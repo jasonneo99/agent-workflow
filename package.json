@@ -19,6 +19,7 @@
     "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",
     "validate": "tsx apps/cli/src/index.ts validate",
     "list": "tsx apps/cli/src/index.ts list",
+    "mcp": "tsx apps/mcp/src/index.ts",
     "provider-check": "tsx apps/cli/src/index.ts provider-check",
     "provider-smoke": "bash scripts/provider-smoke.sh",
     "project-files": "tsx apps/cli/src/index.ts project-files",
@@ -31,6 +32,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.1.0",
     "dotenv": "^17.4.2",
     "fast-glob": "^3.3.2",

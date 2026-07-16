@@ -125,6 +125,27 @@ npm run init-project -- --project /Users/jasonmiller/Projects/media-ai-startup -
 
 See `docs/tellara-integration.md`.
 
+## Use From Codex App
+
+The project includes a local stdio MCP server, so Codex can call the workflow runner as tools instead of asking you to run every CLI command manually.
+
+```bash
+cd "/Users/jasonmiller/Projects/Agent Workflow"
+npm install
+```
+
+Then add the MCP server to `~/.codex/config.toml` and restart Codex. This machine is already configured with:
+
+```toml
+[mcp_servers.agent-workflow]
+command = "npm"
+args = ["run", "-s", "mcp"]
+cwd = "/Users/jasonmiller/Projects/Agent Workflow"
+startup_timeout_sec = 120
+```
+
+See `docs/mcp-codex-app.md` for the tool list and Tellara usage example.
+
 ## Architecture
 
 ```text
