@@ -134,8 +134,23 @@ program
 program
   .command("provider-check")
   .description("Check selected model provider configuration")
-  .action(() => {
+  .action(async () => {
     const provider = providerFromEnv();
+    if (!provider.check) {
+      console.log(`Provider ready: ${provider.id}`);
+      return;
+    }
+
+    const result = await provider.check();
+    for (const detail of result.details) {
+      console.log(detail);
+    }
+    if (!result.ready) {
+      console.error(`Provider not ready: ${provider.id}`);
+      process.exitCode = 1;
+      return;
+    }
+
     console.log(`Provider ready: ${provider.id}`);
   });
 

@@ -42,6 +42,10 @@ export interface FileSummaryOutput {
 
 export interface ModelProvider {
   id: string;
+  check?(): Promise<{
+    ready: boolean;
+    details: string[];
+  }>;
   executeStage(input: StageExecutionInput): Promise<StageExecutionOutput>;
   summarizeFile?(input: FileSummaryInput): Promise<FileSummaryOutput>;
 }

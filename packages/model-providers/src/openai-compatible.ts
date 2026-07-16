@@ -3,37 +3,68 @@ import type { FileSummaryInput, FileSummaryOutput, ModelProvider, StageExecution
 import {
   buildFileSummaryPrompt,
   buildStagePrompt,
+  extractJsonObject,
   normalizeFileSummaryArtifact,
   normalizeStageArtifact,
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
 
-export class OpenAIProvider implements ModelProvider {
-  id = "openai";
+export class OpenAICompatibleProvider implements ModelProvider {
+  id = "openai-compatible";
   private readonly client: OpenAI;
   private readonly model: string;
 
   constructor() {
-    if (!process.env.OPENAI_API_KEY) {
-      throw new Error("OPENAI_API_KEY is required when DEFAULT_MODEL_PROVIDER=openai");
+    const baseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
+    if (!baseURL) {
+      throw new Error("OPENAI_COMPATIBLE_BASE_URL is required when DEFAULT_MODEL_PROVIDER=openai-compatible");
+    }
+
+    this.model = process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
+    if (!this.model) {
+      throw new Error("OPENAI_COMPATIBLE_MODEL is required when DEFAULT_MODEL_PROVIDER=openai-compatible");
     }
 
     this.client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY
+      apiKey: process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",
+      baseURL
     });
-    this.model = process.env.OPENAI_MODEL ?? "gpt-5.5";
+  }
+
+  async check(): Promise<{ ready: boolean; details: string[] }> {
+    try {
+      const models = await this.client.models.list();
+      const modelIds = models.data.map((model) => model.id);
+      const hasConfiguredModel = modelIds.includes(this.model);
+      return {
+        ready: hasConfiguredModel,
+        details: hasConfiguredModel
+          ? [`Endpoint reachable. Model available: ${this.model}`]
+          : [
+            `Endpoint reachable, but model was not listed: ${this.model}`,
+            modelIds.length ? `Available models: ${modelIds.join(", ")}` : "No models listed by endpoint."
+          ]
+      };
+    } catch (error) {
+      return {
+        ready: false,
+        details: [
+          `Endpoint check failed: ${error instanceof Error ? error.message : String(error)}`
+        ]
+      };
+    }
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const response = await this.client.responses.create({
+    const response = await this.client.chat.completions.create({
       model: this.model,
-      input: [
+      messages: [
         {
           role: "system",
           content: [
             "You are executing one stage in a durable agent workflow.",
-            "Return concise JSON only.",
+            "Return one valid JSON object only.",
             "Do not claim that files, commands, or external systems changed unless the stage input explicitly includes that evidence."
           ].join(" ")
         },
@@ -42,46 +73,11 @@ export class OpenAIProvider implements ModelProvider {
           content: buildStagePrompt(input)
         }
       ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "stage_execution_result",
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              summary: { type: "string" },
-              findings: {
-                type: "array",
-                items: { type: "string" }
-              },
-              nextAction: { type: "string" }
-              ,
-              requestedCommands: {
-                type: "array",
-                items: { type: "string" }
-              },
-              requestedFileWrites: {
-                type: "array",
-                items: {
-                  type: "object",
-                  additionalProperties: false,
-                  properties: {
-                    path: { type: "string" },
-                    content: { type: "string" }
-                  },
-                  required: ["path", "content"]
-                }
-              }
-            },
-            required: ["summary", "findings", "nextAction", "requestedCommands", "requestedFileWrites"]
-          },
-          strict: true
-        }
-      }
+      response_format: { type: "json_object" },
+      temperature: 0.2
     });
 
-    const parsed = normalizeStageArtifact(JSON.parse(response.output_text) as StageJsonArtifact);
+    const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
 
     return {
       summary: parsed.summary,
@@ -109,14 +105,14 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
-    const response = await this.client.responses.create({
+    const response = await this.client.chat.completions.create({
       model: this.model,
-      input: [
+      messages: [
         {
           role: "system",
           content: [
             "Summarize one project file for future coding-agent context retrieval.",
-            "Return concise JSON only.",
+            "Return one valid JSON object only.",
             "Emphasize purpose, public interfaces, commands, constraints, and when an agent should read this file."
           ].join(" ")
         },
@@ -125,32 +121,11 @@ export class OpenAIProvider implements ModelProvider {
           content: buildFileSummaryPrompt(input)
         }
       ],
-      text: {
-        format: {
-          type: "json_schema",
-          name: "file_summary_result",
-          schema: {
-            type: "object",
-            additionalProperties: false,
-            properties: {
-              summary: { type: "string" },
-              keyFacts: {
-                type: "array",
-                items: { type: "string" }
-              },
-              likelyUseWhen: {
-                type: "array",
-                items: { type: "string" }
-              }
-            },
-            required: ["summary", "keyFacts", "likelyUseWhen"]
-          },
-          strict: true
-        }
-      }
+      response_format: { type: "json_object" },
+      temperature: 0.1
     });
 
-    const parsed = normalizeFileSummaryArtifact(JSON.parse(response.output_text) as FileSummaryJsonArtifact);
+    const parsed = normalizeFileSummaryArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as FileSummaryJsonArtifact);
     const summary = [
       parsed.summary,
       parsed.keyFacts.length ? `Key facts: ${parsed.keyFacts.join(" | ")}` : "",
@@ -170,4 +145,18 @@ export class OpenAIProvider implements ModelProvider {
       }
     };
   }
+}
+
+export function openAICompatibleConfigStatus(): { ready: boolean; details: string[] } {
+  const details: string[] = [];
+  if (!process.env.OPENAI_COMPATIBLE_BASE_URL) {
+    details.push("OPENAI_COMPATIBLE_BASE_URL is missing");
+  }
+  if (!process.env.OPENAI_COMPATIBLE_MODEL && !process.env.OPENAI_MODEL) {
+    details.push("OPENAI_COMPATIBLE_MODEL is missing");
+  }
+  return {
+    ready: details.length === 0,
+    details
+  };
 }

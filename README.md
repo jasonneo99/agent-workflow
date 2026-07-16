@@ -167,10 +167,13 @@ Provider adapters live in `packages/model-providers/`.
 
 - `mock`: deterministic local execution for workflow and storage testing
 - `openai`: live Responses API execution, enabled with `DEFAULT_MODEL_PROVIDER=openai`
+- `openai-compatible`: local, self-hosted, or gateway chat-completions APIs, enabled with `DEFAULT_MODEL_PROVIDER=openai-compatible`
 
 The provider contract returns a short summary plus a structured artifact. The worker stores that result as an action receipt.
 
 Queued runs store a compiled workflow brief as an artifact. Each stage receives that brief plus prior stage receipts, and every stage output is stored as a `stage_output` artifact.
+
+See `docs/providers.md` for configuration examples.
 
 ## Project Indexing
 
