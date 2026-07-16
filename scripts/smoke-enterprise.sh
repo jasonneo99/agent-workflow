@@ -6,11 +6,31 @@ WORKFLOW="${AGENTFLOW_SMOKE_WORKFLOW:-build-feature}"
 TASK="${AGENTFLOW_SMOKE_TASK:-Smoke test portable agent workflow}"
 PROVIDER="${AGENTFLOW_SMOKE_PROVIDER:-mock}"
 
+retry() {
+  local attempts="$1"
+  local delay_seconds="$2"
+  shift 2
+
+  for attempt in $(seq 1 "$attempts"); do
+    if "$@"; then
+      return 0
+    fi
+
+    if [[ "$attempt" == "$attempts" ]]; then
+      echo "Command failed after $attempts attempts: $*" >&2
+      return 1
+    fi
+
+    echo "Command failed, retrying in ${delay_seconds}s ($attempt/$attempts): $*" >&2
+    sleep "$delay_seconds"
+  done
+}
+
 echo "==> Doctor"
-npm run doctor
+retry 10 2 npm run doctor
 
 echo "==> Bootstrap registry"
-npm run bootstrap-storage
+retry 10 2 npm run bootstrap-storage
 
 echo "==> Validate definitions"
 npm run validate
