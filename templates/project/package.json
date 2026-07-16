@@ -1,0 +1,12 @@
+{
+  "name": "agentflow-example-project",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"example build passed\"",
+    "lint": "echo \"example lint passed\"",
+    "test": "echo \"example tests passed\"",
+    "typecheck": "echo \"example typecheck passed\""
+  }
+}

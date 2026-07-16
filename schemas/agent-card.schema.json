@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Agent Card",
+  "type": "object",
+  "required": ["id", "display_name", "category", "purpose", "prompt"],
+  "properties": {
+    "id": { "type": "string" },
+    "display_name": { "type": "string" },
+    "category": {
+      "type": "string",
+      "enum": ["core", "development", "product", "operations", "automatic"]
+    },
+    "purpose": { "type": "string" },
+    "model_strategy": { "type": "string" },
+    "autonomy": {
+      "oneOf": [
+        { "type": "integer", "minimum": 0, "maximum": 5 },
+        { "type": "string", "const": "wide-open" }
+      ]
+    },
+    "use_when": { "type": "array", "items": { "type": "string" } },
+    "avoid_when": { "type": "array", "items": { "type": "string" } },
+    "can": { "type": "array", "items": { "type": "string" } },
+    "cannot": { "type": "array", "items": { "type": "string" } },
+    "requires_approval": { "type": "array", "items": { "type": "string" } },
+    "prompt": { "type": "string" }
+  }
+}
+

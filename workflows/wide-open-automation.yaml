@@ -1,0 +1,22 @@
+id: wide-open-automation
+name: Wide Open Automation
+description: Run trusted automation with maximum permissions when the project explicitly opts in.
+lead: auto-wide-open-executor
+default_autonomy: wide-open
+triggers:
+  manual: true
+  schedule: project-defined
+  events:
+    - project_defined
+stages:
+  - id: execute
+    agent: auto-wide-open-executor
+    goal: Complete the configured task end to end and write receipts for every action.
+    context:
+      load:
+        - project_policy
+        - task_scope
+        - tool_permissions
+      max_tokens: 8000
+    output: wide_open_receipt
+

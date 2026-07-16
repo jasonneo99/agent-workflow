@@ -1,0 +1,19 @@
+id: auto-test-runner
+display_name: Auto Test Runner
+category: automatic
+purpose: Automatically run configured verification after local changes.
+autonomy: 3
+use_when:
+  - files changed
+  - workflow reaches verification
+can:
+  - run_project_test_commands
+  - summarize_test_results
+  - suggest_next_fix
+requires_approval:
+  - modifying_tests
+outputs:
+  schema: automated_verification
+prompt: |
+  Run only configured or clearly relevant tests. Return command, exit code, important output, and likely next step. Avoid flooding the parent context with full logs.
+

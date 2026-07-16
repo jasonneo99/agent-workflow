@@ -1,0 +1,19 @@
+id: auto-release-check
+display_name: Auto Release Check
+category: automatic
+purpose: Run release-readiness checks on demand or schedule.
+autonomy: 4
+use_when:
+  - release candidate exists
+  - deployment requested
+can:
+  - inspect_release_state
+  - run_predeploy_checks
+  - draft_release_go_no_go
+requires_approval:
+  - deployment
+outputs:
+  schema: release_check_report
+prompt: |
+  Check readiness against the project release policy. Be strict about migrations, config, monitoring, rollback, and user-impact notes.
+

@@ -1,0 +1,29 @@
+id: maintain-context
+name: Maintain Context
+description: Refresh project context, decisions, and compact memory after meaningful work.
+lead: context-curator
+default_autonomy: 2
+triggers:
+  manual: true
+  events:
+    - workflow_completed
+stages:
+  - id: summarize
+    agent: auto-memory-summarizer
+    goal: Summarize the workflow run into durable reusable memory.
+    context:
+      load:
+        - run_receipts
+        - changed_files
+      max_tokens: 4000
+    output: memory_summary
+  - id: update-context
+    agent: context-curator
+    goal: Update project context files with compact decisions and commands.
+    context:
+      load:
+        - memory_summary
+        - project_context
+      max_tokens: 4000
+    output: context_update
+

@@ -1,0 +1,721 @@
+import pg from "pg";
+import type { AgentCard, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
+import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
+import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
+
+const { Client } = pg;
+
+export function databaseUrl(): string {
+  return process.env.DATABASE_URL ?? "postgres://agentflow:agentflow@localhost:15432/agentflow";
+}
+
+export async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
+  const client = new Client({ connectionString: databaseUrl() });
+  await client.connect();
+  try {
+    return await fn(client);
+  } finally {
+    await client.end();
+  }
+}
+
+export async function seedRegistry(
+  agents: RegistryRecord<AgentCard>[],
+  workflows: RegistryRecord<WorkflowDefinition>[]
+): Promise<{ agents: number; workflows: number }> {
+  return withClient(async (client) => {
+    for (const record of agents) {
+      await client.query(
+        `insert into agents (id, display_name, category, source_path, definition, updated_at)
+         values ($1, $2, $3, $4, $5, now())
+         on conflict (id) do update
+         set display_name = excluded.display_name,
+             category = excluded.category,
+             source_path = excluded.source_path,
+             definition = excluded.definition,
+             updated_at = now()`,
+        [
+          record.value.id,
+          record.value.display_name,
+          record.value.category,
+          record.path,
+          JSON.stringify(record.value)
+        ]
+      );
+    }
+
+    for (const record of workflows) {
+      await client.query(
+        `insert into workflows (id, name, source_path, definition, updated_at)
+         values ($1, $2, $3, $4, now())
+         on conflict (id) do update
+         set name = excluded.name,
+             source_path = excluded.source_path,
+             definition = excluded.definition,
+             updated_at = now()`,
+        [
+          record.value.id,
+          record.value.name,
+          record.path,
+          JSON.stringify(record.value)
+        ]
+      );
+    }
+
+    return {
+      agents: agents.length,
+      workflows: workflows.length
+    };
+  });
+}
+
+export async function migrateStorage(): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS artifacts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid REFERENCES workflow_runs(id),
+        task_id uuid REFERENCES workflow_tasks(id),
+        kind text NOT NULL,
+        uri text NOT NULL UNIQUE,
+        content jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS artifacts_run_kind_idx
+      ON artifacts(run_id, kind, created_at)
+    `);
+  });
+}
+
+export async function upsertProject(input: {
+  name: string;
+  rootUri: string;
+  profile: string;
+  config: unknown;
+}): Promise<string> {
+  return withClient(async (client) => {
+    const result = await client.query<{ id: string }>(
+      `insert into projects (name, root_uri, profile, config, updated_at)
+       values ($1, $2, $3, $4, now())
+       on conflict (root_uri) do update
+       set name = excluded.name,
+           profile = excluded.profile,
+           config = excluded.config,
+           updated_at = now()
+       returning id`,
+      [
+        input.name,
+        input.rootUri,
+        input.profile,
+        JSON.stringify(input.config)
+      ]
+    );
+    return result.rows[0].id;
+  });
+}
+
+export async function upsertProjectFiles(input: {
+  projectId: string;
+  files: IndexedProjectFile[];
+}): Promise<number> {
+  return withClient(async (client) => {
+    for (const file of input.files) {
+      await client.query(
+        `insert into project_files (project_id, source_uri, content_hash, token_estimate, summary, metadata, updated_at)
+         values ($1, $2, $3, $4, $5, $6, now())
+         on conflict (project_id, source_uri) do update
+         set content_hash = excluded.content_hash,
+             token_estimate = excluded.token_estimate,
+             summary = excluded.summary,
+             metadata = excluded.metadata,
+             updated_at = now()`,
+        [
+          input.projectId,
+          file.sourceUri,
+          file.contentHash,
+          file.tokenEstimate,
+          file.summary,
+          JSON.stringify(file.metadata)
+        ]
+      );
+    }
+    return input.files.length;
+  });
+}
+
+export interface ProjectFileSummary {
+  sourceUri: string;
+  contentHash: string;
+  tokenEstimate: number;
+  summary: string;
+  updatedAt: string;
+}
+
+export async function listProjectFileSummaries(input: {
+  projectRootUri: string;
+  limit: number;
+}): Promise<ProjectFileSummary[]> {
+  return withClient(async (client) => {
+    const result = await client.query<ProjectFileSummary>(
+      `select
+         pf.source_uri as "sourceUri",
+         pf.content_hash as "contentHash",
+         pf.token_estimate as "tokenEstimate",
+         pf.summary,
+         pf.updated_at::text as "updatedAt"
+       from project_files pf
+       join projects p on p.id = pf.project_id
+       where p.root_uri = $1
+       order by pf.source_uri asc
+       limit $2`,
+      [input.projectRootUri, input.limit]
+    );
+    return result.rows;
+  });
+}
+
+export interface CreateRunInput {
+  projectName: string;
+  projectRootUri: string;
+  projectProfile: string;
+  projectConfig: unknown;
+  workflow: WorkflowDefinition;
+  task: string;
+  autonomy: string;
+  compiledBrief?: string;
+}
+
+export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number }> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const projectResult = await client.query<{ id: string }>(
+        `insert into projects (name, root_uri, profile, config, updated_at)
+         values ($1, $2, $3, $4, now())
+         on conflict (root_uri) do update
+         set name = excluded.name,
+             profile = excluded.profile,
+             config = excluded.config,
+             updated_at = now()
+         returning id`,
+        [
+          input.projectName,
+          input.projectRootUri,
+          input.projectProfile,
+          JSON.stringify(input.projectConfig)
+        ]
+      );
+      const projectId = projectResult.rows[0].id;
+
+      const runResult = await client.query<{ id: string }>(
+        `insert into workflow_runs (project_id, workflow_id, status, task, autonomy, compiled_brief_uri)
+         values ($1, $2, 'queued', $3, $4, $5)
+         returning id`,
+        [
+          projectId,
+          input.workflow.id,
+          input.task,
+          input.autonomy,
+          null
+        ]
+      );
+      const runId = runResult.rows[0].id;
+      const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
+
+      if (input.compiledBrief) {
+        await client.query(
+          `insert into artifacts (run_id, kind, uri, content)
+           values ($1, 'compiled_brief', $2, $3)
+           on conflict (uri) do update
+           set content = excluded.content`,
+          [
+            runId,
+            compiledBriefUri,
+            JSON.stringify({ text: input.compiledBrief })
+          ]
+        );
+        await client.query(
+          `update workflow_runs
+           set compiled_brief_uri = $2
+           where id = $1`,
+          [runId, compiledBriefUri]
+        );
+      }
+
+      for (const stage of input.workflow.stages) {
+        await client.query(
+          `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
+           values ($1, $2, $3, 'queued', $4)`,
+          [
+            runId,
+            stage.id,
+            stage.agent,
+            `${runId}:${stage.id}:${stage.agent}`
+          ]
+        );
+      }
+
+      await client.query("commit");
+      return {
+        projectId,
+        runId,
+        tasks: input.workflow.stages.length
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export interface ClaimedWorkflowTask {
+  taskId: string;
+  runId: string;
+  projectRootUri: string;
+  projectConfig: unknown;
+  workflowId: string;
+  workflowTask: string;
+  stageId: string;
+  stageGoal: string;
+  agentId: string;
+  agentName: string;
+  agentPrompt: string;
+  compiledBrief: string;
+  priorReceipts: Array<{
+    agentId: string;
+    actionType: string;
+    summary: string;
+  }>;
+}
+
+export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | null> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">>(
+        `with next_task as (
+           select wt.id
+           from workflow_tasks wt
+           join workflow_runs wr on wr.id = wt.run_id
+           join workflows wf on wf.id = wr.workflow_id
+           join lateral jsonb_array_elements(wf.definition->'stages') with ordinality stage(definition, stage_order)
+             on stage.definition->>'id' = wt.stage_id
+           where wt.status = 'queued'
+             and wr.status in ('queued', 'running')
+             and wt.available_at <= now()
+             and not exists (
+               select 1
+               from workflow_tasks prior
+               join lateral jsonb_array_elements(wf.definition->'stages') with ordinality prior_stage(definition, stage_order)
+                 on prior_stage.definition->>'id' = prior.stage_id
+               where prior.run_id = wt.run_id
+                 and prior_stage.stage_order < stage.stage_order
+                 and prior.status <> 'completed'
+             )
+           order by wt.available_at asc, stage.stage_order asc
+           limit 1
+           for update of wt skip locked
+         )
+         update workflow_tasks wt
+         set status = 'running',
+             attempts = wt.attempts + 1,
+             started_at = now()
+         from next_task, workflow_runs wr, workflows wf, agents a, projects p
+         where wt.id = next_task.id
+           and wr.id = wt.run_id
+           and p.id = wr.project_id
+           and wf.id = wr.workflow_id
+           and a.id = wt.agent_id
+         returning
+           wt.id as "taskId",
+           wt.run_id as "runId",
+           p.root_uri as "projectRootUri",
+           p.config as "projectConfig",
+           wr.workflow_id as "workflowId",
+           wr.task as "workflowTask",
+           wt.stage_id as "stageId",
+           coalesce((
+             select stage->>'goal'
+             from jsonb_array_elements(wf.definition->'stages') stage
+             where stage->>'id' = wt.stage_id
+             limit 1
+           ), '') as "stageGoal",
+           wt.agent_id as "agentId",
+           a.display_name as "agentName",
+           a.definition->>'prompt' as "agentPrompt"`
+      );
+
+      if (!result.rows[0]) {
+        await client.query("commit");
+        return null;
+      }
+
+      await client.query(
+        `update workflow_runs
+         set status = 'running'
+         where id = $1 and status = 'queued'`,
+        [result.rows[0].runId]
+      );
+
+      await client.query("commit");
+      const claimed = result.rows[0];
+      const context = await loadStageContext(client, claimed.runId);
+      return {
+        ...claimed,
+        ...context
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function completeWorkflowTask(input: {
+  taskId: string;
+  runId: string;
+  agentId: string;
+  summary: string;
+  artifact: Record<string, unknown>;
+}): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const outputUri = `db://workflow_tasks/${input.taskId}/output`;
+      await client.query(
+        `insert into artifacts (run_id, task_id, kind, uri, content)
+         values ($1, $2, 'stage_output', $3, $4)
+         on conflict (uri) do update
+         set content = excluded.content`,
+        [
+          input.runId,
+          input.taskId,
+          outputUri,
+          JSON.stringify(input.artifact)
+        ]
+      );
+      await client.query(
+        `update workflow_tasks
+         set status = 'completed',
+             output_uri = $2,
+             finished_at = now()
+         where id = $1`,
+        [input.taskId, outputUri]
+      );
+
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, $2, 'stage_completed', $3, $4, $5)`,
+        [
+          input.runId,
+          input.agentId,
+          input.taskId,
+          input.summary,
+          JSON.stringify(input.artifact)
+        ]
+      );
+
+      await client.query(
+        `update workflow_runs wr
+         set status = 'completed',
+             finished_at = now()
+         where wr.id = $1
+           and not exists (
+             select 1
+             from workflow_tasks wt
+             where wt.run_id = wr.id
+               and wt.status <> 'completed'
+           )`,
+        [input.runId]
+      );
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function failWorkflowTask(input: {
+  taskId: string;
+  runId: string;
+  agentId: string;
+  error: string;
+}): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query(
+        `update workflow_tasks
+         set status = 'failed',
+             finished_at = now()
+         where id = $1`,
+        [input.taskId]
+      );
+
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, $2, 'stage_failed', $3, $4, $5)`,
+        [
+          input.runId,
+          input.agentId,
+          input.taskId,
+          input.error,
+          JSON.stringify({ error: input.error })
+        ]
+      );
+
+      await client.query(
+        `update workflow_runs
+         set status = 'failed',
+             finished_at = now()
+         where id = $1`,
+        [input.runId]
+      );
+
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function recordRunAction(input: {
+  runId: string;
+  agentId: string;
+  actionType: string;
+  target: string;
+  summary: string;
+  artifactKind: string;
+  artifactContent: Record<string, unknown>;
+}): Promise<string> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [
+          input.runId,
+          input.agentId,
+          input.actionType,
+          input.target,
+          input.summary,
+          JSON.stringify(input.artifactContent)
+        ]
+      );
+
+      const artifactUri = `db://workflow_runs/${input.runId}/${input.artifactKind}/${Date.now()}`;
+      await client.query(
+        `insert into artifacts (run_id, kind, uri, content)
+         values ($1, $2, $3, $4)`,
+        [
+          input.runId,
+          input.artifactKind,
+          artifactUri,
+          JSON.stringify(input.artifactContent)
+        ]
+      );
+
+      await client.query("commit");
+      return artifactUri;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export interface WorkflowRunStatus {
+  id: string;
+  status: string;
+  workflowId: string;
+  task: string;
+  autonomy: string;
+  startedAt: string;
+  finishedAt: string | null;
+}
+
+export interface WorkflowTaskStatus {
+  id: string;
+  stageId: string;
+  agentId: string;
+  status: string;
+  attempts: number;
+  startedAt: string | null;
+  finishedAt: string | null;
+}
+
+export interface ActionReceiptStatus {
+  id: string;
+  agentId: string;
+  actionType: string;
+  target: string;
+  summary: string;
+  createdAt: string;
+}
+
+export interface ArtifactStatus {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  kind: string;
+  uri: string;
+  content: Record<string, unknown>;
+  createdAt: string;
+}
+
+export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus[]> {
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowRunStatus>(
+      `select
+         id::text,
+         status,
+         workflow_id as "workflowId",
+         task,
+         autonomy,
+         started_at::text as "startedAt",
+         finished_at::text as "finishedAt"
+       from workflow_runs
+       order by started_at desc
+       limit $1`,
+      [limit]
+    );
+    return result.rows;
+  });
+}
+
+export async function getWorkflowRunDetails(runId: string): Promise<{
+  run: WorkflowRunStatus | null;
+  tasks: WorkflowTaskStatus[];
+  receipts: ActionReceiptStatus[];
+}> {
+  return withClient(async (client) => {
+    const runResult = await client.query<WorkflowRunStatus>(
+      `select
+         id::text,
+         status,
+         workflow_id as "workflowId",
+         task,
+         autonomy,
+         started_at::text as "startedAt",
+         finished_at::text as "finishedAt"
+       from workflow_runs
+       where id = $1`,
+      [runId]
+    );
+
+    const taskResult = await client.query<WorkflowTaskStatus>(
+      `select
+         id::text,
+         stage_id as "stageId",
+         agent_id as "agentId",
+         status,
+         attempts,
+         started_at::text as "startedAt",
+         finished_at::text as "finishedAt"
+       from workflow_tasks
+       where run_id = $1
+       order by available_at asc, stage_id asc`,
+      [runId]
+    );
+
+    const receiptResult = await client.query<ActionReceiptStatus>(
+      `select
+         id::text,
+         agent_id as "agentId",
+         action_type as "actionType",
+         target,
+         summary,
+         created_at::text as "createdAt"
+       from action_receipts
+       where run_id = $1
+       order by created_at asc`,
+      [runId]
+    );
+
+    return {
+      run: runResult.rows[0] ?? null,
+      tasks: taskResult.rows,
+      receipts: receiptResult.rows
+    };
+  });
+}
+
+export async function listArtifacts(input: {
+  runId: string;
+  kind?: string;
+}): Promise<ArtifactStatus[]> {
+  return withClient(async (client) => {
+    const result = await client.query<ArtifactStatus>(
+      `select
+         id::text,
+         run_id::text as "runId",
+         task_id::text as "taskId",
+         kind,
+         uri,
+         content,
+         created_at::text as "createdAt"
+       from artifacts
+       where run_id = $1
+         and ($2::text is null or kind = $2)
+       order by created_at asc`,
+      [input.runId, input.kind ?? null]
+    );
+    return result.rows;
+  });
+}
+
+export async function getArtifactByUri(uri: string): Promise<ArtifactStatus | null> {
+  return withClient(async (client) => {
+    const result = await client.query<ArtifactStatus>(
+      `select
+         id::text,
+         run_id::text as "runId",
+         task_id::text as "taskId",
+         kind,
+         uri,
+         content,
+         created_at::text as "createdAt"
+       from artifacts
+       where uri = $1`,
+      [uri]
+    );
+    return result.rows[0] ?? null;
+  });
+}
+
+async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">> {
+  const briefResult = await client.query<{ text: string }>(
+    `select content->>'text' as text
+     from artifacts
+     where run_id = $1 and kind = 'compiled_brief'
+     order by created_at desc
+     limit 1`,
+    [runId]
+  );
+
+  const receiptsResult = await client.query<{
+    agentId: string;
+    actionType: string;
+    summary: string;
+  }>(
+    `select
+       agent_id as "agentId",
+       action_type as "actionType",
+       summary
+     from action_receipts
+     where run_id = $1
+     order by created_at asc`,
+    [runId]
+  );
+
+  return {
+    compiledBrief: briefResult.rows[0]?.text ?? "",
+    priorReceipts: receiptsResult.rows
+  };
+}

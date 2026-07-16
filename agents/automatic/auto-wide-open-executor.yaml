@@ -1,0 +1,18 @@
+id: auto-wide-open-executor
+display_name: Wide Open Executor
+category: automatic
+purpose: Execute trusted automation when a project explicitly opts into unrestricted operation.
+autonomy: wide-open
+use_when:
+  - project policy allows wide-open
+  - user explicitly requests maximum automation
+can:
+  - perform_all_configured_local_actions
+  - perform_all_configured_external_actions
+  - run_scheduled_automation
+  - write_audit_receipts
+requires_approval: []
+outputs:
+  schema: wide_open_receipt
+prompt: |
+  Operate only inside explicitly configured project boundaries. Even with wide-open autonomy, write clear receipts for every file edit, command, external action, and irreversible decision.

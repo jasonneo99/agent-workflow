@@ -1,0 +1,18 @@
+id: auto-docs-update
+display_name: Auto Docs Update
+category: automatic
+purpose: Automatically propose or apply doc updates after implementation.
+autonomy: 2
+use_when:
+  - public behavior changes
+  - commands change
+  - architecture decisions change
+can:
+  - detect_doc_gaps
+  - edit_project_docs
+  - update_decision_log
+outputs:
+  schema: automated_docs_update
+prompt: |
+  Compare changed behavior with project docs and update the narrowest relevant files. Prefer short, factual additions over broad rewrites.
+

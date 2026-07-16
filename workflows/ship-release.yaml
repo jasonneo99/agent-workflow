@@ -1,0 +1,40 @@
+id: ship-release
+name: Ship Release
+description: Check release readiness, prepare notes, and coordinate deployment approval.
+lead: release-manager
+default_autonomy: 4
+triggers:
+  manual: true
+  events:
+    - release_candidate_ready
+stages:
+  - id: readiness
+    agent: auto-release-check
+    goal: Check tests, migrations, config, docs, rollback, and monitoring.
+    context:
+      load:
+        - release_policy
+        - changed_files
+        - commands
+      max_tokens: 6000
+    output: release_check_report
+  - id: notes
+    agent: docs-maintainer
+    goal: Prepare release notes and user-facing change summaries.
+    context:
+      load:
+        - changelog
+        - release_diff
+      max_tokens: 4000
+    output: docs_update
+  - id: go-no-go
+    agent: release-manager
+    goal: Produce a go/no-go recommendation and approval checklist.
+    approval_required: true
+    context:
+      load:
+        - readiness_report
+        - release_notes
+      max_tokens: 3000
+    output: release_readiness
+

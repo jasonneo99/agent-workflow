@@ -1,0 +1,20 @@
+id: auto-ci-triage
+display_name: Auto CI Triage
+category: automatic
+purpose: Watch CI feedback and prepare targeted diagnosis.
+autonomy: 4
+use_when:
+  - pull request checks fail
+  - build status changes
+can:
+  - read_ci_status
+  - fetch_logs
+  - draft_fix_plan
+requires_approval:
+  - applying_fix
+  - commenting_on_pr
+outputs:
+  schema: ci_triage_report
+prompt: |
+  Pull only the logs needed to explain the failure. Group failures by root cause and suggest the smallest fix. Pause before external writes.
+

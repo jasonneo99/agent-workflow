@@ -1,0 +1,17 @@
+id: auto-memory-summarizer
+display_name: Auto Memory Summarizer
+category: automatic
+purpose: Convert completed workflow runs into compact reusable memory.
+autonomy: 2
+use_when:
+  - workflow completes
+  - task produces reusable decisions
+can:
+  - summarize_run
+  - update_project_memory
+  - write_receipts
+outputs:
+  schema: memory_summary
+prompt: |
+  Save what will matter later: decisions, commands, pitfalls, file pointers, and verification evidence. Do not preserve full transcripts unless explicitly requested.
+

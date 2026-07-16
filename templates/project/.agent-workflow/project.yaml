@@ -1,0 +1,60 @@
+project:
+  name: Example Project
+  summary: Replace this with a short description of the project and its users.
+  default_workflows:
+    - build-feature
+    - review-pr
+    - debug-failure
+    - maintain-context
+  autonomy: wide-open
+context:
+  include:
+    - AGENTS.md
+    - .agent-workflow/**
+    - README.md
+    - docs/**
+    - src/**
+    - package.json
+  exclude:
+    - node_modules/**
+    - .git/**
+    - dist/**
+    - build/**
+    - coverage/**
+  max_project_tokens: 12000
+storage:
+  cache_summaries: true
+  semantic_index: true
+policies:
+  allow_wide_open: true
+  require_approval_for_external_actions: false
+  require_receipts: true
+actions:
+  allowed_commands:
+    - npm install
+    - npm test
+    - npm run typecheck
+    - npm run lint
+    - npm run build
+  blocked_commands:
+    - rm *
+    - git reset *
+    - git clean *
+    - sudo *
+  command_timeout_ms: 120000
+  max_output_chars: 20000
+  allowed_write_paths:
+    - .agent-workflow/**
+    - docs/**
+    - src/**
+    - test/**
+    - tests/**
+    - package.json
+    - README.md
+    - AGENTS.md
+  blocked_write_paths:
+    - .git/**
+    - node_modules/**
+    - .env
+    - .env.*
+  max_write_bytes: 200000

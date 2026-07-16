@@ -1,0 +1,48 @@
+id: debug-failure
+name: Debug Failure
+description: Reproduce, diagnose, fix, and verify a failing test, build, runtime path, or CI check.
+lead: ci-debugger
+default_autonomy: 3
+triggers:
+  manual: true
+  events:
+    - ci_failed
+stages:
+  - id: collect
+    agent: ci-debugger
+    goal: Gather the smallest useful failure evidence.
+    context:
+      load:
+        - logs
+        - commands
+        - recent_changes
+      max_tokens: 5000
+    output: ci_diagnosis
+  - id: reproduce
+    agent: test-engineer
+    goal: Reproduce the failure locally or explain why it cannot be reproduced.
+    context:
+      load:
+        - commands
+        - relevant_source_files
+      max_tokens: 5000
+    output: reproduction_report
+  - id: fix
+    agent: implementation-agent
+    goal: Apply the smallest credible fix.
+    context:
+      load:
+        - diagnosis
+        - reproduction_report
+      max_tokens: 6000
+    output: change_summary
+  - id: verify
+    agent: auto-test-runner
+    goal: Verify the fix and record residual risk.
+    context:
+      load:
+        - commands
+        - changed_files
+      max_tokens: 4000
+    output: automated_verification
+

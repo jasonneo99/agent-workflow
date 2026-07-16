@@ -1,0 +1,43 @@
+{
+  "name": "portable-agent-workflows",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "agentflow": "apps/cli/src/index.ts"
+  },
+  "scripts": {
+    "agentflow": "tsx apps/cli/src/index.ts",
+    "artifacts": "tsx apps/cli/src/index.ts artifacts",
+    "compile": "tsx apps/cli/src/index.ts compile",
+    "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
+    "doctor": "tsx apps/cli/src/index.ts doctor",
+    "exec-command": "tsx apps/cli/src/index.ts exec-command",
+    "index-project": "tsx apps/cli/src/index.ts index-project",
+    "init-project": "tsx apps/cli/src/index.ts init-project",
+    "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",
+    "validate": "tsx apps/cli/src/index.ts validate",
+    "list": "tsx apps/cli/src/index.ts list",
+    "provider-check": "tsx apps/cli/src/index.ts provider-check",
+    "project-files": "tsx apps/cli/src/index.ts project-files",
+    "status": "tsx apps/cli/src/index.ts status",
+    "worker": "tsx apps/cli/src/index.ts worker",
+    "worker:watch": "tsx apps/cli/src/index.ts worker --watch --limit 1",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "dotenv": "^17.4.2",
+    "fast-glob": "^3.3.2",
+    "openai": "^6.47.0",
+    "pg": "^8.22.0",
+    "yaml": "^2.5.1",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.5.4",
+    "@types/pg": "^8.20.0",
+    "tsx": "^4.19.1",
+    "typescript": "^5.6.2"
+  }
+}

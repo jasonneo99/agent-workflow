@@ -1,0 +1,71 @@
+id: build-feature
+name: Build Feature
+description: Plan, implement, verify, document, and package a feature change.
+lead: workflow-orchestrator
+default_autonomy: 3
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: orient
+    agent: task-triager
+    goal: Classify the request, select relevant specialists, and identify missing context.
+    context:
+      load:
+        - project_contract
+        - recent_decisions
+      max_tokens: 3000
+    output: task_triage
+  - id: plan
+    agent: technical-architect
+    goal: Produce a scoped implementation plan that follows project patterns.
+    subagents:
+      - ux-reviewer
+      - database-engineer
+      - security-reviewer
+    context:
+      load:
+        - relevant_source_files
+        - architecture_docs
+      max_tokens: 6000
+    output: implementation_plan
+  - id: implement
+    agent: implementation-agent
+    goal: Apply the approved implementation plan locally.
+    subagents:
+      - frontend-engineer
+      - backend-engineer
+    context:
+      load:
+        - implementation_plan
+        - touched_files
+      max_tokens: 8000
+    output: change_summary
+  - id: verify
+    agent: auto-test-runner
+    goal: Run configured tests and summarize verification.
+    context:
+      load:
+        - commands
+        - changed_files
+      max_tokens: 4000
+    output: automated_verification
+  - id: document
+    agent: auto-docs-update
+    goal: Update relevant docs, commands, and decision logs.
+    context:
+      load:
+        - change_summary
+        - docs
+      max_tokens: 4000
+    output: automated_docs_update
+  - id: package
+    agent: pr-preparer
+    goal: Prepare review summary, PR notes, test evidence, and residual risk.
+    context:
+      load:
+        - diff_summary
+        - verification_report
+      max_tokens: 3000
+    output: pr_package
+

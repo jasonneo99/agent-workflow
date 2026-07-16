@@ -1,0 +1,43 @@
+id: review-pr
+name: Review Pull Request
+description: Review changes for correctness, risk, UX impact, security, and missing tests.
+lead: workflow-orchestrator
+default_autonomy: 2
+triggers:
+  manual: true
+  events:
+    - github_pr_opened
+    - github_pr_updated
+stages:
+  - id: inspect
+    agent: technical-architect
+    goal: Understand the change, behavioral surface, and risk.
+    context:
+      load:
+        - diff
+        - project_contract
+      max_tokens: 6000
+    output: review_context
+  - id: specialist-review
+    agent: workflow-orchestrator
+    goal: Delegate focused reviews and collect only actionable findings.
+    subagents:
+      - test-engineer
+      - security-reviewer
+      - ux-reviewer
+      - database-engineer
+    context:
+      load:
+        - diff
+        - touched_files
+      max_tokens: 8000
+    output: review_findings
+  - id: final-review
+    agent: pr-preparer
+    goal: Produce ordered findings, open questions, and verification gaps.
+    context:
+      load:
+        - specialist_summaries
+      max_tokens: 3000
+    output: pr_review
+
