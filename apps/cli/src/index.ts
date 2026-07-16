@@ -27,6 +27,7 @@ import {
   listWorkflowRuns,
   migrateStorage,
   recordRunAction,
+  resetStorage,
   seedRegistry,
   upsertProject,
   upsertProjectFiles
@@ -153,8 +154,18 @@ program
 
     const projectDir = path.resolve(process.cwd(), options.project);
     const templateDir = path.join(rootDir, "templates", options.profile === "simple" ? "project-simple" : "project");
-    await copyTemplate(templateDir, projectDir, Boolean(options.force));
+    const result = await copyTemplate(templateDir, projectDir, Boolean(options.force));
     console.log(`Initialized ${options.profile} agent workflow files in ${projectDir}`);
+    console.log(`Wrote ${result.written}; skipped ${result.skipped}.`);
+    console.log("");
+    console.log("Next steps:");
+    console.log(`  npm run index-project -- --project ${projectDir}`);
+    console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
+    if (options.profile === "enterprise") {
+      console.log("  npm run worker -- --limit 6");
+    } else {
+      console.log(`  npm run compile -- --workflow build-feature --project ${projectDir} --task "<task>"`);
+    }
   });
 
 program
@@ -195,6 +206,46 @@ program
 
     await migrateStorage();
     console.log("Storage migrations applied.");
+  });
+
+program
+  .command("reset-storage")
+  .description("Clear local enterprise run history and indexed project data")
+  .option("--include-registry", "also remove seeded agent and workflow definitions")
+  .option("--yes", "confirm destructive cleanup")
+  .action(async (options: { includeRegistry?: boolean; yes?: boolean }) => {
+    if (!options.yes) {
+      console.error("Refusing to reset storage without --yes.");
+      console.error("This deletes local workflow runs, tasks, receipts, artifacts, indexed project files, memory, and projects.");
+      console.error("Use --include-registry to also delete seeded agent and workflow definitions.");
+      process.exitCode = 1;
+      return;
+    }
+
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const result = await resetStorage({ includeRegistry: Boolean(options.includeRegistry) });
+    console.log("Storage reset complete.");
+    console.log(`Deleted artifacts: ${result.artifacts}`);
+    console.log(`Deleted action receipts: ${result.actionReceipts}`);
+    console.log(`Deleted workflow tasks: ${result.workflowTasks}`);
+    console.log(`Deleted workflow runs: ${result.workflowRuns}`);
+    console.log(`Deleted project files: ${result.projectFiles}`);
+    console.log(`Deleted memory items: ${result.memoryItems}`);
+    console.log(`Deleted projects: ${result.projects}`);
+    if (options.includeRegistry) {
+      console.log(`Deleted workflows: ${result.workflows ?? 0}`);
+      console.log(`Deleted agents: ${result.agents ?? 0}`);
+      console.log("Run `npm run bootstrap-storage` before queueing workflows.");
+    }
   });
 
 program
@@ -693,8 +744,10 @@ function selectWorkflowAgents<T extends { id: string }>(agents: T[], workflow: {
   return selectedAgents;
 }
 
-async function copyTemplate(templateDir: string, targetDir: string, force: boolean): Promise<void> {
+async function copyTemplate(templateDir: string, targetDir: string, force: boolean): Promise<{ written: number; skipped: number }> {
   const entries = await walk(templateDir);
+  let written = 0;
+  let skipped = 0;
   for (const sourcePath of entries) {
     const relativePath = path.relative(templateDir, sourcePath);
     const targetPath = path.join(targetDir, relativePath);
@@ -702,12 +755,15 @@ async function copyTemplate(templateDir: string, targetDir: string, force: boole
 
     if (!force && await exists(targetPath)) {
       console.log(`skip existing ${relativePath}`);
+      skipped += 1;
       continue;
     }
 
     await fs.copyFile(sourcePath, targetPath);
     console.log(`write ${relativePath}`);
+    written += 1;
   }
+  return { written, skipped };
 }
 
 async function walk(dir: string): Promise<string[]> {

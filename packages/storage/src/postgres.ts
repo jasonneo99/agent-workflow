@@ -89,6 +89,62 @@ export async function migrateStorage(): Promise<void> {
   });
 }
 
+export async function resetStorage(input: { includeRegistry?: boolean } = {}): Promise<{
+  artifacts: number;
+  actionReceipts: number;
+  workflowTasks: number;
+  workflowRuns: number;
+  projectFiles: number;
+  memoryItems: number;
+  projects: number;
+  agents?: number;
+  workflows?: number;
+}> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const artifacts = await deleteFrom(client, "artifacts");
+      const actionReceipts = await deleteFrom(client, "action_receipts");
+      const workflowTasks = await deleteFrom(client, "workflow_tasks");
+      const workflowRuns = await deleteFrom(client, "workflow_runs");
+      const projectFiles = await deleteFrom(client, "project_files");
+      const memoryItems = await deleteFrom(client, "memory_items");
+      const projects = await deleteFrom(client, "projects");
+      const result = {
+        artifacts,
+        actionReceipts,
+        workflowTasks,
+        workflowRuns,
+        projectFiles,
+        memoryItems,
+        projects
+      };
+
+      if (input.includeRegistry) {
+        const workflows = await deleteFrom(client, "workflows");
+        const agents = await deleteFrom(client, "agents");
+        await client.query("commit");
+        return {
+          ...result,
+          agents,
+          workflows
+        };
+      }
+
+      await client.query("commit");
+      return result;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+async function deleteFrom(client: pg.Client, tableName: string): Promise<number> {
+  const result = await client.query(`delete from ${tableName}`);
+  return result.rowCount ?? 0;
+}
+
 export async function upsertProject(input: {
   name: string;
   rootUri: string;

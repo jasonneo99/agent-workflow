@@ -43,8 +43,16 @@ Live workers can request allowed project file writes. When testing against `temp
 To reset local enterprise storage and remove persisted smoke runs:
 
 ```bash
+npm run reset-storage
+npm run bootstrap-storage
+```
+
+To remove Docker volumes too:
+
+```bash
 npm run services:reset
 docker compose -f infra/docker-compose.yml up -d
+npm run bootstrap-storage
 ```
 
 The long-form workflow behind `npm run smoke` is:
@@ -70,12 +78,44 @@ npm run worker -- --limit 6
 npm run status
 ```
 
+`init-project` writes `AGENTS.md` plus `.agent-workflow/` files, skips existing files unless `--force` is passed, and prints the next recommended commands.
+
 The simpler flat-file workflow is available when a user does not want local services:
 
 ```bash
 npm run init-project -- --project /path/to/project --profile simple
 npm run doctor -- --simple
 ```
+
+## Use From Another Project
+
+Keep this repository as the shared workflow platform, then install lightweight project context into each consuming repository:
+
+```bash
+cd /Users/jasonmiller/Projects/Agent\ Workflow
+npm run init-project -- --project /path/to/your-app --profile enterprise
+```
+
+In the consuming project, edit:
+
+```text
+AGENTS.md
+.agent-workflow/project.yaml
+.agent-workflow/context.md
+.agent-workflow/commands.md
+.agent-workflow/decisions.md
+```
+
+Back in this workflow repository, index and run against that project:
+
+```bash
+npm run index-project -- --project /path/to/your-app
+npm run agentflow -- run build-feature --project /path/to/your-app --task "Describe the work" --no-brief
+npm run worker -- --limit 6
+npm run agentflow -- status --run <workflow-run-id> --artifacts
+```
+
+The reusable agents and workflows stay here. Project-specific context stays in the consuming project.
 
 ## Architecture
 

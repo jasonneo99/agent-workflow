@@ -20,6 +20,7 @@
     "list": "tsx apps/cli/src/index.ts list",
     "provider-check": "tsx apps/cli/src/index.ts provider-check",
     "project-files": "tsx apps/cli/src/index.ts project-files",
+    "reset-storage": "tsx apps/cli/src/index.ts reset-storage --yes",
     "status": "tsx apps/cli/src/index.ts status",
     "smoke": "bash scripts/smoke-enterprise.sh",
     "services:reset": "docker compose -f infra/docker-compose.yml down -v",
