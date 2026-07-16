@@ -159,17 +159,17 @@ program
   .command("init-project")
   .description("Install AGENTS.md and .agent-workflow files into a project")
   .option("-p, --project <dir>", "project directory", ".")
-  .option("--profile <profile>", "enterprise or simple", "enterprise")
+  .option("--profile <profile>", "enterprise, simple, or tellara", "enterprise")
   .option("--force", "overwrite existing files")
   .action(async (options: { project: string; profile: string; force?: boolean }) => {
-    if (!["enterprise", "simple"].includes(options.profile)) {
-      console.error(`Unknown profile: ${options.profile}. Use enterprise or simple.`);
+    if (!["enterprise", "simple", "tellara"].includes(options.profile)) {
+      console.error(`Unknown profile: ${options.profile}. Use enterprise, simple, or tellara.`);
       process.exitCode = 1;
       return;
     }
 
     const projectDir = path.resolve(process.cwd(), options.project);
-    const templateDir = path.join(rootDir, "templates", options.profile === "simple" ? "project-simple" : "project");
+    const templateDir = path.join(rootDir, "templates", templateNameForProfile(options.profile));
     const result = await copyTemplate(templateDir, projectDir, Boolean(options.force));
     console.log(`Initialized ${options.profile} agent workflow files in ${projectDir}`);
     console.log(`Wrote ${result.written}; skipped ${result.skipped}.`);
@@ -177,10 +177,10 @@ program
     console.log("Next steps:");
     console.log(`  npm run index-project -- --project ${projectDir}`);
     console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
-    if (options.profile === "enterprise") {
-      console.log("  npm run worker -- --limit 6");
-    } else {
+    if (options.profile === "simple") {
       console.log(`  npm run compile -- --workflow build-feature --project ${projectDir} --task "<task>"`);
+    } else {
+      console.log("  npm run worker -- --limit 6");
     }
   });
 
@@ -799,6 +799,16 @@ function selectWorkflowAgents<T extends { id: string }>(agents: T[], workflow: {
     }
   }
   return selectedAgents;
+}
+
+function templateNameForProfile(profile: string): string {
+  if (profile === "simple") {
+    return "project-simple";
+  }
+  if (profile === "tellara") {
+    return "project-tellara";
+  }
+  return "project";
 }
 
 async function copyTemplate(templateDir: string, targetDir: string, force: boolean): Promise<{ written: number; skipped: number }> {

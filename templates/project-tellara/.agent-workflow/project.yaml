@@ -1,0 +1,101 @@
+project:
+  name: Tellara
+  summary: Tenant- and property-scoped AI-native media workflow platform with AI Staff, story/package workflows, publishing, personalization, plugins, SDK/MCP foundations, and governed operations.
+  default_workflows:
+    - build-feature
+    - review-pr
+    - debug-failure
+    - maintain-context
+  autonomy: 3
+context:
+  include:
+    - AGENTS.md
+    - .agent-workflow/**
+    - next-actions.md
+    - package.json
+    - docs/architecture-principles.md
+    - docs/database.md
+    - docs/migration-projection-discipline.md
+    - docs/local-development.md
+    - docs/checklists/038-prioritized-feature-completion-backlog.md
+    - docs/checklists/README.md
+    - docs/assistant-system.md
+    - docs/authentication-authorization.md
+    - docs/plugin-architecture.md
+    - docs/mcp-server.md
+    - src/**
+    - scripts/**
+    - db/migrations/**
+    - tests/**
+  exclude:
+    - node_modules/**
+    - .git/**
+    - .next/**
+    - dist/**
+    - coverage/**
+    - playwright-report/**
+    - test-results/**
+    - docs/notion-import/**
+    - public/ai-staff-assets/**
+  max_project_tokens: 16000
+storage:
+  cache_summaries: true
+  semantic_index: true
+policies:
+  allow_wide_open: false
+  require_approval_for_external_actions: true
+  require_receipts: true
+actions:
+  allowed_commands:
+    - pnpm install --frozen-lockfile
+    - pnpm run lint
+    - pnpm run typecheck
+    - pnpm run test
+    - pnpm run test:behavioral
+    - pnpm run test:guardrails
+    - pnpm run test:integration
+    - pnpm run test:e2e:local-dashboard
+    - pnpm run db:boundary-discipline
+    - pnpm run db:migrate:validate
+    - pnpm run staff:registry:check
+    - pnpm run staff:catalog:check
+    - pnpm run staff:policies:check
+    - pnpm run build
+    - pnpm run build:public-profile
+    - pnpm run verify
+  blocked_commands:
+    - rm *
+    - git reset *
+    - git clean *
+    - sudo *
+    - pnpm run dev:services:reset
+    - pnpm run db:reset
+    - pnpm run fga:reset
+    - pnpm run dev:all
+    - pnpm run dev
+  command_timeout_ms: 300000
+  max_output_chars: 40000
+  allowed_write_paths:
+    - .agent-workflow/**
+    - AGENTS.md
+    - docs/**
+    - src/**
+    - scripts/**
+    - db/migrations/**
+    - tests/**
+    - package.json
+    - tsconfig.json
+    - vitest.config.ts
+    - playwright.config.ts
+  blocked_write_paths:
+    - .git/**
+    - node_modules/**
+    - .next/**
+    - dist/**
+    - coverage/**
+    - .env
+    - .env.*
+    - infra/terraform/**
+    - public/ai-staff-assets/**
+    - docs/notion-import/**
+  max_write_bytes: 300000

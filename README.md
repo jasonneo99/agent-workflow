@@ -117,6 +117,14 @@ npm run agentflow -- status --run <workflow-run-id> --artifacts
 
 The reusable agents and workflows stay here. Project-specific context stays in the consuming project.
 
+Tellara has a dedicated profile:
+
+```bash
+npm run init-project -- --project /Users/jasonmiller/Projects/media-ai-startup --profile tellara
+```
+
+See `docs/tellara-integration.md`.
+
 ## Architecture
 
 ```text
