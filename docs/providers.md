@@ -30,6 +30,12 @@ npm run provider-check
 
 The OpenAI provider uses the Responses API with structured JSON schema output.
 
+Run a one-stage provider contract smoke:
+
+```bash
+DEFAULT_MODEL_PROVIDER=openai npm run provider-smoke
+```
+
 ## OpenAI-Compatible
 
 ```bash
@@ -62,3 +68,15 @@ npm run provider-check
 ```
 
 Not every OpenAI-compatible endpoint supports JSON mode equally. If a model wraps JSON in prose, the adapter attempts to extract the first JSON object. If the model cannot produce the required fields reliably, use `mock` for workflow tests or `openai` for strict structured output.
+
+Run a one-stage provider contract smoke:
+
+```bash
+DEFAULT_MODEL_PROVIDER=openai-compatible \
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1 \
+OPENAI_COMPATIBLE_MODEL=<model-name> \
+OPENAI_COMPATIBLE_API_KEY=local \
+npm run provider-smoke
+```
+
+The provider smoke project allows no commands and no file writes. It verifies provider JSON contract behavior without giving the model local action privileges.

@@ -175,6 +175,14 @@ Queued runs store a compiled workflow brief as an artifact. Each stage receives 
 
 See `docs/providers.md` for configuration examples.
 
+To verify that the selected live provider can execute the workflow contract without allowing commands or file writes:
+
+```bash
+npm run provider-smoke
+```
+
+`provider-smoke` creates a temporary project with no allowed local actions, runs one `provider-smoke` workflow stage, and verifies that a `stage_output` artifact was created.
+
 ## Project Indexing
 
 Index project files into compact summaries:

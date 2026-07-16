@@ -1,0 +1,18 @@
+id: provider-smoke
+name: Provider Smoke
+description: Verify that the selected model provider can execute one safe workflow stage and return valid structured output.
+lead: task-triager
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: contract
+    agent: task-triager
+    goal: Verify provider contract compliance by returning concise structured output without requesting commands or file writes.
+    context:
+      load:
+        - project_context
+      max_tokens: 2000
+    approval_required: false
+    output: provider_contract_smoke
