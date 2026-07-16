@@ -13,16 +13,12 @@ The platform separates three concerns:
 Enterprise mode is the default local workflow:
 
 ```bash
+git clone git@github.com:jasonneo99/agent-workflow.git
+cd agent-workflow
+cp .env.example .env
 npm install
 docker compose -f infra/docker-compose.yml up -d
-npm run doctor
-npm run bootstrap-storage
-npm run validate
-npm run index-project -- --project templates/project
-npm run compile -- --workflow build-feature --project ./templates/project --task "Add audit logging"
-npm run agentflow -- run build-feature --project templates/project --task "Add audit logging" --no-brief
-npm run worker -- --limit 6
-npm run status
+npm run smoke
 ```
 
 The worker uses the deterministic `mock` provider by default. That is the safest first smoke test because it validates queueing, context compilation, storage, and receipts without spending model tokens or editing template files.
@@ -36,7 +32,33 @@ export OPENAI_MODEL=gpt-5.5
 npm run worker -- --limit 1
 ```
 
+Run the smoke workflow with a live provider only when you intentionally want the model to perform allowed project actions:
+
+```bash
+AGENTFLOW_SMOKE_PROVIDER=openai npm run smoke
+```
+
 Live workers can request allowed project file writes. When testing against `templates/project`, inspect generated files and reset any example feature output before committing the template.
+
+To reset local enterprise storage and remove persisted smoke runs:
+
+```bash
+npm run services:reset
+docker compose -f infra/docker-compose.yml up -d
+```
+
+The long-form workflow behind `npm run smoke` is:
+
+```bash
+npm run doctor
+npm run bootstrap-storage
+npm run validate
+npm run index-project -- --project templates/project
+npm run compile -- --workflow build-feature --project ./templates/project --task "Smoke test portable agent workflow"
+npm run agentflow -- run build-feature --project templates/project --task "Smoke test portable agent workflow" --no-brief
+DEFAULT_MODEL_PROVIDER=mock npm run worker -- --limit 12
+npm run status
+```
 
 In a real project:
 
