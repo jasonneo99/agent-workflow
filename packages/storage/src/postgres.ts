@@ -592,6 +592,8 @@ export interface WorkflowRunStatus {
   workflowId: string;
   task: string;
   autonomy: string;
+  projectName: string;
+  projectRootUri: string;
   startedAt: string;
   finishedAt: string | null;
 }
@@ -629,15 +631,18 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
   return withClient(async (client) => {
     const result = await client.query<WorkflowRunStatus>(
       `select
-         id::text,
-         status,
-         workflow_id as "workflowId",
-         task,
-         autonomy,
-         started_at::text as "startedAt",
-         finished_at::text as "finishedAt"
-       from workflow_runs
-       order by started_at desc
+         wr.id::text,
+         wr.status,
+         wr.workflow_id as "workflowId",
+         wr.task,
+         wr.autonomy,
+         p.name as "projectName",
+         p.root_uri as "projectRootUri",
+         wr.started_at::text as "startedAt",
+         wr.finished_at::text as "finishedAt"
+       from workflow_runs wr
+       join projects p on p.id = wr.project_id
+       order by wr.started_at desc
        limit $1`,
       [limit]
     );
@@ -653,15 +658,18 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
   return withClient(async (client) => {
     const runResult = await client.query<WorkflowRunStatus>(
       `select
-         id::text,
-         status,
-         workflow_id as "workflowId",
-         task,
-         autonomy,
-         started_at::text as "startedAt",
-         finished_at::text as "finishedAt"
-       from workflow_runs
-       where id = $1`,
+         wr.id::text,
+         wr.status,
+         wr.workflow_id as "workflowId",
+         wr.task,
+         wr.autonomy,
+         p.name as "projectName",
+         p.root_uri as "projectRootUri",
+         wr.started_at::text as "startedAt",
+         wr.finished_at::text as "finishedAt"
+       from workflow_runs wr
+       join projects p on p.id = wr.project_id
+       where wr.id = $1`,
       [runId]
     );
 

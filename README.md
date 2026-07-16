@@ -244,6 +244,14 @@ npm run agentflow -- status --run <workflow-run-id>
 npm run agentflow -- status --run <workflow-run-id> --artifacts
 ```
 
+Export a portable run report:
+
+```bash
+npm run export-run -- --run <workflow-run-id>
+```
+
+Reports are written to `exports/runs/<workflow-run-id>.md` and `.json`. The `exports/` directory is ignored by Git.
+
 ## Safe Local Actions
 
 Projects define allowed commands and writable paths in `.agent-workflow/project.yaml`. Allowed commands are commands for the consuming project root, not management commands for this shared workflow repository.

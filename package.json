@@ -13,6 +13,7 @@
     "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
     "doctor": "tsx apps/cli/src/index.ts doctor",
     "exec-command": "tsx apps/cli/src/index.ts exec-command",
+    "export-run": "tsx apps/cli/src/index.ts export-run",
     "index-project": "tsx apps/cli/src/index.ts index-project",
     "init-project": "tsx apps/cli/src/index.ts init-project",
     "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",

@@ -34,6 +34,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
+import { buildRunExport } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -587,6 +588,47 @@ program
     for (const artifact of artifacts) {
       printArtifact(artifact, Boolean(options.json), Boolean(options.content));
     }
+  });
+
+program
+  .command("export-run")
+  .description("Export a workflow run report as Markdown and JSON")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .option("-o, --out <dir>", "export directory", "exports/runs")
+  .action(async (options: { run: string; out: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const details = await getWorkflowRunDetails(options.run);
+    if (!details.run) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const artifacts = await listArtifacts({ runId: options.run });
+    const document = buildRunExport({
+      run: details.run,
+      tasks: details.tasks,
+      receipts: details.receipts,
+      artifacts
+    });
+    const outDir = path.resolve(process.cwd(), options.out);
+    await fs.mkdir(outDir, { recursive: true });
+    const markdownPath = path.join(outDir, `${options.run}.md`);
+    const jsonPath = path.join(outDir, `${options.run}.json`);
+    await fs.writeFile(markdownPath, document.markdown, "utf8");
+    await fs.writeFile(jsonPath, `${JSON.stringify(document.json, null, 2)}\n`, "utf8");
+
+    console.log(`Exported Markdown: ${markdownPath}`);
+    console.log(`Exported JSON: ${jsonPath}`);
   });
 
 program

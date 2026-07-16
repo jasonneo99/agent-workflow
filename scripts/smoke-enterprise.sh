@@ -68,4 +68,10 @@ npm test --prefix "$PROJECT_DIR"
 npm run typecheck --prefix "$PROJECT_DIR"
 npm run lint --prefix "$PROJECT_DIR"
 
+echo "==> Export run report"
+EXPORT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentflow-smoke-export.XXXXXX")"
+npm run export-run -- --run "$RUN_ID" --out "$EXPORT_DIR"
+test -s "$EXPORT_DIR/$RUN_ID.md"
+test -s "$EXPORT_DIR/$RUN_ID.json"
+
 echo "Smoke passed: $RUN_ID"
