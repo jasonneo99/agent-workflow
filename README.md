@@ -106,6 +106,8 @@ For the local dashboard:
 npm run agentflow -- dashboard
 ```
 
+Open a run detail page from the dashboard to view summaries, receipts, artifacts, and fixed follow-up actions.
+
 See `docs/user-guide.md` for the full installation and usage guide.
 
 The simpler flat-file workflow is available when a user does not want local services:

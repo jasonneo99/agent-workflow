@@ -21,6 +21,7 @@ context:
     - dist/**
     - build/**
     - coverage/**
+    - .agent-workflow/schedule-state.json
   max_project_tokens: 12000
 storage:
   cache_summaries: false
@@ -49,4 +50,5 @@ actions:
     - node_modules/**
     - .env
     - .env.*
+    - .agent-workflow/schedule-state.json
   max_write_bytes: 200000

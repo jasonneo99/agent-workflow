@@ -333,6 +333,38 @@ JSON endpoints:
 /api/run?id=<run-id>
 ```
 
+Run detail pages:
+
+```text
+/run?id=<run-id>
+```
+
+The detail page shows:
+
+- run status, project, workflow, and task
+- decision-ready summary
+- stage results
+- receipts
+- artifact JSON viewers
+- fixed follow-up buttons
+
+Follow-up buttons are local-only actions backed by existing Agent Workflow commands:
+
+- `Summarize Run`
+- `Debug Failure`
+- `Ask Mira`
+- `Frontend Pass`
+- `Maintain Context`
+
+The dashboard home also includes Tellara presets:
+
+- `UX Pass`
+- `PR Review`
+- `Test Triage`
+- `Maintain Context`
+
+These actions still use the project `.agent-workflow/project.yaml` policy and create normal run receipts and artifacts.
+
 ## 10. Use From Codex
 
 After installing the plugin, start a new Codex task and use prompts like:

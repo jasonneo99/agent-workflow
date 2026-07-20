@@ -37,6 +37,7 @@ context:
     - test-results/**
     - docs/notion-import/**
     - public/ai-staff-assets/**
+    - .agent-workflow/schedule-state.json
   max_project_tokens: 16000
 storage:
   cache_summaries: true
@@ -98,4 +99,5 @@ actions:
     - infra/terraform/**
     - public/ai-staff-assets/**
     - docs/notion-import/**
+    - .agent-workflow/schedule-state.json
   max_write_bytes: 300000

@@ -1378,6 +1378,18 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (request.method === "POST" && requestUrl.pathname === "/api/follow-up") {
+    const form = await readFormBody(request);
+    const result = await runDashboardFollowUp({
+      action: form.get("action") ?? "",
+      runId: form.get("runId") ?? undefined,
+      project: form.get("project") ?? undefined
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/runs") {
     const runs = await listWorkflowRuns(50);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -1399,6 +1411,32 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/run") {
+    const runId = requestUrl.searchParams.get("id");
+    if (!runId) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing id");
+      return;
+    }
+    const details = await getWorkflowRunDetails(runId);
+    if (!details.run) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Run not found");
+      return;
+    }
+    const artifacts = await listArtifacts({ runId });
+    const summary = await summarizeWorkflowRun(runId);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderRunDetailHtml({
+      run: details.run,
+      tasks: details.tasks,
+      receipts: details.receipts,
+      artifacts,
+      summary: summary.ok ? summary.value : null
+    }));
+    return;
+  }
+
   const runs = await listWorkflowRuns(50);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs));
@@ -1407,7 +1445,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>): string {
   const rows = runs.map((run) => `
     <tr>
-      <td><a href="/api/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.projectName)}</td>
@@ -1423,22 +1461,24 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Agent Workflow Dashboard</title>
   <style>
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px; }
-    h1 { font-size: 28px; margin: 0 0 18px; }
-    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e7f0; }
-    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
-    th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
-    a { color: #1d4ed8; text-decoration: none; }
-    .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
-    .completed { background: #dcfce7; color: #166534; }
-    .failed { background: #fee2e2; color: #991b1b; }
-    .running, .queued { background: #fef3c7; color: #92400e; }
+    ${dashboardCss()}
   </style>
 </head>
 <body>
   <main>
-    <h1>Agent Workflow Dashboard</h1>
+    <div class="topbar">
+      <h1>Agent Workflow Dashboard</h1>
+      <a class="button secondary" href="/api/runs">JSON</a>
+    </div>
+    <section class="panel">
+      <h2>Tellara Presets</h2>
+      <div class="actions">
+        ${presetForm("tellara-ux-pass", "UX Pass")}
+        ${presetForm("tellara-review-pr", "PR Review")}
+        ${presetForm("tellara-test-triage", "Test Triage")}
+        ${presetForm("tellara-context", "Maintain Context")}
+      </div>
+    </section>
     <table>
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
       <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
@@ -1446,6 +1486,332 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
   </main>
 </body>
 </html>`;
+}
+
+function renderRunDetailHtml(input: {
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>;
+  tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"];
+  receipts: Awaited<ReturnType<typeof getWorkflowRunDetails>>["receipts"];
+  artifacts: Awaited<ReturnType<typeof listArtifacts>>;
+  summary: RunSummary | null;
+}): string {
+  const summaryBlock = input.summary
+    ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
+    : "<p>No summary available.</p>";
+  const taskRows = input.tasks.map((task) => `
+    <tr><td>${escapeHtml(task.stageId)}</td><td>${escapeHtml(task.agentId)}</td><td>${escapeHtml(task.status)}</td><td>${task.attempts}</td></tr>
+  `).join("");
+  const receiptRows = input.receipts.map((receipt) => `
+    <tr><td>${escapeHtml(receipt.actionType)}</td><td>${escapeHtml(receipt.agentId)}</td><td>${escapeHtml(receipt.summary)}</td></tr>
+  `).join("");
+  const artifactBlocks = input.artifacts.map((artifact) => `
+    <details class="artifact">
+      <summary>${escapeHtml(artifact.kind)} ${escapeHtml(artifact.uri)}</summary>
+      <pre>${escapeHtml(JSON.stringify(artifact.content, null, 2))}</pre>
+    </details>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Run ${escapeHtml(input.run.id.slice(0, 8))}</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Run ${escapeHtml(input.run.id)}</h1>
+      </div>
+      <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
+    </div>
+    <section class="panel">
+      <div class="meta-grid">
+        <div><strong>Status</strong><span class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span></div>
+        <div><strong>Workflow</strong>${escapeHtml(input.run.workflowId)}</div>
+        <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
+        <div><strong>Started</strong>${escapeHtml(input.run.startedAt)}</div>
+      </div>
+      <p>${escapeHtml(input.run.task)}</p>
+      <div class="actions">
+        ${runActionForm(input.run.id, "summarize", "Summarize Run")}
+        ${runActionForm(input.run.id, "debug-failure", "Debug Failure")}
+        ${runActionForm(input.run.id, "mira-ux-pass", "Ask Mira")}
+        ${runActionForm(input.run.id, "frontend-pass", "Frontend Pass")}
+        ${runActionForm(input.run.id, "maintain-context", "Maintain Context")}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Summary</h2>
+      ${summaryBlock}
+    </section>
+    <section class="panel">
+      <h2>Stages</h2>
+      <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th></tr></thead><tbody>${taskRows}</tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Receipts</h2>
+      <table><thead><tr><th>Action</th><th>Agent</th><th>Summary</th></tr></thead><tbody>${receiptRows || "<tr><td colspan=\"3\">No receipts.</td></tr>"}</tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Artifacts</h2>
+      ${artifactBlocks || "<p>No artifacts.</p>"}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderDashboardActionResult(result: DashboardFollowUpResult): string {
+  const body = result.ok
+    ? `<h1>${escapeHtml(result.title)}</h1><pre>${escapeHtml(result.output)}</pre>${result.runId ? `<p><a class="button" href="/run?id=${encodeURIComponent(result.runId)}">Open new run</a></p>` : ""}`
+    : `<h1>Action failed</h1><pre>${escapeHtml(result.error)}</pre>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dashboard Action</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body><main><p><a href="/">Dashboard</a></p>${body}</main></body>
+</html>`;
+}
+
+function dashboardCss(): string {
+  return `
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
+    h1 { font-size: 28px; margin: 0 0 8px; }
+    h2 { font-size: 16px; margin: 0 0 12px; }
+    p { line-height: 1.5; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e7f0; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
+    th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
+    a { color: #1d4ed8; text-decoration: none; }
+    pre { overflow: auto; background: #101828; color: #eef4ff; padding: 14px; font-size: 13px; line-height: 1.45; }
+    .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
+    .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
+    .secondary { background: white; color: #1d4ed8; }
+    .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .meta-grid div { display: grid; gap: 5px; font-size: 14px; }
+    .artifact { border: 1px solid #e2e7f0; margin-bottom: 8px; padding: 10px; }
+    .artifact summary { cursor: pointer; }
+    .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
+    .completed { background: #dcfce7; color: #166534; }
+    .failed { background: #fee2e2; color: #991b1b; }
+    .running, .queued { background: #fef3c7; color: #92400e; }
+  `;
+}
+
+function runActionForm(runId: string, action: string, label: string): string {
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function presetForm(action: string, label: string): string {
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="project" value="/Users/jasonmiller/Projects/media-ai-startup"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+type DashboardFollowUpResult =
+  | { ok: true; title: string; output: string; runId?: string }
+  | { ok: false; error: string };
+
+async function readFormBody(request: http.IncomingMessage): Promise<URLSearchParams> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of request) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+  }
+  return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function runDashboardFollowUp(input: {
+  action: string;
+  runId?: string;
+  project?: string;
+}): Promise<DashboardFollowUpResult> {
+  const action = input.action;
+  if (action === "summarize") {
+    if (!input.runId) {
+      return { ok: false, error: "Missing run id." };
+    }
+    const summary = await summarizeWorkflowRun(input.runId);
+    if (!summary.ok) {
+      return { ok: false, error: `Unknown workflow run: ${input.runId}` };
+    }
+    return {
+      ok: true,
+      title: "Run Summary",
+      output: formatRunSummary(summary.value)
+    };
+  }
+
+  const sourceRun = input.runId ? await getWorkflowRunDetails(input.runId) : null;
+  const sourceProject = sourceRun?.run?.projectRootUri ?? input.project;
+  if (!sourceProject) {
+    return { ok: false, error: "Missing project path or source run." };
+  }
+
+  const sourceTask = sourceRun?.run?.task ?? "dashboard preset";
+  const sourceLabel = input.runId ? `from run ${input.runId}` : "from dashboard preset";
+
+  if (action === "debug-failure") {
+    return runDashboardWorkflow({
+      title: "Debug Failure",
+      workflow: "debug-failure",
+      projectDir: sourceProject,
+      task: `Investigate failures ${sourceLabel}: ${sourceTask}`
+    });
+  }
+
+  if (action === "mira-ux-pass" || action === "tellara-ux-pass") {
+    return runDashboardAgentTask({
+      title: "Mira UX Pass",
+      agent: "Mira",
+      projectDir: sourceProject,
+      task: `Do a UX pass ${sourceLabel}: ${sourceTask}`
+    });
+  }
+
+  if (action === "frontend-pass") {
+    return runDashboardAgentTask({
+      title: "Frontend Pass",
+      agent: "frontend",
+      projectDir: sourceProject,
+      task: `Review and plan frontend fixes ${sourceLabel}: ${sourceTask}`
+    });
+  }
+
+  if (action === "maintain-context" || action === "tellara-context") {
+    return runDashboardWorkflow({
+      title: "Maintain Context",
+      workflow: "maintain-context",
+      projectDir: sourceProject,
+      task: `Update durable project context ${sourceLabel}: ${sourceTask}`
+    });
+  }
+
+  if (action === "tellara-review-pr") {
+    return runDashboardWorkflow({
+      title: "Tellara PR Review",
+      workflow: "review-pr",
+      projectDir: sourceProject,
+      task: "Review Tellara changes from the local dashboard preset."
+    });
+  }
+
+  if (action === "tellara-test-triage") {
+    return runDashboardWorkflow({
+      title: "Tellara Test Triage",
+      workflow: "debug-failure",
+      projectDir: sourceProject,
+      task: "Investigate Tellara test and CI failures from the local dashboard preset."
+    });
+  }
+
+  return { ok: false, error: `Unknown dashboard action: ${action}` };
+}
+
+async function runDashboardWorkflow(input: {
+  title: string;
+  workflow: string;
+  projectDir: string;
+  task: string;
+}): Promise<DashboardFollowUpResult> {
+  await indexProjectForRun({
+    projectDir: input.projectDir,
+    maxFiles: 100,
+    refine: false,
+    forceRefine: false
+  });
+  const queued = await queueWorkflow({
+    workflowId: input.workflow,
+    projectPath: input.projectDir,
+    task: input.task
+  });
+  if (!queued.ok) {
+    return { ok: false, error: queued.error };
+  }
+  const watchResult = await watchWorkflowRun({
+    runId: queued.run.runId,
+    workerLimit: 6,
+    intervalMs: 1000,
+    timeoutMs: 900000
+  });
+  const exportResult = await exportWorkflowRun({
+    runId: queued.run.runId,
+    outDir: path.join(input.projectDir, ".agent-workflow", "exports")
+  });
+  const summary = await summarizeWorkflowRun(queued.run.runId);
+  return {
+    ok: true,
+    title: `${input.title}: ${watchResult.status}`,
+    runId: queued.run.runId,
+    output: [
+      `Run: ${queued.run.runId}`,
+      exportResult.ok ? `Exported Markdown: ${exportResult.markdownPath}` : "",
+      exportResult.ok ? `Exported JSON: ${exportResult.jsonPath}` : "",
+      summary.ok ? formatRunSummary(summary.value) : ""
+    ].filter(Boolean).join("\n\n")
+  };
+}
+
+async function runDashboardAgentTask(input: {
+  title: string;
+  agent: string;
+  projectDir: string;
+  task: string;
+}): Promise<DashboardFollowUpResult> {
+  await indexProjectForRun({
+    projectDir: input.projectDir,
+    maxFiles: 100,
+    refine: false,
+    forceRefine: false
+  });
+  const agents = await loadAgentsForProject(input.projectDir);
+  const agent = resolveAgent(agents, input.agent);
+  if (!agent) {
+    return { ok: false, error: `Unknown agent: ${input.agent}` };
+  }
+  const workflow = createAgentTaskWorkflow(agent);
+  const builtinAgentIds = new Set((await loadAgents(rootDir)).map((item) => item.id));
+  await seedRegistry(builtinAgentIds.has(agent.id) ? [] : [{ path: `project/${agent.id}.yaml`, value: agent }], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
+  const queued = await queueWorkflow({
+    workflowId: workflow.id,
+    projectPath: input.projectDir,
+    task: input.task,
+    workflowOverride: workflow
+  });
+  if (!queued.ok) {
+    return { ok: false, error: queued.error };
+  }
+  const watchResult = await watchWorkflowRun({
+    runId: queued.run.runId,
+    workerLimit: 1,
+    intervalMs: 1000,
+    timeoutMs: 600000
+  });
+  const exportResult = await exportWorkflowRun({
+    runId: queued.run.runId,
+    outDir: path.join(input.projectDir, ".agent-workflow", "exports")
+  });
+  const summary = await summarizeWorkflowRun(queued.run.runId);
+  return {
+    ok: true,
+    title: `${input.title}: ${watchResult.status}`,
+    runId: queued.run.runId,
+    output: [
+      `Run: ${queued.run.runId}`,
+      `Agent: ${agent.id} (${agent.display_name})`,
+      exportResult.ok ? `Exported Markdown: ${exportResult.markdownPath}` : "",
+      exportResult.ok ? `Exported JSON: ${exportResult.jsonPath}` : "",
+      summary.ok ? formatRunSummary(summary.value) : ""
+    ].filter(Boolean).join("\n\n")
+  };
 }
 
 function escapeHtml(value: string): string {
