@@ -86,7 +86,7 @@ server.registerTool(
     title: "AgentFlow compile",
     description: "Compile a compact workflow brief without queueing work.",
     inputSchema: {
-      workflow: z.string().describe("Workflow id, for example build-feature or review-change."),
+      workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Task description."),
       sourceTokenBudget: z.number().int().positive().optional().describe("Token budget for indexed source summaries."),
@@ -106,7 +106,7 @@ server.registerTool(
     title: "AgentFlow run workflow",
     description: "Queue an enterprise workflow run for a project task.",
     inputSchema: {
-      workflow: z.string().describe("Workflow id, for example build-feature or review-change."),
+      workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Task description."),
       includeBrief: z.boolean().optional().describe("Print the compiled brief in the result."),
@@ -121,6 +121,72 @@ server.registerTool(
     }
     addSourceOptions(args, sourceTokenBudget, sourceMaxFiles);
     return toolResult(await runAgentflow(args));
+  }
+);
+
+server.registerTool(
+  "agentflow_run_and_watch",
+  {
+    title: "AgentFlow run and watch",
+    description: "Index a project, queue a workflow, process worker tasks until complete or failed, export reports, and return the summary.",
+    inputSchema: {
+      workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
+      project: z.string().describe("Absolute or relative project directory."),
+      task: z.string().describe("Task description."),
+      skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
+      indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index first."),
+      refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
+      forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
+      workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick."),
+      intervalMs: z.number().int().positive().optional().describe("Polling interval while waiting for run status."),
+      timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for completion."),
+      out: z.string().optional().describe("Export directory."),
+      sourceTokenBudget: z.number().int().positive().optional().describe("Token budget for indexed source summaries."),
+      sourceMaxFiles: z.number().int().positive().optional().describe("Maximum indexed source summaries to include.")
+    }
+  },
+  async ({
+    workflow,
+    project,
+    task,
+    skipIndex,
+    indexMaxFiles,
+    refineIndex,
+    forceRefine,
+    workerLimit,
+    intervalMs,
+    timeoutMs,
+    out,
+    sourceTokenBudget,
+    sourceMaxFiles
+  }) => {
+    const args = ["run-and-watch", workflow, "--project", project, "--task", task];
+    if (skipIndex) {
+      args.push("--skip-index");
+    }
+    if (indexMaxFiles) {
+      args.push("--index-max-files", String(indexMaxFiles));
+    }
+    if (refineIndex) {
+      args.push("--refine-index");
+    }
+    if (forceRefine) {
+      args.push("--force-refine");
+    }
+    if (workerLimit) {
+      args.push("--worker-limit", String(workerLimit));
+    }
+    if (intervalMs) {
+      args.push("--interval-ms", String(intervalMs));
+    }
+    if (timeoutMs) {
+      args.push("--timeout-ms", String(timeoutMs));
+    }
+    if (out) {
+      args.push("--out", out);
+    }
+    addSourceOptions(args, sourceTokenBudget, sourceMaxFiles);
+    return toolResult(await runAgentflow(args, { timeoutMs: timeoutMs ? timeoutMs + 60_000 : 16 * 60_000 }));
   }
 );
 

@@ -80,6 +80,16 @@ npm run status
 
 `init-project` writes `AGENTS.md` plus `.agent-workflow/` files, skips existing files unless `--force` is passed, and prints the next recommended commands.
 
+For the normal end-to-end path, use `run-and-watch`:
+
+```bash
+npm run agentflow -- run-and-watch review-pr --project /path/to/project --task "Review recent changes"
+```
+
+This indexes compact project context, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
+
+See `docs/user-guide.md` for the full installation and usage guide.
+
 The simpler flat-file workflow is available when a user does not want local services:
 
 ```bash

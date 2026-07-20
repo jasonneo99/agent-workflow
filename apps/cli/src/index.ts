@@ -350,7 +350,7 @@ program
   .action(async (options: { workflow: string; project: string; task: string; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
     const agents = await loadAgents(rootDir);
     const workflows = await loadWorkflows(rootDir);
-    const workflow = byId(workflows).get(options.workflow);
+    const workflow = resolveWorkflow(workflows, options.workflow);
 
     if (!workflow) {
       console.error(`Unknown workflow: ${options.workflow}`);
@@ -422,64 +422,145 @@ program
       return;
     }
 
-    const agents = await loadAgents(rootDir);
-    const workflows = await loadWorkflows(rootDir);
-    const workflow = byId(workflows).get(workflowId);
+    const result = await queueWorkflow({
+      workflowId,
+      projectPath: options.project,
+      task: options.task,
+      sourceTokenBudget: options.sourceTokenBudget,
+      sourceMaxFiles: options.sourceMaxFiles
+    });
 
-    if (!workflow) {
-      console.error(`Unknown workflow: ${workflowId}`);
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Queued workflow run ${result.run.runId}`);
+    console.log(`Project ${result.run.projectId}`);
+    console.log(`Workflow ${result.workflow.id}`);
+    console.log(`Queued ${result.run.tasks} stage tasks`);
+
+    if (options.brief !== false) {
+      console.log("");
+      console.log(result.brief);
+    }
+  });
+
+program
+  .command("run-and-watch")
+  .description("Index, queue, process, export, and summarize a workflow run")
+  .argument("<workflow>", "workflow id or alias")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "task description")
+  .option("--skip-index", "skip project indexing before queueing")
+  .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--refine-index", "refine indexed summaries with the selected provider")
+  .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
+  .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
+  .option("--interval-ms <number>", "polling interval while waiting for run status", "1000")
+  .option("--timeout-ms <number>", "maximum time to wait for completion", "900000")
+  .option("-o, --out <dir>", "export directory; defaults to <project>/.agent-workflow/exports")
+  .option("--source-token-budget <number>", "token budget for indexed source summaries")
+  .option("--source-max-files <number>", "maximum indexed source summaries to include")
+  .action(async (workflowId: string, options: {
+    project: string;
+    task: string;
+    skipIndex?: boolean;
+    indexMaxFiles: string;
+    refineIndex?: boolean;
+    forceRefine?: boolean;
+    workerLimit: string;
+    intervalMs: string;
+    timeoutMs: string;
+    out?: string;
+    sourceTokenBudget?: string;
+    sourceMaxFiles?: string;
+  }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      console.error("\nStart local enterprise services with:");
+      console.error("docker compose -f infra/docker-compose.yml up -d");
       process.exitCode = 1;
       return;
     }
 
     const projectDir = path.resolve(process.cwd(), options.project);
-    const project = await loadProjectConfig(projectDir);
-    const selectedAgents = selectWorkflowAgents(agents, workflow);
+    const indexMaxFiles = parsePositiveInteger(options.indexMaxFiles, 100);
+    const workerLimit = parsePositiveInteger(options.workerLimit, 6);
+    const intervalMs = parsePositiveInteger(options.intervalMs, 1000);
+    const timeoutMs = parsePositiveInteger(options.timeoutMs, 900000);
 
-    for (const agent of selectedAgents.values()) {
-      const decision = evaluateAgentAutonomy(agent, project);
-      if (!decision.allowed) {
-        console.error(`Policy rejected ${agent.id}: ${decision.reasons.join("; ")}`);
-        process.exitCode = 1;
-        return;
+    if (!options.skipIndex) {
+      const indexResult = await indexProjectForRun({
+        projectDir,
+        maxFiles: indexMaxFiles,
+        refine: Boolean(options.refineIndex),
+        forceRefine: Boolean(options.forceRefine)
+      });
+      console.log(`Indexed ${indexResult.count} files for ${indexResult.projectName}.`);
+      if (options.refineIndex) {
+        console.log(`Refined ${indexResult.refined}; reused ${indexResult.reused}.`);
+      }
+      if (indexResult.skipped) {
+        console.log(`Skipped ${indexResult.skipped} large files.`);
       }
     }
 
-    const brief = await compileContext({
+    const queued = await queueWorkflow({
+      workflowId,
+      projectPath: projectDir,
       task: options.task,
-      projectDir,
-      project,
-      workflow,
-      agents: [...selectedAgents.values()],
-      sourceSummaries: await loadSourceSummaries({
-        projectDir,
-        project,
-        workflow,
-        agents: [...selectedAgents.values()],
-        task: options.task,
-        sourceTokenBudget: options.sourceTokenBudget,
-        sourceMaxFiles: options.sourceMaxFiles
-      })
+      sourceTokenBudget: options.sourceTokenBudget,
+      sourceMaxFiles: options.sourceMaxFiles
     });
 
-    const result = await createWorkflowRun({
-      projectName: project.project.name,
-      projectRootUri: projectDir,
-      projectProfile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
-      projectConfig: project,
-      workflow,
-      task: options.task,
-      autonomy: String(project.project.autonomy),
-      compiledBrief: brief
+    if (!queued.ok) {
+      console.error(queued.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Queued workflow run ${queued.run.runId}`);
+    console.log(`Project ${queued.run.projectId}`);
+    console.log(`Workflow ${queued.workflow.id}`);
+    console.log(`Queued ${queued.run.tasks} stage tasks`);
+
+    const watchResult = await watchWorkflowRun({
+      runId: queued.run.runId,
+      workerLimit,
+      intervalMs,
+      timeoutMs,
+      onTick: (tick) => {
+        if (tick.claimed > 0 || tick.failed > 0) {
+          console.log(`Worker claimed ${tick.claimed}, completed ${tick.completed}, failed ${tick.failed}.`);
+        }
+      }
     });
 
-    console.log(`Queued workflow run ${result.runId}`);
-    console.log(`Project ${result.projectId}`);
-    console.log(`Queued ${result.tasks} stage tasks`);
+    const outDir = path.resolve(process.cwd(), options.out ?? path.join(projectDir, ".agent-workflow", "exports"));
+    const exportResult = await exportWorkflowRun({
+      runId: queued.run.runId,
+      outDir
+    });
+    if (!exportResult.ok) {
+      console.error(`Unknown workflow run: ${queued.run.runId}`);
+      process.exitCode = 1;
+      return;
+    }
 
-    if (options.brief !== false) {
-      console.log("");
-      console.log(brief);
+    console.log(`Run ${watchResult.status}`);
+    console.log(`Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed.`);
+    console.log(`Receipts: ${watchResult.receipts}`);
+    console.log(`Exported Markdown: ${exportResult.markdownPath}`);
+    console.log(`Exported JSON: ${exportResult.jsonPath}`);
+
+    if (watchResult.status !== "completed") {
+      process.exitCode = watchResult.status === "failed" ? 1 : 2;
     }
   });
 
@@ -606,29 +687,18 @@ program
       return;
     }
 
-    const details = await getWorkflowRunDetails(options.run);
-    if (!details.run) {
+    const exportResult = await exportWorkflowRun({
+      runId: options.run,
+      outDir: path.resolve(process.cwd(), options.out)
+    });
+    if (!exportResult.ok) {
       console.error(`Unknown workflow run: ${options.run}`);
       process.exitCode = 1;
       return;
     }
 
-    const artifacts = await listArtifacts({ runId: options.run });
-    const document = buildRunExport({
-      run: details.run,
-      tasks: details.tasks,
-      receipts: details.receipts,
-      artifacts
-    });
-    const outDir = path.resolve(process.cwd(), options.out);
-    await fs.mkdir(outDir, { recursive: true });
-    const markdownPath = path.join(outDir, `${options.run}.md`);
-    const jsonPath = path.join(outDir, `${options.run}.json`);
-    await fs.writeFile(markdownPath, document.markdown, "utf8");
-    await fs.writeFile(jsonPath, `${JSON.stringify(document.json, null, 2)}\n`, "utf8");
-
-    console.log(`Exported Markdown: ${markdownPath}`);
-    console.log(`Exported JSON: ${jsonPath}`);
+    console.log(`Exported Markdown: ${exportResult.markdownPath}`);
+    console.log(`Exported JSON: ${exportResult.jsonPath}`);
   });
 
 program
@@ -750,6 +820,225 @@ function requiredAgent<T extends { id: string }>(agents: Map<string, T>, id: str
   return agent;
 }
 
+function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: string): T | undefined {
+  const aliases: Record<string, string> = {
+    "review-change": "review-pr",
+    review: "review-pr",
+    "pull-request-review": "review-pr",
+    "fix-failure": "debug-failure",
+    debug: "debug-failure",
+    release: "ship-release",
+    ship: "ship-release",
+    "context-maintenance": "maintain-context",
+    "update-context": "maintain-context"
+  };
+  return byId(workflows).get(aliases[workflowId] ?? workflowId);
+}
+
+async function queueWorkflow(input: {
+  workflowId: string;
+  projectPath: string;
+  task: string;
+  sourceTokenBudget?: string;
+  sourceMaxFiles?: string;
+}): Promise<
+  | {
+    ok: true;
+    projectDir: string;
+    workflow: Awaited<ReturnType<typeof loadWorkflows>>[number];
+    brief: string;
+    run: Awaited<ReturnType<typeof createWorkflowRun>>;
+  }
+  | { ok: false; error: string }
+> {
+  const agents = await loadAgents(rootDir);
+  const workflows = await loadWorkflows(rootDir);
+  const workflow = resolveWorkflow(workflows, input.workflowId);
+
+  if (!workflow) {
+    return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
+  }
+
+  const projectDir = path.resolve(process.cwd(), input.projectPath);
+  const project = await loadProjectConfig(projectDir);
+  const selectedAgents = selectWorkflowAgents(agents, workflow);
+
+  for (const agent of selectedAgents.values()) {
+    const decision = evaluateAgentAutonomy(agent, project);
+    if (!decision.allowed) {
+      return {
+        ok: false,
+        error: `Policy rejected ${agent.id}: ${decision.reasons.join("; ")}`
+      };
+    }
+  }
+
+  const selectedAgentList = [...selectedAgents.values()];
+  const brief = await compileContext({
+    task: input.task,
+    projectDir,
+    project,
+    workflow,
+    agents: selectedAgentList,
+    sourceSummaries: await loadSourceSummaries({
+      projectDir,
+      project,
+      workflow,
+      agents: selectedAgentList,
+      task: input.task,
+      sourceTokenBudget: input.sourceTokenBudget,
+      sourceMaxFiles: input.sourceMaxFiles
+    })
+  });
+
+  const run = await createWorkflowRun({
+    projectName: project.project.name,
+    projectRootUri: projectDir,
+    projectProfile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
+    projectConfig: project,
+    workflow,
+    task: input.task,
+    autonomy: String(project.project.autonomy),
+    compiledBrief: brief
+  });
+
+  return {
+    ok: true,
+    projectDir,
+    workflow,
+    brief,
+    run
+  };
+}
+
+async function indexProjectForRun(input: {
+  projectDir: string;
+  maxFiles: number;
+  refine: boolean;
+  forceRefine: boolean;
+}): Promise<{
+  projectName: string;
+  count: number;
+  skipped: number;
+  refined: number;
+  reused: number;
+}> {
+  const project = await loadProjectConfig(input.projectDir);
+  const projectId = await upsertProject({
+    name: project.project.name,
+    rootUri: input.projectDir,
+    profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
+    config: project
+  });
+  const existingSummaries = await listProjectFileSummaries({
+    projectRootUri: input.projectDir,
+    limit: 1000
+  });
+  const result = await indexProjectFiles({
+    projectDir: input.projectDir,
+    project,
+    maxFiles: input.maxFiles,
+    refineProvider: input.refine ? providerFromEnv() : undefined,
+    existingSummaries,
+    forceRefine: input.forceRefine
+  });
+
+  const count = await upsertProjectFiles({ projectId, files: result.files });
+  return {
+    projectName: project.project.name,
+    count,
+    skipped: result.files.filter((file) => file.metadata.skipped).length,
+    refined: result.refined,
+    reused: result.reused
+  };
+}
+
+async function watchWorkflowRun(input: {
+  runId: string;
+  workerLimit: number;
+  intervalMs: number;
+  timeoutMs: number;
+  onTick?: (result: Awaited<ReturnType<typeof runWorkerOnce>>) => void;
+}): Promise<{
+  status: string;
+  totalTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  receipts: number;
+}> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt <= input.timeoutMs) {
+    const workerResult = await runWorkerOnce(input.workerLimit);
+    input.onTick?.(workerResult);
+
+    const details = await getWorkflowRunDetails(input.runId);
+    if (!details.run) {
+      throw new Error(`Unknown workflow run: ${input.runId}`);
+    }
+
+    const failedTasks = details.tasks.filter((task) => task.status === "failed").length;
+    const completedTasks = details.tasks.filter((task) => task.status === "completed").length;
+    if (["completed", "failed"].includes(details.run.status)) {
+      return {
+        status: details.run.status,
+        totalTasks: details.tasks.length,
+        completedTasks,
+        failedTasks,
+        receipts: details.receipts.length
+      };
+    }
+
+    if (workerResult.claimed === 0) {
+      await sleep(input.intervalMs);
+    }
+  }
+
+  const details = await getWorkflowRunDetails(input.runId);
+  if (!details.run) {
+    throw new Error(`Unknown workflow run: ${input.runId}`);
+  }
+
+  return {
+    status: "timed_out",
+    totalTasks: details.tasks.length,
+    completedTasks: details.tasks.filter((task) => task.status === "completed").length,
+    failedTasks: details.tasks.filter((task) => task.status === "failed").length,
+    receipts: details.receipts.length
+  };
+}
+
+async function exportWorkflowRun(input: {
+  runId: string;
+  outDir: string;
+}): Promise<
+  | { ok: true; markdownPath: string; jsonPath: string }
+  | { ok: false }
+> {
+  const details = await getWorkflowRunDetails(input.runId);
+  if (!details.run) {
+    return { ok: false };
+  }
+
+  const artifacts = await listArtifacts({ runId: input.runId });
+  const document = buildRunExport({
+    run: details.run,
+    tasks: details.tasks,
+    receipts: details.receipts,
+    artifacts
+  });
+  await fs.mkdir(input.outDir, { recursive: true });
+  const markdownPath = path.join(input.outDir, `${input.runId}.md`);
+  const jsonPath = path.join(input.outDir, `${input.runId}.json`);
+  await fs.writeFile(markdownPath, document.markdown, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(document.json, null, 2)}\n`, "utf8");
+
+  return {
+    ok: true,
+    markdownPath,
+    jsonPath
+  };
+}
+
 function printArtifact(
   artifact: {
     id: string;
@@ -809,6 +1098,15 @@ function templateNameForProfile(profile: string): string {
     return "project-tellara";
   }
   return "project";
+}
+
+function parsePositiveInteger(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function copyTemplate(templateDir: string, targetDir: string, force: boolean): Promise<{ written: number; skipped: number }> {
