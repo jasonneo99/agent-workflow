@@ -1,17 +1,21 @@
 #!/usr/bin/env node
 import fs from "node:fs/promises";
+import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
 import dotenv from "dotenv";
+import YAML from "yaml";
 import {
   byId,
   loadAgentRecords,
   loadAgents,
   loadProjectConfig,
+  loadYamlFile,
   loadWorkflowRecords,
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
+import { agentCardSchema, type AgentCard } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { evaluateAgentAutonomy } from "../../../packages/policy-engine/src/index.js";
@@ -48,8 +52,11 @@ program
 program
   .command("list")
   .description("List available agents and workflows")
-  .action(async () => {
-    const agents = await loadAgents(rootDir);
+  .option("-p, --project <dir>", "include project-local agents from .agent-workflow/agents")
+  .action(async (options: { project?: string }) => {
+    const agents = options.project
+      ? await loadAgentsForProject(path.resolve(process.cwd(), options.project))
+      : await loadAgents(rootDir);
     const workflows = await loadWorkflows(rootDir);
 
     console.log("Agents");
@@ -558,6 +565,11 @@ program
     console.log(`Receipts: ${watchResult.receipts}`);
     console.log(`Exported Markdown: ${exportResult.markdownPath}`);
     console.log(`Exported JSON: ${exportResult.jsonPath}`);
+    const summary = await summarizeWorkflowRun(queued.run.runId);
+    if (summary.ok) {
+      console.log("");
+      console.log(formatRunSummary(summary.value));
+    }
 
     if (watchResult.status !== "completed") {
       process.exitCode = watchResult.status === "failed" ? 1 : 2;
@@ -608,7 +620,7 @@ program
     const indexMaxFiles = parsePositiveInteger(options.indexMaxFiles, 100);
     const intervalMs = parsePositiveInteger(options.intervalMs, 1000);
     const timeoutMs = parsePositiveInteger(options.timeoutMs, 600000);
-    const agents = await loadAgents(rootDir);
+    const agents = await loadAgentsForProject(projectDir);
     const agent = resolveAgent(agents, agentRef);
 
     if (!agent) {
@@ -634,7 +646,11 @@ program
     }
 
     const workflow = createAgentTaskWorkflow(agent);
-    await seedRegistry([], [{
+    const builtinAgentIds = new Set((await loadAgents(rootDir)).map((item) => item.id));
+    await seedRegistry(builtinAgentIds.has(agent.id) ? [] : [{
+      path: `project/${agent.id}.yaml`,
+      value: agent
+    }], [{
       path: `runtime/${workflow.id}.yaml`,
       value: workflow
     }]);
@@ -687,6 +703,11 @@ program
     console.log(`Receipts: ${watchResult.receipts}`);
     console.log(`Exported Markdown: ${exportResult.markdownPath}`);
     console.log(`Exported JSON: ${exportResult.jsonPath}`);
+    const summary = await summarizeWorkflowRun(queued.run.runId);
+    if (summary.ok) {
+      console.log("");
+      console.log(formatRunSummary(summary.value));
+    }
 
     if (watchResult.status !== "completed") {
       process.exitCode = watchResult.status === "failed" ? 1 : 2;
@@ -831,6 +852,85 @@ program
   });
 
 program
+  .command("summarize-run")
+  .description("Print a compact decision-ready summary for a workflow run")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .option("--json", "print summary JSON")
+  .action(async (options: { run: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const summary = await summarizeWorkflowRun(options.run);
+    if (!summary.ok) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(summary.value, null, 2));
+      return;
+    }
+
+    console.log(formatRunSummary(summary.value));
+  });
+
+program
+  .command("schedule")
+  .description("Run due project schedules from .agent-workflow/schedules.yaml")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--watch", "keep polling for due schedules")
+  .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
+  .option("--dry-run", "print due schedules without running them")
+  .action(async (options: { project: string; watch?: boolean; intervalMs: string; dryRun?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const intervalMs = parsePositiveInteger(options.intervalMs, 60000);
+
+    do {
+      const result = await runDueSchedules({
+        projectDir,
+        dryRun: Boolean(options.dryRun)
+      });
+      for (const line of result.lines) {
+        console.log(line);
+      }
+      if (!options.watch) {
+        return;
+      }
+      await sleep(intervalMs);
+    } while (true);
+  });
+
+program
+  .command("dashboard")
+  .description("Start a local dashboard for workflow runs and artifacts")
+  .option("--host <host>", "host to bind", "127.0.0.1")
+  .option("--port <number>", "port to bind", "17888")
+  .action(async (options: { host: string; port: string }) => {
+    const port = parsePositiveInteger(options.port, 17888);
+    const server = http.createServer(async (request, response) => {
+      try {
+        await handleDashboardRequest(request, response);
+      } catch (error) {
+        response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
+        response.end(error instanceof Error ? error.message : String(error));
+      }
+    });
+
+    await new Promise<void>((resolve) => {
+      server.listen(port, options.host, resolve);
+    });
+    console.log(`Agent Workflow dashboard: http://${options.host}:${port}`);
+  });
+
+program
   .command("exec-command")
   .description("Execute an allowed local command and record an audit receipt")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -949,6 +1049,413 @@ function requiredAgent<T extends { id: string }>(agents: Map<string, T>, id: str
   return agent;
 }
 
+async function loadAgentsForProject(projectDir: string): Promise<AgentCard[]> {
+  const builtins = await loadAgents(rootDir);
+  const projectAgentsDir = path.join(projectDir, ".agent-workflow", "agents");
+  const projectAgents: AgentCard[] = [];
+
+  try {
+    const entries = await fs.readdir(projectAgentsDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.endsWith(".yaml")) {
+        continue;
+      }
+      const agent = await loadYamlFile(path.join(projectAgentsDir, entry.name), agentCardSchema);
+      projectAgents.push(agent);
+    }
+  } catch {
+    return builtins;
+  }
+
+  const merged = new Map<string, AgentCard>();
+  for (const agent of builtins) {
+    merged.set(agent.id, agent);
+  }
+  for (const agent of projectAgents) {
+    merged.set(agent.id, agent);
+  }
+  return [...merged.values()];
+}
+
+interface RunSummary {
+  runId: string;
+  status: string;
+  workflowId: string;
+  task: string;
+  projectName: string;
+  projectRootUri: string;
+  completedTasks: number;
+  failedTasks: number;
+  totalTasks: number;
+  stageResults: Array<{
+    stageId: string;
+    agentId: string;
+    status: string;
+    attempts: number;
+  }>;
+  keyFindings: string[];
+  failures: string[];
+  artifactUris: string[];
+  recommendedNextAction: string;
+}
+
+async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) {
+    return { ok: false };
+  }
+
+  const artifacts = await listArtifacts({ runId });
+  const stageOutputs = artifacts.filter((artifact) => artifact.kind === "stage_output");
+  const failures = details.receipts
+    .filter((receipt) => receipt.actionType.includes("failed") || /failed|timed out|rejected/i.test(receipt.summary))
+    .map((receipt) => `${receipt.agentId}: ${receipt.summary}`);
+  const commandFailures = artifacts
+    .filter((artifact) => artifact.kind === "command_output")
+    .filter((artifact) => {
+      const exitCode = artifact.content.exitCode;
+      return typeof exitCode === "number" && exitCode !== 0 || artifact.content.timedOut === true;
+    })
+    .map((artifact) => {
+      const commandLine = typeof artifact.content.commandLine === "string" ? artifact.content.commandLine : artifact.uri;
+      return `Command failed: ${commandLine}`;
+    });
+
+  const findings = collectArtifactFindings(stageOutputs);
+  const completedTasks = details.tasks.filter((task) => task.status === "completed").length;
+  const failedTasks = details.tasks.filter((task) => task.status === "failed").length;
+
+  return {
+    ok: true,
+    value: {
+      runId,
+      status: details.run.status,
+      workflowId: details.run.workflowId,
+      task: details.run.task,
+      projectName: details.run.projectName,
+      projectRootUri: details.run.projectRootUri,
+      completedTasks,
+      failedTasks,
+      totalTasks: details.tasks.length,
+      stageResults: details.tasks.map((task) => ({
+        stageId: task.stageId,
+        agentId: task.agentId,
+        status: task.status,
+        attempts: task.attempts
+      })),
+      keyFindings: findings.length ? findings.slice(0, 8) : details.receipts.slice(-5).map((receipt) => `${receipt.agentId}: ${receipt.summary}`),
+      failures: [...failures, ...commandFailures].slice(0, 8),
+      artifactUris: artifacts.map((artifact) => `${artifact.kind}: ${artifact.uri}`).slice(0, 12),
+      recommendedNextAction: recommendNextAction(details.run.status, details.run.workflowId, failedTasks, [...failures, ...commandFailures])
+    }
+  };
+}
+
+function collectArtifactFindings(artifacts: Array<{ content: Record<string, unknown> }>): string[] {
+  const findings: string[] = [];
+  for (const artifact of artifacts) {
+    for (const value of Object.values(artifact.content)) {
+      collectFindingValue(value, findings);
+    }
+  }
+  return [...new Set(findings.map((finding) => finding.trim()).filter(Boolean))];
+}
+
+function collectFindingValue(value: unknown, findings: string[]): void {
+  if (findings.length >= 20) {
+    return;
+  }
+  if (typeof value === "string") {
+    if (value.length > 20 && value.length < 280 && !/^[0-9a-f-]{24,}$/i.test(value)) {
+      findings.push(value);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectFindingValue(item, findings);
+    }
+    return;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    for (const key of ["summary", "finding", "issue", "risk", "nextAction", "recommendation"]) {
+      if (key in record) {
+        collectFindingValue(record[key], findings);
+      }
+    }
+  }
+}
+
+function recommendNextAction(status: string, workflowId: string, failedTasks: number, failures: string[]): string {
+  if (status === "failed" || failedTasks > 0 || failures.length) {
+    return "Run `debug-failure` or a targeted specialist `agent-task` against the failing command or stage.";
+  }
+  if (workflowId.startsWith("agent-task-ux-reviewer")) {
+    return "Ask `frontend-engineer` to implement the highest-impact UX findings, then rerun `ux-reviewer`.";
+  }
+  if (workflowId === "review-pr") {
+    return "Address the highest-risk review findings, then rerun `review-pr` before shipping.";
+  }
+  if (workflowId === "build-feature") {
+    return "Review generated artifacts, run project tests, and prepare a PR or release handoff.";
+  }
+  return "Review artifacts and choose the next specialist or workflow from the findings.";
+}
+
+function formatRunSummary(summary: RunSummary): string {
+  return [
+    `Run: ${summary.runId}`,
+    `Status: ${summary.status}`,
+    `Project: ${summary.projectName}`,
+    `Workflow: ${summary.workflowId}`,
+    `Task: ${summary.task}`,
+    `Tasks: ${summary.completedTasks}/${summary.totalTasks} completed, ${summary.failedTasks} failed`,
+    "",
+    "Stages:",
+    ...summary.stageResults.map((stage) => `- ${stage.stageId}: ${stage.agentId} ${stage.status} attempts=${stage.attempts}`),
+    "",
+    "Key findings:",
+    ...(summary.keyFindings.length ? summary.keyFindings.map((finding, index) => `${index + 1}. ${finding}`) : ["- No findings captured."]),
+    "",
+    "Failures:",
+    ...(summary.failures.length ? summary.failures.map((failure) => `- ${failure}`) : ["- None"]),
+    "",
+    "Recommended next action:",
+    summary.recommendedNextAction,
+    "",
+    "Artifacts:",
+    ...(summary.artifactUris.length ? summary.artifactUris.map((artifact) => `- ${artifact}`) : ["- None"])
+  ].join("\n");
+}
+
+interface ScheduleEntry {
+  id: string;
+  enabled?: boolean;
+  every_minutes?: number;
+  workflow?: string;
+  agent?: string;
+  task: string;
+  index_max_files?: number;
+  worker_limit?: number;
+}
+
+async function runDueSchedules(input: { projectDir: string; dryRun: boolean }): Promise<{ lines: string[] }> {
+  const serviceChecks = await checkServices();
+  const missing = serviceChecks.filter((check) => !check.reachable);
+  if (missing.length) {
+    return {
+      lines: missing.map((check) => `MISSING: ${check.endpoint.name} - ${check.message}`)
+    };
+  }
+
+  const schedules = await loadProjectSchedules(input.projectDir);
+  if (!schedules.length) {
+    return { lines: [`No schedules found in ${path.join(input.projectDir, ".agent-workflow", "schedules.yaml")}`] };
+  }
+
+  const statePath = path.join(input.projectDir, ".agent-workflow", "schedule-state.json");
+  const state = await readScheduleState(statePath);
+  const now = Date.now();
+  const lines: string[] = [];
+  let stateChanged = false;
+
+  for (const schedule of schedules) {
+    if (schedule.enabled === false) {
+      continue;
+    }
+    const lastRunAt = state[schedule.id]?.lastRunAt ? Date.parse(state[schedule.id].lastRunAt) : 0;
+    const everyMs = Math.max(1, schedule.every_minutes ?? 1440) * 60_000;
+    const due = !lastRunAt || now - lastRunAt >= everyMs;
+    if (!due) {
+      continue;
+    }
+
+    const label = schedule.workflow ? `workflow ${schedule.workflow}` : `agent ${schedule.agent}`;
+    if (input.dryRun) {
+      lines.push(`DUE ${schedule.id}: ${label} - ${schedule.task}`);
+      continue;
+    }
+
+    const indexResult = await indexProjectForRun({
+      projectDir: input.projectDir,
+      maxFiles: schedule.index_max_files ?? 100,
+      refine: false,
+      forceRefine: false
+    });
+    lines.push(`Indexed ${indexResult.count} files for ${indexResult.projectName}.`);
+
+    let queuedRunId: string | null = null;
+    if (schedule.agent) {
+      const agents = await loadAgentsForProject(input.projectDir);
+      const agent = resolveAgent(agents, schedule.agent);
+      if (!agent) {
+        lines.push(`FAILED ${schedule.id}: unknown agent ${schedule.agent}`);
+        continue;
+      }
+      const workflow = createAgentTaskWorkflow(agent);
+      const builtinAgentIds = new Set((await loadAgents(rootDir)).map((item) => item.id));
+      await seedRegistry(builtinAgentIds.has(agent.id) ? [] : [{ path: `project/${agent.id}.yaml`, value: agent }], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
+      const queued = await queueWorkflow({
+        workflowId: workflow.id,
+        projectPath: input.projectDir,
+        task: schedule.task,
+        workflowOverride: workflow
+      });
+      if (!queued.ok) {
+        lines.push(`FAILED ${schedule.id}: ${queued.error}`);
+        continue;
+      }
+      queuedRunId = queued.run.runId;
+    } else if (schedule.workflow) {
+      const queued = await queueWorkflow({
+        workflowId: schedule.workflow,
+        projectPath: input.projectDir,
+        task: schedule.task
+      });
+      if (!queued.ok) {
+        lines.push(`FAILED ${schedule.id}: ${queued.error}`);
+        continue;
+      }
+      queuedRunId = queued.run.runId;
+    } else {
+      lines.push(`FAILED ${schedule.id}: provide workflow or agent`);
+      continue;
+    }
+
+    const watchResult = await watchWorkflowRun({
+      runId: queuedRunId,
+      workerLimit: schedule.worker_limit ?? 6,
+      intervalMs: 1000,
+      timeoutMs: 900000
+    });
+    const exportResult = await exportWorkflowRun({
+      runId: queuedRunId,
+      outDir: path.join(input.projectDir, ".agent-workflow", "exports")
+    });
+    state[schedule.id] = {
+      lastRunAt: new Date().toISOString(),
+      lastRunId: queuedRunId,
+      lastStatus: watchResult.status
+    };
+    stateChanged = true;
+    lines.push(`RAN ${schedule.id}: ${queuedRunId} ${watchResult.status}`);
+    if (exportResult.ok) {
+      lines.push(`Exported Markdown: ${exportResult.markdownPath}`);
+      lines.push(`Exported JSON: ${exportResult.jsonPath}`);
+    }
+  }
+
+  if (stateChanged) {
+    await writeScheduleState(statePath, state);
+  }
+  return { lines: lines.length ? lines : ["No schedules due."] };
+}
+
+async function loadProjectSchedules(projectDir: string): Promise<ScheduleEntry[]> {
+  const schedulePath = path.join(projectDir, ".agent-workflow", "schedules.yaml");
+  try {
+    const raw = await fs.readFile(schedulePath, "utf8");
+    const parsed = YAML.parse(raw) as { schedules?: ScheduleEntry[] } | ScheduleEntry[];
+    return Array.isArray(parsed) ? parsed : parsed.schedules ?? [];
+  } catch {
+    return [];
+  }
+}
+
+async function readScheduleState(statePath: string): Promise<Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>> {
+  try {
+    return JSON.parse(await fs.readFile(statePath, "utf8")) as Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>;
+  } catch {
+    return {};
+  }
+}
+
+async function writeScheduleState(statePath: string, state: Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>): Promise<void> {
+  await fs.mkdir(path.dirname(statePath), { recursive: true });
+  await fs.writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+}
+
+async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (requestUrl.pathname === "/api/runs") {
+    const runs = await listWorkflowRuns(50);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(runs, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/run") {
+    const runId = requestUrl.searchParams.get("id");
+    if (!runId) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing id");
+      return;
+    }
+    const details = await getWorkflowRunDetails(runId);
+    const artifacts = await listArtifacts({ runId });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ...details, artifacts }, null, 2));
+    return;
+  }
+
+  const runs = await listWorkflowRuns(50);
+  response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+  response.end(renderDashboardHtml(runs));
+}
+
+function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>): string {
+  const rows = runs.map((run) => `
+    <tr>
+      <td><a href="/api/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${escapeHtml(run.workflowId)}</td>
+      <td>${escapeHtml(run.projectName)}</td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${escapeHtml(run.startedAt)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Dashboard</title>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px; }
+    h1 { font-size: 28px; margin: 0 0 18px; }
+    table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e7f0; }
+    th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
+    th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
+    a { color: #1d4ed8; text-decoration: none; }
+    .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
+    .completed { background: #dcfce7; color: #166534; }
+    .failed { background: #fee2e2; color: #991b1b; }
+    .running, .queued { background: #fef3c7; color: #92400e; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Agent Workflow Dashboard</h1>
+    <table>
+      <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
+      <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
+    </table>
+  </main>
+</body>
+</html>`;
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
 function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: string): T | undefined {
   const aliases: Record<string, string> = {
     "review-change": "review-pr",
@@ -1041,7 +1548,8 @@ async function queueWorkflow(input: {
   }
   | { ok: false; error: string }
 > {
-  const agents = await loadAgents(rootDir);
+  const projectDir = path.resolve(process.cwd(), input.projectPath);
+  const agents = await loadAgentsForProject(projectDir);
   const workflows = await loadWorkflows(rootDir);
   const workflow = input.workflowOverride ?? resolveWorkflow(workflows, input.workflowId);
 
@@ -1049,7 +1557,6 @@ async function queueWorkflow(input: {
     return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
   }
 
-  const projectDir = path.resolve(process.cwd(), input.projectPath);
   const project = await loadProjectConfig(projectDir);
   const selectedAgents = selectWorkflowAgents(agents, workflow);
 

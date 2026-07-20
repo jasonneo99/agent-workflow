@@ -1,0 +1,15 @@
+schedules:
+  - id: weekly-tellara-context
+    enabled: false
+    every_minutes: 10080
+    workflow: maintain-context
+    task: "Update Tellara durable context, decisions, and command notes."
+    index_max_files: 120
+    worker_limit: 6
+  - id: daily-tellara-test-triage
+    enabled: false
+    every_minutes: 1440
+    agent: ci
+    task: "Review recent Tellara test and CI failures and recommend next fixes."
+    index_max_files: 120
+    worker_limit: 1

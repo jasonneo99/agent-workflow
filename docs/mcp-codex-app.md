@@ -33,6 +33,8 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_run_workflow`: queue an enterprise workflow run.
 - `agentflow_run_and_watch`: index, queue, process, export, and summarize a workflow run.
 - `agentflow_agent_task`: run one specialist agent directly and export the result.
+- `agentflow_summarize_run`: print a decision-ready run summary.
+- `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
 - `agentflow_artifacts`: inspect run artifacts.

@@ -94,6 +94,18 @@ For one specialist agent, use `agent-task`:
 npm run agentflow -- agent-task Mira --project /path/to/project --task "Do a UX pass"
 ```
 
+For a decision-ready summary after a run:
+
+```bash
+npm run agentflow -- summarize-run --run <run-id>
+```
+
+For the local dashboard:
+
+```bash
+npm run agentflow -- dashboard
+```
+
 See `docs/user-guide.md` for the full installation and usage guide.
 
 The simpler flat-file workflow is available when a user does not want local services:

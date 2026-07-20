@@ -85,6 +85,8 @@ AGENTS.md
 .agent-workflow/context.md
 .agent-workflow/commands.md
 .agent-workflow/decisions.md
+.agent-workflow/schedules.yaml
+.agent-workflow/agents/*.yaml
 ```
 
 Keep reusable agents and workflows in Agent Workflow. Keep project-specific context in the consuming project.
@@ -150,6 +152,20 @@ docs -> docs-maintainer
 release -> release-manager
 product -> product-strategist
 architect -> technical-architect
+```
+
+Project-local agents live in `.agent-workflow/agents/*.yaml`. List built-in plus project agents with:
+
+```bash
+npm run list -- --project /path/to/project
+```
+
+Run a project-local specialist exactly like a built-in agent:
+
+```bash
+npm run agentflow -- agent-task project-reviewer \
+  --project /path/to/project \
+  --task "Review this implementation against local architecture decisions"
 ```
 
 The easiest path is `run-and-watch`. It indexes the project, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
@@ -243,7 +259,81 @@ Inspect a specific run with artifacts:
 npm run agentflow -- status --run <run-id> --artifacts
 ```
 
-## 8. Use From Codex
+Summarize a run into a decision-ready report:
+
+```bash
+npm run agentflow -- summarize-run --run <run-id>
+```
+
+JSON summary:
+
+```bash
+npm run agentflow -- summarize-run --run <run-id> --json
+```
+
+## 8. Schedules
+
+Projects can define disabled-by-default schedules in:
+
+```text
+.agent-workflow/schedules.yaml
+```
+
+Example schedule:
+
+```yaml
+schedules:
+  - id: weekly-context-maintenance
+    enabled: true
+    every_minutes: 10080
+    workflow: maintain-context
+    task: "Update durable project context, decisions, and command notes."
+    index_max_files: 100
+    worker_limit: 6
+```
+
+Dry-run due schedules:
+
+```bash
+npm run agentflow -- schedule --project /path/to/project --dry-run
+```
+
+Run due schedules once:
+
+```bash
+npm run agentflow -- schedule --project /path/to/project
+```
+
+Run due schedules continuously:
+
+```bash
+npm run agentflow -- schedule --project /path/to/project --watch --interval-ms 60000
+```
+
+Schedule state is stored in `.agent-workflow/schedule-state.json`.
+
+## 9. Dashboard
+
+Start the local run dashboard:
+
+```bash
+npm run agentflow -- dashboard
+```
+
+Open:
+
+```text
+http://127.0.0.1:17888
+```
+
+JSON endpoints:
+
+```text
+/api/runs
+/api/run?id=<run-id>
+```
+
+## 10. Use From Codex
 
 After installing the plugin, start a new Codex task and use prompts like:
 
@@ -280,6 +370,8 @@ agentflow_compile
 agentflow_run_workflow
 agentflow_run_and_watch
 agentflow_agent_task
+agentflow_summarize_run
+agentflow_schedule
 agentflow_worker
 agentflow_status
 agentflow_artifacts
@@ -294,7 +386,7 @@ Tool definitions and input schemas live in:
 /Users/jasonmiller/Projects/Agent Workflow/apps/mcp/src/index.ts
 ```
 
-## 10. Storage And Reset
+## 11. Storage And Reset
 
 Reset local enterprise run history:
 
@@ -311,7 +403,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run bootstrap-storage
 ```
 
-## 11. Provider Checks
+## 12. Provider Checks
 
 Check the configured provider:
 
@@ -325,11 +417,11 @@ Run a provider contract smoke test:
 npm run provider-smoke
 ```
 
-## 12. Recommended Next Improvement
+## 13. Recommended Next Improvement
 
-The `run-and-watch` command and MCP tool are now implemented.
+The `run-and-watch`, `agent-task`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
 
-The next best improvement is a small workflow-run dashboard or `run-summary` tool that turns exported artifacts into a compact, developer-friendly next-action report.
+The next best improvement is a dashboard upgrade that can inspect one run in HTML, render summarized artifacts inline, and trigger follow-up agent tasks from buttons.
 
 The target output should include:
 

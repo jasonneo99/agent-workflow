@@ -342,6 +342,44 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_summarize_run",
+  {
+    title: "AgentFlow summarize run",
+    description: "Print a compact decision-ready summary for a workflow run.",
+    inputSchema: {
+      runId: z.string().describe("Workflow run id."),
+      json: z.boolean().optional().describe("Return summary JSON.")
+    }
+  },
+  async ({ runId, json }) => {
+    const args = ["summarize-run", "--run", runId];
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_schedule",
+  {
+    title: "AgentFlow schedule",
+    description: "Run due project schedules from .agent-workflow/schedules.yaml, or dry-run to list due schedules.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      dryRun: z.boolean().optional().describe("Print due schedules without running them.")
+    }
+  },
+  async ({ project, dryRun }) => {
+    const args = ["schedule", "--project", project];
+    if (dryRun) {
+      args.push("--dry-run");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 16 * 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_provider_check",
   {
     title: "AgentFlow provider check",
