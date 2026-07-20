@@ -42,7 +42,72 @@ import { buildRunExport } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const tellaraProjectPath = "/Users/jasonmiller/Projects/media-ai-startup";
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
+
+type WorkflowPreset = {
+  id: string;
+  aliases: string[];
+  label: string;
+  description: string;
+  project: string;
+  task: string;
+  kind: "agent" | "workflow";
+  target: string;
+};
+
+const workflowPresets: WorkflowPreset[] = [
+  {
+    id: "tellara-ux-pass",
+    aliases: ["ux-pass", "mira-ux-pass"],
+    label: "UX Pass",
+    description: "Ask Mira to review the current Tellara user experience and recommend the top fixes.",
+    project: tellaraProjectPath,
+    task: "Do a UX pass on the current Tellara app. Summarize findings and recommend the top 3 fixes.",
+    kind: "agent",
+    target: "Mira"
+  },
+  {
+    id: "tellara-pr-review",
+    aliases: ["tellara-review-pr", "pr-review", "review-pr"],
+    label: "PR Review",
+    description: "Run the Tellara PR review workflow on current local changes.",
+    project: tellaraProjectPath,
+    task: "Review current Tellara changes and call out risks, regressions, missing tests, and recommended fixes.",
+    kind: "workflow",
+    target: "review-pr"
+  },
+  {
+    id: "tellara-test-triage",
+    aliases: ["test-triage", "debug-tests"],
+    label: "Test Triage",
+    description: "Investigate Tellara test or CI failures.",
+    project: tellaraProjectPath,
+    task: "Investigate Tellara test and CI failures. Identify failing areas, likely causes, and the next fix.",
+    kind: "workflow",
+    target: "debug-failure"
+  },
+  {
+    id: "tellara-maintain-context",
+    aliases: ["tellara-context", "maintain-context"],
+    label: "Maintain Context",
+    description: "Refresh durable Tellara context and workflow memory.",
+    project: tellaraProjectPath,
+    task: "Update durable Tellara project context, decisions, and workflow memory from the latest changes.",
+    kind: "workflow",
+    target: "maintain-context"
+  },
+  {
+    id: "tellara-frontend-pass",
+    aliases: ["frontend-pass"],
+    label: "Frontend Pass",
+    description: "Ask the frontend specialist to review Tellara UI implementation risks.",
+    project: tellaraProjectPath,
+    task: "Review the current Tellara frontend implementation and recommend focused UI, accessibility, and state-management fixes.",
+    kind: "agent",
+    target: "frontend"
+  }
+];
 
 program
   .name("agentflow")
@@ -712,6 +777,36 @@ program
     if (watchResult.status !== "completed") {
       process.exitCode = watchResult.status === "failed" ? 1 : 2;
     }
+  });
+
+program
+  .command("preset")
+  .description("Run a named workflow preset")
+  .argument("[preset]", "preset id or alias")
+  .option("--list", "list available presets")
+  .option("-p, --project <dir>", "override preset project directory")
+  .option("-t, --task <task>", "override preset task description")
+  .action(async (presetRef: string | undefined, options: { list?: boolean; project?: string; task?: string }) => {
+    if (options.list || !presetRef) {
+      printPresetList();
+      return;
+    }
+
+    const result = await runWorkflowPreset({
+      presetRef,
+      project: options.project,
+      task: options.task
+    });
+
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(result.title);
+    console.log("");
+    console.log(result.output);
   });
 
 program
@@ -1473,10 +1568,7 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
     <section class="panel">
       <h2>Tellara Presets</h2>
       <div class="actions">
-        ${presetForm("tellara-ux-pass", "UX Pass")}
-        ${presetForm("tellara-review-pr", "PR Review")}
-        ${presetForm("tellara-test-triage", "Test Triage")}
-        ${presetForm("tellara-context", "Maintain Context")}
+        ${workflowPresets.filter((preset) => preset.id.startsWith("tellara-")).map((preset) => presetForm(preset.id, preset.label)).join("")}
       </div>
     </section>
     <table>
@@ -1668,7 +1760,7 @@ async function runDashboardFollowUp(input: {
     });
   }
 
-  if (action === "mira-ux-pass" || action === "tellara-ux-pass") {
+  if (action === "mira-ux-pass") {
     return runDashboardAgentTask({
       title: "Mira UX Pass",
       agent: "Mira",
@@ -1686,7 +1778,7 @@ async function runDashboardFollowUp(input: {
     });
   }
 
-  if (action === "maintain-context" || action === "tellara-context") {
+  if (action === "maintain-context") {
     return runDashboardWorkflow({
       title: "Maintain Context",
       workflow: "maintain-context",
@@ -1695,25 +1787,59 @@ async function runDashboardFollowUp(input: {
     });
   }
 
-  if (action === "tellara-review-pr") {
-    return runDashboardWorkflow({
-      title: "Tellara PR Review",
-      workflow: "review-pr",
-      projectDir: sourceProject,
-      task: "Review Tellara changes from the local dashboard preset."
-    });
-  }
-
-  if (action === "tellara-test-triage") {
-    return runDashboardWorkflow({
-      title: "Tellara Test Triage",
-      workflow: "debug-failure",
-      projectDir: sourceProject,
-      task: "Investigate Tellara test and CI failures from the local dashboard preset."
+  const preset = resolveWorkflowPreset(action);
+  if (preset) {
+    return runWorkflowPreset({
+      presetRef: preset.id,
+      project: input.project ?? sourceProject
     });
   }
 
   return { ok: false, error: `Unknown dashboard action: ${action}` };
+}
+
+function printPresetList(): void {
+  console.log("Presets");
+  for (const preset of workflowPresets) {
+    const aliases = preset.aliases.length ? ` aliases=${preset.aliases.join(",")}` : "";
+    console.log(`- ${preset.id}: ${preset.description}${aliases}`);
+  }
+}
+
+function resolveWorkflowPreset(presetRef: string): WorkflowPreset | null {
+  const normalized = presetRef.toLowerCase();
+  return workflowPresets.find((preset) => preset.id === normalized || preset.aliases.includes(normalized)) ?? null;
+}
+
+async function runWorkflowPreset(input: {
+  presetRef: string;
+  project?: string;
+  task?: string;
+}): Promise<DashboardFollowUpResult> {
+  const preset = resolveWorkflowPreset(input.presetRef);
+  if (!preset) {
+    const available = workflowPresets.map((item) => item.id).join(", ");
+    return { ok: false, error: `Unknown preset: ${input.presetRef}. Available presets: ${available}` };
+  }
+
+  const projectDir = path.resolve(process.cwd(), input.project ?? preset.project);
+  const task = input.task ?? preset.task;
+
+  if (preset.kind === "agent") {
+    return runDashboardAgentTask({
+      title: preset.label,
+      agent: preset.target,
+      projectDir,
+      task
+    });
+  }
+
+  return runDashboardWorkflow({
+    title: preset.label,
+    workflow: preset.target,
+    projectDir,
+    task
+  });
 }
 
 async function runDashboardWorkflow(input: {

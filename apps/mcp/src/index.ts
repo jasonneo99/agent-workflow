@@ -252,6 +252,44 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_preset",
+  {
+    title: "AgentFlow preset",
+    description: "Run a named Agent Workflow preset, such as tellara-ux-pass, tellara-pr-review, tellara-test-triage, tellara-maintain-context, or tellara-frontend-pass.",
+    inputSchema: {
+      preset: z.string().optional().describe("Preset id or alias. Use list to show available presets."),
+      project: z.string().optional().describe("Optional project directory override."),
+      task: z.string().optional().describe("Optional task description override."),
+      list: z.boolean().optional().describe("List available presets instead of running one.")
+    }
+  },
+  async ({ preset, project, task, list }) => {
+    const args = ["preset"];
+    if (list) {
+      args.push("--list");
+    } else {
+      if (!preset) {
+        return toolResult({
+          command: "agentflow preset",
+          exitCode: 1,
+          stdout: "",
+          stderr: "Provide preset or set list=true.",
+          timedOut: false
+        });
+      }
+      args.push(preset);
+    }
+    if (project) {
+      args.push("--project", project);
+    }
+    if (task) {
+      args.push("--task", task);
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 16 * 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_worker",
   {
     title: "AgentFlow worker",

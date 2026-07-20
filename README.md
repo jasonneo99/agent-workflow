@@ -94,6 +94,12 @@ For one specialist agent, use `agent-task`:
 npm run agentflow -- agent-task Mira --project /path/to/project --task "Do a UX pass"
 ```
 
+For a named preset, use `preset`:
+
+```bash
+npm run agentflow -- preset tellara-ux-pass
+```
+
 For a decision-ready summary after a run:
 
 ```bash

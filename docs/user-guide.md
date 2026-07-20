@@ -168,6 +168,35 @@ npm run agentflow -- agent-task project-reviewer \
   --task "Review this implementation against local architecture decisions"
 ```
 
+Run a named preset:
+
+```bash
+npm run agentflow -- preset tellara-ux-pass
+```
+
+List available presets:
+
+```bash
+npm run agentflow -- preset --list
+```
+
+Current Tellara presets:
+
+```text
+tellara-ux-pass
+tellara-pr-review
+tellara-test-triage
+tellara-maintain-context
+tellara-frontend-pass
+```
+
+Override the task or project when needed:
+
+```bash
+npm run agentflow -- preset tellara-ux-pass \
+  --task "Do a UX pass focused on the onboarding and command center flows"
+```
+
 The easiest path is `run-and-watch`. It indexes the project, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
 
 Review Tellara in one command:
@@ -362,6 +391,7 @@ The dashboard home also includes Tellara presets:
 - `PR Review`
 - `Test Triage`
 - `Maintain Context`
+- `Frontend Pass`
 
 These actions still use the project `.agent-workflow/project.yaml` policy and create normal run receipts and artifacts.
 
@@ -375,6 +405,10 @@ Use Agent Workflow to run-and-watch review-pr on Tellara for "Review billing cat
 
 ```text
 Use Agent Workflow to have Mira do a UX pass on Tellara and export the report.
+```
+
+```text
+Use Agent Workflow to run the tellara-ux-pass preset and summarize the top 3 fixes.
 ```
 
 ```text
@@ -451,16 +485,16 @@ npm run provider-smoke
 
 ## 13. Recommended Next Improvement
 
-The `run-and-watch`, `agent-task`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
+The `run-and-watch`, `agent-task`, `preset`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
 
-The next best improvement is a dashboard upgrade that can inspect one run in HTML, render summarized artifacts inline, and trigger follow-up agent tasks from buttons.
+The next best improvement is a project onboarding command that detects a repo's stack, writes a tailored `.agent-workflow/project.yaml`, proposes project-local agents, and performs a safe dry-run before any live workflow runs.
 
 The target output should include:
 
 ```text
-- run id and status
-- stage-by-stage result
-- failing command or rejected action, if any
-- artifact links
-- recommended next command or workflow
+- detected package manager, framework, test commands, and lint/typecheck commands
+- recommended context excludes and blocked write paths
+- suggested project-local agents
+- dry-run validation status
+- next recommended workflow command
 ```

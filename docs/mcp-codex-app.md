@@ -33,6 +33,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_run_workflow`: queue an enterprise workflow run.
 - `agentflow_run_and_watch`: index, queue, process, export, and summarize a workflow run.
 - `agentflow_agent_task`: run one specialist agent directly and export the result.
+- `agentflow_preset`: run a named workflow preset such as `tellara-ux-pass`.
 - `agentflow_summarize_run`: print a decision-ready run summary.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
@@ -52,6 +53,10 @@ Use the agent-workflow MCP to run-and-watch the review-pr workflow for /Users/ja
 
 ```text
 Use the agent-workflow MCP to have Mira do a UX pass on /Users/jasonmiller/Projects/media-ai-startup and export the result.
+```
+
+```text
+Use the agent-workflow MCP to run the tellara-ux-pass preset and summarize the top 3 fixes.
 ```
 
 The MCP server reuses the existing CLI and `.env`, so provider, storage, and project policies remain in one place.
