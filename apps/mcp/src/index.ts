@@ -191,6 +191,67 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_agent_task",
+  {
+    title: "AgentFlow agent task",
+    description: "Run one specialist agent directly, process the task, export reports, and return the summary.",
+    inputSchema: {
+      agent: z.string().describe("Agent id, display name, or alias, for example ux-reviewer, Mira, security, or frontend."),
+      project: z.string().describe("Absolute or relative project directory."),
+      task: z.string().describe("Task description."),
+      skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
+      indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index first."),
+      refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
+      forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
+      intervalMs: z.number().int().positive().optional().describe("Polling interval while waiting for run status."),
+      timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for completion."),
+      out: z.string().optional().describe("Export directory."),
+      sourceTokenBudget: z.number().int().positive().optional().describe("Token budget for indexed source summaries."),
+      sourceMaxFiles: z.number().int().positive().optional().describe("Maximum indexed source summaries to include.")
+    }
+  },
+  async ({
+    agent,
+    project,
+    task,
+    skipIndex,
+    indexMaxFiles,
+    refineIndex,
+    forceRefine,
+    intervalMs,
+    timeoutMs,
+    out,
+    sourceTokenBudget,
+    sourceMaxFiles
+  }) => {
+    const args = ["agent-task", agent, "--project", project, "--task", task];
+    if (skipIndex) {
+      args.push("--skip-index");
+    }
+    if (indexMaxFiles) {
+      args.push("--index-max-files", String(indexMaxFiles));
+    }
+    if (refineIndex) {
+      args.push("--refine-index");
+    }
+    if (forceRefine) {
+      args.push("--force-refine");
+    }
+    if (intervalMs) {
+      args.push("--interval-ms", String(intervalMs));
+    }
+    if (timeoutMs) {
+      args.push("--timeout-ms", String(timeoutMs));
+    }
+    if (out) {
+      args.push("--out", out);
+    }
+    addSourceOptions(args, sourceTokenBudget, sourceMaxFiles);
+    return toolResult(await runAgentflow(args, { timeoutMs: timeoutMs ? timeoutMs + 60_000 : 11 * 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_worker",
   {
     title: "AgentFlow worker",

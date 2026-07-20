@@ -127,6 +127,31 @@ Use `review-pr` for reviewing local changes, PR-like work, or risk-sensitive are
 
 ## 7. Run Workflows From CLI
 
+Run one specialist agent directly:
+
+```bash
+npm run agentflow -- agent-task ux-reviewer \
+  --project /Users/jasonmiller/Projects/media-ai-startup \
+  --task "Have Mira do a UX pass on the current Tellara changes" \
+  --index-max-files 100
+```
+
+Common agent aliases include:
+
+```text
+Mira, ux, ux-pass -> ux-reviewer
+security -> security-reviewer
+frontend -> frontend-engineer
+backend -> backend-engineer
+database, db -> database-engineer
+tests -> test-engineer
+ci -> ci-debugger
+docs -> docs-maintainer
+release -> release-manager
+product -> product-strategist
+architect -> technical-architect
+```
+
 The easiest path is `run-and-watch`. It indexes the project, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
 
 Review Tellara in one command:
@@ -227,6 +252,10 @@ Use Agent Workflow to run-and-watch review-pr on Tellara for "Review billing cat
 ```
 
 ```text
+Use Agent Workflow to have Mira do a UX pass on Tellara and export the report.
+```
+
+```text
 Use Agent Workflow to run debug-failure on Tellara for the failed pnpm test run, inspect artifacts, and summarize next fixes.
 ```
 
@@ -250,6 +279,7 @@ agentflow_index_project
 agentflow_compile
 agentflow_run_workflow
 agentflow_run_and_watch
+agentflow_agent_task
 agentflow_worker
 agentflow_status
 agentflow_artifacts

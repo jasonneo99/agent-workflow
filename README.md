@@ -88,6 +88,12 @@ npm run agentflow -- run-and-watch review-pr --project /path/to/project --task "
 
 This indexes compact project context, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
 
+For one specialist agent, use `agent-task`:
+
+```bash
+npm run agentflow -- agent-task Mira --project /path/to/project --task "Do a UX pass"
+```
+
 See `docs/user-guide.md` for the full installation and usage guide.
 
 The simpler flat-file workflow is available when a user does not want local services:

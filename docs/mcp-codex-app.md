@@ -32,6 +32,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_compile`: compile a workflow brief without queueing work.
 - `agentflow_run_workflow`: queue an enterprise workflow run.
 - `agentflow_run_and_watch`: index, queue, process, export, and summarize a workflow run.
+- `agentflow_agent_task`: run one specialist agent directly and export the result.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
 - `agentflow_artifacts`: inspect run artifacts.
@@ -45,6 +46,10 @@ After Docker services are running, ask Codex:
 
 ```text
 Use the agent-workflow MCP to run-and-watch the review-pr workflow for /Users/jasonmiller/Projects/media-ai-startup with task "Review the billing catalog changes".
+```
+
+```text
+Use the agent-workflow MCP to have Mira do a UX pass on /Users/jasonmiller/Projects/media-ai-startup and export the result.
 ```
 
 The MCP server reuses the existing CLI and `.env`, so provider, storage, and project policies remain in one place.

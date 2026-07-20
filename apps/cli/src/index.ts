@@ -565,6 +565,135 @@ program
   });
 
 program
+  .command("agent-task")
+  .description("Run one specialist agent directly, then export the result")
+  .argument("<agent>", "agent id, display name, or alias")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "task description")
+  .option("--skip-index", "skip project indexing before queueing")
+  .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--refine-index", "refine indexed summaries with the selected provider")
+  .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
+  .option("--interval-ms <number>", "polling interval while waiting for run status", "1000")
+  .option("--timeout-ms <number>", "maximum time to wait for completion", "600000")
+  .option("-o, --out <dir>", "export directory; defaults to <project>/.agent-workflow/exports")
+  .option("--source-token-budget <number>", "token budget for indexed source summaries")
+  .option("--source-max-files <number>", "maximum indexed source summaries to include")
+  .action(async (agentRef: string, options: {
+    project: string;
+    task: string;
+    skipIndex?: boolean;
+    indexMaxFiles: string;
+    refineIndex?: boolean;
+    forceRefine?: boolean;
+    intervalMs: string;
+    timeoutMs: string;
+    out?: string;
+    sourceTokenBudget?: string;
+    sourceMaxFiles?: string;
+  }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      console.error("\nStart local enterprise services with:");
+      console.error("docker compose -f infra/docker-compose.yml up -d");
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const indexMaxFiles = parsePositiveInteger(options.indexMaxFiles, 100);
+    const intervalMs = parsePositiveInteger(options.intervalMs, 1000);
+    const timeoutMs = parsePositiveInteger(options.timeoutMs, 600000);
+    const agents = await loadAgents(rootDir);
+    const agent = resolveAgent(agents, agentRef);
+
+    if (!agent) {
+      console.error(`Unknown agent: ${agentRef}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!options.skipIndex) {
+      const indexResult = await indexProjectForRun({
+        projectDir,
+        maxFiles: indexMaxFiles,
+        refine: Boolean(options.refineIndex),
+        forceRefine: Boolean(options.forceRefine)
+      });
+      console.log(`Indexed ${indexResult.count} files for ${indexResult.projectName}.`);
+      if (options.refineIndex) {
+        console.log(`Refined ${indexResult.refined}; reused ${indexResult.reused}.`);
+      }
+      if (indexResult.skipped) {
+        console.log(`Skipped ${indexResult.skipped} large files.`);
+      }
+    }
+
+    const workflow = createAgentTaskWorkflow(agent);
+    await seedRegistry([], [{
+      path: `runtime/${workflow.id}.yaml`,
+      value: workflow
+    }]);
+
+    const queued = await queueWorkflow({
+      workflowId: workflow.id,
+      projectPath: projectDir,
+      task: options.task,
+      workflowOverride: workflow,
+      sourceTokenBudget: options.sourceTokenBudget,
+      sourceMaxFiles: options.sourceMaxFiles
+    });
+
+    if (!queued.ok) {
+      console.error(queued.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Queued agent task run ${queued.run.runId}`);
+    console.log(`Project ${queued.run.projectId}`);
+    console.log(`Agent ${agent.id} (${agent.display_name})`);
+    console.log(`Workflow ${queued.workflow.id}`);
+
+    const watchResult = await watchWorkflowRun({
+      runId: queued.run.runId,
+      workerLimit: 1,
+      intervalMs,
+      timeoutMs,
+      onTick: (tick) => {
+        if (tick.claimed > 0 || tick.failed > 0) {
+          console.log(`Worker claimed ${tick.claimed}, completed ${tick.completed}, failed ${tick.failed}.`);
+        }
+      }
+    });
+
+    const outDir = path.resolve(process.cwd(), options.out ?? path.join(projectDir, ".agent-workflow", "exports"));
+    const exportResult = await exportWorkflowRun({
+      runId: queued.run.runId,
+      outDir
+    });
+    if (!exportResult.ok) {
+      console.error(`Unknown workflow run: ${queued.run.runId}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Run ${watchResult.status}`);
+    console.log(`Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed.`);
+    console.log(`Receipts: ${watchResult.receipts}`);
+    console.log(`Exported Markdown: ${exportResult.markdownPath}`);
+    console.log(`Exported JSON: ${exportResult.jsonPath}`);
+
+    if (watchResult.status !== "completed") {
+      process.exitCode = watchResult.status === "failed" ? 1 : 2;
+    }
+  });
+
+program
   .command("status")
   .description("Show recent workflow runs or details for a run")
   .option("-r, --run <id>", "workflow run id")
@@ -835,10 +964,71 @@ function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: s
   return byId(workflows).get(aliases[workflowId] ?? workflowId);
 }
 
+function resolveAgent<T extends { id: string; display_name: string }>(agents: T[], agentRef: string): T | undefined {
+  const normalizedRef = normalizeLookup(agentRef);
+  const aliases: Record<string, string> = {
+    mira: "ux-reviewer",
+    ux: "ux-reviewer",
+    "ux-pass": "ux-reviewer",
+    "ux-review": "ux-reviewer",
+    frontend: "frontend-engineer",
+    backend: "backend-engineer",
+    database: "database-engineer",
+    db: "database-engineer",
+    security: "security-reviewer",
+    test: "test-engineer",
+    tests: "test-engineer",
+    ci: "ci-debugger",
+    docs: "docs-maintainer",
+    release: "release-manager",
+    product: "product-strategist",
+    architect: "technical-architect",
+    architecture: "technical-architect"
+  };
+  const resolvedId = aliases[normalizedRef] ?? agentRef;
+  const agentIndex = byId(agents);
+  return agentIndex.get(resolvedId)
+    ?? agents.find((agent) => normalizeLookup(agent.display_name) === normalizedRef)
+    ?? agents.find((agent) => normalizeLookup(agent.id) === normalizedRef);
+}
+
+function normalizeLookup(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {
+  return {
+    id: `agent-task-${agent.id}`,
+    name: `Agent Task - ${agent.display_name}`,
+    description: `Run ${agent.display_name} directly as a one-stage specialist task.`,
+    lead: agent.id,
+    default_autonomy: agent.autonomy,
+    triggers: {
+      manual: true,
+      events: []
+    },
+    stages: [
+      {
+        id: "specialist-task",
+        agent: agent.id,
+        goal: agent.purpose,
+        subagents: [],
+        context: {
+          load: ["AGENTS.md", ".agent-workflow/**"],
+          max_tokens: agent.context_budget.max_tokens
+        },
+        approval_required: false,
+        output: agent.outputs.schema
+      }
+    ]
+  };
+}
+
 async function queueWorkflow(input: {
   workflowId: string;
   projectPath: string;
   task: string;
+  workflowOverride?: Awaited<ReturnType<typeof loadWorkflows>>[number];
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
 }): Promise<
@@ -853,7 +1043,7 @@ async function queueWorkflow(input: {
 > {
   const agents = await loadAgents(rootDir);
   const workflows = await loadWorkflows(rootDir);
-  const workflow = resolveWorkflow(workflows, input.workflowId);
+  const workflow = input.workflowOverride ?? resolveWorkflow(workflows, input.workflowId);
 
   if (!workflow) {
     return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
