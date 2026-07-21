@@ -1,0 +1,6 @@
+schedules:
+  - id: weekly-site-context-refresh
+    workflow: maintain-context
+    task: Refresh Truck Outfitters Unlimited durable context from recent site and SEO changes.
+    interval: weekly
+    worker_limit: 6

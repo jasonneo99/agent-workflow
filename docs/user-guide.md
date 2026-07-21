@@ -197,6 +197,23 @@ npm run agentflow -- preset tellara-ux-pass \
   --task "Do a UX pass focused on the onboarding and command center flows"
 ```
 
+Run a natural-language orchestration:
+
+```bash
+npm run agentflow -- orchestrate \
+  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
+  --task "Review the production site UX, SEO, mobile experience, and launch risks"
+```
+
+Preview the plan before running it:
+
+```bash
+npm run agentflow -- orchestrate \
+  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
+  --task "Review the production site UX, SEO, mobile experience, and launch risks" \
+  --dry-run
+```
+
 The easiest path is `run-and-watch`. It indexes the project, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
 
 Review Tellara in one command:
@@ -412,6 +429,10 @@ Use Agent Workflow to run the tellara-ux-pass preset and summarize the top 3 fix
 ```
 
 ```text
+Use Agent Workflow to orchestrate this for Truck Outfitters Unlimited: review the production site UX, SEO, mobile experience, and launch risks.
+```
+
+```text
 Use Agent Workflow to run debug-failure on Tellara for the failed pnpm test run, inspect artifacts, and summarize next fixes.
 ```
 
@@ -485,7 +506,7 @@ npm run provider-smoke
 
 ## 13. Recommended Next Improvement
 
-The `run-and-watch`, `agent-task`, `preset`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
+The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
 
 The next best improvement is a project onboarding command that detects a repo's stack, writes a tailored `.agent-workflow/project.yaml`, proposes project-local agents, and performs a safe dry-run before any live workflow runs.
 

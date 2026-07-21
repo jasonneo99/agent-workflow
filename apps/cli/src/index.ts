@@ -56,6 +56,21 @@ type WorkflowPreset = {
   target: string;
 };
 
+type OrchestrationStep = {
+  id: string;
+  title: string;
+  reason: string;
+  kind: "agent" | "workflow" | "preset";
+  target: string;
+  task: string;
+};
+
+type OrchestrationPlan = {
+  projectDir: string;
+  task: string;
+  steps: OrchestrationStep[];
+};
+
 const workflowPresets: WorkflowPreset[] = [
   {
     id: "tellara-ux-pass",
@@ -231,11 +246,11 @@ program
   .command("init-project")
   .description("Install AGENTS.md and .agent-workflow files into a project")
   .option("-p, --project <dir>", "project directory", ".")
-  .option("--profile <profile>", "enterprise, simple, or tellara", "enterprise")
+  .option("--profile <profile>", "enterprise, simple, tellara, or truckoutfitters", "enterprise")
   .option("--force", "overwrite existing files")
   .action(async (options: { project: string; profile: string; force?: boolean }) => {
-    if (!["enterprise", "simple", "tellara"].includes(options.profile)) {
-      console.error(`Unknown profile: ${options.profile}. Use enterprise, simple, or tellara.`);
+    if (!["enterprise", "simple", "tellara", "truckoutfitters"].includes(options.profile)) {
+      console.error(`Unknown profile: ${options.profile}. Use enterprise, simple, tellara, or truckoutfitters.`);
       process.exitCode = 1;
       return;
     }
@@ -248,7 +263,12 @@ program
     console.log("");
     console.log("Next steps:");
     console.log(`  npm run index-project -- --project ${projectDir}`);
-    console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
+    if (options.profile === "truckoutfitters") {
+      console.log(`  npm run agentflow -- orchestrate --project ${projectDir} --task "Review the production site UX, SEO, mobile experience, and launch risks" --dry-run`);
+      console.log(`  npm run agentflow -- orchestrate --project ${projectDir} --task "Review the production site UX, SEO, mobile experience, and launch risks"`);
+    } else {
+      console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
+    }
     if (options.profile === "simple") {
       console.log(`  npm run compile -- --workflow build-feature --project ${projectDir} --task "<task>"`);
     } else {
@@ -796,6 +816,68 @@ program
       presetRef,
       project: options.project,
       task: options.task
+    });
+
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(result.title);
+    console.log("");
+    console.log(result.output);
+  });
+
+program
+  .command("orchestrate")
+  .description("Plan and run a natural-language task across the right agents and workflows")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "natural-language task description")
+  .option("--dry-run", "print the orchestration plan without running it")
+  .option("--index-max-files <number>", "maximum project files to index before each step", "100")
+  .option("--refine-index", "refine indexed summaries with the selected provider")
+  .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
+  .option("--worker-limit <number>", "maximum workflow tasks to process per worker tick", "6")
+  .option("--timeout-ms <number>", "maximum time to wait for each step", "900000")
+  .option("-o, --out <dir>", "export directory; defaults to <project>/.agent-workflow/exports")
+  .action(async (options: {
+    project: string;
+    task: string;
+    dryRun?: boolean;
+    indexMaxFiles: string;
+    refineIndex?: boolean;
+    forceRefine?: boolean;
+    workerLimit: string;
+    timeoutMs: string;
+    out?: string;
+  }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      console.error("\nStart local enterprise services with:");
+      console.error("docker compose -f infra/docker-compose.yml up -d");
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const plan = createOrchestrationPlan({ projectDir, task: options.task });
+    if (options.dryRun) {
+      console.log(formatOrchestrationPlan(plan));
+      return;
+    }
+
+    const result = await runOrchestrationPlan(plan, {
+      indexMaxFiles: parsePositiveInteger(options.indexMaxFiles, 100),
+      refineIndex: Boolean(options.refineIndex),
+      forceRefine: Boolean(options.forceRefine),
+      workerLimit: parsePositiveInteger(options.workerLimit, 6),
+      timeoutMs: parsePositiveInteger(options.timeoutMs, 900000),
+      outDir: options.out ? path.resolve(process.cwd(), options.out) : undefined
     });
 
     if (!result.ok) {
@@ -1815,6 +1897,12 @@ async function runWorkflowPreset(input: {
   presetRef: string;
   project?: string;
   task?: string;
+  indexMaxFiles?: number;
+  refineIndex?: boolean;
+  forceRefine?: boolean;
+  workerLimit?: number;
+  timeoutMs?: number;
+  outDir?: string;
 }): Promise<DashboardFollowUpResult> {
   const preset = resolveWorkflowPreset(input.presetRef);
   if (!preset) {
@@ -1830,7 +1918,12 @@ async function runWorkflowPreset(input: {
       title: preset.label,
       agent: preset.target,
       projectDir,
-      task
+      task,
+      indexMaxFiles: input.indexMaxFiles,
+      refineIndex: input.refineIndex,
+      forceRefine: input.forceRefine,
+      timeoutMs: input.timeoutMs,
+      outDir: input.outDir
     });
   }
 
@@ -1838,8 +1931,220 @@ async function runWorkflowPreset(input: {
     title: preset.label,
     workflow: preset.target,
     projectDir,
-    task
+    task,
+    indexMaxFiles: input.indexMaxFiles,
+    refineIndex: input.refineIndex,
+    forceRefine: input.forceRefine,
+    workerLimit: input.workerLimit,
+    timeoutMs: input.timeoutMs,
+    outDir: input.outDir
   });
+}
+
+function createOrchestrationPlan(input: { projectDir: string; task: string }): OrchestrationPlan {
+  const normalizedTask = normalizeLookup(input.task);
+  const normalizedProject = normalizeLookup(input.projectDir);
+  const steps: OrchestrationStep[] = [];
+  const addStep = (step: Omit<OrchestrationStep, "id">): void => {
+    const duplicate = steps.some((existing) => existing.kind === step.kind && existing.target === step.target);
+    if (!duplicate) {
+      steps.push({ ...step, id: `step-${steps.length + 1}` });
+    }
+  };
+  const includesAny = (terms: string[]): boolean => terms.some((term) => normalizedTask.includes(normalizeLookup(term)));
+
+  if (includesAny(["ux", "user experience", "design", "layout", "visual", "accessibility", "mobile", "responsive", "conversion", "onboarding", "homepage"])) {
+    addStep({
+      title: "UX review",
+      reason: "The request touches user experience, visual quality, conversion, accessibility, or responsive behavior.",
+      kind: "agent",
+      target: "Mira",
+      task: `Review UX for this request and produce prioritized findings: ${input.task}`
+    });
+  }
+
+  if (includesAny(["frontend", "ui", "css", "html", "javascript", "component", "page", "site", "mobile", "responsive", "layout"])) {
+    addStep({
+      title: "Frontend implementation review",
+      reason: "The request likely involves browser-facing code or static site implementation details.",
+      kind: "agent",
+      target: "frontend",
+      task: `Review frontend implementation needs, risks, and concrete fixes for: ${input.task}`
+    });
+  }
+
+  if (includesAny(["security", "auth", "permission", "secret", "xss", "production", "wordpress", "external"])) {
+    addStep({
+      title: "Security and production risk review",
+      reason: "The request mentions production, external systems, WordPress, or security-sensitive areas.",
+      kind: "agent",
+      target: "security",
+      task: `Review security and production risks for: ${input.task}`
+    });
+  }
+
+  if (includesAny(["test", "tests", "failing", "failure", "bug", "error", "ci", "build failed", "broken"])) {
+    addStep({
+      title: "Failure and test triage",
+      reason: "The request includes failures, tests, CI, bugs, or build issues.",
+      kind: "workflow",
+      target: "debug-failure",
+      task: `Investigate failures, likely causes, and next fixes for: ${input.task}`
+    });
+  }
+
+  if (includesAny(["review", "audit", "risk", "production", "deploy", "launch", "ship", "seo", "content", "site"])) {
+    if (normalizedProject.includes("truckoutfittersunlimited")) {
+      addStep({
+        title: "Truck Outfitters production site review",
+        reason: "Truck Outfitters has a project-local production reviewer for public site, SEO, mobile, and launch-readiness concerns.",
+        kind: "agent",
+        target: "site-production-reviewer",
+        task: `Review Truck Outfitters production site readiness for: ${input.task}`
+      });
+    }
+    addStep({
+      title: "Change review",
+      reason: "The request calls for review, launch readiness, production confidence, SEO, or site-wide risk assessment.",
+      kind: "workflow",
+      target: "review-pr",
+      task: `Review the project for risks, regressions, missing checks, and recommended actions related to: ${input.task}`
+    });
+  }
+
+  if (includesAny(["implement", "fix", "add", "build", "change", "update", "create"]) && !includesAny(["review", "audit", "pass"])) {
+    addStep({
+      title: "Feature implementation plan",
+      reason: "The request asks for implementation or changes, so the build-feature workflow should plan and execute within policy.",
+      kind: "workflow",
+      target: "build-feature",
+      task: `Implement or plan the requested change within project policy: ${input.task}`
+    });
+  }
+
+  if (includesAny(["context", "memory", "docs", "documentation", "remember", "decisions"])) {
+    addStep({
+      title: "Context maintenance",
+      reason: "The request mentions durable memory, docs, context, or decisions.",
+      kind: "workflow",
+      target: "maintain-context",
+      task: `Update durable project context and decisions for: ${input.task}`
+    });
+  }
+
+  if (!steps.length) {
+    addStep({
+      title: "General project review",
+      reason: "No narrow route matched, so start with a conservative project review.",
+      kind: "workflow",
+      target: "review-pr",
+      task: `Review and recommend the next action for: ${input.task}`
+    });
+  }
+
+  return {
+    projectDir: input.projectDir,
+    task: input.task,
+    steps
+  };
+}
+
+function formatOrchestrationPlan(plan: OrchestrationPlan): string {
+  return [
+    "Orchestration Plan",
+    `Project: ${plan.projectDir}`,
+    `Task: ${plan.task}`,
+    "",
+    ...plan.steps.map((step, index) => [
+      `${index + 1}. ${step.title}`,
+      `   kind: ${step.kind}`,
+      `   target: ${step.target}`,
+      `   reason: ${step.reason}`,
+      `   task: ${step.task}`
+    ].join("\n"))
+  ].join("\n");
+}
+
+async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
+  indexMaxFiles: number;
+  refineIndex: boolean;
+  forceRefine: boolean;
+  workerLimit: number;
+  timeoutMs: number;
+  outDir?: string;
+}): Promise<DashboardFollowUpResult> {
+  const outputs: string[] = [formatOrchestrationPlan(plan)];
+  const runIds: string[] = [];
+
+  for (const step of plan.steps) {
+    const result = step.kind === "agent"
+      ? await runDashboardAgentTask({
+        title: step.title,
+        agent: step.target,
+        projectDir: plan.projectDir,
+        task: step.task,
+        indexMaxFiles: options.indexMaxFiles,
+        refineIndex: options.refineIndex,
+        forceRefine: options.forceRefine,
+        timeoutMs: options.timeoutMs,
+        outDir: options.outDir
+      })
+      : step.kind === "preset"
+        ? await runWorkflowPreset({
+          presetRef: step.target,
+          project: plan.projectDir,
+          task: step.task,
+          indexMaxFiles: options.indexMaxFiles,
+          refineIndex: options.refineIndex,
+          forceRefine: options.forceRefine,
+          workerLimit: options.workerLimit,
+          timeoutMs: options.timeoutMs,
+          outDir: options.outDir
+        })
+        : await runDashboardWorkflow({
+          title: step.title,
+          workflow: step.target,
+          projectDir: plan.projectDir,
+          task: step.task,
+          indexMaxFiles: options.indexMaxFiles,
+          refineIndex: options.refineIndex,
+          forceRefine: options.forceRefine,
+          workerLimit: options.workerLimit,
+          timeoutMs: options.timeoutMs,
+          outDir: options.outDir
+        });
+
+    if (!result.ok) {
+      return {
+        ok: false,
+        error: [
+          `Orchestration stopped at ${step.id} (${step.title}).`,
+          result.error,
+          "",
+          outputs.join("\n\n")
+        ].join("\n")
+      };
+    }
+
+    if (result.runId) {
+      runIds.push(result.runId);
+    }
+    outputs.push([`Completed ${step.id}: ${result.title}`, result.output].join("\n\n"));
+  }
+
+  return {
+    ok: true,
+    title: `Orchestration completed: ${plan.steps.length} step${plan.steps.length === 1 ? "" : "s"}`,
+    runId: runIds[runIds.length - 1],
+    output: [
+      `Run ids: ${runIds.length ? runIds.join(", ") : "none"}`,
+      "",
+      ...outputs,
+      "",
+      "Recommended next action:",
+      "Open the exported reports for any failed or high-risk findings, then run a narrower agent task for the highest-impact fix."
+    ].join("\n")
+  };
 }
 
 async function runDashboardWorkflow(input: {
@@ -1847,12 +2152,18 @@ async function runDashboardWorkflow(input: {
   workflow: string;
   projectDir: string;
   task: string;
+  indexMaxFiles?: number;
+  refineIndex?: boolean;
+  forceRefine?: boolean;
+  workerLimit?: number;
+  timeoutMs?: number;
+  outDir?: string;
 }): Promise<DashboardFollowUpResult> {
   await indexProjectForRun({
     projectDir: input.projectDir,
-    maxFiles: 100,
-    refine: false,
-    forceRefine: false
+    maxFiles: input.indexMaxFiles ?? 100,
+    refine: input.refineIndex ?? false,
+    forceRefine: input.forceRefine ?? false
   });
   const queued = await queueWorkflow({
     workflowId: input.workflow,
@@ -1864,13 +2175,13 @@ async function runDashboardWorkflow(input: {
   }
   const watchResult = await watchWorkflowRun({
     runId: queued.run.runId,
-    workerLimit: 6,
+    workerLimit: input.workerLimit ?? 6,
     intervalMs: 1000,
-    timeoutMs: 900000
+    timeoutMs: input.timeoutMs ?? 900000
   });
   const exportResult = await exportWorkflowRun({
     runId: queued.run.runId,
-    outDir: path.join(input.projectDir, ".agent-workflow", "exports")
+    outDir: input.outDir ?? path.join(input.projectDir, ".agent-workflow", "exports")
   });
   const summary = await summarizeWorkflowRun(queued.run.runId);
   return {
@@ -1891,12 +2202,17 @@ async function runDashboardAgentTask(input: {
   agent: string;
   projectDir: string;
   task: string;
+  indexMaxFiles?: number;
+  refineIndex?: boolean;
+  forceRefine?: boolean;
+  timeoutMs?: number;
+  outDir?: string;
 }): Promise<DashboardFollowUpResult> {
   await indexProjectForRun({
     projectDir: input.projectDir,
-    maxFiles: 100,
-    refine: false,
-    forceRefine: false
+    maxFiles: input.indexMaxFiles ?? 100,
+    refine: input.refineIndex ?? false,
+    forceRefine: input.forceRefine ?? false
   });
   const agents = await loadAgentsForProject(input.projectDir);
   const agent = resolveAgent(agents, input.agent);
@@ -1919,11 +2235,11 @@ async function runDashboardAgentTask(input: {
     runId: queued.run.runId,
     workerLimit: 1,
     intervalMs: 1000,
-    timeoutMs: 600000
+    timeoutMs: input.timeoutMs ?? 600000
   });
   const exportResult = await exportWorkflowRun({
     runId: queued.run.runId,
-    outDir: path.join(input.projectDir, ".agent-workflow", "exports")
+    outDir: input.outDir ?? path.join(input.projectDir, ".agent-workflow", "exports")
   });
   const summary = await summarizeWorkflowRun(queued.run.runId);
   return {
@@ -2285,6 +2601,9 @@ function templateNameForProfile(profile: string): string {
   }
   if (profile === "tellara") {
     return "project-tellara";
+  }
+  if (profile === "truckoutfitters") {
+    return "project-truckoutfitters";
   }
   return "project";
 }

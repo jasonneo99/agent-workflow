@@ -290,6 +290,50 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_orchestrate",
+  {
+    title: "AgentFlow orchestrate",
+    description: "Route a natural-language project task to the right agents and workflows, run the plan, export reports, and return an aggregate summary.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      task: z.string().describe("Natural-language task description."),
+      dryRun: z.boolean().optional().describe("Print the orchestration plan without running it."),
+      indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index before each step."),
+      refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
+      forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
+      workerLimit: z.number().int().positive().max(50).optional().describe("Maximum workflow tasks to process per worker tick."),
+      timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for each step."),
+      out: z.string().optional().describe("Export directory.")
+    }
+  },
+  async ({ project, task, dryRun, indexMaxFiles, refineIndex, forceRefine, workerLimit, timeoutMs, out }) => {
+    const args = ["orchestrate", "--project", project, "--task", task];
+    if (dryRun) {
+      args.push("--dry-run");
+    }
+    if (indexMaxFiles) {
+      args.push("--index-max-files", String(indexMaxFiles));
+    }
+    if (refineIndex) {
+      args.push("--refine-index");
+    }
+    if (forceRefine) {
+      args.push("--force-refine");
+    }
+    if (workerLimit) {
+      args.push("--worker-limit", String(workerLimit));
+    }
+    if (timeoutMs) {
+      args.push("--timeout-ms", String(timeoutMs));
+    }
+    if (out) {
+      args.push("--out", out);
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: timeoutMs ? timeoutMs + 60_000 : 30 * 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_worker",
   {
     title: "AgentFlow worker",

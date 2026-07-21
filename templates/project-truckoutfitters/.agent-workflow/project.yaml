@@ -1,0 +1,81 @@
+project:
+  name: Truck Outfitters Unlimited
+  summary: Production-facing static and WordPress-adjacent site assets for Truck Outfitters Unlimited.
+  default_workflows:
+    - review-pr
+    - debug-failure
+    - maintain-context
+  autonomy: wide-open
+context:
+  include:
+    - AGENTS.md
+    - .agent-workflow/**
+    - README.md
+    - HOSTINGER-EDITING-SETUP.md
+    - index.html
+    - site/**
+    - live-site/**
+    - homepage-modern/**
+    - seo/**
+    - tools/**
+  exclude:
+    - .git/**
+    - .DS_Store
+    - tmp/**
+    - "**/node_modules/**"
+    - "**/.cache/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/coverage/**"
+    - "**/assets/*.jpg"
+    - "**/assets/*.jpeg"
+    - "**/assets/*.png"
+    - "**/assets/*.webp"
+    - "**/assets/*.gif"
+    - "**/assets/*.woff"
+    - "**/assets/*.woff2"
+    - "**/assets/*.ttf"
+    - .agent-workflow/schedule-state.json
+  max_project_tokens: 14000
+storage:
+  cache_summaries: true
+  semantic_index: true
+policies:
+  allow_wide_open: true
+  require_approval_for_external_actions: false
+  require_receipts: true
+actions:
+  allowed_commands:
+    - node --check tools/crawl-wordpress-site.mjs
+    - node --check tools/update-wordpress-media-metadata.mjs
+    - python3 -m http.server 8080
+  blocked_commands:
+    - rm *
+    - git reset *
+    - git clean *
+    - sudo *
+    - curl *
+    - wget *
+    - ssh *
+    - scp *
+  command_timeout_ms: 120000
+  max_output_chars: 20000
+  allowed_write_paths:
+    - .agent-workflow/**
+    - AGENTS.md
+    - README.md
+    - HOSTINGER-EDITING-SETUP.md
+    - index.html
+    - site/**
+    - live-site/**
+    - homepage-modern/**
+    - seo/**
+    - tools/**
+  blocked_write_paths:
+    - .git/**
+    - .env
+    - .env.*
+    - "**/node_modules/**"
+    - tmp/**
+    - .agent-workflow/schedule-state.json
+  max_write_bytes: 300000

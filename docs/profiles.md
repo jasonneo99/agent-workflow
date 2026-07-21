@@ -45,3 +45,30 @@ Check definitions without service checks:
 ```bash
 npm run doctor -- --simple
 ```
+
+## Truck Outfitters Unlimited
+
+Truck Outfitters mode is a production-site profile for `/Users/jasonmiller/Projects/truckoutfittersunlimited`.
+
+Initialize the project:
+
+```bash
+npm run init-project -- --project /Users/jasonmiller/Projects/truckoutfittersunlimited --profile truckoutfitters
+```
+
+Preview an orchestration plan:
+
+```bash
+npm run agentflow -- orchestrate \
+  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
+  --task "Review the production site UX, SEO, mobile experience, and launch risks" \
+  --dry-run
+```
+
+Run the orchestration:
+
+```bash
+npm run agentflow -- orchestrate \
+  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
+  --task "Review the production site UX, SEO, mobile experience, and launch risks"
+```

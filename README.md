@@ -100,6 +100,12 @@ For a named preset, use `preset`:
 npm run agentflow -- preset tellara-ux-pass
 ```
 
+For natural-language orchestration across agents and workflows:
+
+```bash
+npm run agentflow -- orchestrate --project /path/to/project --task "Review the production site UX, SEO, and launch risks"
+```
+
 For a decision-ready summary after a run:
 
 ```bash
