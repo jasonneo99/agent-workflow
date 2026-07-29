@@ -129,6 +129,19 @@ aws sso login
 DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
 ```
 
+If you use a named SSO profile, include it:
+
+```bash
+aws sso login --profile tellara-new-admin
+AWS_PROFILE=tellara-new-admin DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
+```
+
+When Kiro cannot load AWS credentials, Agent Workflow will ask you to refresh SSO or switch back to OpenAI:
+
+```bash
+npm run agentflow -- provider-use openai --check
+```
+
 Switch `.env` to Kiro:
 
 ```bash

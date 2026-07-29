@@ -36,9 +36,13 @@ export class BedrockProvider implements ModelProvider {
         details: [`${this.id} configured. Model: ${this.model}. Region: ${this.region}.`]
       };
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
       return {
         ready: false,
-        details: [`${this.id} provider check failed: ${error instanceof Error ? error.message : String(error)}`]
+        details: [
+          `${this.id} provider check failed: ${message}`,
+          ...providerRecoveryHints(this.id, message)
+        ]
       };
     }
   }
@@ -141,4 +145,33 @@ export function defaultKiroModel(): string {
 
 export function defaultKiroRegion(): string {
   return process.env.KIRO_REGION ?? process.env.AWS_REGION ?? process.env.BEDROCK_REGION ?? "us-east-1";
+}
+
+function providerRecoveryHints(providerId: string, message: string): string[] {
+  if (!isCredentialError(message)) {
+    return [];
+  }
+
+  const profile = process.env.AWS_PROFILE;
+  const loginCommand = profile ? `aws sso login --profile ${profile}` : "aws sso login --profile <profile>";
+  const prefix = providerId === "kiro" ? "Kiro" : "Bedrock";
+  return [
+    `${prefix} could not load AWS credentials. If your SSO session expired, run: ${loginCommand}`,
+    "Or switch Agent Workflow back to OpenAI with: npm run agentflow -- provider-use openai --check",
+    profile
+      ? `Then retry with: AWS_PROFILE=${profile} DEFAULT_MODEL_PROVIDER=${providerId} npm run provider-check`
+      : `If you use a named SSO profile, retry with: AWS_PROFILE=<profile> DEFAULT_MODEL_PROVIDER=${providerId} npm run provider-check`
+  ];
+}
+
+function isCredentialError(message: string): boolean {
+  const normalized = message.toLowerCase();
+  return [
+    "could not load credentials",
+    "unable to locate credentials",
+    "sso token",
+    "token has expired",
+    "token for",
+    "credentials"
+  ].some((pattern) => normalized.includes(pattern));
 }
