@@ -474,7 +474,7 @@ server.registerTool(
   "agentflow_provider_use",
   {
     title: "AgentFlow provider use",
-    description: "Switch DEFAULT_MODEL_PROVIDER in .env, optionally checking readiness.",
+    description: "Switch or update the Agent Workflow model provider in .env, for requests like 'update my model to openai' or 'use Kiro'.",
     inputSchema: {
       provider: z.enum(["mock", "openai", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
       check: z.boolean().optional().describe("Run provider-check after switching.")

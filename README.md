@@ -105,6 +105,7 @@ Switch model providers:
 ```bash
 npm run agentflow -- provider-use openai --check
 npm run agentflow -- provider-use kiro --check
+npm run agentflow -- model-use OpenAI --check
 ```
 
 For natural-language orchestration across agents and workflows:

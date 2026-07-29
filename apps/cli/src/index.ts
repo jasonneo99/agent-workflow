@@ -244,27 +244,29 @@ program
 
 program
   .command("provider-use")
+  .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
   .argument("<provider>", "mock, openai, openai-compatible, bedrock, or kiro")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean }) => {
     const supported = ["mock", "openai", "openai-compatible", "bedrock", "kiro"];
-    if (!supported.includes(provider)) {
+    const providerId = normalizeProviderRef(provider);
+    if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
       console.error(`Use one of: ${supported.join(", ")}`);
       process.exitCode = 1;
       return;
     }
 
-    await updateEnvValue(path.join(rootDir, ".env"), "DEFAULT_MODEL_PROVIDER", provider);
-    process.env.DEFAULT_MODEL_PROVIDER = provider;
-    console.log(`DEFAULT_MODEL_PROVIDER=${provider}`);
+    await updateEnvValue(path.join(rootDir, ".env"), "DEFAULT_MODEL_PROVIDER", providerId);
+    process.env.DEFAULT_MODEL_PROVIDER = providerId;
+    console.log(`DEFAULT_MODEL_PROVIDER=${providerId}`);
 
-    if (provider === "openai") {
+    if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
-    } else if (provider === "kiro") {
+    } else if (providerId === "kiro") {
       console.log("Using Kiro provider. Requires AWS/Kiro credentials and optional KIRO_MODEL/KIRO_REGION.");
-    } else if (provider === "bedrock") {
+    } else if (providerId === "bedrock") {
       console.log("Using AWS Bedrock provider. Requires AWS credentials and optional BEDROCK_MODEL/AWS_REGION.");
     }
 
@@ -2354,6 +2356,26 @@ function resolveAgent<T extends { id: string; display_name: string }>(agents: T[
 
 function normalizeLookup(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+}
+
+function normalizeProviderRef(value: string): string {
+  const normalized = normalizeLookup(value);
+  const aliases: Record<string, string> = {
+    openai: "openai",
+    "open-ai": "openai",
+    gpt: "openai",
+    kiro: "kiro",
+    mock: "mock",
+    test: "mock",
+    local: "openai-compatible",
+    ollama: "openai-compatible",
+    "openai-compatible": "openai-compatible",
+    "open-ai-compatible": "openai-compatible",
+    compatible: "openai-compatible",
+    bedrock: "bedrock",
+    aws: "bedrock"
+  };
+  return aliases[normalized] ?? normalized;
 }
 
 function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {

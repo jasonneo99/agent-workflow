@@ -42,7 +42,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_artifacts`: inspect run artifacts.
 - `agentflow_export_run`: export Markdown and JSON run reports.
 - `agentflow_provider_check`: check selected model provider.
-- `agentflow_provider_use`: switch selected model provider in `.env`.
+- `agentflow_provider_use`: switch or update selected model provider in `.env`.
 - `agentflow_provider_smoke`: run a minimal provider contract smoke workflow.
 
 ## Tellara Example
@@ -66,3 +66,15 @@ Use the agent-workflow MCP to orchestrate /Users/jasonmiller/Projects/truckoutfi
 ```
 
 The MCP server reuses the existing CLI and `.env`, so provider, storage, and project policies remain in one place.
+
+## Provider Switching
+
+Ask Codex:
+
+```text
+Use Agent Workflow to update my model to OpenAI.
+```
+
+```text
+Use Agent Workflow to update my model to Kiro.
+```

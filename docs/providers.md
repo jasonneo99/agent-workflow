@@ -17,6 +17,14 @@ Switch the default provider stored in `.env`:
 ```bash
 npm run agentflow -- provider-use openai --check
 npm run agentflow -- provider-use kiro --check
+npm run agentflow -- model-use OpenAI --check
+```
+
+In Codex, natural-language requests like these should route to `agentflow_provider_use`:
+
+```text
+Use Agent Workflow to update my model to OpenAI.
+Use Agent Workflow to update my model to Kiro.
 ```
 
 ## Mock
