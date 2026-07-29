@@ -9,6 +9,15 @@ Portable Agent Workflows keeps workflow and agent definitions provider-neutral. 
 | `mock` | Deterministic local workflow, CI, storage, and receipt testing | none |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `openai-compatible` | Local/self-hosted/OpenAI-compatible chat-completions APIs | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
+| `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
+| `kiro` | Kiro/AWS credential chain over Bedrock | AWS/Kiro credentials, optional `KIRO_MODEL`, `KIRO_REGION` |
+
+Switch the default provider stored in `.env`:
+
+```bash
+npm run agentflow -- provider-use openai --check
+npm run agentflow -- provider-use kiro --check
+```
 
 ## Mock
 
@@ -80,3 +89,54 @@ npm run provider-smoke
 ```
 
 The provider smoke project allows no commands and no file writes. It verifies provider JSON contract behavior without giving the model local action privileges.
+
+## Bedrock
+
+```bash
+DEFAULT_MODEL_PROVIDER=bedrock \
+AWS_REGION=us-east-1 \
+BEDROCK_MODEL=us.anthropic.claude-sonnet-4-20250514-v1:0 \
+npm run provider-check
+```
+
+Bedrock uses the AWS SDK credential chain. If your credentials come from SSO, refresh them first:
+
+```bash
+aws sso login
+```
+
+Run a one-stage provider contract smoke:
+
+```bash
+DEFAULT_MODEL_PROVIDER=bedrock npm run provider-smoke
+```
+
+## Kiro
+
+```bash
+DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
+```
+
+Kiro uses the same Bedrock runtime path with Kiro-specific environment fallbacks:
+
+- `KIRO_MODEL` falls back to `BEDROCK_MODEL`, then the default Bedrock model.
+- `KIRO_REGION` falls back to `AWS_REGION`, then `BEDROCK_REGION`, then `us-east-1`.
+
+If the provider check fails with an AWS credentials message, refresh SSO and retry:
+
+```bash
+aws sso login
+DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
+```
+
+Switch `.env` to Kiro:
+
+```bash
+npm run agentflow -- provider-use kiro --check
+```
+
+Switch back to OpenAI:
+
+```bash
+npm run agentflow -- provider-use openai --check
+```

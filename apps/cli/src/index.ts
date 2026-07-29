@@ -243,6 +243,51 @@ program
   });
 
 program
+  .command("provider-use")
+  .description("Switch DEFAULT_MODEL_PROVIDER in .env")
+  .argument("<provider>", "mock, openai, openai-compatible, bedrock, or kiro")
+  .option("--check", "run provider-check after switching")
+  .action(async (provider: string, options: { check?: boolean }) => {
+    const supported = ["mock", "openai", "openai-compatible", "bedrock", "kiro"];
+    if (!supported.includes(provider)) {
+      console.error(`Unsupported provider: ${provider}`);
+      console.error(`Use one of: ${supported.join(", ")}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    await updateEnvValue(path.join(rootDir, ".env"), "DEFAULT_MODEL_PROVIDER", provider);
+    process.env.DEFAULT_MODEL_PROVIDER = provider;
+    console.log(`DEFAULT_MODEL_PROVIDER=${provider}`);
+
+    if (provider === "openai") {
+      console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
+    } else if (provider === "kiro") {
+      console.log("Using Kiro provider. Requires AWS/Kiro credentials and optional KIRO_MODEL/KIRO_REGION.");
+    } else if (provider === "bedrock") {
+      console.log("Using AWS Bedrock provider. Requires AWS credentials and optional BEDROCK_MODEL/AWS_REGION.");
+    }
+
+    if (options.check) {
+      const selected = providerFromEnv();
+      if (!selected.check) {
+        console.log(`Provider ready: ${selected.id}`);
+        return;
+      }
+      const result = await selected.check();
+      for (const detail of result.details) {
+        console.log(detail);
+      }
+      if (!result.ready) {
+        console.error(`Provider not ready: ${selected.id}`);
+        process.exitCode = 1;
+        return;
+      }
+      console.log(`Provider ready: ${selected.id}`);
+    }
+  });
+
+program
   .command("init-project")
   .description("Install AGENTS.md and .agent-workflow files into a project")
   .option("-p, --project <dir>", "project directory", ".")
@@ -2660,6 +2705,30 @@ async function exists(filePath: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function updateEnvValue(filePath: string, key: string, value: string): Promise<void> {
+  const existing = await exists(filePath) ? await fs.readFile(filePath, "utf8") : "";
+  const lines = existing ? existing.split(/\r?\n/) : [];
+  const nextLine = `${key}=${value}`;
+  let replaced = false;
+  const nextLines = lines.map((line) => {
+    if (line.startsWith(`${key}=`)) {
+      replaced = true;
+      return nextLine;
+    }
+    return line;
+  });
+
+  if (!replaced) {
+    if (nextLines.length && nextLines[nextLines.length - 1] !== "") {
+      nextLines.push(nextLine);
+    } else {
+      nextLines.splice(Math.max(0, nextLines.length - 1), 0, nextLine);
+    }
+  }
+
+  await fs.writeFile(filePath, `${nextLines.join("\n").replace(/\n+$/u, "")}\n`, "utf8");
 }
 
 async function loadSourceSummaries(input: {

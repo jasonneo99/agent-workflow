@@ -1,3 +1,5 @@
+import { BedrockProvider } from "./bedrock.js";
+import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
@@ -16,6 +18,14 @@ export function providerFromEnv(): ModelProvider {
 
   if (provider === "openai-compatible") {
     return new OpenAICompatibleProvider();
+  }
+
+  if (provider === "bedrock") {
+    return new BedrockProvider();
+  }
+
+  if (provider === "kiro") {
+    return new KiroProvider();
   }
 
   throw new Error(`Unsupported provider adapter: ${provider}`);

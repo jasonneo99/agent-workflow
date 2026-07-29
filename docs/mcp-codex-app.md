@@ -42,6 +42,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_artifacts`: inspect run artifacts.
 - `agentflow_export_run`: export Markdown and JSON run reports.
 - `agentflow_provider_check`: check selected model provider.
+- `agentflow_provider_use`: switch selected model provider in `.env`.
 - `agentflow_provider_smoke`: run a minimal provider contract smoke workflow.
 
 ## Tellara Example

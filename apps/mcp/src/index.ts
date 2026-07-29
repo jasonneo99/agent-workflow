@@ -471,6 +471,25 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_provider_use",
+  {
+    title: "AgentFlow provider use",
+    description: "Switch DEFAULT_MODEL_PROVIDER in .env, optionally checking readiness.",
+    inputSchema: {
+      provider: z.enum(["mock", "openai", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
+      check: z.boolean().optional().describe("Run provider-check after switching.")
+    }
+  },
+  async ({ provider, check }) => {
+    const args = ["provider-use", provider];
+    if (check) {
+      args.push("--check");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_provider_smoke",
   {
     title: "AgentFlow provider smoke",

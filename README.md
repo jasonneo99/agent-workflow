@@ -100,6 +100,13 @@ For a named preset, use `preset`:
 npm run agentflow -- preset tellara-ux-pass
 ```
 
+Switch model providers:
+
+```bash
+npm run agentflow -- provider-use openai --check
+npm run agentflow -- provider-use kiro --check
+```
+
 For natural-language orchestration across agents and workflows:
 
 ```bash
