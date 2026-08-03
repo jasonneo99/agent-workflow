@@ -51,7 +51,7 @@ export async function executeAllowedCommand(input: {
     const child = spawn(argv[0], argv.slice(1), {
       cwd: input.cwd,
       shell: false,
-      env: process.env
+      env: createProjectCommandEnv()
     });
     let stdout = "";
     let stderr = "";
@@ -91,6 +91,17 @@ export async function executeAllowedCommand(input: {
   });
 }
 
+function createProjectCommandEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+
+  // Agent Workflow uses DATABASE_URL for its own storage database. Project
+  // commands should resolve their database config from the project cwd instead
+  // of inheriting the workflow runtime connection string.
+  delete env.DATABASE_URL;
+
+  return env;
+}
+
 function matchesPattern(commandLine: string, pattern: string): boolean {
   const normalizedPattern = normalizeCommand(pattern);
   if (normalizedPattern.endsWith(" *")) {
@@ -124,4 +135,3 @@ function truncateOutput(value: string, maxChars: number): string {
   }
   return `${value.slice(0, maxChars)}\n...[truncated ${value.length - maxChars} chars]`;
 }
-
