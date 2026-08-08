@@ -276,7 +276,7 @@ program
     if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
     } else if (providerId === "kiro") {
-      console.log("Using Kiro provider. Requires AWS/Kiro credentials and optional KIRO_MODEL/KIRO_REGION.");
+      console.log("Using Kiro CLI provider. Requires `kiro-cli login` or KIRO_API_KEY, optional KIRO_AGENT.");
     } else if (providerId === "bedrock") {
       console.log("Using AWS Bedrock provider. Requires AWS credentials and optional BEDROCK_MODEL/AWS_REGION.");
     }

@@ -6,7 +6,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 
 - **22 specialist agents** — architecture, frontend, backend, security, UX, testing, docs, and more
 - **8 composable workflows** — build features, review PRs, debug failures, check production readiness
-- **Any model provider** — OpenAI, AWS Bedrock (Nova, Claude, Llama), Ollama, LM Studio, or any OpenAI-compatible API
+- **Any model provider** — OpenAI, Kiro CLI, AWS Bedrock (Nova, Claude, Llama), Ollama, LM Studio, or any OpenAI-compatible API
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 
@@ -41,6 +41,7 @@ npm run agentflow -- orchestrate --project /path/to/your/project --task "Review 
 |----------|--------|--------|
 | `mock` | None (deterministic) | No config needed |
 | `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
+| `kiro` | Kiro CLI Auto/custom agents | `kiro-cli login` or `KIRO_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
 | `openai-compatible` | Any (Ollama, LM Studio, vLLM) | `OPENAI_COMPATIBLE_BASE_URL` + model name |
 
@@ -56,6 +57,11 @@ OPENAI_COMPATIBLE_MODEL=llama3.1
 DEFAULT_MODEL_PROVIDER=bedrock
 BEDROCK_MODEL=amazon.nova-pro-v1:0
 AWS_REGION=us-east-1
+
+# Kiro CLI
+DEFAULT_MODEL_PROVIDER=kiro
+KIRO_CLI_BIN=kiro-cli
+KIRO_AGENT=
 
 # OpenAI
 DEFAULT_MODEL_PROVIDER=openai

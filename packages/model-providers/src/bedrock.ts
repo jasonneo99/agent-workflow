@@ -163,14 +163,6 @@ export class BedrockProvider implements ModelProvider {
   }
 }
 
-export function defaultKiroModel(): string {
-  return process.env.KIRO_MODEL ?? process.env.BEDROCK_MODEL ?? defaultModelTiers.standard;
-}
-
-export function defaultKiroRegion(): string {
-  return process.env.KIRO_REGION ?? process.env.AWS_REGION ?? process.env.BEDROCK_REGION ?? "us-east-1";
-}
-
 function providerRecoveryHints(providerId: string, message: string): string[] {
   if (!isCredentialError(message)) {
     return [];
@@ -178,9 +170,8 @@ function providerRecoveryHints(providerId: string, message: string): string[] {
 
   const profile = process.env.AWS_PROFILE;
   const loginCommand = profile ? `aws sso login --profile ${profile}` : "aws sso login --profile <profile>";
-  const prefix = providerId === "kiro" ? "Kiro" : "Bedrock";
   return [
-    `${prefix} could not load AWS credentials. If your SSO session expired, run: ${loginCommand}`,
+    `Bedrock could not load AWS credentials. If your SSO session expired, run: ${loginCommand}`,
     "Or switch Agent Workflow back to OpenAI with: npm run agentflow -- provider-use openai --check",
     profile
       ? `Then retry with: AWS_PROFILE=${profile} DEFAULT_MODEL_PROVIDER=${providerId} npm run provider-check`

@@ -10,7 +10,7 @@ Portable Agent Workflows keeps workflow and agent definitions provider-neutral. 
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `openai-compatible` | Local/self-hosted/OpenAI-compatible chat-completions APIs | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
-| `kiro` | Kiro/AWS credential chain over Bedrock | AWS/Kiro credentials, optional `KIRO_MODEL`, `KIRO_REGION` |
+| `kiro` | Kiro CLI headless execution | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
 
 Switch the default provider stored in `.env`:
 
@@ -125,26 +125,34 @@ DEFAULT_MODEL_PROVIDER=bedrock npm run provider-smoke
 DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
 ```
 
-Kiro uses the same Bedrock runtime path with Kiro-specific environment fallbacks:
+Kiro uses the supported Kiro CLI path:
 
-- `KIRO_MODEL` falls back to `BEDROCK_MODEL`, then the default Bedrock model.
-- `KIRO_REGION` falls back to `AWS_REGION`, then `BEDROCK_REGION`, then `us-east-1`.
+- `KIRO_CLI_BIN` defaults to `kiro-cli`.
+- `KIRO_API_KEY` enables Kiro headless mode for CI or unattended use.
+- `KIRO_AGENT` optionally selects a Kiro custom agent.
+- `KIRO_TIMEOUT_MS` defaults to ten minutes.
 
-If the provider check fails with an AWS credentials message, refresh SSO and retry:
+Install Kiro CLI:
 
 ```bash
-aws sso login
+curl -fsSL https://cli.kiro.dev/install | bash
+```
+
+Interactive auth:
+
+```bash
+kiro-cli login
 DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
 ```
 
-If you use a named SSO profile, include it:
+Headless auth:
 
 ```bash
-aws sso login --profile tellara-new-admin
-AWS_PROFILE=tellara-new-admin DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
+export KIRO_API_KEY=...
+DEFAULT_MODEL_PROVIDER=kiro npm run provider-check
 ```
 
-When Kiro cannot load AWS credentials, Agent Workflow will ask you to refresh SSO or switch back to OpenAI:
+When Kiro cannot authenticate, Agent Workflow will ask you to run `kiro-cli login`, set `KIRO_API_KEY`, or switch back to OpenAI:
 
 ```bash
 npm run agentflow -- provider-use openai --check

@@ -18,6 +18,8 @@ interface SetupAnswers {
   bedrockModel?: string;
   bedrockRegion?: string;
   awsProfile?: string;
+  kiroApiKey?: string;
+  kiroAgent?: string;
   compatibleBaseUrl?: string;
   compatibleModel?: string;
   compatibleKey?: string;
@@ -42,10 +44,11 @@ async function main(): Promise<void> {
   console.log("  2) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
   console.log("  3) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
   console.log("  4) openai-compatible — Any OpenAI-compatible API (Ollama, LM Studio, etc.)");
+  console.log("  5) kiro          — Kiro CLI headless mode");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-4, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "openai-compatible", "": "mock" };
+  const providerChoice = await ask("  Provider [1-5, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "openai-compatible", "5": "kiro", "": "mock" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -66,6 +69,15 @@ async function main(): Promise<void> {
     answers.bedrockRegion = region.trim() || "us-east-1";
     const profile = await ask("  AWS profile (leave blank for default): ");
     answers.awsProfile = profile.trim() || undefined;
+  }
+
+  if (provider === "kiro") {
+    console.log("");
+    console.log("  Kiro uses Kiro CLI. Interactive use can rely on `kiro-cli login`; headless use can set KIRO_API_KEY.");
+    const key = await ask("  Kiro API key (leave blank to use existing login): ");
+    answers.kiroApiKey = key.trim() || undefined;
+    const agent = await ask("  Kiro agent name (leave blank for default): ");
+    answers.kiroAgent = agent.trim() || undefined;
   }
 
   if (provider === "openai-compatible") {
@@ -161,6 +173,13 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
     if (answers.awsProfile) {
       lines.push(`AWS_PROFILE=${answers.awsProfile}`);
     }
+  }
+
+  if (answers.provider === "kiro") {
+    lines.push("KIRO_CLI_BIN=kiro-cli");
+    lines.push(`KIRO_API_KEY=${answers.kiroApiKey ?? ""}`);
+    lines.push(`KIRO_AGENT=${answers.kiroAgent ?? ""}`);
+    lines.push("KIRO_TIMEOUT_MS=600000");
   }
 
   if (answers.provider === "openai-compatible") {
