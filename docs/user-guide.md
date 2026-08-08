@@ -1,6 +1,6 @@
 # Agent Workflow User Guide
 
-This guide covers installation, Codex plugin setup, project setup, CLI usage, MCP usage, and common examples.
+This guide covers installation, MCP client setup, project setup, CLI usage, and common examples.
 
 ## 1. Install Agent Workflow
 
@@ -46,7 +46,13 @@ npm run smoke
 
 This verifies Docker services, workflow definitions, queueing, storage, receipts, artifacts, and worker execution.
 
-## 3. Install In Codex
+## 3. Use From An MCP Client
+
+Agent Workflow can run from VS Code, Cursor, Codex, or another MCP-capable client. The client only launches the local MCP server; model/provider selection stays in Agent Workflow's `.env`.
+
+See [MCP Client Setup](mcp-clients.md) for config examples.
+
+## 3a. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:
 

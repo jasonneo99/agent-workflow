@@ -1,5 +1,7 @@
 # Codex App MCP Install
 
+For VS Code, Cursor, and generic MCP client setup, see [MCP Client Setup](mcp-clients.md).
+
 This project includes a local stdio MCP server that exposes the portable agent workflow CLI to Codex.
 
 ## Install

@@ -7,6 +7,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **22 specialist agents** — architecture, frontend, backend, security, UX, testing, docs, and more
 - **8 composable workflows** — build features, review PRs, debug failures, check production readiness
 - **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
+- **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 
@@ -122,6 +123,12 @@ npm run status                 # List recent runs
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```
+
+## IDE Clients
+
+Agent Workflow is not tied to a specific coding environment. Use the CLI directly, or expose the same workflows through MCP in VS Code, Cursor, Codex, or another MCP-capable client.
+
+See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex config examples.
 
 ## Enterprise Storage
 
