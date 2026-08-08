@@ -46,6 +46,10 @@ Check definitions without service checks:
 npm run doctor -- --simple
 ```
 
+## Project-Specific Profiles
+
+Project-specific profiles can prefill policy, context includes/excludes, schedules, and local guardrails for a known project. They are optional; generic projects should use `enterprise` or `simple`.
+
 ## Truck Outfitters Unlimited
 
 Truck Outfitters mode is a production-site profile for `/Users/jasonmiller/Projects/truckoutfittersunlimited`.

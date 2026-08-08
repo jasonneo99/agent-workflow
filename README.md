@@ -17,6 +17,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 git clone https://github.com/jasonneo99/agent-workflow.git
 cd agent-workflow
 npm install
+cp .env.example .env
 npm run setup
 ```
 
@@ -26,6 +27,12 @@ The interactive setup walks you through provider selection and configuration. On
 # Verify your provider is working
 npm run provider-check
 
+# Start enterprise storage for durable runs
+docker compose -f infra/docker-compose.yml up -d
+npm run doctor
+npm run bootstrap-storage
+npm run validate
+
 # Initialize agent workflow in your project
 npm run init-project -- --project /path/to/your/project
 
@@ -33,8 +40,10 @@ npm run init-project -- --project /path/to/your/project
 npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality" --dry-run
 
 # Run it for real
-npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality"
+npm run agentflow -- run-and-watch production-readiness --project /path/to/your/project --task "Review production readiness, UX, SEO, mobile experience, security, and launch risks"
 ```
+
+For a no-services setup, initialize a project with `--profile simple` and use `npm run compile` to produce file-based briefs.
 
 ## Providers
 
@@ -129,6 +138,15 @@ npm run agentflow -- dashboard # Start local web dashboard
 Agent Workflow is not tied to a specific coding environment. Use the CLI directly, or expose the same workflows through MCP in VS Code, Cursor, Codex, or another MCP-capable client.
 
 See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex config examples.
+
+## Docs
+
+- [User Guide](docs/user-guide.md): full install and usage guide
+- [Provider Matrix](docs/providers.md): BYO, OpenAI, Bedrock, OpenAI-compatible, and Kiro setup
+- [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
+- [Agent Roster](docs/agent-roster.md): available agents
+- [Architecture](docs/architecture.md): runtime and storage design
+- [Autonomy Policy](docs/autonomy.md): automation levels and guardrails
 
 ## Enterprise Storage
 

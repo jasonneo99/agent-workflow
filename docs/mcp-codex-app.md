@@ -9,7 +9,7 @@ This project includes a local stdio MCP server that exposes the portable agent w
 Install dependencies once:
 
 ```bash
-cd "/Users/jasonmiller/Projects/Agent Workflow"
+cd /absolute/path/to/agent-workflow
 npm install
 ```
 
@@ -19,7 +19,7 @@ Add this to `~/.codex/config.toml`:
 [mcp_servers.agent-workflow]
 command = "npm"
 args = ["run", "-s", "mcp"]
-cwd = "/Users/jasonmiller/Projects/Agent Workflow"
+cwd = "/absolute/path/to/agent-workflow"
 startup_timeout_sec = 120
 ```
 
@@ -47,24 +47,24 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_provider_use`: switch or update selected model provider in `.env`.
 - `agentflow_provider_smoke`: run a minimal provider contract smoke workflow.
 
-## Tellara Example
+## Examples
 
 After Docker services are running, ask Codex:
 
 ```text
-Use the agent-workflow MCP to run-and-watch the review-pr workflow for /Users/jasonmiller/Projects/media-ai-startup with task "Review the billing catalog changes".
+Use the agent-workflow MCP to run-and-watch the review-pr workflow for /path/to/project with task "Review the current changes".
 ```
 
 ```text
-Use the agent-workflow MCP to have Mira do a UX pass on /Users/jasonmiller/Projects/media-ai-startup and export the result.
+Use the agent-workflow MCP to have Mira do a UX pass on /path/to/project and export the result.
 ```
 
 ```text
-Use the agent-workflow MCP to run the tellara-ux-pass preset and summarize the top 3 fixes.
+Use the agent-workflow MCP to run-and-watch the production-readiness workflow for /path/to/project and summarize the top 3 fixes.
 ```
 
 ```text
-Use the agent-workflow MCP to orchestrate /Users/jasonmiller/Projects/truckoutfittersunlimited for "Review the production site UX, SEO, mobile experience, and launch risks".
+Use the agent-workflow MCP to orchestrate /path/to/project for "Review the production site UX, SEO, mobile experience, and launch risks".
 ```
 
 The MCP server reuses the existing CLI and `.env`, so provider, storage, and project policies remain in one place.
@@ -72,6 +72,10 @@ The MCP server reuses the existing CLI and `.env`, so provider, storage, and pro
 ## Provider Switching
 
 Ask Codex:
+
+```text
+Use Agent Workflow to update my model to BYO.
+```
 
 ```text
 Use Agent Workflow to update my model to OpenAI.

@@ -24,6 +24,15 @@ npm run agentflow -- provider-use kiro --check
 npm run agentflow -- model-use OpenAI --check
 ```
 
+Manual `.env` switching works too:
+
+```env
+DEFAULT_MODEL_PROVIDER=byo
+BYO_MODEL_BASE_URL=http://localhost:11434/v1
+BYO_MODEL_NAME=llama3.1
+BYO_MODEL_API_KEY=not-required
+```
+
 In any MCP-capable client, natural-language requests like these should route to `agentflow_provider_use`:
 
 ```text

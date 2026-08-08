@@ -8,9 +8,11 @@ Clone the repo and install dependencies:
 
 ```bash
 git clone git@github.com:jasonneo99/agent-workflow.git
-cd "/Users/jasonmiller/Projects/Agent Workflow"
+cd agent-workflow
 cp .env.example .env
 npm install
+npm run setup
+npm run provider-check
 ```
 
 Start the default enterprise services:
@@ -28,7 +30,16 @@ The default first-run provider should be `mock`:
 DEFAULT_MODEL_PROVIDER=mock
 ```
 
-Use OpenAI only when you intentionally want live model execution:
+Use BYO when you want live model execution through a local, hosted, or enterprise OpenAI-compatible model gateway:
+
+```env
+DEFAULT_MODEL_PROVIDER=byo
+BYO_MODEL_BASE_URL=http://localhost:11434/v1
+BYO_MODEL_NAME=llama3.1
+BYO_MODEL_API_KEY=not-required
+```
+
+Use OpenAI only when you intentionally want direct OpenAI API execution:
 
 ```env
 DEFAULT_MODEL_PROVIDER=openai
@@ -64,10 +75,10 @@ Then start a new Codex task or restart Codex so the plugin skill and MCP tools a
 
 The plugin provides:
 
-- Codex skill: `/Users/jasonmiller/plugins/agent-workflow/skills/agent-workflow/SKILL.md`
-- MCP launcher: `/Users/jasonmiller/plugins/agent-workflow/scripts/run-agent-workflow-mcp.sh`
-- MCP manifest: `/Users/jasonmiller/plugins/agent-workflow/.mcp.json`
-- Plugin manifest: `/Users/jasonmiller/plugins/agent-workflow/.codex-plugin/plugin.json`
+- Codex skill: `<plugin-root>/skills/agent-workflow/SKILL.md`
+- MCP launcher: `<plugin-root>/scripts/run-agent-workflow-mcp.sh`
+- MCP manifest: `<plugin-root>/.mcp.json`
+- Plugin manifest: `<plugin-root>/.codex-plugin/plugin.json`
 
 ## 4. Add Agent Workflow To A Project
 
@@ -108,7 +119,7 @@ npm run index-project -- --project /path/to/project --max-files 100
 For large repos, start with a compact non-refined pass:
 
 ```bash
-npm run index-project -- --project /Users/jasonmiller/Projects/media-ai-startup --max-files 100
+npm run index-project -- --project /path/to/project --max-files 100
 ```
 
 Use provider-refined summaries only for smaller or targeted passes:
@@ -125,6 +136,7 @@ Current workflow ids:
 build-feature
 debug-failure
 maintain-context
+production-readiness
 provider-smoke
 review-pr
 ship-release
@@ -139,8 +151,8 @@ Run one specialist agent directly:
 
 ```bash
 npm run agentflow -- agent-task ux-reviewer \
-  --project /Users/jasonmiller/Projects/media-ai-startup \
-  --task "Have Mira do a UX pass on the current Tellara changes" \
+  --project /path/to/project \
+  --task "Have Mira do a UX pass on the current app" \
   --index-max-files 100
 ```
 
@@ -186,7 +198,7 @@ List available presets:
 npm run agentflow -- preset --list
 ```
 
-Current Tellara presets:
+Project-specific Tellara presets are available when that profile is useful:
 
 ```text
 tellara-ux-pass
@@ -222,12 +234,12 @@ npm run agentflow -- orchestrate \
 
 The easiest path is `run-and-watch`. It indexes the project, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
 
-Review Tellara in one command:
+Review a project in one command:
 
 ```bash
 npm run agentflow -- run-and-watch review-pr \
-  --project /Users/jasonmiller/Projects/media-ai-startup \
-  --task "Review billing catalog changes" \
+  --project /path/to/project \
+  --task "Review the current changes and summarize risks" \
   --index-max-files 100 \
   --worker-limit 6
 ```
@@ -246,8 +258,8 @@ Debug a failure in one command:
 
 ```bash
 npm run agentflow -- run-and-watch debug-failure \
-  --project /Users/jasonmiller/Projects/media-ai-startup \
-  --task "Investigate pnpm test failures from run 17cbcb8d-4a18-421b-9950-8afc0a782fce" \
+  --project /path/to/project \
+  --task "Investigate the latest test failure and propose fixes" \
   --index-max-files 100 \
   --worker-limit 6
 ```
@@ -277,10 +289,10 @@ npm run worker -- --limit 6
 npm run status
 ```
 
-Review Tellara:
+Review a project:
 
 ```bash
-npm run agentflow -- run review-pr --project /Users/jasonmiller/Projects/media-ai-startup --task "Review billing catalog changes" --no-brief
+npm run agentflow -- run review-pr --project /path/to/project --task "Review the current changes" --no-brief
 npm run worker -- --limit 6
 npm run status
 ```
@@ -288,7 +300,7 @@ npm run status
 Debug a failure:
 
 ```bash
-npm run agentflow -- run debug-failure --project /Users/jasonmiller/Projects/media-ai-startup --task "Investigate pnpm test failures from run 17cbcb8d-4a18-421b-9950-8afc0a782fce" --no-brief
+npm run agentflow -- run debug-failure --project /path/to/project --task "Investigate the latest test failure" --no-brief
 npm run worker -- --limit 6
 ```
 
@@ -418,41 +430,41 @@ The dashboard home also includes Tellara presets:
 
 These actions still use the project `.agent-workflow/project.yaml` policy and create normal run receipts and artifacts.
 
-## 10. Use From Codex
+## 10. MCP Prompt Examples
 
-After installing the plugin, start a new Codex task and use prompts like:
+After adding the MCP server to VS Code, Cursor, Codex, or another MCP-capable client, use prompts like:
 
 ```text
-Use Agent Workflow to run-and-watch review-pr on Tellara for "Review billing catalog changes" and return the exported report.
+Use Agent Workflow to run-and-watch review-pr on this project for "Review the current changes" and return the exported report.
 ```
 
 ```text
-Use Agent Workflow to have Mira do a UX pass on Tellara and export the report.
+Use Agent Workflow to have Mira do a UX pass on this app and export the report.
 ```
 
 ```text
-Use Agent Workflow to run the tellara-ux-pass preset and summarize the top 3 fixes.
+Use Agent Workflow to orchestrate this project for production readiness, UX, SEO, mobile experience, security, and launch risks.
 ```
 
 ```text
-Use Agent Workflow to orchestrate this for Truck Outfitters Unlimited: review the production site UX, SEO, mobile experience, and launch risks.
+Use Agent Workflow to update my model provider to BYO and run a provider check.
 ```
 
 ```text
-Use Agent Workflow to run debug-failure on Tellara for the failed pnpm test run, inspect artifacts, and summarize next fixes.
+Use Agent Workflow to run debug-failure for the latest failed test run, inspect artifacts, and summarize next fixes.
 ```
 
 ```text
-Use Agent Workflow to maintain Tellara context after these recent architecture changes.
+Use Agent Workflow to maintain project context after these recent architecture changes.
 ```
 
 ```text
 Use Agent Workflow to index this repo and run build-feature for "Add audit logging".
 ```
 
-## 9. MCP Tools
+## 11. MCP Tools
 
-Codex can call these MCP tools through the plugin:
+MCP clients can call these tools:
 
 ```text
 agentflow_doctor
@@ -470,16 +482,17 @@ agentflow_status
 agentflow_artifacts
 agentflow_export_run
 agentflow_provider_check
+agentflow_provider_use
 agentflow_provider_smoke
 ```
 
 Tool definitions and input schemas live in:
 
 ```text
-/Users/jasonmiller/Projects/Agent Workflow/apps/mcp/src/index.ts
+apps/mcp/src/index.ts
 ```
 
-## 11. Storage And Reset
+## 12. Storage And Reset
 
 Reset local enterprise run history:
 
@@ -496,7 +509,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run bootstrap-storage
 ```
 
-## 12. Provider Checks
+## 13. Provider Checks
 
 Check the configured provider:
 
@@ -510,7 +523,7 @@ Run a provider contract smoke test:
 npm run provider-smoke
 ```
 
-## 13. Recommended Next Improvement
+## 14. Recommended Next Improvement
 
 The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
 

@@ -20,7 +20,7 @@ Portable Agent Workflows is enterprise-first and file-compatible.
 7. The runner delegates to provider adapters with the brief plus prior stage receipts.
 8. Receipts, summaries, embeddings, and artifacts are persisted.
 
-The first provider adapter is `mock`, which gives deterministic local workflow execution. The OpenAI adapter uses the same `executeStage` contract and can be enabled with `DEFAULT_MODEL_PROVIDER=openai`.
+The `mock` provider gives deterministic local workflow execution. The recommended live-provider path is `byo`, which points at any OpenAI-compatible model gateway with `DEFAULT_MODEL_PROVIDER=byo`. OpenAI, Bedrock, OpenAI-compatible legacy env names, and Kiro CLI are optional adapters behind the same `executeStage` contract.
 
 ## Artifacts
 
@@ -68,4 +68,4 @@ Enterprise mode is the default. Simple mode skips these services and only compil
 
 ## Model Portability
 
-Agent cards and workflows are provider-neutral. Provider adapters should translate the compiled brief into OpenAI, Anthropic, local OpenAI-compatible, or future MCP-hosted execution.
+Agent cards and workflows are provider-neutral. Provider adapters translate the compiled brief into the selected model surface: BYO OpenAI-compatible gateway, OpenAI Responses API, AWS Bedrock, Kiro CLI, or future adapters. Editor clients such as VS Code, Cursor, and Codex are control surfaces only; they do not own the provider configuration.
