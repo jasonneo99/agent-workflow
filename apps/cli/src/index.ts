@@ -39,7 +39,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildRunExport } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildRunExport, formatCostQualityReport, type CostQualityReport } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1147,6 +1147,37 @@ program
   });
 
 program
+  .command("quality-report")
+  .description("Show adaptive routing, cost mix, latency, fallback, and quality scoring for a workflow run")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .option("--json", "print report JSON")
+  .action(async (options: { run: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = await loadCostQualityReport(options.run);
+    if (!report) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    console.log(formatCostQualityReport(report));
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1415,6 +1446,21 @@ async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: R
   };
 }
 
+async function loadCostQualityReport(runId: string): Promise<CostQualityReport | null> {
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) {
+    return null;
+  }
+
+  const artifacts = await listArtifacts({ runId });
+  return buildCostQualityReport({
+    run: details.run,
+    tasks: details.tasks,
+    receipts: details.receipts,
+    artifacts
+  });
+}
+
 function collectArtifactFindings(artifacts: Array<{ content: Record<string, unknown> }>): string[] {
   const findings: string[] = [];
   for (const artifact of artifacts) {
@@ -1675,6 +1721,24 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/quality") {
+    const runId = requestUrl.searchParams.get("id");
+    if (!runId) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing id");
+      return;
+    }
+    const report = await loadCostQualityReport(runId);
+    if (!report) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Run not found");
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/run") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -1690,13 +1754,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     }
     const artifacts = await listArtifacts({ runId });
     const summary = await summarizeWorkflowRun(runId);
+    const qualityReport = await loadCostQualityReport(runId);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunDetailHtml({
       run: details.run,
       tasks: details.tasks,
       receipts: details.receipts,
       artifacts,
-      summary: summary.ok ? summary.value : null
+      summary: summary.ok ? summary.value : null,
+      qualityReport
     }));
     return;
   }
@@ -1755,6 +1821,7 @@ function renderRunDetailHtml(input: {
   receipts: Awaited<ReturnType<typeof getWorkflowRunDetails>>["receipts"];
   artifacts: Awaited<ReturnType<typeof listArtifacts>>;
   summary: RunSummary | null;
+  qualityReport: CostQualityReport | null;
 }): string {
   const summaryBlock = input.summary
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
@@ -1788,6 +1855,7 @@ function renderRunDetailHtml(input: {
         <h1>Run ${escapeHtml(input.run.id)}</h1>
       </div>
       <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
+      <a class="button secondary" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
     </div>
     <section class="panel">
       <div class="meta-grid">
@@ -1810,6 +1878,10 @@ function renderRunDetailHtml(input: {
       ${summaryBlock}
     </section>
     <section class="panel">
+      <h2>Cost & Quality</h2>
+      ${input.qualityReport ? renderCostQualityHtml(input.qualityReport) : "<p>No routing data available.</p>"}
+    </section>
+    <section class="panel">
       <h2>Stages</h2>
       <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th></tr></thead><tbody>${taskRows}</tbody></table>
     </section>
@@ -1824,6 +1896,51 @@ function renderRunDetailHtml(input: {
   </main>
 </body>
 </html>`;
+}
+
+function renderCostQualityHtml(report: CostQualityReport): string {
+  const stageRows = report.stages.map((stage) => `
+    <tr>
+      <td>${escapeHtml(stage.stageId)}</td>
+      <td>${escapeHtml(stage.agentId)}</td>
+      <td>${escapeHtml(stage.providerId)}${stage.model ? `<br><span class="muted">${escapeHtml(stage.model)}</span>` : ""}</td>
+      <td>${escapeHtml(stage.modelTier)}</td>
+      <td>${escapeHtml(stage.estimatedCostTier)}</td>
+      <td>${stage.qualityScore ?? "n/a"} ${stage.qualityPassed === false ? "<span class=\"flag bad\">Review</span>" : stage.qualityPassed === true ? "<span class=\"flag good\">Pass</span>" : ""}</td>
+      <td>${stage.fallbackUsed ? escapeHtml(stage.fallbackProviderId ?? "yes") : "no"}</td>
+      <td>${stage.latencyMs ?? "n/a"}</td>
+    </tr>
+  `).join("");
+  const recommendations = report.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+
+  return `
+    <div class="metric-grid">
+      ${metricCard("Quality", report.averageQuality ?? "n/a", `${report.qualityPassCount} pass / ${report.qualityFailCount} review`)}
+      ${metricCard("Fallbacks", report.fallbackCount, "retry count")}
+      ${metricCard("Latency", `${report.totalLatencyMs}ms`, `avg ${report.averageLatencyMs ?? "n/a"}ms`)}
+      ${metricCard("BYO Savings", report.estimatedByoSavingsStages, "local or low-cost stages")}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Providers</strong>${escapeHtml(formatInlineCounts(report.providerMix))}</div>
+      <div><strong>Cost Mix</strong>${escapeHtml(formatInlineCounts(report.estimatedCostMix))}</div>
+      <div><strong>Model Tiers</strong>${escapeHtml(formatInlineCounts(report.modelTierMix))}</div>
+    </div>
+    <table>
+      <thead><tr><th>Stage</th><th>Agent</th><th>Provider</th><th>Tier</th><th>Cost</th><th>Quality</th><th>Fallback</th><th>Latency ms</th></tr></thead>
+      <tbody>${stageRows || "<tr><td colspan=\"8\">No routing receipts found.</td></tr>"}</tbody>
+    </table>
+    <h3>Recommendations</h3>
+    <ul>${recommendations}</ul>
+  `;
+}
+
+function metricCard(label: string, value: string | number, detail: string): string {
+  return `<div class="metric"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
+}
+
+function formatInlineCounts(counts: Record<string, number>): string {
+  const entries = Object.entries(counts);
+  return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(", ") : "none";
 }
 
 function renderDashboardActionResult(result: DashboardFollowUpResult): string {
@@ -1848,7 +1965,9 @@ function dashboardCss(): string {
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
     h1 { font-size: 28px; margin: 0 0 8px; }
     h2 { font-size: 16px; margin: 0 0 12px; }
+    h3 { font-size: 14px; margin: 16px 0 8px; }
     p { line-height: 1.5; }
+    ul { margin: 0; padding-left: 20px; }
     table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e7f0; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
     th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
@@ -1859,10 +1978,18 @@ function dashboardCss(): string {
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
     .secondary { background: white; color: #1d4ed8; }
+    .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
+    .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
+    .metric span { font-size: 22px; font-weight: 700; }
+    .metric small, .muted { color: #64748b; }
     .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .meta-grid div { display: grid; gap: 5px; font-size: 14px; }
+    .compact { margin-bottom: 12px; }
     .artifact { border: 1px solid #e2e7f0; margin-bottom: 8px; padding: 10px; }
     .artifact summary { cursor: pointer; }
+    .flag { display: inline-block; margin-left: 6px; padding: 2px 5px; font-size: 11px; }
+    .good { background: #dcfce7; color: #166534; }
+    .bad { background: #fee2e2; color: #991b1b; }
     .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
     .completed { background: #dcfce7; color: #166534; }
     .failed { background: #fee2e2; color: #991b1b; }

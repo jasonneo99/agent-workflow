@@ -409,6 +409,7 @@ JSON endpoints:
 ```text
 /api/runs
 /api/run?id=<run-id>
+/api/quality?id=<run-id>
 ```
 
 Run detail pages:
@@ -421,6 +422,7 @@ The detail page shows:
 
 - run status, project, workflow, and task
 - decision-ready summary
+- cost, routing, fallback, latency, and quality metrics
 - stage results
 - receipts
 - artifact JSON viewers
@@ -494,6 +496,7 @@ agentflow_summarize_run
 agentflow_schedule
 agentflow_worker
 agentflow_status
+agentflow_quality_report
 agentflow_artifacts
 agentflow_export_run
 agentflow_provider_check
@@ -540,7 +543,7 @@ npm run provider-smoke
 
 ## 14. Adaptive Routing
 
-The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, dashboard commands, adaptive model routing, and quality scoring are now implemented.
+The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, dashboard commands, adaptive model routing, quality scoring, and cost/quality reporting are now implemented.
 
 Adaptive routing lets Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs through a fallback provider, and record which agent/model combinations produce the best accepted results.
 
@@ -568,4 +571,4 @@ Each worker stage records:
 
 ## 15. Recommended Next Improvement
 
-The next best improvement is a cost and quality dashboard. It should summarize routing decisions across runs, show where fallback providers were needed, estimate cost savings from BYO/local routing, and highlight agents that need prompt or context tuning.
+The next best improvement is a feedback memory loop. Users should be able to mark outputs as accepted, revised, or rejected, then let Agent Workflow use that signal to tune routing, context budgets, agent prompts, and project-specific preferences over time.

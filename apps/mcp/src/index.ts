@@ -399,6 +399,25 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_quality_report",
+  {
+    title: "AgentFlow quality report",
+    description: "Show adaptive routing, cost mix, latency, fallback, and quality scoring for a workflow run.",
+    inputSchema: {
+      runId: z.string().describe("Workflow run id."),
+      json: z.boolean().optional().describe("Return report JSON.")
+    }
+  },
+  async ({ runId, json }) => {
+    const args = ["quality-report", "--run", runId];
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

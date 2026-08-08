@@ -39,6 +39,7 @@ npm run agentflow -- run-and-watch production-readiness \
   --task "Review production readiness, UX, SEO, mobile experience, security, and launch risks" \
   --index-max-files 100 \
   --worker-limit 6
+npm run agentflow -- quality-report --run <run-id>
 ```
 
 ## BYO Model Config

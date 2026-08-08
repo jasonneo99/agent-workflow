@@ -42,6 +42,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
+- `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
 - `agentflow_artifacts`: inspect run artifacts.
 - `agentflow_export_run`: export Markdown and JSON run reports.
 - `agentflow_provider_check`: check selected model provider.

@@ -67,6 +67,10 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         summary: `${route.providerId}${fallbackUsed ? ` -> ${fallbackProviderId}` : ""} quality=${quality.score}`,
         artifactKind: "model_route",
         artifactContent: {
+          target: `${task.workflowId}/${task.stageId}`,
+          workflowId: task.workflowId,
+          stageId: task.stageId,
+          agentId: task.agentId,
           route,
           fallbackProviderId,
           fallbackUsed,
