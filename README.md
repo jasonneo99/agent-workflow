@@ -144,6 +144,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [User Guide](docs/user-guide.md): full install and usage guide
 - [Provider Matrix](docs/providers.md): BYO, OpenAI, Bedrock, OpenAI-compatible, and Kiro setup
 - [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
+- [Integration Examples](docs/integration-examples.md): copyable model-provider and IDE/client examples
 - [Agent Roster](docs/agent-roster.md): available agents
 - [Architecture](docs/architecture.md): runtime and storage design
 - [Autonomy Policy](docs/autonomy.md): automation levels and guardrails

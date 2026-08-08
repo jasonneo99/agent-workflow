@@ -7,12 +7,13 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 1. [User Guide](user-guide.md): install, configure a provider, initialize a project, run workflows, inspect results.
 2. [Provider Matrix](providers.md): BYO model setup, OpenAI, Bedrock, OpenAI-compatible legacy config, and optional Kiro CLI adapter.
 3. [MCP Client Setup](mcp-clients.md): use the same local workflow server from VS Code, Cursor, Codex, or another MCP-capable client.
-4. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
-5. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
-6. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-7. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-8. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-9. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+4. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
+5. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
+6. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
+7. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+8. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+9. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+10. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
 
 ## Fast Path
 

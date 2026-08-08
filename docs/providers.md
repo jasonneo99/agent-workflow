@@ -4,6 +4,8 @@ Portable Agent Workflows keeps workflow and agent definitions provider-neutral. 
 
 The recommended portable path is `byo`: bring any model endpoint that exposes an OpenAI-compatible chat-completions API. Kiro, Codex, OpenAI, and Bedrock are optional environments/adapters, not requirements.
 
+For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock, Kiro, VS Code, Cursor, and Codex, see [Integration Examples](integration-examples.md).
+
 ## Providers
 
 | Provider | Use when | Required config |

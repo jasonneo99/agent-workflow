@@ -2,6 +2,8 @@
 
 Agent Workflow can be used from any MCP-capable client. The MCP server is local stdio and reuses this repo's CLI, `.env`, provider config, storage config, project policies, and workflow definitions.
 
+For model-provider pairings and copyable end-to-end examples, see [Integration Examples](integration-examples.md).
+
 ## Install Once
 
 ```bash
