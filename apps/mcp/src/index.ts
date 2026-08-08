@@ -474,9 +474,9 @@ server.registerTool(
   "agentflow_provider_use",
   {
     title: "AgentFlow provider use",
-    description: "Switch or update the Agent Workflow model provider in .env, for requests like 'update my model to openai' or 'use Kiro'.",
+    description: "Switch or update the Agent Workflow model provider in .env, for requests like 'use BYO model', 'update my model to openai', or 'use Kiro'.",
     inputSchema: {
-      provider: z.enum(["mock", "openai", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
+      provider: z.enum(["mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
       check: z.boolean().optional().describe("Run provider-check after switching.")
     }
   },

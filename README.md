@@ -6,7 +6,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 
 - **22 specialist agents** — architecture, frontend, backend, security, UX, testing, docs, and more
 - **8 composable workflows** — build features, review PRs, debug failures, check production readiness
-- **Any model provider** — OpenAI, Kiro CLI, AWS Bedrock (Nova, Claude, Llama), Ollama, LM Studio, or any OpenAI-compatible API
+- **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 
@@ -40,18 +40,20 @@ npm run agentflow -- orchestrate --project /path/to/your/project --task "Review 
 | Provider | Models | Config |
 |----------|--------|--------|
 | `mock` | None (deterministic) | No config needed |
+| `byo` | Any OpenAI-compatible gateway | `BYO_MODEL_BASE_URL` + `BYO_MODEL_NAME` |
 | `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
-| `kiro` | Kiro CLI Auto/custom agents | `kiro-cli login` or `KIRO_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
-| `openai-compatible` | Any (Ollama, LM Studio, vLLM) | `OPENAI_COMPATIBLE_BASE_URL` + model name |
+| `openai-compatible` | Legacy BYO-compatible alias | `OPENAI_COMPATIBLE_BASE_URL` + model name |
+| `kiro` | Optional Kiro CLI adapter | `kiro-cli login` or `KIRO_API_KEY` |
 
 Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
 
 ```bash
-# Local with Ollama
-DEFAULT_MODEL_PROVIDER=openai-compatible
-OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
-OPENAI_COMPATIBLE_MODEL=llama3.1
+# BYO model gateway: Ollama, LM Studio, vLLM, LiteLLM, internal routers, etc.
+DEFAULT_MODEL_PROVIDER=byo
+BYO_MODEL_BASE_URL=http://localhost:11434/v1
+BYO_MODEL_NAME=llama3.1
+BYO_MODEL_API_KEY=
 
 # AWS Bedrock
 DEFAULT_MODEL_PROVIDER=bedrock
@@ -69,17 +71,19 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=gpt-4o
 ```
 
+For a fresh install, BYO can be configured either through `npm run setup` or by manually adding those four `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and the model is available.
+
 ## Model Tier Routing
 
 Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). The provider automatically routes to the right model:
 
-| Tier | Use case | Bedrock default | OpenAI default |
-|------|----------|-----------------|----------------|
-| `fast` | Triage, docs, test running | Nova Lite | gpt-4o-mini |
-| `standard` | Implementation, frontend, backend | Nova Pro | gpt-4o |
-| `reasoning` | Architecture, security, UX review | Nova Pro | gpt-4o |
+| Tier | Use case | Default routing behavior |
+|------|----------|--------------------------|
+| `fast` | Triage, docs, test running | Provider adapter chooses a low-cost/low-effort path where supported |
+| `standard` | Implementation, frontend, backend | Provider adapter uses its configured default model |
+| `reasoning` | Architecture, security, UX review | Provider adapter chooses higher effort/capability where supported |
 
-Override per-tier models with `BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, `BEDROCK_MODEL_REASONING`.
+Override per-tier models where the provider supports it, such as `BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, and `BEDROCK_MODEL_REASONING`.
 
 ## Architecture
 

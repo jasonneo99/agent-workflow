@@ -20,6 +20,15 @@ export function providerFromEnv(): ModelProvider {
     return new OpenAICompatibleProvider();
   }
 
+  if (provider === "byo") {
+    return new OpenAICompatibleProvider({
+      id: "byo",
+      baseUrlEnv: "BYO_MODEL_BASE_URL",
+      modelEnv: "BYO_MODEL_NAME",
+      apiKeyEnv: "BYO_MODEL_API_KEY"
+    });
+  }
+
   if (provider === "bedrock") {
     return new BedrockProvider();
   }

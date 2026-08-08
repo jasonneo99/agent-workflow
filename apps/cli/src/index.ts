@@ -257,10 +257,10 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "mock, openai, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "mock, byo, openai, openai-compatible, bedrock, or kiro")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean }) => {
-    const supported = ["mock", "openai", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -275,6 +275,8 @@ program
 
     if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
+    } else if (providerId === "byo") {
+      console.log("Using BYO model provider. Requires BYO_MODEL_BASE_URL and BYO_MODEL_NAME; BYO_MODEL_API_KEY is optional.");
     } else if (providerId === "kiro") {
       console.log("Using Kiro CLI provider. Requires `kiro-cli login` or KIRO_API_KEY, optional KIRO_AGENT.");
     } else if (providerId === "bedrock") {
@@ -2440,6 +2442,10 @@ function normalizeProviderRef(value: string): string {
     "open-ai": "openai",
     gpt: "openai",
     kiro: "kiro",
+    byo: "byo",
+    "bring-your-own": "byo",
+    "bring-your-own-model": "byo",
+    "byo-model": "byo",
     mock: "mock",
     test: "mock",
     local: "openai-compatible",

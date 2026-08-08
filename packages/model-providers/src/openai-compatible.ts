@@ -14,20 +14,23 @@ export class OpenAICompatibleProvider implements ModelProvider {
   id = "openai-compatible";
   private readonly client: OpenAI;
   private readonly model: string;
+  private readonly baseURL: string;
 
-  constructor() {
-    const baseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
+  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string } = {}) {
+    this.id = input.id ?? this.id;
+    const baseURL = process.env[input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL"] ?? process.env.OPENAI_COMPATIBLE_BASE_URL;
     if (!baseURL) {
-      throw new Error("OPENAI_COMPATIBLE_BASE_URL is required when DEFAULT_MODEL_PROVIDER=openai-compatible");
+      throw new Error(`${input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL"} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
     }
 
-    this.model = process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
+    this.baseURL = baseURL;
+    this.model = process.env[input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL"] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
     if (!this.model) {
-      throw new Error("OPENAI_COMPATIBLE_MODEL is required when DEFAULT_MODEL_PROVIDER=openai-compatible");
+      throw new Error(`${input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL"} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
     }
 
     this.client = new OpenAI({
-      apiKey: process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",
+      apiKey: process.env[input.apiKeyEnv ?? "OPENAI_COMPATIBLE_API_KEY"] || process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",
       baseURL
     });
   }
@@ -40,9 +43,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
       return {
         ready: hasConfiguredModel,
         details: hasConfiguredModel
-          ? [`Endpoint reachable. Model available: ${this.model}`]
+          ? [`Endpoint reachable: ${this.baseURL}`, `Model available: ${this.model}`]
           : [
-            `Endpoint reachable, but model was not listed: ${this.model}`,
+            `Endpoint reachable: ${this.baseURL}`,
+            `Configured model was not listed: ${this.model}`,
             modelIds.length ? `Available models: ${modelIds.join(", ")}` : "No models listed by endpoint."
           ]
       };

@@ -2,27 +2,32 @@
 
 Portable Agent Workflows keeps workflow and agent definitions provider-neutral. Runtime model behavior is selected by `DEFAULT_MODEL_PROVIDER`.
 
+The recommended portable path is `byo`: bring any model endpoint that exposes an OpenAI-compatible chat-completions API. Kiro, Codex, OpenAI, and Bedrock are optional environments/adapters, not requirements.
+
 ## Providers
 
 | Provider | Use when | Required config |
 | --- | --- | --- |
 | `mock` | Deterministic local workflow, CI, storage, and receipt testing | none |
+| `byo` | Bring your own local, hosted, or enterprise model gateway | `BYO_MODEL_BASE_URL`, `BYO_MODEL_NAME`, optional `BYO_MODEL_API_KEY` |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
-| `openai-compatible` | Local/self-hosted/OpenAI-compatible chat-completions APIs | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
+| `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
-| `kiro` | Kiro CLI headless execution | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
+| `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
 
 Switch the default provider stored in `.env`:
 
 ```bash
+npm run agentflow -- provider-use byo --check
 npm run agentflow -- provider-use openai --check
 npm run agentflow -- provider-use kiro --check
 npm run agentflow -- model-use OpenAI --check
 ```
 
-In Codex, natural-language requests like these should route to `agentflow_provider_use`:
+In any MCP-capable client, natural-language requests like these should route to `agentflow_provider_use`:
 
 ```text
+Use Agent Workflow to update my model to BYO.
 Use Agent Workflow to update my model to OpenAI.
 Use Agent Workflow to update my model to Kiro.
 ```
@@ -53,7 +58,45 @@ Run a one-stage provider contract smoke:
 DEFAULT_MODEL_PROVIDER=openai npm run provider-smoke
 ```
 
+## BYO
+
+Use this for local models, hosted model gateways, enterprise routers, LiteLLM, vLLM, LM Studio, Ollama, and other OpenAI-compatible chat-completions endpoints.
+
+There are two setup paths:
+
+```bash
+# Guided setup
+npm run setup
+```
+
+Or manually add the provider to `.env`:
+
+```bash
+DEFAULT_MODEL_PROVIDER=byo
+BYO_MODEL_BASE_URL=http://localhost:11434/v1
+BYO_MODEL_NAME=llama3.1
+BYO_MODEL_API_KEY=not-required
+```
+
+Then verify it:
+
+```bash
+npm run provider-check
+```
+
+Run a one-stage provider contract smoke:
+
+```bash
+DEFAULT_MODEL_PROVIDER=byo \
+BYO_MODEL_BASE_URL=http://localhost:11434/v1 \
+BYO_MODEL_NAME=<model-name> \
+BYO_MODEL_API_KEY=local \
+npm run provider-smoke
+```
+
 ## OpenAI-Compatible
+
+`openai-compatible` remains available for older installs. Prefer `byo` for new setups.
 
 ```bash
 DEFAULT_MODEL_PROVIDER=openai-compatible \

@@ -23,6 +23,9 @@ interface SetupAnswers {
   compatibleBaseUrl?: string;
   compatibleModel?: string;
   compatibleKey?: string;
+  byoBaseUrl?: string;
+  byoModel?: string;
+  byoKey?: string;
   useEnterprise: boolean;
   projectDir?: string;
 }
@@ -43,12 +46,13 @@ async function main(): Promise<void> {
   console.log("  1) mock          — No model calls. Good for testing workflows locally.");
   console.log("  2) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
   console.log("  3) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
-  console.log("  4) openai-compatible — Any OpenAI-compatible API (Ollama, LM Studio, etc.)");
-  console.log("  5) kiro          — Kiro CLI headless mode");
+  console.log("  4) byo           — Bring your own OpenAI-compatible model gateway");
+  console.log("  5) openai-compatible — Same as BYO, with legacy env names");
+  console.log("  6) kiro          — Optional Kiro CLI adapter");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-5, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "openai-compatible", "5": "kiro", "": "mock" };
+  const providerChoice = await ask("  Provider [1-6, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "byo", "5": "openai-compatible", "6": "kiro", "": "mock" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -78,6 +82,16 @@ async function main(): Promise<void> {
     answers.kiroApiKey = key.trim() || undefined;
     const agent = await ask("  Kiro agent name (leave blank for default): ");
     answers.kiroAgent = agent.trim() || undefined;
+  }
+
+  if (provider === "byo") {
+    console.log("");
+    console.log("  BYO uses any OpenAI-compatible chat-completions endpoint.");
+    const baseUrl = await ask("  Base URL [default http://localhost:11434/v1]: ");
+    answers.byoBaseUrl = baseUrl.trim() || "http://localhost:11434/v1";
+    answers.byoModel = await ask("  Model name (required): ");
+    const key = await ask("  API key (leave blank if not needed): ");
+    answers.byoKey = key.trim() || undefined;
   }
 
   if (provider === "openai-compatible") {
@@ -180,6 +194,16 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
     lines.push(`KIRO_API_KEY=${answers.kiroApiKey ?? ""}`);
     lines.push(`KIRO_AGENT=${answers.kiroAgent ?? ""}`);
     lines.push("KIRO_TIMEOUT_MS=600000");
+  }
+
+  if (answers.provider === "byo") {
+    lines.push(`BYO_MODEL_BASE_URL=${answers.byoBaseUrl ?? "http://localhost:11434/v1"}`);
+    lines.push(`BYO_MODEL_NAME=${answers.byoModel ?? ""}`);
+    if (answers.byoKey) {
+      lines.push(`BYO_MODEL_API_KEY=${answers.byoKey}`);
+    } else {
+      lines.push("BYO_MODEL_API_KEY=");
+    }
   }
 
   if (answers.provider === "openai-compatible") {
