@@ -33,7 +33,7 @@ npm run validate
 Then initialize a target project:
 
 ```bash
-npm run init-project -- --project /path/to/project --profile enterprise
+npm run onboard-project -- --project /path/to/project --profile enterprise --write
 npm run agentflow -- run-and-watch production-readiness \
   --project /path/to/project \
   --task "Review production readiness, UX, SEO, mobile experience, security, and launch risks" \

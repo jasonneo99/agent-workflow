@@ -82,6 +82,20 @@ The plugin provides:
 
 ## 4. Add Agent Workflow To A Project
 
+Preview tailored onboarding recommendations:
+
+```bash
+npm run onboard-project -- --project /path/to/project
+```
+
+Write a tailored `.agent-workflow/project.yaml` and support files:
+
+```bash
+npm run onboard-project -- --project /path/to/project --profile enterprise --write
+```
+
+This writes `AGENTS.md` when missing plus `.agent-workflow/project.yaml`, `context.md`, `commands.md`, `decisions.md`, and `schedules.yaml`. Existing files are skipped unless `--force` is provided.
+
 Enterprise mode is the default:
 
 ```bash
@@ -470,6 +484,7 @@ MCP clients can call these tools:
 agentflow_doctor
 agentflow_validate
 agentflow_list
+agentflow_onboard_project
 agentflow_index_project
 agentflow_compile
 agentflow_run_workflow
@@ -525,16 +540,16 @@ npm run provider-smoke
 
 ## 14. Recommended Next Improvement
 
-The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, project-local agents, schedules, and dashboard commands are now implemented.
+The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, and dashboard commands are now implemented.
 
-The next best improvement is a project onboarding command that detects a repo's stack, writes a tailored `.agent-workflow/project.yaml`, proposes project-local agents, and performs a safe dry-run before any live workflow runs.
+The next best improvement is adaptive model routing with quality scoring. That would let Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs, and learn which agent/model combinations produce the best accepted results.
 
 The target output should include:
 
 ```text
-- detected package manager, framework, test commands, and lint/typecheck commands
-- recommended context excludes and blocked write paths
-- suggested project-local agents
-- dry-run validation status
-- next recommended workflow command
+- per-stage selected provider/model and reason
+- estimated cost, latency, and retry count
+- output quality score and acceptance status
+- fallback model used when the first provider fails or returns weak output
+- durable preference notes that shaped the result
 ```

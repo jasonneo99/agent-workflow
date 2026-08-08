@@ -25,6 +25,7 @@
     "index-project": "tsx apps/cli/src/index.ts index-project",
     "init-project": "tsx apps/cli/src/index.ts init-project",
     "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",
+    "onboard-project": "tsx apps/cli/src/index.ts onboard-project",
     "validate": "tsx apps/cli/src/index.ts validate",
     "list": "tsx apps/cli/src/index.ts list",
     "mcp": "tsx apps/mcp/src/index.ts",

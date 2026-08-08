@@ -30,6 +30,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_doctor`: check definitions and local enterprise services.
 - `agentflow_validate`: validate agent and workflow files.
 - `agentflow_list`: list available agents and workflows.
+- `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
 - `agentflow_index_project`: index a project into compact durable context.
 - `agentflow_compile`: compile a workflow brief without queueing work.
 - `agentflow_run_workflow`: queue an enterprise workflow run.

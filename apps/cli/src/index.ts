@@ -15,7 +15,7 @@ import {
   loadWorkflowRecords,
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
-import { agentCardSchema, type AgentCard } from "../../../packages/agent-registry/src/schemas.js";
+import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { evaluateAgentAutonomy } from "../../../packages/policy-engine/src/index.js";
@@ -329,6 +329,38 @@ program
     } else {
       console.log("  npm run worker -- --limit 6");
     }
+  });
+
+program
+  .command("onboard-project")
+  .description("Analyze a project and recommend or write a tailored Agent Workflow config")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--profile <profile>", "enterprise or simple", "enterprise")
+  .option("--write", "write .agent-workflow/project.yaml and support files")
+  .option("--force", "overwrite existing .agent-workflow/project.yaml when writing")
+  .option("--json", "print machine-readable onboarding output")
+  .action(async (options: { project: string; profile: string; write?: boolean; force?: boolean; json?: boolean }) => {
+    if (!["enterprise", "simple"].includes(options.profile)) {
+      console.error(`Unknown profile: ${options.profile}. Use enterprise or simple.`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const result = await analyzeProjectForOnboarding(projectDir, options.profile as "enterprise" | "simple");
+
+    if (options.write) {
+      const writeResult = await writeOnboardingFiles(projectDir, result, Boolean(options.force));
+      result.written = writeResult.written;
+      result.skipped = writeResult.skipped;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    printOnboardingResult(result, Boolean(options.write));
   });
 
 program
@@ -2826,6 +2858,552 @@ async function updateEnvValue(filePath: string, key: string, value: string): Pro
   }
 
   await fs.writeFile(filePath, `${nextLines.join("\n").replace(/\n+$/u, "")}\n`, "utf8");
+}
+
+type OnboardingResult = {
+  projectDir: string;
+  profile: "enterprise" | "simple";
+  detected: {
+    name: string;
+    packageManager?: string;
+    frameworks: string[];
+    languages: string[];
+    markers: string[];
+  };
+  recommendations: {
+    contextInclude: string[];
+    contextExclude: string[];
+    allowedCommands: string[];
+    blockedCommands: string[];
+    suggestedAgents: string[];
+    defaultWorkflows: string[];
+    nextCommands: string[];
+  };
+  config: ProjectConfig;
+  dryRun: {
+    valid: boolean;
+    notes: string[];
+  };
+  written?: string[];
+  skipped?: string[];
+};
+
+async function analyzeProjectForOnboarding(projectDir: string, profile: "enterprise" | "simple"): Promise<OnboardingResult> {
+  if (!await exists(projectDir)) {
+    throw new Error(`Project directory does not exist: ${projectDir}`);
+  }
+
+  const packageJson = await readJsonFile<Record<string, unknown>>(path.join(projectDir, "package.json"));
+  const packageScripts = objectValue(packageJson?.scripts);
+  const dependencies = {
+    ...objectValue(packageJson?.dependencies),
+    ...objectValue(packageJson?.devDependencies)
+  };
+  const packageManager = await detectPackageManager(projectDir, packageJson);
+  const commandPrefix = commandPrefixForPackageManager(packageManager);
+  const markers = await detectMarkers(projectDir);
+  const frameworks = detectFrameworks(dependencies, markers);
+  const languages = detectLanguages(packageJson, markers);
+  const name = stringValue(packageJson?.name) ?? path.basename(projectDir);
+  const allowedCommands = recommendCommands(packageScripts, commandPrefix, markers);
+  const contextInclude = recommendContextIncludes(markers, frameworks, languages);
+  const contextExclude = recommendContextExcludes(frameworks, languages);
+  const allowedWritePaths = recommendWritePaths(frameworks, languages);
+  const suggestedAgents = recommendAgents(frameworks, languages, markers);
+  const defaultWorkflows = recommendWorkflows(frameworks, languages, markers);
+  const recommendedFirstWorkflow = defaultWorkflows.includes("production-readiness") ? "production-readiness" : "review-pr";
+  const recommendedFirstTask = recommendedFirstWorkflow === "production-readiness"
+    ? "Review production readiness, UX, SEO, mobile experience, security, and launch risks"
+    : "Review the current project setup and code quality risks";
+
+  const config: ProjectConfig = {
+    project: {
+      name,
+      summary: summarizeDetectedProject(frameworks, languages, markers),
+      default_workflows: defaultWorkflows,
+      autonomy: profile === "enterprise" ? 3 : 2
+    },
+    context: {
+      include: contextInclude,
+      exclude: contextExclude,
+      max_project_tokens: frameworks.includes("static-site") ? 14000 : 12000
+    },
+    storage: {
+      cache_summaries: profile === "enterprise",
+      semantic_index: profile === "enterprise"
+    },
+    policies: {
+      allow_wide_open: false,
+      require_approval_for_external_actions: true,
+      require_receipts: true
+    },
+    actions: {
+      allowed_commands: allowedCommands,
+      blocked_commands: [
+        "rm *",
+        "git reset *",
+        "git clean *",
+        "sudo *",
+        "curl *",
+        "wget *",
+        "ssh *",
+        "scp *"
+      ],
+      command_timeout_ms: 120000,
+      max_output_chars: 20000,
+      allowed_write_paths: allowedWritePaths,
+      blocked_write_paths: [
+        ".git/**",
+        "node_modules/**",
+        ".env",
+        ".env.*",
+        ".agent-workflow/schedule-state.json",
+        "**/.next/**",
+        "**/dist/**",
+        "**/build/**",
+        "**/coverage/**"
+      ],
+      max_write_bytes: 250000
+    }
+  };
+
+  return {
+    projectDir,
+    profile,
+    detected: {
+      name,
+      packageManager,
+      frameworks,
+      languages,
+      markers
+    },
+    recommendations: {
+      contextInclude,
+      contextExclude,
+      allowedCommands,
+      blockedCommands: config.actions.blocked_commands,
+      suggestedAgents,
+      defaultWorkflows,
+      nextCommands: [
+        `npm run onboard-project -- --project ${projectDir} --profile ${profile} --write`,
+        `npm run index-project -- --project ${projectDir} --max-files 100`,
+        `npm run agentflow -- run-and-watch ${recommendedFirstWorkflow} --project ${projectDir} --task "${recommendedFirstTask}" --index-max-files 100 --worker-limit 6`
+      ]
+    },
+    config,
+    dryRun: {
+      valid: true,
+      notes: [
+        "No files written unless --write is provided.",
+        "External network commands are blocked by default.",
+        "Writes to .env, .git, node_modules, build output, and coverage output are blocked.",
+        "Review allowed commands before enabling higher autonomy."
+      ]
+    }
+  };
+}
+
+async function writeOnboardingFiles(projectDir: string, result: OnboardingResult, force: boolean): Promise<{ written: string[]; skipped: string[] }> {
+  const workflowDir = path.join(projectDir, ".agent-workflow");
+  await fs.mkdir(workflowDir, { recursive: true });
+  const files = new Map<string, string>([
+    [
+      path.join(projectDir, "AGENTS.md"),
+      [
+        "# AGENTS.md",
+        "",
+        "This project uses Agent Workflow for reusable agent workflows, project-specific context, and safe automation.",
+        "",
+        "## Project Rules",
+        "",
+        "- Read `.agent-workflow/project.yaml` before choosing a workflow.",
+        "- Use `.agent-workflow/context.md` for product, user, team, and personalization context.",
+        "- Use `.agent-workflow/commands.md` for setup, test, build, and release commands.",
+        "- Use `.agent-workflow/decisions.md` for durable project decisions.",
+        "- Keep reusable agents and workflows outside this project in the shared Agent Workflow repo.",
+        "- Keep project-specific preferences and constraints inside this project.",
+        "- Write receipts for automatic actions."
+      ].join("\n")
+    ],
+    [
+      path.join(workflowDir, "project.yaml"),
+      YAML.stringify(result.config)
+    ],
+    [
+      path.join(workflowDir, "context.md"),
+      [
+        `# ${result.detected.name} Context`,
+        "",
+        result.config.project.summary,
+        "",
+        "## Detected Stack",
+        "",
+        `- Package manager: ${result.detected.packageManager ?? "none detected"}`,
+        `- Frameworks: ${result.detected.frameworks.join(", ") || "none detected"}`,
+        `- Languages: ${result.detected.languages.join(", ") || "none detected"}`,
+        "",
+        "## Personalization Notes",
+        "",
+        "- Add project-specific product goals, audience, tone, architectural preferences, and reporting preferences here.",
+        "- Keep durable preferences here instead of repeating them in every prompt."
+      ].join("\n")
+    ],
+    [
+      path.join(workflowDir, "commands.md"),
+      [
+        "# Agent Workflow Commands",
+        "",
+        "Recommended safe commands detected during onboarding:",
+        "",
+        ...result.recommendations.allowedCommands.map((command) => `- \`${command}\``)
+      ].join("\n")
+    ],
+    [
+      path.join(workflowDir, "decisions.md"),
+      [
+        "# Agent Workflow Decisions",
+        "",
+        "- Initial project configuration generated by `agentflow onboard-project`.",
+        "- Update this file with durable architecture and workflow decisions."
+      ].join("\n")
+    ],
+    [
+      path.join(workflowDir, "schedules.yaml"),
+      YAML.stringify({
+        schedules: [
+          {
+            id: "weekly-context-maintenance",
+            enabled: false,
+            every_minutes: 10080,
+            workflow: "maintain-context",
+            task: "Update durable project context, decisions, and command notes.",
+            index_max_files: 100,
+            worker_limit: 6
+          }
+        ]
+      })
+    ]
+  ]);
+
+  const written: string[] = [];
+  const skipped: string[] = [];
+  for (const [filePath, content] of files) {
+    const relativePath = path.relative(projectDir, filePath);
+    if (!force && await exists(filePath)) {
+      skipped.push(relativePath);
+      continue;
+    }
+    await fs.mkdir(path.dirname(filePath), { recursive: true });
+    await fs.writeFile(filePath, `${content.replace(/\n+$/u, "")}\n`, "utf8");
+    written.push(relativePath);
+  }
+  return { written, skipped };
+}
+
+function printOnboardingResult(result: OnboardingResult, wrote: boolean): void {
+  console.log(`Project: ${result.detected.name}`);
+  console.log(`Path: ${result.projectDir}`);
+  console.log(`Profile: ${result.profile}`);
+  console.log("");
+  console.log("Detected");
+  console.log(`- package manager: ${result.detected.packageManager ?? "none"}`);
+  console.log(`- frameworks: ${result.detected.frameworks.join(", ") || "none"}`);
+  console.log(`- languages: ${result.detected.languages.join(", ") || "none"}`);
+  console.log(`- markers: ${result.detected.markers.join(", ") || "none"}`);
+  console.log("");
+  console.log("Recommended commands");
+  for (const command of result.recommendations.allowedCommands) {
+    console.log(`- ${command}`);
+  }
+  console.log("");
+  console.log("Suggested project-local agents");
+  for (const agent of result.recommendations.suggestedAgents) {
+    console.log(`- ${agent}`);
+  }
+  console.log("");
+  console.log("Default workflows");
+  for (const workflow of result.recommendations.defaultWorkflows) {
+    console.log(`- ${workflow}`);
+  }
+  console.log("");
+  console.log("Context includes");
+  for (const include of result.recommendations.contextInclude) {
+    console.log(`- ${include}`);
+  }
+  console.log("");
+  if (wrote) {
+    console.log("Written");
+    for (const file of result.written ?? []) {
+      console.log(`- ${file}`);
+    }
+    if (result.skipped?.length) {
+      console.log("");
+      console.log("Skipped existing files");
+      for (const file of result.skipped) {
+        console.log(`- ${file}`);
+      }
+      console.log("Use --force to overwrite skipped files.");
+    }
+  } else {
+    console.log("Dry run only. Add --write to create .agent-workflow files.");
+  }
+  console.log("");
+  console.log("Next commands");
+  for (const command of result.recommendations.nextCommands) {
+    console.log(`- ${command}`);
+  }
+}
+
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
+  try {
+    return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+async function detectPackageManager(projectDir: string, packageJson: Record<string, unknown> | null): Promise<string | undefined> {
+  const packageManager = stringValue(packageJson?.packageManager);
+  if (packageManager) {
+    return packageManager.split("@")[0];
+  }
+  if (await exists(path.join(projectDir, "pnpm-lock.yaml"))) {
+    return "pnpm";
+  }
+  if (await exists(path.join(projectDir, "yarn.lock"))) {
+    return "yarn";
+  }
+  if (await exists(path.join(projectDir, "bun.lockb")) || await exists(path.join(projectDir, "bun.lock"))) {
+    return "bun";
+  }
+  if (await exists(path.join(projectDir, "package-lock.json"))) {
+    return "npm";
+  }
+  return packageJson ? "npm" : undefined;
+}
+
+function commandPrefixForPackageManager(packageManager: string | undefined): string {
+  if (packageManager === "pnpm") {
+    return "pnpm";
+  }
+  if (packageManager === "yarn") {
+    return "yarn";
+  }
+  if (packageManager === "bun") {
+    return "bun";
+  }
+  return "npm run";
+}
+
+async function detectMarkers(projectDir: string): Promise<string[]> {
+  const markerChecks: Array<[string, string]> = [
+    ["package.json", "package-json"],
+    ["tsconfig.json", "typescript"],
+    ["next.config.js", "next"],
+    ["next.config.mjs", "next"],
+    ["vite.config.ts", "vite"],
+    ["vite.config.js", "vite"],
+    ["tailwind.config.ts", "tailwind"],
+    ["tailwind.config.js", "tailwind"],
+    ["components.json", "shadcn"],
+    ["pyproject.toml", "python"],
+    ["requirements.txt", "python"],
+    ["manage.py", "django"],
+    ["composer.json", "php"],
+    ["wp-config.php", "wordpress"],
+    ["index.html", "static-site"],
+    ["Dockerfile", "docker"],
+    ["docker-compose.yml", "docker-compose"],
+    ["docker-compose.yaml", "docker-compose"]
+  ];
+  const markers: string[] = [];
+  for (const [file, marker] of markerChecks) {
+    if (await exists(path.join(projectDir, file)) && !markers.includes(marker)) {
+      markers.push(marker);
+    }
+  }
+  return markers;
+}
+
+function detectFrameworks(dependencies: Record<string, unknown>, markers: string[]): string[] {
+  const frameworks = new Set<string>();
+  if (dependencies.next || markers.includes("next")) frameworks.add("next");
+  if (dependencies.react || dependencies["@vitejs/plugin-react"]) frameworks.add("react");
+  if (dependencies.vue || dependencies["@vitejs/plugin-vue"]) frameworks.add("vue");
+  if (dependencies.svelte || dependencies["@sveltejs/kit"]) frameworks.add("svelte");
+  if (dependencies.astro) frameworks.add("astro");
+  if (dependencies.express) frameworks.add("express");
+  if (dependencies.fastify) frameworks.add("fastify");
+  if (markers.includes("vite")) frameworks.add("vite");
+  if (markers.includes("tailwind")) frameworks.add("tailwind");
+  if (markers.includes("shadcn")) frameworks.add("shadcn");
+  if (markers.includes("django")) frameworks.add("django");
+  if (markers.includes("wordpress")) frameworks.add("wordpress");
+  if (markers.includes("static-site")) frameworks.add("static-site");
+  if (markers.includes("docker") || markers.includes("docker-compose")) frameworks.add("docker");
+  return [...frameworks];
+}
+
+function detectLanguages(packageJson: Record<string, unknown> | null, markers: string[]): string[] {
+  const languages = new Set<string>();
+  if (packageJson) languages.add("javascript");
+  if (markers.includes("typescript")) languages.add("typescript");
+  if (markers.includes("python")) languages.add("python");
+  if (markers.includes("php") || markers.includes("wordpress")) languages.add("php");
+  if (markers.includes("static-site")) languages.add("html");
+  return [...languages];
+}
+
+function recommendCommands(scripts: Record<string, unknown>, commandPrefix: string, markers: string[]): string[] {
+  const commands = new Set<string>();
+  for (const script of ["test", "typecheck", "lint", "build", "check", "verify"]) {
+    if (scripts[script]) {
+      commands.add(commandPrefix === "npm run" ? `npm run ${script}` : `${commandPrefix} ${script}`);
+    }
+  }
+  if (markers.includes("python")) {
+    commands.add("python -m pytest");
+  }
+  if (markers.includes("php")) {
+    commands.add("composer test");
+  }
+  return [...commands].length ? [...commands] : ["npm test", "npm run typecheck", "npm run lint"];
+}
+
+function recommendContextIncludes(markers: string[], frameworks: string[], languages: string[]): string[] {
+  const includes = new Set([
+    "AGENTS.md",
+    ".agent-workflow/**",
+    "README.md",
+    "docs/**"
+  ]);
+  if (languages.includes("javascript") || languages.includes("typescript")) {
+    includes.add("package.json");
+    includes.add("src/**");
+    includes.add("app/**");
+    includes.add("pages/**");
+    includes.add("components/**");
+    includes.add("lib/**");
+    includes.add("test/**");
+    includes.add("tests/**");
+  }
+  if (languages.includes("python")) {
+    includes.add("pyproject.toml");
+    includes.add("requirements.txt");
+    includes.add("**/*.py");
+  }
+  if (languages.includes("php") || frameworks.includes("wordpress")) {
+    includes.add("composer.json");
+    includes.add("wp-content/**");
+    includes.add("**/*.php");
+  }
+  if (frameworks.includes("static-site")) {
+    includes.add("index.html");
+    includes.add("site/**");
+    includes.add("assets/**");
+  }
+  if (markers.includes("docker") || markers.includes("docker-compose")) {
+    includes.add("Dockerfile");
+    includes.add("docker-compose.yml");
+    includes.add("docker-compose.yaml");
+  }
+  return [...includes];
+}
+
+function recommendContextExcludes(frameworks: string[], languages: string[]): string[] {
+  const excludes = new Set([
+    "node_modules/**",
+    ".git/**",
+    "dist/**",
+    "build/**",
+    "coverage/**",
+    ".next/**",
+    ".turbo/**",
+    ".cache/**",
+    ".agent-workflow/schedule-state.json",
+    "**/*.jpg",
+    "**/*.jpeg",
+    "**/*.png",
+    "**/*.webp",
+    "**/*.gif",
+    "**/*.woff",
+    "**/*.woff2",
+    "**/*.ttf"
+  ]);
+  if (languages.includes("python")) {
+    excludes.add(".venv/**");
+    excludes.add("venv/**");
+    excludes.add("__pycache__/**");
+  }
+  if (frameworks.includes("wordpress")) {
+    excludes.add("wp-content/uploads/**");
+  }
+  return [...excludes];
+}
+
+function recommendWritePaths(frameworks: string[], languages: string[]): string[] {
+  const paths = new Set([
+    ".agent-workflow/**",
+    "AGENTS.md",
+    "README.md",
+    "docs/**"
+  ]);
+  if (languages.includes("javascript") || languages.includes("typescript")) {
+    ["src/**", "app/**", "pages/**", "components/**", "lib/**", "test/**", "tests/**", "package.json"].forEach((item) => paths.add(item));
+  }
+  if (languages.includes("python")) {
+    ["**/*.py", "pyproject.toml", "requirements.txt", "tests/**"].forEach((item) => paths.add(item));
+  }
+  if (languages.includes("php") || frameworks.includes("wordpress")) {
+    ["**/*.php", "wp-content/themes/**", "wp-content/plugins/**", "composer.json"].forEach((item) => paths.add(item));
+  }
+  if (frameworks.includes("static-site")) {
+    ["index.html", "site/**", "assets/**"].forEach((item) => paths.add(item));
+  }
+  return [...paths];
+}
+
+function recommendAgents(frameworks: string[], languages: string[], markers: string[]): string[] {
+  const agents = new Set(["technical-architect", "implementation-agent", "test-engineer", "docs-maintainer"]);
+  if (frameworks.some((framework) => ["react", "next", "vite", "vue", "svelte", "astro", "tailwind", "shadcn", "static-site"].includes(framework))) {
+    agents.add("frontend-engineer");
+    agents.add("ux-reviewer");
+  }
+  if (frameworks.some((framework) => ["express", "fastify", "django"].includes(framework)) || languages.includes("php")) {
+    agents.add("backend-engineer");
+  }
+  if (markers.includes("docker") || markers.includes("docker-compose")) {
+    agents.add("ci-debugger");
+  }
+  agents.add("security-reviewer");
+  return [...agents];
+}
+
+function recommendWorkflows(frameworks: string[], _languages: string[], _markers: string[]): string[] {
+  const workflows = new Set(["build-feature", "review-pr", "debug-failure", "maintain-context"]);
+  if (frameworks.some((framework) => ["react", "next", "vite", "vue", "svelte", "astro", "static-site", "wordpress"].includes(framework))) {
+    workflows.add("production-readiness");
+  }
+  return [...workflows];
+}
+
+function summarizeDetectedProject(frameworks: string[], languages: string[], markers: string[]): string {
+  const stack = [...frameworks, ...languages].filter(Boolean);
+  if (stack.length) {
+    return `Detected ${stack.join(", ")} project. Generated onboarding config should be reviewed and personalized for users, product goals, quality gates, and deployment constraints.`;
+  }
+  if (markers.length) {
+    return `Detected project markers: ${markers.join(", ")}. Generated onboarding config should be reviewed and personalized before live workflow runs.`;
+  }
+  return "Generic project. Generated onboarding config should be reviewed and personalized before live workflow runs.";
 }
 
 async function loadSourceSummaries(input: {

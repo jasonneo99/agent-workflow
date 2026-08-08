@@ -54,6 +54,34 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_onboard_project",
+  {
+    title: "AgentFlow onboard project",
+    description: "Analyze a project and recommend or write tailored Agent Workflow project config for lower-cost, more personalized runs.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      profile: z.enum(["enterprise", "simple"]).optional().describe("Project profile to recommend or write."),
+      write: z.boolean().optional().describe("Write AGENTS.md and .agent-workflow files."),
+      force: z.boolean().optional().describe("Overwrite existing onboarding files when writing."),
+      json: z.boolean().optional().describe("Return machine-readable onboarding output.")
+    }
+  },
+  async ({ project, profile, write, force, json }) => {
+    const args = ["onboard-project", "--project", project, "--profile", profile ?? "enterprise"];
+    if (write) {
+      args.push("--write");
+    }
+    if (force) {
+      args.push("--force");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_index_project",
   {
     title: "AgentFlow index project",

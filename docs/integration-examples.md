@@ -260,6 +260,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run doctor
 npm run bootstrap-storage
 npm run validate
+npm run onboard-project -- --project /path/to/project --write
 npm run agentflow -- run-and-watch provider-smoke \
   --project templates/project \
   --task "Return a concise provider contract smoke result. Do not request commands. Do not request file writes." \

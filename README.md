@@ -33,8 +33,8 @@ npm run doctor
 npm run bootstrap-storage
 npm run validate
 
-# Initialize agent workflow in your project
-npm run init-project -- --project /path/to/your/project
+# Initialize tailored agent workflow files in your project
+npm run onboard-project -- --project /path/to/your/project --profile enterprise --write
 
 # Run your first workflow (dry run)
 npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality" --dry-run
@@ -44,6 +44,8 @@ npm run agentflow -- run-and-watch production-readiness --project /path/to/your/
 ```
 
 For a no-services setup, initialize a project with `--profile simple` and use `npm run compile` to produce file-based briefs.
+
+`onboard-project` is dry-run by default. Add `--write` to create `AGENTS.md` and tailored `.agent-workflow/` files; existing files are skipped unless `--force` is provided. Use `init-project` only when you want the generic template instead of stack-detected onboarding.
 
 ## Providers
 
@@ -118,6 +120,7 @@ npm run doctor                 # Check local services
 
 # Project operations
 npm run init-project -- -p .   # Install agent workflow into a project
+npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief
 

@@ -90,6 +90,10 @@ Use Agent Workflow to update my model provider to BYO and run a provider check.
 ```
 
 ```text
+Use Agent Workflow to onboard this project, write the recommended config, then tell me the next command to run.
+```
+
+```text
 Use Agent Workflow to run-and-watch the build-feature workflow for "Add audit logging."
 ```
 
