@@ -36,7 +36,8 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
       const project = projectConfigSchema.parse(task.projectConfig);
       const output = await provider.executeStage({
         ...task,
-        projectConfig: project
+        projectConfig: project,
+        modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       });
       for (const commandLine of output.requestedCommands ?? []) {
         let commandResult;

@@ -2,6 +2,7 @@ id: implementation-agent
 display_name: Implementation Agent
 category: development
 purpose: Make scoped local code and document changes from an approved plan.
+model_tier: standard
 autonomy: 3
 use_when:
   - coding tasks

@@ -1,385 +1,191 @@
-# Portable Agent Workflows
+# Agent Workflow
 
-A model-agnostic workflow kit for sharing reusable development agents across projects while keeping project-specific context inside each project.
+Portable, model-agnostic agent workflows for any codebase. Define reusable AI agent teams and multi-stage workflows, plug in any model provider, and run structured automation across your projects.
 
-The platform separates three concerns:
+## What it does
 
-- reusable agents, subagents, policies, and workflows live in this repository
-- each project provides a small `AGENTS.md` plus `.agent-workflow/` context files
-- the runner compiles only the relevant context for a task, then records auditable workflow runs
+- **22 specialist agents** — architecture, frontend, backend, security, UX, testing, docs, and more
+- **8 composable workflows** — build features, review PRs, debug failures, check production readiness
+- **Any model provider** — OpenAI, AWS Bedrock (Nova, Claude, Llama), Ollama, LM Studio, or any OpenAI-compatible API
+- **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
+- **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 
-## Recommended Developer Workflow
-
-Enterprise mode is the default local workflow:
+## Quick Start
 
 ```bash
-git clone git@github.com:jasonneo99/agent-workflow.git
+git clone https://github.com/jasonneo99/agent-workflow.git
 cd agent-workflow
-cp .env.example .env
 npm install
-docker compose -f infra/docker-compose.yml up -d
-npm run smoke
+npm run setup
 ```
 
-The worker uses the deterministic `mock` provider by default. That is the safest first smoke test because it validates queueing, context compilation, storage, and receipts without spending model tokens or editing template files.
-
-To opt into live OpenAI execution:
+The interactive setup walks you through provider selection and configuration. Once complete:
 
 ```bash
-export DEFAULT_MODEL_PROVIDER=openai
-export OPENAI_API_KEY="..."
-export OPENAI_MODEL=gpt-5.5
-npm run worker -- --limit 1
-```
+# Verify your provider is working
+npm run provider-check
 
-Run the smoke workflow with a live provider only when you intentionally want the model to perform allowed project actions:
+# Initialize agent workflow in your project
+npm run init-project -- --project /path/to/your/project
 
-```bash
-AGENTFLOW_SMOKE_PROVIDER=openai npm run smoke
-```
+# Run your first workflow (dry run)
+npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality" --dry-run
 
-Live workers can request allowed project file writes. When testing against `templates/project`, inspect generated files and reset any example feature output before committing the template.
-
-To reset local enterprise storage and remove persisted smoke runs:
-
-```bash
-npm run reset-storage
-npm run bootstrap-storage
-```
-
-To remove Docker volumes too:
-
-```bash
-npm run services:reset
-docker compose -f infra/docker-compose.yml up -d
-npm run bootstrap-storage
-```
-
-The long-form workflow behind `npm run smoke` is:
-
-```bash
-npm run doctor
-npm run bootstrap-storage
-npm run validate
-npm run index-project -- --project templates/project
-npm run compile -- --workflow build-feature --project ./templates/project --task "Smoke test portable agent workflow"
-npm run agentflow -- run build-feature --project templates/project --task "Smoke test portable agent workflow" --no-brief
-DEFAULT_MODEL_PROVIDER=mock npm run worker -- --limit 12
-npm run status
-```
-
-In a real project:
-
-```bash
-npm run init-project -- --project /path/to/project --profile enterprise
-npm run index-project -- --project /path/to/project
-npm run agentflow -- run build-feature --project /path/to/project --task "Add audit logging"
-npm run worker -- --limit 6
-npm run status
-```
-
-`init-project` writes `AGENTS.md` plus `.agent-workflow/` files, skips existing files unless `--force` is passed, and prints the next recommended commands.
-
-For the normal end-to-end path, use `run-and-watch`:
-
-```bash
-npm run agentflow -- run-and-watch review-pr --project /path/to/project --task "Review recent changes"
-```
-
-This indexes compact project context, queues the workflow, processes worker tasks until the run completes or fails, exports Markdown and JSON reports, and prints the final status.
-
-For one specialist agent, use `agent-task`:
-
-```bash
-npm run agentflow -- agent-task Mira --project /path/to/project --task "Do a UX pass"
-```
-
-For a named preset, use `preset`:
-
-```bash
-npm run agentflow -- preset tellara-ux-pass
-```
-
-Switch model providers:
-
-```bash
-npm run agentflow -- provider-use openai --check
-npm run agentflow -- provider-use kiro --check
-npm run agentflow -- model-use OpenAI --check
-```
-
-For natural-language orchestration across agents and workflows:
-
-```bash
-npm run agentflow -- orchestrate --project /path/to/project --task "Review the production site UX, SEO, and launch risks"
-```
-
-For a decision-ready summary after a run:
-
-```bash
-npm run agentflow -- summarize-run --run <run-id>
-```
-
-For the local dashboard:
-
-```bash
-npm run agentflow -- dashboard
-```
-
-Open a run detail page from the dashboard to view summaries, receipts, artifacts, and fixed follow-up actions.
-
-See `docs/user-guide.md` for the full installation and usage guide.
-
-The simpler flat-file workflow is available when a user does not want local services:
-
-```bash
-npm run init-project -- --project /path/to/project --profile simple
-npm run doctor -- --simple
-```
-
-## Use From Another Project
-
-Keep this repository as the shared workflow platform, then install lightweight project context into each consuming repository:
-
-```bash
-cd /Users/jasonmiller/Projects/Agent\ Workflow
-npm run init-project -- --project /path/to/your-app --profile enterprise
-```
-
-In the consuming project, edit:
-
-```text
-AGENTS.md
-.agent-workflow/project.yaml
-.agent-workflow/context.md
-.agent-workflow/commands.md
-.agent-workflow/decisions.md
-```
-
-Back in this workflow repository, index and run against that project:
-
-```bash
-npm run index-project -- --project /path/to/your-app
-npm run agentflow -- run build-feature --project /path/to/your-app --task "Describe the work" --no-brief
-npm run worker -- --limit 6
-npm run agentflow -- status --run <workflow-run-id> --artifacts
-```
-
-The reusable agents and workflows stay here. Project-specific context stays in the consuming project.
-
-Tellara has a dedicated profile:
-
-```bash
-npm run init-project -- --project /Users/jasonmiller/Projects/media-ai-startup --profile tellara
-```
-
-See `docs/tellara-integration.md`.
-
-## Use From Codex App
-
-The project includes a local stdio MCP server, so Codex can call the workflow runner as tools instead of asking you to run every CLI command manually.
-
-```bash
-cd "/Users/jasonmiller/Projects/Agent Workflow"
-npm install
-```
-
-Then add the MCP server to `~/.codex/config.toml` and restart Codex. This machine is already configured with:
-
-```toml
-[mcp_servers.agent-workflow]
-command = "npm"
-args = ["run", "-s", "mcp"]
-cwd = "/Users/jasonmiller/Projects/Agent Workflow"
-startup_timeout_sec = 120
-```
-
-See `docs/mcp-codex-app.md` for the tool list and Tellara usage example.
-
-## Architecture
-
-```text
-developer tool or model
-  -> project AGENTS.md
-  -> agentflow CLI or MCP server
-  -> workflow engine
-  -> context compiler
-  -> policy engine
-  -> specialist and automatic agents
-  -> project files, tests, GitHub, Linear, Slack, deploy tools
-```
-
-## Storage Model
-
-The source files in this repository are portable. Enterprise operation uses:
-
-- Postgres as the system of record
-- pgvector for semantic memory and file summaries
-- Redis for queues, locks, rate limits, and short-lived cache
-- object storage for transcripts, screenshots, logs, rendered artifacts, and large outputs
-
-Local development should run the full stack with Docker Compose:
-
-```bash
-docker compose -f infra/docker-compose.yml up
-```
-
-This is the default workflow. It gives the platform durable workflow runs, receipts, semantic memory, queues, cached summaries, and object storage for large artifacts.
-
-Default local ports avoid common service collisions:
-
-- Postgres: `15432`
-- Redis: `16379`
-- MinIO: `19000`
-- MinIO console: `19001`
-
-Seed the enterprise registry after services are healthy:
-
-```bash
-npm run migrate-storage
-npm run bootstrap-storage
+# Run it for real
+npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality"
 ```
 
 ## Providers
 
-Provider adapters live in `packages/model-providers/`.
+| Provider | Models | Config |
+|----------|--------|--------|
+| `mock` | None (deterministic) | No config needed |
+| `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
+| `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
+| `openai-compatible` | Any (Ollama, LM Studio, vLLM) | `OPENAI_COMPATIBLE_BASE_URL` + model name |
 
-- `mock`: deterministic local execution for workflow and storage testing
-- `openai`: live Responses API execution, enabled with `DEFAULT_MODEL_PROVIDER=openai`
-- `openai-compatible`: local, self-hosted, or gateway chat-completions APIs, enabled with `DEFAULT_MODEL_PROVIDER=openai-compatible`
-
-The provider contract returns a short summary plus a structured artifact. The worker stores that result as an action receipt.
-
-Queued runs store a compiled workflow brief as an artifact. Each stage receives that brief plus prior stage receipts, and every stage output is stored as a `stage_output` artifact.
-
-See `docs/providers.md` for configuration examples.
-
-To verify that the selected live provider can execute the workflow contract without allowing commands or file writes:
+Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
 
 ```bash
-npm run provider-smoke
+# Local with Ollama
+DEFAULT_MODEL_PROVIDER=openai-compatible
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
+OPENAI_COMPATIBLE_MODEL=llama3.1
+
+# AWS Bedrock
+DEFAULT_MODEL_PROVIDER=bedrock
+BEDROCK_MODEL=amazon.nova-pro-v1:0
+AWS_REGION=us-east-1
+
+# OpenAI
+DEFAULT_MODEL_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+OPENAI_MODEL=gpt-4o
 ```
 
-`provider-smoke` creates a temporary project with no allowed local actions, runs one `provider-smoke` workflow stage, and verifies that a `stage_output` artifact was created.
+## Model Tier Routing
 
-## Project Indexing
+Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). The provider automatically routes to the right model:
 
-Index project files into compact summaries:
+| Tier | Use case | Bedrock default | OpenAI default |
+|------|----------|-----------------|----------------|
+| `fast` | Triage, docs, test running | Nova Lite | gpt-4o-mini |
+| `standard` | Implementation, frontend, backend | Nova Pro | gpt-4o |
+| `reasoning` | Architecture, security, UX review | Nova Pro | gpt-4o |
+
+Override per-tier models with `BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, `BEDROCK_MODEL_REASONING`.
+
+## Architecture
+
+```
+agents/          — Reusable agent cards (YAML)
+workflows/       — Multi-stage workflow definitions (YAML)
+packages/        — Runtime: model providers, context compiler, workflow engine
+apps/cli/        — CLI interface
+apps/worker/     — Background task processor
+apps/mcp/        — MCP server for IDE integration
+infra/           — Docker Compose for enterprise storage (Postgres, Redis, MinIO)
+templates/       — Project initialization templates
+```
+
+## Commands
 
 ```bash
-npm run index-project -- --project /path/to/project
+npm run setup                  # Interactive onboarding
+npm run provider-check         # Verify model provider
+npm run validate               # Validate agent/workflow definitions
+npm run doctor                 # Check local services
+
+# Project operations
+npm run init-project -- -p .   # Install agent workflow into a project
+npm run index-project -- -p .  # Index project files for context
+npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief
+
+# Workflow execution (requires enterprise storage)
+npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
+npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
+npm run agentflow -- agent-task security -p . -t "task"  # Run single agent
+npm run worker -- --limit 6    # Process queued tasks
+
+# Inspection
+npm run status                 # List recent runs
+npm run artifacts -- -r <id>   # View run artifacts
+npm run agentflow -- dashboard # Start local web dashboard
 ```
 
-Optionally refine summaries with the selected provider:
+## Enterprise Storage
+
+For durable execution with run history, a dashboard, and artifact storage:
 
 ```bash
-npm run index-project -- --project /path/to/project --refine
-npm run index-project -- --project /path/to/project --refine --force-refine --max-files 5
+docker compose -f infra/docker-compose.yml up -d
+npm run migrate-storage
+npm run bootstrap-storage
+npm run doctor
 ```
 
-Refined summaries are cached by content hash. Unchanged files are reused unless `--force-refine` is set.
+For file-based output only (no Docker required), use `--profile simple` during project init.
 
-Inspect indexed files:
+## Adding Your Own Agents
 
-```bash
-npm run project-files -- --project /path/to/project
+Create a YAML file in your project's `.agent-workflow/agents/` directory:
+
+```yaml
+id: my-specialist
+display_name: My Specialist
+category: development
+purpose: Do a specific thing well.
+model_tier: standard    # fast | standard | reasoning
+autonomy: 3
+use_when:
+  - relevant keyword
+can:
+  - specific_capability
+outputs:
+  schema: structured_summary
+prompt: |
+  Your agent instructions here.
 ```
 
-The compiled brief includes indexed summaries when they exist, which keeps source context compact and reusable.
+## Adding Workflows
 
-Limit indexed context during compile or run:
+Create a YAML file in `workflows/`:
 
-```bash
-npm run compile -- --workflow build-feature --project /path/to/project --task "..." --source-token-budget 3000 --source-max-files 20
-npm run agentflow -- run build-feature --project /path/to/project --task "..." --source-token-budget 3000 --source-max-files 20
+```yaml
+id: my-workflow
+name: My Custom Workflow
+description: What this workflow does.
+lead: workflow-orchestrator
+stages:
+  - id: analyze
+    agent: technical-architect
+    goal: Understand the problem.
+    context:
+      max_tokens: 4000
+    output: analysis
+  - id: implement
+    agent: implementation-agent
+    goal: Make the changes.
+    context:
+      max_tokens: 6000
+    output: change_summary
 ```
 
-The selector ranks indexed summaries by overlap with the task, workflow stages, and selected agent roles, then fits the best matches into the token budget.
+## Cost Optimization
 
-## Worker And Status
+- **Model tier routing** — fast agents use cheap models, reasoning agents use capable ones
+- **Delta indexing** — only re-indexes files that changed since last run
+- **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
+- **Persistent memory** — stores findings so future runs skip re-discovering known-good areas
+- **Batched workflows** — `production-readiness` runs 4 specialist reviews in one pass with shared context
 
-Run a fixed batch:
+## Contributing
 
-```bash
-npm run worker -- --limit 6
-```
+1. Fork the repo
+2. Create a feature branch
+3. Run `npm run validate` and `npm run typecheck` before submitting
+4. Open a PR with a clear description of what changed and why
 
-Run continuously:
+## License
 
-```bash
-npm run worker:watch
-```
-
-Inspect recent runs:
-
-```bash
-npm run status
-```
-
-Inspect a specific run:
-
-```bash
-npm run agentflow -- status --run <workflow-run-id>
-npm run agentflow -- status --run <workflow-run-id> --artifacts
-```
-
-Export a portable run report:
-
-```bash
-npm run export-run -- --run <workflow-run-id>
-```
-
-Reports are written to `exports/runs/<workflow-run-id>.md` and `.json`. The `exports/` directory is ignored by Git.
-
-## Safe Local Actions
-
-Projects define allowed commands and writable paths in `.agent-workflow/project.yaml`. Allowed commands are commands for the consuming project root, not management commands for this shared workflow repository.
-
-Execute an allowed command and record a receipt/artifact against a run:
-
-```bash
-npm run exec-command -- --project /path/to/project --run <workflow-run-id> -- npm run typecheck
-```
-
-Commands are executed without a shell, shell metacharacters are rejected, and output is truncated according to project policy.
-
-Worker stages can also request commands through provider output. The worker executes only commands allowed by project policy, records each command as a `local_command` receipt plus `command_output` artifact, and fails the stage if a requested command is rejected or exits nonzero.
-
-Worker stages can also request file writes through provider output. The worker accepts only project-relative paths allowed by `allowed_write_paths`, rejects blocked paths such as `.env` and `.git/**`, caps write size with `max_write_bytes`, and records each write as a `file_write` receipt plus artifact.
-
-Inspect artifacts for a run:
-
-```bash
-npm run artifacts -- --run <workflow-run-id>
-npm run artifacts -- --run <workflow-run-id> --kind stage_output
-npm run artifacts -- --uri db://workflow_tasks/<task-id>/output --json
-```
-
-## Autonomy
-
-Agents use explicit autonomy levels:
-
-- `0`: advisory only
-- `1`: draft artifacts
-- `2`: edit local files
-- `3`: run local commands and tests
-- `4`: update external systems with approval
-- `5`: trusted scheduled automation
-- `wide-open`: project owner explicitly allows all local and external actions supported by configured tools
-
-`wide-open` exists because some users want maximum automation, but it is never implicit. A project must opt in through `.agent-workflow/project.yaml`. The enterprise template opts in; the simple template does not.
-
-## Project Contract
-
-Each consuming project should include:
-
-```text
-AGENTS.md
-.agent-workflow/
-  project.yaml
-  context.md
-  commands.md
-  decisions.md
-```
-
-`AGENTS.md` stays short and points the agent toward project-local context plus this shared workflow platform.
+MIT

@@ -2,6 +2,7 @@ id: auto-test-runner
 display_name: Auto Test Runner
 category: automatic
 purpose: Automatically run configured verification after local changes.
+model_tier: fast
 autonomy: 3
 use_when:
   - files changed

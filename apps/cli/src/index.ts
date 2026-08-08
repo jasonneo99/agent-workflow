@@ -33,6 +33,7 @@ import {
   recordRunAction,
   resetStorage,
   seedRegistry,
+  upsertMemoryItem,
   upsertProject,
   upsertProjectFiles
 } from "../../../packages/storage/src/postgres.js";
@@ -42,7 +43,6 @@ import { buildRunExport } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-const tellaraProjectPath = "/Users/jasonmiller/Projects/media-ai-startup";
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
 
 type WorkflowPreset = {
@@ -63,6 +63,7 @@ type OrchestrationStep = {
   kind: "agent" | "workflow" | "preset";
   target: string;
   task: string;
+  skipIfPriorEmpty?: boolean;
 };
 
 type OrchestrationPlan = {
@@ -73,54 +74,64 @@ type OrchestrationPlan = {
 
 const workflowPresets: WorkflowPreset[] = [
   {
-    id: "tellara-ux-pass",
-    aliases: ["ux-pass", "mira-ux-pass"],
+    id: "ux-pass",
+    aliases: ["mira-ux-pass", "ux-review"],
     label: "UX Pass",
-    description: "Ask Mira to review the current Tellara user experience and recommend the top fixes.",
-    project: tellaraProjectPath,
-    task: "Do a UX pass on the current Tellara app. Summarize findings and recommend the top 3 fixes.",
+    description: "Ask Mira to review user experience and recommend the top fixes.",
+    project: ".",
+    task: "Do a UX pass on the current project. Summarize findings and recommend the top 3 fixes.",
     kind: "agent",
     target: "Mira"
   },
   {
-    id: "tellara-pr-review",
-    aliases: ["tellara-review-pr", "pr-review", "review-pr"],
+    id: "pr-review",
+    aliases: ["review-pr", "review"],
     label: "PR Review",
-    description: "Run the Tellara PR review workflow on current local changes.",
-    project: tellaraProjectPath,
-    task: "Review current Tellara changes and call out risks, regressions, missing tests, and recommended fixes.",
+    description: "Run the PR review workflow on current local changes.",
+    project: ".",
+    task: "Review current changes and call out risks, regressions, missing tests, and recommended fixes.",
     kind: "workflow",
     target: "review-pr"
   },
   {
-    id: "tellara-test-triage",
-    aliases: ["test-triage", "debug-tests"],
+    id: "test-triage",
+    aliases: ["debug-tests", "fix-tests"],
     label: "Test Triage",
-    description: "Investigate Tellara test or CI failures.",
-    project: tellaraProjectPath,
-    task: "Investigate Tellara test and CI failures. Identify failing areas, likely causes, and the next fix.",
+    description: "Investigate test or CI failures.",
+    project: ".",
+    task: "Investigate test and CI failures. Identify failing areas, likely causes, and the next fix.",
     kind: "workflow",
     target: "debug-failure"
   },
   {
-    id: "tellara-maintain-context",
-    aliases: ["tellara-context", "maintain-context"],
+    id: "maintain-context",
+    aliases: ["context", "refresh-context"],
     label: "Maintain Context",
-    description: "Refresh durable Tellara context and workflow memory.",
-    project: tellaraProjectPath,
-    task: "Update durable Tellara project context, decisions, and workflow memory from the latest changes.",
+    description: "Refresh durable project context and workflow memory.",
+    project: ".",
+    task: "Update durable project context, decisions, and workflow memory from the latest changes.",
     kind: "workflow",
     target: "maintain-context"
   },
   {
-    id: "tellara-frontend-pass",
-    aliases: ["frontend-pass"],
+    id: "frontend-pass",
+    aliases: ["frontend-review"],
     label: "Frontend Pass",
-    description: "Ask the frontend specialist to review Tellara UI implementation risks.",
-    project: tellaraProjectPath,
-    task: "Review the current Tellara frontend implementation and recommend focused UI, accessibility, and state-management fixes.",
+    description: "Ask the frontend specialist to review UI implementation risks.",
+    project: ".",
+    task: "Review the current frontend implementation and recommend focused UI, accessibility, and state-management fixes.",
     kind: "agent",
     target: "frontend"
+  },
+  {
+    id: "production-readiness",
+    aliases: ["prod-ready", "launch-check"],
+    label: "Production Readiness",
+    description: "Run a full production readiness check (frontend, security, site quality, summary).",
+    project: ".",
+    task: "Review production site readiness: frontend quality, security risks, SEO, mobile, and launch blockers.",
+    kind: "workflow",
+    target: "production-readiness"
   }
 ];
 
@@ -293,11 +304,11 @@ program
   .command("init-project")
   .description("Install AGENTS.md and .agent-workflow files into a project")
   .option("-p, --project <dir>", "project directory", ".")
-  .option("--profile <profile>", "enterprise, simple, tellara, or truckoutfitters", "enterprise")
+  .option("--profile <profile>", "enterprise or simple", "enterprise")
   .option("--force", "overwrite existing files")
   .action(async (options: { project: string; profile: string; force?: boolean }) => {
-    if (!["enterprise", "simple", "tellara", "truckoutfitters"].includes(options.profile)) {
-      console.error(`Unknown profile: ${options.profile}. Use enterprise, simple, tellara, or truckoutfitters.`);
+    if (!["enterprise", "simple"].includes(options.profile)) {
+      console.error(`Unknown profile: ${options.profile}. Use enterprise or simple.`);
       process.exitCode = 1;
       return;
     }
@@ -310,12 +321,7 @@ program
     console.log("");
     console.log("Next steps:");
     console.log(`  npm run index-project -- --project ${projectDir}`);
-    if (options.profile === "truckoutfitters") {
-      console.log(`  npm run agentflow -- orchestrate --project ${projectDir} --task "Review the production site UX, SEO, mobile experience, and launch risks" --dry-run`);
-      console.log(`  npm run agentflow -- orchestrate --project ${projectDir} --task "Review the production site UX, SEO, mobile experience, and launch risks"`);
-    } else {
-      console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
-    }
+    console.log(`  npm run agentflow -- run build-feature --project ${projectDir} --task "<task>" --no-brief`);
     if (options.profile === "simple") {
       console.log(`  npm run compile -- --workflow build-feature --project ${projectDir} --task "<task>"`);
     } else {
@@ -1695,9 +1701,9 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
       <a class="button secondary" href="/api/runs">JSON</a>
     </div>
     <section class="panel">
-      <h2>Tellara Presets</h2>
+      <h2>Quick Actions</h2>
       <div class="actions">
-        ${workflowPresets.filter((preset) => preset.id.startsWith("tellara-")).map((preset) => presetForm(preset.id, preset.label)).join("")}
+        ${workflowPresets.map((preset) => presetForm(preset.id, preset.label)).join("")}
       </div>
     </section>
     <table>
@@ -1835,7 +1841,7 @@ function runActionForm(runId: string, action: string, label: string): string {
 }
 
 function presetForm(action: string, label: string): string {
-  return `<form method="post" action="/api/follow-up"><input type="hidden" name="project" value="/Users/jasonmiller/Projects/media-ai-startup"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
 type DashboardFollowUpResult =
@@ -1990,7 +1996,6 @@ async function runWorkflowPreset(input: {
 
 function createOrchestrationPlan(input: { projectDir: string; task: string }): OrchestrationPlan {
   const normalizedTask = normalizeLookup(input.task);
-  const normalizedProject = normalizeLookup(input.projectDir);
   const steps: OrchestrationStep[] = [];
   const addStep = (step: Omit<OrchestrationStep, "id">): void => {
     const duplicate = steps.some((existing) => existing.kind === step.kind && existing.target === step.target);
@@ -2041,21 +2046,13 @@ function createOrchestrationPlan(input: { projectDir: string; task: string }): O
   }
 
   if (includesAny(["review", "audit", "risk", "production", "deploy", "launch", "ship", "seo", "content", "site"])) {
-    if (normalizedProject.includes("truckoutfittersunlimited")) {
-      addStep({
-        title: "Truck Outfitters production site review",
-        reason: "Truck Outfitters has a project-local production reviewer for public site, SEO, mobile, and launch-readiness concerns.",
-        kind: "agent",
-        target: "site-production-reviewer",
-        task: `Review Truck Outfitters production site readiness for: ${input.task}`
-      });
-    }
     addStep({
       title: "Change review",
       reason: "The request calls for review, launch readiness, production confidence, SEO, or site-wide risk assessment.",
       kind: "workflow",
       target: "review-pr",
-      task: `Review the project for risks, regressions, missing checks, and recommended actions related to: ${input.task}`
+      task: `Review the project for risks, regressions, missing checks, and recommended actions related to: ${input.task}`,
+      skipIfPriorEmpty: true
     });
   }
 
@@ -2096,6 +2093,69 @@ function createOrchestrationPlan(input: { projectDir: string; task: string }): O
   };
 }
 
+async function persistOrchestrationMemory(plan: OrchestrationPlan, runIds: string[], outputs: string[]): Promise<void> {
+  try {
+    const completedSteps = outputs.filter((output) => output.startsWith("Completed"));
+    const summaryLines = [
+      `Orchestration: ${plan.task}`,
+      `Date: ${new Date().toISOString().split("T")[0]}`,
+      `Steps: ${completedSteps.length}`,
+      `Run IDs: ${runIds.join(", ")}`,
+      "",
+      ...completedSteps.map((output) => {
+        // Extract just the first line (step title + status) for compact memory
+        const firstLine = output.split("\n")[0];
+        return `- ${firstLine}`;
+      })
+    ];
+
+    await upsertMemoryItem({
+      projectRootUri: plan.projectDir,
+      sourceUri: `orchestration/${new Date().toISOString().split("T")[0]}/${plan.task.slice(0, 60).replace(/[^a-z0-9]+/gi, "-")}`,
+      summary: summaryLines.join("\n"),
+      metadata: {
+        kind: "orchestration_memory",
+        task: plan.task,
+        runIds,
+        stepCount: plan.steps.length,
+        completedAt: new Date().toISOString(),
+        hadFindings: outputs.some((output) => hasActionableFindings(output))
+      }
+    });
+  } catch {
+    // Memory persistence is best-effort — don't fail orchestration if storage is unavailable
+  }
+}
+
+function hasActionableFindings(output: string): boolean {
+  const normalized = output.toLowerCase();
+  // If the run failed, treat it as "has findings" (something needs attention)
+  if (normalized.includes("status: failed")) {
+    return true;
+  }
+  // Patterns that indicate NO useful findings were produced
+  const emptyPatterns = [
+    "no immediate security risks",
+    "no significant",
+    "no issues found",
+    "no actionable",
+    "no risks identified",
+    "all passing",
+    "no findings captured",
+    "- none"
+  ];
+  const findingsSection = normalized.includes("key findings:")
+    ? normalized.slice(normalized.indexOf("key findings:"))
+    : normalized;
+  const hasEmpty = emptyPatterns.some((pattern) => findingsSection.includes(pattern));
+  // If all key findings are generic/empty, skip
+  if (hasEmpty && !normalized.includes("risk") && !normalized.includes("fix") && !normalized.includes("vulnerability")) {
+    return false;
+  }
+  // If there are specific findings mentioned, keep going
+  return true;
+}
+
 function formatOrchestrationPlan(plan: OrchestrationPlan): string {
   return [
     "Orchestration Plan",
@@ -2122,8 +2182,15 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
 }): Promise<DashboardFollowUpResult> {
   const outputs: string[] = [formatOrchestrationPlan(plan)];
   const runIds: string[] = [];
+  let priorStepsHadFindings = true;
 
   for (const step of plan.steps) {
+    // Conditional skip: if step is marked skipIfPriorEmpty and prior steps found nothing actionable
+    if (step.skipIfPriorEmpty && !priorStepsHadFindings) {
+      outputs.push(`Skipped ${step.id} (${step.title}): prior steps found no actionable issues.`);
+      continue;
+    }
+
     const result = step.kind === "agent"
       ? await runDashboardAgentTask({
         title: step.title,
@@ -2177,7 +2244,15 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
       runIds.push(result.runId);
     }
     outputs.push([`Completed ${step.id}: ${result.title}`, result.output].join("\n\n"));
+
+    // Track whether this step produced actionable findings for conditional skipping
+    if (result.ok) {
+      priorStepsHadFindings = hasActionableFindings(result.output);
+    }
   }
+
+  // Persist compact memory for future runs
+  await persistOrchestrationMemory(plan, runIds, outputs);
 
   return {
     ok: true,
@@ -2665,12 +2740,6 @@ function selectWorkflowAgents<T extends { id: string }>(agents: T[], workflow: {
 function templateNameForProfile(profile: string): string {
   if (profile === "simple") {
     return "project-simple";
-  }
-  if (profile === "tellara") {
-    return "project-tellara";
-  }
-  if (profile === "truckoutfitters") {
-    return "project-truckoutfitters";
   }
   return "project";
 }

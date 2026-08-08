@@ -2,6 +2,7 @@ id: docs-maintainer
 display_name: Docs Maintainer
 category: operations
 purpose: Keep documentation, changelogs, and decision logs aligned with shipped work.
+model_tier: fast
 autonomy: 2
 use_when:
   - docs need updating

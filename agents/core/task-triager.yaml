@@ -2,6 +2,7 @@ id: task-triager
 display_name: Task Triage
 category: core
 purpose: Classify incoming work and choose the best workflow and specialist agents.
+model_tier: fast
 autonomy: 1
 use_when:
   - new task starts

@@ -338,6 +338,7 @@ export interface ClaimedWorkflowTask {
   agentId: string;
   agentName: string;
   agentPrompt: string;
+  modelTier: string | null;
   compiledBrief: string;
   priorReceipts: Array<{
     agentId: string;
@@ -400,7 +401,8 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            ), '') as "stageGoal",
            wt.agent_id as "agentId",
            a.display_name as "agentName",
-           a.definition->>'prompt' as "agentPrompt"`
+           a.definition->>'prompt' as "agentPrompt",
+           a.definition->>'model_tier' as "modelTier"`
       );
 
       if (!result.rows[0]) {
@@ -782,4 +784,60 @@ async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<
     compiledBrief: briefResult.rows[0]?.text ?? "",
     priorReceipts: receiptsResult.rows
   };
+}
+
+export async function upsertMemoryItem(input: {
+  projectRootUri: string;
+  sourceUri: string;
+  summary: string;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await withClient(async (client) => {
+    const projectResult = await client.query<{ id: string }>(
+      `select id from projects where root_uri = $1`,
+      [input.projectRootUri]
+    );
+    if (!projectResult.rows[0]) {
+      return;
+    }
+    const projectId = projectResult.rows[0].id;
+    const contentHash = `memory-${Date.now()}`;
+    await client.query(
+      `insert into memory_items (project_id, source_uri, content_hash, summary, metadata, updated_at)
+       values ($1, $2, $3, $4, $5, now())
+       on conflict (project_id, source_uri, content_hash) do update
+       set summary = excluded.summary,
+           metadata = excluded.metadata,
+           updated_at = now()`,
+      [
+        projectId,
+        input.sourceUri,
+        contentHash,
+        input.summary,
+        JSON.stringify(input.metadata ?? {})
+      ]
+    );
+  });
+}
+
+export async function getLatestMemory(input: {
+  projectRootUri: string;
+  limit?: number;
+}): Promise<Array<{ sourceUri: string; summary: string; metadata: Record<string, unknown>; updatedAt: string }>> {
+  return withClient(async (client) => {
+    const result = await client.query<{ sourceUri: string; summary: string; metadata: Record<string, unknown>; updatedAt: string }>(
+      `select
+         mi.source_uri as "sourceUri",
+         mi.summary,
+         mi.metadata,
+         mi.updated_at::text as "updatedAt"
+       from memory_items mi
+       join projects p on p.id = mi.project_id
+       where p.root_uri = $1
+       order by mi.updated_at desc
+       limit $2`,
+      [input.projectRootUri, input.limit ?? 10]
+    );
+    return result.rows;
+  });
 }

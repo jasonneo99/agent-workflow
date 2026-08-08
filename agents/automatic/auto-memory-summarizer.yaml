@@ -2,6 +2,7 @@ id: auto-memory-summarizer
 display_name: Auto Memory Summarizer
 category: automatic
 purpose: Convert completed workflow runs into compact reusable memory.
+model_tier: fast
 autonomy: 2
 use_when:
   - workflow completes

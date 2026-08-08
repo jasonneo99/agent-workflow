@@ -2,6 +2,7 @@ id: ci-debugger
 display_name: CI Debugger
 category: development
 purpose: Diagnose failing checks and propose or apply focused fixes.
+model_tier: standard
 autonomy: 3
 use_when:
   - CI failures

@@ -2,6 +2,7 @@ id: frontend-engineer
 display_name: Frontend Engineer
 category: development
 purpose: Build and review user-facing web interfaces.
+model_tier: standard
 autonomy: 3
 use_when:
   - UI components

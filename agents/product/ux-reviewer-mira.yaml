@@ -2,6 +2,7 @@ id: ux-reviewer
 display_name: Mira
 category: product
 purpose: Review product surfaces for usability, accessibility, workflow clarity, and user trust.
+model_tier: reasoning
 autonomy: 2
 use_when:
   - product UI changes

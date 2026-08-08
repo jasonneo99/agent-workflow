@@ -1,0 +1,184 @@
+/**
+ * Interactive CLI onboarding — walks users through provider selection,
+ * project initialization, and service setup.
+ *
+ * Usage: npm run setup
+ */
+import fs from "node:fs/promises";
+import path from "node:path";
+import readline from "node:readline";
+import { fileURLToPath } from "node:url";
+
+const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+
+interface SetupAnswers {
+  provider: string;
+  openaiKey?: string;
+  openaiModel?: string;
+  bedrockModel?: string;
+  bedrockRegion?: string;
+  awsProfile?: string;
+  compatibleBaseUrl?: string;
+  compatibleModel?: string;
+  compatibleKey?: string;
+  useEnterprise: boolean;
+  projectDir?: string;
+}
+
+async function main(): Promise<void> {
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const ask = (question: string): Promise<string> => new Promise((resolve) => rl.question(question, resolve));
+
+  console.log("");
+  console.log("  Welcome to Agent Workflow");
+  console.log("  ─────────────────────────");
+  console.log("  Portable, model-agnostic agent workflows for any codebase.");
+  console.log("");
+
+  // Provider selection
+  console.log("  Choose your model provider:");
+  console.log("");
+  console.log("  1) mock          — No model calls. Good for testing workflows locally.");
+  console.log("  2) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
+  console.log("  3) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
+  console.log("  4) openai-compatible — Any OpenAI-compatible API (Ollama, LM Studio, etc.)");
+  console.log("");
+
+  const providerChoice = await ask("  Provider [1-4, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "openai-compatible", "": "mock" };
+  const provider = providerMap[providerChoice.trim()] ?? "mock";
+
+  const answers: SetupAnswers = { provider, useEnterprise: false };
+
+  if (provider === "openai") {
+    console.log("");
+    answers.openaiKey = await ask("  OpenAI API key: ");
+    const model = await ask("  Model [default gpt-4o]: ");
+    answers.openaiModel = model.trim() || "gpt-4o";
+  }
+
+  if (provider === "bedrock") {
+    console.log("");
+    console.log("  Bedrock uses your AWS credential chain (SSO, env vars, or ~/.aws/credentials).");
+    const model = await ask("  Model [default amazon.nova-pro-v1:0]: ");
+    answers.bedrockModel = model.trim() || "amazon.nova-pro-v1:0";
+    const region = await ask("  AWS region [default us-east-1]: ");
+    answers.bedrockRegion = region.trim() || "us-east-1";
+    const profile = await ask("  AWS profile (leave blank for default): ");
+    answers.awsProfile = profile.trim() || undefined;
+  }
+
+  if (provider === "openai-compatible") {
+    console.log("");
+    const baseUrl = await ask("  Base URL [default http://localhost:11434/v1]: ");
+    answers.compatibleBaseUrl = baseUrl.trim() || "http://localhost:11434/v1";
+    answers.compatibleModel = await ask("  Model name (required): ");
+    const key = await ask("  API key (leave blank if not needed): ");
+    answers.compatibleKey = key.trim() || undefined;
+  }
+
+  // Enterprise vs simple
+  console.log("");
+  console.log("  Storage mode:");
+  console.log("  - Enterprise: PostgreSQL + Redis + Object Storage (run history, dashboard, worker)");
+  console.log("  - Simple: File-based output only (no services needed)");
+  console.log("");
+  const storageChoice = await ask("  Use enterprise storage? [y/N]: ");
+  answers.useEnterprise = storageChoice.trim().toLowerCase().startsWith("y");
+
+  // Project init
+  console.log("");
+  const initProject = await ask("  Initialize a project now? [Y/n]: ");
+  if (!initProject.trim().toLowerCase().startsWith("n")) {
+    const projectDir = await ask("  Project directory [default .]: ");
+    answers.projectDir = projectDir.trim() || ".";
+  }
+
+  rl.close();
+
+  // Write .env
+  console.log("");
+  console.log("  Writing .env...");
+  await writeEnvFile(answers);
+
+  // Start services if enterprise
+  if (answers.useEnterprise) {
+    console.log("  Starting enterprise services (docker compose)...");
+    console.log("  Run: docker compose -f infra/docker-compose.yml up -d");
+    console.log("  Then: npm run migrate-storage && npm run bootstrap-storage");
+  }
+
+  // Init project
+  if (answers.projectDir) {
+    console.log(`  Initializing project in ${answers.projectDir}...`);
+    console.log(`  Run: npm run init-project -- --project ${answers.projectDir} --profile ${answers.useEnterprise ? "enterprise" : "simple"}`);
+  }
+
+  // Provider check
+  console.log("");
+  console.log("  Setup complete! Verify with:");
+  console.log("  npm run provider-check");
+  console.log("");
+
+  if (answers.useEnterprise && answers.projectDir) {
+    console.log("  Then run your first workflow:");
+    console.log(`  npm run agentflow -- orchestrate --project ${answers.projectDir} --task "Review project readiness" --dry-run`);
+  } else if (answers.projectDir) {
+    console.log("  Then compile a brief:");
+    console.log(`  npm run compile -- --workflow build-feature --project ${answers.projectDir} --task "Describe your task"`);
+  }
+
+  console.log("");
+}
+
+async function writeEnvFile(answers: SetupAnswers): Promise<void> {
+  const lines: string[] = [];
+
+  if (answers.useEnterprise) {
+    lines.push(
+      "DATABASE_URL=postgres://agentflow:agentflow@localhost:15432/agentflow",
+      "REDIS_URL=redis://localhost:16379",
+      "OBJECT_STORAGE_ENDPOINT=http://localhost:19000",
+      "OBJECT_STORAGE_BUCKET=agentflow-artifacts",
+      "OBJECT_STORAGE_ACCESS_KEY=agentflow",
+      "OBJECT_STORAGE_SECRET_KEY=agentflow-secret"
+    );
+  }
+
+  lines.push(`DEFAULT_MODEL_PROVIDER=${answers.provider}`);
+
+  if (answers.provider === "openai") {
+    lines.push(`OPENAI_API_KEY=${answers.openaiKey ?? ""}`);
+    lines.push(`OPENAI_MODEL=${answers.openaiModel ?? "gpt-4o"}`);
+  }
+
+  if (answers.provider === "bedrock") {
+    lines.push(`BEDROCK_MODEL=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
+    lines.push(`BEDROCK_MODEL_FAST=amazon.nova-lite-v1:0`);
+    lines.push(`BEDROCK_MODEL_STANDARD=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
+    lines.push(`BEDROCK_MODEL_REASONING=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
+    lines.push(`AWS_REGION=${answers.bedrockRegion ?? "us-east-1"}`);
+    if (answers.awsProfile) {
+      lines.push(`AWS_PROFILE=${answers.awsProfile}`);
+    }
+  }
+
+  if (answers.provider === "openai-compatible") {
+    lines.push(`OPENAI_COMPATIBLE_BASE_URL=${answers.compatibleBaseUrl ?? "http://localhost:11434/v1"}`);
+    lines.push(`OPENAI_COMPATIBLE_MODEL=${answers.compatibleModel ?? ""}`);
+    if (answers.compatibleKey) {
+      lines.push(`OPENAI_COMPATIBLE_API_KEY=${answers.compatibleKey}`);
+    }
+  }
+
+  lines.push("DEFAULT_AUTONOMY=2");
+  lines.push("");
+
+  const envPath = path.join(rootDir, ".env");
+  await fs.writeFile(envPath, lines.join("\n"), "utf8");
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+});

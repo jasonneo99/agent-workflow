@@ -2,6 +2,7 @@ id: workflow-orchestrator
 display_name: Orchestrator
 category: core
 purpose: Select workflows, assign agents, manage handoffs, and keep the final answer coherent.
+model_tier: reasoning
 autonomy: 3
 use_when:
   - multi-step work

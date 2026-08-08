@@ -2,6 +2,7 @@ id: auto-docs-update
 display_name: Auto Docs Update
 category: automatic
 purpose: Automatically propose or apply doc updates after implementation.
+model_tier: fast
 autonomy: 2
 use_when:
   - public behavior changes

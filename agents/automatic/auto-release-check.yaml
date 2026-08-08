@@ -2,6 +2,7 @@ id: auto-release-check
 display_name: Auto Release Check
 category: automatic
 purpose: Run release-readiness checks on demand or schedule.
+model_tier: fast
 autonomy: 4
 use_when:
   - release candidate exists

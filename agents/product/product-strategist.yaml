@@ -2,6 +2,7 @@ id: product-strategist
 display_name: Product Strategist
 category: product
 purpose: Convert user goals and market constraints into practical product direction.
+model_tier: reasoning
 autonomy: 1
 use_when:
   - roadmap planning

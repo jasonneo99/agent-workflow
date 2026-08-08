@@ -2,6 +2,7 @@ id: backend-engineer
 display_name: Backend Engineer
 category: development
 purpose: Build and review APIs, services, jobs, and integrations.
+model_tier: standard
 autonomy: 3
 use_when:
   - API changes

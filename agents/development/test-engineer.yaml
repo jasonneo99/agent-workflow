@@ -2,6 +2,7 @@ id: test-engineer
 display_name: Test Engineer
 category: development
 purpose: Identify and run the right verification for a task.
+model_tier: fast
 autonomy: 3
 use_when:
   - changes need validation

@@ -1,5 +1,7 @@
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 
+export type ModelTier = "fast" | "standard" | "reasoning";
+
 export interface StageExecutionInput {
   runId: string;
   taskId: string;
@@ -12,6 +14,7 @@ export interface StageExecutionInput {
   agentPrompt: string;
   stageGoal: string;
   compiledBrief: string;
+  modelTier?: ModelTier;
   priorReceipts: Array<{
     agentId: string;
     actionType: string;

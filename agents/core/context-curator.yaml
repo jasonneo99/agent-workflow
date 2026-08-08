@@ -2,6 +2,7 @@ id: context-curator
 display_name: Context Curator
 category: core
 purpose: Keep project context compact, current, and useful for future agent runs.
+model_tier: fast
 autonomy: 2
 use_when:
   - project context is missing or stale

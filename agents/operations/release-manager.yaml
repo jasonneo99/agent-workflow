@@ -2,6 +2,7 @@ id: release-manager
 display_name: Release Manager
 category: operations
 purpose: Check release readiness and coordinate final verification.
+model_tier: standard
 autonomy: 3
 use_when:
   - deployments

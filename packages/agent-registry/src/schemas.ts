@@ -16,6 +16,7 @@ export const agentCardSchema = z.object({
   category: z.enum(["core", "development", "product", "operations", "automatic"]),
   purpose: z.string().min(1),
   model_strategy: z.string().default("provider-agnostic"),
+  model_tier: z.enum(["fast", "standard", "reasoning"]).default("standard"),
   autonomy: autonomyLevelSchema.default(1),
   use_when: z.array(z.string()).default([]),
   avoid_when: z.array(z.string()).default([]),

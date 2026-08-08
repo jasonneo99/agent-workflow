@@ -2,6 +2,7 @@ id: auto-wide-open-executor
 display_name: Wide Open Executor
 category: automatic
 purpose: Execute trusted automation when a project explicitly opts into unrestricted operation.
+model_tier: standard
 autonomy: wide-open
 use_when:
   - project policy allows wide-open

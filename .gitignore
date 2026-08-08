@@ -7,3 +7,6 @@ dist/
 .agentflow-cache/
 coverage/
 exports/
+*.log
+.agent-workflow/schedule-state.json
+.agent-workflow/exports/

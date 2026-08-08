@@ -2,6 +2,7 @@ id: database-engineer
 display_name: Database Engineer
 category: development
 purpose: Design and review schemas, queries, migrations, and data access.
+model_tier: standard
 autonomy: 3
 use_when:
   - database schema changes

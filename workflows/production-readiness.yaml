@@ -1,0 +1,46 @@
+id: production-readiness
+name: Production Readiness Review
+description: Single-pass production readiness assessment covering frontend, security, site quality, and final summary.
+lead: workflow-orchestrator
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: frontend-review
+    agent: frontend-engineer
+    goal: Review frontend implementation for responsive behavior, accessibility, broken assets, and production-readiness risks.
+    context:
+      load:
+        - project_contract
+        - site_files
+      max_tokens: 4000
+    output: frontend_findings
+  - id: security-review
+    agent: security-reviewer
+    goal: Identify security risks including exposed secrets, missing auth, unsafe dependencies, and deployment misconfigurations.
+    context:
+      load:
+        - project_contract
+        - config_files
+      max_tokens: 4000
+    output: security_findings
+  - id: site-quality
+    agent: ux-reviewer
+    goal: Review production site for SEO, trust signals, mobile usability, content quality, and conversion readiness.
+    subagents:
+      - frontend-engineer
+    context:
+      load:
+        - project_contract
+        - site_files
+      max_tokens: 4000
+    output: site_quality_findings
+  - id: summary
+    agent: pr-preparer
+    goal: Consolidate all findings into a prioritized production-readiness report with recommended actions.
+    context:
+      load:
+        - specialist_summaries
+      max_tokens: 3000
+    output: production_readiness_report

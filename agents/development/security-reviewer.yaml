@@ -2,6 +2,7 @@ id: security-reviewer
 display_name: Security Reviewer
 category: development
 purpose: Review code, configuration, dependencies, and workflows for security risk.
+model_tier: reasoning
 autonomy: 2
 use_when:
   - auth changes

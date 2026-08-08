@@ -1,6 +1,6 @@
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
-import type { FileSummaryInput, FileSummaryOutput, ModelProvider, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import {
   buildFileSummaryPrompt,
   buildStagePrompt,
@@ -11,7 +11,28 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-const defaultBedrockModel = "us.anthropic.claude-sonnet-4-20250514-v1:0";
+/**
+ * Model tier configuration. Each tier maps to the best available model
+ * for that cost/quality tradeoff. Override with env vars:
+ *   BEDROCK_MODEL_FAST, BEDROCK_MODEL_STANDARD, BEDROCK_MODEL_REASONING
+ */
+const defaultModelTiers: Record<ModelTier, string> = {
+  fast: "amazon.nova-lite-v1:0",
+  standard: "amazon.nova-pro-v1:0",
+  reasoning: "amazon.nova-pro-v1:0"
+};
+
+function resolveModelForTier(tier: ModelTier | undefined, fallbackModel: string): string {
+  if (!tier) {
+    return fallbackModel;
+  }
+  const envKey = `BEDROCK_MODEL_${tier.toUpperCase()}`;
+  const envValue = process.env[envKey];
+  if (envValue) {
+    return envValue;
+  }
+  return defaultModelTiers[tier] ?? fallbackModel;
+}
 
 export class BedrockProvider implements ModelProvider {
   id = "bedrock";
@@ -22,7 +43,7 @@ export class BedrockProvider implements ModelProvider {
 
   constructor(input: { model?: string; region?: string; id?: string } = {}) {
     this.id = input.id ?? this.id;
-    this.model = input.model ?? process.env.BEDROCK_MODEL ?? defaultBedrockModel;
+    this.model = input.model ?? process.env.BEDROCK_MODEL ?? defaultModelTiers.standard;
     this.region = input.region ?? process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
     this.runtimeClient = new BedrockRuntimeClient({ region: this.region });
     this.controlClient = new BedrockClient({ region: this.region });
@@ -48,6 +69,7 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
+    const modelForStage = resolveModelForTier(input.modelTier, this.model);
     const text = await this.converseJson({
       system: [
         "You are executing one stage in a durable agent workflow.",
@@ -55,7 +77,8 @@ export class BedrockProvider implements ModelProvider {
         "Do not claim that files, commands, or external systems changed unless the stage input explicitly includes that evidence."
       ].join(" "),
       prompt: buildStagePrompt(input),
-      temperature: 0.2
+      temperature: 0.2,
+      modelOverride: modelForStage
     });
     const parsed = normalizeStageArtifact(extractJsonObject(text) as StageJsonArtifact);
 
@@ -65,7 +88,8 @@ export class BedrockProvider implements ModelProvider {
       requestedFileWrites: parsed.requestedFileWrites,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model: modelForStage,
+        modelTier: input.modelTier ?? "standard",
         runId: input.runId,
         taskId: input.taskId,
         workflowId: input.workflowId,
@@ -113,9 +137,9 @@ export class BedrockProvider implements ModelProvider {
     };
   }
 
-  private async converseJson(input: { system: string; prompt: string; temperature: number }): Promise<string> {
+  private async converseJson(input: { system: string; prompt: string; temperature: number; modelOverride?: string }): Promise<string> {
     const response = await this.runtimeClient.send(new ConverseCommand({
-      modelId: this.model,
+      modelId: input.modelOverride ?? this.model,
       system: [{ text: input.system }],
       messages: [
         {
@@ -140,7 +164,7 @@ export class BedrockProvider implements ModelProvider {
 }
 
 export function defaultKiroModel(): string {
-  return process.env.KIRO_MODEL ?? process.env.BEDROCK_MODEL ?? defaultBedrockModel;
+  return process.env.KIRO_MODEL ?? process.env.BEDROCK_MODEL ?? defaultModelTiers.standard;
 }
 
 export function defaultKiroRegion(): string {

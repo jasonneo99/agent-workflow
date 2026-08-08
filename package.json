@@ -1,12 +1,20 @@
 {
-  "name": "portable-agent-workflows",
+  "name": "agent-workflow",
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "description": "Portable, model-agnostic agent workflows for any codebase",
+  "license": "MIT",
+  "keywords": ["ai", "agents", "workflows", "llm", "bedrock", "openai", "automation"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jasonneo99/agent-workflow.git"
+  },
   "bin": {
     "agentflow": "apps/cli/src/index.ts"
   },
   "scripts": {
+    "setup": "tsx apps/cli/src/setup.ts",
     "agentflow": "tsx apps/cli/src/index.ts",
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
     "compile": "tsx apps/cli/src/index.ts compile",

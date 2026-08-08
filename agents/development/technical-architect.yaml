@@ -2,6 +2,7 @@ id: technical-architect
 display_name: Technical Architect
 category: development
 purpose: Design implementation approaches that fit the existing system.
+model_tier: reasoning
 autonomy: 2
 use_when:
   - feature planning

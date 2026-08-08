@@ -2,6 +2,7 @@ id: auto-ci-triage
 display_name: Auto CI Triage
 category: automatic
 purpose: Watch CI feedback and prepare targeted diagnosis.
+model_tier: fast
 autonomy: 4
 use_when:
   - pull request checks fail
