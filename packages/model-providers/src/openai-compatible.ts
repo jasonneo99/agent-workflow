@@ -15,6 +15,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly client: OpenAI;
   private readonly model: string;
   private readonly baseURL: string;
+  private readonly modelEnv: string;
 
   constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string } = {}) {
     this.id = input.id ?? this.id;
@@ -24,7 +25,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
     }
 
     this.baseURL = baseURL;
-    this.model = process.env[input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL"] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
+    this.modelEnv = input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL";
+    this.model = process.env[this.modelEnv] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
     if (!this.model) {
       throw new Error(`${input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL"} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
     }
@@ -61,8 +63,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
+    const model = this.resolveModelForTier(input.modelTier);
     const response = await this.client.chat.completions.create({
-      model: this.model,
+      model,
       messages: [
         {
           role: "system",
@@ -89,7 +92,8 @@ export class OpenAICompatibleProvider implements ModelProvider {
       requestedFileWrites: parsed.requestedFileWrites,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model,
+        modelTier: input.modelTier ?? "standard",
         responseId: response.id,
         runId: input.runId,
         taskId: input.taskId,
@@ -148,6 +152,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
         likelyUseWhen: parsed.likelyUseWhen
       }
     };
+  }
+
+  private resolveModelForTier(tier: StageExecutionInput["modelTier"]): string {
+    if (!tier) {
+      return this.model;
+    }
+    const tierEnv = this.modelEnv.replace(/(?:MODEL|MODEL_NAME)$/u, `MODEL_${tier.toUpperCase()}`);
+    return process.env[tierEnv] || this.model;
   }
 }
 

@@ -2,6 +2,8 @@ import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { providerFromEnv } from "../../model-providers/src/index.js";
+import { scoreStageOutput } from "../../model-providers/src/quality.js";
+import { selectModelRoute } from "../../model-providers/src/routing.js";
 import {
   claimNextWorkflowTask,
   completeWorkflowTask,
@@ -16,7 +18,6 @@ export interface WorkerResult {
 }
 
 export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
-  const provider = providerFromEnv();
   const result: WorkerResult = {
     claimed: 0,
     completed: 0,
@@ -34,11 +35,46 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
     try {
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
-      const output = await provider.executeStage({
+      const stageInput = {
         ...task,
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
+      };
+      const route = selectModelRoute(stageInput);
+      let provider = providerFromEnv(route.providerId);
+      const startedAt = Date.now();
+      let output = await provider.executeStage(stageInput);
+      let quality = scoreStageOutput(stageInput, output);
+      const fallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+      let fallbackUsed = false;
+
+      if (!quality.passed && fallbackProviderId && fallbackProviderId !== route.providerId) {
+        provider = providerFromEnv(fallbackProviderId);
+        const fallbackOutput = await provider.executeStage(stageInput);
+        const fallbackQuality = scoreStageOutput(stageInput, fallbackOutput);
+        if (fallbackQuality.score >= quality.score) {
+          output = fallbackOutput;
+          quality = fallbackQuality;
+          fallbackUsed = true;
+        }
+      }
+
+      await recordRunAction({
+        runId: task.runId,
+        agentId: task.agentId,
+        actionType: "model_route",
+        target: `${task.workflowId}/${task.stageId}`,
+        summary: `${route.providerId}${fallbackUsed ? ` -> ${fallbackProviderId}` : ""} quality=${quality.score}`,
+        artifactKind: "model_route",
+        artifactContent: {
+          route,
+          fallbackProviderId,
+          fallbackUsed,
+          latencyMs: Date.now() - startedAt,
+          quality
+        }
       });
+
       for (const commandLine of output.requestedCommands ?? []) {
         let commandResult;
         try {
@@ -152,6 +188,12 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         summary: output.summary,
         artifact: {
           ...output.artifact,
+          routing: {
+            ...route,
+            fallbackProviderId,
+            fallbackUsed
+          },
+          quality,
           actionResults
         }
       });

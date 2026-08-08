@@ -538,13 +538,25 @@ Run a provider contract smoke test:
 npm run provider-smoke
 ```
 
-## 14. Recommended Next Improvement
+## 14. Adaptive Routing
 
-The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, and dashboard commands are now implemented.
+The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, dashboard commands, adaptive model routing, and quality scoring are now implemented.
 
-The next best improvement is adaptive model routing with quality scoring. That would let Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs, and learn which agent/model combinations produce the best accepted results.
+Adaptive routing lets Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs through a fallback provider, and record which agent/model combinations produce the best accepted results.
 
-The target output should include:
+Configure it with:
+
+```bash
+DEFAULT_MODEL_PROVIDER=byo
+AGENTFLOW_ROUTING_MODE=adaptive
+AGENTFLOW_PROVIDER_FAST=byo
+AGENTFLOW_PROVIDER_STANDARD=byo
+AGENTFLOW_PROVIDER_REASONING=openai
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+```
+
+Each worker stage records:
 
 ```text
 - per-stage selected provider/model and reason
@@ -553,3 +565,7 @@ The target output should include:
 - fallback model used when the first provider fails or returns weak output
 - durable preference notes that shaped the result
 ```
+
+## 15. Recommended Next Improvement
+
+The next best improvement is a cost and quality dashboard. It should summarize routing decisions across runs, show where fallback providers were needed, estimate cost savings from BYO/local routing, and highlight agents that need prompt or context tuning.

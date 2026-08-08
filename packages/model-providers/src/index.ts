@@ -5,8 +5,8 @@ import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
 import type { ModelProvider } from "./types.js";
 
-export function providerFromEnv(): ModelProvider {
-  const provider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+export function providerFromEnv(providerOverride?: string): ModelProvider {
+  const provider = providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
 
   if (provider === "mock") {
     return new MockProvider();

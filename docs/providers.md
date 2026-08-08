@@ -17,6 +17,34 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
 
+## Adaptive Routing
+
+Adaptive routing is enabled by default and remains provider-neutral. If no per-tier provider is configured, every stage uses `DEFAULT_MODEL_PROVIDER`. To save cost while preserving quality, route cheaper stages to local/BYO models and harder stages to stronger providers:
+
+```env
+DEFAULT_MODEL_PROVIDER=byo
+AGENTFLOW_ROUTING_MODE=adaptive
+AGENTFLOW_PROVIDER_FAST=byo
+AGENTFLOW_PROVIDER_STANDARD=byo
+AGENTFLOW_PROVIDER_REASONING=openai
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+```
+
+Per-tier model overrides are supported where the provider supports model names:
+
+```env
+BYO_MODEL_FAST=llama3.1:8b
+BYO_MODEL_STANDARD=qwen2.5-coder:14b
+BYO_MODEL_REASONING=deepseek-r1:32b
+
+OPENAI_MODEL_FAST=gpt-4o-mini
+OPENAI_MODEL_STANDARD=gpt-4o
+OPENAI_MODEL_REASONING=gpt-4o
+```
+
+Each worker stage records a `model_route` receipt with the selected provider, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`.
+
 Switch the default provider stored in `.env`:
 
 ```bash

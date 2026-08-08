@@ -26,8 +26,9 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
+    const model = this.resolveModelForTier(input.modelTier);
     const response = await this.client.responses.create({
-      model: this.model,
+      model,
       input: [
         {
           role: "system",
@@ -89,7 +90,8 @@ export class OpenAIProvider implements ModelProvider {
       requestedFileWrites: parsed.requestedFileWrites,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model,
+        modelTier: input.modelTier ?? "standard",
         responseId: response.id,
         runId: input.runId,
         taskId: input.taskId,
@@ -169,5 +171,12 @@ export class OpenAIProvider implements ModelProvider {
         likelyUseWhen: parsed.likelyUseWhen
       }
     };
+  }
+
+  private resolveModelForTier(tier: StageExecutionInput["modelTier"]): string {
+    if (!tier) {
+      return this.model;
+    }
+    return process.env[`OPENAI_MODEL_${tier.toUpperCase()}`] || this.model;
   }
 }

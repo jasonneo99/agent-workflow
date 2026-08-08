@@ -83,6 +83,31 @@ BYO_MODEL_API_KEY=<gateway-api-key>
 npm run provider-check
 ```
 
+### Adaptive Cost-Saving Mix
+
+Use this when you want cheap local/default execution for most stages and stronger reasoning only where needed.
+
+```env
+DEFAULT_MODEL_PROVIDER=byo
+AGENTFLOW_ROUTING_MODE=adaptive
+AGENTFLOW_PROVIDER_FAST=byo
+AGENTFLOW_PROVIDER_STANDARD=byo
+AGENTFLOW_PROVIDER_REASONING=openai
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+
+BYO_MODEL_BASE_URL=http://localhost:11434/v1
+BYO_MODEL_NAME=qwen2.5-coder:14b
+BYO_MODEL_FAST=llama3.1:8b
+BYO_MODEL_STANDARD=qwen2.5-coder:14b
+BYO_MODEL_REASONING=deepseek-r1:32b
+
+OPENAI_API_KEY=<openai-api-key>
+OPENAI_MODEL_REASONING=gpt-4o
+```
+
+Every stage records routing and quality metadata in its artifacts.
+
 ### OpenAI
 
 Use this when you want Agent Workflow to call the OpenAI Responses API directly.

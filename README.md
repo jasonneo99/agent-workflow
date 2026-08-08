@@ -8,6 +8,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **8 composable workflows** — build features, review PRs, debug failures, check production readiness
 - **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
 - **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
+- **Adaptive routing** — send cheap stages to local/BYO models and hard stages to stronger providers
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 
