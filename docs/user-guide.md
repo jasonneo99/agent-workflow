@@ -606,6 +606,22 @@ npm run agentflow -- tuning-proposals --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact tuning proposal panel for the run's project. These are reviewable hints, not automatic edits.
 
-## 18. Recommended Next Improvement
+## 18. Apply Tuning Proposals
 
-The next best improvement is opt-in proposal application. Agent Workflow should write selected tuning proposals into project-local `.agent-workflow/` overlays or open a patch for review, while preserving global reusable agent definitions.
+Create project-local overlays from selected tuning proposals without changing shared reusable agents or workflows:
+
+```bash
+npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids all
+npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids tune-001,tune-004 --write
+```
+
+Without `--write`, the command is a dry run and prints the files it would create. With `--write`, Agent Workflow writes:
+
+- `.agent-workflow/tuning/proposals.md`: human-readable selected proposals and patch hints.
+- `.agent-workflow/tuning/proposals.json`: structured overlay data for IDEs, MCP clients, dashboards, or future automation.
+
+The dashboard tuning panel includes a Dry Run Apply button. The MCP tool `agentflow_apply_tuning_proposals` exposes the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
+
+## 19. Recommended Next Improvement
+
+The next best improvement is an approval queue for applying tuning overlays to real prompt, workflow, or project config patches after a human reviews the generated proposal files.

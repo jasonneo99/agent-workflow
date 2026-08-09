@@ -137,6 +137,7 @@ npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and
 npm run agentflow -- feedback -r <id> --rating accepted  # Teach future runs from outcomes
 npm run agentflow -- preference-scorecard -p . # See agent/provider/tier performance
 npm run agentflow -- tuning-proposals -p . # Generate reviewable tuning suggestions
+npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-local tuning overlays
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```

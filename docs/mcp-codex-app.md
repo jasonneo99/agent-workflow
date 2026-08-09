@@ -46,6 +46,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_feedback`: record accepted, revised, or rejected feedback for a run.
 - `agentflow_preference_scorecard`: aggregate feedback and routing performance by workflow, stage, agent, provider, and tier.
 - `agentflow_tuning_proposals`: generate reviewable prompt, context-budget, and routing tuning suggestions.
+- `agentflow_apply_tuning_proposals`: dry-run or write selected tuning proposals into project-local `.agent-workflow/tuning/` overlays.
 - `agentflow_artifacts`: inspect run artifacts.
 - `agentflow_export_run`: export Markdown and JSON run reports.
 - `agentflow_provider_check`: check selected model provider.

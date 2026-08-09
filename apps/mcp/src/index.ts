@@ -484,6 +484,37 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_apply_tuning_proposals",
+  {
+    title: "AgentFlow apply tuning proposals",
+    description: "Dry-run or write project-local tuning overlay files from selected tuning proposals.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated proposal ids to apply, or all."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write generated overlay files into .agent-workflow/tuning."),
+      json: z.boolean().optional().describe("Return application plan JSON.")
+    }
+  },
+  async ({ project, ids, limit, write, json }) => {
+    const args = ["apply-tuning-proposals", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

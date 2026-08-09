@@ -122,6 +122,19 @@ export interface TuningProposal {
   patchHint: string;
 }
 
+export interface TuningApplicationPlan {
+  projectRootUri: string;
+  generatedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  files: TuningApplicationFile[];
+}
+
+export interface TuningApplicationFile {
+  relativePath: string;
+  content: string;
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -545,6 +558,56 @@ export function formatTuningProposals(proposalSet: TuningProposalSet): string {
   ].join("\n");
 }
 
+export function buildTuningApplicationPlan(
+  proposalSet: TuningProposalSet,
+  selectedIds: string[] | "all" = "all"
+): TuningApplicationPlan {
+  const requestedIds = selectedIds === "all" ? proposalSet.proposals.map((proposal) => proposal.id) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = proposalSet.proposals.filter((proposal) => requestedIdSet.has(proposal.id));
+  const selectedIdSet = new Set(selected.map((proposal) => proposal.id));
+  const skippedIds = requestedIds.filter((id) => !selectedIdSet.has(id));
+  const generatedAt = new Date().toISOString();
+  const jsonDocument = {
+    kind: "agentflow_tuning_overlay",
+    projectRootUri: proposalSet.projectRootUri,
+    generatedAt,
+    sourceGeneratedAt: proposalSet.generatedAt,
+    sourceRunsAnalyzed: proposalSet.sourceRunsAnalyzed,
+    selectedIds: selected.map((proposal) => proposal.id),
+    proposals: selected
+  };
+
+  return {
+    projectRootUri: proposalSet.projectRootUri,
+    generatedAt,
+    selectedIds: selected.map((proposal) => proposal.id),
+    skippedIds,
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/proposals.md",
+        content: formatTuningOverlayMarkdown(proposalSet, selected, generatedAt)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/proposals.json",
+        content: `${JSON.stringify(jsonDocument, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+export function formatTuningApplicationPlan(plan: TuningApplicationPlan): string {
+  return [
+    `Tuning Application Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected proposals: ${plan.selectedIds.length ? plan.selectedIds.join(", ") : "none"}`,
+    plan.skippedIds.length ? `Skipped unknown ids: ${plan.skippedIds.join(", ")}` : "",
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
 function formatStageOutput(artifact: ArtifactStatus): string {
   const content = artifact.content;
   return [
@@ -556,6 +619,43 @@ function formatStageOutput(artifact: ArtifactStatus): string {
     formatStringArray("Requested commands", content.requestedCommands),
     formatFileWriteRequests(content.requestedFileWrites)
   ].filter(Boolean).join("\n");
+}
+
+function formatTuningOverlayMarkdown(
+  proposalSet: TuningProposalSet,
+  selected: TuningProposal[],
+  generatedAt: string
+): string {
+  const sections = selected.map((proposal) => [
+    `## ${proposal.id} [${proposal.priority}] ${proposal.kind}`,
+    "",
+    `- Workflow: ${proposal.workflowId}`,
+    `- Stage: ${proposal.stageId}`,
+    `- Agent: ${proposal.agentId}`,
+    `- Provider/tier: ${proposal.providerId} / ${proposal.modelTier}`,
+    `- Reason: ${proposal.reason}`,
+    `- Recommendation: ${proposal.recommendation}`,
+    `- Patch hint: ${proposal.patchHint}`,
+    ""
+  ].join("\n"));
+
+  return [
+    "# Agent Workflow Tuning Overlay",
+    "",
+    `Generated: ${generatedAt}`,
+    `Project: ${proposalSet.projectRootUri}`,
+    `Source proposals generated: ${proposalSet.generatedAt}`,
+    `Source runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
+    "",
+    "This file is project-local. It records selected tuning proposals without modifying shared agents or workflows.",
+    "",
+    "## Summary",
+    "",
+    proposalSet.summary.map((item) => `- ${item}`).join("\n") || "- No proposal summary available.",
+    "",
+    selected.length ? sections.join("\n") : "_No proposals selected._",
+    ""
+  ].join("\n");
 }
 
 function formatCommandOutput(artifact: ArtifactStatus): string {

@@ -41,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningProposals, formatCostQualityReport, formatPreferenceScorecard, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningProposals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1275,6 +1275,52 @@ program
   });
 
 program
+  .command("apply-tuning-proposals")
+  .description("Create project-local tuning overlay files from selected tuning proposals")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated proposal ids to apply, or all", "all")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "25")
+  .option("--write", "write generated overlay files into the project")
+  .option("--json", "print application plan JSON")
+  .action(async (options: { project: string; ids: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const proposalSet = await loadTuningProposals({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 25)
+    });
+    const plan = buildTuningApplicationPlan(proposalSet, parseProposalIds(options.ids));
+
+    if (options.write) {
+      await writeTuningApplicationPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatTuningApplicationPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create these project-local overlay files.");
+    }
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1596,6 +1642,21 @@ async function loadTuningProposals(input: {
   return buildTuningProposals(scorecard);
 }
 
+async function writeTuningApplicationPlan(projectDir: string, plan: TuningApplicationPlan): Promise<void> {
+  for (const file of plan.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
+      throw new Error(`Refusing to write tuning overlay outside .agent-workflow/tuning: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write tuning overlay outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
 async function recordRunFeedback(input: {
   runId: string;
   rating: string;
@@ -1902,6 +1963,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       action: form.get("action") ?? "",
       runId: form.get("runId") ?? undefined,
       project: form.get("project") ?? undefined,
+      ids: form.get("ids") ?? undefined,
       rating: form.get("rating") ?? undefined,
       note: form.get("note") ?? undefined
     });
@@ -1980,6 +2042,24 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(proposals, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/apply-tuning") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25);
+    const proposals = await loadTuningProposals({
+      projectDir: project,
+      limit
+    });
+    const plan = buildTuningApplicationPlan(proposals, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all"));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ...plan, mode: "dry-run" }, null, 2));
     return;
   }
 
@@ -2179,6 +2259,12 @@ function renderTuningProposalsHtml(proposalSet: TuningProposalSet): string {
 
   return `
     <ul>${summary}</ul>
+    <form class="inline-form" method="post" action="/api/follow-up">
+      <input type="hidden" name="action" value="apply-tuning-dry-run">
+      <input type="hidden" name="project" value="${escapeHtml(proposalSet.projectRootUri)}">
+      <input name="ids" value="all" aria-label="Proposal ids">
+      <button type="submit">Dry Run Apply</button>
+    </form>
     <table>
       <thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Patch Hint</th></tr></thead>
       <tbody>${rows || "<tr><td colspan=\"5\">No tuning proposals yet.</td></tr>"}</tbody>
@@ -2310,6 +2396,7 @@ function dashboardCss(): string {
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
     input { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
+    .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
     .secondary { background: white; color: #1d4ed8; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
@@ -2359,6 +2446,7 @@ async function runDashboardFollowUp(input: {
   action: string;
   runId?: string;
   project?: string;
+  ids?: string;
   rating?: string;
   note?: string;
 }): Promise<DashboardFollowUpResult> {
@@ -2407,6 +2495,19 @@ async function runDashboardFollowUp(input: {
 
   const sourceTask = sourceRun?.run?.task ?? "dashboard preset";
   const sourceLabel = input.runId ? `from run ${input.runId}` : "from dashboard preset";
+
+  if (action === "apply-tuning-dry-run") {
+    const proposalSet = await loadTuningProposals({
+      projectDir: sourceProject,
+      limit: 25
+    });
+    const plan = buildTuningApplicationPlan(proposalSet, parseProposalIds(input.ids));
+    return {
+      ok: true,
+      title: "Tuning Overlay Dry Run",
+      output: `${formatTuningApplicationPlan(plan)}\n\nRun this command to write the overlay files:\nnpm run agentflow -- apply-tuning-proposals --project ${shellQuote(sourceProject)} --ids ${shellQuote(input.ids?.trim() || "all")} --write`
+    };
+  }
 
   if (action === "debug-failure") {
     return runDashboardWorkflow({
@@ -3274,6 +3375,17 @@ function templateNameForProfile(profile: string): string {
 function parsePositiveInteger(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseProposalIds(value: string | undefined): string[] | "all" {
+  if (!value || value.trim().toLowerCase() === "all") {
+    return "all";
+  }
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
 function sleep(ms: number): Promise<void> {

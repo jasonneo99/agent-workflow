@@ -43,6 +43,8 @@ npm run agentflow -- quality-report --run <run-id>
 npm run agentflow -- feedback --run <run-id> --rating accepted --note "Good production-readiness scope"
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project
+npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids all
+npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids tune-001,tune-004 --write
 ```
 
 ## BYO Model Config
