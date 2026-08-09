@@ -461,6 +461,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_tuning_proposals",
+  {
+    title: "AgentFlow tuning proposals",
+    description: "Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      json: z.boolean().optional().describe("Return proposals JSON.")
+    }
+  },
+  async ({ project, limit, json }) => {
+    const args = ["tuning-proposals", "--project", project];
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

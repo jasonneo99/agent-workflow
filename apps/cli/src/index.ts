@@ -41,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, formatCostQualityReport, formatPreferenceScorecard, type CostQualityReport, type PreferenceScorecard } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningProposals, formatCostQualityReport, formatPreferenceScorecard, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1245,6 +1245,36 @@ program
   });
 
 program
+  .command("tuning-proposals")
+  .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "25")
+  .option("--json", "print proposals JSON")
+  .action(async (options: { project: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const proposalSet = await loadTuningProposals({
+      projectDir: path.resolve(process.cwd(), options.project),
+      limit: parsePositiveInteger(options.limit, 25)
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(proposalSet, null, 2));
+      return;
+    }
+
+    console.log(formatTuningProposals(proposalSet));
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1556,6 +1586,14 @@ async function loadPreferenceScorecard(input: {
     projectRootUri: input.projectDir,
     reports
   });
+}
+
+async function loadTuningProposals(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<TuningProposalSet> {
+  const scorecard = await loadPreferenceScorecard(input);
+  return buildTuningProposals(scorecard);
 }
 
 async function recordRunFeedback(input: {
@@ -1928,6 +1966,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/tuning") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25);
+    const proposals = await loadTuningProposals({
+      projectDir: project,
+      limit
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(proposals, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/run") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -1948,6 +2003,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       projectDir: details.run.projectRootUri,
       limit: 25
     });
+    const tuningProposals = buildTuningProposals(preferenceScorecard);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunDetailHtml({
       run: details.run,
@@ -1956,7 +2012,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       artifacts,
       summary: summary.ok ? summary.value : null,
       qualityReport,
-      preferenceScorecard
+      preferenceScorecard,
+      tuningProposals
     }));
     return;
   }
@@ -2017,6 +2074,7 @@ function renderRunDetailHtml(input: {
   summary: RunSummary | null;
   qualityReport: CostQualityReport | null;
   preferenceScorecard: PreferenceScorecard | null;
+  tuningProposals: TuningProposalSet | null;
 }): string {
   const summaryBlock = input.summary
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
@@ -2052,6 +2110,7 @@ function renderRunDetailHtml(input: {
       <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
       <a class="button secondary" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
       <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
+      <a class="button secondary" href="/api/tuning?project=${encodeURIComponent(input.run.projectRootUri)}">Tuning JSON</a>
     </div>
     <section class="panel">
       <div class="meta-grid">
@@ -2086,6 +2145,10 @@ function renderRunDetailHtml(input: {
       ${input.preferenceScorecard ? renderPreferenceScorecardHtml(input.preferenceScorecard) : "<p>No preference scorecard available.</p>"}
     </section>
     <section class="panel">
+      <h2>Tuning Proposals</h2>
+      ${input.tuningProposals ? renderTuningProposalsHtml(input.tuningProposals) : "<p>No tuning proposals available.</p>"}
+    </section>
+    <section class="panel">
       <h2>Stages</h2>
       <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th></tr></thead><tbody>${taskRows}</tbody></table>
     </section>
@@ -2100,6 +2163,27 @@ function renderRunDetailHtml(input: {
   </main>
 </body>
 </html>`;
+}
+
+function renderTuningProposalsHtml(proposalSet: TuningProposalSet): string {
+  const summary = proposalSet.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const rows = proposalSet.proposals.slice(0, 8).map((proposal) => `
+    <tr>
+      <td>${escapeHtml(proposal.id)}<br><span class="flag ${proposal.priority === "high" ? "bad" : proposal.priority === "medium" ? "warn" : "good"}">${escapeHtml(proposal.priority)}</span></td>
+      <td>${escapeHtml(proposal.kind)}</td>
+      <td>${escapeHtml(proposal.workflowId)}<br><span class="muted">${escapeHtml(proposal.stageId)} / ${escapeHtml(proposal.agentId)}</span></td>
+      <td>${escapeHtml(proposal.recommendation)}</td>
+      <td>${escapeHtml(proposal.patchHint)}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <ul>${summary}</ul>
+    <table>
+      <thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Patch Hint</th></tr></thead>
+      <tbody>${rows || "<tr><td colspan=\"5\">No tuning proposals yet.</td></tr>"}</tbody>
+    </table>
+  `;
 }
 
 function renderPreferenceScorecardHtml(scorecard: PreferenceScorecard): string {
@@ -2238,6 +2322,7 @@ function dashboardCss(): string {
     .artifact summary { cursor: pointer; }
     .flag { display: inline-block; margin-left: 6px; padding: 2px 5px; font-size: 11px; }
     .good { background: #dcfce7; color: #166534; }
+    .warn { background: #fef3c7; color: #92400e; }
     .bad { background: #fee2e2; color: #991b1b; }
     .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
     .completed { background: #dcfce7; color: #166534; }

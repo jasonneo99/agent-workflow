@@ -100,6 +100,28 @@ export interface PreferenceScoreGroup {
   recommendation: string;
 }
 
+export interface TuningProposalSet {
+  projectRootUri: string;
+  generatedAt: string;
+  sourceRunsAnalyzed: number;
+  proposals: TuningProposal[];
+  summary: string[];
+}
+
+export interface TuningProposal {
+  id: string;
+  priority: "high" | "medium" | "low";
+  kind: "agent_prompt" | "context_budget" | "routing_preference" | "feedback_needed";
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  providerId: string;
+  modelTier: string;
+  reason: string;
+  recommendation: string;
+  patchHint: string;
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -405,6 +427,124 @@ export function formatPreferenceScorecard(scorecard: PreferenceScorecard): strin
   ].join("\n");
 }
 
+export function buildTuningProposals(scorecard: PreferenceScorecard): TuningProposalSet {
+  const proposals: TuningProposal[] = [];
+  const addProposal = (input: Omit<TuningProposal, "id">): void => {
+    proposals.push({
+      ...input,
+      id: `tune-${String(proposals.length + 1).padStart(3, "0")}`
+    });
+  };
+
+  for (const group of scorecard.groups) {
+    const feedbackCount = group.accepted + group.revised + group.rejected;
+    if (feedbackCount === 0) {
+      if (group.runs >= 3) {
+        addProposal({
+          priority: "low",
+          kind: "feedback_needed",
+          workflowId: group.workflowId,
+          stageId: group.stageId,
+          agentId: group.agentId,
+          providerId: group.providerId,
+          modelTier: group.modelTier,
+          reason: `${group.runs} run(s) have no accepted/revised/rejected signal.`,
+          recommendation: "Collect feedback before changing prompts or routing for this combination.",
+          patchHint: `Run: npm run agentflow -- feedback --run <run-id> --rating accepted|revised|rejected --note "<why>"`
+        });
+      }
+      continue;
+    }
+
+    if (group.feedbackScore < 0) {
+      addProposal({
+        priority: "high",
+        kind: "agent_prompt",
+        workflowId: group.workflowId,
+        stageId: group.stageId,
+        agentId: group.agentId,
+        providerId: group.providerId,
+        modelTier: group.modelTier,
+        reason: `Feedback score ${group.feedbackScore} with ${group.rejected} rejected run(s).`,
+        recommendation: "Tighten the agent prompt around project evidence, explicit assumptions, and verifiable next actions.",
+        patchHint: `In the ${group.agentId} agent prompt, add: "Ground every finding in project files, name assumptions, and include a concrete verification step."`
+      });
+    } else if (group.feedbackScore < 0.5) {
+      addProposal({
+        priority: "medium",
+        kind: "context_budget",
+        workflowId: group.workflowId,
+        stageId: group.stageId,
+        agentId: group.agentId,
+        providerId: group.providerId,
+        modelTier: group.modelTier,
+        reason: `Feedback score ${group.feedbackScore} with ${group.revised} revised run(s).`,
+        recommendation: "Increase context for this stage or add a targeted project preference note before changing providers.",
+        patchHint: `In workflow ${group.workflowId}, consider raising stage ${group.stageId} context max_tokens by 15-25% or add a project decision note describing the expected output.`
+      });
+    }
+
+    if (group.fallbackRate >= 0.5) {
+      addProposal({
+        priority: "high",
+        kind: "routing_preference",
+        workflowId: group.workflowId,
+        stageId: group.stageId,
+        agentId: group.agentId,
+        providerId: group.providerId,
+        modelTier: group.modelTier,
+        reason: `Fallback rate is ${group.fallbackRate}.`,
+        recommendation: "Route this stage to a stronger provider or higher tier by default.",
+        patchHint: `Set AGENTFLOW_PROVIDER_${group.modelTier.toUpperCase()} to the fallback provider, or promote ${group.workflowId}/${group.stageId} to a stronger model tier in workflow config.`
+      });
+    }
+
+    if (group.averageQuality !== null && group.averageQuality < 0.7) {
+      addProposal({
+        priority: "medium",
+        kind: "agent_prompt",
+        workflowId: group.workflowId,
+        stageId: group.stageId,
+        agentId: group.agentId,
+        providerId: group.providerId,
+        modelTier: group.modelTier,
+        reason: `Average quality score is ${group.averageQuality}.`,
+        recommendation: "Improve output contract compliance: summary length, findings, next action, and project-specific evidence.",
+        patchHint: `In ${group.agentId}, require at least one file-backed finding and a nextAction that names the next workflow step.`
+      });
+    }
+  }
+
+  return {
+    projectRootUri: scorecard.projectRootUri,
+    generatedAt: new Date().toISOString(),
+    sourceRunsAnalyzed: scorecard.runsAnalyzed,
+    proposals,
+    summary: summarizeTuningProposals(proposals, scorecard)
+  };
+}
+
+export function formatTuningProposals(proposalSet: TuningProposalSet): string {
+  return [
+    `Tuning Proposals: ${proposalSet.projectRootUri}`,
+    `Generated: ${proposalSet.generatedAt}`,
+    `Runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
+    "",
+    "Summary",
+    proposalSet.summary.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Proposals",
+    proposalSet.proposals.length
+      ? proposalSet.proposals.map((proposal) => [
+        `- ${proposal.id} [${proposal.priority}] ${proposal.kind}: ${proposal.workflowId}/${proposal.stageId} ${proposal.agentId}`,
+        `  - Reason: ${proposal.reason}`,
+        `  - Recommendation: ${proposal.recommendation}`,
+        `  - Patch hint: ${proposal.patchHint}`
+      ].join("\n")).join("\n")
+      : "- No tuning proposals yet."
+  ].join("\n");
+}
+
 function formatStageOutput(artifact: ArtifactStatus): string {
   const content = artifact.content;
   return [
@@ -595,6 +735,32 @@ function recommendScorecard(groups: PreferenceScoreGroup[], runsAnalyzed: number
     recommendations.push("No urgent tuning needed. Continue collecting feedback across more workflows.");
   }
   return recommendations;
+}
+
+function summarizeTuningProposals(proposals: TuningProposal[], scorecard: PreferenceScorecard): string[] {
+  const summary: string[] = [];
+  const high = proposals.filter((proposal) => proposal.priority === "high").length;
+  const medium = proposals.filter((proposal) => proposal.priority === "medium").length;
+  const feedbackNeeded = proposals.filter((proposal) => proposal.kind === "feedback_needed").length;
+
+  if (scorecard.runsAnalyzed === 0) {
+    summary.push("No runs analyzed yet. Run and rate workflows before applying tuning.");
+    return summary;
+  }
+  if (high) {
+    summary.push(`${high} high-priority tuning proposal(s) should be reviewed before repeating the affected workflows.`);
+  }
+  if (medium) {
+    summary.push(`${medium} medium-priority proposal(s) can improve revised or low-quality outputs.`);
+  }
+  if (feedbackNeeded) {
+    summary.push(`${feedbackNeeded} combination(s) need feedback before a confident tuning recommendation.`);
+  }
+  if (!proposals.length) {
+    summary.push("No prompt, context, or routing changes are recommended yet. Continue collecting rated runs.");
+  }
+  summary.push("Treat proposals as reviewable patches; apply them intentionally after checking project goals and policy.");
+  return summary;
 }
 
 function parseRouteReason(reason: string): { stageId: string; agentId: string } {

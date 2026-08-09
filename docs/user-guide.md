@@ -499,6 +499,7 @@ agentflow_status
 agentflow_quality_report
 agentflow_feedback
 agentflow_preference_scorecard
+agentflow_tuning_proposals
 agentflow_artifacts
 agentflow_export_run
 agentflow_provider_check
@@ -595,6 +596,16 @@ npm run agentflow -- preference-scorecard --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact scorecard for the run's project. Use it to find combinations that repeatedly need revision, fallback often, or produce low quality scores.
 
-## 17. Recommended Next Improvement
+## 17. Tuning Proposals
 
-The next best improvement is automatic tuning proposals. Agent Workflow should turn scorecard findings into explicit patchable suggestions for agent prompts, workflow stage context budgets, and project `.agent-workflow/project.yaml` routing preferences.
+Turn scorecard findings into reviewable prompt, context-budget, and routing suggestions:
+
+```bash
+npm run agentflow -- tuning-proposals --project /path/to/project --limit 25
+```
+
+The dashboard run page also shows a compact tuning proposal panel for the run's project. These are reviewable hints, not automatic edits.
+
+## 18. Recommended Next Improvement
+
+The next best improvement is opt-in proposal application. Agent Workflow should write selected tuning proposals into project-local `.agent-workflow/` overlays or open a patch for review, while preserving global reusable agent definitions.
