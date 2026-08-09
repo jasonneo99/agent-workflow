@@ -2,6 +2,8 @@
 
 This repository can operate as the shared workflow runner for Tellara while keeping Tellara-specific context inside the Tellara repository.
 
+See [Open Source Boundary](open-source-boundary.md) for the public/private line: Agent Workflow should share reusable orchestration, safety, routing, and observability patterns, while Tellara-specific agent engine logic stays project-local or private.
+
 ## Install The Profile
 
 From this repository:
