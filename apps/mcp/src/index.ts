@@ -418,6 +418,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_feedback",
+  {
+    title: "AgentFlow feedback",
+    description: "Record accepted, revised, or rejected feedback for a workflow run so future routing can learn from it.",
+    inputSchema: {
+      runId: z.string().describe("Workflow run id."),
+      rating: z.enum(["accepted", "revised", "rejected"]).describe("User outcome rating for the run."),
+      note: z.string().optional().describe("Short note explaining what worked or what should change.")
+    }
+  },
+  async ({ runId, rating, note }) => {
+    const args = ["feedback", "--run", runId, "--rating", rating];
+    if (note) {
+      args.push("--note", note);
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

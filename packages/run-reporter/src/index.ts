@@ -35,8 +35,22 @@ export interface CostQualityReport {
   providerMix: Record<string, number>;
   modelTierMix: Record<string, number>;
   estimatedByoSavingsStages: number;
+  feedback: FeedbackSummary;
   stages: CostQualityStage[];
   recommendations: string[];
+}
+
+export interface FeedbackSummary {
+  counts: Record<string, number>;
+  latest: RunFeedback | null;
+  items: RunFeedback[];
+}
+
+export interface RunFeedback {
+  rating: "accepted" | "revised" | "rejected";
+  note: string;
+  createdAt: string;
+  source: string;
 }
 
 export interface CostQualityStage {
@@ -130,6 +144,7 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
 export function buildCostQualityReport(input: RunExportInput): CostQualityReport {
   const routeArtifacts = input.artifacts.filter((artifact) => artifact.kind === "model_route");
   const stageOutputArtifacts = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
+  const feedback = collectRunFeedback(input.artifacts);
   const stageOutputByKey = new Map(
     stageOutputArtifacts.map((artifact) => {
       const stageId = stringValue(artifact.content.stageId, "");
@@ -194,8 +209,9 @@ export function buildCostQualityReport(input: RunExportInput): CostQualityReport
     providerMix: countBy(stages, (stage) => stage.providerId),
     modelTierMix: countBy(stages, (stage) => stage.modelTier),
     estimatedByoSavingsStages,
+    feedback,
     stages,
-    recommendations: recommendCostQualityActions(stages, input.run.status)
+    recommendations: recommendCostQualityActions(stages, input.run.status, feedback)
   };
 }
 
@@ -217,6 +233,7 @@ export function formatCostQualityReport(report: CostQualityReport): string {
     `- Provider mix: ${formatCounts(report.providerMix)}`,
     `- Cost mix: ${formatCounts(report.estimatedCostMix)}`,
     `- Tier mix: ${formatCounts(report.modelTierMix)}`,
+    `- Feedback: ${report.feedback.latest ? `${report.feedback.latest.rating}${report.feedback.latest.note ? ` - ${report.feedback.latest.note}` : ""}` : "none"}`,
     "",
     "Stages",
     report.stages.length
@@ -322,7 +339,31 @@ function round(value: number): number {
   return Number(value.toFixed(2));
 }
 
-function recommendCostQualityActions(stages: CostQualityStage[], status: string): string[] {
+function collectRunFeedback(artifacts: ArtifactStatus[]): FeedbackSummary {
+  const items = artifacts
+    .filter((artifact) => artifact.kind === "run_feedback")
+    .map((artifact): RunFeedback | null => {
+      const rating = stringValue(artifact.content.rating, "");
+      if (!["accepted", "revised", "rejected"].includes(rating)) {
+        return null;
+      }
+      return {
+        rating: rating as RunFeedback["rating"],
+        note: stringValue(artifact.content.note, ""),
+        createdAt: artifact.createdAt,
+        source: stringValue(artifact.content.source, "user")
+      };
+    })
+    .filter((item): item is RunFeedback => item !== null);
+
+  return {
+    counts: countBy(items, (item) => item.rating),
+    latest: items.at(-1) ?? null,
+    items
+  };
+}
+
+function recommendCostQualityActions(stages: CostQualityStage[], status: string, feedback: FeedbackSummary): string[] {
   const recommendations: string[] = [];
   const weakStages = stages.filter((stage) => stage.qualityPassed === false || (stage.qualityScore !== null && stage.qualityScore < 0.7));
   const fallbackStages = stages.filter((stage) => stage.fallbackUsed);
@@ -342,6 +383,13 @@ function recommendCostQualityActions(stages: CostQualityStage[], status: string)
   }
   if (status === "failed") {
     recommendations.push("Use the failed stage and quality notes to run debug-failure before retrying the full workflow.");
+  }
+  if (!feedback.latest) {
+    recommendations.push("Mark this run accepted, revised, or rejected so future routing can learn from the result.");
+  } else if (feedback.latest.rating === "rejected") {
+    recommendations.push("Treat this run as negative training signal; inspect weak stages before reusing the same provider mix.");
+  } else if (feedback.latest.rating === "revised") {
+    recommendations.push("Capture the revision note as a project preference before repeating this workflow.");
   }
   if (!recommendations.length) {
     recommendations.push("Routing looks healthy. Keep this mix and compare future runs for latency and fallback drift.");

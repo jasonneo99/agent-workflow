@@ -1178,6 +1178,39 @@ program
   });
 
 program
+  .command("feedback")
+  .description("Record accepted, revised, or rejected feedback for a workflow run")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .requiredOption("--rating <rating>", "accepted, revised, or rejected")
+  .option("--note <text>", "short note explaining what worked or needs to change", "")
+  .action(async (options: { run: string; rating: string; note: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const result = await recordRunFeedback({
+      runId: options.run,
+      rating: options.rating,
+      note: options.note,
+      source: "cli"
+    });
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+
+    console.log(`Recorded ${result.rating} feedback for ${options.run}.`);
+    console.log(`Artifact: ${result.artifactUri}`);
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1394,6 +1427,8 @@ interface RunSummary {
   recommendedNextAction: string;
 }
 
+type FeedbackRating = "accepted" | "revised" | "rejected";
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -1459,6 +1494,79 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
     receipts: details.receipts,
     artifacts
   });
+}
+
+async function recordRunFeedback(input: {
+  runId: string;
+  rating: string;
+  note: string;
+  source: string;
+}): Promise<{ ok: true; rating: FeedbackRating; artifactUri: string } | { ok: false; error: string }> {
+  const rating = normalizeFeedbackRating(input.rating);
+  if (!rating) {
+    return { ok: false, error: "Rating must be accepted, revised, or rejected." };
+  }
+
+  const details = await getWorkflowRunDetails(input.runId);
+  if (!details.run) {
+    return { ok: false, error: `Unknown workflow run: ${input.runId}` };
+  }
+
+  const note = input.note.trim();
+  const artifactContent = {
+    runId: input.runId,
+    workflowId: details.run.workflowId,
+    task: details.run.task,
+    projectName: details.run.projectName,
+    projectRootUri: details.run.projectRootUri,
+    rating,
+    note,
+    source: input.source,
+    recordedAt: new Date().toISOString()
+  };
+  const artifactUri = await recordRunAction({
+    runId: input.runId,
+    agentId: "workflow-orchestrator",
+    actionType: "run_feedback",
+    target: input.runId,
+    summary: `${rating}${note ? `: ${note}` : ""}`,
+    artifactKind: "run_feedback",
+    artifactContent
+  });
+
+  await upsertMemoryItem({
+    projectRootUri: details.run.projectRootUri,
+    sourceUri: `agentflow://feedback/${input.runId}/${Date.now()}`,
+    summary: [
+      `Workflow ${details.run.workflowId} feedback: ${rating}.`,
+      `Task: ${details.run.task}`,
+      note ? `Note: ${note}` : ""
+    ].filter(Boolean).join(" "),
+    metadata: {
+      kind: "run_feedback",
+      runId: input.runId,
+      workflowId: details.run.workflowId,
+      rating,
+      note,
+      source: input.source
+    }
+  });
+
+  return { ok: true, rating, artifactUri };
+}
+
+function normalizeFeedbackRating(value: string): FeedbackRating | null {
+  const normalized = normalizeLookup(value);
+  if (normalized === "accept" || normalized === "accepted" || normalized === "good" || normalized === "approved") {
+    return "accepted";
+  }
+  if (normalized === "revise" || normalized === "revised" || normalized === "edited" || normalized === "partial") {
+    return "revised";
+  }
+  if (normalized === "reject" || normalized === "rejected" || normalized === "bad" || normalized === "wrong") {
+    return "rejected";
+  }
+  return null;
 }
 
 function collectArtifactFindings(artifacts: Array<{ content: Record<string, unknown> }>): string[] {
@@ -1693,7 +1801,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await runDashboardFollowUp({
       action: form.get("action") ?? "",
       runId: form.get("runId") ?? undefined,
-      project: form.get("project") ?? undefined
+      project: form.get("project") ?? undefined,
+      rating: form.get("rating") ?? undefined,
+      note: form.get("note") ?? undefined
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -1874,6 +1984,10 @@ function renderRunDetailHtml(input: {
       </div>
     </section>
     <section class="panel">
+      <h2>Feedback</h2>
+      ${input.qualityReport ? renderFeedbackHtml(input.run.id, input.qualityReport) : "<p>No feedback available.</p>"}
+    </section>
+    <section class="panel">
       <h2>Summary</h2>
       ${summaryBlock}
     </section>
@@ -1934,6 +2048,20 @@ function renderCostQualityHtml(report: CostQualityReport): string {
   `;
 }
 
+function renderFeedbackHtml(runId: string, report: CostQualityReport): string {
+  const latest = report.feedback.latest
+    ? `<p><strong>Latest:</strong> ${escapeHtml(report.feedback.latest.rating)}${report.feedback.latest.note ? ` - ${escapeHtml(report.feedback.latest.note)}` : ""}</p>`
+    : "<p>No feedback recorded yet.</p>";
+  return `
+    ${latest}
+    <div class="actions">
+      ${feedbackForm(runId, "accepted", "Accept")}
+      ${feedbackForm(runId, "revised", "Mark Revised")}
+      ${feedbackForm(runId, "rejected", "Reject")}
+    </div>
+  `;
+}
+
 function metricCard(label: string, value: string | number, detail: string): string {
   return `<div class="metric"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
 }
@@ -1977,6 +2105,8 @@ function dashboardCss(): string {
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
+    input { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; }
+    .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .secondary { background: white; color: #1d4ed8; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
@@ -2001,6 +2131,10 @@ function runActionForm(runId: string, action: string, label: string): string {
   return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
+function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {
+  return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" placeholder="Optional note"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
 function presetForm(action: string, label: string): string {
   return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
@@ -2021,6 +2155,8 @@ async function runDashboardFollowUp(input: {
   action: string;
   runId?: string;
   project?: string;
+  rating?: string;
+  note?: string;
 }): Promise<DashboardFollowUpResult> {
   const action = input.action;
   if (action === "summarize") {
@@ -2035,6 +2171,27 @@ async function runDashboardFollowUp(input: {
       ok: true,
       title: "Run Summary",
       output: formatRunSummary(summary.value)
+    };
+  }
+
+  if (action === "feedback") {
+    if (!input.runId) {
+      return { ok: false, error: "Missing run id." };
+    }
+    const result = await recordRunFeedback({
+      runId: input.runId,
+      rating: input.rating ?? "",
+      note: input.note ?? "",
+      source: "dashboard"
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    return {
+      ok: true,
+      title: "Feedback Recorded",
+      output: `Recorded ${result.rating} feedback.\nArtifact: ${result.artifactUri}`,
+      runId: input.runId
     };
   }
 

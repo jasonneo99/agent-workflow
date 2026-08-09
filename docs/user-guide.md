@@ -497,6 +497,7 @@ agentflow_schedule
 agentflow_worker
 agentflow_status
 agentflow_quality_report
+agentflow_feedback
 agentflow_artifacts
 agentflow_export_run
 agentflow_provider_check
@@ -569,6 +570,18 @@ Each worker stage records:
 - durable preference notes that shaped the result
 ```
 
-## 15. Recommended Next Improvement
+## 15. Feedback Memory
 
-The next best improvement is a feedback memory loop. Users should be able to mark outputs as accepted, revised, or rejected, then let Agent Workflow use that signal to tune routing, context budgets, agent prompts, and project-specific preferences over time.
+Record whether a run was useful:
+
+```bash
+npm run agentflow -- feedback --run <run-id> --rating accepted --note "Good scope and routing"
+npm run agentflow -- feedback --run <run-id> --rating revised --note "Needed more frontend context"
+npm run agentflow -- feedback --run <run-id> --rating rejected --note "Wrong files were prioritized"
+```
+
+The dashboard run page also includes Accept, Mark Revised, and Reject buttons. Feedback is stored as a normal receipt/artifact and as compact project memory, so future routing and personalization can use it without adding project-local prompt bloat.
+
+## 16. Recommended Next Improvement
+
+The next best improvement is adaptive preference tuning. Agent Workflow should read feedback memory before routing and automatically adjust context budgets, provider tiers, and agent instructions for patterns that repeatedly lead to accepted or rejected results.
