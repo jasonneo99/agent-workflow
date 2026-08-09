@@ -652,6 +652,33 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
   });
 }
 
+export async function listWorkflowRunsForProject(input: {
+  projectRootUri: string;
+  limit: number;
+}): Promise<WorkflowRunStatus[]> {
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowRunStatus>(
+      `select
+         wr.id::text,
+         wr.status,
+         wr.workflow_id as "workflowId",
+         wr.task,
+         wr.autonomy,
+         p.name as "projectName",
+         p.root_uri as "projectRootUri",
+         wr.started_at::text as "startedAt",
+         wr.finished_at::text as "finishedAt"
+       from workflow_runs wr
+       join projects p on p.id = wr.project_id
+       where p.root_uri = $1
+       order by wr.started_at desc
+       limit $2`,
+      [input.projectRootUri, input.limit]
+    );
+    return result.rows;
+  });
+}
+
 export async function getWorkflowRunDetails(runId: string): Promise<{
   run: WorkflowRunStatus | null;
   tasks: WorkflowTaskStatus[];

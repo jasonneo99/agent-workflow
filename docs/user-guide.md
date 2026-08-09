@@ -498,6 +498,7 @@ agentflow_worker
 agentflow_status
 agentflow_quality_report
 agentflow_feedback
+agentflow_preference_scorecard
 agentflow_artifacts
 agentflow_export_run
 agentflow_provider_check
@@ -584,6 +585,16 @@ The dashboard run page also includes Accept, Mark Revised, and Reject buttons. F
 
 Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report.
 
-## 16. Recommended Next Improvement
+## 16. Preference Scorecard
 
-The next best improvement is per-agent preference scoring. Agent Workflow should aggregate feedback by workflow, stage, agent, provider, and model tier, then recommend specific prompt, context-budget, and routing changes for the combinations that repeatedly lead to accepted or rejected results.
+Aggregate feedback by workflow, stage, agent, provider, and model tier:
+
+```bash
+npm run agentflow -- preference-scorecard --project /path/to/project --limit 25
+```
+
+The dashboard run page also shows a compact scorecard for the run's project. Use it to find combinations that repeatedly need revision, fallback often, or produce low quality scores.
+
+## 17. Recommended Next Improvement
+
+The next best improvement is automatic tuning proposals. Agent Workflow should turn scorecard findings into explicit patchable suggestions for agent prompts, workflow stage context budgets, and project `.agent-workflow/project.yaml` routing preferences.

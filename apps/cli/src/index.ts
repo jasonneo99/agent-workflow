@@ -29,6 +29,7 @@ import {
   getWorkflowRunDetails,
   listArtifacts,
   listProjectFileSummaries,
+  listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
   recordRunAction,
@@ -40,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildRunExport, formatCostQualityReport, type CostQualityReport } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, formatCostQualityReport, formatPreferenceScorecard, type CostQualityReport, type PreferenceScorecard } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1213,6 +1214,37 @@ program
   });
 
 program
+  .command("preference-scorecard")
+  .description("Aggregate feedback, quality, fallback, and routing performance by workflow, stage, agent, provider, and tier")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "25")
+  .option("--json", "print scorecard JSON")
+  .action(async (options: { project: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const scorecard = await loadPreferenceScorecard({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 25)
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(scorecard, null, 2));
+      return;
+    }
+
+    console.log(formatPreferenceScorecard(scorecard));
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1495,6 +1527,34 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
     tasks: details.tasks,
     receipts: details.receipts,
     artifacts
+  });
+}
+
+async function loadPreferenceScorecard(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<PreferenceScorecard> {
+  const runs = await listWorkflowRunsForProject({
+    projectRootUri: input.projectDir,
+    limit: input.limit
+  });
+  const reports: CostQualityReport[] = [];
+  for (const run of runs) {
+    const details = await getWorkflowRunDetails(run.id);
+    if (!details.run) {
+      continue;
+    }
+    const artifacts = await listArtifacts({ runId: run.id });
+    reports.push(buildCostQualityReport({
+      run: details.run,
+      tasks: details.tasks,
+      receipts: details.receipts,
+      artifacts
+    }));
+  }
+  return buildPreferenceScorecard({
+    projectRootUri: input.projectDir,
+    reports
   });
 }
 
@@ -1851,6 +1911,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/preferences") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25);
+    const scorecard = await loadPreferenceScorecard({
+      projectDir: project,
+      limit
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(scorecard, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/run") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -1867,6 +1944,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const artifacts = await listArtifacts({ runId });
     const summary = await summarizeWorkflowRun(runId);
     const qualityReport = await loadCostQualityReport(runId);
+    const preferenceScorecard = await loadPreferenceScorecard({
+      projectDir: details.run.projectRootUri,
+      limit: 25
+    });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunDetailHtml({
       run: details.run,
@@ -1874,7 +1955,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       receipts: details.receipts,
       artifacts,
       summary: summary.ok ? summary.value : null,
-      qualityReport
+      qualityReport,
+      preferenceScorecard
     }));
     return;
   }
@@ -1934,6 +2016,7 @@ function renderRunDetailHtml(input: {
   artifacts: Awaited<ReturnType<typeof listArtifacts>>;
   summary: RunSummary | null;
   qualityReport: CostQualityReport | null;
+  preferenceScorecard: PreferenceScorecard | null;
 }): string {
   const summaryBlock = input.summary
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
@@ -1968,6 +2051,7 @@ function renderRunDetailHtml(input: {
       </div>
       <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
       <a class="button secondary" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
+      <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
     </div>
     <section class="panel">
       <div class="meta-grid">
@@ -1998,6 +2082,10 @@ function renderRunDetailHtml(input: {
       ${input.qualityReport ? renderCostQualityHtml(input.qualityReport) : "<p>No routing data available.</p>"}
     </section>
     <section class="panel">
+      <h2>Preference Scorecard</h2>
+      ${input.preferenceScorecard ? renderPreferenceScorecardHtml(input.preferenceScorecard) : "<p>No preference scorecard available.</p>"}
+    </section>
+    <section class="panel">
       <h2>Stages</h2>
       <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th></tr></thead><tbody>${taskRows}</tbody></table>
     </section>
@@ -2012,6 +2100,35 @@ function renderRunDetailHtml(input: {
   </main>
 </body>
 </html>`;
+}
+
+function renderPreferenceScorecardHtml(scorecard: PreferenceScorecard): string {
+  const recommendations = scorecard.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const rows = scorecard.groups.slice(0, 8).map((group) => `
+    <tr>
+      <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)}</span></td>
+      <td>${escapeHtml(group.agentId)}</td>
+      <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}</td>
+      <td>${group.runs}</td>
+      <td>${group.accepted}/${group.revised}/${group.rejected}</td>
+      <td>${group.feedbackScore}</td>
+      <td>${group.averageQuality ?? "n/a"}</td>
+      <td>${group.fallbackRate}</td>
+      <td>${escapeHtml(group.recommendation)}</td>
+    </tr>
+  `).join("");
+
+  return `
+    <div class="meta-grid compact">
+      <div><strong>Runs</strong>${scorecard.runsAnalyzed}</div>
+      <div><strong>Feedback</strong>${escapeHtml(formatInlineCounts(scorecard.feedbackCounts))}</div>
+    </div>
+    <ul>${recommendations}</ul>
+    <table>
+      <thead><tr><th>Workflow</th><th>Agent</th><th>Provider/Tier</th><th>Runs</th><th>A/R/R</th><th>Score</th><th>Quality</th><th>Fallback</th><th>Recommendation</th></tr></thead>
+      <tbody>${rows || "<tr><td colspan=\"9\">No scored combinations yet.</td></tr>"}</tbody>
+    </table>
+  `;
 }
 
 function renderCostQualityHtml(report: CostQualityReport): string {

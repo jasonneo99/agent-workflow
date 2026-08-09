@@ -438,6 +438,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_preference_scorecard",
+  {
+    title: "AgentFlow preference scorecard",
+    description: "Aggregate feedback, quality, fallback, and routing performance by workflow, stage, agent, provider, and tier.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      json: z.boolean().optional().describe("Return scorecard JSON.")
+    }
+  },
+  async ({ project, limit, json }) => {
+    const args = ["preference-scorecard", "--project", project];
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

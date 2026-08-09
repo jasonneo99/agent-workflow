@@ -135,6 +135,7 @@ npm run worker -- --limit 6    # Process queued tasks
 npm run status                 # List recent runs
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
 npm run agentflow -- feedback -r <id> --rating accepted  # Teach future runs from outcomes
+npm run agentflow -- preference-scorecard -p . # See agent/provider/tier performance
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```

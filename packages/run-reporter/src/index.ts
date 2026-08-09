@@ -69,6 +69,37 @@ export interface CostQualityStage {
   reasons: string[];
 }
 
+export interface PreferenceScorecardInput {
+  projectRootUri: string;
+  reports: CostQualityReport[];
+}
+
+export interface PreferenceScorecard {
+  projectRootUri: string;
+  runsAnalyzed: number;
+  feedbackCounts: Record<string, number>;
+  groups: PreferenceScoreGroup[];
+  recommendations: string[];
+}
+
+export interface PreferenceScoreGroup {
+  key: string;
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  providerId: string;
+  modelTier: string;
+  runs: number;
+  accepted: number;
+  revised: number;
+  rejected: number;
+  feedbackScore: number;
+  averageQuality: number | null;
+  fallbackRate: number;
+  averageLatencyMs: number | null;
+  recommendation: string;
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -157,10 +188,11 @@ export function buildCostQualityReport(input: RunExportInput): CostQualityReport
   const stages = routeArtifacts.map((artifact): CostQualityStage => {
     const route = objectValue(artifact.content.route);
     const quality = objectValue(artifact.content.quality);
+    const routeFallback = parseRouteReason(stringValue(route.reason, ""));
     const target = stringValue(artifact.content.target, "");
     const targetStage = target.includes("/") ? target.split("/").at(-1) ?? target : target;
-    const agentId = stringValue(artifact.content.agentId, "");
-    const stageId = stringValue(artifact.content.stageId, targetStage);
+    const agentId = stringValue(artifact.content.agentId, routeFallback.agentId);
+    const stageId = stringValue(artifact.content.stageId, targetStage || routeFallback.stageId);
     const stageArtifact = stageOutputByKey.get(`${stageId}:${agentId}`);
     const fallbackProviderId = stringValue(artifact.content.fallbackProviderId, "");
 
@@ -250,6 +282,126 @@ export function formatCostQualityReport(report: CostQualityReport): string {
     "",
     "Recommendations",
     report.recommendations.map((item) => `- ${item}`).join("\n")
+  ].join("\n");
+}
+
+export function buildPreferenceScorecard(input: PreferenceScorecardInput): PreferenceScorecard {
+  const groups = new Map<string, {
+    workflowId: string;
+    stageId: string;
+    agentId: string;
+    providerId: string;
+    modelTier: string;
+    runs: number;
+    accepted: number;
+    revised: number;
+    rejected: number;
+    qualityTotal: number;
+    qualityCount: number;
+    fallbackCount: number;
+    latencyTotal: number;
+    latencyCount: number;
+  }>();
+
+  for (const report of input.reports) {
+    const rating = report.feedback.latest?.rating;
+    for (const stage of report.stages) {
+      const key = [report.workflowId, stage.stageId, stage.agentId, stage.providerId, stage.modelTier].join("|");
+      const group = groups.get(key) ?? {
+        workflowId: report.workflowId,
+        stageId: stage.stageId,
+        agentId: stage.agentId,
+        providerId: stage.providerId,
+        modelTier: stage.modelTier,
+        runs: 0,
+        accepted: 0,
+        revised: 0,
+        rejected: 0,
+        qualityTotal: 0,
+        qualityCount: 0,
+        fallbackCount: 0,
+        latencyTotal: 0,
+        latencyCount: 0
+      };
+      group.runs += 1;
+      if (rating === "accepted") {
+        group.accepted += 1;
+      } else if (rating === "revised") {
+        group.revised += 1;
+      } else if (rating === "rejected") {
+        group.rejected += 1;
+      }
+      if (stage.qualityScore !== null) {
+        group.qualityTotal += stage.qualityScore;
+        group.qualityCount += 1;
+      }
+      if (stage.fallbackUsed) {
+        group.fallbackCount += 1;
+      }
+      if (stage.latencyMs !== null) {
+        group.latencyTotal += stage.latencyMs;
+        group.latencyCount += 1;
+      }
+      groups.set(key, group);
+    }
+  }
+
+  const scoredGroups = [...groups.entries()].map(([key, group]): PreferenceScoreGroup => {
+    const feedbackScore = round((group.accepted * 1 + group.revised * 0.35 + group.rejected * -1) / Math.max(1, group.accepted + group.revised + group.rejected));
+    const fallbackRate = round(group.fallbackCount / Math.max(1, group.runs));
+    const averageQuality = group.qualityCount ? round(group.qualityTotal / group.qualityCount) : null;
+    return {
+      key,
+      workflowId: group.workflowId,
+      stageId: group.stageId,
+      agentId: group.agentId,
+      providerId: group.providerId,
+      modelTier: group.modelTier,
+      runs: group.runs,
+      accepted: group.accepted,
+      revised: group.revised,
+      rejected: group.rejected,
+      feedbackScore,
+      averageQuality,
+      fallbackRate,
+      averageLatencyMs: group.latencyCount ? Math.round(group.latencyTotal / group.latencyCount) : null,
+      recommendation: group.accepted + group.revised + group.rejected === 0
+        ? "Collect accepted/revised/rejected feedback before changing this combination."
+        : recommendScoreGroup(group.modelTier, feedbackScore, fallbackRate, averageQuality)
+    };
+  }).sort((a, b) => {
+    const riskDelta = (b.revised + b.rejected + b.fallbackRate) - (a.revised + a.rejected + a.fallbackRate);
+    return riskDelta || a.feedbackScore - b.feedbackScore || b.runs - a.runs;
+  });
+
+  return {
+    projectRootUri: input.projectRootUri,
+    runsAnalyzed: input.reports.length,
+    feedbackCounts: countBy(input.reports.flatMap((report) => report.feedback.latest ? [report.feedback.latest] : []), (item) => item.rating),
+    groups: scoredGroups,
+    recommendations: recommendScorecard(scoredGroups, input.reports.length)
+  };
+}
+
+export function formatPreferenceScorecard(scorecard: PreferenceScorecard): string {
+  return [
+    `Preference Scorecard: ${scorecard.projectRootUri}`,
+    `Runs analyzed: ${scorecard.runsAnalyzed}`,
+    `Feedback: ${formatCounts(scorecard.feedbackCounts)}`,
+    "",
+    "Recommendations",
+    scorecard.recommendations.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Groups",
+    scorecard.groups.length
+      ? scorecard.groups.map((group) => [
+        `- ${group.workflowId}/${group.stageId}: ${group.agentId}`,
+        `  - Provider/tier: ${group.providerId}/${group.modelTier}`,
+        `  - Runs: ${group.runs}, accepted=${group.accepted}, revised=${group.revised}, rejected=${group.rejected}`,
+        `  - Score: ${group.feedbackScore}, quality=${group.averageQuality ?? "n/a"}, fallbackRate=${group.fallbackRate}, latency=${group.averageLatencyMs ?? "n/a"}ms`,
+        `  - Recommendation: ${group.recommendation}`
+      ].join("\n")).join("\n")
+      : "- No routed stages found."
   ].join("\n");
 }
 
@@ -398,6 +550,59 @@ function recommendCostQualityActions(stages: CostQualityStage[], status: string,
   }
 
   return recommendations;
+}
+
+function recommendScoreGroup(modelTier: string, feedbackScore: number, fallbackRate: number, averageQuality: number | null): string {
+  if (feedbackScore < 0) {
+    return modelTier === "fast"
+      ? "Promote this stage to standard and add more project-specific context before retrying."
+      : "Review agent prompt and context selection; this combination is trending negative.";
+  }
+  if (feedbackScore < 0.5) {
+    return "Keep this combination under review; revised feedback suggests prompt or context-budget tuning may help.";
+  }
+  if (fallbackRate >= 0.5) {
+    return "Primary provider is often insufficient; route this stage to a stronger default provider or model tier.";
+  }
+  if (averageQuality !== null && averageQuality < 0.7) {
+    return "Quality score is low despite feedback; improve output structure, findings, or project evidence.";
+  }
+  return "This combination is performing well; keep current routing and context settings.";
+}
+
+function recommendScorecard(groups: PreferenceScoreGroup[], runsAnalyzed: number): string[] {
+  const recommendations: string[] = [];
+  if (runsAnalyzed === 0) {
+    recommendations.push("Run and rate workflows to build a project-specific preference scorecard.");
+    return recommendations;
+  }
+  const risky = groups.filter((group) => {
+    const hasFeedback = group.accepted + group.revised + group.rejected > 0;
+    return hasFeedback && (group.feedbackScore < 0.5 || group.fallbackRate >= 0.5 || (group.averageQuality !== null && group.averageQuality < 0.7));
+  });
+  const strong = groups.filter((group) => group.feedbackScore >= 0.75 && group.fallbackRate < 0.25 && (group.averageQuality === null || group.averageQuality >= 0.7));
+  if (risky.length) {
+    const top = risky.slice(0, 3).map((group) => `${group.workflowId}/${group.stageId}/${group.agentId}`).join(", ");
+    recommendations.push(`Tune the riskiest combinations first: ${top}.`);
+  }
+  if (strong.length) {
+    recommendations.push(`Keep ${strong.length} high-performing combination(s) on their current provider/tier.`);
+  }
+  if (!groups.some((group) => group.accepted + group.revised + group.rejected > 0)) {
+    recommendations.push("Add accepted/revised/rejected feedback to recent runs so the scorecard can distinguish quality from mere completion.");
+  }
+  if (!recommendations.length) {
+    recommendations.push("No urgent tuning needed. Continue collecting feedback across more workflows.");
+  }
+  return recommendations;
+}
+
+function parseRouteReason(reason: string): { stageId: string; agentId: string } {
+  const match = reason.match(/stage\s+[^/]+\/([^\s]+)\s+\(([^)]+)\)/u);
+  return {
+    stageId: match?.[1] ?? "",
+    agentId: match?.[2] ?? ""
+  };
 }
 
 function formatStringArray(label: string, value: unknown): string {
