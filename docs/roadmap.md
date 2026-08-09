@@ -4,7 +4,8 @@ This roadmap keeps Agent Workflow moving toward reusable shared platform IP whil
 
 ## Direction
 
-Agent Workflow should become the portable agent operations layer for any project:
+Agent Workflow should become the portable, local-first developer agent
+operations layer for any project:
 
 - reusable agents and workflows
 - project-local context
@@ -14,7 +15,15 @@ Agent Workflow should become the portable agent operations layer for any project
 - safe tuning proposal workflows
 - MCP, CLI, dashboard, and IDE control surfaces
 
-It should not absorb private product intelligence from Tellara or any other product. Domain prompts, customer workflows, scoring heuristics, schemas, production policy, and customer-derived learning should remain project-local or private.
+The current center of gravity is local developer use cases: planning,
+implementation support, code review, debugging, UX/security passes, evaluation
+evidence, provider comparison, context hygiene, and cost optimization around
+developer workflows. It is not currently a production product-agent runtime.
+
+It should not absorb private product intelligence from Tellara or any other
+product. Domain prompts, customer workflows, scoring heuristics, schemas,
+production policy, and customer-derived learning should remain project-local or
+private.
 
 ## Current Baseline
 

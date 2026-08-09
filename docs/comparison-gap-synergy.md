@@ -4,11 +4,11 @@ This document compares Agent Workflow with a private product agent engine such a
 
 ## Executive Recommendation
 
-Lean into shared IP for the agent operations layer, not the product intelligence layer.
+Lean into shared IP for the local developer agent operations layer, not the product intelligence layer.
 
 Agent Workflow should become the reusable platform for:
 
-- Agent execution and orchestration.
+- Local developer-agent execution and orchestration.
 - Model-provider portability.
 - Context indexing and brief compilation.
 - Cost and quality routing.
@@ -28,7 +28,7 @@ Private product engines should keep ownership of:
 The strongest path is a layered model:
 
 ```text
-Open/shared:  agent operating system, workflow runtime, provider abstraction, observability
+Open/shared:  local developer workflow runtime, provider abstraction, observability
 Private:      product brain, domain policies, customer data, competitive heuristics
 ```
 
@@ -36,7 +36,7 @@ Private:      product brain, domain policies, customer data, competitive heurist
 
 | Area | Agent Workflow | Private Product Agent Engine | Boundary |
 | --- | --- | --- | --- |
-| Purpose | Portable development-agent workflows for any project | Domain-specific automation and intelligence inside a product | Share the runtime, keep domain intelligence private |
+| Purpose | Local-first portable development-agent workflows for any project | Domain-specific automation and intelligence inside a product | Share developer workflow mechanics, keep product runtime intelligence private |
 | Users | Developers, maintainers, MCP clients, IDEs, CI-like automation | Product users, internal operators, customer-specific workflows | Public project optimizes developer operations |
 | Context | `AGENTS.md`, `.agent-workflow/`, indexed source summaries, artifacts | Product data, tenant context, app state, customer behavior, domain entities | Keep private context in the product repo or service |
 | Agents | Generic specialists such as architecture, frontend, UX, security, testing, docs | Product-specialized agents with domain goals and business rules | Generic agent contracts can be shared; private roles stay private |
