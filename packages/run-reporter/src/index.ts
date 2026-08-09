@@ -59,6 +59,7 @@ export interface CostQualityStage {
   providerId: string;
   model?: string;
   modelTier: string;
+  requestedModelTier: string;
   estimatedCostTier: string;
   qualityScore: number | null;
   qualityPassed: boolean | null;
@@ -169,6 +170,7 @@ export function buildCostQualityReport(input: RunExportInput): CostQualityReport
       providerId: stringValue(route.providerId, "unknown"),
       model: stageArtifact ? stringValue(stageArtifact.content.model, "") || undefined : undefined,
       modelTier: stringValue(route.modelTier, "standard"),
+      requestedModelTier: stringValue(route.requestedModelTier, stringValue(route.modelTier, "standard")),
       estimatedCostTier: stringValue(route.estimatedCostTier, "unknown"),
       qualityScore: numberValue(quality.score),
       qualityPassed: booleanValue(quality.passed),
@@ -240,7 +242,7 @@ export function formatCostQualityReport(report: CostQualityReport): string {
       ? report.stages.map((stage) => [
         `- ${stage.stageId}: ${stage.agentId}`,
         `  - Provider: ${stage.providerId}${stage.model ? ` / ${stage.model}` : ""}`,
-        `  - Tier: ${stage.modelTier}, cost=${stage.estimatedCostTier}, quality=${stage.qualityScore ?? "n/a"}`,
+        `  - Tier: ${stage.modelTier}${stage.requestedModelTier !== stage.modelTier ? ` (requested ${stage.requestedModelTier})` : ""}, cost=${stage.estimatedCostTier}, quality=${stage.qualityScore ?? "n/a"}`,
         `  - Fallback: ${stage.fallbackUsed ? stage.fallbackProviderId ?? "yes" : "no"}, latency=${stage.latencyMs ?? "n/a"}ms`,
         stage.reasons.length ? `  - Notes: ${stage.reasons.join("; ")}` : ""
       ].filter(Boolean).join("\n")).join("\n")

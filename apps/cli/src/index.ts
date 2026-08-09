@@ -25,6 +25,7 @@ import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
   createWorkflowRun,
   getArtifactByUri,
+  getLatestMemory,
   getWorkflowRunDetails,
   listArtifacts,
   listProjectFileSummaries,
@@ -573,7 +574,8 @@ program
         task: options.task,
         sourceTokenBudget: options.sourceTokenBudget,
         sourceMaxFiles: options.sourceMaxFiles
-      })
+      }),
+      preferenceNotes: await loadPreferenceNotes(projectDir)
     });
 
     console.log(brief);
@@ -2018,7 +2020,7 @@ function renderCostQualityHtml(report: CostQualityReport): string {
       <td>${escapeHtml(stage.stageId)}</td>
       <td>${escapeHtml(stage.agentId)}</td>
       <td>${escapeHtml(stage.providerId)}${stage.model ? `<br><span class="muted">${escapeHtml(stage.model)}</span>` : ""}</td>
-      <td>${escapeHtml(stage.modelTier)}</td>
+      <td>${escapeHtml(stage.modelTier)}${stage.requestedModelTier !== stage.modelTier ? `<br><span class="muted">requested ${escapeHtml(stage.requestedModelTier)}</span>` : ""}</td>
       <td>${escapeHtml(stage.estimatedCostTier)}</td>
       <td>${stage.qualityScore ?? "n/a"} ${stage.qualityPassed === false ? "<span class=\"flag bad\">Review</span>" : stage.qualityPassed === true ? "<span class=\"flag good\">Pass</span>" : ""}</td>
       <td>${stage.fallbackUsed ? escapeHtml(stage.fallbackProviderId ?? "yes") : "no"}</td>
@@ -2857,7 +2859,8 @@ async function queueWorkflow(input: {
       task: input.task,
       sourceTokenBudget: input.sourceTokenBudget,
       sourceMaxFiles: input.sourceMaxFiles
-    })
+    }),
+    preferenceNotes: await loadPreferenceNotes(projectDir)
   });
 
   const run = await createWorkflowRun({
@@ -3714,6 +3717,27 @@ async function loadSourceSummaries(input: {
       summaries,
       maxTokens: Number.isFinite(tokenBudget) && tokenBudget > 0 ? tokenBudget : undefined,
       maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function loadPreferenceNotes(projectDir: string): Promise<string[]> {
+  try {
+    const memory = await getLatestMemory({
+      projectRootUri: projectDir,
+      limit: 25
+    });
+    const feedbackItems = memory
+      .filter((item) => item.metadata?.kind === "run_feedback")
+      .slice(0, 8);
+
+    return feedbackItems.map((item) => {
+      const rating = typeof item.metadata.rating === "string" ? item.metadata.rating : "unknown";
+      const workflowId = typeof item.metadata.workflowId === "string" ? item.metadata.workflowId : "unknown-workflow";
+      const note = typeof item.metadata.note === "string" && item.metadata.note.trim() ? ` Note: ${item.metadata.note.trim()}` : "";
+      return `${rating} feedback for ${workflowId}.${note} (${item.updatedAt})`;
     });
   } catch {
     return [];

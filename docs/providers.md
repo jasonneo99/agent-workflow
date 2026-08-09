@@ -43,7 +43,9 @@ OPENAI_MODEL_STANDARD=gpt-4o
 OPENAI_MODEL_REASONING=gpt-4o
 ```
 
-Each worker stage records a `model_route` receipt with the selected provider, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`.
+Each worker stage records a `model_route` receipt with the selected provider, requested tier, routed tier, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`.
+
+When prior project feedback includes revised or rejected runs, Agent Workflow adds compact preference notes to the compiled brief and conservatively promotes fast stages to standard. The quality report shows both the requested tier and the routed tier so the tuning remains auditable.
 
 Switch the default provider stored in `.env`:
 

@@ -582,6 +582,8 @@ npm run agentflow -- feedback --run <run-id> --rating rejected --note "Wrong fil
 
 The dashboard run page also includes Accept, Mark Revised, and Reject buttons. Feedback is stored as a normal receipt/artifact and as compact project memory, so future routing and personalization can use it without adding project-local prompt bloat.
 
+Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report.
+
 ## 16. Recommended Next Improvement
 
-The next best improvement is adaptive preference tuning. Agent Workflow should read feedback memory before routing and automatically adjust context budgets, provider tiers, and agent instructions for patterns that repeatedly lead to accepted or rejected results.
+The next best improvement is per-agent preference scoring. Agent Workflow should aggregate feedback by workflow, stage, agent, provider, and model tier, then recommend specific prompt, context-budget, and routing changes for the combinations that repeatedly lead to accepted or rejected results.

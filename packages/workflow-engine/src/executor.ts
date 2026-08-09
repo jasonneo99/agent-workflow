@@ -41,17 +41,21 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
       const route = selectModelRoute(stageInput);
+      const routedStageInput = {
+        ...stageInput,
+        modelTier: route.modelTier
+      };
       let provider = providerFromEnv(route.providerId);
       const startedAt = Date.now();
-      let output = await provider.executeStage(stageInput);
-      let quality = scoreStageOutput(stageInput, output);
+      let output = await provider.executeStage(routedStageInput);
+      let quality = scoreStageOutput(routedStageInput, output);
       const fallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
       let fallbackUsed = false;
 
       if (!quality.passed && fallbackProviderId && fallbackProviderId !== route.providerId) {
         provider = providerFromEnv(fallbackProviderId);
-        const fallbackOutput = await provider.executeStage(stageInput);
-        const fallbackQuality = scoreStageOutput(stageInput, fallbackOutput);
+        const fallbackOutput = await provider.executeStage(routedStageInput);
+        const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
         if (fallbackQuality.score >= quality.score) {
           output = fallbackOutput;
           quality = fallbackQuality;

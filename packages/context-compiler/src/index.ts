@@ -15,6 +15,7 @@ export interface CompileInput {
     score?: number;
     matchedTerms?: string[];
   }>;
+  preferenceNotes?: string[];
 }
 
 export async function compileContext(input: CompileInput): Promise<string> {
@@ -57,12 +58,22 @@ export async function compileContext(input: CompileInput): Promise<string> {
     "## Indexed Source Summaries",
     formatSourceSummaries(input.sourceSummaries ?? []),
     "",
+    "## Adaptive Preference Notes",
+    formatPreferenceNotes(input.preferenceNotes ?? []),
+    "",
     "## Workflow Stages",
     stageBriefs.join("\n\n"),
     "",
     "## Agent Instructions",
     input.agents.map(formatAgent).join("\n\n")
   ].join("\n");
+}
+
+function formatPreferenceNotes(notes: string[]): string {
+  if (!notes.length) {
+    return "_No prior feedback memory available for this project._";
+  }
+  return notes.map((note) => `- ${note}`).join("\n");
 }
 
 function formatActionPolicy(project: ProjectConfig): string {
