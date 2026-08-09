@@ -624,4 +624,4 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tool `agentf
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is an approval queue for applying tuning overlays to real prompt, workflow, or project config patches after a human reviews the generated proposal files.
+The next best improvement is an approval queue for applying tuning overlays to real prompt, workflow, or project config patches after a human reviews the generated proposal files. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.

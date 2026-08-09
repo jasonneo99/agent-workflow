@@ -10,12 +10,13 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 4. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
 5. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
 6. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
-7. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-8. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-9. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-10. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-11. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-12. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+7. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+8. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+9. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+10. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+11. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+12. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+13. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
 
 ## Fast Path
 

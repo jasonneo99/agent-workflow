@@ -156,6 +156,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [Integration Examples](docs/integration-examples.md): copyable model-provider and IDE/client examples
 - [Agent Roster](docs/agent-roster.md): available agents
 - [Architecture](docs/architecture.md): runtime and storage design
+- [Roadmap](docs/roadmap.md): shared-platform direction and next implementation phases
 - [Open Source Boundary](docs/open-source-boundary.md): what belongs in the framework versus private product agent engines
 - [Comparison, Gap, And Synergy](docs/comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private
 - [Autonomy Policy](docs/autonomy.md): automation levels and guardrails
