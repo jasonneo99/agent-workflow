@@ -41,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningProposals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1280,9 +1280,10 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--ids <ids>", "comma-separated proposal ids to apply, or all", "all")
   .option("-l, --limit <number>", "number of recent project runs to analyze", "25")
+  .option("--approved", "apply only approved proposals from .agent-workflow/tuning/approval-queue.json")
   .option("--write", "write generated overlay files into the project")
   .option("--json", "print application plan JSON")
-  .action(async (options: { project: string; ids: string; limit: string; write?: boolean; json?: boolean }) => {
+  .action(async (options: { project: string; ids: string; limit: string; approved?: boolean; write?: boolean; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1294,10 +1295,12 @@ program
     }
 
     const projectDir = path.resolve(process.cwd(), options.project);
-    const proposalSet = await loadTuningProposals({
-      projectDir,
-      limit: parsePositiveInteger(options.limit, 25)
-    });
+    const proposalSet = options.approved
+      ? proposalSetFromApprovedQueue(await readTuningApprovalQueue(projectDir))
+      : await loadTuningProposals({
+        projectDir,
+        limit: parsePositiveInteger(options.limit, 25)
+      });
     const plan = buildTuningApplicationPlan(proposalSet, parseProposalIds(options.ids));
 
     if (options.write) {
@@ -1318,6 +1321,95 @@ program
       console.log("");
       console.log("Dry run only. Re-run with --write to create these project-local overlay files.");
     }
+  });
+
+program
+  .command("queue-tuning-approvals")
+  .description("Create a project-local approval queue from selected tuning proposals")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated proposal ids to queue, or all", "all")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "25")
+  .option("--write", "write approval queue files into the project")
+  .option("--json", "print approval queue JSON")
+  .action(async (options: { project: string; ids: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const proposalSet = await loadTuningProposals({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 25)
+    });
+    const existingQueue = await readTuningApprovalQueue(projectDir).catch(() => undefined);
+    const queue = buildTuningApprovalQueue(proposalSet, parseProposalIds(options.ids), existingQueue);
+
+    if (options.write) {
+      await writeTuningApprovalQueue(projectDir, queue);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...queue, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatTuningApprovalQueue(queue));
+    if (options.write) {
+      console.log("Wrote .agent-workflow/tuning/approval-queue.json");
+      console.log("Wrote .agent-workflow/tuning/approval-queue.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create the project-local approval queue.");
+    }
+  });
+
+program
+  .command("tuning-approvals")
+  .description("List, approve, or reject project-local tuning approval queue items")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--approve <ids>", "comma-separated approval ids or proposal ids to approve, or all")
+  .option("--reject <ids>", "comma-separated approval ids or proposal ids to reject, or all")
+  .option("--reviewer <name>", "reviewer name")
+  .option("--note <text>", "decision note")
+  .option("--json", "print approval queue JSON")
+  .action(async (options: { project: string; approve?: string; reject?: string; reviewer?: string; note?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readTuningApprovalQueue(projectDir);
+    const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject));
+    if (decisionCount > 1) {
+      console.error("Use either --approve or --reject, not both.");
+      process.exitCode = 1;
+      return;
+    }
+
+    let nextQueue = queue;
+    if (options.approve || options.reject) {
+      const result = decideTuningApprovals({
+        queue,
+        ids: parseProposalIds(options.approve ?? options.reject),
+        status: options.approve ? "approved" : "rejected",
+        reviewer: options.reviewer,
+        note: options.note
+      });
+      nextQueue = result.queue;
+      await writeTuningApprovalQueue(projectDir, nextQueue);
+      if (result.skippedIds.length) {
+        console.error(`Skipped unknown ids: ${result.skippedIds.join(", ")}`);
+      }
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(nextQueue, null, 2));
+      return;
+    }
+
+    console.log(formatTuningApprovalQueue(nextQueue));
   });
 
 program
@@ -1655,6 +1747,37 @@ async function writeTuningApplicationPlan(projectDir: string, plan: TuningApplic
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
   }
+}
+
+async function readTuningApprovalQueue(projectDir: string): Promise<TuningApprovalQueue> {
+  const queuePath = path.join(projectDir, ".agent-workflow", "tuning", "approval-queue.json");
+  const raw = await fs.readFile(queuePath, "utf8");
+  const parsed = JSON.parse(raw) as TuningApprovalQueue;
+  if (parsed.kind !== "agentflow_tuning_approval_queue" || !Array.isArray(parsed.items)) {
+    throw new Error(`Invalid tuning approval queue: ${queuePath}`);
+  }
+  return parsed;
+}
+
+async function writeTuningApprovalQueue(projectDir: string, queue: TuningApprovalQueue): Promise<void> {
+  const tuningDir = path.join(projectDir, ".agent-workflow", "tuning");
+  await fs.mkdir(tuningDir, { recursive: true });
+  await fs.writeFile(path.join(tuningDir, "approval-queue.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(tuningDir, "approval-queue.md"), formatTuningApprovalQueueMarkdown(queue), "utf8");
+}
+
+function proposalSetFromApprovedQueue(queue: TuningApprovalQueue): TuningProposalSet {
+  const proposals = queue.items.filter((item) => item.status === "approved").map((item) => item.proposal);
+  return {
+    projectRootUri: queue.projectRootUri,
+    generatedAt: new Date().toISOString(),
+    sourceRunsAnalyzed: queue.sourceRunsAnalyzed,
+    proposals,
+    summary: [
+      `${proposals.length} approved tuning proposal(s) selected from the project-local approval queue.`,
+      "Only approved proposals are included in this application plan."
+    ]
+  };
 }
 
 async function recordRunFeedback(input: {

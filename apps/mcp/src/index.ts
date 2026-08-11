@@ -492,12 +492,47 @@ server.registerTool(
       project: z.string().describe("Absolute or relative project directory."),
       ids: z.string().optional().describe("Comma-separated proposal ids to apply, or all."),
       limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      approved: z.boolean().optional().describe("Apply only approved proposals from .agent-workflow/tuning/approval-queue.json."),
       write: z.boolean().optional().describe("Write generated overlay files into .agent-workflow/tuning."),
       json: z.boolean().optional().describe("Return application plan JSON.")
     }
   },
-  async ({ project, ids, limit, write, json }) => {
+  async ({ project, ids, limit, approved, write, json }) => {
     const args = ["apply-tuning-proposals", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (approved) {
+      args.push("--approved");
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_queue_tuning_approvals",
+  {
+    title: "AgentFlow queue tuning approvals",
+    description: "Dry-run or write a project-local approval queue for selected tuning proposals.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated proposal ids to queue, or all."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write approval queue files into .agent-workflow/tuning."),
+      json: z.boolean().optional().describe("Return approval queue JSON.")
+    }
+  },
+  async ({ project, ids, limit, write, json }) => {
+    const args = ["queue-tuning-approvals", "--project", project];
     if (ids) {
       args.push("--ids", ids);
     }
@@ -506,6 +541,41 @@ server.registerTool(
     }
     if (write) {
       args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_tuning_approvals",
+  {
+    title: "AgentFlow tuning approvals",
+    description: "List, approve, or reject project-local tuning approval queue items.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      approve: z.string().optional().describe("Comma-separated approval ids or proposal ids to approve, or all."),
+      reject: z.string().optional().describe("Comma-separated approval ids or proposal ids to reject, or all."),
+      reviewer: z.string().optional().describe("Reviewer name."),
+      note: z.string().optional().describe("Decision note."),
+      json: z.boolean().optional().describe("Return approval queue JSON.")
+    }
+  },
+  async ({ project, approve, reject, reviewer, note, json }) => {
+    const args = ["tuning-approvals", "--project", project];
+    if (approve) {
+      args.push("--approve", approve);
+    }
+    if (reject) {
+      args.push("--reject", reject);
+    }
+    if (reviewer) {
+      args.push("--reviewer", reviewer);
+    }
+    if (note) {
+      args.push("--note", note);
     }
     if (json) {
       args.push("--json");

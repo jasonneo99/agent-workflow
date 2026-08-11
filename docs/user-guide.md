@@ -611,7 +611,12 @@ The dashboard run page also shows a compact tuning proposal panel for the run's 
 Create project-local overlays from selected tuning proposals without changing shared reusable agents or workflows:
 
 ```bash
+npm run agentflow -- queue-tuning-approvals --project /path/to/project --ids all
+npm run agentflow -- queue-tuning-approvals --project /path/to/project --ids all --write
+npm run agentflow -- tuning-approvals --project /path/to/project
+npm run agentflow -- tuning-approvals --project /path/to/project --approve tune-001 --reviewer "Your Name" --note "Looks safe"
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids all
+npm run agentflow -- apply-tuning-proposals --project /path/to/project --approved
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids tune-001,tune-004 --write
 ```
 
@@ -619,9 +624,13 @@ Without `--write`, the command is a dry run and prints the files it would create
 
 - `.agent-workflow/tuning/proposals.md`: human-readable selected proposals and patch hints.
 - `.agent-workflow/tuning/proposals.json`: structured overlay data for IDEs, MCP clients, dashboards, or future automation.
+- `.agent-workflow/tuning/approval-queue.md`: human-readable proposal approval queue.
+- `.agent-workflow/tuning/approval-queue.json`: structured approval queue with pending, approved, and rejected decisions.
 
-The dashboard tuning panel includes a Dry Run Apply button. The MCP tool `agentflow_apply_tuning_proposals` exposes the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
+Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approvals` to approve or reject selected proposal ids, then `apply-tuning-proposals --approved` to build overlays only from approved proposals.
+
+The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is an approval queue for applying tuning overlays to real prompt, workflow, or project config patches after a human reviews the generated proposal files. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next best improvement is converting approved tuning overlays into reviewable patches for project config, workflow config, or agent prompt overlays. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.

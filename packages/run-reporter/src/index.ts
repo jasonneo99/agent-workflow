@@ -135,6 +135,35 @@ export interface TuningApplicationFile {
   content: string;
 }
 
+export type TuningApprovalStatus = "pending" | "approved" | "rejected";
+
+export interface TuningApprovalQueue {
+  kind: "agentflow_tuning_approval_queue";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceGeneratedAt: string;
+  sourceRunsAnalyzed: number;
+  skippedIds: string[];
+  items: TuningApprovalItem[];
+}
+
+export interface TuningApprovalItem {
+  id: string;
+  proposalId: string;
+  status: TuningApprovalStatus;
+  createdAt: string;
+  decidedAt?: string;
+  reviewer?: string;
+  note?: string;
+  proposal: TuningProposal;
+}
+
+export interface TuningApprovalDecisionResult {
+  queue: TuningApprovalQueue;
+  selectedIds: string[];
+  skippedIds: string[];
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -606,6 +635,141 @@ export function formatTuningApplicationPlan(plan: TuningApplicationPlan): string
     "Files",
     plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
   ].filter(Boolean).join("\n");
+}
+
+export function buildTuningApprovalQueue(
+  proposalSet: TuningProposalSet,
+  selectedIds: string[] | "all" = "all",
+  existingQueue?: TuningApprovalQueue
+): TuningApprovalQueue {
+  const requestedIds = selectedIds === "all" ? proposalSet.proposals.map((proposal) => proposal.id) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = proposalSet.proposals.filter((proposal) => requestedIdSet.has(proposal.id));
+  const selectedIdSet = new Set(selected.map((proposal) => proposal.id));
+  const existingByProposal = new Map((existingQueue?.items ?? []).map((item) => [item.proposalId, item]));
+  const generatedAt = new Date().toISOString();
+
+  return {
+    kind: "agentflow_tuning_approval_queue",
+    projectRootUri: proposalSet.projectRootUri,
+    generatedAt,
+    sourceGeneratedAt: proposalSet.generatedAt,
+    sourceRunsAnalyzed: proposalSet.sourceRunsAnalyzed,
+    skippedIds: requestedIds.filter((id) => !selectedIdSet.has(id)),
+    items: selected.map((proposal) => {
+      const existing = existingByProposal.get(proposal.id);
+      return {
+        id: existing?.id ?? `approval-${proposal.id.replace(/^tune-/, "")}`,
+        proposalId: proposal.id,
+        status: existing?.status ?? "pending",
+        createdAt: existing?.createdAt ?? generatedAt,
+        decidedAt: existing?.decidedAt,
+        reviewer: existing?.reviewer,
+        note: existing?.note,
+        proposal
+      };
+    })
+  };
+}
+
+export function decideTuningApprovals(input: {
+  queue: TuningApprovalQueue;
+  ids: string[] | "all";
+  status: Exclude<TuningApprovalStatus, "pending">;
+  reviewer?: string;
+  note?: string;
+}): TuningApprovalDecisionResult {
+  const idSet = input.ids === "all" ? null : new Set(input.ids);
+  const decidedAt = new Date().toISOString();
+  const selectedIds: string[] = [];
+  const matchedIds = new Set<string>();
+  const items = input.queue.items.map((item) => {
+    const selected = idSet === null || idSet.has(item.id) || idSet.has(item.proposalId);
+    if (!selected) {
+      return item;
+    }
+    selectedIds.push(item.proposalId);
+    matchedIds.add(item.id);
+    matchedIds.add(item.proposalId);
+    return {
+      ...item,
+      status: input.status,
+      decidedAt,
+      reviewer: input.reviewer,
+      note: input.note
+    };
+  });
+
+  return {
+    queue: {
+      ...input.queue,
+      generatedAt: decidedAt,
+      items
+    },
+    selectedIds,
+    skippedIds: input.ids === "all" ? [] : input.ids.filter((id) => !matchedIds.has(id))
+  };
+}
+
+export function formatTuningApprovalQueue(queue: TuningApprovalQueue): string {
+  const counts = queue.items.reduce<Record<string, number>>((acc, item) => {
+    acc[item.status] = (acc[item.status] ?? 0) + 1;
+    return acc;
+  }, {});
+  return [
+    `Tuning Approval Queue: ${queue.projectRootUri}`,
+    `Generated: ${queue.generatedAt}`,
+    `Source runs analyzed: ${queue.sourceRunsAnalyzed}`,
+    `Counts: pending=${counts.pending ?? 0} approved=${counts.approved ?? 0} rejected=${counts.rejected ?? 0}`,
+    queue.skippedIds.length ? `Skipped unknown ids: ${queue.skippedIds.join(", ")}` : "",
+    "",
+    queue.items.length
+      ? queue.items.map((item) => [
+        `- ${item.proposalId} ${item.status}: ${item.proposal.workflowId}/${item.proposal.stageId} ${item.proposal.agentId}`,
+        `  - Approval id: ${item.id}`,
+        `  - Recommendation: ${item.proposal.recommendation}`,
+        item.note ? `  - Note: ${item.note}` : ""
+      ].filter(Boolean).join("\n")).join("\n")
+      : "- No approval items."
+  ].filter(Boolean).join("\n");
+}
+
+export function formatTuningApprovalQueueMarkdown(queue: TuningApprovalQueue): string {
+  const sections = queue.items.map((item) => [
+    `## ${item.proposalId} - ${item.status}`,
+    "",
+    `- Approval id: ${item.id}`,
+    `- Priority: ${item.proposal.priority}`,
+    `- Kind: ${item.proposal.kind}`,
+    `- Workflow: ${item.proposal.workflowId}`,
+    `- Stage: ${item.proposal.stageId}`,
+    `- Agent: ${item.proposal.agentId}`,
+    `- Provider/tier: ${item.proposal.providerId} / ${item.proposal.modelTier}`,
+    `- Created: ${item.createdAt}`,
+    item.decidedAt ? `- Decided: ${item.decidedAt}` : "",
+    item.reviewer ? `- Reviewer: ${item.reviewer}` : "",
+    item.note ? `- Note: ${item.note}` : "",
+    `- Reason: ${item.proposal.reason}`,
+    `- Recommendation: ${item.proposal.recommendation}`,
+    `- Patch hint: ${item.proposal.patchHint}`,
+    ""
+  ].filter(Boolean).join("\n"));
+
+  return [
+    "# Agent Workflow Tuning Approval Queue",
+    "",
+    `Generated: ${queue.generatedAt}`,
+    `Project: ${queue.projectRootUri}`,
+    `Source proposals generated: ${queue.sourceGeneratedAt}`,
+    `Source runs analyzed: ${queue.sourceRunsAnalyzed}`,
+    "",
+    "This file is project-local. Approve or reject tuning proposals before turning them into behavior-changing patches.",
+    "",
+    queue.skippedIds.length ? `Skipped unknown ids: ${queue.skippedIds.join(", ")}` : "",
+    "",
+    sections.length ? sections.join("\n") : "_No approval items._",
+    ""
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 function formatStageOutput(artifact: ArtifactStatus): string {
