@@ -50,8 +50,11 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Apply reviewed patch-plan items into project-local tuning notes.
   - Teach future brief compilation to read applied project-local tuning notes with conservative context caps.
 
-- [ ] Export redaction and scrubbed example tooling.
-  - Remove secrets, customer data, private prompts, private schemas, tenant context, and proprietary scoring from exported reports.
+- [x] Export redaction and scrubbed report tooling.
+  - Remove secrets, customer data, private prompts, private schemas, tenant context, and high-risk freeform artifact details from scrubbed exported reports.
+  - Preserve workflow shape, statuses, stage outcomes, and artifact metadata for shareable debugging.
+
+- [ ] Scrubbed synthetic example fixtures for docs.
   - Produce safe synthetic examples for docs.
 
 - [ ] Versioned agent/workflow bundle manifests.

@@ -1093,7 +1093,8 @@ program
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
   .option("-o, --out <dir>", "export directory", "exports/runs")
-  .action(async (options: { run: string; out: string }) => {
+  .option("--scrub", "redact secrets and high-risk project details for sharing")
+  .action(async (options: { run: string; out: string; scrub?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1106,7 +1107,8 @@ program
 
     const exportResult = await exportWorkflowRun({
       runId: options.run,
-      outDir: path.resolve(process.cwd(), options.out)
+      outDir: path.resolve(process.cwd(), options.out),
+      scrub: Boolean(options.scrub)
     });
     if (!exportResult.ok) {
       console.error(`Unknown workflow run: ${options.run}`);
@@ -3497,6 +3499,7 @@ async function watchWorkflowRun(input: {
 async function exportWorkflowRun(input: {
   runId: string;
   outDir: string;
+  scrub?: boolean;
 }): Promise<
   | { ok: true; markdownPath: string; jsonPath: string }
   | { ok: false }
@@ -3511,7 +3514,8 @@ async function exportWorkflowRun(input: {
     run: details.run,
     tasks: details.tasks,
     receipts: details.receipts,
-    artifacts
+    artifacts,
+    scrub: input.scrub
   });
   await fs.mkdir(input.outDir, { recursive: true });
   const markdownPath = path.join(input.outDir, `${input.runId}.md`);

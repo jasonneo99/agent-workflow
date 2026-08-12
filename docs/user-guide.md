@@ -329,7 +329,10 @@ Export a run:
 
 ```bash
 npm run export-run -- --run <run-id> --out /path/to/project/.agent-workflow/exports
+npm run export-run -- --run <run-id> --out /path/to/project/.agent-workflow/exports --scrub
 ```
+
+Use `--scrub` before sharing exports outside a trusted local context. Scrubbed exports preserve workflow shape and status while redacting absolute paths, emails, common secret patterns, compiled briefs, prompts, command output, summaries, findings, schemas, tenant fields, and other high-risk freeform artifact fields.
 
 Inspect a specific run with artifacts:
 
@@ -640,4 +643,4 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is export redaction and scrubbed example tooling. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next best improvement is scrubbed synthetic example fixtures for docs. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.

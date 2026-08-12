@@ -10,6 +10,7 @@ export interface RunExportInput {
   tasks: WorkflowTaskStatus[];
   receipts: ActionReceiptStatus[];
   artifacts: ArtifactStatus[];
+  scrub?: boolean;
 }
 
 export interface RunExportDocument {
@@ -193,32 +194,34 @@ export interface TuningPatchPlanEntry {
 }
 
 export function buildRunExport(input: RunExportInput): RunExportDocument {
-  const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
-  const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
-  const fileWrites = input.artifacts.filter((artifact) => artifact.kind === "file_write");
-  const actionRejections = input.artifacts.filter((artifact) => artifact.kind === "action_rejection");
+  const redaction = input.scrub ? buildRedactedRunExport(input) : input;
+  const stageOutputs = redaction.artifacts.filter((artifact) => artifact.kind === "stage_output");
+  const commandOutputs = redaction.artifacts.filter((artifact) => artifact.kind === "command_output");
+  const fileWrites = redaction.artifacts.filter((artifact) => artifact.kind === "file_write");
+  const actionRejections = redaction.artifacts.filter((artifact) => artifact.kind === "action_rejection");
 
   const markdown = [
-    `# Workflow Run ${input.run.id}`,
+    `# Workflow Run ${redaction.run.id}`,
     "",
     "## Summary",
-    `- Status: ${input.run.status}`,
-    `- Workflow: ${input.run.workflowId}`,
-    `- Task: ${input.run.task}`,
-    `- Project: ${input.run.projectName}`,
-    `- Project root: ${input.run.projectRootUri}`,
-    `- Autonomy: ${input.run.autonomy}`,
-    `- Started: ${input.run.startedAt}`,
-    `- Finished: ${input.run.finishedAt ?? "not finished"}`,
+    input.scrub ? "- Redaction: scrubbed for sharing" : "",
+    `- Status: ${redaction.run.status}`,
+    `- Workflow: ${redaction.run.workflowId}`,
+    `- Task: ${redaction.run.task}`,
+    `- Project: ${redaction.run.projectName}`,
+    `- Project root: ${redaction.run.projectRootUri}`,
+    `- Autonomy: ${redaction.run.autonomy}`,
+    `- Started: ${redaction.run.startedAt}`,
+    `- Finished: ${redaction.run.finishedAt ?? "not finished"}`,
     "",
     "## Stages",
-    input.tasks.length
-      ? input.tasks.map((task) => `- ${task.stageId}: ${task.agentId} ${task.status} attempts=${task.attempts}`).join("\n")
+    redaction.tasks.length
+      ? redaction.tasks.map((task) => `- ${task.stageId}: ${task.agentId} ${task.status} attempts=${task.attempts}`).join("\n")
       : "_No stages recorded._",
     "",
     "## Receipts",
-    input.receipts.length
-      ? input.receipts.map((receipt) => [
+    redaction.receipts.length
+      ? redaction.receipts.map((receipt) => [
         `- ${receipt.actionType} ${receipt.agentId}`,
         `  - Target: ${receipt.target}`,
         `  - Summary: ${receipt.summary}`,
@@ -247,8 +250,8 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
       : "_No action rejections recorded._",
     "",
     "## Artifacts",
-    input.artifacts.length
-      ? input.artifacts.map((artifact) => `- ${artifact.kind}: ${artifact.uri}`).join("\n")
+    redaction.artifacts.length
+      ? redaction.artifacts.map((artifact) => `- ${artifact.kind}: ${artifact.uri}`).join("\n")
       : "_No artifacts recorded._",
     ""
   ].join("\n");
@@ -257,10 +260,15 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
     markdown,
     json: {
       exportedAt: new Date().toISOString(),
-      run: input.run,
-      tasks: input.tasks,
-      receipts: input.receipts,
-      artifacts: input.artifacts
+      redacted: Boolean(input.scrub),
+      redactionNotes: input.scrub ? [
+        "Absolute paths, emails, common secret patterns, and high-risk freeform artifact fields were scrubbed.",
+        "Use unscreened local exports only for trusted internal debugging."
+      ] : [],
+      run: redaction.run,
+      tasks: redaction.tasks,
+      receipts: redaction.receipts,
+      artifacts: redaction.artifacts
     }
   };
 }
@@ -1148,6 +1156,98 @@ function formatActionRejection(artifact: ArtifactStatus): string {
     `- Target: ${stringValue(content.target, "unknown")}`,
     `- Error: ${stringValue(content.error, "unknown")}`
   ].join("\n");
+}
+
+function buildRedactedRunExport(input: RunExportInput): RunExportInput {
+  const projectRoot = input.run.projectRootUri;
+  const redactedRun = redactRecord(input.run, projectRoot) as WorkflowRunStatus;
+  return {
+    ...input,
+    run: {
+      ...redactedRun,
+      task: "[REDACTED_TASK]",
+      projectName: "Scrubbed Project",
+      projectRootUri: "[PROJECT_ROOT]"
+    },
+    tasks: input.tasks.map((task) => redactRecord(task, projectRoot) as WorkflowTaskStatus),
+    receipts: input.receipts.map((receipt) => redactRecord(receipt, projectRoot, new Set(["summary"])) as ActionReceiptStatus),
+    artifacts: input.artifacts.map((artifact) => ({
+      ...redactRecord(artifact, projectRoot) as ArtifactStatus,
+      content: scrubArtifactContent(artifact.kind, artifact.content, projectRoot)
+    })),
+    scrub: true
+  };
+}
+
+function scrubArtifactContent(kind: string, content: Record<string, unknown>, projectRoot: string): Record<string, unknown> {
+  if (kind === "compiled_brief") {
+    return { redacted: true, reason: "Compiled brief content may include private project context, prompts, schemas, or tenant details." };
+  }
+
+  const highRiskKeys = new Set([
+    "compiledBrief",
+    "workflowTask",
+    "task",
+    "prompt",
+    "systemPrompt",
+    "developerPrompt",
+    "userPrompt",
+    "text",
+    "summary",
+    "findings",
+    "nextAction",
+    "stdout",
+    "stderr",
+    "output",
+    "content",
+    "diff",
+    "patch",
+    "code",
+    "schema",
+    "tenant",
+    "tenantId",
+    "customer",
+    "customerId"
+  ]);
+
+  return redactRecord(content, projectRoot, highRiskKeys) as Record<string, unknown>;
+}
+
+function redactRecord(value: unknown, projectRoot: string, highRiskKeys = new Set<string>()): unknown {
+  if (typeof value === "string") {
+    return redactString(value, projectRoot);
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactRecord(item, projectRoot, highRiskKeys));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const output: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (highRiskKeys.has(key)) {
+      output[key] = "[REDACTED]";
+    } else {
+      output[key] = redactRecord(item, projectRoot, highRiskKeys);
+    }
+  }
+  return output;
+}
+
+function redactString(value: string, projectRoot: string): string {
+  let output = value;
+  if (projectRoot) {
+    output = output.split(projectRoot).join("[PROJECT_ROOT]");
+  }
+  output = output
+    .replace(/\/Users\/[A-Za-z0-9._-]+\/[^\s)'"`]+/g, "[LOCAL_PATH]")
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[EMAIL]")
+    .replace(/\bsk-proj-[A-Za-z0-9_-]{12,}\b/g, "[OPENAI_PROJECT_KEY]")
+    .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "[OPENAI_KEY]")
+    .replace(/\bAKIA[0-9A-Z]{16}\b/g, "[AWS_ACCESS_KEY]")
+    .replace(/\b(password|passwd|pwd|secret|token|api[_-]?key)\s*=\s*([^\s'"`]+)/gi, "$1=[REDACTED]");
+  return output;
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

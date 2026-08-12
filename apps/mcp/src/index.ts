@@ -679,13 +679,17 @@ server.registerTool(
     description: "Export a workflow run report as Markdown and JSON.",
     inputSchema: {
       runId: z.string().describe("Workflow run id."),
-      out: z.string().optional().describe("Export directory.")
+      out: z.string().optional().describe("Export directory."),
+      scrub: z.boolean().optional().describe("Redact secrets and high-risk project details for sharing.")
     }
   },
-  async ({ runId, out }) => {
+  async ({ runId, out, scrub }) => {
     const args = ["export-run", "--run", runId];
     if (out) {
       args.push("--out", out);
+    }
+    if (scrub) {
+      args.push("--scrub");
     }
     return toolResult(await runAgentflow(args));
   }

@@ -52,7 +52,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_apply_tuning_patches`: dry-run or write project-local tuning notes from reviewed patch-plan items.
 - `agentflow_apply_tuning_proposals`: dry-run or write selected tuning proposals into project-local `.agent-workflow/tuning/` overlays.
 - `agentflow_artifacts`: inspect run artifacts.
-- `agentflow_export_run`: export Markdown and JSON run reports.
+- `agentflow_export_run`: export Markdown and JSON run reports, with optional scrubbed sharing mode.
 - `agentflow_provider_check`: check selected model provider.
 - `agentflow_provider_use`: switch or update selected model provider in `.env`.
 - `agentflow_provider_smoke`: run a minimal provider contract smoke workflow.
