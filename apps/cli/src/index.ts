@@ -41,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningPatchPlan, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1445,6 +1445,38 @@ program
   });
 
 program
+  .command("apply-tuning-patches")
+  .description("Apply reviewed tuning patch-plan items into project-local tuning note files")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated approved proposal ids or approval ids to apply, or all", "all")
+  .option("--write", "write applied tuning note files into the project")
+  .option("--json", "print application plan JSON")
+  .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const patchPlan = await readTuningPatchPlan(projectDir);
+    const plan = buildTuningPatchApplicationPlan(patchPlan, parseProposalIds(options.ids));
+
+    if (options.write) {
+      await writeTuningApplicationPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatTuningApplicationPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create applied project-local tuning notes.");
+    }
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1811,6 +1843,16 @@ async function writeTuningPatchPlan(projectDir: string, plan: TuningPatchPlan): 
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
   }
+}
+
+async function readTuningPatchPlan(projectDir: string): Promise<TuningPatchPlanDocument> {
+  const patchPlanPath = path.join(projectDir, ".agent-workflow", "tuning", "patches", "patch-plan.json");
+  const raw = await fs.readFile(patchPlanPath, "utf8");
+  const parsed = JSON.parse(raw) as TuningPatchPlanDocument;
+  if (parsed.kind !== "agentflow_tuning_patch_plan" || !Array.isArray(parsed.patches)) {
+    throw new Error(`Invalid tuning patch plan: ${patchPlanPath}`);
+  }
+  return parsed;
 }
 
 function proposalSetFromApprovedQueue(queue: TuningApprovalQueue): TuningProposalSet {

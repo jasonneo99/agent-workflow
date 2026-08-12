@@ -172,6 +172,26 @@ export interface TuningPatchPlan {
   files: TuningApplicationFile[];
 }
 
+export interface TuningPatchPlanDocument {
+  kind: "agentflow_tuning_patch_plan";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceQueueGeneratedAt: string;
+  selectedIds: string[];
+  patches: TuningPatchPlanEntry[];
+}
+
+export interface TuningPatchPlanEntry {
+  proposalId: string;
+  approvalId: string;
+  status: "approved";
+  target: string;
+  action: string;
+  proposal: TuningProposal;
+  reviewer?: string;
+  note?: string;
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -794,7 +814,7 @@ export function buildTuningPatchPlan(
     relativePath: `.agent-workflow/tuning/patches/${item.proposalId}.md`,
     content: formatTuningPatchMarkdown(item, generatedAt)
   }));
-  const jsonDocument = {
+  const jsonDocument: TuningPatchPlanDocument = {
     kind: "agentflow_tuning_patch_plan",
     projectRootUri: queue.projectRootUri,
     generatedAt,
@@ -803,7 +823,7 @@ export function buildTuningPatchPlan(
     patches: selected.map((item) => ({
       proposalId: item.proposalId,
       approvalId: item.id,
-      status: item.status,
+      status: "approved" as const,
       target: tuningPatchTarget(item.proposal),
       action: tuningPatchAction(item.proposal),
       proposal: item.proposal,
@@ -841,6 +861,54 @@ export function formatTuningPatchPlan(plan: TuningPatchPlan): string {
     "Files",
     plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
   ].filter(Boolean).join("\n");
+}
+
+export function buildTuningPatchApplicationPlan(
+  patchPlan: TuningPatchPlanDocument,
+  selectedIds: string[] | "all" = "all"
+): TuningApplicationPlan {
+  const requestedIds = selectedIds === "all" ? patchPlan.patches.map((patch) => patch.proposalId) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = patchPlan.patches.filter((patch) => requestedIdSet.has(patch.approvalId) || requestedIdSet.has(patch.proposalId));
+  const matchedIds = new Set(selected.flatMap((patch) => [patch.approvalId, patch.proposalId]));
+  const generatedAt = new Date().toISOString();
+  const document = {
+    kind: "agentflow_applied_tuning_patches",
+    projectRootUri: patchPlan.projectRootUri,
+    generatedAt,
+    sourcePatchPlanGeneratedAt: patchPlan.generatedAt,
+    selectedIds: selected.map((patch) => patch.proposalId),
+    patches: selected
+  };
+
+  return {
+    projectRootUri: patchPlan.projectRootUri,
+    generatedAt,
+    selectedIds: selected.map((patch) => patch.proposalId),
+    skippedIds: requestedIds.filter((id) => !matchedIds.has(id)),
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/applied-patches.md",
+        content: formatAppliedTuningPatchesMarkdown(patchPlan, selected, generatedAt)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/applied-patches.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      },
+      {
+        relativePath: ".agent-workflow/tuning/agent-notes.md",
+        content: formatAppliedTuningCategoryMarkdown("Agent Prompt Notes", selected.filter((patch) => patch.proposal.kind === "agent_prompt"), generatedAt)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/context-budget-notes.md",
+        content: formatAppliedTuningCategoryMarkdown("Context Budget Notes", selected.filter((patch) => patch.proposal.kind === "context_budget"), generatedAt)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/routing-preferences.md",
+        content: formatAppliedTuningCategoryMarkdown("Routing Preference Notes", selected.filter((patch) => patch.proposal.kind === "routing_preference"), generatedAt)
+      }
+    ]
+  };
 }
 
 function formatStageOutput(artifact: ArtifactStatus): string {
@@ -987,6 +1055,64 @@ function tuningPatchAction(proposal: TuningProposal): string {
     return `Review provider routing for ${proposal.workflowId}/${proposal.stageId}: ${proposal.patchHint}`;
   }
   return proposal.patchHint;
+}
+
+function formatAppliedTuningPatchesMarkdown(
+  patchPlan: TuningPatchPlanDocument,
+  selected: TuningPatchPlanEntry[],
+  generatedAt: string
+): string {
+  return [
+    "# Applied Agent Workflow Tuning Patches",
+    "",
+    `Generated: ${generatedAt}`,
+    `Project: ${patchPlan.projectRootUri}`,
+    `Source patch plan generated: ${patchPlan.generatedAt}`,
+    "",
+    "These are project-local tuning notes derived from approved patch-plan items. They record accepted intent but do not edit shared reusable agents or workflows.",
+    "",
+    selected.length
+      ? selected.map((patch) => [
+        `## ${patch.proposalId}`,
+        "",
+        `- Approval id: ${patch.approvalId}`,
+        `- Kind: ${patch.proposal.kind}`,
+        `- Target: ${patch.target}`,
+        `- Action: ${patch.action}`,
+        patch.reviewer ? `- Reviewer: ${patch.reviewer}` : "",
+        patch.note ? `- Note: ${patch.note}` : "",
+        `- Reason: ${patch.proposal.reason}`,
+        ""
+      ].filter(Boolean).join("\n")).join("\n")
+      : "_No approved patch-plan items selected._",
+    ""
+  ].join("\n");
+}
+
+function formatAppliedTuningCategoryMarkdown(
+  title: string,
+  patches: TuningPatchPlanEntry[],
+  generatedAt: string
+): string {
+  return [
+    `# ${title}`,
+    "",
+    `Generated: ${generatedAt}`,
+    "",
+    patches.length
+      ? patches.map((patch) => [
+        `## ${patch.proposalId}`,
+        "",
+        `- Workflow/stage: ${patch.proposal.workflowId}/${patch.proposal.stageId}`,
+        `- Agent: ${patch.proposal.agentId}`,
+        `- Recommendation: ${patch.proposal.recommendation}`,
+        `- Suggested local action: ${patch.action}`,
+        `- Verification hint: run the affected workflow or project checks after making any behavior-changing edit.`,
+        ""
+      ].join("\n")).join("\n")
+      : "_No applied notes in this category._",
+    ""
+  ].join("\n");
 }
 
 function formatCommandOutput(artifact: ArtifactStatus): string {

@@ -612,6 +612,33 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_apply_tuning_patches",
+  {
+    title: "AgentFlow apply tuning patches",
+    description: "Dry-run or write project-local tuning notes from reviewed patch-plan items.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated approved proposal ids or approval ids to apply, or all."),
+      write: z.boolean().optional().describe("Write applied tuning notes into .agent-workflow/tuning."),
+      json: z.boolean().optional().describe("Return application plan JSON.")
+    }
+  },
+  async ({ project, ids, write, json }) => {
+    const args = ["apply-tuning-patches", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_artifacts",
   {
     title: "AgentFlow artifacts",

@@ -47,7 +47,8 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Create project-local approval queues from selected tuning proposals.
   - Require explicit human approval before proposals become approved overlay inputs.
   - Generate reviewable patch-plan files for approved proposals.
-  - Next depth: apply approved patch-plan files through a guarded project-local patch command.
+  - Apply reviewed patch-plan items into project-local tuning notes.
+  - Next depth: teach future brief compilation to read applied project-local tuning notes.
 
 - [ ] Export redaction and scrubbed example tooling.
   - Remove secrets, customer data, private prompts, private schemas, tenant context, and proprietary scoring from exported reports.
