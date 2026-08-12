@@ -58,7 +58,7 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Produce safe synthetic examples for docs.
   - Validate committed examples in CI so private data patterns do not drift into documentation fixtures.
 
-- [ ] Versioned agent/workflow bundle manifests.
+- [x] Versioned agent/workflow bundle manifests.
   - Track bundle version, source, checksum, compatibility, and migration notes.
   - Support safer sharing across teams and IDE clients.
 

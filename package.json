@@ -19,6 +19,7 @@
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
     "compile": "tsx apps/cli/src/index.ts compile",
     "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
+    "bundle-manifest": "tsx apps/cli/src/index.ts bundle-manifest",
     "doctor": "tsx apps/cli/src/index.ts doctor",
     "exec-command": "tsx apps/cli/src/index.ts exec-command",
     "export-run": "tsx apps/cli/src/index.ts export-run",

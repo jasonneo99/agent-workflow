@@ -117,6 +117,7 @@ templates/       — Project initialization templates
 npm run setup                  # Interactive onboarding
 npm run provider-check         # Verify model provider
 npm run validate               # Validate agent/workflow definitions
+npm run bundle-manifest        # Inspect versioned bundle checksums
 npm run doctor                 # Check local services
 
 # Project operations
@@ -160,6 +161,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
 - [Integration Examples](docs/integration-examples.md): copyable model-provider and IDE/client examples
 - [Scrubbed Examples](docs/examples/README.md): synthetic exports safe for docs and issue reports
+- [Bundle Manifest](agent-workflow.bundle.json): versioned reusable agent/workflow bundle checksum
 - [Agent Roster](docs/agent-roster.md): available agents
 - [Architecture](docs/architecture.md): runtime and storage design
 - [Roadmap](docs/roadmap.md): shared-platform direction and next implementation phases

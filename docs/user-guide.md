@@ -22,6 +22,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run doctor
 npm run bootstrap-storage
 npm run validate
+npm run bundle-manifest
 ```
 
 The default first-run provider should be `mock`:
@@ -56,6 +57,8 @@ npm run smoke
 ```
 
 This verifies Docker services, workflow definitions, queueing, storage, receipts, artifacts, and worker execution.
+
+`npm run bundle-manifest` prints the versioned reusable agent/workflow bundle manifest. Run `npm run bundle-manifest -- --write` after changing shared files under `agents/` or `workflows/`; `npm run validate` checks the committed manifest checksum.
 
 ## 3. Use From An MCP Client
 
@@ -645,4 +648,4 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is versioned agent/workflow bundle manifests. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next best improvement is production, staging, and local policy profiles. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.

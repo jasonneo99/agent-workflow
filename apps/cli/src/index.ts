@@ -15,6 +15,7 @@ import {
   loadWorkflowRecords,
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
+import { buildBundleManifest, compareBundleManifests, formatBundleManifest, loadCommittedBundleManifest, writeBundleManifest } from "../../../packages/agent-registry/src/manifest.js";
 import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
@@ -169,6 +170,7 @@ program
   .action(async () => {
     const agents = await loadAgents(rootDir);
     const workflows = await loadWorkflows(rootDir);
+    const committedManifest = await loadCommittedBundleManifest(rootDir);
     const agentIds = new Set(agents.map((agent) => agent.id));
     const errors: string[] = [];
 
@@ -190,6 +192,11 @@ program
       }
     }
 
+    if (committedManifest) {
+      const currentManifest = await buildBundleManifest(rootDir);
+      errors.push(...compareBundleManifests(committedManifest, currentManifest));
+    }
+
     if (errors.length) {
       for (const error of errors) {
         console.error(`ERROR: ${error}`);
@@ -199,6 +206,23 @@ program
     }
 
     console.log(`Validated ${agents.length} agents and ${workflows.length} workflows.`);
+    if (committedManifest) {
+      console.log(`Bundle manifest ${committedManifest.bundle.version} checksum ${committedManifest.checksum.value}`);
+    }
+  });
+
+program
+  .command("bundle-manifest")
+  .description("Print or write the versioned reusable agent/workflow bundle manifest")
+  .option("--write", "write agent-workflow.bundle.json")
+  .action(async (options: { write?: boolean }) => {
+    const manifest = await buildBundleManifest(rootDir);
+    if (options.write) {
+      const outputPath = await writeBundleManifest(rootDir, manifest);
+      console.log(`Wrote ${path.relative(rootDir, outputPath)}`);
+    } else {
+      console.log(formatBundleManifest(manifest));
+    }
   });
 
 program

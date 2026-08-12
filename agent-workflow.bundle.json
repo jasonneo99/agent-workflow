@@ -1,0 +1,310 @@
+{
+  "schemaVersion": 1,
+  "bundle": {
+    "id": "agent-workflow-core",
+    "name": "Agent Workflow Core Bundle",
+    "version": "0.1.0",
+    "source": "https://github.com/jasonneo99/agent-workflow.git",
+    "description": "Portable, model-agnostic agent workflows for any codebase"
+  },
+  "compatibility": {
+    "agentWorkflow": ">=0.1.0 <1.0.0",
+    "node": ">=24",
+    "mcp": ">=1.29.0"
+  },
+  "counts": {
+    "agents": 22,
+    "workflows": 8,
+    "files": 30
+  },
+  "checksum": {
+    "algorithm": "sha256",
+    "value": "2fa2ed67c779c1fcd01ebbb7091ff6fce6a3578ce93fb3e9132696a4d64a2c81"
+  },
+  "agents": [
+    {
+      "id": "auto-ci-triage",
+      "path": "agents/automatic/auto-ci-triage.yaml",
+      "checksum": "770c9d9616fe092158cae2940f73c3493608011b075b04486d1413433c32773e"
+    },
+    {
+      "id": "auto-docs-update",
+      "path": "agents/automatic/auto-docs-update.yaml",
+      "checksum": "b750256074a5115f5fdeb6293404f4b11f2737fb610c2dfc7564ba0fc4aedef1"
+    },
+    {
+      "id": "auto-memory-summarizer",
+      "path": "agents/automatic/auto-memory-summarizer.yaml",
+      "checksum": "5deff1459051335b754fce1f6241cefab7eeb63869dc52ef5376b09a5bc0aa11"
+    },
+    {
+      "id": "auto-release-check",
+      "path": "agents/automatic/auto-release-check.yaml",
+      "checksum": "12e634ca59d3cd0972b9044896cf3c01049a51a5be077e958bbc981636cf3fe5"
+    },
+    {
+      "id": "auto-test-runner",
+      "path": "agents/automatic/auto-test-runner.yaml",
+      "checksum": "2fe44446154162004bd060337f098ff0b0044b02e63051ca695b332cb454ec2d"
+    },
+    {
+      "id": "auto-wide-open-executor",
+      "path": "agents/automatic/auto-wide-open-executor.yaml",
+      "checksum": "e2edff0198c163d99ace208af8ed0ff2bfb70c7e2738dcb4d3b424a4cacd2135"
+    },
+    {
+      "id": "context-curator",
+      "path": "agents/core/context-curator.yaml",
+      "checksum": "129567a35806f71f3b558df67108cb4693d671538fbd70b34b98798669a7bcc3"
+    },
+    {
+      "id": "task-triager",
+      "path": "agents/core/task-triager.yaml",
+      "checksum": "26f3e966ad6fa201ea7ddf8694719b45dfeeb2658c70aee79d1244e678c14943"
+    },
+    {
+      "id": "workflow-orchestrator",
+      "path": "agents/core/workflow-orchestrator.yaml",
+      "checksum": "e655ccdc1ffd8cb09346a236cfcd01a0e68bdded1d1d1b0038a959244e067055"
+    },
+    {
+      "id": "backend-engineer",
+      "path": "agents/development/backend-engineer.yaml",
+      "checksum": "b9f74128981c843c0294e8d716e5afea9dc326808285e1d251a198cb4a428d86"
+    },
+    {
+      "id": "ci-debugger",
+      "path": "agents/development/ci-debugger.yaml",
+      "checksum": "af59e2d48b84c7daa8eac5c94bea018385819978865d5c7441a037c7cad0292b"
+    },
+    {
+      "id": "database-engineer",
+      "path": "agents/development/database-engineer.yaml",
+      "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
+    },
+    {
+      "id": "frontend-engineer",
+      "path": "agents/development/frontend-engineer.yaml",
+      "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
+    },
+    {
+      "id": "implementation-agent",
+      "path": "agents/development/implementation-agent.yaml",
+      "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+    },
+    {
+      "id": "security-reviewer",
+      "path": "agents/development/security-reviewer.yaml",
+      "checksum": "f08d2c9edf387ac272d93fb2ac3e64c1188c14ef2e1fe566180aa8eaad8f81d5"
+    },
+    {
+      "id": "technical-architect",
+      "path": "agents/development/technical-architect.yaml",
+      "checksum": "66fc838085f2fd78b13ff39fc4f1c4282f602cb533a5cc72e0deeefea42aff42"
+    },
+    {
+      "id": "test-engineer",
+      "path": "agents/development/test-engineer.yaml",
+      "checksum": "c1ff845d969c61ab093590f0a05a2f5160a0d2de4bd489d10015716b6e2c42b8"
+    },
+    {
+      "id": "docs-maintainer",
+      "path": "agents/operations/docs-maintainer.yaml",
+      "checksum": "996423d62d15b1d7691c4de1e4f3b919fb3073b113a2fdc65bfccd604c289255"
+    },
+    {
+      "id": "pr-preparer",
+      "path": "agents/operations/pr-preparer.yaml",
+      "checksum": "5fae1a2cecddaf9607ec3a1537922511a6bea591faac828230a20c35b59c5b59"
+    },
+    {
+      "id": "release-manager",
+      "path": "agents/operations/release-manager.yaml",
+      "checksum": "9e848fd1e6641840c1933a0e0b18a324c9a237c591d96a9c42d3645fe09c9610"
+    },
+    {
+      "id": "product-strategist",
+      "path": "agents/product/product-strategist.yaml",
+      "checksum": "67ebb74db692a03ba1bec5cb9313e1212496288a703cb1745a20a9b90c14da00"
+    },
+    {
+      "id": "ux-reviewer",
+      "path": "agents/product/ux-reviewer-mira.yaml",
+      "checksum": "428f21af307cd42e954c10806660034d7d3249c7c4f36cf44a20fcbd1b5b2af0"
+    }
+  ],
+  "workflows": [
+    {
+      "id": "build-feature",
+      "path": "workflows/build-feature.yaml",
+      "checksum": "7966d98ee608f199b6d40a3d76b5fa3248ff0ba74da63763a9414c9e56643cd6"
+    },
+    {
+      "id": "debug-failure",
+      "path": "workflows/debug-failure.yaml",
+      "checksum": "04f3b4019cc6f35b1b7062add881ccda803d59d3c1def786994e7191293a2cc0"
+    },
+    {
+      "id": "maintain-context",
+      "path": "workflows/maintain-context.yaml",
+      "checksum": "6af9398c60c35375b678de98104ba869d1d06a1a74b90442f08a36dbf1634bd9"
+    },
+    {
+      "id": "production-readiness",
+      "path": "workflows/production-readiness.yaml",
+      "checksum": "f76322805b15af8df7bec258dd82ffb447153482a7ce22408864bc387d700433"
+    },
+    {
+      "id": "provider-smoke",
+      "path": "workflows/provider-smoke.yaml",
+      "checksum": "7b7041dd6271516bc7f7353150a8e6ef98ef768edecd10116915233dad287678"
+    },
+    {
+      "id": "review-pr",
+      "path": "workflows/review-pr.yaml",
+      "checksum": "ddd37a7335c8bfd24d858b6c5a5aa65c885142df3c1253f3673c2237dcc1db8e"
+    },
+    {
+      "id": "ship-release",
+      "path": "workflows/ship-release.yaml",
+      "checksum": "a13556bbe9db5589a9e2476fb25b8bf94ad6abcd3bdfbdc3acb63e8634aa5944"
+    },
+    {
+      "id": "wide-open-automation",
+      "path": "workflows/wide-open-automation.yaml",
+      "checksum": "15e6a800c0d0480756d48006a518669a66f42058d66fbc294bdeee28a6b00d3e"
+    }
+  ],
+  "files": [
+    {
+      "path": "agents/automatic/auto-ci-triage.yaml",
+      "checksum": "770c9d9616fe092158cae2940f73c3493608011b075b04486d1413433c32773e"
+    },
+    {
+      "path": "agents/automatic/auto-docs-update.yaml",
+      "checksum": "b750256074a5115f5fdeb6293404f4b11f2737fb610c2dfc7564ba0fc4aedef1"
+    },
+    {
+      "path": "agents/automatic/auto-memory-summarizer.yaml",
+      "checksum": "5deff1459051335b754fce1f6241cefab7eeb63869dc52ef5376b09a5bc0aa11"
+    },
+    {
+      "path": "agents/automatic/auto-release-check.yaml",
+      "checksum": "12e634ca59d3cd0972b9044896cf3c01049a51a5be077e958bbc981636cf3fe5"
+    },
+    {
+      "path": "agents/automatic/auto-test-runner.yaml",
+      "checksum": "2fe44446154162004bd060337f098ff0b0044b02e63051ca695b332cb454ec2d"
+    },
+    {
+      "path": "agents/automatic/auto-wide-open-executor.yaml",
+      "checksum": "e2edff0198c163d99ace208af8ed0ff2bfb70c7e2738dcb4d3b424a4cacd2135"
+    },
+    {
+      "path": "agents/core/context-curator.yaml",
+      "checksum": "129567a35806f71f3b558df67108cb4693d671538fbd70b34b98798669a7bcc3"
+    },
+    {
+      "path": "agents/core/task-triager.yaml",
+      "checksum": "26f3e966ad6fa201ea7ddf8694719b45dfeeb2658c70aee79d1244e678c14943"
+    },
+    {
+      "path": "agents/core/workflow-orchestrator.yaml",
+      "checksum": "e655ccdc1ffd8cb09346a236cfcd01a0e68bdded1d1d1b0038a959244e067055"
+    },
+    {
+      "path": "agents/development/backend-engineer.yaml",
+      "checksum": "b9f74128981c843c0294e8d716e5afea9dc326808285e1d251a198cb4a428d86"
+    },
+    {
+      "path": "agents/development/ci-debugger.yaml",
+      "checksum": "af59e2d48b84c7daa8eac5c94bea018385819978865d5c7441a037c7cad0292b"
+    },
+    {
+      "path": "agents/development/database-engineer.yaml",
+      "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
+    },
+    {
+      "path": "agents/development/frontend-engineer.yaml",
+      "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
+    },
+    {
+      "path": "agents/development/implementation-agent.yaml",
+      "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+    },
+    {
+      "path": "agents/development/security-reviewer.yaml",
+      "checksum": "f08d2c9edf387ac272d93fb2ac3e64c1188c14ef2e1fe566180aa8eaad8f81d5"
+    },
+    {
+      "path": "agents/development/technical-architect.yaml",
+      "checksum": "66fc838085f2fd78b13ff39fc4f1c4282f602cb533a5cc72e0deeefea42aff42"
+    },
+    {
+      "path": "agents/development/test-engineer.yaml",
+      "checksum": "c1ff845d969c61ab093590f0a05a2f5160a0d2de4bd489d10015716b6e2c42b8"
+    },
+    {
+      "path": "agents/operations/docs-maintainer.yaml",
+      "checksum": "996423d62d15b1d7691c4de1e4f3b919fb3073b113a2fdc65bfccd604c289255"
+    },
+    {
+      "path": "agents/operations/pr-preparer.yaml",
+      "checksum": "5fae1a2cecddaf9607ec3a1537922511a6bea591faac828230a20c35b59c5b59"
+    },
+    {
+      "path": "agents/operations/release-manager.yaml",
+      "checksum": "9e848fd1e6641840c1933a0e0b18a324c9a237c591d96a9c42d3645fe09c9610"
+    },
+    {
+      "path": "agents/product/product-strategist.yaml",
+      "checksum": "67ebb74db692a03ba1bec5cb9313e1212496288a703cb1745a20a9b90c14da00"
+    },
+    {
+      "path": "agents/product/ux-reviewer-mira.yaml",
+      "checksum": "428f21af307cd42e954c10806660034d7d3249c7c4f36cf44a20fcbd1b5b2af0"
+    },
+    {
+      "path": "workflows/build-feature.yaml",
+      "checksum": "7966d98ee608f199b6d40a3d76b5fa3248ff0ba74da63763a9414c9e56643cd6"
+    },
+    {
+      "path": "workflows/debug-failure.yaml",
+      "checksum": "04f3b4019cc6f35b1b7062add881ccda803d59d3c1def786994e7191293a2cc0"
+    },
+    {
+      "path": "workflows/maintain-context.yaml",
+      "checksum": "6af9398c60c35375b678de98104ba869d1d06a1a74b90442f08a36dbf1634bd9"
+    },
+    {
+      "path": "workflows/production-readiness.yaml",
+      "checksum": "f76322805b15af8df7bec258dd82ffb447153482a7ce22408864bc387d700433"
+    },
+    {
+      "path": "workflows/provider-smoke.yaml",
+      "checksum": "7b7041dd6271516bc7f7353150a8e6ef98ef768edecd10116915233dad287678"
+    },
+    {
+      "path": "workflows/review-pr.yaml",
+      "checksum": "ddd37a7335c8bfd24d858b6c5a5aa65c885142df3c1253f3673c2237dcc1db8e"
+    },
+    {
+      "path": "workflows/ship-release.yaml",
+      "checksum": "a13556bbe9db5589a9e2476fb25b8bf94ad6abcd3bdfbdc3acb63e8634aa5944"
+    },
+    {
+      "path": "workflows/wide-open-automation.yaml",
+      "checksum": "15e6a800c0d0480756d48006a518669a66f42058d66fbc294bdeee28a6b00d3e"
+    }
+  ],
+  "migrations": [
+    {
+      "from": "0.0.x",
+      "to": "0.1.0",
+      "notes": [
+        "Initial public bundle manifest for portable local developer workflows.",
+        "Use project-local AGENTS.md and .agent-workflow/ for private context instead of editing shared bundle files."
+      ]
+    }
+  ]
+}

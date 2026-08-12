@@ -45,6 +45,18 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_bundle_manifest",
+  {
+    title: "AgentFlow bundle manifest",
+    description: "Print or write the versioned reusable agent/workflow bundle manifest.",
+    inputSchema: {
+      write: z.boolean().optional().describe("Write agent-workflow.bundle.json instead of printing JSON.")
+    }
+  },
+  async ({ write }) => toolResult(await runAgentflow(["bundle-manifest", ...(write ? ["--write"] : [])], { timeoutMs: 60_000 }))
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",

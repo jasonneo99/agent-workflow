@@ -32,6 +32,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run doctor
 npm run bootstrap-storage
 npm run validate
+npm run bundle-manifest
 ```
 
 Then initialize a target project:
@@ -62,6 +63,7 @@ npm run export-run -- --run <run-id> --scrub
 Compiled briefs automatically include approved project-local tuning notes from `.agent-workflow/tuning/` with conservative context caps.
 Use `--scrub` when exporting reports for docs, issues, or public sharing.
 See [Scrubbed Examples](examples/README.md) for safe sample Markdown and JSON exports.
+The root `agent-workflow.bundle.json` records reusable agent/workflow bundle version, source, compatibility, file checksums, and migration notes.
 
 ## BYO Model Config
 
