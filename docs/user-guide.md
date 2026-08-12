@@ -584,7 +584,7 @@ npm run agentflow -- feedback --run <run-id> --rating rejected --note "Wrong fil
 
 The dashboard run page also includes Accept, Mark Revised, and Reject buttons. Feedback is stored as a normal receipt/artifact and as compact project memory, so future routing and personalization can use it without adding project-local prompt bloat.
 
-Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report.
+Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report. Compiled briefs also include approved project-local tuning notes from `.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and `routing-preferences.md` with a small context cap.
 
 ## 16. Preference Scorecard
 
@@ -634,10 +634,10 @@ Without `--write`, the command is a dry run and prints the files it would create
 - `.agent-workflow/tuning/applied-patches.md`: applied local tuning-note ledger.
 - `.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and `routing-preferences.md`: project-local notes grouped by patch kind.
 
-Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approvals` to approve or reject selected proposal ids, `generate-tuning-patches` to create reviewable patch-plan files, `apply-tuning-patches` to write project-local tuning notes, then `apply-tuning-proposals --approved` to build overlays only from approved proposals.
+Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approvals` to approve or reject selected proposal ids, `generate-tuning-patches` to create reviewable patch-plan files, and `apply-tuning-patches` to write project-local tuning notes that future compiled briefs will read. Use `apply-tuning-proposals --approved` only when you also want overlay files for external tools or manual review.
 
 The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is teaching future brief compilation to read applied project-local tuning notes. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next best improvement is export redaction and scrubbed example tooling. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.

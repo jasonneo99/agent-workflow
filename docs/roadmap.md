@@ -48,7 +48,7 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Require explicit human approval before proposals become approved overlay inputs.
   - Generate reviewable patch-plan files for approved proposals.
   - Apply reviewed patch-plan items into project-local tuning notes.
-  - Next depth: teach future brief compilation to read applied project-local tuning notes.
+  - Teach future brief compilation to read applied project-local tuning notes with conservative context caps.
 
 - [ ] Export redaction and scrubbed example tooling.
   - Remove secrets, customer data, private prompts, private schemas, tenant context, and proprietary scoring from exported reports.

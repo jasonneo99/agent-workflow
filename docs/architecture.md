@@ -14,7 +14,7 @@ Portable Agent Workflows is enterprise-first and file-compatible.
 1. The CLI or MCP server receives a task.
 2. The workflow registry loads YAML definitions.
 3. The project adapter loads `AGENTS.md` and `.agent-workflow/`.
-4. The context compiler creates a compact task brief.
+4. The context compiler creates a compact task brief, including approved project-local tuning notes when present.
 5. The policy engine checks autonomy and approval requirements.
 6. The compiled brief is persisted as a run artifact.
 7. The runner delegates to provider adapters with the brief plus prior stage receipts.

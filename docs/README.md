@@ -57,6 +57,8 @@ npm run agentflow -- apply-tuning-proposals --project /path/to/project --approve
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids tune-001,tune-004 --write
 ```
 
+Compiled briefs automatically include approved project-local tuning notes from `.agent-workflow/tuning/` with conservative context caps.
+
 ## BYO Model Config
 
 For local models, hosted gateways, enterprise routers, LiteLLM, vLLM, LM Studio, Ollama, or any OpenAI-compatible chat-completions endpoint:

@@ -16,12 +16,17 @@ export interface CompileInput {
     matchedTerms?: string[];
   }>;
   preferenceNotes?: string[];
+  tuningNotes?: Array<{
+    relativePath: string;
+    content: string;
+  }>;
 }
 
 export async function compileContext(input: CompileInput): Promise<string> {
   const agentIndex = new Map(input.agents.map((agent) => [agent.id, agent]));
   const lead = agentIndex.get(input.workflow.lead);
   const projectFiles = await readProjectContextFiles(input.projectDir);
+  const tuningNotes = input.tuningNotes ?? await readProjectTuningNotes(input.projectDir);
 
   const stageBriefs = input.workflow.stages.map((stage) => {
     const agent = agentIndex.get(stage.agent);
@@ -61,6 +66,9 @@ export async function compileContext(input: CompileInput): Promise<string> {
     "## Adaptive Preference Notes",
     formatPreferenceNotes(input.preferenceNotes ?? []),
     "",
+    "## Applied Local Tuning Notes",
+    formatAppliedTuningNotes(tuningNotes),
+    "",
     "## Workflow Stages",
     stageBriefs.join("\n\n"),
     "",
@@ -74,6 +82,17 @@ function formatPreferenceNotes(notes: string[]): string {
     return "_No prior feedback memory available for this project._";
   }
   return notes.map((note) => `- ${note}`).join("\n");
+}
+
+function formatAppliedTuningNotes(notes: Array<{ relativePath: string; content: string }>): string {
+  if (!notes.length) {
+    return "_No applied project-local tuning notes available._";
+  }
+
+  return notes.map((note) => [
+    `### ${note.relativePath}`,
+    note.content
+  ].join("\n")).join("\n\n");
 }
 
 function formatActionPolicy(project: ProjectConfig): string {
@@ -129,6 +148,45 @@ async function readProjectContextFiles(projectDir: string): Promise<string> {
   }
 
   return sections.join("\n\n");
+}
+
+async function readProjectTuningNotes(projectDir: string): Promise<Array<{ relativePath: string; content: string }>> {
+  const candidates = [
+    ".agent-workflow/tuning/agent-notes.md",
+    ".agent-workflow/tuning/context-budget-notes.md",
+    ".agent-workflow/tuning/routing-preferences.md"
+  ];
+
+  const notes: Array<{ relativePath: string; content: string }> = [];
+  for (const relativePath of candidates) {
+    const absolutePath = path.join(projectDir, relativePath);
+    try {
+      const raw = await fs.readFile(absolutePath, "utf8");
+      const content = compactTuningNote(raw);
+      if (content) {
+        notes.push({ relativePath, content });
+      }
+    } catch {
+      // Missing tuning files are expected until a project opts into approved local tuning.
+    }
+  }
+
+  return notes;
+}
+
+function compactTuningNote(raw: string): string {
+  const content = raw
+    .split("\n")
+    .map((line) => line.trimEnd())
+    .filter((line) => !line.includes("_No applied notes in this category._"))
+    .join("\n")
+    .trim();
+
+  const maxChars = 1600;
+  if (content.length <= maxChars) {
+    return content;
+  }
+  return `${content.slice(0, maxChars).trimEnd()}\n...truncated to fit local tuning context budget...`;
 }
 
 function formatAgent(agent: AgentCard): string {

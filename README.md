@@ -123,7 +123,7 @@ npm run doctor                 # Check local services
 npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
-npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief
+npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
 
 # Workflow execution (requires enterprise storage)
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
