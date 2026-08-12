@@ -48,6 +48,8 @@ npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project
 npm run agentflow -- queue-tuning-approvals --project /path/to/project --ids all --write
 npm run agentflow -- tuning-approvals --project /path/to/project --approve tune-001 --reviewer "Your Name"
+npm run agentflow -- generate-tuning-patches --project /path/to/project
+npm run agentflow -- generate-tuning-patches --project /path/to/project --write
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids all
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --approved
 npm run agentflow -- apply-tuning-proposals --project /path/to/project --ids tune-001,tune-004 --write

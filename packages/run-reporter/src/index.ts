@@ -164,6 +164,14 @@ export interface TuningApprovalDecisionResult {
   skippedIds: string[];
 }
 
+export interface TuningPatchPlan {
+  projectRootUri: string;
+  generatedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  files: TuningApplicationFile[];
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const stageOutputs = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const commandOutputs = input.artifacts.filter((artifact) => artifact.kind === "command_output");
@@ -772,6 +780,69 @@ export function formatTuningApprovalQueueMarkdown(queue: TuningApprovalQueue): s
   ].filter((line) => line !== undefined).join("\n");
 }
 
+export function buildTuningPatchPlan(
+  queue: TuningApprovalQueue,
+  selectedIds: string[] | "all" = "all"
+): TuningPatchPlan {
+  const approvedItems = queue.items.filter((item) => item.status === "approved");
+  const requestedIds = selectedIds === "all" ? approvedItems.map((item) => item.proposalId) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = approvedItems.filter((item) => requestedIdSet.has(item.id) || requestedIdSet.has(item.proposalId));
+  const matchedIds = new Set(selected.flatMap((item) => [item.id, item.proposalId]));
+  const generatedAt = new Date().toISOString();
+  const patchDocuments = selected.map((item) => ({
+    relativePath: `.agent-workflow/tuning/patches/${item.proposalId}.md`,
+    content: formatTuningPatchMarkdown(item, generatedAt)
+  }));
+  const jsonDocument = {
+    kind: "agentflow_tuning_patch_plan",
+    projectRootUri: queue.projectRootUri,
+    generatedAt,
+    sourceQueueGeneratedAt: queue.generatedAt,
+    selectedIds: selected.map((item) => item.proposalId),
+    patches: selected.map((item) => ({
+      proposalId: item.proposalId,
+      approvalId: item.id,
+      status: item.status,
+      target: tuningPatchTarget(item.proposal),
+      action: tuningPatchAction(item.proposal),
+      proposal: item.proposal,
+      reviewer: item.reviewer,
+      note: item.note
+    }))
+  };
+
+  return {
+    projectRootUri: queue.projectRootUri,
+    generatedAt,
+    selectedIds: selected.map((item) => item.proposalId),
+    skippedIds: requestedIds.filter((id) => !matchedIds.has(id)),
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/patches/README.md",
+        content: formatTuningPatchPlanMarkdown(queue, selected, generatedAt)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/patches/patch-plan.json",
+        content: `${JSON.stringify(jsonDocument, null, 2)}\n`
+      },
+      ...patchDocuments
+    ]
+  };
+}
+
+export function formatTuningPatchPlan(plan: TuningPatchPlan): string {
+  return [
+    `Tuning Patch Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected approved proposals: ${plan.selectedIds.length ? plan.selectedIds.join(", ") : "none"}`,
+    plan.skippedIds.length ? `Skipped unavailable ids: ${plan.skippedIds.join(", ")}` : "",
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
 function formatStageOutput(artifact: ArtifactStatus): string {
   const content = artifact.content;
   return [
@@ -820,6 +891,102 @@ function formatTuningOverlayMarkdown(
     selected.length ? sections.join("\n") : "_No proposals selected._",
     ""
   ].join("\n");
+}
+
+function formatTuningPatchPlanMarkdown(
+  queue: TuningApprovalQueue,
+  selected: TuningApprovalItem[],
+  generatedAt: string
+): string {
+  return [
+    "# Agent Workflow Tuning Patch Plan",
+    "",
+    `Generated: ${generatedAt}`,
+    `Project: ${queue.projectRootUri}`,
+    `Source queue generated: ${queue.generatedAt}`,
+    "",
+    "These files are review artifacts. They do not mutate project config, workflow config, or agent prompts by themselves.",
+    "",
+    "## Approved Proposals",
+    "",
+    selected.length
+      ? selected.map((item) => `- ${item.proposalId}: ${tuningPatchTarget(item.proposal)} - ${item.proposal.recommendation}`).join("\n")
+      : "- No approved proposals selected.",
+    "",
+    "## Review Flow",
+    "",
+    "1. Read each proposal patch file in this directory.",
+    "2. Copy the suggested change into the named project-local target only if it fits the project.",
+    "3. Run the relevant project checks.",
+    "4. Record feedback on the original Agent Workflow run so future proposals improve.",
+    ""
+  ].join("\n");
+}
+
+function formatTuningPatchMarkdown(item: TuningApprovalItem, generatedAt: string): string {
+  const proposal = item.proposal;
+  return [
+    `# Reviewable Tuning Patch: ${proposal.id}`,
+    "",
+    `Generated: ${generatedAt}`,
+    `Approval id: ${item.id}`,
+    `Status: ${item.status}`,
+    item.reviewer ? `Reviewer: ${item.reviewer}` : "",
+    item.note ? `Review note: ${item.note}` : "",
+    "",
+    "## Target",
+    "",
+    tuningPatchTarget(proposal),
+    "",
+    "## Suggested Action",
+    "",
+    tuningPatchAction(proposal),
+    "",
+    "## Rationale",
+    "",
+    `- Priority: ${proposal.priority}`,
+    `- Kind: ${proposal.kind}`,
+    `- Workflow: ${proposal.workflowId}`,
+    `- Stage: ${proposal.stageId}`,
+    `- Agent: ${proposal.agentId}`,
+    `- Provider/tier: ${proposal.providerId} / ${proposal.modelTier}`,
+    `- Reason: ${proposal.reason}`,
+    `- Recommendation: ${proposal.recommendation}`,
+    `- Patch hint: ${proposal.patchHint}`,
+    "",
+    "## Review Checklist",
+    "",
+    "- The change is project-local and does not edit shared reusable agents unless intentionally promoted later.",
+    "- The change does not expose secrets, customer data, private prompts, or product-specific heuristics.",
+    "- The change can be verified with a local command or a follow-up Agent Workflow run.",
+    ""
+  ].filter(Boolean).join("\n");
+}
+
+function tuningPatchTarget(proposal: TuningProposal): string {
+  if (proposal.kind === "agent_prompt") {
+    return `.agent-workflow/agents/${proposal.agentId}.yaml or .agent-workflow/tuning/agent-notes.md`;
+  }
+  if (proposal.kind === "context_budget") {
+    return `.agent-workflow/workflows/${proposal.workflowId}.yaml or .agent-workflow/project.yaml context settings`;
+  }
+  if (proposal.kind === "routing_preference") {
+    return `.agent-workflow/project.yaml routing preferences or provider environment settings`;
+  }
+  return "No behavior patch yet; collect explicit run feedback first.";
+}
+
+function tuningPatchAction(proposal: TuningProposal): string {
+  if (proposal.kind === "agent_prompt") {
+    return `Add a project-local instruction for ${proposal.agentId}: ${proposal.patchHint}`;
+  }
+  if (proposal.kind === "context_budget") {
+    return `Adjust project-local context settings for ${proposal.workflowId}/${proposal.stageId}: ${proposal.patchHint}`;
+  }
+  if (proposal.kind === "routing_preference") {
+    return `Review provider routing for ${proposal.workflowId}/${proposal.stageId}: ${proposal.patchHint}`;
+  }
+  return proposal.patchHint;
 }
 
 function formatCommandOutput(artifact: ArtifactStatus): string {

@@ -41,7 +41,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningPatchPlan, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1413,6 +1413,38 @@ program
   });
 
 program
+  .command("generate-tuning-patches")
+  .description("Create reviewable patch-plan files from approved tuning proposals")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated approved proposal ids or approval ids to include, or all", "all")
+  .option("--write", "write patch-plan files into the project")
+  .option("--json", "print patch plan JSON")
+  .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readTuningApprovalQueue(projectDir);
+    const plan = buildTuningPatchPlan(queue, parseProposalIds(options.ids));
+
+    if (options.write) {
+      await writeTuningPatchPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatTuningPatchPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create reviewable patch-plan files.");
+    }
+  });
+
+program
   .command("schedule")
   .description("Run due project schedules from .agent-workflow/schedules.yaml")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -1764,6 +1796,21 @@ async function writeTuningApprovalQueue(projectDir: string, queue: TuningApprova
   await fs.mkdir(tuningDir, { recursive: true });
   await fs.writeFile(path.join(tuningDir, "approval-queue.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(tuningDir, "approval-queue.md"), formatTuningApprovalQueueMarkdown(queue), "utf8");
+}
+
+async function writeTuningPatchPlan(projectDir: string, plan: TuningPatchPlan): Promise<void> {
+  for (const file of plan.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/tuning/patches/")) {
+      throw new Error(`Refusing to write tuning patch plan outside .agent-workflow/tuning/patches: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write tuning patch plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
 }
 
 function proposalSetFromApprovedQueue(queue: TuningApprovalQueue): TuningProposalSet {

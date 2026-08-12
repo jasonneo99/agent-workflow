@@ -139,6 +139,7 @@ npm run agentflow -- preference-scorecard -p . # See agent/provider/tier perform
 npm run agentflow -- tuning-proposals -p . # Generate reviewable tuning suggestions
 npm run agentflow -- queue-tuning-approvals -p . --ids all # Dry-run approval queue
 npm run agentflow -- tuning-approvals -p . --approve tune-001 # Approve a queued item
+npm run agentflow -- generate-tuning-patches -p . # Dry-run reviewable patch-plan files
 npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-local tuning overlays
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard

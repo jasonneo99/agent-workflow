@@ -46,7 +46,8 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
 - [x] Approval queue for generated tuning overlays.
   - Create project-local approval queues from selected tuning proposals.
   - Require explicit human approval before proposals become approved overlay inputs.
-  - Next depth: turn approved proposals into reviewable patches for project config, workflow config, or agent prompt overlays.
+  - Generate reviewable patch-plan files for approved proposals.
+  - Next depth: apply approved patch-plan files through a guarded project-local patch command.
 
 - [ ] Export redaction and scrubbed example tooling.
   - Remove secrets, customer data, private prompts, private schemas, tenant context, and proprietary scoring from exported reports.
