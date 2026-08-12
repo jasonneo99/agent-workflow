@@ -28,6 +28,9 @@ jobs:
       - name: Validate definitions
         run: npm run validate
 
+      - name: Validate scrubbed examples
+        run: npm run validate-examples
+
       - name: Template test
         run: npm test --prefix templates/project
 

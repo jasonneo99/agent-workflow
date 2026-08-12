@@ -1,0 +1,132 @@
+{
+  "exportedAt": "2026-08-12T18:05:00.000Z",
+  "redacted": true,
+  "redactionNotes": [
+    "Absolute paths, emails, common secret patterns, and high-risk freeform artifact fields were scrubbed.",
+    "Use unscreened local exports only for trusted internal debugging."
+  ],
+  "run": {
+    "id": "run_synthetic_001",
+    "workflowId": "build-feature",
+    "task": "[REDACTED_TASK]",
+    "status": "completed",
+    "projectName": "Scrubbed Project",
+    "projectRootUri": "[PROJECT_ROOT]",
+    "autonomy": "standard",
+    "startedAt": "2026-08-12T18:00:00.000Z",
+    "finishedAt": "2026-08-12T18:04:30.000Z"
+  },
+  "tasks": [
+    {
+      "id": "task_synthetic_orient",
+      "runId": "run_synthetic_001",
+      "stageId": "orient",
+      "agentId": "task-triager",
+      "status": "completed",
+      "attempts": 1
+    },
+    {
+      "id": "task_synthetic_verify",
+      "runId": "run_synthetic_001",
+      "stageId": "verify",
+      "agentId": "auto-test-runner",
+      "status": "completed",
+      "attempts": 1
+    }
+  ],
+  "receipts": [
+    {
+      "id": "receipt_synthetic_orient",
+      "runId": "run_synthetic_001",
+      "taskId": "task_synthetic_orient",
+      "agentId": "task-triager",
+      "actionType": "stage_completed",
+      "target": "build-feature/orient",
+      "summary": "[REDACTED]",
+      "createdAt": "2026-08-12T18:00:20.000Z"
+    },
+    {
+      "id": "receipt_synthetic_verify",
+      "runId": "run_synthetic_001",
+      "taskId": "task_synthetic_verify",
+      "agentId": "auto-test-runner",
+      "actionType": "stage_completed",
+      "target": "build-feature/verify",
+      "summary": "[REDACTED]",
+      "createdAt": "2026-08-12T18:03:00.000Z"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "artifact_synthetic_brief",
+      "runId": "run_synthetic_001",
+      "kind": "compiled_brief",
+      "uri": "db://workflow_runs/run_synthetic_001/compiled-brief",
+      "content": {
+        "redacted": true,
+        "reason": "Compiled brief content may include private project context, prompts, schemas, or tenant details."
+      },
+      "createdAt": "2026-08-12T18:00:05.000Z"
+    },
+    {
+      "id": "artifact_synthetic_route",
+      "runId": "run_synthetic_001",
+      "kind": "model_route",
+      "uri": "db://workflow_runs/run_synthetic_001/model_route/001",
+      "content": {
+        "target": "build-feature/verify",
+        "agentId": "auto-test-runner",
+        "stageId": "verify",
+        "route": {
+          "providerId": "mock",
+          "modelTier": "standard",
+          "requestedModelTier": "standard",
+          "estimatedCostTier": "none"
+        },
+        "quality": {
+          "score": 0.86,
+          "passed": true,
+          "reasons": [
+            "Synthetic example quality signal"
+          ]
+        },
+        "fallbackUsed": false,
+        "latencyMs": 42
+      },
+      "createdAt": "2026-08-12T18:02:45.000Z"
+    },
+    {
+      "id": "artifact_synthetic_stage",
+      "runId": "run_synthetic_001",
+      "taskId": "task_synthetic_verify",
+      "kind": "stage_output",
+      "uri": "db://workflow_tasks/task_synthetic_verify/output",
+      "content": {
+        "stageId": "verify",
+        "agentId": "auto-test-runner",
+        "agentName": "Auto Test Runner",
+        "model": "mock-standard",
+        "summary": "[REDACTED]",
+        "findings": "[REDACTED]",
+        "nextAction": "[REDACTED]",
+        "workflowTask": "[REDACTED]"
+      },
+      "createdAt": "2026-08-12T18:03:00.000Z"
+    },
+    {
+      "id": "artifact_synthetic_command",
+      "runId": "run_synthetic_001",
+      "kind": "command_output",
+      "uri": "db://workflow_runs/run_synthetic_001/command_output/001",
+      "content": {
+        "commandLine": "npm test",
+        "exitCode": 0,
+        "timedOut": false,
+        "durationMs": 1200,
+        "stdout": "[REDACTED]",
+        "stderr": "[REDACTED]"
+      },
+      "createdAt": "2026-08-12T18:03:10.000Z"
+    }
+  ]
+}

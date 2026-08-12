@@ -27,6 +27,7 @@
     "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",
     "onboard-project": "tsx apps/cli/src/index.ts onboard-project",
     "validate": "tsx apps/cli/src/index.ts validate",
+    "validate-examples": "node scripts/validate-scrubbed-examples.mjs",
     "list": "tsx apps/cli/src/index.ts list",
     "mcp": "tsx apps/mcp/src/index.ts",
     "provider-check": "tsx apps/cli/src/index.ts provider-check",

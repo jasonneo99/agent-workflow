@@ -17,6 +17,7 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 11. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
 12. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
 13. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+14. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
@@ -60,6 +61,7 @@ npm run export-run -- --run <run-id> --scrub
 
 Compiled briefs automatically include approved project-local tuning notes from `.agent-workflow/tuning/` with conservative context caps.
 Use `--scrub` when exporting reports for docs, issues, or public sharing.
+See [Scrubbed Examples](examples/README.md) for safe sample Markdown and JSON exports.
 
 ## BYO Model Config
 
