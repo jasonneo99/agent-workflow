@@ -2558,6 +2558,18 @@ type DashboardInfo = {
       estimatedCostTier: string;
       reason: string;
     }>;
+    providerStatuses?: Array<{
+      providerId: string;
+      label: string;
+      configured: boolean;
+      status: "ready" | "missing" | "not configured";
+      model?: string;
+      baseUrl?: string;
+      apiKeyStatus?: string;
+      awsProfile?: string;
+      awsRegion?: string;
+      details: string[];
+    }>;
   };
   services: Array<{
     name: string;
@@ -2656,7 +2668,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       modelEnv: "AGENTFLOW_PROVIDER_*",
       canSelectModel: false,
       availableModels: [],
-      autoRoutes: await loadAutoRoutePreviews()
+      autoRoutes: await loadAutoRoutePreviews(),
+      providerStatuses: await loadAutoProviderStatuses()
     };
   }
 
@@ -2745,6 +2758,192 @@ async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provi
       reason: route.reason
     };
   }));
+}
+
+async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
+  const [openai, byo, compatible, bedrock, kiro, mock] = await Promise.all([
+    inspectOpenAIStatus(),
+    inspectOpenAICompatibleStatus({
+      providerId: "byo",
+      label: "BYO / OpenAI-compatible gateway",
+      baseUrl: process.env.BYO_MODEL_BASE_URL,
+      model: process.env.BYO_MODEL_NAME,
+      apiKey: process.env.BYO_MODEL_API_KEY
+    }),
+    inspectOpenAICompatibleStatus({
+      providerId: "openai-compatible",
+      label: "OpenAI-compatible legacy",
+      baseUrl: process.env.OPENAI_COMPATIBLE_BASE_URL,
+      model: process.env.OPENAI_COMPATIBLE_MODEL,
+      apiKey: process.env.OPENAI_COMPATIBLE_API_KEY
+    }),
+    inspectProviderStatus({
+      providerId: "bedrock",
+      label: "AWS Bedrock",
+      configured: hasAwsConfiguration(),
+      model: process.env.BEDROCK_MODEL ?? process.env.BEDROCK_MODEL_STANDARD ?? process.env.BEDROCK_MODEL_ID,
+      apiKeyStatus: awsCredentialStatusLabel(),
+      awsProfile: process.env.AWS_PROFILE || "default",
+      awsRegion: process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1",
+      alwaysCheck: true
+    }),
+    inspectProviderStatus({
+      providerId: "kiro",
+      label: "Kiro CLI",
+      configured: Boolean(process.env.KIRO_API_KEY || process.env.KIRO_AGENT || process.env.KIRO_CLI_BIN),
+      model: process.env.KIRO_AGENT || "auto",
+      apiKeyStatus: process.env.KIRO_API_KEY ? "configured" : "CLI login or missing"
+    }),
+    {
+      providerId: "mock",
+      label: "Mock",
+      configured: true,
+      status: "ready" as const,
+      model: "mock",
+      details: ["Always available for deterministic local validation."]
+    }
+  ]);
+  return [openai, byo, compatible, bedrock, kiro, mock];
+}
+
+async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
+  const configured = Boolean(process.env.OPENAI_API_KEY);
+  if (!configured) {
+    return {
+      providerId: "openai",
+      label: "OpenAI",
+      configured,
+      status: "not configured",
+      model: process.env.OPENAI_MODEL,
+      apiKeyStatus: "missing",
+      details: ["OPENAI_API_KEY is not configured."]
+    };
+  }
+
+  const discovered = await discoverModelIds(() => loadOpenAIModelIds());
+  return {
+    providerId: "openai",
+    label: "OpenAI",
+    configured,
+    status: discovered.error ? "missing" : "ready",
+    model: process.env.OPENAI_MODEL || "default",
+    apiKeyStatus: "configured",
+    details: discovered.error
+      ? [`Model list check failed: ${discovered.error}`]
+      : [`API key configured. ${discovered.models.length} models listed.`]
+  };
+}
+
+async function inspectOpenAICompatibleStatus(input: {
+  providerId: "byo" | "openai-compatible";
+  label: string;
+  baseUrl?: string;
+  model?: string;
+  apiKey?: string;
+}): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
+  const configured = Boolean(input.baseUrl && input.model);
+  if (!configured) {
+    return {
+      providerId: input.providerId,
+      label: input.label,
+      configured,
+      status: "not configured",
+      model: input.model,
+      baseUrl: safeDisplayUrl(input.baseUrl),
+      apiKeyStatus: input.apiKey ? "configured" : "not required or missing",
+      details: ["Base URL and model name are required before this provider can be routed."]
+    };
+  }
+
+  const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(input.baseUrl, input.apiKey));
+  return {
+    providerId: input.providerId,
+    label: input.label,
+    configured,
+    status: discovered.error ? "missing" : "ready",
+    model: input.model,
+    baseUrl: safeDisplayUrl(input.baseUrl),
+    apiKeyStatus: input.apiKey ? "configured" : "not required",
+    details: discovered.error
+      ? [`Model list check failed: ${discovered.error}`]
+      : [`Endpoint reachable. ${discovered.models.length} models listed.`]
+  };
+}
+
+async function inspectProviderStatus(input: {
+  providerId: "bedrock" | "kiro";
+  label: string;
+  configured: boolean;
+  model?: string;
+  apiKeyStatus?: string;
+  awsProfile?: string;
+  awsRegion?: string;
+  alwaysCheck?: boolean;
+}): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
+  if (!input.configured && !input.alwaysCheck) {
+    return {
+      providerId: input.providerId,
+      label: input.label,
+      configured: false,
+      status: "not configured",
+      model: input.model,
+      apiKeyStatus: input.apiKeyStatus,
+      awsProfile: input.awsProfile,
+      awsRegion: input.awsRegion,
+      details: ["Provider-specific configuration was not found."]
+    };
+  }
+
+  try {
+    const provider = providerFromEnv(input.providerId);
+    const result = provider.check ? await provider.check() : { ready: true, details: [`${input.providerId} configured.`] };
+    return {
+      providerId: input.providerId,
+      label: input.label,
+      configured: input.configured,
+      status: result.ready ? "ready" : "missing",
+      model: input.model,
+      apiKeyStatus: input.apiKeyStatus,
+      awsProfile: input.awsProfile,
+      awsRegion: input.awsRegion,
+      details: result.details.map(safeErrorMessage)
+    };
+  } catch (error) {
+    return {
+      providerId: input.providerId,
+      label: input.label,
+      configured: input.configured,
+      status: "missing",
+      model: input.model,
+      apiKeyStatus: input.apiKeyStatus,
+      awsProfile: input.awsProfile,
+      awsRegion: input.awsRegion,
+      details: [safeErrorMessage(error)]
+    };
+  }
+}
+
+function hasAwsConfiguration(): boolean {
+  return Boolean(
+    process.env.AWS_PROFILE
+      || process.env.AWS_REGION
+      || process.env.BEDROCK_REGION
+      || process.env.BEDROCK_MODEL
+      || process.env.BEDROCK_MODEL_STANDARD
+      || process.env.AWS_ACCESS_KEY_ID
+      || process.env.AWS_SESSION_TOKEN
+      || process.env.AWS_WEB_IDENTITY_TOKEN_FILE
+  );
+}
+
+function awsCredentialStatusLabel(): string {
+  if (process.env.AWS_ACCESS_KEY_ID || process.env.AWS_SESSION_TOKEN) {
+    return "env credentials configured";
+  }
+  if (process.env.AWS_PROFILE) {
+    return `profile ${process.env.AWS_PROFILE}`;
+  }
+  return "default credential chain";
 }
 
 async function discoverModelIds(loader: () => Promise<string[]>): Promise<{ models: string[]; error?: string }> {
@@ -2913,6 +3112,23 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table>
       <p class="muted">Auto routing uses the workflow/agent tier for each stage and checks provider readiness before choosing Bedrock or other live providers.</p>`
     : "";
+  const providerStatusRows = info.provider.providerStatuses?.map((provider) => `
+    <tr>
+      <td>${escapeHtml(provider.label)}<br><span class="muted">${escapeHtml(provider.providerId)}</span></td>
+      <td><span class="status ${provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued"}">${escapeHtml(provider.status)}</span></td>
+      <td>${provider.configured ? "yes" : "no"}</td>
+      <td>${escapeHtml(provider.model ?? "not set")}</td>
+      <td>${escapeHtml(provider.baseUrl ?? "not used")}</td>
+      <td>${escapeHtml(provider.apiKeyStatus ?? "not used")}</td>
+      <td>${escapeHtml([provider.awsProfile ? `profile: ${provider.awsProfile}` : "", provider.awsRegion ? `region: ${provider.awsRegion}` : ""].filter(Boolean).join(", ") || "not used")}</td>
+      <td>${escapeHtml(provider.details.join(" "))}</td>
+    </tr>
+  `).join("") ?? "";
+  const providerStatuses = providerStatusRows ? `
+      <h3>Available Provider Status</h3>
+      <table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table>
+      <p class="muted">Secrets are never displayed. AWS readiness is checked through the normal AWS credential chain, including SSO, profiles, environment credentials, and default credentials.</p>`
+    : "";
 
   return `<!doctype html>
 <html>
@@ -2945,6 +3161,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <div class="meta-grid">${providerRows}</div>
       ${modelSelector}
       ${autoRoutes}
+      ${providerStatuses}
     </section>
     <section class="panel">
       <h2>Enterprise Services</h2>
