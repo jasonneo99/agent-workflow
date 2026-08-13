@@ -446,6 +446,8 @@ The detail page shows:
 - artifact JSON viewers
 - fixed follow-up buttons
 
+The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`.
+
 Follow-up buttons are local-only actions backed by existing Agent Workflow commands:
 
 - `Summarize Run`

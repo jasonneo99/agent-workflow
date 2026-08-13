@@ -2218,6 +2218,20 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (request.method === "POST" && requestUrl.pathname === "/api/workflow-run") {
+    const form = await readFormBody(request);
+    const result = await queueDashboardWorkflowRun({
+      workflowId: form.get("workflowId") ?? "",
+      project: form.get("project") ?? "",
+      task: form.get("task") ?? "",
+      sourceTokenBudget: form.get("sourceTokenBudget") ?? "",
+      sourceMaxFiles: form.get("sourceMaxFiles") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
     const form = await readFormBody(request);
     const result = await updateDashboardRouting({
@@ -2400,12 +2414,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const runs = await listWorkflowRuns(50);
+  const [runs, workflows] = await Promise.all([
+    listWorkflowRuns(50),
+    loadWorkflows(rootDir)
+  ]);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs));
+  response.end(renderDashboardHtml(runs, workflows));
 }
 
-function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>): string {
+function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>): string {
   const rows = runs.map((run) => `
     <tr>
       <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
@@ -2416,6 +2433,11 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
       <td>${escapeHtml(run.startedAt)}</td>
     </tr>
   `).join("");
+  const workflowOptions = workflows
+    .filter((workflow) => workflow.triggers.manual)
+    .map((workflow) => `<option value="${escapeHtml(workflow.id)}">${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
+    .join("");
+  const defaultProject = process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "templates/project";
 
   return `<!doctype html>
 <html>
@@ -2441,6 +2463,28 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
       <div class="actions">
         ${workflowPresets.map((preset) => presetForm(preset.id, preset.label, preset.project)).join("")}
       </div>
+    </section>
+    <section class="panel">
+      <h2>Run Workflow</h2>
+      <form class="workflow-form" method="post" action="/api/workflow-run">
+        <label>Workflow
+          <select name="workflowId">${workflowOptions}</select>
+        </label>
+        <label>Project path
+          <input name="project" value="${escapeHtml(defaultProject)}" placeholder="/path/to/project">
+        </label>
+        <label class="wide">Task
+          <textarea name="task" rows="4" placeholder="Describe the work to run"></textarea>
+        </label>
+        <label>Source token budget
+          <input name="sourceTokenBudget" inputmode="numeric" placeholder="3000">
+        </label>
+        <label>Source max files
+          <input name="sourceMaxFiles" inputmode="numeric" placeholder="20">
+        </label>
+        <div class="form-actions"><button type="submit">Queue Run</button></div>
+      </form>
+      <p class="muted">Queues a workflow run in enterprise storage and opens a run link. Use a worker from the terminal to process queued stages.</p>
     </section>
     <table>
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
@@ -3173,6 +3217,56 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
   return supported.has(normalized) ? normalized : undefined;
 }
 
+async function queueDashboardWorkflowRun(input: {
+  workflowId: string;
+  project: string;
+  task: string;
+  sourceTokenBudget?: string;
+  sourceMaxFiles?: string;
+}): Promise<DashboardFollowUpResult> {
+  const workflowId = input.workflowId.trim();
+  const project = input.project.trim();
+  const task = input.task.trim();
+  if (!workflowId) {
+    return { ok: false, error: "Missing workflow." };
+  }
+  if (!project) {
+    return { ok: false, error: "Missing project path." };
+  }
+  if (!task) {
+    return { ok: false, error: "Missing task." };
+  }
+
+  const queued = await queueWorkflow({
+    workflowId,
+    projectPath: project,
+    task,
+    sourceTokenBudget: input.sourceTokenBudget?.trim(),
+    sourceMaxFiles: input.sourceMaxFiles?.trim()
+  });
+
+  if (!queued.ok) {
+    return { ok: false, error: queued.error };
+  }
+
+  const runUrl = `/run?id=${encodeURIComponent(queued.run.runId)}`;
+  return {
+    ok: true,
+    title: "Workflow queued",
+    runId: queued.run.runId,
+    output: [
+      `Run: ${queued.run.runId}`,
+      `Workflow: ${queued.workflow.id}`,
+      `Project: ${queued.projectDir}`,
+      `Queued stages: ${queued.run.tasks}`,
+      `Open: ${runUrl}`,
+      "",
+      "Process queued stages with:",
+      "npm run worker -- --limit 6"
+    ].join("\n")
+  };
+}
+
 function safeDisplayUrl(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -3504,12 +3598,13 @@ function dashboardCss(): string {
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
-    input, select { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; }
+    input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
-    .routing-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
-    .routing-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
-    .routing-form input, .routing-form select { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
+    .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .routing-form input, .routing-form select, .workflow-form input, .workflow-form select, .workflow-form textarea { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .wide { grid-column: 1 / -1; }
     .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
