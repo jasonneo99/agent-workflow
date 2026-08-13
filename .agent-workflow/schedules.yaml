@@ -1,0 +1,8 @@
+schedules:
+  - id: weekly-context-maintenance
+    enabled: false
+    every_minutes: 10080
+    workflow: maintain-context
+    task: Update durable project context, decisions, and command notes.
+    index_max_files: 100
+    worker_limit: 6

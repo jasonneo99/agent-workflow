@@ -1,0 +1,107 @@
+project:
+  name: agent-workflow
+  summary: Portable Agent Workflows is a local-first, model-portable developer
+    workflow kit. It provides reusable agent cards, orchestrated workflows, MCP
+    tooling, dashboard controls, enterprise local storage, and project-local
+    context so Codex, Cursor, VS Code, Claude Code, and other tools can reuse
+    the same development agents without copying large prompts into each repo.
+  default_workflows:
+    - build-feature
+    - review-pr
+    - debug-failure
+    - maintain-context
+  autonomy: 3
+context:
+  include:
+    - AGENTS.md
+    - .agent-workflow/*.md
+    - .agent-workflow/*.yaml
+    - README.md
+    - docs/**
+    - agents/**
+    - workflows/**
+    - apps/**
+    - packages/**
+    - templates/**
+    - scripts/**
+    - infra/**
+    - package.json
+    - package-lock.json
+    - tsconfig.json
+    - agent-workflow.bundle.json
+  exclude:
+    - node_modules/**
+    - .git/**
+    - dist/**
+    - build/**
+    - coverage/**
+    - .next/**
+    - .turbo/**
+    - .cache/**
+    - .agent-workflow/exports/**
+    - .agent-workflow/schedule-state.json
+    - "**/*.jpg"
+    - "**/*.jpeg"
+    - "**/*.png"
+    - "**/*.webp"
+    - "**/*.gif"
+    - "**/*.woff"
+    - "**/*.woff2"
+    - "**/*.ttf"
+  max_project_tokens: 12000
+storage:
+  cache_summaries: true
+  semantic_index: true
+policies:
+  allow_wide_open: false
+  require_approval_for_external_actions: true
+  require_receipts: true
+actions:
+  allowed_commands:
+    - npm run typecheck
+    - npm run validate
+    - npm run validate-examples
+    - npm run provider-check
+    - npm run list
+    - npm run status
+    - npm run agentflow -- list
+    - npm run agentflow -- status
+    - npm run index-project -- --project . --max-files 100
+  blocked_commands:
+    - rm *
+    - git reset *
+    - git clean *
+    - sudo *
+    - curl *
+    - wget *
+    - ssh *
+    - scp *
+  command_timeout_ms: 120000
+  max_output_chars: 20000
+  allowed_write_paths:
+    - .agent-workflow/**
+    - AGENTS.md
+    - README.md
+    - docs/**
+    - agents/**
+    - workflows/**
+    - apps/**
+    - packages/**
+    - templates/**
+    - scripts/**
+    - infra/**
+    - package.json
+    - package-lock.json
+    - tsconfig.json
+    - agent-workflow.bundle.json
+  blocked_write_paths:
+    - .git/**
+    - node_modules/**
+    - .env
+    - .env.*
+    - .agent-workflow/schedule-state.json
+    - "**/.next/**"
+    - "**/dist/**"
+    - "**/build/**"
+    - "**/coverage/**"
+  max_write_bytes: 250000
