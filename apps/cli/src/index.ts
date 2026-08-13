@@ -2372,7 +2372,7 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
     <section class="panel">
       <h2>Quick Actions</h2>
       <div class="actions">
-        ${workflowPresets.map((preset) => presetForm(preset.id, preset.label)).join("")}
+        ${workflowPresets.map((preset) => presetForm(preset.id, preset.label, preset.project)).join("")}
       </div>
     </section>
     <table>
@@ -2664,8 +2664,9 @@ function feedbackForm(runId: string, rating: FeedbackRating, label: string): str
   return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" placeholder="Optional note"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
-function presetForm(action: string, label: string): string {
-  return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+function presetForm(action: string, label: string, project?: string): string {
+  const projectInput = project ? `<input type="hidden" name="project" value="${escapeHtml(project)}">` : "";
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}">${projectInput}<button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
 type DashboardFollowUpResult =
@@ -2726,9 +2727,10 @@ async function runDashboardFollowUp(input: {
   }
 
   const sourceRun = input.runId ? await getWorkflowRunDetails(input.runId) : null;
-  const sourceProject = sourceRun?.run?.projectRootUri ?? input.project;
+  const preset = resolveWorkflowPreset(action);
+  const sourceProject = sourceRun?.run?.projectRootUri ?? input.project ?? preset?.project;
   if (!sourceProject) {
-    return { ok: false, error: "Missing project path or source run." };
+    return { ok: false, error: "Missing project path or source run. Open a run detail page first, or use a dashboard quick action with a configured project." };
   }
 
   const sourceTask = sourceRun?.run?.task ?? "dashboard preset";
@@ -2783,7 +2785,6 @@ async function runDashboardFollowUp(input: {
     });
   }
 
-  const preset = resolveWorkflowPreset(action);
   if (preset) {
     return runWorkflowPreset({
       presetRef: preset.id,
