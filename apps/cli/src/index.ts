@@ -2217,6 +2217,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/info") {
+    const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(info, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/run") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -2336,6 +2343,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/info") {
+    const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardInfoHtml(info));
+    return;
+  }
+
   const runs = await listWorkflowRuns(50);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs));
@@ -2367,7 +2381,10 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>)
   <main>
     <div class="topbar">
       <h1>Agent Workflow Dashboard</h1>
-      <a class="button secondary" href="/api/runs">JSON</a>
+      <div class="actions">
+        <a class="button secondary" href="/info">Info</a>
+        <a class="button secondary" href="/api/runs">JSON</a>
+      </div>
     </div>
     <section class="panel">
       <h2>Quick Actions</h2>
@@ -2477,6 +2494,237 @@ function renderRunDetailHtml(input: {
     <section class="panel">
       <h2>Artifacts</h2>
       ${artifactBlocks || "<p>No artifacts.</p>"}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+type DashboardInfo = {
+  app: {
+    name: string;
+    version: string;
+    rootDir: string;
+    dashboardUrl: string;
+  };
+  provider: {
+    selected: string;
+    adapter: string;
+    model?: string;
+    baseUrl?: string;
+    apiKeyConfigured?: boolean;
+    awsProfile?: string;
+  };
+  services: Array<{
+    name: string;
+    reachable: boolean;
+    message: string;
+    requiredFor: string;
+  }>;
+  registry: {
+    agents: number;
+    workflows: number;
+  };
+  bundle: {
+    version: string;
+    checksum: string;
+    files: number;
+    source: string;
+  } | null;
+  storage: {
+    databaseUrlConfigured: boolean;
+    redisUrlConfigured: boolean;
+    objectStorageConfigured: boolean;
+  };
+  commands: string[];
+};
+
+async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
+  const packageJson = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8")) as { name?: string; version?: string };
+  const selectedProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+  const provider = providerFromEnv(selectedProvider);
+  const [serviceChecks, agents, workflows, manifest] = await Promise.all([
+    checkServices(),
+    loadAgents(rootDir),
+    loadWorkflows(rootDir),
+    loadCommittedBundleManifest(rootDir)
+  ]);
+
+  return {
+    app: {
+      name: packageJson.name ?? "agent-workflow",
+      version: packageJson.version ?? "0.0.0",
+      rootDir,
+      dashboardUrl
+    },
+    provider: describeProvider(selectedProvider, provider.id),
+    services: serviceChecks.map((check) => ({
+      name: check.endpoint.name,
+      reachable: check.reachable,
+      message: check.message,
+      requiredFor: check.endpoint.requiredFor
+    })),
+    registry: {
+      agents: agents.length,
+      workflows: workflows.length
+    },
+    bundle: manifest ? {
+      version: manifest.bundle.version,
+      checksum: manifest.checksum.value,
+      files: manifest.counts.files,
+      source: manifest.bundle.source
+    } : null,
+    storage: {
+      databaseUrlConfigured: Boolean(process.env.DATABASE_URL),
+      redisUrlConfigured: Boolean(process.env.REDIS_URL),
+      objectStorageConfigured: Boolean(process.env.OBJECT_STORAGE_ENDPOINT && process.env.OBJECT_STORAGE_BUCKET)
+    },
+    commands: [
+      "npm run doctor",
+      "npm run validate",
+      "npm run bundle-manifest",
+      "npm run provider-check",
+      "npm run agentflow -- run-and-watch <workflow> --project <path> --task \"...\""
+    ]
+  };
+}
+
+function dashboardUrlFromRequest(request: http.IncomingMessage): string {
+  const host = request.headers.host || "127.0.0.1";
+  return `http://${host}`;
+}
+
+function describeProvider(selected: string, adapter: string): DashboardInfo["provider"] {
+  if (selected === "openai") {
+    return {
+      selected,
+      adapter,
+      model: process.env.OPENAI_MODEL || "default",
+      apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY)
+    };
+  }
+  if (selected === "byo") {
+    return {
+      selected,
+      adapter,
+      model: process.env.BYO_MODEL_NAME || undefined,
+      baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
+      apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY)
+    };
+  }
+  if (selected === "openai-compatible") {
+    return {
+      selected,
+      adapter,
+      model: process.env.OPENAI_COMPATIBLE_MODEL || undefined,
+      baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY)
+    };
+  }
+  if (selected === "bedrock") {
+    return {
+      selected,
+      adapter,
+      model: process.env.BEDROCK_MODEL_ID || undefined,
+      awsProfile: process.env.AWS_PROFILE || "default"
+    };
+  }
+  return {
+    selected,
+    adapter,
+    model: selected === "kiro" ? "kiro-cli" : "mock"
+  };
+}
+
+function safeDisplayUrl(value?: string): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    parsed.search = "";
+    parsed.hash = "";
+    return parsed.toString().replace(/\/$/, parsed.pathname === "/" ? "/" : "");
+  } catch {
+    return value.replace(/:\/\/[^/@]+@/, "://[REDACTED]@").replace(/[?].*$/, "");
+  }
+}
+
+function renderDashboardInfoHtml(info: DashboardInfo): string {
+  const serviceRows = info.services.map((service) => `
+    <tr>
+      <td>${escapeHtml(service.name)}</td>
+      <td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "reachable" : "missing"}</span></td>
+      <td>${escapeHtml(service.message)}</td>
+      <td>${escapeHtml(service.requiredFor)}</td>
+    </tr>
+  `).join("");
+  const commands = info.commands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const providerRows = [
+    ["Selected", info.provider.selected],
+    ["Adapter", info.provider.adapter],
+    ["Model", info.provider.model ?? "not set"],
+    ["Base URL", info.provider.baseUrl ?? "not used"],
+    ["API key", typeof info.provider.apiKeyConfigured === "boolean" ? info.provider.apiKeyConfigured ? "configured" : "not configured" : "not used"],
+    ["AWS profile", info.provider.awsProfile ?? "not used"]
+  ].map(([label, value]) => `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</div>`).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Info</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Agent Workflow Info</h1>
+      </div>
+      <a class="button secondary" href="/api/info">JSON</a>
+    </div>
+    <section class="panel">
+      <h2>Runtime</h2>
+      <div class="meta-grid">
+        <div><strong>App</strong>${escapeHtml(info.app.name)} ${escapeHtml(info.app.version)}</div>
+        <div><strong>Root</strong>${escapeHtml(info.app.rootDir)}</div>
+        <div><strong>Dashboard</strong>${escapeHtml(info.app.dashboardUrl)}</div>
+        <div><strong>Registry</strong>${info.registry.agents} agents, ${info.registry.workflows} workflows</div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Model Provider</h2>
+      <div class="meta-grid">${providerRows}</div>
+    </section>
+    <section class="panel">
+      <h2>Enterprise Services</h2>
+      <table><thead><tr><th>Service</th><th>Status</th><th>Message</th><th>Required For</th></tr></thead><tbody>${serviceRows}</tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Bundle Manifest</h2>
+      ${info.bundle ? `<div class="meta-grid">
+        <div><strong>Version</strong>${escapeHtml(info.bundle.version)}</div>
+        <div><strong>Files</strong>${info.bundle.files}</div>
+        <div><strong>Checksum</strong><code>${escapeHtml(info.bundle.checksum)}</code></div>
+        <div><strong>Source</strong>${escapeHtml(info.bundle.source)}</div>
+      </div>` : "<p>No committed bundle manifest found.</p>"}
+    </section>
+    <section class="panel">
+      <h2>Storage Config</h2>
+      <div class="meta-grid">
+        <div><strong>DATABASE_URL</strong>${info.storage.databaseUrlConfigured ? "configured" : "missing"}</div>
+        <div><strong>REDIS_URL</strong>${info.storage.redisUrlConfigured ? "configured" : "missing"}</div>
+        <div><strong>Object storage</strong>${info.storage.objectStorageConfigured ? "configured" : "missing"}</div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Useful Commands</h2>
+      <ul>${commands}</ul>
     </section>
   </main>
 </body>

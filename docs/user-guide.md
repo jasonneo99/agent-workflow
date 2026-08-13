@@ -416,6 +416,7 @@ JSON endpoints:
 
 ```text
 /api/runs
+/api/info
 /api/run?id=<run-id>
 /api/quality?id=<run-id>
 ```
@@ -423,8 +424,11 @@ JSON endpoints:
 Run detail pages:
 
 ```text
+/info
 /run?id=<run-id>
 ```
+
+The Info page shows safe local runtime details: selected model provider, model name/base URL when applicable, whether API keys are configured, enterprise service reachability, registry counts, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
 The detail page shows:
 
