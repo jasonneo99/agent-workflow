@@ -52,6 +52,7 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 
 | Provider | Models | Config |
 |----------|--------|--------|
+| `auto` | Smart per-stage routing across configured providers | Any configured provider |
 | `mock` | None (deterministic) | No config needed |
 | `byo` | Any OpenAI-compatible gateway | `BYO_MODEL_BASE_URL` + `BYO_MODEL_NAME` |
 | `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
@@ -62,6 +63,10 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
 
 ```bash
+# Smart routing across configured providers
+DEFAULT_MODEL_PROVIDER=auto
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+
 # BYO model gateway: Ollama, LM Studio, vLLM, LiteLLM, internal routers, etc.
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
@@ -88,7 +93,9 @@ For a fresh install, BYO can be configured either through `npm run setup` or by 
 
 ## Model Tier Routing
 
-Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). The provider automatically routes to the right model:
+Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). With `DEFAULT_MODEL_PROVIDER=auto`, Agent Workflow chooses a ready provider for each tier. BYO/local models are preferred for cheaper stages, OpenAI is preferred for reasoning when configured, and Bedrock is included when AWS credentials are valid.
+
+Provider adapters then route to the right model:
 
 | Tier | Use case | Default routing behavior |
 |------|----------|--------------------------|

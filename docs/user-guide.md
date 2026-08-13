@@ -432,6 +432,8 @@ The Info page shows safe local runtime details: selected model provider, model n
 
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 
+If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
+
 The detail page shows:
 
 - run status, project, workflow, and task
@@ -565,6 +567,15 @@ The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `on
 Adaptive routing lets Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs through a fallback provider, and record which agent/model combinations produce the best accepted results.
 
 Configure it with:
+
+```bash
+DEFAULT_MODEL_PROVIDER=auto
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+```
+
+Or configure explicit tier routing:
 
 ```bash
 DEFAULT_MODEL_PROVIDER=byo

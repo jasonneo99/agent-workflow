@@ -10,6 +10,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 
 | Provider | Use when | Required config |
 | --- | --- | --- |
+| `auto` | Smart per-stage routing across configured providers | one or more configured providers |
 | `mock` | Deterministic local workflow, CI, storage, and receipt testing | none |
 | `byo` | Bring your own local, hosted, or enterprise model gateway | `BYO_MODEL_BASE_URL`, `BYO_MODEL_NAME`, optional `BYO_MODEL_API_KEY` |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
@@ -17,9 +18,24 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
 
-## Adaptive Routing
+## Auto And Adaptive Routing
 
-Adaptive routing is enabled by default and remains provider-neutral. If no per-tier provider is configured, every stage uses `DEFAULT_MODEL_PROVIDER`. To save cost while preserving quality, route cheaper stages to local/BYO models and harder stages to stronger providers:
+Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the provider per stage. The workflow or agent assigns a model tier (`fast`, `standard`, or `reasoning`) from the request shape, then auto routing checks configured providers and selects a ready provider for that tier. Bedrock is included only when the AWS credential chain works, so expired SSO sessions do not silently become the default route.
+
+```env
+DEFAULT_MODEL_PROVIDER=auto
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+```
+
+If `AGENTFLOW_AUTO_PROVIDERS` is omitted, the built-in order prefers BYO/local providers for cheaper stages, OpenAI for reasoning stages, and Bedrock whenever AWS credentials are valid. Preview the current tier routing:
+
+```bash
+npm run agentflow -- provider-use auto --check
+```
+
+Adaptive routing remains provider-neutral. If no per-tier provider is configured and `DEFAULT_MODEL_PROVIDER` is not `auto`, every stage uses `DEFAULT_MODEL_PROVIDER`. To save cost while preserving quality with explicit tier routing, route cheaper stages to local/BYO models and harder stages to stronger providers:
 
 ```env
 DEFAULT_MODEL_PROVIDER=byo

@@ -40,7 +40,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
-      const route = selectModelRoute(stageInput);
+      const route = await selectModelRoute(stageInput);
       const routedStageInput = {
         ...stageInput,
         modelTier: route.modelTier

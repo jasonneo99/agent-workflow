@@ -88,6 +88,17 @@ npm run provider-check
 Use this when you want cheap local/default execution for most stages and stronger reasoning only where needed.
 
 ```env
+DEFAULT_MODEL_PROVIDER=auto
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_FALLBACK_PROVIDER=openai
+AGENTFLOW_QUALITY_THRESHOLD=0.62
+```
+
+Run `npm run agentflow -- provider-use auto --check` to preview which provider will be used for `fast`, `standard`, and `reasoning` stages. If AWS SSO is active, Bedrock can participate in the route; if it is expired, auto routing skips Bedrock and reports the checked providers in the route reason.
+
+For explicit tier routing, use:
+
+```env
 DEFAULT_MODEL_PROVIDER=byo
 AGENTFLOW_ROUTING_MODE=adaptive
 AGENTFLOW_PROVIDER_FAST=byo

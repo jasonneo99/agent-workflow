@@ -43,16 +43,17 @@ async function main(): Promise<void> {
   // Provider selection
   console.log("  Choose your model provider:");
   console.log("");
-  console.log("  1) mock          — No model calls. Good for testing workflows locally.");
-  console.log("  2) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
-  console.log("  3) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
-  console.log("  4) byo           — Bring your own OpenAI-compatible model gateway");
-  console.log("  5) openai-compatible — Same as BYO, with legacy env names");
-  console.log("  6) kiro          — Optional Kiro CLI adapter");
+  console.log("  1) auto          — Smart routing across configured providers by stage tier.");
+  console.log("  2) mock          — No model calls. Good for testing workflows locally.");
+  console.log("  3) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
+  console.log("  4) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
+  console.log("  5) byo           — Bring your own OpenAI-compatible model gateway");
+  console.log("  6) openai-compatible — Same as BYO, with legacy env names");
+  console.log("  7) kiro          — Optional Kiro CLI adapter");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-6, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "mock", "2": "openai", "3": "bedrock", "4": "byo", "5": "openai-compatible", "6": "kiro", "": "mock" };
+  const providerChoice = await ask("  Provider [1-7, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "bedrock", "5": "byo", "6": "openai-compatible", "7": "kiro", "": "auto" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -172,6 +173,11 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
   }
 
   lines.push(`DEFAULT_MODEL_PROVIDER=${answers.provider}`);
+
+  if (answers.provider === "auto") {
+    lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
+    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro");
+  }
 
   if (answers.provider === "openai") {
     lines.push(`OPENAI_API_KEY=${answers.openaiKey ?? ""}`);

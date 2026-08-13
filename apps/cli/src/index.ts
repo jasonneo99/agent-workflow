@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
 import YAML from "yaml";
@@ -42,6 +43,7 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
+import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
@@ -260,6 +262,16 @@ program
   .command("provider-check")
   .description("Check selected model provider configuration")
   .action(async () => {
+    if ((process.env.DEFAULT_MODEL_PROVIDER ?? "mock") === "auto") {
+      const routes = await loadAutoRoutePreviews();
+      console.log("Provider ready: auto");
+      for (const route of routes) {
+        console.log(`${route.tier}: ${route.providerId} (${route.estimatedCostTier})`);
+        console.log(`  ${route.reason}`);
+      }
+      return;
+    }
+
     const provider = providerFromEnv();
     if (!provider.check) {
       console.log(`Provider ready: ${provider.id}`);
@@ -283,10 +295,10 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "mock, byo, openai, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, byo, openai, openai-compatible, bedrock, or kiro")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean }) => {
-    const supported = ["mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -301,6 +313,8 @@ program
 
     if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
+    } else if (providerId === "auto") {
+      console.log("Using auto routing. Agent Workflow will pick a ready provider per stage tier.");
     } else if (providerId === "byo") {
       console.log("Using BYO model provider. Requires BYO_MODEL_BASE_URL and BYO_MODEL_NAME; BYO_MODEL_API_KEY is optional.");
     } else if (providerId === "kiro") {
@@ -310,6 +324,15 @@ program
     }
 
     if (options.check) {
+      if (providerId === "auto") {
+        const routes = await loadAutoRoutePreviews();
+        for (const route of routes) {
+          console.log(`${route.tier}: ${route.providerId} (${route.estimatedCostTier})`);
+          console.log(`  ${route.reason}`);
+        }
+        return;
+      }
+
       const selected = providerFromEnv();
       if (!selected.check) {
         console.log(`Provider ready: ${selected.id}`);
@@ -2529,6 +2552,12 @@ type DashboardInfo = {
     canSelectModel: boolean;
     availableModels: string[];
     availableModelsError?: string;
+    autoRoutes?: Array<{
+      tier: string;
+      providerId: string;
+      estimatedCostTier: string;
+      reason: string;
+    }>;
   };
   services: Array<{
     name: string;
@@ -2558,10 +2587,14 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
   const packageJson = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8")) as { name?: string; version?: string };
   const selectedProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
   let adapter = selectedProvider;
-  try {
-    adapter = providerFromEnv(selectedProvider).id;
-  } catch {
-    adapter = "unavailable";
+  if (selectedProvider === "auto") {
+    adapter = "auto-router";
+  } else {
+    try {
+      adapter = providerFromEnv(selectedProvider).id;
+    } catch {
+      adapter = "unavailable";
+    }
   }
   const [serviceChecks, agents, workflows, manifest] = await Promise.all([
     checkServices(),
@@ -2615,6 +2648,18 @@ function dashboardUrlFromRequest(request: http.IncomingMessage): string {
 }
 
 async function describeProvider(selected: string, adapter: string): Promise<DashboardInfo["provider"]> {
+  if (selected === "auto") {
+    return {
+      selected,
+      adapter,
+      model: "tier-based",
+      modelEnv: "AGENTFLOW_PROVIDER_*",
+      canSelectModel: false,
+      availableModels: [],
+      autoRoutes: await loadAutoRoutePreviews()
+    };
+  }
+
   if (selected === "openai") {
     const currentModel = process.env.OPENAI_MODEL || "default";
     const discovered = await discoverModelIds(() => loadOpenAIModelIds());
@@ -2661,6 +2706,7 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
   }
   if (selected === "bedrock") {
     const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || undefined;
+    const discovered = await discoverModelIds(() => loadBedrockModelIds());
     return {
       selected,
       adapter,
@@ -2668,7 +2714,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       modelEnv: "BEDROCK_MODEL",
       awsProfile: process.env.AWS_PROFILE || "default",
       canSelectModel: true,
-      availableModels: uniqueSorted([currentModel])
+      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModelsError: discovered.error
     };
   }
   const model = selected === "kiro" ? "kiro-cli" : "mock";
@@ -2679,6 +2726,25 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
     canSelectModel: false,
     availableModels: [model]
   };
+}
+
+async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provider"]["autoRoutes"]>> {
+  const tiers = ["fast", "standard", "reasoning"] as const;
+  return Promise.all(tiers.map(async (tier) => {
+    const route = await selectModelRoute({
+      modelTier: tier,
+      agentId: "auto-preview",
+      stageId: tier,
+      workflowId: "dashboard",
+      compiledBrief: ""
+    });
+    return {
+      tier,
+      providerId: route.providerId,
+      estimatedCostTier: route.estimatedCostTier,
+      reason: route.reason
+    };
+  }));
 }
 
 async function discoverModelIds(loader: () => Promise<string[]>): Promise<{ models: string[]; error?: string }> {
@@ -2721,6 +2787,13 @@ async function loadOpenAICompatibleModelIds(baseUrl?: string, apiKey?: string): 
   }
   const parsed = await response.json() as { data?: Array<{ id?: string }> };
   return uniqueSorted(parsed.data?.map((model) => model.id).filter((id): id is string => Boolean(id)) ?? []);
+}
+
+async function loadBedrockModelIds(): Promise<string[]> {
+  const region = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
+  const client = new BedrockClient({ region });
+  const response = await client.send(new ListFoundationModelsCommand({}));
+  return uniqueSorted(response.modelSummaries?.map((model) => model.modelId).filter((modelId): modelId is string => Boolean(modelId)) ?? []);
 }
 
 function uniqueSorted(values: Array<string | undefined>): string[] {
@@ -2827,6 +2900,19 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <p class="muted">${info.provider.availableModels.length ? `${info.provider.availableModels.length} models listed from the active provider.` : "No models were listed; enter a model name manually."} Secrets are never displayed.</p>
       ${info.provider.availableModelsError ? `<p class="warn-box">${escapeHtml(info.provider.availableModelsError)}</p>` : ""}`
     : `<p class="muted">This provider has no selectable live model list.</p>`;
+  const autoRouteRows = info.provider.autoRoutes?.map((route) => `
+    <tr>
+      <td>${escapeHtml(route.tier)}</td>
+      <td>${escapeHtml(route.providerId)}</td>
+      <td>${escapeHtml(route.estimatedCostTier)}</td>
+      <td>${escapeHtml(route.reason)}</td>
+    </tr>
+  `).join("") ?? "";
+  const autoRoutes = autoRouteRows ? `
+      <h3>Auto Routing Preview</h3>
+      <table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table>
+      <p class="muted">Auto routing uses the workflow/agent tier for each stage and checks provider readiness before choosing Bedrock or other live providers.</p>`
+    : "";
 
   return `<!doctype html>
 <html>
@@ -2858,6 +2944,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <h2>Model Provider</h2>
       <div class="meta-grid">${providerRows}</div>
       ${modelSelector}
+      ${autoRoutes}
     </section>
     <section class="panel">
       <h2>Enterprise Services</h2>
@@ -3705,6 +3792,11 @@ function normalizeLookup(value: string): string {
 function normalizeProviderRef(value: string): string {
   const normalized = normalizeLookup(value);
   const aliases: Record<string, string> = {
+    auto: "auto",
+    automatic: "auto",
+    smart: "auto",
+    router: "auto",
+    "auto-router": "auto",
     openai: "openai",
     "open-ai": "openai",
     gpt: "openai",
