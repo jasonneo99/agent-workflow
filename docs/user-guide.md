@@ -434,6 +434,8 @@ When the active provider exposes a models endpoint, the Info page also lists ava
 
 If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. It also shows an available-provider status table with safe details for each provider: whether required config exists, whether an API key or auth path is configured, the selected model, base URL, AWS profile/region, and readiness details. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
 
+The Info page also includes routing controls. They write safe, non-secret values back to `.env`: `DEFAULT_MODEL_PROVIDER`, `AGENTFLOW_AUTO_PROVIDERS`, `AGENTFLOW_PROVIDER_FAST`, `AGENTFLOW_PROVIDER_STANDARD`, `AGENTFLOW_PROVIDER_REASONING`, `AGENTFLOW_FALLBACK_PROVIDER`, and `AGENTFLOW_QUALITY_THRESHOLD`. Use `auto` for a tier to let the priority list decide, or choose a concrete provider to force that tier.
+
 The detail page shows:
 
 - run status, project, workflow, and task

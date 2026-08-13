@@ -24,10 +24,11 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
   const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
   const modelTier = mode === "adaptive" && preference.promoteFastStages && requestedModelTier === "fast" ? "standard" : requestedModelTier;
   const explicitTierProvider = process.env[`AGENTFLOW_PROVIDER_${modelTier.toUpperCase()}`];
+  const tierProvider = explicitTierProvider === "auto" ? undefined : explicitTierProvider;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
   const providerId = mode === "fixed"
     ? defaultProvider
-    : autoRoute?.providerId ?? explicitTierProvider ?? defaultProvider;
+    : autoRoute?.providerId ?? tierProvider ?? defaultProvider;
 
   return {
     providerId,

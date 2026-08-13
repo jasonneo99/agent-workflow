@@ -2218,6 +2218,22 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
+    const form = await readFormBody(request);
+    const result = await updateDashboardRouting({
+      provider: form.get("provider") ?? "",
+      autoProviders: form.get("autoProviders") ?? "",
+      fastProvider: form.get("fastProvider") ?? "",
+      standardProvider: form.get("standardProvider") ?? "",
+      reasoningProvider: form.get("reasoningProvider") ?? "",
+      fallbackProvider: form.get("fallbackProvider") ?? "",
+      qualityThreshold: form.get("qualityThreshold") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/model") {
     const form = await readFormBody(request);
     const result = await updateDashboardModel({
@@ -2570,6 +2586,15 @@ type DashboardInfo = {
       awsRegion?: string;
       details: string[];
     }>;
+    routingConfig: {
+      provider: string;
+      autoProviders: string;
+      fastProvider: string;
+      standardProvider: string;
+      reasoningProvider: string;
+      fallbackProvider: string;
+      qualityThreshold: string;
+    };
   };
   services: Array<{
     name: string;
@@ -2669,7 +2694,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       canSelectModel: false,
       availableModels: [],
       autoRoutes: await loadAutoRoutePreviews(),
-      providerStatuses: await loadAutoProviderStatuses()
+      providerStatuses: await loadAutoProviderStatuses(),
+      routingConfig: loadRoutingConfig()
     };
   }
 
@@ -2684,7 +2710,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_API_KEY),
       availableModels: uniqueSorted([currentModel, ...discovered.models]),
-      availableModelsError: discovered.error
+      availableModelsError: discovered.error,
+      routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "byo") {
@@ -2699,7 +2726,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY),
       canSelectModel: Boolean(process.env.BYO_MODEL_BASE_URL),
       availableModels: uniqueSorted([currentModel, ...discovered.models]),
-      availableModelsError: discovered.error
+      availableModelsError: discovered.error,
+      routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "openai-compatible") {
@@ -2714,7 +2742,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
       availableModels: uniqueSorted([currentModel, ...discovered.models]),
-      availableModelsError: discovered.error
+      availableModelsError: discovered.error,
+      routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "bedrock") {
@@ -2728,7 +2757,8 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       awsProfile: process.env.AWS_PROFILE || "default",
       canSelectModel: true,
       availableModels: uniqueSorted([currentModel, ...discovered.models]),
-      availableModelsError: discovered.error
+      availableModelsError: discovered.error,
+      routingConfig: loadRoutingConfig()
     };
   }
   const model = selected === "kiro" ? "kiro-cli" : "mock";
@@ -2737,7 +2767,20 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
     adapter,
     model,
     canSelectModel: false,
-    availableModels: [model]
+    availableModels: [model],
+    routingConfig: loadRoutingConfig()
+  };
+}
+
+function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
+  return {
+    provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "byo,bedrock,openai,openai-compatible,kiro",
+    fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
+    standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
+    reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
+    fallbackProvider: process.env.AGENTFLOW_FALLBACK_PROVIDER ?? "",
+    qualityThreshold: process.env.AGENTFLOW_QUALITY_THRESHOLD ?? "0.62"
   };
 }
 
@@ -3048,6 +3091,88 @@ async function updateDashboardModel(input: { provider: string; model: string }):
   };
 }
 
+async function updateDashboardRouting(input: {
+  provider: string;
+  autoProviders: string;
+  fastProvider: string;
+  standardProvider: string;
+  reasoningProvider: string;
+  fallbackProvider: string;
+  qualityThreshold: string;
+}): Promise<DashboardFollowUpResult> {
+  const provider = normalizeDashboardProvider(input.provider, { allowBlank: false });
+  if (!provider) {
+    return { ok: false, error: `Unsupported provider: ${input.provider}` };
+  }
+
+  const autoProviders = orderedUnique(splitProviderList(input.autoProviders)
+    .map((item) => normalizeDashboardProvider(item, { allowBlank: false }))
+    .filter((item): item is string => Boolean(item && item !== "auto")));
+  const fastProvider = normalizeDashboardProvider(input.fastProvider, { allowBlank: false });
+  const standardProvider = normalizeDashboardProvider(input.standardProvider, { allowBlank: false });
+  const reasoningProvider = normalizeDashboardProvider(input.reasoningProvider, { allowBlank: false });
+  const fallbackProvider = normalizeDashboardProvider(input.fallbackProvider, { allowBlank: true });
+  const threshold = input.qualityThreshold.trim() || "0.62";
+  const parsedThreshold = Number(threshold);
+
+  if (!fastProvider || !standardProvider || !reasoningProvider || fallbackProvider === undefined) {
+    return { ok: false, error: "One or more routing providers are unsupported." };
+  }
+  if (!Number.isFinite(parsedThreshold) || parsedThreshold < 0 || parsedThreshold > 1) {
+    return { ok: false, error: "Quality threshold must be a number between 0 and 1." };
+  }
+
+  const updates: Record<string, string> = {
+    DEFAULT_MODEL_PROVIDER: provider,
+    AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
+    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "byo,bedrock,openai,openai-compatible,kiro",
+    AGENTFLOW_PROVIDER_FAST: fastProvider,
+    AGENTFLOW_PROVIDER_STANDARD: standardProvider,
+    AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
+    AGENTFLOW_FALLBACK_PROVIDER: fallbackProvider,
+    AGENTFLOW_QUALITY_THRESHOLD: String(parsedThreshold)
+  };
+
+  const envPath = path.join(rootDir, ".env");
+  for (const [key, value] of Object.entries(updates)) {
+    await updateEnvValue(envPath, key, value);
+    process.env[key] = value;
+  }
+
+  return {
+    ok: true,
+    title: "Routing updated",
+    output: [
+      `DEFAULT_MODEL_PROVIDER=${updates.DEFAULT_MODEL_PROVIDER}`,
+      `AGENTFLOW_AUTO_PROVIDERS=${updates.AGENTFLOW_AUTO_PROVIDERS}`,
+      `AGENTFLOW_PROVIDER_FAST=${updates.AGENTFLOW_PROVIDER_FAST}`,
+      `AGENTFLOW_PROVIDER_STANDARD=${updates.AGENTFLOW_PROVIDER_STANDARD}`,
+      `AGENTFLOW_PROVIDER_REASONING=${updates.AGENTFLOW_PROVIDER_REASONING}`,
+      `AGENTFLOW_FALLBACK_PROVIDER=${updates.AGENTFLOW_FALLBACK_PROVIDER || "none"}`,
+      `AGENTFLOW_QUALITY_THRESHOLD=${updates.AGENTFLOW_QUALITY_THRESHOLD}`,
+      "New workflow tasks will use this routing. Already-running workers should be restarted if they need the updated environment."
+    ].join("\n")
+  };
+}
+
+function splitProviderList(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function orderedUnique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+function normalizeDashboardProvider(value: string, options: { allowBlank: boolean }): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed && options.allowBlank) {
+    return "";
+  }
+  const normalized = normalizeProviderRef(trimmed);
+  const supported = new Set(["auto", "mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"]);
+  return supported.has(normalized) ? normalized : undefined;
+}
+
 function safeDisplayUrl(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -3098,7 +3223,43 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       </form>
       <p class="muted">${info.provider.availableModels.length ? `${info.provider.availableModels.length} models listed from the active provider.` : "No models were listed; enter a model name manually."} Secrets are never displayed.</p>
       ${info.provider.availableModelsError ? `<p class="warn-box">${escapeHtml(info.provider.availableModelsError)}</p>` : ""}`
-    : `<p class="muted">This provider has no selectable live model list.</p>`;
+    : info.provider.selected === "auto"
+      ? `<p class="muted">Auto mode selects provider/model by stage tier. Use the routing controls below to tune it.</p>`
+      : `<p class="muted">This provider has no selectable live model list.</p>`;
+  const providerIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "openai", "bedrock", "byo", "openai-compatible", "kiro", "mock"];
+  const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
+    const selected = value === selectedValue ? " selected" : "";
+    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value || blankLabel)}</option>`;
+  }).join("");
+  const routingControls = `
+      <h3>Routing Controls</h3>
+      <form class="routing-form" method="post" action="/api/routing">
+        <label>Provider mode
+          <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
+        </label>
+        <label>Auto priority
+          <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,openai">
+        </label>
+        <label>Fast tier
+          <select name="fastProvider">${optionList(executionProviderIds, info.provider.routingConfig.fastProvider)}</select>
+        </label>
+        <label>Standard tier
+          <select name="standardProvider">${optionList(executionProviderIds, info.provider.routingConfig.standardProvider)}</select>
+        </label>
+        <label>Reasoning tier
+          <select name="reasoningProvider">${optionList(executionProviderIds, info.provider.routingConfig.reasoningProvider)}</select>
+        </label>
+        <label>Fallback provider
+          <select name="fallbackProvider">${optionList(fallbackProviderIds, info.provider.routingConfig.fallbackProvider)}</select>
+        </label>
+        <label>Quality threshold
+          <input name="qualityThreshold" value="${escapeHtml(info.provider.routingConfig.qualityThreshold)}" inputmode="decimal">
+        </label>
+        <div class="form-actions"><button type="submit">Save Routing</button></div>
+      </form>
+      <p class="muted">Use <code>auto</code> for a tier to follow the auto priority list. Select a concrete provider to force that tier.</p>`;
   const autoRouteRows = info.provider.autoRoutes?.map((route) => `
     <tr>
       <td>${escapeHtml(route.tier)}</td>
@@ -3160,6 +3321,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <h2>Model Provider</h2>
       <div class="meta-grid">${providerRows}</div>
       ${modelSelector}
+      ${routingControls}
       ${autoRoutes}
       ${providerStatuses}
     </section>
@@ -3345,6 +3507,10 @@ function dashboardCss(): string {
     input, select { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .routing-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
+    .routing-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .routing-form input, .routing-form select { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
