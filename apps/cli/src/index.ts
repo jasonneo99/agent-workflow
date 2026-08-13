@@ -2225,7 +2225,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       project: form.get("project") ?? "",
       task: form.get("task") ?? "",
       sourceTokenBudget: form.get("sourceTokenBudget") ?? "",
-      sourceMaxFiles: form.get("sourceMaxFiles") ?? ""
+      sourceMaxFiles: form.get("sourceMaxFiles") ?? "",
+      watch: form.get("watch") === "on",
+      workerLimit: form.get("workerLimit") ?? "",
+      timeoutMs: form.get("timeoutMs") ?? ""
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -2482,9 +2485,19 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
         <label>Source max files
           <input name="sourceMaxFiles" inputmode="numeric" placeholder="20">
         </label>
+        <label>Worker limit
+          <input name="workerLimit" inputmode="numeric" value="6">
+        </label>
+        <label>Watch timeout ms
+          <input name="timeoutMs" inputmode="numeric" value="60000">
+        </label>
+        <label class="check-row">
+          <input type="checkbox" name="watch">
+          Run and watch
+        </label>
         <div class="form-actions"><button type="submit">Queue Run</button></div>
       </form>
-      <p class="muted">Queues a workflow run in enterprise storage and opens a run link. Use a worker from the terminal to process queued stages.</p>
+      <p class="muted">Queue only returns immediately. Run and watch processes a bounded number of worker ticks in the browser request, then returns the run status and link.</p>
     </section>
     <table>
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
@@ -3223,6 +3236,9 @@ async function queueDashboardWorkflowRun(input: {
   task: string;
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
+  watch?: boolean;
+  workerLimit?: string;
+  timeoutMs?: string;
 }): Promise<DashboardFollowUpResult> {
   const workflowId = input.workflowId.trim();
   const project = input.project.trim();
@@ -3250,20 +3266,49 @@ async function queueDashboardWorkflowRun(input: {
   }
 
   const runUrl = `/run?id=${encodeURIComponent(queued.run.runId)}`;
-  return {
-    ok: true,
-    title: "Workflow queued",
-    runId: queued.run.runId,
-    output: [
-      `Run: ${queued.run.runId}`,
-      `Workflow: ${queued.workflow.id}`,
-      `Project: ${queued.projectDir}`,
-      `Queued stages: ${queued.run.tasks}`,
-      `Open: ${runUrl}`,
+  const output = [
+    `Run: ${queued.run.runId}`,
+    `Workflow: ${queued.workflow.id}`,
+    `Project: ${queued.projectDir}`,
+    `Queued stages: ${queued.run.tasks}`,
+    `Open: ${runUrl}`
+  ];
+
+  if (input.watch) {
+    const workerLimit = parsePositiveInteger(input.workerLimit ?? "6", 6);
+    const timeoutMs = parsePositiveInteger(input.timeoutMs ?? "60000", 60000);
+    const ticks: string[] = [];
+    const watchResult = await watchWorkflowRun({
+      runId: queued.run.runId,
+      workerLimit,
+      intervalMs: 1000,
+      timeoutMs,
+      onTick: (tick) => {
+        if (tick.claimed > 0 || tick.completed > 0 || tick.failed > 0) {
+          ticks.push(`Worker claimed ${tick.claimed}, completed ${tick.completed}, failed ${tick.failed}.`);
+        }
+      }
+    });
+    output.push(
+      "",
+      `Status: ${watchResult.status}`,
+      `Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed`,
+      `Receipts: ${watchResult.receipts}`,
+      ticks.length ? ticks.join("\n") : "Worker did not claim tasks during the watch window."
+    );
+  } else {
+    output.push(
       "",
       "Process queued stages with:",
       "npm run worker -- --limit 6"
-    ].join("\n")
+    );
+  }
+
+  return {
+    ok: true,
+    title: input.watch ? "Workflow run watched" : "Workflow queued",
+    runId: queued.run.runId,
+    output: output.join("\n")
   };
 }
 
@@ -3604,6 +3649,8 @@ function dashboardCss(): string {
     .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
     .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .routing-form input, .routing-form select, .workflow-form input, .workflow-form select, .workflow-form textarea { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .workflow-form .check-row { display: flex; align-items: center; gap: 8px; min-height: 36px; }
+    .workflow-form .check-row input { width: auto; min-width: 0; }
     .wide { grid-column: 1 / -1; }
     .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
