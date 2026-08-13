@@ -2195,6 +2195,17 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (request.method === "POST" && requestUrl.pathname === "/api/model") {
+    const form = await readFormBody(request);
+    const result = await updateDashboardModel({
+      provider: form.get("provider") ?? "",
+      model: form.get("model") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/follow-up") {
     const form = await readFormBody(request);
     const result = await runDashboardFollowUp({
@@ -2511,9 +2522,13 @@ type DashboardInfo = {
     selected: string;
     adapter: string;
     model?: string;
+    modelEnv?: string;
     baseUrl?: string;
     apiKeyConfigured?: boolean;
     awsProfile?: string;
+    canSelectModel: boolean;
+    availableModels: string[];
+    availableModelsError?: string;
   };
   services: Array<{
     name: string;
@@ -2542,7 +2557,12 @@ type DashboardInfo = {
 async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
   const packageJson = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8")) as { name?: string; version?: string };
   const selectedProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
-  const provider = providerFromEnv(selectedProvider);
+  let adapter = selectedProvider;
+  try {
+    adapter = providerFromEnv(selectedProvider).id;
+  } catch {
+    adapter = "unavailable";
+  }
   const [serviceChecks, agents, workflows, manifest] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
@@ -2557,7 +2577,7 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       rootDir,
       dashboardUrl
     },
-    provider: describeProvider(selectedProvider, provider.id),
+    provider: await describeProvider(selectedProvider, adapter),
     services: serviceChecks.map((check) => ({
       name: check.endpoint.name,
       reachable: check.reachable,
@@ -2594,45 +2614,165 @@ function dashboardUrlFromRequest(request: http.IncomingMessage): string {
   return `http://${host}`;
 }
 
-function describeProvider(selected: string, adapter: string): DashboardInfo["provider"] {
+async function describeProvider(selected: string, adapter: string): Promise<DashboardInfo["provider"]> {
   if (selected === "openai") {
+    const currentModel = process.env.OPENAI_MODEL || "default";
+    const discovered = await discoverModelIds(() => loadOpenAIModelIds());
     return {
       selected,
       adapter,
-      model: process.env.OPENAI_MODEL || "default",
-      apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY)
+      model: currentModel,
+      modelEnv: "OPENAI_MODEL",
+      apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
+      canSelectModel: Boolean(process.env.OPENAI_API_KEY),
+      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModelsError: discovered.error
     };
   }
   if (selected === "byo") {
+    const currentModel = process.env.BYO_MODEL_NAME || undefined;
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(process.env.BYO_MODEL_BASE_URL, process.env.BYO_MODEL_API_KEY));
     return {
       selected,
       adapter,
-      model: process.env.BYO_MODEL_NAME || undefined,
+      model: currentModel,
+      modelEnv: "BYO_MODEL_NAME",
       baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
-      apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY)
+      apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY),
+      canSelectModel: Boolean(process.env.BYO_MODEL_BASE_URL),
+      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModelsError: discovered.error
     };
   }
   if (selected === "openai-compatible") {
+    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || undefined;
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(process.env.OPENAI_COMPATIBLE_BASE_URL, process.env.OPENAI_COMPATIBLE_API_KEY));
     return {
       selected,
       adapter,
-      model: process.env.OPENAI_COMPATIBLE_MODEL || undefined,
+      model: currentModel,
+      modelEnv: "OPENAI_COMPATIBLE_MODEL",
       baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
-      apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY)
+      apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
+      canSelectModel: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModelsError: discovered.error
     };
   }
   if (selected === "bedrock") {
+    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || undefined;
     return {
       selected,
       adapter,
-      model: process.env.BEDROCK_MODEL_ID || undefined,
-      awsProfile: process.env.AWS_PROFILE || "default"
+      model: currentModel,
+      modelEnv: "BEDROCK_MODEL",
+      awsProfile: process.env.AWS_PROFILE || "default",
+      canSelectModel: true,
+      availableModels: uniqueSorted([currentModel])
     };
   }
+  const model = selected === "kiro" ? "kiro-cli" : "mock";
   return {
     selected,
     adapter,
-    model: selected === "kiro" ? "kiro-cli" : "mock"
+    model,
+    canSelectModel: false,
+    availableModels: [model]
+  };
+}
+
+async function discoverModelIds(loader: () => Promise<string[]>): Promise<{ models: string[]; error?: string }> {
+  try {
+    return { models: await loader() };
+  } catch (error) {
+    return { models: [], error: safeErrorMessage(error) };
+  }
+}
+
+async function loadOpenAIModelIds(): Promise<string[]> {
+  if (!process.env.OPENAI_API_KEY) {
+    return [];
+  }
+
+  const response = await fetch("https://api.openai.com/v1/models", {
+    headers: {
+      authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+    }
+  });
+  if (!response.ok) {
+    throw new Error(`OpenAI models API returned ${response.status}`);
+  }
+  const parsed = await response.json() as { data?: Array<{ id?: string }> };
+  return uniqueSorted(parsed.data?.map((model) => model.id).filter((id): id is string => Boolean(id)) ?? []);
+}
+
+async function loadOpenAICompatibleModelIds(baseUrl?: string, apiKey?: string): Promise<string[]> {
+  if (!baseUrl) {
+    return [];
+  }
+
+  const headers: Record<string, string> = {};
+  if (apiKey) {
+    headers.authorization = `Bearer ${apiKey}`;
+  }
+  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/models`, { headers });
+  if (!response.ok) {
+    throw new Error(`models API returned ${response.status}`);
+  }
+  const parsed = await response.json() as { data?: Array<{ id?: string }> };
+  return uniqueSorted(parsed.data?.map((model) => model.id).filter((id): id is string => Boolean(id)) ?? []);
+}
+
+function uniqueSorted(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value && value.trim())))].sort((a, b) => a.localeCompare(b));
+}
+
+function safeErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/sk-[A-Za-z0-9_-]+/g, "[REDACTED]");
+}
+
+function modelEnvForProvider(provider: string): string | undefined {
+  if (provider === "openai") {
+    return "OPENAI_MODEL";
+  }
+  if (provider === "byo") {
+    return "BYO_MODEL_NAME";
+  }
+  if (provider === "openai-compatible") {
+    return "OPENAI_COMPATIBLE_MODEL";
+  }
+  if (provider === "bedrock") {
+    return "BEDROCK_MODEL";
+  }
+  return undefined;
+}
+
+async function updateDashboardModel(input: { provider: string; model: string }): Promise<DashboardFollowUpResult> {
+  const selectedProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+  if (input.provider !== selectedProvider) {
+    return { ok: false, error: `Provider changed while editing. Current provider is ${selectedProvider}.` };
+  }
+
+  const model = input.model.trim();
+  if (!model) {
+    return { ok: false, error: "Missing model." };
+  }
+
+  const modelEnv = modelEnvForProvider(selectedProvider);
+  if (!modelEnv) {
+    return { ok: false, error: `${selectedProvider} does not support model selection.` };
+  }
+
+  await updateEnvValue(path.join(rootDir, ".env"), modelEnv, model);
+  process.env[modelEnv] = model;
+  return {
+    ok: true,
+    title: "Model updated",
+    output: [
+      `${modelEnv}=${model}`,
+      "New workflow tasks will use this model. Restart any already-running workers if you need them to pick up the change immediately."
+    ].join("\n")
   };
 }
 
@@ -2666,10 +2806,27 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
     ["Selected", info.provider.selected],
     ["Adapter", info.provider.adapter],
     ["Model", info.provider.model ?? "not set"],
+    ["Model env", info.provider.modelEnv ?? "not used"],
     ["Base URL", info.provider.baseUrl ?? "not used"],
     ["API key", typeof info.provider.apiKeyConfigured === "boolean" ? info.provider.apiKeyConfigured ? "configured" : "not configured" : "not used"],
     ["AWS profile", info.provider.awsProfile ?? "not used"]
   ].map(([label, value]) => `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</div>`).join("");
+  const modelOptions = info.provider.availableModels.map((model) => {
+    const selected = model === info.provider.model ? " selected" : "";
+    return `<option value="${escapeHtml(model)}"${selected}>${escapeHtml(model)}</option>`;
+  }).join("");
+  const modelControl = info.provider.availableModels.length
+    ? `<select name="model">${modelOptions}</select>`
+    : `<input name="model" value="${escapeHtml(info.provider.model ?? "")}" placeholder="Model name">`;
+  const modelSelector = info.provider.canSelectModel ? `
+      <form class="inline-form" method="post" action="/api/model">
+        <input type="hidden" name="provider" value="${escapeHtml(info.provider.selected)}">
+        ${modelControl}
+        <button type="submit">Use Model</button>
+      </form>
+      <p class="muted">${info.provider.availableModels.length ? `${info.provider.availableModels.length} models listed from the active provider.` : "No models were listed; enter a model name manually."} Secrets are never displayed.</p>
+      ${info.provider.availableModelsError ? `<p class="warn-box">${escapeHtml(info.provider.availableModelsError)}</p>` : ""}`
+    : `<p class="muted">This provider has no selectable live model list.</p>`;
 
   return `<!doctype html>
 <html>
@@ -2700,6 +2857,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
     <section class="panel">
       <h2>Model Provider</h2>
       <div class="meta-grid">${providerRows}</div>
+      ${modelSelector}
     </section>
     <section class="panel">
       <h2>Enterprise Services</h2>
@@ -2880,7 +3038,7 @@ function dashboardCss(): string {
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
-    input { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; }
+    input, select { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
     .secondary { background: white; color: #1d4ed8; }
@@ -2897,6 +3055,7 @@ function dashboardCss(): string {
     .good { background: #dcfce7; color: #166534; }
     .warn { background: #fef3c7; color: #92400e; }
     .bad { background: #fee2e2; color: #991b1b; }
+    .warn-box { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 10px 12px; }
     .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
     .completed { background: #dcfce7; color: #166534; }
     .failed { background: #fee2e2; color: #991b1b; }

@@ -430,6 +430,8 @@ Run detail pages:
 
 The Info page shows safe local runtime details: selected model provider, model name/base URL when applicable, whether API keys are configured, enterprise service reachability, registry counts, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
+When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
+
 The detail page shows:
 
 - run status, project, workflow, and task
