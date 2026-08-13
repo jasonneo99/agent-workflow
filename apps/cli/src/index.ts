@@ -2218,6 +2218,19 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (request.method === "POST" && requestUrl.pathname === "/api/run-worker") {
+    const form = await readFormBody(request);
+    const result = await processDashboardRun({
+      runId: form.get("runId") ?? "",
+      mode: form.get("mode") ?? "batch",
+      workerLimit: form.get("workerLimit") ?? "",
+      timeoutMs: form.get("timeoutMs") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/workflow-run") {
     const form = await readFormBody(request);
     const result = await queueDashboardWorkflowRun({
@@ -2518,6 +2531,10 @@ function renderRunDetailHtml(input: {
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
 }): string {
+  const completedTasks = input.tasks.filter((task) => task.status === "completed").length;
+  const failedTasks = input.tasks.filter((task) => task.status === "failed").length;
+  const activeTasks = input.tasks.filter((task) => task.status === "running" || task.status === "queued").length;
+  const shouldRefresh = input.run.status === "queued" || input.run.status === "running";
   const summaryBlock = input.summary
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
     : "<p>No summary available.</p>";
@@ -2539,6 +2556,7 @@ function renderRunDetailHtml(input: {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  ${shouldRefresh ? "<meta http-equiv=\"refresh\" content=\"5\">" : ""}
   <title>Run ${escapeHtml(input.run.id.slice(0, 8))}</title>
   <style>${dashboardCss()}</style>
 </head>
@@ -2560,9 +2578,15 @@ function renderRunDetailHtml(input: {
         <div><strong>Workflow</strong>${escapeHtml(input.run.workflowId)}</div>
         <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
         <div><strong>Started</strong>${escapeHtml(input.run.startedAt)}</div>
+        <div><strong>Tasks</strong>${completedTasks}/${input.tasks.length} completed</div>
+        <div><strong>Failed</strong>${failedTasks}</div>
+        <div><strong>Active</strong>${activeTasks}</div>
+        <div><strong>Receipts</strong>${input.receipts.length}</div>
       </div>
       <p>${escapeHtml(input.run.task)}</p>
       <div class="actions">
+        ${workerActionForm(input.run.id, "batch", "Process Next Batch")}
+        ${workerActionForm(input.run.id, "watch", "Run Until Complete")}
         ${runActionForm(input.run.id, "summarize", "Summarize Run")}
         ${runActionForm(input.run.id, "debug-failure", "Debug Failure")}
         ${runActionForm(input.run.id, "mira-ux-pass", "Ask Mira")}
@@ -3312,6 +3336,71 @@ async function queueDashboardWorkflowRun(input: {
   };
 }
 
+async function processDashboardRun(input: {
+  runId: string;
+  mode: string;
+  workerLimit: string;
+  timeoutMs: string;
+}): Promise<DashboardFollowUpResult> {
+  const runId = input.runId.trim();
+  if (!runId) {
+    return { ok: false, error: "Missing run id." };
+  }
+
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) {
+    return { ok: false, error: `Unknown workflow run: ${runId}` };
+  }
+
+  const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
+  const timeoutMs = parsePositiveInteger(input.timeoutMs || "60000", 60000);
+  if (input.mode === "watch") {
+    const ticks: string[] = [];
+    const watchResult = await watchWorkflowRun({
+      runId,
+      workerLimit,
+      intervalMs: 1000,
+      timeoutMs,
+      onTick: (tick) => {
+        if (tick.claimed > 0 || tick.completed > 0 || tick.failed > 0) {
+          ticks.push(`Worker claimed ${tick.claimed}, completed ${tick.completed}, failed ${tick.failed}.`);
+        }
+      }
+    });
+    return {
+      ok: true,
+      title: `Run ${watchResult.status}`,
+      runId,
+      output: [
+        `Run: ${runId}`,
+        `Status: ${watchResult.status}`,
+        `Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed`,
+        `Receipts: ${watchResult.receipts}`,
+        ticks.length ? ticks.join("\n") : "Worker did not claim tasks during the watch window.",
+        `Open: /run?id=${encodeURIComponent(runId)}`
+      ].join("\n")
+    };
+  }
+
+  const workerResult = await runWorkerOnce(workerLimit);
+  const updated = await getWorkflowRunDetails(runId);
+  const completedTasks = updated.tasks.filter((task) => task.status === "completed").length;
+  const failedTasks = updated.tasks.filter((task) => task.status === "failed").length;
+  return {
+    ok: true,
+    title: "Worker batch processed",
+    runId,
+    output: [
+      `Run: ${runId}`,
+      `Worker claimed ${workerResult.claimed}, completed ${workerResult.completed}, failed ${workerResult.failed}.`,
+      updated.run ? `Status: ${updated.run.status}` : "",
+      `Tasks: ${completedTasks}/${updated.tasks.length} completed, ${failedTasks} failed`,
+      `Receipts: ${updated.receipts.length}`,
+      `Open: /run?id=${encodeURIComponent(runId)}`
+    ].filter(Boolean).join("\n")
+  };
+}
+
 function safeDisplayUrl(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -3645,6 +3734,7 @@ function dashboardCss(): string {
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
     input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
+    .worker-form { display: inline-flex; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
     .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
     .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
@@ -3677,6 +3767,10 @@ function dashboardCss(): string {
 
 function runActionForm(runId: string, action: string, label: string): string {
   return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function workerActionForm(runId: string, mode: "batch" | "watch", label: string): string {
+  return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
 function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {
