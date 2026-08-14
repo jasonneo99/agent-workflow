@@ -530,6 +530,8 @@ agentflow_provider_use
 agentflow_provider_smoke
 ```
 
+`agentflow_run_workflow` processes worker stages by default when called through MCP so Codex, Cursor, and VS Code do not leave runs stuck in `queued`. Pass `queueOnly=true` only when you intentionally want to queue work for a separately running worker.
+
 Tool definitions and input schemas live in:
 
 ```text

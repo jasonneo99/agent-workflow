@@ -34,7 +34,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
 - `agentflow_index_project`: index a project into compact durable context.
 - `agentflow_compile`: compile a workflow brief without queueing work.
-- `agentflow_run_workflow`: queue an enterprise workflow run.
+- `agentflow_run_workflow`: run a workflow and process worker stages by default; set `queueOnly=true` only when you want to leave work queued for a separate worker.
 - `agentflow_run_and_watch`: index, queue, process, export, and summarize a workflow run.
 - `agentflow_agent_task`: run one specialist agent directly and export the result.
 - `agentflow_preset`: run a named workflow preset such as `tellara-ux-pass`.
@@ -65,6 +65,8 @@ After Docker services are running, ask Codex:
 ```text
 Use the agent-workflow MCP to run-and-watch the review-pr workflow for /path/to/project with task "Review the current changes".
 ```
+
+For Codex review requests such as "ask Nash to review this", prefer `agentflow_run_workflow` or `agentflow_run_and_watch` without `queueOnly`. That prevents the run from staying queued after the MCP call returns.
 
 ```text
 Use the agent-workflow MCP to have Mira do a UX pass on /path/to/project and export the result.

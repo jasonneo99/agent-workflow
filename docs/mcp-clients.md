@@ -97,6 +97,8 @@ Use Agent Workflow to onboard this project, write the recommended config, then t
 Use Agent Workflow to run-and-watch the build-feature workflow for "Add audit logging."
 ```
 
+For review requests from Codex, VS Code, or Cursor, prefer run-and-watch behavior. The MCP `agentflow_run_workflow` tool now processes worker stages by default; use `queueOnly=true` only when a separate worker is already running.
+
 ## Notes
 
 - The MCP client is only the control surface. The model provider is configured in Agent Workflow's `.env`.

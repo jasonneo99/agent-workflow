@@ -144,19 +144,38 @@ server.registerTool(
   "agentflow_run_workflow",
   {
     title: "AgentFlow run workflow",
-    description: "Queue an enterprise workflow run for a project task.",
+    description: "Run a workflow for a project task and process worker stages by default. Set queueOnly=true only when you explicitly want to leave the run queued for a separate worker.",
     inputSchema: {
       workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Task description."),
+      queueOnly: z.boolean().optional().describe("Only queue the run and return immediately. Defaults to false so Codex-facing calls do not get stuck in queued state."),
       includeBrief: z.boolean().optional().describe("Print the compiled brief in the result."),
+      workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick when queueOnly is false."),
+      timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for completion when queueOnly is false."),
+      out: z.string().optional().describe("Export directory when queueOnly is false."),
       sourceTokenBudget: z.number().int().positive().optional().describe("Token budget for indexed source summaries."),
       sourceMaxFiles: z.number().int().positive().optional().describe("Maximum indexed source summaries to include.")
     }
   },
-  async ({ workflow, project, task, includeBrief, sourceTokenBudget, sourceMaxFiles }) => {
+  async ({ workflow, project, task, queueOnly, includeBrief, workerLimit, timeoutMs, out, sourceTokenBudget, sourceMaxFiles }) => {
+    if (!queueOnly) {
+      const args = ["run-and-watch", workflow, "--project", project, "--task", task, "--skip-index"];
+      if (workerLimit) {
+        args.push("--worker-limit", String(workerLimit));
+      }
+      if (timeoutMs) {
+        args.push("--timeout-ms", String(timeoutMs));
+      }
+      if (out) {
+        args.push("--out", out);
+      }
+      addSourceOptions(args, sourceTokenBudget, sourceMaxFiles);
+      return toolResult(await runAgentflow(args, { timeoutMs: timeoutMs ? timeoutMs + 60_000 : 16 * 60_000 }));
+    }
+
     const args = ["run", workflow, "--project", project, "--task", task];
-    if (!includeBrief) {
+    if (includeBrief !== true) {
       args.push("--no-brief");
     }
     addSourceOptions(args, sourceTokenBudget, sourceMaxFiles);
