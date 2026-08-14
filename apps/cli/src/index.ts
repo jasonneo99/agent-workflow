@@ -1760,11 +1760,14 @@ type RunUsageEstimate = {
 };
 
 type DashboardUsageSummary = {
+  includeMock: boolean;
   runsAnalyzed: number;
   completedRuns: number;
   failedRuns: number;
   queuedRuns: number;
   runningRuns: number;
+  mockRunsExcluded: number;
+  mockStagesExcluded: number;
   routedStages: number;
   totalLatencyMs: number;
   averageLatencyMs: number | null;
@@ -1846,10 +1849,13 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
   });
 }
 
-async function loadDashboardUsageSummary(runs: DashboardRunStatus[]): Promise<DashboardUsageSummary> {
+async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { includeMock: boolean }): Promise<DashboardUsageSummary> {
   const projectTokenTotals = new Map<string, number>();
-  const reports: CostQualityReport[] = [];
+  const metricRuns: DashboardRunStatus[] = [];
+  const metricStages: CostQualityReport["stages"] = [];
   const estimates: RunUsageEstimate[] = [];
+  let mockRunsExcluded = 0;
+  let mockStagesExcluded = 0;
 
   for (const run of runs) {
     const details = await getWorkflowRunDetails(run.id);
@@ -1863,17 +1869,30 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[]): Promise<Da
       receipts: details.receipts,
       artifacts
     });
-    reports.push(report);
+    const mockStages = report.stages.filter((stage) => stage.providerId === "mock");
+    const realStages = report.stages.filter((stage) => stage.providerId !== "mock");
+    const mockOnlyRun = report.routedStages > 0 && realStages.length === 0;
+    if (!input.includeMock && mockOnlyRun) {
+      mockRunsExcluded += 1;
+      mockStagesExcluded += mockStages.length;
+      continue;
+    }
+
+    metricRuns.push(details.run);
+    metricStages.push(...(input.includeMock ? report.stages : realStages));
+    if (!input.includeMock) {
+      mockStagesExcluded += mockStages.length;
+    }
     estimates.push(await buildRunUsageEstimate({
       run: details.run,
       artifacts,
-      routedStages: report.routedStages,
+      routedStages: input.includeMock ? report.routedStages : Math.max(1, realStages.length),
       projectTokenTotals
     }));
   }
 
-  const totalLatencyMs = reports.reduce((sum, report) => sum + report.totalLatencyMs, 0);
-  const latencyStages = reports.reduce((sum, report) => sum + report.stages.filter((stage) => stage.latencyMs !== null).length, 0);
+  const totalLatencyMs = metricStages.reduce((sum, stage) => sum + (stage.latencyMs ?? 0), 0);
+  const latencyStages = metricStages.filter((stage) => stage.latencyMs !== null).length;
   const durations = estimates
     .map((estimate) => estimate.runDurationMs)
     .filter((duration): duration is number => duration !== null);
@@ -1882,12 +1901,15 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[]): Promise<Da
   const estimatedTokensSaved = estimates.reduce((sum, estimate) => sum + estimate.estimatedTokensSaved, 0);
 
   return {
-    runsAnalyzed: runs.length,
-    completedRuns: runs.filter((run) => run.status === "completed").length,
-    failedRuns: runs.filter((run) => run.status === "failed").length,
-    queuedRuns: runs.filter((run) => run.status === "queued").length,
-    runningRuns: runs.filter((run) => run.status === "running").length,
-    routedStages: reports.reduce((sum, report) => sum + report.routedStages, 0),
+    includeMock: input.includeMock,
+    runsAnalyzed: metricRuns.length,
+    completedRuns: metricRuns.filter((run) => run.status === "completed").length,
+    failedRuns: metricRuns.filter((run) => run.status === "failed").length,
+    queuedRuns: metricRuns.filter((run) => run.status === "queued").length,
+    runningRuns: metricRuns.filter((run) => run.status === "running").length,
+    mockRunsExcluded,
+    mockStagesExcluded,
+    routedStages: metricStages.length,
     totalLatencyMs,
     averageLatencyMs: latencyStages ? Math.round(totalLatencyMs / latencyStages) : null,
     averageRunDurationMs: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : null,
@@ -1895,10 +1917,13 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[]): Promise<Da
     estimatedBaselineTokens,
     estimatedTokensSaved,
     tokenReductionPercent: estimatedBaselineTokens > 0 ? Math.round((estimatedTokensSaved / estimatedBaselineTokens) * 100) : null,
-    providerMix: mergeCountMaps(reports.map((report) => report.providerMix)),
-    costMix: mergeCountMaps(reports.map((report) => report.estimatedCostMix)),
-    modelTierMix: mergeCountMaps(reports.map((report) => report.modelTierMix)),
-    byoSavingsStages: reports.reduce((sum, report) => sum + report.estimatedByoSavingsStages, 0)
+    providerMix: countDashboardStages(metricStages, (stage) => stage.providerId),
+    costMix: countDashboardStages(metricStages, (stage) => stage.estimatedCostTier),
+    modelTierMix: countDashboardStages(metricStages, (stage) => stage.modelTier),
+    byoSavingsStages: metricStages.filter((stage) =>
+      ["byo", "openai-compatible"].includes(stage.providerId) &&
+      ["low", "medium", "none"].includes(stage.estimatedCostTier)
+    ).length
   };
 }
 
@@ -1986,14 +2011,13 @@ function runDurationMs(run: DashboardRunStatus): number | null {
   return finished - started;
 }
 
-function mergeCountMaps(maps: Array<Record<string, number>>): Record<string, number> {
-  const merged: Record<string, number> = {};
-  for (const map of maps) {
-    for (const [key, value] of Object.entries(map)) {
-      merged[key] = (merged[key] ?? 0) + value;
-    }
+function countDashboardStages(stages: CostQualityReport["stages"], keyFor: (stage: CostQualityReport["stages"][number]) => string): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const stage of stages) {
+    const key = keyFor(stage);
+    counts[key] = (counts[key] ?? 0) + 1;
   }
-  return merged;
+  return counts;
 }
 
 async function loadPreferenceScorecard(input: {
@@ -2627,7 +2651,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     listWorkflowRuns(50),
     loadWorkflows(rootDir)
   ]);
-  const usage = await loadDashboardUsageSummary(runs);
+  const includeMock = requestUrl.searchParams.get("includeMock") === "true";
+  const usage = await loadDashboardUsageSummary(runs, { includeMock });
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs, workflows, usage));
 }
@@ -3883,10 +3908,23 @@ function renderCostQualityHtml(report: CostQualityReport): string {
 }
 
 function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
+  const modeLabel = summary.includeMock ? "Including mock/test runs" : "Real providers only";
+  const toggleHref = summary.includeMock ? "/" : "/?includeMock=true";
+  const toggleLabel = summary.includeMock ? "Hide Mock/Test Runs" : "Include Mock/Test Runs";
+  const excluded = summary.includeMock
+    ? "Mock/test runs are included in these diagnostics."
+    : `${summary.mockRunsExcluded} mock/test runs and ${summary.mockStagesExcluded} mock stages excluded from cost metrics.`;
   return `
+    <div class="section-heading">
+      <div>
+        <strong>${escapeHtml(modeLabel)}</strong>
+        <span class="muted">${escapeHtml(excluded)}</span>
+      </div>
+      <a class="button secondary" href="${escapeHtml(toggleHref)}">${escapeHtml(toggleLabel)}</a>
+    </div>
     <div class="metric-grid">
       ${metricCard("Runs", summary.runsAnalyzed, `${summary.completedRuns} complete / ${summary.failedRuns} failed / ${summary.queuedRuns + summary.runningRuns} active`)}
-      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} low-cost or local`)}
+      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} BYO or local-compatible`)}
       ${metricCard("Avg Latency", summary.averageLatencyMs === null ? "n/a" : formatDuration(summary.averageLatencyMs), `${formatDuration(summary.totalLatencyMs)} total model latency`)}
       ${metricCard("Avg Run Time", summary.averageRunDurationMs === null ? "n/a" : formatDuration(summary.averageRunDurationMs), "completed runs")}
       ${metricCard("Est. Prompt Tokens", formatNumber(summary.estimatedPromptTokens), "compiled brief x routed stages")}
@@ -3898,7 +3936,7 @@ function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
       <div><strong>Model Tiers</strong>${escapeHtml(formatInlineCounts(summary.modelTierMix))}</div>
       <div><strong>Est. Baseline</strong>${escapeHtml(formatNumber(summary.estimatedBaselineTokens))} indexed-context tokens</div>
     </div>
-    <p class="muted">Token savings are estimates from indexed project summaries and compiled briefs. They show context avoided, not exact provider billing tokens.</p>
+    <p class="muted">Token savings are estimates from indexed project summaries and compiled briefs. They show context avoided, not exact provider billing tokens. Mock is test-only and excluded by default.</p>
   `;
 }
 
@@ -4003,6 +4041,8 @@ function dashboardCss(): string {
     .wide { grid-column: 1 / -1; }
     .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
+    .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+    .section-heading div { display: grid; gap: 4px; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
     .metric span { font-size: 22px; font-weight: 700; }
