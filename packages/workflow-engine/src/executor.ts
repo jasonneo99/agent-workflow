@@ -92,7 +92,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             project
           });
         } catch (error) {
-          await recordRunAction({
+          const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,
             agentId: task.agentId,
             actionType: "local_command_rejected",
@@ -107,7 +107,13 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
               requestedByStageId: task.stageId
             }
           });
-          throw error;
+          actionResults.push({
+            type: "local_command_rejected",
+            commandLine,
+            artifactUri: rejectionArtifactUri,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
         }
         const summary = [
           `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
@@ -147,7 +153,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             project
           });
         } catch (error) {
-          await recordRunAction({
+          const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,
             agentId: task.agentId,
             actionType: "file_write_rejected",
@@ -162,7 +168,13 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
               requestedByStageId: task.stageId
             }
           });
-          throw error;
+          actionResults.push({
+            type: "file_write_rejected",
+            path: fileWrite.path,
+            artifactUri: rejectionArtifactUri,
+            error: error instanceof Error ? error.message : String(error)
+          });
+          continue;
         }
         const summary = [
           `Wrote ${writeResult.bytesWritten} bytes to \`${writeResult.relativePath}\`.`,

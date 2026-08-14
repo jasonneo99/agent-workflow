@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "2fa2ed67c779c1fcd01ebbb7091ff6fce6a3578ce93fb3e9132696a4d64a2c81"
+    "value": "6bc4c943d8894d764f2c4ee22ab283f56256edcb80aaa207e2df61100beb7170"
   },
   "agents": [
     {
@@ -115,7 +115,7 @@
     {
       "id": "pr-preparer",
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "5fae1a2cecddaf9607ec3a1537922511a6bea591faac828230a20c35b59c5b59"
+      "checksum": "e9778e320cb714fd1a3cd7232f0dde7b3e3c6ba27cf3e287ac54e316409846ac"
     },
     {
       "id": "release-manager",
@@ -250,7 +250,7 @@
     },
     {
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "5fae1a2cecddaf9607ec3a1537922511a6bea591faac828230a20c35b59c5b59"
+      "checksum": "e9778e320cb714fd1a3cd7232f0dde7b3e3c6ba27cf3e287ac54e316409846ac"
     },
     {
       "path": "agents/operations/release-manager.yaml",

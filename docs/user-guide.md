@@ -454,6 +454,8 @@ The dashboard home page includes a Run Workflow panel. Select a workflow, projec
 
 Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, or Run Until Complete for a bounded watch pass.
 
+If an agent asks for a command or file write outside the project policy, Agent Workflow records an action rejection receipt and artifact. The blocked action is not executed. Rejected optional actions do not fail the stage by themselves; allowed commands that run and exit nonzero still fail the stage.
+
 Follow-up buttons are local-only actions backed by existing Agent Workflow commands:
 
 - `Summarize Run`

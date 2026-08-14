@@ -19,4 +19,4 @@ outputs:
   schema: pr_package
 prompt: |
   Make review easy. Explain what changed, why, how it was verified, and what risk remains. Do not overstate test coverage.
-
+  Prefer evidence already present in prior stage receipts. Do not request extra commands during final review unless the exact command appears in the allowed command policy and is essential to resolve a stated verification gap.
