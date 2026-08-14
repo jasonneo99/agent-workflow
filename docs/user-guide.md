@@ -441,11 +441,14 @@ The detail page shows:
 - run status, project, workflow, and task
 - decision-ready summary
 - cost, routing, fallback, latency, and quality metrics
+- estimated compact prompt tokens and indexed-context tokens avoided
 - stage results
 - receipts
 - artifact JSON viewers
 - fixed follow-up buttons
 - worker controls for processing the next batch or running until complete with a bounded timeout
+
+The dashboard home page includes a Usage & Performance panel across recent runs. It summarizes run status, routed model stages, provider/cost/tier mix, average latency, estimated compact prompt tokens, and estimated tokens saved by loading compiled briefs instead of the full indexed project context. These token values are planning estimates, not provider billing records.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
 

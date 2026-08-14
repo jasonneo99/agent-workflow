@@ -238,6 +238,7 @@ stages:
 
 - **Model tier routing** — fast agents use cheap models, reasoning agents use capable ones
 - **Delta indexing** — only re-indexes files that changed since last run
+- **Dashboard savings estimates** — shows provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas
 - **Batched workflows** — `production-readiness` runs 4 specialist reviews in one pass with shared context

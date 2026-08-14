@@ -1744,6 +1744,41 @@ interface RunSummary {
 
 type FeedbackRating = "accepted" | "revised" | "rejected";
 
+type DashboardRunStatus = Awaited<ReturnType<typeof listWorkflowRuns>>[number];
+
+type RunUsageEstimate = {
+  runId: string;
+  routedStages: number;
+  indexedProjectTokens: number;
+  compiledBriefTokens: number;
+  selectedSourceTokens: number;
+  estimatedPromptTokens: number;
+  estimatedBaselineTokens: number;
+  estimatedTokensSaved: number;
+  tokenReductionPercent: number | null;
+  runDurationMs: number | null;
+};
+
+type DashboardUsageSummary = {
+  runsAnalyzed: number;
+  completedRuns: number;
+  failedRuns: number;
+  queuedRuns: number;
+  runningRuns: number;
+  routedStages: number;
+  totalLatencyMs: number;
+  averageLatencyMs: number | null;
+  averageRunDurationMs: number | null;
+  estimatedPromptTokens: number;
+  estimatedBaselineTokens: number;
+  estimatedTokensSaved: number;
+  tokenReductionPercent: number | null;
+  providerMix: Record<string, number>;
+  costMix: Record<string, number>;
+  modelTierMix: Record<string, number>;
+  byoSavingsStages: number;
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -1809,6 +1844,156 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
     receipts: details.receipts,
     artifacts
   });
+}
+
+async function loadDashboardUsageSummary(runs: DashboardRunStatus[]): Promise<DashboardUsageSummary> {
+  const projectTokenTotals = new Map<string, number>();
+  const reports: CostQualityReport[] = [];
+  const estimates: RunUsageEstimate[] = [];
+
+  for (const run of runs) {
+    const details = await getWorkflowRunDetails(run.id);
+    if (!details.run) {
+      continue;
+    }
+    const artifacts = await listArtifacts({ runId: run.id });
+    const report = buildCostQualityReport({
+      run: details.run,
+      tasks: details.tasks,
+      receipts: details.receipts,
+      artifacts
+    });
+    reports.push(report);
+    estimates.push(await buildRunUsageEstimate({
+      run: details.run,
+      artifacts,
+      routedStages: report.routedStages,
+      projectTokenTotals
+    }));
+  }
+
+  const totalLatencyMs = reports.reduce((sum, report) => sum + report.totalLatencyMs, 0);
+  const latencyStages = reports.reduce((sum, report) => sum + report.stages.filter((stage) => stage.latencyMs !== null).length, 0);
+  const durations = estimates
+    .map((estimate) => estimate.runDurationMs)
+    .filter((duration): duration is number => duration !== null);
+  const estimatedPromptTokens = estimates.reduce((sum, estimate) => sum + estimate.estimatedPromptTokens, 0);
+  const estimatedBaselineTokens = estimates.reduce((sum, estimate) => sum + estimate.estimatedBaselineTokens, 0);
+  const estimatedTokensSaved = estimates.reduce((sum, estimate) => sum + estimate.estimatedTokensSaved, 0);
+
+  return {
+    runsAnalyzed: runs.length,
+    completedRuns: runs.filter((run) => run.status === "completed").length,
+    failedRuns: runs.filter((run) => run.status === "failed").length,
+    queuedRuns: runs.filter((run) => run.status === "queued").length,
+    runningRuns: runs.filter((run) => run.status === "running").length,
+    routedStages: reports.reduce((sum, report) => sum + report.routedStages, 0),
+    totalLatencyMs,
+    averageLatencyMs: latencyStages ? Math.round(totalLatencyMs / latencyStages) : null,
+    averageRunDurationMs: durations.length ? Math.round(durations.reduce((sum, duration) => sum + duration, 0) / durations.length) : null,
+    estimatedPromptTokens,
+    estimatedBaselineTokens,
+    estimatedTokensSaved,
+    tokenReductionPercent: estimatedBaselineTokens > 0 ? Math.round((estimatedTokensSaved / estimatedBaselineTokens) * 100) : null,
+    providerMix: mergeCountMaps(reports.map((report) => report.providerMix)),
+    costMix: mergeCountMaps(reports.map((report) => report.estimatedCostMix)),
+    modelTierMix: mergeCountMaps(reports.map((report) => report.modelTierMix)),
+    byoSavingsStages: reports.reduce((sum, report) => sum + report.estimatedByoSavingsStages, 0)
+  };
+}
+
+async function buildRunUsageEstimate(input: {
+  run: DashboardRunStatus;
+  artifacts: Awaited<ReturnType<typeof listArtifacts>>;
+  routedStages: number;
+  projectTokenTotals?: Map<string, number>;
+}): Promise<RunUsageEstimate> {
+  const compiledBriefText = compiledBriefTextFromArtifacts(input.artifacts);
+  const compiledBriefTokens = estimateDashboardTokens(compiledBriefText);
+  const selectedSourceTokens = sumApproxSourceTokens(compiledBriefText);
+  const indexedProjectTokens = await loadIndexedProjectTokenTotal(input.run.projectRootUri, input.projectTokenTotals);
+  const routedStages = Math.max(1, input.routedStages);
+  const estimatedPromptTokens = compiledBriefTokens * routedStages;
+  const estimatedBaselineTokens = Math.max(indexedProjectTokens, selectedSourceTokens, compiledBriefTokens) * routedStages;
+  const estimatedTokensSaved = Math.max(0, estimatedBaselineTokens - estimatedPromptTokens);
+
+  return {
+    runId: input.run.id,
+    routedStages,
+    indexedProjectTokens,
+    compiledBriefTokens,
+    selectedSourceTokens,
+    estimatedPromptTokens,
+    estimatedBaselineTokens,
+    estimatedTokensSaved,
+    tokenReductionPercent: estimatedBaselineTokens > 0 ? Math.round((estimatedTokensSaved / estimatedBaselineTokens) * 100) : null,
+    runDurationMs: runDurationMs(input.run)
+  };
+}
+
+async function loadIndexedProjectTokenTotal(projectRootUri: string, cache = new Map<string, number>()): Promise<number> {
+  const cached = cache.get(projectRootUri);
+  if (cached !== undefined) {
+    return cached;
+  }
+  try {
+    const summaries = await listProjectFileSummaries({
+      projectRootUri,
+      limit: 5000
+    });
+    const total = summaries.reduce((sum, summary) => sum + summary.tokenEstimate, 0);
+    cache.set(projectRootUri, total);
+    return total;
+  } catch {
+    cache.set(projectRootUri, 0);
+    return 0;
+  }
+}
+
+function compiledBriefTextFromArtifacts(artifacts: Awaited<ReturnType<typeof listArtifacts>>): string {
+  const artifact = artifacts.find((item) => item.kind === "compiled_brief");
+  if (!artifact) {
+    return "";
+  }
+  const text = artifact.content.text;
+  if (typeof text === "string") {
+    return text;
+  }
+  return JSON.stringify(artifact.content);
+}
+
+function sumApproxSourceTokens(text: string): number {
+  return [...text.matchAll(/Approx tokens:\s*(\d+)/gu)]
+    .reduce((sum, match) => sum + Number(match[1]), 0);
+}
+
+function estimateDashboardTokens(text: string): number {
+  if (!text.trim()) {
+    return 0;
+  }
+  return Math.ceil(text.length / 4);
+}
+
+function runDurationMs(run: DashboardRunStatus): number | null {
+  if (!run.finishedAt) {
+    return null;
+  }
+  const started = Date.parse(run.startedAt);
+  const finished = Date.parse(run.finishedAt);
+  if (!Number.isFinite(started) || !Number.isFinite(finished) || finished < started) {
+    return null;
+  }
+  return finished - started;
+}
+
+function mergeCountMaps(maps: Array<Record<string, number>>): Record<string, number> {
+  const merged: Record<string, number> = {};
+  for (const map of maps) {
+    for (const [key, value] of Object.entries(map)) {
+      merged[key] = (merged[key] ?? 0) + value;
+    }
+  }
+  return merged;
 }
 
 async function loadPreferenceScorecard(input: {
@@ -2404,6 +2589,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const artifacts = await listArtifacts({ runId });
     const summary = await summarizeWorkflowRun(runId);
     const qualityReport = await loadCostQualityReport(runId);
+    const usageEstimate = qualityReport
+      ? await buildRunUsageEstimate({
+        run: details.run,
+        artifacts,
+        routedStages: qualityReport.routedStages
+      })
+      : null;
     const preferenceScorecard = await loadPreferenceScorecard({
       projectDir: details.run.projectRootUri,
       limit: 25
@@ -2417,6 +2609,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       artifacts,
       summary: summary.ok ? summary.value : null,
       qualityReport,
+      usageEstimate,
       preferenceScorecard,
       tuningProposals
     }));
@@ -2434,11 +2627,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     listWorkflowRuns(50),
     loadWorkflows(rootDir)
   ]);
+  const usage = await loadDashboardUsageSummary(runs);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs, workflows));
+  response.end(renderDashboardHtml(runs, workflows, usage));
 }
 
-function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>): string {
+function renderDashboardHtml(
+  runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
+  workflows: Awaited<ReturnType<typeof loadWorkflows>>,
+  usage: DashboardUsageSummary
+): string {
   const rows = runs.map((run) => `
     <tr>
       <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
@@ -2512,6 +2710,10 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
       </form>
       <p class="muted">Queue only returns immediately. Run and watch processes a bounded number of worker ticks in the browser request, then returns the run status and link.</p>
     </section>
+    <section class="panel">
+      <h2>Usage & Performance</h2>
+      ${renderDashboardUsageHtml(usage)}
+    </section>
     <table>
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
       <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
@@ -2528,6 +2730,7 @@ function renderRunDetailHtml(input: {
   artifacts: Awaited<ReturnType<typeof listArtifacts>>;
   summary: RunSummary | null;
   qualityReport: CostQualityReport | null;
+  usageEstimate: RunUsageEstimate | null;
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
 }): string {
@@ -2605,6 +2808,10 @@ function renderRunDetailHtml(input: {
     <section class="panel">
       <h2>Cost & Quality</h2>
       ${input.qualityReport ? renderCostQualityHtml(input.qualityReport) : "<p>No routing data available.</p>"}
+    </section>
+    <section class="panel">
+      <h2>Token Savings Estimate</h2>
+      ${input.usageEstimate ? renderRunUsageEstimateHtml(input.usageEstimate) : "<p>No token estimate available.</p>"}
     </section>
     <section class="panel">
       <h2>Preference Scorecard</h2>
@@ -3675,6 +3882,40 @@ function renderCostQualityHtml(report: CostQualityReport): string {
   `;
 }
 
+function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
+  return `
+    <div class="metric-grid">
+      ${metricCard("Runs", summary.runsAnalyzed, `${summary.completedRuns} complete / ${summary.failedRuns} failed / ${summary.queuedRuns + summary.runningRuns} active`)}
+      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} low-cost or local`)}
+      ${metricCard("Avg Latency", summary.averageLatencyMs === null ? "n/a" : formatDuration(summary.averageLatencyMs), `${formatDuration(summary.totalLatencyMs)} total model latency`)}
+      ${metricCard("Avg Run Time", summary.averageRunDurationMs === null ? "n/a" : formatDuration(summary.averageRunDurationMs), "completed runs")}
+      ${metricCard("Est. Prompt Tokens", formatNumber(summary.estimatedPromptTokens), "compiled brief x routed stages")}
+      ${metricCard("Est. Tokens Saved", formatNumber(summary.estimatedTokensSaved), `${summary.tokenReductionPercent ?? "n/a"}% vs indexed context baseline`)}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Providers</strong>${escapeHtml(formatInlineCounts(summary.providerMix))}</div>
+      <div><strong>Cost Mix</strong>${escapeHtml(formatInlineCounts(summary.costMix))}</div>
+      <div><strong>Model Tiers</strong>${escapeHtml(formatInlineCounts(summary.modelTierMix))}</div>
+      <div><strong>Est. Baseline</strong>${escapeHtml(formatNumber(summary.estimatedBaselineTokens))} indexed-context tokens</div>
+    </div>
+    <p class="muted">Token savings are estimates from indexed project summaries and compiled briefs. They show context avoided, not exact provider billing tokens.</p>
+  `;
+}
+
+function renderRunUsageEstimateHtml(estimate: RunUsageEstimate): string {
+  return `
+    <div class="metric-grid">
+      ${metricCard("Est. Prompt Tokens", formatNumber(estimate.estimatedPromptTokens), `${estimate.routedStages} routed stages`)}
+      ${metricCard("Est. Tokens Saved", formatNumber(estimate.estimatedTokensSaved), `${estimate.tokenReductionPercent ?? "n/a"}% reduction`)}
+      ${metricCard("Indexed Context", formatNumber(estimate.indexedProjectTokens), "project baseline")}
+      ${metricCard("Compiled Brief", formatNumber(estimate.compiledBriefTokens), "per-stage compact context")}
+      ${metricCard("Selected Sources", formatNumber(estimate.selectedSourceTokens), "source summary budget")}
+      ${metricCard("Run Duration", estimate.runDurationMs === null ? "n/a" : formatDuration(estimate.runDurationMs), "wall-clock")}
+    </div>
+    <p class="muted">Estimate compares the indexed project context baseline with the compact compiled brief that each model-routed stage received.</p>
+  `;
+}
+
 function renderFeedbackHtml(runId: string, report: CostQualityReport): string {
   const latest = report.feedback.latest
     ? `<p><strong>Latest:</strong> ${escapeHtml(report.feedback.latest.rating)}${report.feedback.latest.note ? ` - ${escapeHtml(report.feedback.latest.note)}` : ""}</p>`
@@ -3696,6 +3937,24 @@ function metricCard(label: string, value: string | number, detail: string): stri
 function formatInlineCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts);
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(", ") : "none";
+}
+
+function formatNumber(value: number): string {
+  return new Intl.NumberFormat("en-US").format(Math.round(value));
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  if (ms < 60_000) {
+    return `${formatOneDecimal(ms / 1000)}s`;
+  }
+  return `${formatOneDecimal(ms / 60_000)}m`;
+}
+
+function formatOneDecimal(value: number): string {
+  return String(Math.round(value * 10) / 10);
 }
 
 function renderDashboardActionResult(result: DashboardFollowUpResult): string {
