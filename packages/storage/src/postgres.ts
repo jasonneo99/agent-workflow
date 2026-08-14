@@ -209,6 +209,90 @@ export interface ProjectFileSummary {
   updatedAt: string;
 }
 
+export interface ProjectStorageSummary {
+  id: string;
+  name: string;
+  rootUri: string;
+  profile: string;
+  config: Record<string, unknown>;
+  updatedAt: string;
+  indexedFiles: number;
+  indexedTokens: number;
+  lastIndexedAt: string | null;
+  memoryItems: number;
+  runCount: number;
+  completedRuns: number;
+  failedRuns: number;
+  queuedRuns: number;
+  runningRuns: number;
+  lastRunAt: string | null;
+  lastRunId: string | null;
+  lastWorkflowId: string | null;
+  lastRunStatus: string | null;
+}
+
+export async function listProjectStorageSummaries(limit = 100): Promise<ProjectStorageSummary[]> {
+  return withClient(async (client) => {
+    const result = await client.query<ProjectStorageSummary>(
+      `select
+         p.id::text,
+         p.name,
+         p.root_uri as "rootUri",
+         p.profile,
+         p.config,
+         p.updated_at::text as "updatedAt",
+         coalesce(pf.indexed_files, 0)::int as "indexedFiles",
+         coalesce(pf.indexed_tokens, 0)::int as "indexedTokens",
+         pf.last_indexed_at::text as "lastIndexedAt",
+         coalesce(mi.memory_items, 0)::int as "memoryItems",
+         coalesce(wr.run_count, 0)::int as "runCount",
+         coalesce(wr.completed_runs, 0)::int as "completedRuns",
+         coalesce(wr.failed_runs, 0)::int as "failedRuns",
+         coalesce(wr.queued_runs, 0)::int as "queuedRuns",
+         coalesce(wr.running_runs, 0)::int as "runningRuns",
+         latest.started_at::text as "lastRunAt",
+         latest.id::text as "lastRunId",
+         latest.workflow_id as "lastWorkflowId",
+         latest.status as "lastRunStatus"
+       from projects p
+       left join lateral (
+         select
+           count(*) as indexed_files,
+           coalesce(sum(token_estimate), 0) as indexed_tokens,
+           max(updated_at) as last_indexed_at
+         from project_files
+         where project_id = p.id
+       ) pf on true
+       left join lateral (
+         select count(*) as memory_items
+         from memory_items
+         where project_id = p.id
+       ) mi on true
+       left join lateral (
+         select
+           count(*) as run_count,
+           count(*) filter (where status = 'completed') as completed_runs,
+           count(*) filter (where status = 'failed') as failed_runs,
+           count(*) filter (where status = 'queued') as queued_runs,
+           count(*) filter (where status = 'running') as running_runs
+         from workflow_runs
+         where project_id = p.id
+       ) wr on true
+       left join lateral (
+         select id, workflow_id, status, started_at
+         from workflow_runs
+         where project_id = p.id
+         order by started_at desc
+         limit 1
+       ) latest on true
+       order by greatest(coalesce(latest.started_at, '-infinity'::timestamptz), p.updated_at) desc
+       limit $1`,
+      [limit]
+    );
+    return result.rows;
+  });
+}
+
 export async function listProjectFileSummaries(input: {
   projectRootUri: string;
   limit: number;

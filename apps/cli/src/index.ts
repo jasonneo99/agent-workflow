@@ -31,6 +31,7 @@ import {
   getWorkflowRunDetails,
   listArtifacts,
   listProjectFileSummaries,
+  listProjectStorageSummaries,
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
@@ -1782,6 +1783,23 @@ type DashboardUsageSummary = {
   byoSavingsStages: number;
 };
 
+type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
+
+type DashboardProjectDetail = {
+  project: DashboardProjectSummary;
+  files: Awaited<ReturnType<typeof listProjectFileSummaries>>;
+  memory: Awaited<ReturnType<typeof getLatestMemory>>;
+  runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>;
+  contextFiles: Array<{
+    label: string;
+    relativePath: string;
+    exists: boolean;
+    preview: string;
+  }>;
+  initialized: boolean;
+  allowWrites: boolean;
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -1925,6 +1943,70 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { in
       ["low", "medium", "none"].includes(stage.estimatedCostTier)
     ).length
   };
+}
+
+async function loadDashboardProjectDetail(rootUri: string): Promise<DashboardProjectDetail | null> {
+  const projects = await listProjectStorageSummaries(500);
+  const project = projects.find((item) => item.rootUri === rootUri);
+  if (!project) {
+    return null;
+  }
+  const [files, memory, runs, contextFiles] = await Promise.all([
+    listProjectFileSummaries({ projectRootUri: rootUri, limit: 20 }),
+    getLatestMemory({ projectRootUri: rootUri, limit: 8 }),
+    listWorkflowRunsForProject({ projectRootUri: rootUri, limit: 12 }),
+    loadDashboardProjectContextFiles(rootUri)
+  ]);
+  const config = project.config as {
+    actions?: { allowed_write_paths?: string[] };
+    policies?: { allow_wide_open?: boolean };
+  };
+  return {
+    project,
+    files,
+    memory,
+    runs,
+    contextFiles,
+    initialized: contextFiles.some((file) => file.relativePath === ".agent-workflow/project.yaml" && file.exists),
+    allowWrites: Boolean(config.policies?.allow_wide_open || (config.actions?.allowed_write_paths?.length ?? 0) > 0)
+  };
+}
+
+async function loadDashboardProjectContextFiles(projectRootUri: string): Promise<DashboardProjectDetail["contextFiles"]> {
+  const files = [
+    ["AGENTS.md", "AGENTS.md"],
+    ["Project Policy", ".agent-workflow/project.yaml"],
+    ["Context", ".agent-workflow/context.md"],
+    ["Commands", ".agent-workflow/commands.md"],
+    ["Decisions", ".agent-workflow/decisions.md"],
+    ["Schedules", ".agent-workflow/schedules.yaml"]
+  ] as const;
+  return Promise.all(files.map(async ([label, relativePath]) => {
+    try {
+      const raw = await fs.readFile(path.join(projectRootUri, relativePath), "utf8");
+      return {
+        label,
+        relativePath,
+        exists: true,
+        preview: previewText(raw)
+      };
+    } catch {
+      return {
+        label,
+        relativePath,
+        exists: false,
+        preview: ""
+      };
+    }
+  }));
+}
+
+function previewText(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 500) {
+    return trimmed;
+  }
+  return `${trimmed.slice(0, 500)}\n...`;
 }
 
 async function buildRunUsageEstimate(input: {
@@ -2457,6 +2539,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/project-index") {
+    const form = await readFormBody(request);
+    const result = await indexDashboardProject({
+      project: form.get("project") ?? "",
+      maxFiles: form.get("maxFiles") ?? "",
+      refine: form.get("refine") === "on"
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
     const form = await readFormBody(request);
     const result = await updateDashboardRouting({
@@ -2503,6 +2597,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const runs = await listWorkflowRuns(50);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(runs, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/projects") {
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(projects, null, 2));
     return;
   }
 
@@ -2640,6 +2741,31 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/projects") {
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderProjectsHtml(projects));
+    return;
+  }
+
+  if (requestUrl.pathname === "/project") {
+    const rootUri = requestUrl.searchParams.get("root");
+    if (!rootUri) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing root");
+      return;
+    }
+    const detail = await loadDashboardProjectDetail(rootUri);
+    if (!detail) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Project not found");
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderProjectDetailHtml(detail));
+    return;
+  }
+
   if (requestUrl.pathname === "/info") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -2693,6 +2819,7 @@ function renderDashboardHtml(
     <div class="topbar">
       <h1>Agent Workflow Dashboard</h1>
       <div class="actions">
+        <a class="button secondary" href="/projects">Projects</a>
         <a class="button secondary" href="/info">Info</a>
         <a class="button secondary" href="/api/runs">JSON</a>
       </div>
@@ -2743,6 +2870,142 @@ function renderDashboardHtml(
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
       <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
     </table>
+  </main>
+</body>
+</html>`;
+}
+
+function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
+  const rows = projects.map((project) => `
+    <tr>
+      <td><a href="/project?root=${encodeURIComponent(project.rootUri)}">${escapeHtml(project.name)}</a><br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
+      <td>${escapeHtml(project.profile)}</td>
+      <td>${formatNumber(project.indexedFiles)}<br><span class="muted">${formatNumber(project.indexedTokens)} tokens</span></td>
+      <td>${formatNumber(project.memoryItems)}</td>
+      <td>${formatNumber(project.runCount)}<br><span class="muted">${project.completedRuns} ok / ${project.failedRuns} failed / ${project.queuedRuns + project.runningRuns} active</span></td>
+      <td>${project.lastRunId ? `<a href="/run?id=${encodeURIComponent(project.lastRunId)}">${escapeHtml(project.lastRunId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(project.lastWorkflowId ?? "unknown")} ${escapeHtml(project.lastRunStatus ?? "")}</span>` : "none"}</td>
+      <td>${escapeHtml(project.lastIndexedAt ?? "not indexed")}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Projects</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Projects</h1>
+      </div>
+      <a class="button secondary" href="/api/projects">JSON</a>
+    </div>
+    <section class="panel">
+      <h2>Known Projects</h2>
+      <table>
+        <thead><tr><th>Project</th><th>Profile</th><th>Indexed</th><th>Memory</th><th>Runs</th><th>Last Run</th><th>Last Indexed</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"7\">No projects found. Run onboarding or index a project first.</td></tr>"}</tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
+  const project = detail.project;
+  const contextRows = detail.contextFiles.map((file) => `
+    <details class="artifact" ${file.exists ? "" : ""}>
+      <summary>${escapeHtml(file.label)} <span class="muted">${escapeHtml(file.relativePath)} - ${file.exists ? "found" : "missing"}</span></summary>
+      ${file.exists ? `<pre>${escapeHtml(file.preview)}</pre>` : "<p class=\"muted\">File not found in this project.</p>"}
+    </details>
+  `).join("");
+  const runRows = detail.runs.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${escapeHtml(run.workflowId)}</td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${escapeHtml(run.startedAt)}</td>
+    </tr>
+  `).join("");
+  const fileRows = detail.files.map((file) => `
+    <tr>
+      <td>${escapeHtml(file.sourceUri)}</td>
+      <td>${formatNumber(file.tokenEstimate)}</td>
+      <td>${escapeHtml(file.updatedAt)}</td>
+      <td>${escapeHtml(file.summary)}</td>
+    </tr>
+  `).join("");
+  const memoryRows = detail.memory.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.sourceUri)}</td>
+      <td>${escapeHtml(item.updatedAt)}</td>
+      <td>${escapeHtml(item.summary)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>${escapeHtml(project.name)} - Agent Workflow</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/projects">Projects</a>
+        <h1>${escapeHtml(project.name)}</h1>
+        <p class="muted">${escapeHtml(project.rootUri)}</p>
+      </div>
+      <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(project.rootUri)}">Preference JSON</a>
+    </div>
+    <section class="panel">
+      <div class="meta-grid">
+        <div><strong>Initialized</strong>${detail.initialized ? "yes" : "no"}</div>
+        <div><strong>Profile</strong>${escapeHtml(project.profile)}</div>
+        <div><strong>Write Policy</strong>${detail.allowWrites ? "configured" : "read-only or missing"}</div>
+        <div><strong>Indexed Files</strong>${formatNumber(project.indexedFiles)}</div>
+        <div><strong>Indexed Tokens</strong>${formatNumber(project.indexedTokens)}</div>
+        <div><strong>Memory Items</strong>${formatNumber(project.memoryItems)}</div>
+        <div><strong>Runs</strong>${formatNumber(project.runCount)}</div>
+        <div><strong>Last Indexed</strong>${escapeHtml(project.lastIndexedAt ?? "not indexed")}</div>
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Project Actions</h2>
+      <div class="actions">
+        ${projectIndexForm(project.rootUri)}
+        ${projectActionForm(project.rootUri, "mira-ux-pass", "UX Pass")}
+        ${projectActionForm(project.rootUri, "pr-review", "Review")}
+        ${projectActionForm(project.rootUri, "production-readiness", "Production Readiness")}
+        ${projectActionForm(project.rootUri, "maintain-context", "Maintain Context")}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Context Files</h2>
+      ${contextRows}
+    </section>
+    <section class="panel">
+      <h2>Recent Runs</h2>
+      <table><thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${runRows || "<tr><td colspan=\"5\">No runs.</td></tr>"}</tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Indexed Files</h2>
+      <table><thead><tr><th>File</th><th>Tokens</th><th>Indexed</th><th>Summary</th></tr></thead><tbody>${fileRows || "<tr><td colspan=\"4\">No indexed files.</td></tr>"}</tbody></table>
+    </section>
+    <section class="panel">
+      <h2>Memory</h2>
+      <table><thead><tr><th>Source</th><th>Updated</th><th>Summary</th></tr></thead><tbody>${memoryRows || "<tr><td colspan=\"3\">No memory items.</td></tr>"}</tbody></table>
+    </section>
   </main>
 </body>
 </html>`;
@@ -3486,6 +3749,49 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
   return supported.has(normalized) ? normalized : undefined;
 }
 
+async function indexDashboardProject(input: {
+  project: string;
+  maxFiles: string;
+  refine: boolean;
+}): Promise<DashboardFollowUpResult> {
+  const projectDir = input.project.trim();
+  if (!projectDir) {
+    return { ok: false, error: "Missing project path." };
+  }
+  const serviceChecks = await checkServices();
+  const missing = serviceChecks.filter((check) => !check.reachable);
+  if (missing.length) {
+    return {
+      ok: false,
+      error: missing.map((check) => `${check.endpoint.name}: ${check.message}`).join("\n")
+    };
+  }
+  const maxFiles = parsePositiveInteger(input.maxFiles || "120", 120);
+  const resolvedProjectDir = path.resolve(process.cwd(), projectDir);
+  try {
+    const result = await indexProjectForRun({
+      projectDir: resolvedProjectDir,
+      maxFiles,
+      refine: input.refine,
+      forceRefine: false
+    });
+    return {
+      ok: true,
+      title: "Project Indexed",
+      output: [
+        `Project: ${result.projectName}`,
+        `Path: ${resolvedProjectDir}`,
+        `Indexed: ${result.count} files`,
+        `Skipped: ${result.skipped} large files`,
+        input.refine ? `Refined: ${result.refined}, reused: ${result.reused}` : "",
+        `Open: /project?root=${encodeURIComponent(resolvedProjectDir)}`
+      ].filter(Boolean).join("\n")
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function queueDashboardWorkflowRun(input: {
   workflowId: string;
   project: string;
@@ -4079,6 +4385,14 @@ function feedbackForm(runId: string, rating: FeedbackRating, label: string): str
 function presetForm(action: string, label: string, project?: string): string {
   const projectInput = project ? `<input type="hidden" name="project" value="${escapeHtml(project)}">` : "";
   return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}">${projectInput}<button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function projectActionForm(project: string, action: string, label: string): string {
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function projectIndexForm(project: string): string {
+  return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
 }
 
 type DashboardFollowUpResult =

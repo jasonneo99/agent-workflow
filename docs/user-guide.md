@@ -417,6 +417,7 @@ JSON endpoints:
 ```text
 /api/runs
 /api/info
+/api/projects
 /api/run?id=<run-id>
 /api/quality?id=<run-id>
 ```
@@ -425,6 +426,8 @@ Run detail pages:
 
 ```text
 /info
+/projects
+/project?root=<project-root>
 /run?id=<run-id>
 ```
 
@@ -451,6 +454,8 @@ The detail page shows:
 The dashboard home page includes a Usage & Performance panel across recent runs. It summarizes run status, routed model stages, provider/cost/tier mix, average latency, estimated compact prompt tokens, and estimated tokens saved by loading compiled briefs instead of the full indexed project context. These token values are planning estimates, not provider billing records.
 
 Mock provider runs are excluded from Usage & Performance cost metrics by default because they are test-only and not cost comparable. Use the Include Mock/Test Runs toggle when debugging workflow mechanics, CI, smoke tests, or queue/worker behavior.
+
+The Projects page lists known projects from local enterprise storage. It shows each project's indexed files, indexed token estimate, memory count, run counts, latest run, and last index time. Open a project to inspect context files, recent runs, indexed summaries, memory, and project-scoped quick actions such as Index Project, UX Pass, Review, Production Readiness, and Maintain Context.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
 
