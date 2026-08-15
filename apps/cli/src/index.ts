@@ -25,6 +25,7 @@ import { executeAllowedCommand } from "../../../packages/local-tools/src/command
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
+  cancelWorkflowRun,
   createWorkflowRun,
   getArtifactByUri,
   getLatestMemory,
@@ -32,11 +33,14 @@ import {
   listArtifacts,
   listProjectFileSummaries,
   listProjectStorageSummaries,
+  listWorkflowQueue,
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
   recordRunAction,
+  requeueRunningWorkflowTasks,
   resetStorage,
+  retryFailedWorkflowRun,
   seedRegistry,
   upsertMemoryItem,
   upsertProject,
@@ -1784,6 +1788,7 @@ type DashboardUsageSummary = {
 };
 
 type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
+type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
 type DashboardProjectDetail = {
   project: DashboardProjectSummary;
@@ -2522,6 +2527,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/queue-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardQueueAction({
+      action: form.get("action") ?? "",
+      runId: form.get("runId") ?? "",
+      workerLimit: form.get("workerLimit") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/workflow-run") {
     const form = await readFormBody(request);
     const result = await queueDashboardWorkflowRun({
@@ -2597,6 +2614,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const runs = await listWorkflowRuns(50);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(runs, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/queue") {
+    const queue = await listWorkflowQueue(100);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(queue, null, 2));
     return;
   }
 
@@ -2741,6 +2765,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/queue") {
+    const queue = await listWorkflowQueue(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderQueueHtml(queue));
+    return;
+  }
+
   if (requestUrl.pathname === "/projects") {
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -2819,6 +2850,7 @@ function renderDashboardHtml(
     <div class="topbar">
       <h1>Agent Workflow Dashboard</h1>
       <div class="actions">
+        <a class="button secondary" href="/queue">Queue</a>
         <a class="button secondary" href="/projects">Projects</a>
         <a class="button secondary" href="/info">Info</a>
         <a class="button secondary" href="/api/runs">JSON</a>
@@ -2870,6 +2902,70 @@ function renderDashboardHtml(
       <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
       <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
     </table>
+  </main>
+</body>
+</html>`;
+}
+
+function renderQueueHtml(queue: DashboardQueueItem[]): string {
+  const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
+  const failed = queue.filter((item) => item.runStatus === "failed");
+  const rows = queue.map((item) => {
+    const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} running, ${item.failedTasks} failed`;
+    const currentStage = item.runningStageId
+      ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
+      : item.nextStageId
+        ? `${item.nextStageId} (${item.nextAgentId ?? "unknown"})`
+        : "none";
+    return `
+      <tr>
+        <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span></td>
+        <td><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span></td>
+        <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
+        <td>${escapeHtml(item.task)}</td>
+        <td>${escapeHtml(taskSummary)}<br><span class="muted">current: ${escapeHtml(currentStage)}</span></td>
+        <td>${escapeHtml(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</td>
+        <td><div class="actions">${queueItemForms(item)}</div></td>
+      </tr>
+    `;
+  }).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="10">
+  <title>Agent Workflow Queue</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Queue</h1>
+      </div>
+      <a class="button secondary" href="/api/queue">JSON</a>
+    </div>
+    <section class="panel">
+      <div class="meta-grid">
+        <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
+        <div><strong>Failed Runs</strong>${formatNumber(failed.length)}</div>
+        <div><strong>Queued Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0))}</div>
+        <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
+      </div>
+      <div class="actions">
+        ${queueProcessForm()}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Runs Needing Attention</h2>
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Project</th><th>Task</th><th>Stage Tasks</th><th>Oldest Active</th><th>Actions</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"7\">Queue is clear.</td></tr>"}</tbody>
+      </table>
+    </section>
   </main>
 </body>
 </html>`;
@@ -3939,6 +4035,69 @@ async function processDashboardRun(input: {
   };
 }
 
+async function processDashboardQueueAction(input: {
+  action: string;
+  runId: string;
+  workerLimit: string;
+}): Promise<DashboardFollowUpResult> {
+  const action = input.action.trim();
+  const runId = input.runId.trim();
+
+  if (action === "process") {
+    const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
+    const workerResult = await runWorkerOnce(workerLimit);
+    return {
+      ok: true,
+      title: "Worker batch processed",
+      output: [
+        `Worker claimed ${workerResult.claimed}, completed ${workerResult.completed}, failed ${workerResult.failed}.`,
+        "Open: /queue"
+      ].join("\n")
+    };
+  }
+
+  if (!runId) {
+    return { ok: false, error: "Missing run id." };
+  }
+
+  if (action === "cancel") {
+    const cancelled = await cancelWorkflowRun(runId);
+    return cancelled
+      ? { ok: true, title: "Run cancelled", runId, output: `Run: ${runId}\nOpen: /queue` }
+      : { ok: false, error: `Run is not queued/running or does not exist: ${runId}` };
+  }
+
+  if (action === "requeue-running") {
+    const count = await requeueRunningWorkflowTasks(runId);
+    return {
+      ok: true,
+      title: "Running tasks requeued",
+      runId,
+      output: [
+        `Run: ${runId}`,
+        `Requeued running tasks: ${count}`,
+        `Open: /run?id=${encodeURIComponent(runId)}`
+      ].join("\n")
+    };
+  }
+
+  if (action === "retry-failed") {
+    const count = await retryFailedWorkflowRun(runId);
+    return {
+      ok: true,
+      title: "Failed tasks requeued",
+      runId,
+      output: [
+        `Run: ${runId}`,
+        `Requeued failed tasks: ${count}`,
+        `Open: /run?id=${encodeURIComponent(runId)}`
+      ].join("\n")
+    };
+  }
+
+  return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
+}
+
 function safeDisplayUrl(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -4366,6 +4525,7 @@ function dashboardCss(): string {
     .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
     .completed { background: #dcfce7; color: #166534; }
     .failed { background: #fee2e2; color: #991b1b; }
+    .cancelled { background: #e5e7eb; color: #374151; }
     .running, .queued { background: #fef3c7; color: #92400e; }
   `;
 }
@@ -4376,6 +4536,30 @@ function runActionForm(runId: string, action: string, label: string): string {
 
 function workerActionForm(runId: string, mode: "batch" | "watch", label: string): string {
   return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function queueProcessForm(): string {
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><button type="submit">Process Worker Batch</button></form>`;
+}
+
+function queueItemForms(item: DashboardQueueItem): string {
+  const forms = [
+    `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">Open</a>`
+  ];
+  if (item.runningTasks > 0) {
+    forms.push(queueRunActionForm(item.runId, "requeue-running", "Requeue Running"));
+  }
+  if (item.failedTasks > 0 || item.runStatus === "failed") {
+    forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
+  }
+  if (item.runStatus === "queued" || item.runStatus === "running") {
+    forms.push(queueRunActionForm(item.runId, "cancel", "Cancel"));
+  }
+  return forms.join("");
+}
+
+function queueRunActionForm(runId: string, action: string, label: string): string {
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
 function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {

@@ -209,6 +209,175 @@ export interface ProjectFileSummary {
   updatedAt: string;
 }
 
+export interface WorkflowQueueItem {
+  runId: string;
+  workflowId: string;
+  runStatus: string;
+  task: string;
+  projectName: string;
+  projectRootUri: string;
+  startedAt: string;
+  finishedAt: string | null;
+  totalTasks: number;
+  queuedTasks: number;
+  runningTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  cancelledTasks: number;
+  nextStageId: string | null;
+  nextAgentId: string | null;
+  runningStageId: string | null;
+  runningAgentId: string | null;
+  oldestQueuedAt: string | null;
+  oldestRunningAt: string | null;
+}
+
+export async function listWorkflowQueue(limit = 50): Promise<WorkflowQueueItem[]> {
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowQueueItem>(
+      `select
+         wr.id::text as "runId",
+         wr.workflow_id as "workflowId",
+         wr.status as "runStatus",
+         wr.task,
+         p.name as "projectName",
+         p.root_uri as "projectRootUri",
+         wr.started_at::text as "startedAt",
+         wr.finished_at::text as "finishedAt",
+         count(wt.*)::int as "totalTasks",
+         count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
+         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status = 'completed')::int as "completedTasks",
+         count(*) filter (where wt.status = 'failed')::int as "failedTasks",
+         count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks",
+         (array_agg(wt.stage_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextStageId",
+         (array_agg(wt.agent_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextAgentId",
+         (array_agg(wt.stage_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningStageId",
+         (array_agg(wt.agent_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningAgentId",
+         (min(wt.available_at) filter (where wt.status = 'queued'))::text as "oldestQueuedAt",
+         (min(wt.started_at) filter (where wt.status = 'running'))::text as "oldestRunningAt"
+       from workflow_runs wr
+       join projects p on p.id = wr.project_id
+       join workflow_tasks wt on wt.run_id = wr.id
+       where wr.status in ('queued', 'running', 'failed')
+          or exists (
+            select 1 from workflow_tasks active
+            where active.run_id = wr.id
+              and active.status in ('queued', 'running', 'failed')
+          )
+       group by wr.id, p.id
+       order by
+         case wr.status when 'running' then 0 when 'queued' then 1 when 'failed' then 2 else 3 end,
+         coalesce(min(wt.started_at) filter (where wt.status = 'running'), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
+       limit $1`,
+      [limit]
+    );
+    return result.rows;
+  });
+}
+
+export async function cancelWorkflowRun(runId: string): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<{ id: string }>(
+        `update workflow_runs
+         set status = 'cancelled',
+             finished_at = now()
+         where id = $1
+           and status in ('queued', 'running')
+         returning id::text`,
+        [runId]
+      );
+      if (!result.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query(
+        `update workflow_tasks
+         set status = 'cancelled',
+             finished_at = now()
+         where run_id = $1
+           and status in ('queued', 'running')`,
+        [runId]
+      );
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function requeueRunningWorkflowTasks(runId: string): Promise<number> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<{ id: string }>(
+        `update workflow_tasks
+         set status = 'queued',
+             started_at = null,
+             finished_at = null,
+             available_at = now()
+         where run_id = $1
+           and status = 'running'
+         returning id::text`,
+        [runId]
+      );
+      if (result.rowCount && result.rowCount > 0) {
+        await client.query(
+          `update workflow_runs
+           set status = 'queued',
+               finished_at = null
+           where id = $1
+             and status = 'running'`,
+          [runId]
+        );
+      }
+      await client.query("commit");
+      return result.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function retryFailedWorkflowRun(runId: string): Promise<number> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<{ id: string }>(
+        `update workflow_tasks
+         set status = 'queued',
+             started_at = null,
+             finished_at = null,
+             available_at = now()
+         where run_id = $1
+           and status = 'failed'
+         returning id::text`,
+        [runId]
+      );
+      if (result.rowCount && result.rowCount > 0) {
+        await client.query(
+          `update workflow_runs
+           set status = 'queued',
+               finished_at = null
+           where id = $1
+             and status = 'failed'`,
+          [runId]
+        );
+      }
+      await client.query("commit");
+      return result.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 export interface ProjectStorageSummary {
   id: string;
   name: string;

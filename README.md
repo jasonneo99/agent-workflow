@@ -240,6 +240,7 @@ stages:
 - **Delta indexing** — only re-indexes files that changed since last run
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
+- **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas
 - **Batched workflows** — `production-readiness` runs 4 specialist reviews in one pass with shared context
