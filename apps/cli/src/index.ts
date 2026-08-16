@@ -1852,6 +1852,15 @@ type DashboardUsageSummary = {
 type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
 type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
+type DashboardHomeHealth = {
+  worker: DashboardWorkerStatus;
+  queue: DashboardQueueItem[];
+  projects: DashboardProjectSummary[];
+  services: Awaited<ReturnType<typeof checkServices>>;
+  provider: string;
+  latestFailedRun: DashboardRunStatus | null;
+};
+
 type DashboardProjectDetail = {
   project: DashboardProjectSummary;
   files: Awaited<ReturnType<typeof listProjectFileSummaries>>;
@@ -2879,6 +2888,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/runs") {
+    const runs = await listWorkflowRuns(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderRunsHtml(runs));
+    return;
+  }
+
   if (requestUrl.pathname === "/projects") {
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -2904,6 +2920,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/providers") {
+    const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderProvidersHtml(info));
+    return;
+  }
+
   if (requestUrl.pathname === "/info") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -2911,10 +2934,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows, worker] = await Promise.all([
+  const [runs, workflows, worker, queue, projects, services] = await Promise.all([
     listWorkflowRuns(25),
     loadWorkflows(rootDir),
-    loadDashboardWorkerStatus()
+    loadDashboardWorkerStatus(),
+    listWorkflowQueue(100),
+    listProjectStorageSummaries(100),
+    checkServices()
   ]);
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
   const usage = await withTimeout(
@@ -2925,15 +2951,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       note: "Usage metrics timed out, so the dashboard rendered a fast run-status summary. Open run details or refresh for full cost/token estimates."
     })
   );
+  const health: DashboardHomeHealth = {
+    worker,
+    queue,
+    projects,
+    services,
+    provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
+    latestFailedRun: runs.find((run) => run.status === "failed") ?? null
+  };
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs, workflows, usage, worker));
+  response.end(renderDashboardHtml(runs, workflows, usage, health));
 }
 
 function renderDashboardHtml(
   runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
   workflows: Awaited<ReturnType<typeof loadWorkflows>>,
   usage: DashboardUsageSummary,
-  worker: DashboardWorkerStatus
+  health: DashboardHomeHealth
 ): string {
   const rows = runs.map((run) => `
     <tr>
@@ -2962,16 +2996,25 @@ function renderDashboardHtml(
   </style>
 </head>
 <body>
+  ${dashboardNav("dashboard")}
   <main>
     <div class="topbar">
-      <h1>Agent Workflow Dashboard</h1>
+      <div>
+        <h1>Agent Workflow Dashboard</h1>
+        <p class="muted">Local control center for reusable development agents, runs, queues, providers, and project context.</p>
+      </div>
       <div class="actions">
         <a class="button secondary" href="/queue">Queue</a>
         <a class="button secondary" href="/projects">Projects</a>
+        <a class="button secondary" href="/providers">Providers</a>
         <a class="button secondary" href="/info">Info</a>
         <a class="button secondary" href="/api/runs">JSON</a>
       </div>
     </div>
+    <section class="panel">
+      <h2>System Health</h2>
+      ${renderDashboardHealthHtml(health)}
+    </section>
     <section class="panel">
       <h2>Quick Actions</h2>
       <div class="actions">
@@ -2982,11 +3025,11 @@ function renderDashboardHtml(
       <div class="section-heading">
         <div>
           <h2>Background Worker</h2>
-          <span class="muted">${escapeHtml(workerStatusDetail(worker))}</span>
+          <span class="muted">${escapeHtml(workerStatusDetail(health.worker))}</span>
         </div>
         <a class="button secondary" href="/queue">Open Queue</a>
       </div>
-      ${renderWorkerStatusHtml(worker)}
+      ${renderWorkerStatusHtml(health.worker)}
     </section>
     <section class="panel">
       <h2>Run Workflow</h2>
@@ -3066,6 +3109,7 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
   <style>${dashboardCss()}</style>
 </head>
 <body>
+  ${dashboardNav("queue")}
   <main>
     <div class="topbar">
       <div>
@@ -3097,6 +3141,48 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
 </html>`;
 }
 
+function renderRunsHtml(runs: DashboardRunStatus[]): string {
+  const rows = runs.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span></td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${escapeHtml(run.workflowId)}</td>
+      <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${escapeHtml(run.startedAt)}</td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Runs</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("runs")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Runs</h1>
+      </div>
+      <a class="button secondary" href="/api/runs">JSON</a>
+    </div>
+    <section class="panel">
+      <h2>Recent Runs</h2>
+      <table>
+        <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
 function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
   const rows = projects.map((project) => `
     <tr>
@@ -3119,6 +3205,7 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
   <style>${dashboardCss()}</style>
 </head>
 <body>
+  ${dashboardNav("projects")}
   <main>
     <div class="topbar">
       <div>
@@ -3181,6 +3268,7 @@ function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
   <style>${dashboardCss()}</style>
 </head>
 <body>
+  ${dashboardNav("projects")}
   <main>
     <div class="topbar">
       <div>
@@ -3274,6 +3362,7 @@ function renderRunDetailHtml(input: {
   <style>${dashboardCss()}</style>
 </head>
 <body>
+  ${dashboardNav("runs")}
   <main>
     <div class="topbar">
       <div>
@@ -4414,6 +4503,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
   <style>${dashboardCss()}</style>
 </head>
 <body>
+  ${dashboardNav("info")}
   <main>
     <div class="topbar">
       <div>
@@ -4468,6 +4558,114 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <h2>Useful Commands</h2>
       <ul>${commands}</ul>
     </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderProvidersHtml(info: DashboardInfo): string {
+  const providerRows = [
+    ["Selected", info.provider.selected],
+    ["Adapter", info.provider.adapter],
+    ["Model", info.provider.model ?? "not set"],
+    ["Model env", info.provider.modelEnv ?? "not used"],
+    ["Base URL", info.provider.baseUrl ?? "not used"],
+    ["API key", typeof info.provider.apiKeyConfigured === "boolean" ? info.provider.apiKeyConfigured ? "configured" : "not configured" : "not used"],
+    ["AWS profile", info.provider.awsProfile ?? "not used"]
+  ].map(([label, value]) => `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</div>`).join("");
+  const modelOptions = info.provider.availableModels.map((model) => {
+    const selected = model === info.provider.model ? " selected" : "";
+    return `<option value="${escapeHtml(model)}"${selected}>${escapeHtml(model)}</option>`;
+  }).join("");
+  const modelControl = info.provider.availableModels.length
+    ? `<select name="model">${modelOptions}</select>`
+    : `<input name="model" value="${escapeHtml(info.provider.model ?? "")}" placeholder="Model name">`;
+  const modelSelector = info.provider.canSelectModel ? `
+      <form class="inline-form" method="post" action="/api/model">
+        <input type="hidden" name="provider" value="${escapeHtml(info.provider.selected)}">
+        ${modelControl}
+        <button type="submit">Use Model</button>
+      </form>
+      <p class="muted">${info.provider.availableModels.length ? `${info.provider.availableModels.length} models listed from the active provider.` : "No models were listed; enter a model name manually."} Secrets are never displayed.</p>
+      ${info.provider.availableModelsError ? `<p class="warn-box">${escapeHtml(info.provider.availableModelsError)}</p>` : ""}`
+    : info.provider.selected === "auto"
+      ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
+      : `<p class="muted">This provider has no selectable live model list.</p>`;
+  const providerIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "openai", "bedrock", "byo", "openai-compatible", "kiro", "mock"];
+  const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
+    const selected = value === selectedValue ? " selected" : "";
+    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value || blankLabel)}</option>`;
+  }).join("");
+  const autoRouteRows = info.provider.autoRoutes?.map((route) => `
+    <tr><td>${escapeHtml(route.tier)}</td><td>${escapeHtml(route.providerId)}</td><td>${escapeHtml(route.estimatedCostTier)}</td><td>${escapeHtml(route.reason)}</td></tr>
+  `).join("") ?? "";
+  const providerStatusRows = info.provider.providerStatuses?.map((provider) => `
+    <tr>
+      <td>${escapeHtml(provider.label)}<br><span class="muted">${escapeHtml(provider.providerId)}</span></td>
+      <td><span class="status ${provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued"}">${escapeHtml(provider.status)}</span></td>
+      <td>${provider.configured ? "yes" : "no"}</td>
+      <td>${escapeHtml(provider.model ?? "not set")}</td>
+      <td>${escapeHtml(provider.baseUrl ?? "not used")}</td>
+      <td>${escapeHtml(provider.apiKeyStatus ?? "not used")}</td>
+      <td>${escapeHtml([provider.awsProfile ? `profile: ${provider.awsProfile}` : "", provider.awsRegion ? `region: ${provider.awsRegion}` : ""].filter(Boolean).join(", ") || "not used")}</td>
+      <td>${escapeHtml(provider.details.join(" "))}</td>
+    </tr>
+  `).join("") ?? "";
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Providers</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("providers")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Providers & Models</h1>
+      </div>
+      <a class="button secondary" href="/api/info">Info JSON</a>
+    </div>
+    <section class="panel">
+      <h2>Selected Provider</h2>
+      <div class="meta-grid">${providerRows}</div>
+      ${modelSelector}
+    </section>
+    <section class="panel">
+      <h2>Routing Controls</h2>
+      <form class="routing-form" method="post" action="/api/routing">
+        <label>Provider mode
+          <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
+        </label>
+        <label>Auto priority
+          <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,openai">
+        </label>
+        <label>Fast tier
+          <select name="fastProvider">${optionList(executionProviderIds, info.provider.routingConfig.fastProvider)}</select>
+        </label>
+        <label>Standard tier
+          <select name="standardProvider">${optionList(executionProviderIds, info.provider.routingConfig.standardProvider)}</select>
+        </label>
+        <label>Reasoning tier
+          <select name="reasoningProvider">${optionList(executionProviderIds, info.provider.routingConfig.reasoningProvider)}</select>
+        </label>
+        <label>Fallback provider
+          <select name="fallbackProvider">${optionList(fallbackProviderIds, info.provider.routingConfig.fallbackProvider)}</select>
+        </label>
+        <label>Quality threshold
+          <input name="qualityThreshold" value="${escapeHtml(info.provider.routingConfig.qualityThreshold)}" inputmode="decimal">
+        </label>
+        <div class="form-actions"><button type="submit">Save Routing</button></div>
+      </form>
+    </section>
+    ${autoRouteRows ? `<section class="panel"><h2>Auto Routing Preview</h2><table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table></section>` : ""}
+    ${providerStatusRows ? `<section class="panel"><h2>Available Provider Status</h2><table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table><p class="muted">Secrets are never displayed.</p></section>` : ""}
   </main>
 </body>
 </html>`;
@@ -4637,6 +4835,69 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
   `;
 }
 
+function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
+  const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
+  const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
+  const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
+  const servicesReady = health.services.every((service) => service.reachable);
+  const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
+  const providerStatus = health.provider === "mock" ? "mock" : health.provider;
+  return `
+    <div class="health-grid">
+      ${healthCard({
+        label: "Worker",
+        status: health.worker.status === "running" ? "good" : health.worker.status === "missing" ? "warn" : "bad",
+        value: health.worker.status,
+        detail: workerStatusDetail(health.worker),
+        href: "/info"
+      })}
+      ${healthCard({
+        label: "Queue",
+        status: failedRuns > 0 ? "bad" : queuedTasks + runningTasks > 0 ? "warn" : "good",
+        value: `${queuedTasks + runningTasks} active`,
+        detail: failedRuns > 0 ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"} need review` : "Queue is ready for new work",
+        href: "/queue"
+      })}
+      ${healthCard({
+        label: "Provider",
+        status: providerStatus === "mock" ? "warn" : "good",
+        value: providerStatus,
+        detail: providerStatus === "mock" ? "Mock is useful for smoke tests, not real agent output" : "Configured for live model execution",
+        href: "/providers"
+      })}
+      ${healthCard({
+        label: "Storage",
+        status: servicesReady ? "good" : "bad",
+        value: servicesReady ? "ready" : "attention",
+        detail: servicesReady ? "Postgres, Redis, and object storage are reachable" : "One or more enterprise services are unavailable",
+        href: "/info"
+      })}
+      ${healthCard({
+        label: "Projects",
+        status: activeProjects > 0 ? "good" : "warn",
+        value: formatNumber(activeProjects),
+        detail: `${formatNumber(health.projects.length)} known project${health.projects.length === 1 ? "" : "s"} in local storage`,
+        href: "/projects"
+      })}
+      ${healthCard({
+        label: "Latest Failed Run",
+        status: health.latestFailedRun ? "bad" : "good",
+        value: health.latestFailedRun ? health.latestFailedRun.id.slice(0, 8) : "none",
+        detail: health.latestFailedRun ? compactDashboardText(`${health.latestFailedRun.workflowId}: ${health.latestFailedRun.task}`, 120) : "No recent failed run in the home window",
+        href: health.latestFailedRun ? `/run?id=${encodeURIComponent(health.latestFailedRun.id)}` : "/runs"
+      })}
+    </div>
+  `;
+}
+
+function healthCard(input: { label: string; status: "good" | "warn" | "bad"; value: string; detail: string; href: string }): string {
+  return `<a class="health-card ${input.status}" href="${escapeHtml(input.href)}"><strong>${escapeHtml(input.label)}</strong><span>${escapeHtml(input.value)}</span><small>${escapeHtml(input.detail)}</small></a>`;
+}
+
+function compactDashboardText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, maxLength - 3)}...` : value;
+}
+
 function workerStatusDetail(worker: DashboardWorkerStatus): string {
   if (worker.status === "running") {
     return `Worker is processing queued stages. Last heartbeat ${worker.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, worker.ageMs))} ago`}.`;
@@ -4648,6 +4909,21 @@ function workerStatusDetail(worker: DashboardWorkerStatus): string {
     return "Worker stopped cleanly. Start one with npm run worker:daemon.";
   }
   return "Worker heartbeat is stale. Restart with npm run worker:daemon, or requeue interrupted stages from Queue.";
+}
+
+function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "providers" | "info"): string {
+  const items = [
+    ["dashboard", "/", "Dashboard"],
+    ["queue", "/queue", "Queue"],
+    ["projects", "/projects", "Projects"],
+    ["runs", "/runs", "Runs"],
+    ["providers", "/providers", "Providers"],
+    ["info", "/info", "Settings"]
+  ] as const;
+  return `<nav class="side-nav" aria-label="Dashboard navigation">
+    <strong>Agent Workflow</strong>
+    ${items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}
+  </nav>`;
 }
 
 function renderFeedbackHtml(runId: string, report: CostQualityReport): string {
@@ -4703,13 +4979,13 @@ function renderDashboardActionResult(result: DashboardFollowUpResult): string {
   <title>Dashboard Action</title>
   <style>${dashboardCss()}</style>
 </head>
-<body><main><p><a href="/">Dashboard</a></p>${body}</main></body>
+<body>${dashboardNav("dashboard")}<main><p><a href="/">Dashboard</a></p>${body}</main></body>
 </html>`;
 }
 
 function dashboardCss(): string {
   return `
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px; }
+    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 32px 216px; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
     h1 { font-size: 28px; margin: 0 0 8px; }
     h2 { font-size: 16px; margin: 0 0 12px; }
@@ -4721,6 +4997,10 @@ function dashboardCss(): string {
     th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
     a { color: #1d4ed8; text-decoration: none; }
     pre { overflow: auto; background: #101828; color: #eef4ff; padding: 14px; font-size: 13px; line-height: 1.45; }
+    .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 6px; z-index: 10; }
+    .side-nav strong { color: white; font-size: 14px; margin: 0 0 12px; }
+    .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
+    .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -4739,6 +5019,14 @@ function dashboardCss(): string {
     .secondary { background: white; color: #1d4ed8; }
     .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
     .section-heading div { display: grid; gap: 4px; }
+    .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .health-card { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 5px; color: #172033; background: #fff; min-height: 104px; }
+    .health-card strong { font-size: 12px; color: #4b5870; text-transform: uppercase; }
+    .health-card span { font-size: 22px; font-weight: 700; }
+    .health-card small { color: #64748b; line-height: 1.35; }
+    .health-card.good { border-color: #bbf7d0; background: #f0fdf4; }
+    .health-card.warn { border-color: #fde68a; background: #fffbeb; }
+    .health-card.bad { border-color: #fecaca; background: #fef2f2; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
     .metric span { font-size: 22px; font-weight: 700; }
@@ -4758,6 +5046,13 @@ function dashboardCss(): string {
     .failed { background: #fee2e2; color: #991b1b; }
     .cancelled { background: #e5e7eb; color: #374151; }
     .running, .queued { background: #fef3c7; color: #92400e; }
+    @media (max-width: 820px) {
+      main { padding: 94px 12px 24px; }
+      .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; padding: 10px 12px; }
+      .side-nav strong { display: none; }
+      .topbar, .section-heading { display: grid; }
+      table { display: block; overflow-x: auto; }
+    }
   `;
 }
 

@@ -240,6 +240,7 @@ stages:
 - **Model tier routing** — fast agents use cheap models, reasoning agents use capable ones
 - **Delta indexing** — only re-indexes files that changed since last run
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
+- **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Settings, and home health cards
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
