@@ -1826,6 +1826,8 @@ type RunUsageEstimate = {
 
 type DashboardUsageSummary = {
   includeMock: boolean;
+  partial: boolean;
+  note: string | null;
   runsAnalyzed: number;
   completedRuns: number;
   failedRuns: number;
@@ -1985,6 +1987,8 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { in
 
   return {
     includeMock: input.includeMock,
+    partial: false,
+    note: null,
     runsAnalyzed: metricRuns.length,
     completedRuns: metricRuns.filter((run) => run.status === "completed").length,
     failedRuns: metricRuns.filter((run) => run.status === "failed").length,
@@ -2008,6 +2012,49 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { in
       ["low", "medium", "none"].includes(stage.estimatedCostTier)
     ).length
   };
+}
+
+function fallbackDashboardUsageSummary(runs: DashboardRunStatus[], input: { includeMock: boolean; note: string }): DashboardUsageSummary {
+  return {
+    includeMock: input.includeMock,
+    partial: true,
+    note: input.note,
+    runsAnalyzed: runs.length,
+    completedRuns: runs.filter((run) => run.status === "completed").length,
+    failedRuns: runs.filter((run) => run.status === "failed").length,
+    queuedRuns: runs.filter((run) => run.status === "queued").length,
+    runningRuns: runs.filter((run) => run.status === "running").length,
+    mockRunsExcluded: 0,
+    mockStagesExcluded: 0,
+    routedStages: 0,
+    totalLatencyMs: 0,
+    averageLatencyMs: null,
+    averageRunDurationMs: null,
+    estimatedPromptTokens: 0,
+    estimatedBaselineTokens: 0,
+    estimatedTokensSaved: 0,
+    tokenReductionPercent: null,
+    providerMix: {},
+    costMix: {},
+    modelTierMix: {},
+    byoSavingsStages: 0
+  };
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => resolve(onTimeout()), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
 }
 
 async function loadDashboardProjectDetail(rootUri: string): Promise<DashboardProjectDetail | null> {
@@ -2865,12 +2912,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   const [runs, workflows, worker] = await Promise.all([
-    listWorkflowRuns(50),
+    listWorkflowRuns(25),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus()
   ]);
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
-  const usage = await loadDashboardUsageSummary(runs, { includeMock });
+  const usage = await withTimeout(
+    loadDashboardUsageSummary(runs, { includeMock }),
+    1200,
+    () => fallbackDashboardUsageSummary(runs, {
+      includeMock,
+      note: "Usage metrics timed out, so the dashboard rendered a fast run-status summary. Open run details or refresh for full cost/token estimates."
+    })
+  );
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs, workflows, usage, worker));
 }
@@ -4518,7 +4572,11 @@ function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
   const excluded = summary.includeMock
     ? "Mock/test runs are included in these diagnostics."
     : `${summary.mockRunsExcluded} mock/test runs and ${summary.mockStagesExcluded} mock stages excluded from cost metrics.`;
+  const partialNotice = summary.partial && summary.note
+    ? `<p class="warn-box">${escapeHtml(summary.note)}</p>`
+    : "";
   return `
+    ${partialNotice}
     <div class="section-heading">
       <div>
         <strong>${escapeHtml(modeLabel)}</strong>
