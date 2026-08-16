@@ -39,6 +39,7 @@
     "smoke": "bash scripts/smoke-enterprise.sh",
     "services:reset": "docker compose -f infra/docker-compose.yml down -v",
     "worker": "tsx apps/cli/src/index.ts worker",
+    "worker:daemon": "tsx apps/cli/src/index.ts worker --watch --limit 6 --interval-ms 2000",
     "worker:watch": "tsx apps/cli/src/index.ts worker --watch --limit 1",
     "typecheck": "tsc --noEmit"
   },

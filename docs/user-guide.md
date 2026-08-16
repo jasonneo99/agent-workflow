@@ -406,6 +406,14 @@ Start the local run dashboard:
 npm run agentflow -- dashboard
 ```
 
+For the recommended local developer setup, also start a background worker in a second terminal:
+
+```bash
+npm run worker:daemon
+```
+
+The daemon continuously processes queued stages and writes a heartbeat to `.agent-workflow/runtime/worker-heartbeat.json`. The dashboard uses that heartbeat to show whether the worker is running, stale, stopped, or missing.
+
 Open:
 
 ```text
@@ -435,6 +443,8 @@ Run detail pages:
 
 The Info page shows safe local runtime details: selected model provider, model name/base URL when applicable, whether API keys are configured, enterprise service reachability, registry counts, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
+The dashboard home page and Info page include Background Worker status. If it says `missing`, `stopped`, or `stale`, run `npm run worker:daemon` from the Agent Workflow repo. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
+
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 
 If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. It also shows an available-provider status table with safe details for each provider: whether required config exists, whether an API key or auth path is configured, the selected model, base URL, AWS profile/region, and readiness details. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
@@ -459,7 +469,7 @@ Mock provider runs are excluded from Usage & Performance cost metrics by default
 
 The Projects page lists known projects from local enterprise storage. It shows each project's indexed files, indexed token estimate, memory count, run counts, latest run, and last index time. Open a project to inspect context files, recent runs, indexed summaries, memory, and project-scoped quick actions such as Index Project, UX Pass, Review, Production Readiness, and Maintain Context.
 
-The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages, Requeue Running to unlock stages left running after an interrupted worker, Retry Failed to requeue failed stages, and Cancel to stop queued or running work.
+The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages when no daemon is running, Requeue Running to unlock stages left running after an interrupted worker, Retry Failed to requeue failed stages, and Cancel to stop queued or running work.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
 

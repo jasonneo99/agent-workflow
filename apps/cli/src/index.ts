@@ -54,6 +54,39 @@ import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, build
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
+const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
+
+type WorkerHeartbeat = {
+  pid: number;
+  startedAt: string;
+  lastHeartbeatAt: string;
+  limit: number;
+  intervalMs: number;
+  ticks: number;
+  claimed: number;
+  completed: number;
+  failed: number;
+  status: "starting" | "running" | "stopping" | "stopped";
+  command: string;
+};
+
+type DashboardWorkerStatus = {
+  heartbeatPath: string;
+  configured: boolean;
+  status: "running" | "stale" | "stopped" | "missing";
+  pid: number | null;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+  ageMs: number | null;
+  limit: number | null;
+  intervalMs: number | null;
+  ticks: number;
+  claimed: number;
+  completed: number;
+  failed: number;
+  processAlive: boolean;
+  command: string;
+};
 
 type WorkflowPreset = {
   id: string;
@@ -1635,7 +1668,8 @@ program
   .option("-l, --limit <number>", "maximum tasks to execute", "1")
   .option("--watch", "keep polling for queued workflow tasks")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "2000")
-  .action(async (options: { limit: string; watch?: boolean; intervalMs: string }) => {
+  .option("--heartbeat-file <path>", "worker heartbeat file path", defaultWorkerHeartbeatPath)
+  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; heartbeatFile: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1669,6 +1703,29 @@ program
     }
 
     let stop = false;
+    let ticks = 0;
+    const startedAt = new Date().toISOString();
+    const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
+    const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>): Promise<void> => {
+      if (tick) {
+        ticks += 1;
+      }
+      const heartbeat: WorkerHeartbeat = {
+        pid: process.pid,
+        startedAt,
+        lastHeartbeatAt: new Date().toISOString(),
+        limit,
+        intervalMs,
+        ticks,
+        claimed: tick?.claimed ?? 0,
+        completed: tick?.completed ?? 0,
+        failed: tick?.failed ?? 0,
+        status,
+        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs}`
+      };
+      await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
+      await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
+    };
     const stopWorker = () => {
       stop = true;
       console.log("Stopping worker after current tick...");
@@ -1676,17 +1733,20 @@ program
     process.once("SIGINT", stopWorker);
     process.once("SIGTERM", stopWorker);
 
-    console.log(`Worker watching. limit=${limit} intervalMs=${intervalMs}`);
+    await writeHeartbeat("starting");
+    console.log(`Worker watching. limit=${limit} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
     await runWorkerWatch({
       limitPerTick: limit,
       intervalMs,
       shouldStop: () => stop,
-      onTick: (result) => {
+      onTick: async (result) => {
+        await writeHeartbeat(stop ? "stopping" : "running", result);
         if (result.claimed > 0 || result.failed > 0) {
           console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
         }
       }
     });
+    await writeHeartbeat("stopped");
   });
 
 function requiredAgent<T extends { id: string }>(agents: Map<string, T>, id: string): T {
@@ -2804,20 +2864,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows] = await Promise.all([
+  const [runs, workflows, worker] = await Promise.all([
     listWorkflowRuns(50),
-    loadWorkflows(rootDir)
+    loadWorkflows(rootDir),
+    loadDashboardWorkerStatus()
   ]);
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
   const usage = await loadDashboardUsageSummary(runs, { includeMock });
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs, workflows, usage));
+  response.end(renderDashboardHtml(runs, workflows, usage, worker));
 }
 
 function renderDashboardHtml(
   runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
   workflows: Awaited<ReturnType<typeof loadWorkflows>>,
-  usage: DashboardUsageSummary
+  usage: DashboardUsageSummary,
+  worker: DashboardWorkerStatus
 ): string {
   const rows = runs.map((run) => `
     <tr>
@@ -2861,6 +2923,16 @@ function renderDashboardHtml(
       <div class="actions">
         ${workflowPresets.map((preset) => presetForm(preset.id, preset.label, preset.project)).join("")}
       </div>
+    </section>
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Background Worker</h2>
+          <span class="muted">${escapeHtml(workerStatusDetail(worker))}</span>
+        </div>
+        <a class="button secondary" href="/queue">Open Queue</a>
+      </div>
+      ${renderWorkerStatusHtml(worker)}
     </section>
     <section class="panel">
       <h2>Run Workflow</h2>
@@ -3289,6 +3361,7 @@ type DashboardInfo = {
     redisUrlConfigured: boolean;
     objectStorageConfigured: boolean;
   };
+  worker: DashboardWorkerStatus;
   commands: string[];
 };
 
@@ -3305,11 +3378,12 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
-    loadCommittedBundleManifest(rootDir)
+    loadCommittedBundleManifest(rootDir),
+    loadDashboardWorkerStatus()
   ]);
 
   return {
@@ -3341,14 +3415,75 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       redisUrlConfigured: Boolean(process.env.REDIS_URL),
       objectStorageConfigured: Boolean(process.env.OBJECT_STORAGE_ENDPOINT && process.env.OBJECT_STORAGE_BUCKET)
     },
+    worker,
     commands: [
       "npm run doctor",
       "npm run validate",
       "npm run bundle-manifest",
       "npm run provider-check",
+      "npm run worker:daemon",
       "npm run agentflow -- run-and-watch <workflow> --project <path> --task \"...\""
     ]
   };
+}
+
+async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
+  const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_WORKER_HEARTBEAT ?? defaultWorkerHeartbeatPath);
+  try {
+    const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<WorkerHeartbeat>;
+    const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
+    const ageMs = lastHeartbeatAt ? Date.now() - Date.parse(lastHeartbeatAt) : null;
+    const intervalMs = typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : null;
+    const staleAfterMs = Math.max((intervalMs ?? 2000) * 3, 15_000);
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const processAlive = pid ? isProcessAlive(pid) : false;
+    const heartbeatStatus = heartbeat.status ?? "stopped";
+    const running = processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping";
+    return {
+      heartbeatPath,
+      configured: true,
+      status: running ? "running" : heartbeatStatus === "stopped" ? "stopped" : "stale",
+      pid,
+      startedAt: typeof heartbeat.startedAt === "string" ? heartbeat.startedAt : null,
+      lastHeartbeatAt,
+      ageMs,
+      limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
+      intervalMs,
+      ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
+      claimed: typeof heartbeat.claimed === "number" ? heartbeat.claimed : 0,
+      completed: typeof heartbeat.completed === "number" ? heartbeat.completed : 0,
+      failed: typeof heartbeat.failed === "number" ? heartbeat.failed : 0,
+      processAlive,
+      command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run worker:daemon"
+    };
+  } catch {
+    return {
+      heartbeatPath,
+      configured: false,
+      status: "missing",
+      pid: null,
+      startedAt: null,
+      lastHeartbeatAt: null,
+      ageMs: null,
+      limit: null,
+      intervalMs: null,
+      ticks: 0,
+      claimed: 0,
+      completed: 0,
+      failed: 0,
+      processAlive: false,
+      command: "npm run worker:daemon"
+    };
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function dashboardUrlFromRequest(request: http.IncomingMessage): string {
@@ -4255,6 +4390,10 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <table><thead><tr><th>Service</th><th>Status</th><th>Message</th><th>Required For</th></tr></thead><tbody>${serviceRows}</tbody></table>
     </section>
     <section class="panel">
+      <h2>Background Worker</h2>
+      ${renderWorkerStatusHtml(info.worker)}
+    </section>
+    <section class="panel">
       <h2>Bundle Manifest</h2>
       ${info.bundle ? `<div class="meta-grid">
         <div><strong>Version</strong>${escapeHtml(info.bundle.version)}</div>
@@ -4417,6 +4556,40 @@ function renderRunUsageEstimateHtml(estimate: RunUsageEstimate): string {
     </div>
     <p class="muted">Estimate compares the indexed project context baseline with the compact compiled brief that each model-routed stage received.</p>
   `;
+}
+
+function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
+  const age = worker.ageMs === null ? "n/a" : formatDuration(Math.max(0, worker.ageMs));
+  return `
+    <div class="meta-grid">
+      <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
+      <div><strong>PID</strong>${worker.pid ?? "none"}</div>
+      <div><strong>Process</strong>${worker.processAlive ? "alive" : "not running"}</div>
+      <div><strong>Last Heartbeat</strong>${escapeHtml(worker.lastHeartbeatAt ?? "none")}</div>
+      <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
+      <div><strong>Tick Count</strong>${formatNumber(worker.ticks)}</div>
+      <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
+      <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Last Tick</strong>${worker.claimed} claimed / ${worker.completed} completed / ${worker.failed} failed</div>
+      <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
+      <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
+    </div>
+  `;
+}
+
+function workerStatusDetail(worker: DashboardWorkerStatus): string {
+  if (worker.status === "running") {
+    return `Worker is processing queued stages. Last heartbeat ${worker.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, worker.ageMs))} ago`}.`;
+  }
+  if (worker.status === "missing") {
+    return "No worker heartbeat found. Start one with npm run worker:daemon.";
+  }
+  if (worker.status === "stopped") {
+    return "Worker stopped cleanly. Start one with npm run worker:daemon.";
+  }
+  return "Worker heartbeat is stale. Restart with npm run worker:daemon, or requeue interrupted stages from Queue.";
 }
 
 function renderFeedbackHtml(runId: string, report: CostQualityReport): string {

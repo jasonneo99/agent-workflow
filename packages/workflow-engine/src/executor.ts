@@ -236,11 +236,11 @@ export async function runWorkerWatch(input: {
   limitPerTick: number;
   intervalMs: number;
   shouldStop: () => boolean;
-  onTick: (result: WorkerResult) => void;
+  onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
   while (!input.shouldStop()) {
     const result = await runWorkerOnce(input.limitPerTick);
-    input.onTick(result);
+    await input.onTick(result);
     await sleep(input.intervalMs);
   }
 }

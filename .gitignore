@@ -10,3 +10,4 @@ exports/
 *.log
 .agent-workflow/schedule-state.json
 .agent-workflow/exports/
+.agent-workflow/runtime/

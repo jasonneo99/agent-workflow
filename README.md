@@ -138,6 +138,7 @@ npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
 npm run agentflow -- agent-task security -p . -t "task"  # Run single agent
 npm run worker -- --limit 6    # Process queued tasks
+npm run worker:daemon          # Continuously process queued tasks locally
 
 # Inspection
 npm run status                 # List recent runs
@@ -241,6 +242,7 @@ stages:
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
+- **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas
 - **Batched workflows** — `production-readiness` runs 4 specialist reviews in one pass with shared context
