@@ -443,15 +443,15 @@ Run detail pages:
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Providers, and Settings. The home page includes System Health cards for the worker, queue, selected provider, enterprise storage, known projects, and the latest failed run.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Providers, and Settings. The home page includes System Health cards for the worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
-The Info page shows safe local runtime details: selected model provider, model name/base URL when applicable, whether API keys are configured, enterprise service reachability, registry counts, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
+The Settings page shows safe local runtime details: selected provider summary, enterprise service reachability, worker heartbeat, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
 The dashboard home page and Info page include Background Worker status. If it says `missing`, `stopped`, or `stale`, run `npm run worker:daemon` from the Agent Workflow repo. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 
-The Providers page gives model/provider controls their own workspace. Use it to inspect the selected provider, update selectable model names, review auto-routing previews, and tune provider routing by tier.
+The Providers page gives model/provider controls their own workspace. Use it to inspect the selected provider, update selectable model names, and tune provider routing by tier. It renders from local config first so the dashboard stays fast; run `npm run provider-check` when you want full live provider validation.
 
 If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. It also shows an available-provider status table with safe details for each provider: whether required config exists, whether an API key or auth path is configured, the selected model, base URL, AWS profile/region, and readiness details. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
 

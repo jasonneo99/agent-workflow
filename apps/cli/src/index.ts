@@ -2921,7 +2921,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/providers") {
-    const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
+    const info = await loadDashboardInfoFast(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProvidersHtml(info));
     return;
@@ -2944,7 +2944,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   ]);
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
   const usage = await withTimeout(
-    loadDashboardUsageSummary(runs, { includeMock }),
+    loadDashboardUsageSummary(runs.slice(0, 10), { includeMock }),
     1200,
     () => fallbackDashboardUsageSummary(runs, {
       includeMock,
@@ -3014,6 +3014,10 @@ function renderDashboardHtml(
     <section class="panel">
       <h2>System Health</h2>
       ${renderDashboardHealthHtml(health)}
+    </section>
+    <section class="panel">
+      <h2>Needs Attention</h2>
+      ${renderDashboardAttentionHtml(health)}
     </section>
     <section class="panel">
       <h2>Quick Actions</h2>
@@ -3570,6 +3574,67 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
   };
 }
 
+async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInfo> {
+  const packageJson = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8")) as { name?: string; version?: string };
+  const selectedProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+  let adapter = selectedProvider;
+  if (selectedProvider === "auto") {
+    adapter = "auto-router";
+  } else {
+    try {
+      adapter = providerFromEnv(selectedProvider).id;
+    } catch {
+      adapter = "unavailable";
+    }
+  }
+  const [serviceChecks, agents, workflows, manifest, worker] = await Promise.all([
+    checkServices(),
+    loadAgents(rootDir),
+    loadWorkflows(rootDir),
+    loadCommittedBundleManifest(rootDir),
+    loadDashboardWorkerStatus()
+  ]);
+  return {
+    app: {
+      name: packageJson.name ?? "agent-workflow",
+      version: packageJson.version ?? "0.0.0",
+      rootDir,
+      dashboardUrl
+    },
+    provider: describeProviderFast(selectedProvider, adapter),
+    services: serviceChecks.map((check) => ({
+      name: check.endpoint.name,
+      reachable: check.reachable,
+      message: check.message,
+      requiredFor: check.endpoint.requiredFor
+    })),
+    registry: {
+      agents: agents.length,
+      workflows: workflows.length
+    },
+    bundle: manifest ? {
+      version: manifest.bundle.version,
+      checksum: manifest.checksum.value,
+      files: manifest.counts.files,
+      source: manifest.bundle.source
+    } : null,
+    storage: {
+      databaseUrlConfigured: Boolean(process.env.DATABASE_URL),
+      redisUrlConfigured: Boolean(process.env.REDIS_URL),
+      objectStorageConfigured: Boolean(process.env.OBJECT_STORAGE_ENDPOINT && process.env.OBJECT_STORAGE_BUCKET)
+    },
+    worker,
+    commands: [
+      "npm run doctor",
+      "npm run validate",
+      "npm run bundle-manifest",
+      "npm run provider-check",
+      "npm run worker:daemon",
+      "npm run agentflow -- run-and-watch <workflow> --project <path> --task \"...\""
+    ]
+  };
+}
+
 async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
   const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_WORKER_HEARTBEAT ?? defaultWorkerHeartbeatPath);
   try {
@@ -3719,6 +3784,89 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
     canSelectModel: false,
     availableModels: [model],
     routingConfig: loadRoutingConfig()
+  };
+}
+
+function describeProviderFast(selected: string, adapter: string): DashboardInfo["provider"] {
+  const routingConfig = loadRoutingConfig();
+  if (selected === "auto") {
+    return {
+      selected,
+      adapter,
+      model: "tier-based",
+      modelEnv: "AGENTFLOW_PROVIDER_*",
+      canSelectModel: false,
+      availableModels: [],
+      availableModelsError: "Live provider readiness was skipped for fast page load. Use provider-check for full validation.",
+      routingConfig
+    };
+  }
+  if (selected === "openai") {
+    const currentModel = process.env.OPENAI_MODEL || "default";
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "OPENAI_MODEL",
+      apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
+      canSelectModel: Boolean(process.env.OPENAI_API_KEY),
+      availableModels: [currentModel],
+      availableModelsError: "Live model listing was skipped for fast page load.",
+      routingConfig
+    };
+  }
+  if (selected === "byo") {
+    const currentModel = process.env.BYO_MODEL_NAME || undefined;
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "BYO_MODEL_NAME",
+      baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
+      apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY),
+      canSelectModel: Boolean(process.env.BYO_MODEL_BASE_URL),
+      availableModels: currentModel ? [currentModel] : [],
+      availableModelsError: "Live model listing was skipped for fast page load.",
+      routingConfig
+    };
+  }
+  if (selected === "openai-compatible") {
+    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || undefined;
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "OPENAI_COMPATIBLE_MODEL",
+      baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
+      canSelectModel: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      availableModels: currentModel ? [currentModel] : [],
+      availableModelsError: "Live model listing was skipped for fast page load.",
+      routingConfig
+    };
+  }
+  if (selected === "bedrock") {
+    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || undefined;
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "BEDROCK_MODEL",
+      awsProfile: process.env.AWS_PROFILE || "default",
+      canSelectModel: true,
+      availableModels: currentModel ? [currentModel] : [],
+      availableModelsError: "Live Bedrock model listing was skipped for fast page load.",
+      routingConfig
+    };
+  }
+  const model = selected === "kiro" ? "kiro-cli" : "mock";
+  return {
+    selected,
+    adapter,
+    model,
+    canSelectModel: false,
+    availableModels: [model],
+    routingConfig
   };
 }
 
@@ -4406,93 +4554,8 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
     ["Selected", info.provider.selected],
     ["Adapter", info.provider.adapter],
     ["Model", info.provider.model ?? "not set"],
-    ["Model env", info.provider.modelEnv ?? "not used"],
-    ["Base URL", info.provider.baseUrl ?? "not used"],
-    ["API key", typeof info.provider.apiKeyConfigured === "boolean" ? info.provider.apiKeyConfigured ? "configured" : "not configured" : "not used"],
-    ["AWS profile", info.provider.awsProfile ?? "not used"]
+    ["API key", typeof info.provider.apiKeyConfigured === "boolean" ? info.provider.apiKeyConfigured ? "configured" : "not configured" : "not used"]
   ].map(([label, value]) => `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(value)}</div>`).join("");
-  const modelOptions = info.provider.availableModels.map((model) => {
-    const selected = model === info.provider.model ? " selected" : "";
-    return `<option value="${escapeHtml(model)}"${selected}>${escapeHtml(model)}</option>`;
-  }).join("");
-  const modelControl = info.provider.availableModels.length
-    ? `<select name="model">${modelOptions}</select>`
-    : `<input name="model" value="${escapeHtml(info.provider.model ?? "")}" placeholder="Model name">`;
-  const modelSelector = info.provider.canSelectModel ? `
-      <form class="inline-form" method="post" action="/api/model">
-        <input type="hidden" name="provider" value="${escapeHtml(info.provider.selected)}">
-        ${modelControl}
-        <button type="submit">Use Model</button>
-      </form>
-      <p class="muted">${info.provider.availableModels.length ? `${info.provider.availableModels.length} models listed from the active provider.` : "No models were listed; enter a model name manually."} Secrets are never displayed.</p>
-      ${info.provider.availableModelsError ? `<p class="warn-box">${escapeHtml(info.provider.availableModelsError)}</p>` : ""}`
-    : info.provider.selected === "auto"
-      ? `<p class="muted">Auto mode selects provider/model by stage tier. Use the routing controls below to tune it.</p>`
-      : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "openai", "bedrock", "byo", "openai-compatible", "kiro", "mock"];
-  const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
-    const selected = value === selectedValue ? " selected" : "";
-    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value || blankLabel)}</option>`;
-  }).join("");
-  const routingControls = `
-      <h3>Routing Controls</h3>
-      <form class="routing-form" method="post" action="/api/routing">
-        <label>Provider mode
-          <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
-        </label>
-        <label>Auto priority
-          <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,openai">
-        </label>
-        <label>Fast tier
-          <select name="fastProvider">${optionList(executionProviderIds, info.provider.routingConfig.fastProvider)}</select>
-        </label>
-        <label>Standard tier
-          <select name="standardProvider">${optionList(executionProviderIds, info.provider.routingConfig.standardProvider)}</select>
-        </label>
-        <label>Reasoning tier
-          <select name="reasoningProvider">${optionList(executionProviderIds, info.provider.routingConfig.reasoningProvider)}</select>
-        </label>
-        <label>Fallback provider
-          <select name="fallbackProvider">${optionList(fallbackProviderIds, info.provider.routingConfig.fallbackProvider)}</select>
-        </label>
-        <label>Quality threshold
-          <input name="qualityThreshold" value="${escapeHtml(info.provider.routingConfig.qualityThreshold)}" inputmode="decimal">
-        </label>
-        <div class="form-actions"><button type="submit">Save Routing</button></div>
-      </form>
-      <p class="muted">Use <code>auto</code> for a tier to follow the auto priority list. Select a concrete provider to force that tier.</p>`;
-  const autoRouteRows = info.provider.autoRoutes?.map((route) => `
-    <tr>
-      <td>${escapeHtml(route.tier)}</td>
-      <td>${escapeHtml(route.providerId)}</td>
-      <td>${escapeHtml(route.estimatedCostTier)}</td>
-      <td>${escapeHtml(route.reason)}</td>
-    </tr>
-  `).join("") ?? "";
-  const autoRoutes = autoRouteRows ? `
-      <h3>Auto Routing Preview</h3>
-      <table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table>
-      <p class="muted">Auto routing uses the workflow/agent tier for each stage and checks provider readiness before choosing Bedrock or other live providers.</p>`
-    : "";
-  const providerStatusRows = info.provider.providerStatuses?.map((provider) => `
-    <tr>
-      <td>${escapeHtml(provider.label)}<br><span class="muted">${escapeHtml(provider.providerId)}</span></td>
-      <td><span class="status ${provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued"}">${escapeHtml(provider.status)}</span></td>
-      <td>${provider.configured ? "yes" : "no"}</td>
-      <td>${escapeHtml(provider.model ?? "not set")}</td>
-      <td>${escapeHtml(provider.baseUrl ?? "not used")}</td>
-      <td>${escapeHtml(provider.apiKeyStatus ?? "not used")}</td>
-      <td>${escapeHtml([provider.awsProfile ? `profile: ${provider.awsProfile}` : "", provider.awsRegion ? `region: ${provider.awsRegion}` : ""].filter(Boolean).join(", ") || "not used")}</td>
-      <td>${escapeHtml(provider.details.join(" "))}</td>
-    </tr>
-  `).join("") ?? "";
-  const providerStatuses = providerStatusRows ? `
-      <h3>Available Provider Status</h3>
-      <table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table>
-      <p class="muted">Secrets are never displayed. AWS readiness is checked through the normal AWS credential chain, including SSO, profiles, environment credentials, and default credentials.</p>`
-    : "";
 
   return `<!doctype html>
 <html>
@@ -4508,7 +4571,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
     <div class="topbar">
       <div>
         <a href="/">Dashboard</a>
-        <h1>Agent Workflow Info</h1>
+        <h1>Settings</h1>
       </div>
       <a class="button secondary" href="/api/info">JSON</a>
     </div>
@@ -4522,12 +4585,14 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       </div>
     </section>
     <section class="panel">
-      <h2>Model Provider</h2>
+      <div class="section-heading">
+        <div>
+          <h2>Provider Summary</h2>
+          <span class="muted">Model and routing controls live on the Providers page.</span>
+        </div>
+        <a class="button secondary" href="/providers">Open Providers</a>
+      </div>
       <div class="meta-grid">${providerRows}</div>
-      ${modelSelector}
-      ${routingControls}
-      ${autoRoutes}
-      ${providerStatuses}
     </section>
     <section class="panel">
       <h2>Enterprise Services</h2>
@@ -4796,7 +4861,7 @@ function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
       <div><strong>Model Tiers</strong>${escapeHtml(formatInlineCounts(summary.modelTierMix))}</div>
       <div><strong>Est. Baseline</strong>${escapeHtml(formatNumber(summary.estimatedBaselineTokens))} indexed-context tokens</div>
     </div>
-    <p class="muted">Token savings are estimates from indexed project summaries and compiled briefs. They show context avoided, not exact provider billing tokens. Mock is test-only and excluded by default.</p>
+    <p class="muted">Token savings are estimated from recent home-page runs, indexed project summaries, and compiled briefs. They show context avoided, not exact provider billing tokens. Mock is test-only and excluded by default.</p>
   `;
 }
 
@@ -4892,6 +4957,72 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
 
 function healthCard(input: { label: string; status: "good" | "warn" | "bad"; value: string; detail: string; href: string }): string {
   return `<a class="health-card ${input.status}" href="${escapeHtml(input.href)}"><strong>${escapeHtml(input.label)}</strong><span>${escapeHtml(input.value)}</span><small>${escapeHtml(input.detail)}</small></a>`;
+}
+
+function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
+  const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
+  const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
+  const failedRuns = health.queue.filter((item) => item.runStatus === "failed");
+  const missingServices = health.services.filter((service) => !service.reachable);
+  const items: string[] = [];
+
+  if (health.worker.status !== "running") {
+    items.push(attentionItem({
+      title: "Start the background worker",
+      detail: workerStatusDetail(health.worker),
+      href: "/info",
+      action: "Open Settings"
+    }));
+  }
+  if (failedRuns.length > 0) {
+    items.push(attentionItem({
+      title: "Review failed workflow runs",
+      detail: `${failedRuns.length} failed run${failedRuns.length === 1 ? " is" : "s are"} waiting in the queue.`,
+      href: "/queue",
+      action: "Open Queue"
+    }));
+  }
+  if (queuedTasks + runningTasks > 0) {
+    items.push(attentionItem({
+      title: "Process active queue work",
+      detail: `${queuedTasks} queued and ${runningTasks} running stage task${queuedTasks + runningTasks === 1 ? "" : "s"} are active.`,
+      href: "/queue",
+      action: "Open Queue"
+    }));
+  }
+  if (health.provider === "mock") {
+    items.push(attentionItem({
+      title: "Switch away from mock for real output",
+      detail: "Mock is great for validation, but live development runs need OpenAI, BYO, Bedrock, or another configured provider.",
+      href: "/providers",
+      action: "Open Providers"
+    }));
+  }
+  if (missingServices.length > 0) {
+    items.push(attentionItem({
+      title: "Restore enterprise services",
+      detail: missingServices.map((service) => service.endpoint.name).join(", "),
+      href: "/info",
+      action: "Open Settings"
+    }));
+  }
+  if (health.latestFailedRun) {
+    items.push(attentionItem({
+      title: "Inspect latest failed run",
+      detail: compactDashboardText(`${health.latestFailedRun.workflowId}: ${health.latestFailedRun.task}`, 140),
+      href: `/run?id=${encodeURIComponent(health.latestFailedRun.id)}`,
+      action: "Open Run"
+    }));
+  }
+
+  if (!items.length) {
+    return "<p class=\"muted\">No immediate action needed. The worker, storage, queue, and recent runs look healthy.</p>";
+  }
+  return `<div class="attention-list">${items.join("")}</div>`;
+}
+
+function attentionItem(input: { title: string; detail: string; href: string; action: string }): string {
+  return `<div class="attention-item"><div><strong>${escapeHtml(input.title)}</strong><span>${escapeHtml(input.detail)}</span></div><a class="button secondary" href="${escapeHtml(input.href)}">${escapeHtml(input.action)}</a></div>`;
 }
 
 function compactDashboardText(value: string, maxLength: number): string {
@@ -5027,6 +5158,10 @@ function dashboardCss(): string {
     .health-card.good { border-color: #bbf7d0; background: #f0fdf4; }
     .health-card.warn { border-color: #fde68a; background: #fffbeb; }
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
+    .attention-list { display: grid; gap: 8px; }
+    .attention-item { border: 1px solid #e2e7f0; padding: 12px; display: flex; justify-content: space-between; gap: 12px; align-items: center; background: #fff; }
+    .attention-item div { display: grid; gap: 4px; }
+    .attention-item span { color: #64748b; font-size: 14px; line-height: 1.4; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
     .metric span { font-size: 22px; font-weight: 700; }
@@ -5051,6 +5186,7 @@ function dashboardCss(): string {
       .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; padding: 10px 12px; }
       .side-nav strong { display: none; }
       .topbar, .section-heading { display: grid; }
+      .attention-item { display: grid; }
       table { display: block; overflow-x: auto; }
     }
   `;
