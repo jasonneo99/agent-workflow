@@ -400,25 +400,33 @@ Schedule state is stored in `.agent-workflow/schedule-state.json`.
 
 ## 9. Dashboard
 
-Start the local run dashboard:
+Start the recommended local developer supervisor:
 
 ```bash
-npm run agentflow -- dashboard
+npm run dev:agentflow
 ```
 
-For the recommended local developer setup, also start a background worker in a second terminal:
-
-```bash
-npm run worker:daemon
-```
-
-The daemon continuously processes queued stages and writes a heartbeat to `.agent-workflow/runtime/worker-heartbeat.json`. The dashboard uses that heartbeat to show whether the worker is running, stale, stopped, or missing.
+This starts Docker services, starts the dashboard when port `17888` is free, starts the background worker, and writes a supervisor heartbeat to `.agent-workflow/runtime/supervisor-heartbeat.json`.
 
 Open:
 
 ```text
 http://127.0.0.1:17888
 ```
+
+Manual mode is still available. Start only the local run dashboard with:
+
+```bash
+npm run agentflow -- dashboard
+```
+
+Then start a background worker in a second terminal:
+
+```bash
+npm run worker:daemon
+```
+
+The daemon continuously processes queued stages and writes a heartbeat to `.agent-workflow/runtime/worker-heartbeat.json`. The dashboard uses that heartbeat to show whether the worker is running, stale, stopped, or missing.
 
 JSON endpoints:
 
@@ -443,11 +451,11 @@ Run detail pages:
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Providers, and Settings. The home page includes System Health cards for the worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
-The Settings page shows safe local runtime details: selected provider summary, enterprise service reachability, worker heartbeat, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
+The Settings page shows safe local runtime details: selected provider summary, enterprise service reachability, supervisor heartbeat, worker heartbeat, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
-The dashboard home page and Info page include Background Worker status. If it says `missing`, `stopped`, or `stale`, run `npm run worker:daemon` from the Agent Workflow repo. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
+The dashboard home page and Settings page include Local Supervisor and Background Worker status. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 

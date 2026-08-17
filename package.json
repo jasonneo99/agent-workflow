@@ -18,6 +18,7 @@
     "agentflow": "tsx apps/cli/src/index.ts",
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
     "compile": "tsx apps/cli/src/index.ts compile",
+    "dev:agentflow": "node scripts/dev-agentflow.mjs",
     "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
     "bundle-manifest": "tsx apps/cli/src/index.ts bundle-manifest",
     "doctor": "tsx apps/cli/src/index.ts doctor",

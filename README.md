@@ -134,6 +134,7 @@ npm run index-project -- -p .  # Index project files for context
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
 
 # Workflow execution (requires enterprise storage)
+npm run dev:agentflow       # Start services, dashboard, and supervised worker
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
 npm run agentflow -- agent-task security -p . -t "task"  # Run single agent
@@ -243,6 +244,7 @@ stages:
 - **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Settings, and home health cards
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
+- **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, and heartbeat monitoring together
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas

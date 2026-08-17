@@ -55,6 +55,7 @@ const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
+const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
 type WorkerHeartbeat = {
   pid: number;
@@ -85,6 +86,39 @@ type DashboardWorkerStatus = {
   completed: number;
   failed: number;
   processAlive: boolean;
+  command: string;
+};
+
+type SupervisorHeartbeat = {
+  pid: number;
+  status: "starting" | "running" | "stopping" | "stopped" | "failed";
+  message: string;
+  startedAt: string;
+  lastHeartbeatAt: string;
+  ticks: number;
+  dashboardPort: number;
+  dashboardManaged: boolean;
+  workerManaged: boolean;
+  workerLimit: number;
+  workerIntervalMs: number;
+  monitorIntervalMs: number;
+  command: string;
+};
+
+type DashboardSupervisorStatus = {
+  heartbeatPath: string;
+  configured: boolean;
+  status: "running" | "stale" | "stopped" | "missing" | "failed";
+  pid: number | null;
+  processAlive: boolean;
+  message: string;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+  ageMs: number | null;
+  ticks: number;
+  dashboardPort: number | null;
+  dashboardManaged: boolean;
+  workerManaged: boolean;
   command: string;
 };
 
@@ -1854,6 +1888,7 @@ type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
 type DashboardHomeHealth = {
   worker: DashboardWorkerStatus;
+  supervisor: DashboardSupervisorStatus;
   queue: DashboardQueueItem[];
   projects: DashboardProjectSummary[];
   services: Awaited<ReturnType<typeof checkServices>>;
@@ -2934,10 +2969,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows, worker, queue, projects, services] = await Promise.all([
+  const [runs, workflows, worker, supervisor, queue, projects, services] = await Promise.all([
     listWorkflowRuns(25),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
+    loadDashboardSupervisorStatus(),
     listWorkflowQueue(100),
     listProjectStorageSummaries(100),
     checkServices()
@@ -2953,6 +2989,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   );
   const health: DashboardHomeHealth = {
     worker,
+    supervisor,
     queue,
     projects,
     services,
@@ -3509,6 +3546,7 @@ type DashboardInfo = {
     objectStorageConfigured: boolean;
   };
   worker: DashboardWorkerStatus;
+  supervisor: DashboardSupervisorStatus;
   commands: string[];
 };
 
@@ -3525,12 +3563,13 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
-    loadDashboardWorkerStatus()
+    loadDashboardWorkerStatus(),
+    loadDashboardSupervisorStatus()
   ]);
 
   return {
@@ -3563,11 +3602,13 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       objectStorageConfigured: Boolean(process.env.OBJECT_STORAGE_ENDPOINT && process.env.OBJECT_STORAGE_BUCKET)
     },
     worker,
+    supervisor,
     commands: [
       "npm run doctor",
       "npm run validate",
       "npm run bundle-manifest",
       "npm run provider-check",
+      "npm run dev:agentflow",
       "npm run worker:daemon",
       "npm run agentflow -- run-and-watch <workflow> --project <path> --task \"...\""
     ]
@@ -3587,12 +3628,13 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
-    loadDashboardWorkerStatus()
+    loadDashboardWorkerStatus(),
+    loadDashboardSupervisorStatus()
   ]);
   return {
     app: {
@@ -3624,11 +3666,13 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
       objectStorageConfigured: Boolean(process.env.OBJECT_STORAGE_ENDPOINT && process.env.OBJECT_STORAGE_BUCKET)
     },
     worker,
+    supervisor,
     commands: [
       "npm run doctor",
       "npm run validate",
       "npm run bundle-manifest",
       "npm run provider-check",
+      "npm run dev:agentflow",
       "npm run worker:daemon",
       "npm run agentflow -- run-and-watch <workflow> --project <path> --task \"...\""
     ]
@@ -3681,6 +3725,54 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
       failed: 0,
       processAlive: false,
       command: "npm run worker:daemon"
+    };
+  }
+}
+
+async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatus> {
+  const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_SUPERVISOR_HEARTBEAT ?? defaultSupervisorHeartbeatPath);
+  try {
+    const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<SupervisorHeartbeat>;
+    const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
+    const ageMs = lastHeartbeatAt ? Date.now() - Date.parse(lastHeartbeatAt) : null;
+    const monitorIntervalMs = typeof heartbeat.monitorIntervalMs === "number" ? heartbeat.monitorIntervalMs : 5000;
+    const staleAfterMs = Math.max(monitorIntervalMs * 3, 20_000);
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const processAlive = pid ? isProcessAlive(pid) : false;
+    const heartbeatStatus = heartbeat.status ?? "stopped";
+    const running = processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus === "running";
+    return {
+      heartbeatPath,
+      configured: true,
+      status: running ? "running" : heartbeatStatus === "failed" ? "failed" : heartbeatStatus === "stopped" ? "stopped" : "stale",
+      pid,
+      processAlive,
+      message: typeof heartbeat.message === "string" ? heartbeat.message : "",
+      startedAt: typeof heartbeat.startedAt === "string" ? heartbeat.startedAt : null,
+      lastHeartbeatAt,
+      ageMs,
+      ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
+      dashboardPort: typeof heartbeat.dashboardPort === "number" ? heartbeat.dashboardPort : null,
+      dashboardManaged: heartbeat.dashboardManaged === true,
+      workerManaged: heartbeat.workerManaged === true,
+      command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run dev:agentflow"
+    };
+  } catch {
+    return {
+      heartbeatPath,
+      configured: false,
+      status: "missing",
+      pid: null,
+      processAlive: false,
+      message: "No supervisor heartbeat found.",
+      startedAt: null,
+      lastHeartbeatAt: null,
+      ageMs: null,
+      ticks: 0,
+      dashboardPort: null,
+      dashboardManaged: false,
+      workerManaged: false,
+      command: "npm run dev:agentflow"
     };
   }
 }
@@ -4599,6 +4691,10 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <table><thead><tr><th>Service</th><th>Status</th><th>Message</th><th>Required For</th></tr></thead><tbody>${serviceRows}</tbody></table>
     </section>
     <section class="panel">
+      <h2>Local Supervisor</h2>
+      ${renderSupervisorStatusHtml(info.supervisor)}
+    </section>
+    <section class="panel">
       <h2>Background Worker</h2>
       ${renderWorkerStatusHtml(info.worker)}
     </section>
@@ -4900,6 +4996,27 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
   `;
 }
 
+function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): string {
+  const age = supervisor.ageMs === null ? "n/a" : formatDuration(Math.max(0, supervisor.ageMs));
+  return `
+    <div class="meta-grid">
+      <div><strong>Status</strong><span class="status ${supervisor.status === "running" ? "completed" : supervisor.status === "missing" ? "queued" : "failed"}">${escapeHtml(supervisor.status)}</span></div>
+      <div><strong>PID</strong>${supervisor.pid ?? "none"}</div>
+      <div><strong>Process</strong>${supervisor.processAlive ? "alive" : "not running"}</div>
+      <div><strong>Last Heartbeat</strong>${escapeHtml(supervisor.lastHeartbeatAt ?? "none")}</div>
+      <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
+      <div><strong>Tick Count</strong>${formatNumber(supervisor.ticks)}</div>
+      <div><strong>Dashboard</strong>${supervisor.dashboardManaged ? "managed" : "external or stopped"}</div>
+      <div><strong>Worker</strong>${supervisor.workerManaged ? "managed" : "external or stopped"}</div>
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Message</strong>${escapeHtml(supervisor.message || "n/a")}</div>
+      <div><strong>Heartbeat File</strong>${escapeHtml(supervisor.heartbeatPath)}</div>
+      <div><strong>Start Command</strong><code>${escapeHtml(supervisor.command || "npm run dev:agentflow")}</code></div>
+    </div>
+  `;
+}
+
 function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
   const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
   const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
@@ -4909,6 +5026,13 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
   const providerStatus = health.provider === "mock" ? "mock" : health.provider;
   return `
     <div class="health-grid">
+      ${healthCard({
+        label: "Supervisor",
+        status: health.supervisor.status === "running" ? "good" : health.supervisor.status === "missing" ? "warn" : "bad",
+        value: health.supervisor.status,
+        detail: supervisorStatusDetail(health.supervisor),
+        href: "/info"
+      })}
       ${healthCard({
         label: "Worker",
         status: health.worker.status === "running" ? "good" : health.worker.status === "missing" ? "warn" : "bad",
@@ -4970,6 +5094,14 @@ function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
     items.push(attentionItem({
       title: "Start the background worker",
       detail: workerStatusDetail(health.worker),
+      href: "/info",
+      action: "Open Settings"
+    }));
+  }
+  if (health.supervisor.status !== "running") {
+    items.push(attentionItem({
+      title: "Use one-command local dev",
+      detail: supervisorStatusDetail(health.supervisor),
       href: "/info",
       action: "Open Settings"
     }));
@@ -5040,6 +5172,22 @@ function workerStatusDetail(worker: DashboardWorkerStatus): string {
     return "Worker stopped cleanly. Start one with npm run worker:daemon.";
   }
   return "Worker heartbeat is stale. Restart with npm run worker:daemon, or requeue interrupted stages from Queue.";
+}
+
+function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
+  if (supervisor.status === "running") {
+    return `Managed by dev:agentflow. Last heartbeat ${supervisor.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, supervisor.ageMs))} ago`}.`;
+  }
+  if (supervisor.status === "missing") {
+    return "Supervisor is not running. Start everything with npm run dev:agentflow.";
+  }
+  if (supervisor.status === "stopped") {
+    return "Supervisor stopped cleanly. Restart with npm run dev:agentflow.";
+  }
+  if (supervisor.status === "failed") {
+    return `Supervisor failed: ${supervisor.message || "unknown error"}`;
+  }
+  return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
 function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "providers" | "info"): string {
