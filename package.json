@@ -1,7 +1,6 @@
 {
-  "name": "agent-workflow",
+  "name": "@jasonneo99/agent-workflow",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Portable, model-agnostic agent workflows for any codebase",
   "license": "MIT",
@@ -11,10 +10,28 @@
     "url": "https://github.com/jasonneo99/agent-workflow.git"
   },
   "bin": {
-    "agentflow": "apps/cli/src/index.ts"
+    "agentflow": "dist/apps/cli/src/index.js",
+    "agentflow-mcp": "dist/apps/mcp/src/index.js",
+    "agentflow-setup": "dist/apps/cli/src/setup.js"
   },
+  "files": [
+    "dist/",
+    "agents/",
+    "workflows/",
+    "templates/",
+    "scripts/provider-smoke.sh",
+    "agent-workflow.bundle.json",
+    ".env.example",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": { "node": ">=24" },
+  "publishConfig": { "access": "public" },
   "scripts": {
     "setup": "tsx apps/cli/src/setup.ts",
+    "build": "tsc",
+    "prepack": "npm run build",
+    "pack:check": "node scripts/verify-package.mjs",
     "agentflow": "tsx apps/cli/src/index.ts",
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
     "compile": "tsx apps/cli/src/index.ts compile",

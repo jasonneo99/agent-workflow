@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+AGENTFLOW_CLI=(node "$ROOT_DIR/dist/apps/cli/src/index.js")
+
 WORKFLOW="provider-smoke"
 TASK="${AGENTFLOW_PROVIDER_SMOKE_TASK:-Return a concise provider contract smoke result. Do not request commands. Do not request file writes.}"
 PROJECT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentflow-provider-smoke.XXXXXX")"
@@ -91,19 +94,19 @@ retry() {
 }
 
 echo "==> Doctor"
-retry 10 2 npm run doctor
+retry 10 2 "${AGENTFLOW_CLI[@]}" doctor
 
 echo "==> Provider check"
-npm run provider-check
+"${AGENTFLOW_CLI[@]}" provider-check
 
 echo "==> Bootstrap registry"
-retry 10 2 npm run bootstrap-storage
+retry 10 2 "${AGENTFLOW_CLI[@]}" bootstrap-storage
 
 echo "==> Validate definitions"
-npm run validate
+"${AGENTFLOW_CLI[@]}" validate
 
 echo "==> Queue provider smoke run"
-RUN_OUTPUT="$(npm run agentflow -- run "$WORKFLOW" --project "$PROJECT_DIR" --task "$TASK" --no-brief)"
+RUN_OUTPUT="$("${AGENTFLOW_CLI[@]}" run "$WORKFLOW" --project "$PROJECT_DIR" --task "$TASK" --no-brief)"
 echo "$RUN_OUTPUT"
 RUN_ID="$(printf '%s\n' "$RUN_OUTPUT" | awk '/Queued workflow run/ {print $4}')"
 
@@ -113,10 +116,10 @@ if [[ -z "$RUN_ID" ]]; then
 fi
 
 echo "==> Execute one provider stage"
-npm run worker -- --limit 1
+"${AGENTFLOW_CLI[@]}" worker --limit 1
 
 echo "==> Inspect provider smoke run"
-RUN_STATUS="$(npm run agentflow -- status --run "$RUN_ID" --artifacts)"
+RUN_STATUS="$("${AGENTFLOW_CLI[@]}" status --run "$RUN_ID" --artifacts)"
 echo "$RUN_STATUS"
 
 if ! printf '%s\n' "$RUN_STATUS" | grep -q "^$RUN_ID completed "; then

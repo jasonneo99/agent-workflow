@@ -6,12 +6,12 @@ export interface IdeConfigSnippet {
   content: string;
 }
 
-export function buildIdeConfigSnippet(client: IdeClient, agentWorkflowRoot: string): IdeConfigSnippet {
-  const server = {
-    command: "npm",
-    args: ["run", "-s", "mcp"],
-    cwd: agentWorkflowRoot
-  };
+export function buildIdeConfigSnippet(
+  client: IdeClient,
+  agentWorkflowRoot: string,
+  launcher: { command: string; args: string[]; cwd?: string } = { command: "npm", args: ["run", "-s", "mcp"], cwd: agentWorkflowRoot }
+): IdeConfigSnippet {
+  const server = launcher;
   if (client === "vscode") {
     return {
       client,
@@ -31,13 +31,13 @@ export function buildIdeConfigSnippet(client: IdeClient, agentWorkflowRoot: stri
     relativePath: ".codex/config.toml",
     content: [
       "[mcp_servers.agent-workflow]",
-      'command = "npm"',
-      'args = ["run", "-s", "mcp"]',
-      `cwd = ${tomlString(agentWorkflowRoot)}`,
+      `command = ${tomlString(launcher.command)}`,
+      `args = ${JSON.stringify(launcher.args)}`,
+      launcher.cwd ? `cwd = ${tomlString(launcher.cwd)}` : "",
       "startup_timeout_sec = 120",
       'default_tools_approval_mode = "writes"',
       ""
-    ].join("\n")
+    ].filter(Boolean).join("\n")
   };
 }
 

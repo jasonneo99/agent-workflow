@@ -3,7 +3,6 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { fileURLToPath } from "node:url";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
@@ -24,6 +23,7 @@ import { selectRelevantSourceSummaries } from "../../../packages/context-selecto
 import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
+import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
@@ -58,8 +58,9 @@ import { selectModelRoute } from "../../../packages/model-providers/src/routing.
 import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
-dotenv.config({ path: path.join(rootDir, ".env"), quiet: true });
+const rootDir = findAgentWorkflowRoot(import.meta.url);
+const configuredEnvPath = agentWorkflowEnvPath(rootDir);
+dotenv.config({ path: configuredEnvPath, quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
@@ -385,7 +386,7 @@ program
       return;
     }
 
-    await updateEnvValue(path.join(rootDir, ".env"), "DEFAULT_MODEL_PROVIDER", providerId);
+    await updateEnvValue(configuredEnvPath, "DEFAULT_MODEL_PROVIDER", providerId);
     process.env.DEFAULT_MODEL_PROVIDER = providerId;
     console.log(`DEFAULT_MODEL_PROVIDER=${providerId}`);
 
@@ -524,7 +525,11 @@ program
       }
     }
 
-    const snippets = clients.map((client) => buildIdeConfigSnippet(client, rootDir));
+    const compiledMcpPath = path.join(rootDir, "dist", "apps", "mcp", "src", "index.js");
+    const launcher = await pathExists(compiledMcpPath)
+      ? { command: process.execPath, args: [compiledMcpPath] }
+      : { command: "npm", args: ["run", "-s", "mcp"], cwd: rootDir };
+    const snippets = clients.map((client) => buildIdeConfigSnippet(client, rootDir, launcher));
     const files: Array<{ client: IdeClient; path: string; status: "preview" | "written" | "unchanged" }> = [];
     for (const snippet of snippets) {
       const target = path.join(projectDir, snippet.relativePath);
@@ -4830,7 +4835,7 @@ async function updateDashboardModel(input: { provider: string; model: string }):
     return { ok: false, error: `${selectedProvider} does not support model selection.` };
   }
 
-  await updateEnvValue(path.join(rootDir, ".env"), modelEnv, model);
+  await updateEnvValue(configuredEnvPath, modelEnv, model);
   process.env[modelEnv] = model;
   return {
     ok: true,
@@ -4884,7 +4889,7 @@ async function updateDashboardRouting(input: {
     AGENTFLOW_QUALITY_THRESHOLD: String(parsedThreshold)
   };
 
-  const envPath = path.join(rootDir, ".env");
+  const envPath = configuredEnvPath;
   for (const [key, value] of Object.entries(updates)) {
     await updateEnvValue(envPath, key, value);
     process.env[key] = value;
@@ -7061,6 +7066,7 @@ async function exists(filePath: string): Promise<boolean> {
 }
 
 async function updateEnvValue(filePath: string, key: string, value: string): Promise<void> {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
   const existing = await exists(filePath) ? await fs.readFile(filePath, "utf8") : "";
   const lines = existing ? existing.split(/\r?\n/) : [];
   const nextLine = `${key}=${value}`;

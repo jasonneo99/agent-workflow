@@ -7,9 +7,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
-import { fileURLToPath } from "node:url";
+import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
+const rootDir = findAgentWorkflowRoot(import.meta.url);
 
 interface SetupAnswers {
   provider: string;
@@ -223,7 +223,8 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
   lines.push("DEFAULT_AUTONOMY=2");
   lines.push("");
 
-  const envPath = path.join(rootDir, ".env");
+  const envPath = agentWorkflowEnvPath(rootDir);
+  await fs.mkdir(path.dirname(envPath), { recursive: true });
   await fs.writeFile(envPath, lines.join("\n"), "utf8");
 }
 

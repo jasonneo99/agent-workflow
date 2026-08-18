@@ -6,6 +6,18 @@ For model-provider pairings and copyable end-to-end examples, see [Integration E
 
 ## Install Once
 
+Install the compiled package without cloning:
+
+```bash
+npm install --global @jasonneo99/agent-workflow
+agentflow-setup
+agentflow ide-onboard --project /path/to/project --write --check
+```
+
+The standalone MCP executable is `agentflow-mcp`. IDE onboarding resolves its installed compiled entrypoint to an absolute Node command, avoiding IDE shell `PATH` differences.
+
+For repository development:
+
 ```bash
 git clone https://github.com/jasonneo99/agent-workflow.git
 cd agent-workflow

@@ -96,7 +96,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Validate local server/provider readiness.
   - Explain model-provider ownership clearly.
 
-- [ ] Package/install story beyond cloning the repo.
+- [x] Package/install story beyond cloning the repo.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
   - Keep repo-based development workflow available.
 

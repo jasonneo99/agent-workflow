@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v3";
+import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+const rootDir = findAgentWorkflowRoot(import.meta.url);
+const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
 const maxOutputChars = 30_000;
 const defaultTimeoutMs = 120_000;
 
@@ -807,7 +808,7 @@ server.registerTool(
     title: "AgentFlow provider smoke",
     description: "Run a minimal workflow through the configured model provider."
   },
-  async () => toolResult(await runNpmScript(["run", "-s", "provider-smoke"], { timeoutMs: 10 * 60_000 }))
+  async () => toolResult(await runCommand("bash", [path.join(rootDir, "scripts", "provider-smoke.sh")], 10 * 60_000))
 );
 
 await server.connect(new StdioServerTransport());
@@ -822,7 +823,19 @@ function addSourceOptions(args: string[], sourceTokenBudget?: number, sourceMaxF
 }
 
 async function runAgentflow(args: string[], options: { timeoutMs?: number } = {}): Promise<CommandResult> {
+  if (await fileExists(compiledCliPath)) {
+    return runCommand(process.execPath, [compiledCliPath, ...args], options.timeoutMs ?? defaultTimeoutMs);
+  }
   return runNpmScript(["run", "-s", "agentflow", "--", ...args], options);
+}
+
+async function fileExists(target: string): Promise<boolean> {
+  try {
+    await import("node:fs/promises").then((fs) => fs.access(target));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function runNpmScript(args: string[], options: { timeoutMs?: number } = {}): Promise<CommandResult> {

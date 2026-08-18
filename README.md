@@ -14,6 +14,19 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 
 ## Quick Start
 
+Install without cloning:
+
+```bash
+npm install --global @jasonneo99/agent-workflow
+agentflow-setup
+agentflow doctor
+agentflow ide-onboard --project /path/to/your/project --write --check
+```
+
+For one-off use, run `npx --package @jasonneo99/agent-workflow agentflow -- list`. The package exposes `agentflow`, `agentflow-mcp`, and `agentflow-setup`, and includes the compiled runtime, agents, workflows, and templates. Publishing remains an explicit release action.
+
+Develop from a clone:
+
 ```bash
 git clone https://github.com/jasonneo99/agent-workflow.git
 cd agent-workflow
