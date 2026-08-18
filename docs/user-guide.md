@@ -728,3 +728,18 @@ npm run agentflow -- tuning-history --project /path/to/project --record supersed
 ```
 
 History is append-only project metadata. It informs later review and scorecards but never applies or promotes a proposal by itself.
+## Multi-project governance
+
+Inspect every registered project without changing it:
+
+```bash
+agentflow governance
+agentflow governance --health critical
+agentflow governance --provider openai --policy-profile production --json
+```
+
+The report checks path and context availability, registered-versus-local configuration drift, current policy hashes against immutable recent run snapshots, provider/tier metadata, indexing, failed runs, and stale active runs. Critical findings cause exit code `2`, making the JSON report suitable for monitoring without granting remediation authority.
+
+Temporary provider-smoke projects are excluded by default. Add `--include-ephemeral` when auditing test registrations themselves.
+
+Open `/governance` in the dashboard for the same report with health, provider, and policy-profile filters. `/api/governance` exposes the stable JSON contract. The MCP tool is `agentflow_governance`.

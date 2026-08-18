@@ -17,12 +17,13 @@ import {
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
 import { buildBundleManifest, compareBundleManifests, formatBundleManifest, loadCommittedBundleManifest, writeBundleManifest } from "../../../packages/agent-registry/src/manifest.js";
-import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
+import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
+import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -559,6 +560,28 @@ program
       console.log("Restart or reload the selected IDE after writing MCP configuration.");
     }
     if (!result.ready) process.exitCode = 1;
+  });
+
+program
+  .command("governance")
+  .description("Inspect registered projects for health, policy drift, providers, queues, and remediation guidance")
+  .option("--health <status>", "healthy, warning, critical, or all", "all")
+  .option("--provider <provider>", "filter by provider")
+  .option("--policy-profile <profile>", "filter by policy profile")
+  .option("--stale-minutes <number>", "running age considered stale", "15")
+  .option("--include-ephemeral", "include temporary provider-smoke projects")
+  .option("--json", "print machine-readable governance report")
+  .action(async (options: { health: string; provider?: string; policyProfile?: string; staleMinutes: string; includeEphemeral?: boolean; json?: boolean }) => {
+    if (!["all", "healthy", "warning", "critical"].includes(options.health)) throw new Error("--health must be healthy, warning, critical, or all");
+    const report = await loadGovernanceReport(parsePositiveInteger(options.staleMinutes, 15), Boolean(options.includeEphemeral));
+    const projects = report.projects.filter((project) =>
+      (options.health === "all" || project.health === options.health) &&
+      (!options.provider || project.provider === options.provider) &&
+      (!options.policyProfile || project.policyProfile === options.policyProfile)
+    );
+    const filtered = buildGovernanceReport(report.bundleVersion, report.servicesReady, projects, report.configuredProvider, report.definitionsReady);
+    console.log(options.json ? JSON.stringify(filtered, null, 2) : formatGovernanceReport(filtered));
+    if (!filtered.servicesReady || !filtered.definitionsReady || filtered.counts.critical > 0) process.exitCode = 2;
   });
 
 program
@@ -2258,6 +2281,77 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
   });
 }
 
+async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false): Promise<GovernanceReport> {
+  const [summaries, services, packageRaw, agents, workflows] = await Promise.all([
+    listProjectStorageSummaries(500),
+    checkServices(),
+    fs.readFile(path.join(rootDir, "package.json"), "utf8"),
+    loadAgents(rootDir),
+    loadWorkflows(rootDir)
+  ]);
+  const staleBefore = Date.now() - staleMinutes * 60_000;
+  const governedSummaries = includeEphemeral ? summaries : summaries.filter((summary) =>
+    !(summary.name === "Provider Smoke Project" && /agentflow-provider-smoke\./.test(summary.rootUri))
+  );
+  const projects = await Promise.all(governedSummaries.map(async (summary) => {
+    const accessible = await pathExists(summary.rootUri);
+    const agentsFile = accessible && await pathExists(path.join(summary.rootUri, "AGENTS.md"));
+    let configStatus: "valid" | "missing" | "invalid" = "missing";
+    let localConfig: ProjectConfig | null = null;
+    if (accessible && await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+      try {
+        localConfig = await loadProjectConfig(summary.rootUri);
+        configStatus = "valid";
+      } catch {
+        configStatus = "invalid";
+      }
+    }
+    const runs = await listWorkflowRunsForProject({ projectRootUri: summary.rootUri, limit: 100 });
+    const latest = runs[0] ?? null;
+    let policyDrift: boolean | null = null;
+    let configDrift: boolean | null = null;
+    if (localConfig) {
+      try {
+        const currentPolicy = resolveExecutionPolicy(localConfig, latest?.policyProfile ?? localConfig.execution.policy_profile);
+        policyDrift = latest?.policySnapshotHash ? currentPolicy.snapshotHash !== latest.policySnapshotHash : null;
+      } catch {
+        policyDrift = true;
+      }
+      try {
+        const stored = projectConfigSchema.parse(summary.config);
+        configDrift = createHash("sha256").update(JSON.stringify(stored)).digest("hex") !== createHash("sha256").update(JSON.stringify(localConfig)).digest("hex");
+      } catch {
+        configDrift = true;
+      }
+    }
+    const active = runs.filter((run) => run.status === "queued" || run.status === "running");
+    const staleActiveRuns = active.filter((run) => run.status === "running" && Date.parse(run.startedAt) < staleBefore).length;
+    return finalizeGovernanceProject({
+      id: summary.id,
+      name: summary.name,
+      rootUri: summary.rootUri,
+      accessible,
+      agentsFile,
+      projectConfig: configStatus,
+      policyProfile: localConfig?.execution.policy_profile ?? latest?.policyProfile ?? "unknown",
+      policyDrift,
+      configDrift,
+      provider: latest?.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
+      modelTier: latest?.modelTierOverride ?? null,
+      indexedFiles: summary.indexedFiles,
+      runCount: summary.runCount,
+      activeRuns: summary.queuedRuns + summary.runningRuns,
+      failedRuns: summary.failedRuns,
+      staleActiveRuns,
+      lastRunAt: summary.lastRunAt
+    });
+  }));
+  const packageInfo = JSON.parse(packageRaw) as { version?: string };
+  return buildGovernanceReport(packageInfo.version ?? "unknown", services.every((service) => service.reachable), projects.sort((a, b) =>
+    ({ critical: 0, warning: 1, healthy: 2 })[a.health] - ({ critical: 0, warning: 1, healthy: 2 })[b.health] || a.name.localeCompare(b.name)
+  ), process.env.DEFAULT_MODEL_PROVIDER ?? "mock", agents.length > 0 && workflows.length > 0);
+}
+
 async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluationSuite[]> {
   const runs = (await listWorkflowRuns(limit)).filter((run) =>
     typeof run.evaluationMetadata?.suiteId === "string"
@@ -3221,6 +3315,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/governance") {
+    const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(filterGovernanceReport(report, requestUrl.searchParams), null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/info") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -3370,6 +3471,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : suites[0] ?? null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderEvaluationsHtml(suites, selected));
+    return;
+  }
+
+  if (requestUrl.pathname === "/governance") {
+    const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderGovernanceHtml(filterGovernanceReport(report, requestUrl.searchParams), requestUrl.searchParams));
     return;
   }
 
@@ -3788,6 +3896,39 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
   </main>
 </body>
 </html>`;
+}
+
+function filterGovernanceReport(report: GovernanceReport, params: URLSearchParams): GovernanceReport {
+  const health = params.get("health");
+  const provider = params.get("provider");
+  const profile = params.get("policyProfile");
+  const projects = report.projects.filter((project) =>
+    (!health || health === "all" || project.health === health) &&
+    (!provider || project.provider === provider) &&
+    (!profile || project.policyProfile === profile)
+  );
+  return buildGovernanceReport(report.bundleVersion, report.servicesReady, projects, report.configuredProvider, report.definitionsReady);
+}
+
+function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams): string {
+  const providers = [...new Set(report.projects.map((project) => project.provider))].sort();
+  const profiles = [...new Set(report.projects.map((project) => project.policyProfile))].sort();
+  const rows = report.projects.map((project) => `
+    <tr>
+      <td><strong>${escapeHtml(project.name)}</strong><br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
+      <td><span class="flag ${project.health === "healthy" ? "good" : project.health === "warning" ? "warn" : "bad"}">${project.health}</span></td>
+      <td>${escapeHtml(project.policyProfile)}<br><span class="muted">policy drift: ${project.policyDrift ?? "unknown"}<br>config drift: ${project.configDrift ?? "unknown"}</span></td>
+      <td>${escapeHtml(project.provider)}<br><span class="muted">${escapeHtml(project.modelTier ?? "default tier")}</span></td>
+      <td>${project.activeRuns} active / ${project.staleActiveRuns} stale<br><span class="muted">${project.failedRuns} failed · ${project.runCount} total</span></td>
+      <td>${project.indexedFiles}<br><span class="muted">config: ${project.projectConfig}</span></td>
+      <td>${project.recommendations.length ? `<ul>${project.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : '<span class="flag good">No action</span>'}</td>
+    </tr>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Governance</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("governance")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Multi-project Governance</h1><p class="muted">Read-only project health, policy drift, provider, queue, and remediation inspection.</p></div><a class="button secondary" href="/api/governance?${escapeHtml(params.toString())}">JSON</a></div>
+  <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
+  <form method="get" class="form-grid"><label>Health<select name="health"><option value="all">all</option>${["healthy", "warning", "critical"].map((value) => `<option${params.get("health") === value ? " selected" : ""}>${value}</option>`).join("")}</select></label><label>Provider<select name="provider"><option value="">all</option>${providers.map((value) => `<option${params.get("provider") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>Policy profile<select name="policyProfile"><option value="">all</option>${profiles.map((value) => `<option${params.get("policyProfile") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Filter</button></div></form></section>
+  <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
 
 function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
@@ -5801,13 +5942,14 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "governance" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
     ["projects", "/projects", "Projects"],
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
+    ["governance", "/governance", "Governance"],
     ["providers", "/providers", "Providers"],
     ["info", "/info", "Settings"]
   ] as const;

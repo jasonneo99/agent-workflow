@@ -100,7 +100,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
   - Keep repo-based development workflow available.
 
-- [ ] Multi-project governance.
+- [x] Multi-project governance.
   - Inspect registered projects, storage health, provider settings, and policy drift.
   - Support enterprise teams that operate many repositories.
 

@@ -55,6 +55,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_governance",
+  {
+    title: "AgentFlow multi-project governance",
+    description: "Read-only inspection of registered project health, policy drift, providers, queues, and remediation guidance.",
+    inputSchema: {
+      health: z.enum(["all", "healthy", "warning", "critical"]).optional(),
+      provider: z.string().optional(),
+      policyProfile: z.string().optional(),
+      staleMinutes: z.number().int().positive().optional(),
+      includeEphemeral: z.boolean().optional(),
+      json: z.boolean().optional()
+    }
+  },
+  async ({ health, provider, policyProfile, staleMinutes, includeEphemeral, json }) => {
+    const args = ["governance", "--health", health ?? "all", "--stale-minutes", String(staleMinutes ?? 15)];
+    if (provider) args.push("--provider", provider);
+    if (policyProfile) args.push("--policy-profile", policyProfile);
+    if (includeEphemeral) args.push("--include-ephemeral");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 120_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_bundle_manifest",
   {
     title: "AgentFlow bundle manifest",
