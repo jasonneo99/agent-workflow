@@ -232,7 +232,7 @@ const workflowPresets: WorkflowPreset[] = [
 program
   .name("agentflow")
   .description("Portable, model-agnostic agent workflow runner")
-  .version("0.1.0");
+  .version("0.2.0");
 
 program
   .command("list")
