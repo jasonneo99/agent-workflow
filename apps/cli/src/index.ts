@@ -21,6 +21,7 @@ import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../pa
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { buildEvaluationReport, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation } from "../../../packages/evaluation/src/index.js";
+import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
@@ -2980,6 +2981,11 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  if (requestUrl.pathname === "/assets/queue-watcher.js") {
+    response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
+    response.end(queueWatcherScript());
+    return;
+  }
   if (request.method === "POST" && requestUrl.pathname === "/api/run-worker") {
     const form = await readFormBody(request);
     const result = await processDashboardRun({
@@ -3483,7 +3489,6 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="10">
   <title>Agent Workflow Queue</title>
   <style>${dashboardCss()}</style>
 </head>
@@ -3494,6 +3499,7 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
       <div>
         <a href="/">Dashboard</a>
         <h1>Queue</h1>
+        <span id="queue-watch-status" class="muted">Queue watcher starting…</span>
       </div>
       <a class="button secondary" href="/api/queue">JSON</a>
     </div>
@@ -3521,6 +3527,28 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
       </table>
     </section>
   </main>
+  <script>
+    (() => {
+      const status = document.getElementById("queue-watch-status");
+      if (!("Worker" in window)) {
+        status.textContent = "Live queue updates unavailable; refresh manually.";
+        return;
+      }
+      const watcher = new Worker("/assets/queue-watcher.js");
+      watcher.onmessage = (event) => {
+        if (event.data.type === "error") {
+          status.textContent = "Queue watcher reconnecting…";
+          return;
+        }
+        status.textContent = event.data.active > 0
+          ? "Watching " + event.data.active + " active run" + (event.data.active === 1 ? "" : "s") + " · updated " + new Date(event.data.checkedAt).toLocaleTimeString()
+          : "Queue watcher idle · checked " + new Date(event.data.checkedAt).toLocaleTimeString();
+        if (event.data.changed) window.location.reload();
+      };
+      watcher.postMessage({ type: "start", signature: ${JSON.stringify(queueSnapshotSignature(queue))} });
+      window.addEventListener("pagehide", () => watcher.postMessage({ type: "stop" }), { once: true });
+    })();
+  </script>
 </body>
 </html>`;
 }
