@@ -52,7 +52,7 @@ import {
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
-import { buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalQueue, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 
 const program = new Command();
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -1555,6 +1555,7 @@ program
 
     if (options.write) {
       await writeTuningApplicationPlan(projectDir, plan);
+      await recordTuningHistory(projectDir, plan.selectedIds, "applied", undefined, "Applied as project-local tuning overlays");
     }
 
     if (options.json) {
@@ -1602,6 +1603,8 @@ program
 
     if (options.write) {
       await writeTuningApprovalQueue(projectDir, queue);
+      const newIds = queue.items.filter((item) => !existingQueue?.items.some((existing) => existing.proposalId === item.proposalId)).map((item) => item.proposalId);
+      await recordTuningHistory(projectDir, newIds, "queued");
     }
 
     if (options.json) {
@@ -1649,6 +1652,7 @@ program
       });
       nextQueue = result.queue;
       await writeTuningApprovalQueue(projectDir, nextQueue);
+      await recordTuningHistory(projectDir, result.selectedIds, options.approve ? "approved" : "rejected", options.reviewer, options.note);
       if (result.skippedIds.length) {
         console.error(`Skipped unknown ids: ${result.skippedIds.join(", ")}`);
       }
@@ -1708,6 +1712,7 @@ program
 
     if (options.write) {
       await writeTuningApplicationPlan(projectDir, plan);
+      await recordTuningHistory(projectDir, plan.selectedIds, "applied");
     }
 
     if (options.json) {
@@ -1724,6 +1729,33 @@ program
       console.log("");
       console.log("Dry run only. Re-run with --write to create applied project-local tuning notes.");
     }
+  });
+
+program
+  .command("tuning-history")
+  .description("List or append project-local tuning proposal lifecycle history")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--record <status>", "append applied, reverted, or superseded events")
+  .option("--ids <ids>", "comma-separated proposal ids", "all")
+  .option("--actor <name>", "actor name")
+  .option("--note <text>", "event note")
+  .option("--related-proposal <id>", "replacement or related proposal id")
+  .option("--json", "print history JSON")
+  .action(async (options: { project: string; record?: string; ids: string; actor?: string; note?: string; relatedProposal?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    if (options.record) {
+      const allowed: TuningHistoryStatus[] = ["applied", "reverted", "superseded"];
+      if (!allowed.includes(options.record as TuningHistoryStatus)) throw new Error(`--record must be one of: ${allowed.join(", ")}`);
+      if (options.ids === "all") throw new Error("--ids is required when recording a history event");
+      await recordTuningHistory(projectDir, parseProposalIds(options.ids) as string[], options.record as TuningHistoryStatus, options.actor, options.note, options.relatedProposal);
+    }
+    const history = await readTuningApprovalHistory(projectDir).catch(() => ({
+      kind: "agentflow_tuning_approval_history" as const,
+      projectRootUri: projectDir,
+      updatedAt: new Date(0).toISOString(),
+      events: []
+    }));
+    console.log(options.json ? JSON.stringify(history, null, 2) : formatTuningApprovalHistory(history));
   });
 
 program
@@ -2589,6 +2621,24 @@ async function writeTuningApprovalQueue(projectDir: string, queue: TuningApprova
   await fs.mkdir(tuningDir, { recursive: true });
   await fs.writeFile(path.join(tuningDir, "approval-queue.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(tuningDir, "approval-queue.md"), formatTuningApprovalQueueMarkdown(queue), "utf8");
+}
+
+async function readTuningApprovalHistory(projectDir: string): Promise<TuningApprovalHistory> {
+  const historyPath = path.join(projectDir, ".agent-workflow", "tuning", "approval-history.json");
+  const raw = await fs.readFile(historyPath, "utf8");
+  const parsed = JSON.parse(raw) as TuningApprovalHistory;
+  if (parsed.kind !== "agentflow_tuning_approval_history" || !Array.isArray(parsed.events)) throw new Error(`Invalid tuning approval history: ${historyPath}`);
+  return parsed;
+}
+
+async function recordTuningHistory(projectDir: string, proposalIds: string[], status: TuningHistoryStatus, actor?: string, note?: string, relatedProposalId?: string): Promise<void> {
+  if (!proposalIds.length) return;
+  const existing = await readTuningApprovalHistory(projectDir).catch(() => undefined);
+  const history = appendTuningApprovalHistory(existing, { projectRootUri: projectDir, proposalIds, status, actor, note, relatedProposalId });
+  const tuningDir = path.join(projectDir, ".agent-workflow", "tuning");
+  await fs.mkdir(tuningDir, { recursive: true });
+  await fs.writeFile(path.join(tuningDir, "approval-history.json"), `${JSON.stringify(history, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(tuningDir, "approval-history.md"), formatTuningApprovalHistoryMarkdown(history), "utf8");
 }
 
 async function writeTuningPatchPlan(projectDir: string, plan: TuningPatchPlan): Promise<void> {

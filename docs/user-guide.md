@@ -715,3 +715,14 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 ## 19. Recommended Next Improvement
 
 The next best improvement is production, staging, and local policy profiles. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+### Tuning approval history
+
+Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
+
+```bash
+npm run agentflow -- tuning-history --project /path/to/project
+npm run agentflow -- tuning-history --project /path/to/project --record reverted --ids tune-001 --actor jason --note "Regressed quality"
+npm run agentflow -- tuning-history --project /path/to/project --record superseded --ids tune-001 --related-proposal tune-004
+```
+
+History is append-only project metadata. It informs later review and scorecards but never applies or promotes a proposal by itself.

@@ -79,7 +79,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Compare runs by workflow, stage, agent, provider, tier, quality, fallback, and feedback.
   - Highlight regressions and improvement candidates.
 
-- [ ] Tuning proposal approval history.
+- [x] Tuning proposal approval history.
   - Track which proposals were accepted, rejected, applied, reverted, or superseded.
   - Feed future scorecards without auto-promoting risky behavior.
 
