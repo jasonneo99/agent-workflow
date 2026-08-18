@@ -51,6 +51,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   status text NOT NULL,
   task text NOT NULL,
   autonomy text NOT NULL,
+  policy_profile text NOT NULL DEFAULT 'local',
+  policy_snapshot jsonb NOT NULL DEFAULT '{}',
+  policy_snapshot_hash text NOT NULL DEFAULT '',
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz

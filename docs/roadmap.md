@@ -62,9 +62,10 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Track bundle version, source, checksum, compatibility, and migration notes.
   - Support safer sharing across teams and IDE clients.
 
-- [ ] Production, staging, and local policy profiles.
+- [x] Named execution policy profiles for local, staging, and production targets.
   - Provide reusable command/write/autonomy presets.
   - Preserve dry-run and explicit-write defaults for risky operations.
+  - Persist the selected profile and immutable resolved policy snapshot with each run without requiring separate storage per target environment.
 
 ## Phase 2: Evaluation And Personalization
 

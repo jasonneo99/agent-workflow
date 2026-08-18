@@ -37,6 +37,7 @@
     "project-files": "tsx apps/cli/src/index.ts project-files",
     "reset-storage": "tsx apps/cli/src/index.ts reset-storage --yes",
     "status": "tsx apps/cli/src/index.ts status",
+    "test": "node --import tsx --test 'packages/**/*.test.ts'",
     "smoke": "bash scripts/smoke-enterprise.sh",
     "services:reset": "docker compose -f infra/docker-compose.yml down -v",
     "worker": "tsx apps/cli/src/index.ts worker",

@@ -137,6 +137,7 @@ npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, 
 npm run dev:agentflow       # Start services, dashboard, and supervised worker
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
+npm run agentflow -- run build-feature -p . -t "task" --policy-profile staging # Apply target guardrails
 npm run agentflow -- agent-task security -p . -t "task"  # Run single agent
 npm run worker -- --limit 6    # Process queued tasks
 npm run worker:daemon          # Continuously process queued tasks locally
@@ -156,6 +157,11 @@ npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-loc
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```
+
+Execution policy profiles (`local`, `staging`, and `production`) control
+autonomy, commands, and write access without creating separate workflow
+storage. Every queued run records the resolved policy snapshot used by its
+worker. See [Autonomy Policy](docs/autonomy.md).
 
 ## IDE Clients
 

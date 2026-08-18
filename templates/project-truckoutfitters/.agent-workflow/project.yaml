@@ -40,6 +40,9 @@ context:
 storage:
   cache_summaries: true
   semantic_index: true
+execution:
+  policy_profile: local
+  policy_profiles: {}
 policies:
   allow_wide_open: true
   require_approval_for_external_actions: false

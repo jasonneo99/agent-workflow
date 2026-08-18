@@ -72,6 +72,12 @@ export async function seedRegistry(
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(`
+      ALTER TABLE workflow_runs
+      ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
+      ADD COLUMN IF NOT EXISTS policy_snapshot jsonb NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS policy_snapshot_hash text NOT NULL DEFAULT ''
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         run_id uuid REFERENCES workflow_runs(id),
@@ -493,6 +499,9 @@ export interface CreateRunInput {
   workflow: WorkflowDefinition;
   task: string;
   autonomy: string;
+  policyProfile: string;
+  policySnapshot: unknown;
+  policySnapshotHash: string;
   compiledBrief?: string;
 }
 
@@ -519,14 +528,20 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const projectId = projectResult.rows[0].id;
 
       const runResult = await client.query<{ id: string }>(
-        `insert into workflow_runs (project_id, workflow_id, status, task, autonomy, compiled_brief_uri)
-         values ($1, $2, 'queued', $3, $4, $5)
+        `insert into workflow_runs (
+           project_id, workflow_id, status, task, autonomy,
+           policy_profile, policy_snapshot, policy_snapshot_hash, compiled_brief_uri
+         )
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8)
          returning id`,
         [
           projectId,
           input.workflow.id,
           input.task,
           input.autonomy,
+          input.policyProfile,
+          JSON.stringify(input.policySnapshot),
+          input.policySnapshotHash,
           null
         ]
       );
@@ -642,7 +657,7 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            wt.id as "taskId",
            wt.run_id as "runId",
            p.root_uri as "projectRootUri",
-           p.config as "projectConfig",
+           coalesce(nullif(wr.policy_snapshot, '{}'::jsonb), p.config) as "projectConfig",
            wr.workflow_id as "workflowId",
            wr.task as "workflowTask",
            wt.stage_id as "stageId",
@@ -847,6 +862,8 @@ export interface WorkflowRunStatus {
   workflowId: string;
   task: string;
   autonomy: string;
+  policyProfile: string;
+  policySnapshotHash: string;
   projectName: string;
   projectRootUri: string;
   startedAt: string;
@@ -891,6 +908,8 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          wr.workflow_id as "workflowId",
          wr.task,
          wr.autonomy,
+         wr.policy_profile as "policyProfile",
+         wr.policy_snapshot_hash as "policySnapshotHash",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -917,6 +936,8 @@ export async function listWorkflowRunsForProject(input: {
          wr.workflow_id as "workflowId",
          wr.task,
          wr.autonomy,
+         wr.policy_profile as "policyProfile",
+         wr.policy_snapshot_hash as "policySnapshotHash",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -945,6 +966,8 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.workflow_id as "workflowId",
          wr.task,
          wr.autonomy,
+         wr.policy_profile as "policyProfile",
+         wr.policy_snapshot_hash as "policySnapshotHash",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",

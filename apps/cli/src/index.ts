@@ -20,7 +20,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
-import { evaluateAgentAutonomy } from "../../../packages/policy-engine/src/index.js";
+import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
@@ -645,9 +645,10 @@ program
   .requiredOption("-w, --workflow <id>", "workflow id")
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
+  .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--source-token-budget <number>", "token budget for indexed source summaries")
   .option("--source-max-files <number>", "maximum indexed source summaries to include")
-  .action(async (options: { workflow: string; project: string; task: string; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
+  .action(async (options: { workflow: string; project: string; task: string; policyProfile?: string; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
     const agents = await loadAgents(rootDir);
     const workflows = await loadWorkflows(rootDir);
     const workflow = resolveWorkflow(workflows, options.workflow);
@@ -659,7 +660,8 @@ program
     }
 
     const projectDir = path.resolve(process.cwd(), options.project);
-    const project = await loadProjectConfig(projectDir);
+    const configuredProject = await loadProjectConfig(projectDir);
+    const project = resolveExecutionPolicy(configuredProject, options.policyProfile).project;
     const agentIndex = byId(agents);
     const selectedAgents = new Map<string, typeof agents[number]>();
 
@@ -707,10 +709,11 @@ program
   .argument("<workflow>", "workflow id")
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
+  .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--no-brief", "queue the run without printing the compiled brief")
   .option("--source-token-budget <number>", "token budget for indexed source summaries")
   .option("--source-max-files <number>", "maximum indexed source summaries to include")
-  .action(async (workflowId: string, options: { project: string; task: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
+  .action(async (workflowId: string, options: { project: string; task: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -727,6 +730,7 @@ program
       workflowId,
       projectPath: options.project,
       task: options.task,
+      policyProfile: options.policyProfile,
       sourceTokenBudget: options.sourceTokenBudget,
       sourceMaxFiles: options.sourceMaxFiles
     });
@@ -754,6 +758,7 @@ program
   .argument("<workflow>", "workflow id or alias")
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
+  .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--skip-index", "skip project indexing before queueing")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
   .option("--refine-index", "refine indexed summaries with the selected provider")
@@ -767,6 +772,7 @@ program
   .action(async (workflowId: string, options: {
     project: string;
     task: string;
+    policyProfile?: string;
     skipIndex?: boolean;
     indexMaxFiles: string;
     refineIndex?: boolean;
@@ -816,6 +822,7 @@ program
       workflowId,
       projectPath: projectDir,
       task: options.task,
+      policyProfile: options.policyProfile,
       sourceTokenBudget: options.sourceTokenBudget,
       sourceMaxFiles: options.sourceMaxFiles
     });
@@ -876,6 +883,7 @@ program
   .argument("<agent>", "agent id, display name, or alias")
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
+  .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--skip-index", "skip project indexing before queueing")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
   .option("--refine-index", "refine indexed summaries with the selected provider")
@@ -888,6 +896,7 @@ program
   .action(async (agentRef: string, options: {
     project: string;
     task: string;
+    policyProfile?: string;
     skipIndex?: boolean;
     indexMaxFiles: string;
     refineIndex?: boolean;
@@ -953,6 +962,7 @@ program
       workflowId: workflow.id,
       projectPath: projectDir,
       task: options.task,
+      policyProfile: options.policyProfile,
       workflowOverride: workflow,
       sourceTokenBudget: options.sourceTokenBudget,
       sourceMaxFiles: options.sourceMaxFiles
@@ -1128,6 +1138,8 @@ program
       console.log(`${details.run.id} ${details.run.status} ${details.run.workflowId}`);
       console.log(`Task: ${details.run.task}`);
       console.log(`Autonomy: ${details.run.autonomy}`);
+      console.log(`Policy profile: ${details.run.policyProfile}`);
+      console.log(`Policy snapshot: ${details.run.policySnapshotHash || "legacy run"}`);
       console.log("");
       console.log("Stages");
       for (const task of details.tasks) {
@@ -6076,6 +6088,7 @@ async function queueWorkflow(input: {
   workflowId: string;
   projectPath: string;
   task: string;
+  policyProfile?: string;
   workflowOverride?: Awaited<ReturnType<typeof loadWorkflows>>[number];
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
@@ -6098,7 +6111,14 @@ async function queueWorkflow(input: {
     return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
   }
 
-  const project = await loadProjectConfig(projectDir);
+  const configuredProject = await loadProjectConfig(projectDir);
+  let resolvedPolicy: ReturnType<typeof resolveExecutionPolicy>;
+  try {
+    resolvedPolicy = resolveExecutionPolicy(configuredProject, input.policyProfile);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  const project = resolvedPolicy.project;
   const selectedAgents = selectWorkflowAgents(agents, workflow);
 
   for (const agent of selectedAgents.values()) {
@@ -6134,10 +6154,13 @@ async function queueWorkflow(input: {
     projectName: project.project.name,
     projectRootUri: projectDir,
     projectProfile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
-    projectConfig: project,
+    projectConfig: configuredProject,
     workflow,
     task: input.task,
     autonomy: String(project.project.autonomy),
+    policyProfile: resolvedPolicy.profile,
+    policySnapshot: resolvedPolicy.snapshot,
+    policySnapshotHash: resolvedPolicy.snapshotHash,
     compiledBrief: brief
   });
 
@@ -6498,6 +6521,10 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
     storage: {
       cache_summaries: profile === "enterprise",
       semantic_index: profile === "enterprise"
+    },
+    execution: {
+      policy_profile: "local",
+      policy_profiles: {}
     },
     policies: {
       allow_wide_open: false,

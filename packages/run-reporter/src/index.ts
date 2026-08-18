@@ -211,6 +211,8 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
     `- Project: ${redaction.run.projectName}`,
     `- Project root: ${redaction.run.projectRootUri}`,
     `- Autonomy: ${redaction.run.autonomy}`,
+    `- Policy profile: ${redaction.run.policyProfile}`,
+    `- Policy snapshot: ${redaction.run.policySnapshotHash || "legacy run"}`,
     `- Started: ${redaction.run.startedAt}`,
     `- Finished: ${redaction.run.finishedAt ?? "not finished"}`,
     "",

@@ -18,10 +18,19 @@ type CommandResult = {
   timedOut: boolean;
 };
 
-const server = new McpServer({
-  name: "portable-agent-workflows",
-  version: "0.1.0"
-});
+const server = new McpServer(
+  {
+    name: "portable-agent-workflows",
+    version: "0.1.0"
+  },
+  {
+    instructions:
+      "Agent Workflow is the default orchestration layer for software-project work. " +
+      "When this server is available and a request involves planning, implementation, debugging, testing, review, security, UX, documentation, release readiness, or project maintenance, use its tools before doing substantive work. " +
+      "Prefer agentflow_orchestrate for ambiguous or multi-stage tasks and the narrowest matching tool for focused tasks. " +
+      "Use project paths that are accessible on Loki. If the target project is not accessible on Loki or this server cannot serve the task, continue with native Codex tools and state the fallback."
+  }
+);
 
 server.registerTool(
   "agentflow_doctor",

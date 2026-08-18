@@ -62,6 +62,30 @@ export const workflowSchema = z.object({
 
 export type WorkflowDefinition = z.infer<typeof workflowSchema>;
 
+const policyOverridesSchema = z.object({
+  allow_wide_open: z.boolean().optional(),
+  require_approval_for_external_actions: z.boolean().optional(),
+  require_receipts: z.boolean().optional()
+}).default({});
+
+const actionOverridesSchema = z.object({
+  allowed_commands: z.array(z.string()).optional(),
+  blocked_commands: z.array(z.string()).optional(),
+  command_timeout_ms: z.number().int().positive().optional(),
+  max_output_chars: z.number().int().positive().optional(),
+  allowed_write_paths: z.array(z.string()).optional(),
+  blocked_write_paths: z.array(z.string()).optional(),
+  max_write_bytes: z.number().int().positive().optional()
+}).default({});
+
+export const executionPolicyProfileSchema = z.object({
+  autonomy: autonomyLevelSchema.optional(),
+  policies: policyOverridesSchema,
+  actions: actionOverridesSchema
+});
+
+export type ExecutionPolicyProfile = z.infer<typeof executionPolicyProfileSchema>;
+
 export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
@@ -78,6 +102,10 @@ export const projectConfigSchema = z.object({
     cache_summaries: z.boolean().default(true),
     semantic_index: z.boolean().default(true)
   }).default({ cache_summaries: true, semantic_index: true }),
+  execution: z.object({
+    policy_profile: z.string().min(1).default("local"),
+    policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({})
+  }).default({ policy_profile: "local", policy_profiles: {} }),
   policies: z.object({
     allow_wide_open: z.boolean().default(false),
     require_approval_for_external_actions: z.boolean().default(true),
