@@ -79,3 +79,35 @@ run details. `/api/evaluations` returns the same comparison data as JSON; pass
 
 Do not commit private evaluation cases, customer prompts, or product-specific
 scoring. Keep those suites inside the target project's ignored local context.
+
+## Private product scoring
+
+Shared evaluation code supports a declarative weighting profile, but the actual product weights and heuristics stay under the target project's ignored `.agent-workflow/evaluations/` directory. For example:
+
+```yaml
+version: 1
+id: private-product-fit-v1
+weights:
+  pass_rate: 3
+  quality: 2
+  latency: 0.25
+  fallback_rate: -1
+  accepted_feedback_rate: 2
+  revised_feedback_rate: -0.5
+  rejected_feedback_rate: -3
+case_weights:
+  checkout-critical-path: 4
+  backoffice-edge-case: 0.5
+latency_budget_ms: 30000
+```
+
+Run it with:
+
+```bash
+npm run agentflow -- evaluate \
+  --suite .agent-workflow/evaluations/private-suite.yaml \
+  --project . \
+  --scoring-profile .agent-workflow/evaluations/private-scoring.yaml
+```
+
+The shared engine combines normalized pass rate, quality, latency, fallback rate, and feedback rates. Positive weights reward a signal and negative weights penalize it. Optional `case_weights` keep product-critical scenario priorities private while using the same public scoring mechanics. The generated report contains the profile ID and checksum for reproducibility, but does not copy the private weights, case priorities, or heuristics into shared output. Without a private profile, the original public ranking remains pass rate, quality, fallback use, then latency.

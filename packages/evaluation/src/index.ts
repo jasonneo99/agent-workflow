@@ -24,9 +24,26 @@ export const evaluationSuiteSchema = z.object({
   })).min(1)
 });
 
+export const evaluationScoringProfileSchema = z.object({
+  version: z.literal(1).default(1),
+  id: z.string().min(1),
+  weights: z.object({
+    pass_rate: z.number().default(1),
+    quality: z.number().default(1),
+    latency: z.number().default(0),
+    fallback_rate: z.number().default(0),
+    accepted_feedback_rate: z.number().default(0),
+    revised_feedback_rate: z.number().default(0),
+    rejected_feedback_rate: z.number().default(0)
+  }).default({}),
+  case_weights: z.record(z.number().positive()).default({}),
+  latency_budget_ms: z.number().positive().default(30000)
+});
+
 export type EvaluationSuite = z.infer<typeof evaluationSuiteSchema>;
 export type EvaluationCase = EvaluationSuite["cases"][number];
 export type EvaluationVariant = EvaluationSuite["variants"][number];
+export type EvaluationScoringProfile = z.infer<typeof evaluationScoringProfileSchema>;
 
 export interface EvaluationObservation {
   caseId: string;
@@ -62,6 +79,7 @@ export interface EvaluationVariantSummary {
   averageLatencyMs: number | null;
   fallbackRate: number;
   feedbackCounts: Record<string, number>;
+  privateScore: number | null;
 }
 
 export interface EvaluationReport {
@@ -72,11 +90,13 @@ export interface EvaluationReport {
   rows: EvaluationResultRow[];
   variants: EvaluationVariantSummary[];
   winner: string | null;
+  scoringProfile: { id: string; checksum: string } | null;
 }
 
 export function buildEvaluationReport(
   suite: EvaluationSuite,
-  observations: EvaluationObservation[]
+  observations: EvaluationObservation[],
+  scoring?: { profile: EvaluationScoringProfile; checksum: string }
 ): EvaluationReport {
   const caseMap = new Map(suite.cases.map((item) => [item.id, item]));
   const variantMap = new Map(suite.variants.map((item) => [item.id, item]));
@@ -113,7 +133,7 @@ export function buildEvaluationReport(
   const variants = suite.variants.map((variant): EvaluationVariantSummary => {
     const selected = rows.filter((row) => row.variantId === variant.id);
     const quality = selected.filter((row) => row.averageQuality !== null);
-    return {
+    const summary: EvaluationVariantSummary = {
       variantId: variant.id,
       provider: variant.provider,
       modelTier: variant.model_tier,
@@ -127,9 +147,13 @@ export function buildEvaluationReport(
         ? Math.round(selected.reduce((sum, row) => sum + row.totalLatencyMs, 0) / selected.length)
         : null,
       fallbackRate: round(selected.reduce((sum, row) => sum + row.fallbackCount, 0) / Math.max(1, selected.length)),
-      feedbackCounts: countBy(selected.filter((row) => row.feedbackRating !== null), (row) => row.feedbackRating ?? "none")
+      feedbackCounts: countBy(selected.filter((row) => row.feedbackRating !== null), (row) => row.feedbackRating ?? "none"),
+      privateScore: null
     };
+    summary.privateScore = scoring ? scoreEvaluationVariant(summary, scoring.profile, selected) : null;
+    return summary;
   }).sort((a, b) =>
+    (scoring ? (b.privateScore ?? -Infinity) - (a.privateScore ?? -Infinity) : 0) ||
     b.passRate - a.passRate ||
     (b.averageQuality ?? -1) - (a.averageQuality ?? -1) ||
     a.fallbackRate - b.fallbackRate ||
@@ -143,8 +167,33 @@ export function buildEvaluationReport(
     generatedAt: new Date().toISOString(),
     rows,
     variants,
-    winner: variants[0]?.variantId ?? null
+    winner: variants[0]?.variantId ?? null,
+    scoringProfile: scoring ? { id: scoring.profile.id, checksum: scoring.checksum } : null
   };
+}
+
+export function scoreEvaluationVariant(summary: EvaluationVariantSummary, profile: EvaluationScoringProfile, rows: EvaluationResultRow[] = []): number {
+  const weighted = rows.map((row) => ({ row, weight: profile.case_weights[row.caseId] ?? 1 }));
+  const totalWeight = weighted.reduce((sum, item) => sum + item.weight, 0);
+  const weightedRate = (select: (row: EvaluationResultRow) => number): number =>
+    weighted.reduce((sum, item) => sum + select(item.row) * item.weight, 0) / Math.max(1, totalWeight);
+  const passRate = rows.length ? weightedRate((row) => Number(row.passed)) : summary.passRate;
+  const quality = rows.length ? weightedRate((row) => row.averageQuality ?? 0) : summary.averageQuality ?? 0;
+  const latencyMs = rows.length ? weightedRate((row) => row.totalLatencyMs) : summary.averageLatencyMs ?? profile.latency_budget_ms;
+  const fallbackRate = rows.length ? weightedRate((row) => row.fallbackCount) : summary.fallbackRate;
+  const feedbackRate = (rating: string): number => rows.length
+    ? weightedRate((row) => Number(row.feedbackRating === rating))
+    : (summary.feedbackCounts[rating] ?? 0) / Math.max(1, Object.values(summary.feedbackCounts).reduce((sum, count) => sum + count, 0));
+  const latencyScore = Math.max(0, 1 - latencyMs / profile.latency_budget_ms);
+  const value =
+    passRate * profile.weights.pass_rate +
+    quality * profile.weights.quality +
+    latencyScore * profile.weights.latency +
+    fallbackRate * profile.weights.fallback_rate +
+    feedbackRate("accepted") * profile.weights.accepted_feedback_rate +
+    feedbackRate("revised") * profile.weights.revised_feedback_rate +
+    feedbackRate("rejected") * profile.weights.rejected_feedback_rate;
+  return round(value);
 }
 
 export function formatEvaluationReport(report: EvaluationReport): string {
@@ -155,13 +204,14 @@ export function formatEvaluationReport(report: EvaluationReport): string {
     `- Workflow: ${report.workflow}`,
     `- Generated: ${report.generatedAt}`,
     `- Winner: ${report.winner ?? "none"}`,
+    `- Scoring: ${report.scoringProfile ? `${report.scoringProfile.id} (${report.scoringProfile.checksum})` : "shared default ranking"}`,
     "",
     "## Variant comparison",
     "",
-    "| Variant | Provider | Tier | Pass rate | Quality | Avg latency | Fallbacks/run | Feedback |",
-    "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    "| Variant | Provider | Tier | Score | Pass rate | Quality | Avg latency | Fallbacks/run | Feedback |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |",
     ...report.variants.map((variant) =>
-      `| ${variant.variantId} | ${variant.provider} | ${variant.modelTier} | ${variant.passRate} | ${variant.averageQuality ?? "n/a"} | ${variant.averageLatencyMs ?? "n/a"}ms | ${variant.fallbackRate} | ${formatCounts(variant.feedbackCounts)} |`
+      `| ${variant.variantId} | ${variant.provider} | ${variant.modelTier} | ${variant.privateScore ?? "default"} | ${variant.passRate} | ${variant.averageQuality ?? "n/a"} | ${variant.averageLatencyMs ?? "n/a"}ms | ${variant.fallbackRate} | ${formatCounts(variant.feedbackCounts)} |`
     ),
     "",
     "## Runs",

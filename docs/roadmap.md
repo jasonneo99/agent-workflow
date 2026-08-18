@@ -83,7 +83,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Track which proposals were accepted, rejected, applied, reverted, or superseded.
   - Feed future scorecards without auto-promoting risky behavior.
 
-- [ ] Shared evaluation patterns, private product scoring.
+- [x] Shared evaluation patterns, private product scoring.
   - Keep generic quality and routing mechanics public.
   - Keep product-specific ranking, customer-derived feedback, and domain heuristics private.
 

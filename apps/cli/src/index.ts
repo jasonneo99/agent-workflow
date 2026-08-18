@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
@@ -20,7 +21,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
-import { buildEvaluationReport, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation } from "../../../packages/evaluation/src/index.js";
+import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -1297,6 +1298,7 @@ program
   .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
   .option("--timeout-ms <number>", "maximum time to wait for each run", "900000")
   .option("-o, --out <dir>", "report directory; defaults to <project>/.agent-workflow/evaluations")
+  .option("--scoring-profile <file>", "private scoring YAML under <project>/.agent-workflow/evaluations")
   .action(async (options: {
     suite: string;
     project: string;
@@ -1306,13 +1308,16 @@ program
     workerLimit: string;
     timeoutMs: string;
     out?: string;
+    scoringProfile?: string;
   }) => {
     const suitePath = path.resolve(process.cwd(), options.suite);
     const suite = evaluationSuiteSchema.parse(YAML.parse(await fs.readFile(suitePath, "utf8")));
     const projectDir = path.resolve(process.cwd(), options.project);
+    const scoring = options.scoringProfile ? await loadPrivateEvaluationScoring(projectDir, options.scoringProfile) : undefined;
     const matrix = suite.cases.flatMap((testCase) => suite.variants.map((variant) => ({ testCase, variant })));
 
     console.log(`Evaluation ${suite.id}: ${matrix.length} run(s), workflow ${suite.workflow}`);
+    console.log(`Scoring: ${scoring ? `${scoring.profile.id} (${scoring.checksum})` : "shared default ranking"}`);
     for (const item of matrix) {
       console.log(`- ${item.testCase.id} / ${item.variant.id}: ${item.variant.provider} ${item.variant.model_tier}`);
     }
@@ -1382,7 +1387,7 @@ program
       });
     }
 
-    const report = buildEvaluationReport(suite, observations);
+    const report = buildEvaluationReport(suite, observations, scoring);
     const outDir = path.resolve(process.cwd(), options.out ?? path.join(projectDir, ".agent-workflow", "evaluations"));
     await fs.mkdir(outDir, { recursive: true });
     const stamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
@@ -2964,6 +2969,26 @@ async function loadProjectSchedules(projectDir: string): Promise<ScheduleEntry[]
   } catch {
     return [];
   }
+}
+
+async function loadPrivateEvaluationScoring(
+  projectDir: string,
+  profilePath: string
+): Promise<{ profile: EvaluationScoringProfile; checksum: string }> {
+  const privateRoot = path.resolve(projectDir, ".agent-workflow", "evaluations");
+  const resolved = path.resolve(projectDir, profilePath);
+  if (resolved !== privateRoot && !resolved.startsWith(`${privateRoot}${path.sep}`)) {
+    throw new Error("Private scoring profiles must be stored under <project>/.agent-workflow/evaluations");
+  }
+  const [realPrivateRoot, realResolved] = await Promise.all([fs.realpath(privateRoot), fs.realpath(resolved)]);
+  if (realResolved !== realPrivateRoot && !realResolved.startsWith(`${realPrivateRoot}${path.sep}`)) {
+    throw new Error("Private scoring profile symlinks must remain under <project>/.agent-workflow/evaluations");
+  }
+  const raw = await fs.readFile(realResolved, "utf8");
+  return {
+    profile: evaluationScoringProfileSchema.parse(YAML.parse(raw)),
+    checksum: createHash("sha256").update(raw).digest("hex").slice(0, 16)
+  };
 }
 
 async function readScheduleState(statePath: string): Promise<Record<string, { lastRunAt: string; lastRunId: string; lastStatus: string }>> {
