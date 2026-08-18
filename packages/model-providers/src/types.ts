@@ -15,6 +15,7 @@ export interface StageExecutionInput {
   stageGoal: string;
   compiledBrief: string;
   modelTier?: ModelTier;
+  providerOverride?: string | null;
   priorReceipts: Array<{
     agentId: string;
     actionType: string;

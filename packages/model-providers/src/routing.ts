@@ -17,10 +17,10 @@ type ProviderReadiness = {
 
 const readinessCache = new Map<string, Promise<ProviderReadiness>>();
 
-export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTier" | "agentId" | "stageId" | "workflowId" | "compiledBrief">): Promise<ModelRouteDecision> {
+export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief">): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
   const preference = inferPreferenceTuning(input.compiledBrief);
-  const defaultProvider = process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
+  const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
   const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
   const modelTier = mode === "adaptive" && preference.promoteFastStages && requestedModelTier === "fast" ? "standard" : requestedModelTier;
   const explicitTierProvider = process.env[`AGENTFLOW_PROVIDER_${modelTier.toUpperCase()}`];

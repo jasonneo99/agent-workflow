@@ -10,14 +10,15 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 4. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
 5. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
 6. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
-7. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-8. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-9. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-10. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-11. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-12. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-13. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-14. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+7. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
+8. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+9. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+10. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+11. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+12. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+13. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+14. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+15. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
@@ -45,6 +46,7 @@ npm run agentflow -- run-and-watch production-readiness \
   --index-max-files 100 \
   --worker-limit 6
 npm run agentflow -- quality-report --run <run-id>
+npm run agentflow -- evaluate --suite evaluations/synthetic-provider-comparison.yaml --project . --dry-run
 npm run agentflow -- feedback --run <run-id> --rating accepted --note "Good production-readiness scope"
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project

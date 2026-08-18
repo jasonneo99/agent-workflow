@@ -37,6 +37,17 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
       allowed_commands: [],
       allowed_write_paths: []
     }
+  },
+  evaluation: {
+    policies: {
+      allow_wide_open: true,
+      require_approval_for_external_actions: true,
+      require_receipts: true
+    },
+    actions: {
+      allowed_commands: [],
+      allowed_write_paths: []
+    }
   }
 };
 

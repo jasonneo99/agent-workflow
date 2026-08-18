@@ -146,6 +146,7 @@ npm run worker:daemon          # Continuously process queued tasks locally
 npm run status                 # List recent runs
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
+npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
 npm run agentflow -- feedback -r <id> --rating accepted  # Teach future runs from outcomes
 npm run agentflow -- preference-scorecard -p . # See agent/provider/tier performance
 npm run agentflow -- tuning-proposals -p . # Generate reviewable tuning suggestions
@@ -157,6 +158,9 @@ npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-loc
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```
+
+The dashboard includes an **Evaluations** view for comparing provider, model
+tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
 
 Execution policy profiles (`local`, `staging`, and `production`) control
 autonomy, commands, and write access without creating separate workflow
@@ -180,6 +184,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [Agent Roster](docs/agent-roster.md): available agents
 - [Architecture](docs/architecture.md): runtime and storage design
 - [Roadmap](docs/roadmap.md): shared-platform direction and next implementation phases
+- [Evaluation Harness](docs/evaluations.md): provider, tier, and prompt comparison suites
 - [Open Source Boundary](docs/open-source-boundary.md): what belongs in the framework versus private product agent engines
 - [Comparison, Gap, And Synergy](docs/comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private
 - [Autonomy Policy](docs/autonomy.md): automation levels and guardrails

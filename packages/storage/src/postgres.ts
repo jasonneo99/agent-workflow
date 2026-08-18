@@ -75,7 +75,10 @@ export async function migrateStorage(): Promise<void> {
       ALTER TABLE workflow_runs
       ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
       ADD COLUMN IF NOT EXISTS policy_snapshot jsonb NOT NULL DEFAULT '{}',
-      ADD COLUMN IF NOT EXISTS policy_snapshot_hash text NOT NULL DEFAULT ''
+      ADD COLUMN IF NOT EXISTS policy_snapshot_hash text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS model_tier_override text,
+      ADD COLUMN IF NOT EXISTS provider_override text,
+      ADD COLUMN IF NOT EXISTS evaluation_metadata jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -384,6 +387,111 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
   });
 }
 
+export async function dismissFailedWorkflowRun(input: {
+  runId: string;
+  actor: string;
+  reason: string;
+}): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const runResult = await client.query<{ id: string }>(
+        `update workflow_runs wr
+         set status = 'dismissed',
+             finished_at = coalesce(finished_at, now())
+         where wr.id = $1
+           and (
+             wr.status = 'failed'
+             or exists (
+               select 1 from workflow_tasks wt
+               where wt.run_id = wr.id and wt.status = 'failed'
+             )
+           )
+         returning wr.id::text`,
+        [input.runId]
+      );
+      if (!runResult.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query(
+        `update workflow_tasks
+         set status = 'dismissed',
+             finished_at = coalesce(finished_at, now())
+         where run_id = $1 and status in ('queued', 'running', 'failed')`,
+        [input.runId]
+      );
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, 'workflow-orchestrator', 'failed_run_dismissed', $1::text, $2, $3)`,
+        [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false })]
+      );
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function dismissAllFailedWorkflowRuns(input: {
+  projectRootUri?: string;
+  actor: string;
+  reason: string;
+}): Promise<number> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const runs = await client.query<{ id: string }>(
+        `select wr.id::text
+         from workflow_runs wr
+         join projects p on p.id = wr.project_id
+         where (
+           wr.status = 'failed'
+           or exists (
+             select 1 from workflow_tasks wt
+             where wt.run_id = wr.id and wt.status = 'failed'
+           )
+         )
+           and ($1::text is null or p.root_uri = $1)
+         for update of wr`,
+        [input.projectRootUri ?? null]
+      );
+      const runIds = runs.rows.map((row) => row.id);
+      if (!runIds.length) {
+        await client.query("rollback");
+        return 0;
+      }
+      await client.query(
+        `update workflow_tasks
+         set status = 'dismissed',
+             finished_at = coalesce(finished_at, now())
+         where run_id = any($1::uuid[]) and status in ('queued', 'running', 'failed')`,
+        [runIds]
+      );
+      await client.query(
+        `update workflow_runs
+         set status = 'dismissed',
+             finished_at = coalesce(finished_at, now())
+         where id = any($1::uuid[])`,
+        [runIds]
+      );
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         select id, 'workflow-orchestrator', 'failed_run_dismissed', id::text, $2, $3
+         from workflow_runs where id = any($1::uuid[])`,
+        [runIds, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: true, projectRootUri: input.projectRootUri ?? null })]
+      );
+      await client.query("commit");
+      return runIds.length;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 export interface ProjectStorageSummary {
   id: string;
   name: string;
@@ -502,6 +610,9 @@ export interface CreateRunInput {
   policyProfile: string;
   policySnapshot: unknown;
   policySnapshotHash: string;
+  modelTierOverride?: "fast" | "standard" | "reasoning";
+  providerOverride?: string;
+  evaluationMetadata?: Record<string, unknown>;
   compiledBrief?: string;
 }
 
@@ -530,9 +641,10 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const runResult = await client.query<{ id: string }>(
         `insert into workflow_runs (
            project_id, workflow_id, status, task, autonomy,
-           policy_profile, policy_snapshot, policy_snapshot_hash, compiled_brief_uri
+           policy_profile, policy_snapshot, policy_snapshot_hash,
+           model_tier_override, provider_override, evaluation_metadata, compiled_brief_uri
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11)
          returning id`,
         [
           projectId,
@@ -542,6 +654,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           input.policyProfile,
           JSON.stringify(input.policySnapshot),
           input.policySnapshotHash,
+          input.modelTierOverride ?? null,
+          input.providerOverride ?? null,
+          JSON.stringify(input.evaluationMetadata ?? {}),
           null
         ]
       );
@@ -607,6 +722,7 @@ export interface ClaimedWorkflowTask {
   agentName: string;
   agentPrompt: string;
   modelTier: string | null;
+  providerOverride: string | null;
   compiledBrief: string;
   priorReceipts: Array<{
     agentId: string;
@@ -670,7 +786,8 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            wt.agent_id as "agentId",
            a.display_name as "agentName",
            a.definition->>'prompt' as "agentPrompt",
-           a.definition->>'model_tier' as "modelTier"`
+           wr.provider_override as "providerOverride",
+           coalesce(wr.model_tier_override, a.definition->>'model_tier') as "modelTier"`
       );
 
       if (!result.rows[0]) {
@@ -864,6 +981,9 @@ export interface WorkflowRunStatus {
   autonomy: string;
   policyProfile: string;
   policySnapshotHash: string;
+  modelTierOverride: string | null;
+  providerOverride: string | null;
+  evaluationMetadata: Record<string, unknown>;
   projectName: string;
   projectRootUri: string;
   startedAt: string;
@@ -910,6 +1030,9 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",
+         wr.model_tier_override as "modelTierOverride",
+         wr.provider_override as "providerOverride",
+         wr.evaluation_metadata as "evaluationMetadata",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -938,6 +1061,9 @@ export async function listWorkflowRunsForProject(input: {
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",
+         wr.model_tier_override as "modelTierOverride",
+         wr.provider_override as "providerOverride",
+         wr.evaluation_metadata as "evaluationMetadata",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -968,6 +1094,9 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",
+         wr.model_tier_override as "modelTierOverride",
+         wr.provider_override as "providerOverride",
+         wr.evaluation_metadata as "evaluationMetadata",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",

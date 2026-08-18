@@ -20,6 +20,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
+import { buildEvaluationReport, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation } from "../../../packages/evaluation/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
@@ -27,6 +28,8 @@ import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
   cancelWorkflowRun,
   createWorkflowRun,
+  dismissAllFailedWorkflowRuns,
+  dismissFailedWorkflowRun,
   getArtifactByUri,
   getLatestMemory,
   getWorkflowRunDetails,
@@ -1283,6 +1286,120 @@ program
   });
 
 program
+  .command("evaluate")
+  .description("Run a synthetic or project-local evaluation suite across provider, tier, and prompt variants")
+  .requiredOption("-s, --suite <file>", "evaluation suite YAML file")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--dry-run", "validate and print the evaluation matrix without running it")
+  .option("--skip-index", "skip project indexing before evaluation")
+  .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
+  .option("--timeout-ms <number>", "maximum time to wait for each run", "900000")
+  .option("-o, --out <dir>", "report directory; defaults to <project>/.agent-workflow/evaluations")
+  .action(async (options: {
+    suite: string;
+    project: string;
+    dryRun?: boolean;
+    skipIndex?: boolean;
+    indexMaxFiles: string;
+    workerLimit: string;
+    timeoutMs: string;
+    out?: string;
+  }) => {
+    const suitePath = path.resolve(process.cwd(), options.suite);
+    const suite = evaluationSuiteSchema.parse(YAML.parse(await fs.readFile(suitePath, "utf8")));
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const matrix = suite.cases.flatMap((testCase) => suite.variants.map((variant) => ({ testCase, variant })));
+
+    console.log(`Evaluation ${suite.id}: ${matrix.length} run(s), workflow ${suite.workflow}`);
+    for (const item of matrix) {
+      console.log(`- ${item.testCase.id} / ${item.variant.id}: ${item.variant.provider} ${item.variant.model_tier}`);
+    }
+    if (options.dryRun) {
+      return;
+    }
+
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    if (!options.skipIndex) {
+      const indexed = await indexProjectForRun({
+        projectDir,
+        maxFiles: parsePositiveInteger(options.indexMaxFiles, 100),
+        refine: false,
+        forceRefine: false
+      });
+      console.log(`Indexed ${indexed.count} files for ${indexed.projectName}.`);
+    }
+
+    const observations: EvaluationObservation[] = [];
+    for (const item of matrix) {
+      const task = item.variant.prompt_suffix
+        ? `${item.testCase.task}\n\nEvaluation prompt variant instructions:\n${item.variant.prompt_suffix}`
+        : item.testCase.task;
+      const queued = await queueWorkflow({
+        workflowId: suite.workflow,
+        projectPath: projectDir,
+        task,
+        policyProfile: "evaluation",
+        modelTierOverride: item.variant.model_tier,
+        providerOverride: item.variant.provider,
+        evaluationMetadata: {
+          suiteId: suite.id,
+          suiteName: suite.name,
+          caseId: item.testCase.id,
+          variantId: item.variant.id,
+          promptSuffix: item.variant.prompt_suffix
+        }
+      });
+      if (!queued.ok) {
+        throw new Error(`Could not queue ${item.testCase.id}/${item.variant.id}: ${queued.error}`);
+      }
+      console.log(`Running ${item.testCase.id}/${item.variant.id}: ${queued.run.runId}`);
+      await watchWorkflowRun({
+        runId: queued.run.runId,
+        workerLimit: parsePositiveInteger(options.workerLimit, 6),
+        intervalMs: 1000,
+        timeoutMs: parsePositiveInteger(options.timeoutMs, 900000)
+      });
+      const report = await loadCostQualityReport(queued.run.runId);
+      if (!report) {
+        throw new Error(`Evaluation run disappeared: ${queued.run.runId}`);
+      }
+      observations.push({
+        caseId: item.testCase.id,
+        variantId: item.variant.id,
+        runId: queued.run.runId,
+        report
+      });
+    }
+
+    const report = buildEvaluationReport(suite, observations);
+    const outDir = path.resolve(process.cwd(), options.out ?? path.join(projectDir, ".agent-workflow", "evaluations"));
+    await fs.mkdir(outDir, { recursive: true });
+    const stamp = new Date().toISOString().replaceAll(":", "-").replace(/\.\d{3}Z$/, "Z");
+    const jsonPath = path.join(outDir, `${suite.id}-${stamp}.json`);
+    const markdownPath = path.join(outDir, `${suite.id}-${stamp}.md`);
+    await fs.writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+    await fs.writeFile(markdownPath, `${formatEvaluationReport(report)}\n`, "utf8");
+    console.log("");
+    console.log(formatEvaluationReport(report));
+    console.log("");
+    console.log(`JSON: ${jsonPath}`);
+    console.log(`Markdown: ${markdownPath}`);
+    if (report.rows.some((row) => !row.passed)) {
+      process.exitCode = 2;
+    }
+  });
+
+program
   .command("quality-report")
   .description("Show adaptive routing, cost mix, latency, fallback, and quality scoring for a workflow run")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -1898,6 +2015,47 @@ type DashboardUsageSummary = {
 type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
 type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
+type DashboardEvaluationRun = {
+  runId: string;
+  suiteId: string;
+  suiteName: string;
+  caseId: string;
+  variantId: string;
+  workflowId: string;
+  provider: string;
+  modelTier: string;
+  status: string;
+  averageQuality: number | null;
+  totalLatencyMs: number;
+  fallbackCount: number;
+  estimatedCostMix: Record<string, number>;
+  feedback: string | null;
+  startedAt: string;
+};
+
+type DashboardEvaluationVariant = {
+  id: string;
+  provider: string;
+  modelTier: string;
+  runs: number;
+  completed: number;
+  averageQuality: number | null;
+  averageLatencyMs: number | null;
+  fallbackRate: number;
+  estimatedCostMix: Record<string, number>;
+  feedbackCounts: Record<string, number>;
+};
+
+type DashboardEvaluationSuite = {
+  id: string;
+  name: string;
+  workflowId: string;
+  runs: DashboardEvaluationRun[];
+  variants: DashboardEvaluationVariant[];
+  leader: string | null;
+  latestAt: string;
+};
+
 type DashboardHomeHealth = {
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
@@ -1988,6 +2146,101 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
     receipts: details.receipts,
     artifacts
   });
+}
+
+async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluationSuite[]> {
+  const runs = (await listWorkflowRuns(limit)).filter((run) =>
+    typeof run.evaluationMetadata?.suiteId === "string"
+  );
+  const evaluated: DashboardEvaluationRun[] = [];
+  for (const run of runs) {
+    const metadata = run.evaluationMetadata ?? {};
+    const report = await loadCostQualityReport(run.id);
+    if (!report) {
+      continue;
+    }
+    const suiteId = stringValue(metadata.suiteId);
+    const caseId = stringValue(metadata.caseId);
+    const variantId = stringValue(metadata.variantId);
+    if (!suiteId || !caseId || !variantId) {
+      continue;
+    }
+    evaluated.push({
+      runId: run.id,
+      suiteId,
+      suiteName: stringValue(metadata.suiteName) ?? suiteId,
+      caseId,
+      variantId,
+      workflowId: run.workflowId,
+      provider: run.providerOverride ?? Object.keys(report.providerMix)[0] ?? "unknown",
+      modelTier: run.modelTierOverride ?? Object.keys(report.modelTierMix)[0] ?? "unknown",
+      status: run.status,
+      averageQuality: report.averageQuality,
+      totalLatencyMs: report.totalLatencyMs,
+      fallbackCount: report.fallbackCount,
+      estimatedCostMix: report.estimatedCostMix,
+      feedback: report.feedback.latest?.rating ?? null,
+      startedAt: run.startedAt
+    });
+  }
+
+  const suites = new Map<string, DashboardEvaluationRun[]>();
+  for (const run of evaluated) {
+    const selected = suites.get(run.suiteId) ?? [];
+    selected.push(run);
+    suites.set(run.suiteId, selected);
+  }
+  return [...suites.entries()].map(([id, suiteRuns]): DashboardEvaluationSuite => {
+    const variantIds = [...new Set(suiteRuns.map((run) => run.variantId))];
+    const variants = variantIds.map((variantId): DashboardEvaluationVariant => {
+      const selected = suiteRuns.filter((run) => run.variantId === variantId);
+      const scored = selected.filter((run) => run.averageQuality !== null);
+      return {
+        id: variantId,
+        provider: selected[0]?.provider ?? "unknown",
+        modelTier: selected[0]?.modelTier ?? "unknown",
+        runs: selected.length,
+        completed: selected.filter((run) => run.status === "completed").length,
+        averageQuality: scored.length
+          ? Math.round(scored.reduce((sum, run) => sum + (run.averageQuality ?? 0), 0) / scored.length * 1000) / 1000
+          : null,
+        averageLatencyMs: selected.length
+          ? Math.round(selected.reduce((sum, run) => sum + run.totalLatencyMs, 0) / selected.length)
+          : null,
+        fallbackRate: Math.round(selected.reduce((sum, run) => sum + run.fallbackCount, 0) / Math.max(1, selected.length) * 1000) / 1000,
+        estimatedCostMix: mergeCounts(selected.map((run) => run.estimatedCostMix)),
+        feedbackCounts: countStrings(selected.flatMap((run) => run.feedback ? [run.feedback] : []))
+      };
+    }).sort((a, b) =>
+      b.completed / Math.max(1, b.runs) - a.completed / Math.max(1, a.runs) ||
+      (b.averageQuality ?? -1) - (a.averageQuality ?? -1) ||
+      a.fallbackRate - b.fallbackRate ||
+      (a.averageLatencyMs ?? Number.MAX_SAFE_INTEGER) - (b.averageLatencyMs ?? Number.MAX_SAFE_INTEGER)
+    );
+    return {
+      id,
+      name: suiteRuns[0]?.suiteName ?? id,
+      workflowId: suiteRuns[0]?.workflowId ?? "unknown",
+      runs: suiteRuns.sort((a, b) => b.startedAt.localeCompare(a.startedAt)),
+      variants,
+      leader: variants[0]?.id ?? null,
+      latestAt: suiteRuns.map((run) => run.startedAt).sort().at(-1) ?? ""
+    };
+  }).sort((a, b) => b.latestAt.localeCompare(a.latestAt));
+}
+
+function mergeCounts(items: Record<string, number>[]): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const item of items) {
+    for (const [key, value] of Object.entries(item)) {
+      result[key] = (result[key] ?? 0) + value;
+    }
+  }
+  return result;
+}
+
+function countStrings(items: string[]): Record<string, number> {
+  return mergeCounts(items.map((item) => ({ [item]: 1 })));
 }
 
 async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { includeMock: boolean }): Promise<DashboardUsageSummary> {
@@ -2695,7 +2948,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await processDashboardQueueAction({
       action: form.get("action") ?? "",
       runId: form.get("runId") ?? "",
-      workerLimit: form.get("workerLimit") ?? ""
+      workerLimit: form.get("workerLimit") ?? "",
+      project: form.get("project") ?? "",
+      reason: form.get("reason") ?? "",
+      confirmed: form.get("confirmed") === "on"
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -2777,6 +3033,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const runs = await listWorkflowRuns(50);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(runs, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/evaluations") {
+    const suites = await loadDashboardEvaluations();
+    const suiteId = requestUrl.searchParams.get("suite");
+    const payload = suiteId ? suites.find((suite) => suite.id === suiteId) ?? null : suites;
+    response.writeHead(payload ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(payload, null, 2));
     return;
   }
 
@@ -2932,6 +3197,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const queue = await listWorkflowQueue(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderQueueHtml(queue));
+    return;
+  }
+
+  if (requestUrl.pathname === "/evaluations") {
+    const suites = await loadDashboardEvaluations();
+    const requestedSuite = requestUrl.searchParams.get("suite");
+    const selected = requestedSuite
+      ? suites.find((suite) => suite.id === requestedSuite) ?? null
+      : suites[0] ?? null;
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderEvaluationsHtml(suites, selected));
     return;
   }
 
@@ -3182,6 +3458,11 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
         ${queueProcessForm()}
       </div>
     </section>
+    ${failed.length ? `<section class="panel warn-panel">
+      <h2>Clear Failed Queue Items</h2>
+      <p class="muted">Dismissal removes failed runs from this queue without deleting their history, artifacts, or receipts.</p>
+      ${queueDismissAllForm()}
+    </section>` : ""}
     <section class="panel">
       <h2>Runs Needing Attention</h2>
       <table>
@@ -3231,6 +3512,95 @@ function renderRunsHtml(runs: DashboardRunStatus[]): string {
         <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
       </table>
     </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: DashboardEvaluationSuite | null): string {
+  const suiteLinks = suites.map((suite) => `
+    <a class="suite-link ${selected?.id === suite.id ? "active" : ""}" href="/evaluations?suite=${encodeURIComponent(suite.id)}">
+      <strong>${escapeHtml(suite.name)}</strong>
+      <span>${escapeHtml(suite.workflowId)} · ${suite.runs.length} runs</span>
+      <small>${escapeHtml(suite.latestAt)}</small>
+    </a>
+  `).join("");
+  const variantRows = selected?.variants.map((variant) => `
+    <tr class="${selected.leader === variant.id ? "leader-row" : ""}">
+      <td><strong>${escapeHtml(variant.id)}</strong>${selected.leader === variant.id ? '<span class="flag good">leader</span>' : ""}</td>
+      <td>${escapeHtml(variant.provider)}</td>
+      <td>${escapeHtml(variant.modelTier)}</td>
+      <td>${variant.completed}/${variant.runs}</td>
+      <td>${variant.averageQuality ?? "n/a"}</td>
+      <td>${variant.averageLatencyMs === null ? "n/a" : formatDuration(variant.averageLatencyMs)}</td>
+      <td>${variant.fallbackRate}</td>
+      <td>${escapeHtml(formatInlineCounts(variant.estimatedCostMix))}</td>
+      <td>${escapeHtml(formatInlineCounts(variant.feedbackCounts))}</td>
+    </tr>
+  `).join("") ?? "";
+  const runRows = selected?.runs.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td>
+      <td>${escapeHtml(run.caseId)}</td>
+      <td>${escapeHtml(run.variantId)}</td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${run.averageQuality ?? "n/a"}</td>
+      <td>${formatDuration(run.totalLatencyMs)}</td>
+      <td>${run.fallbackCount}</td>
+      <td>${escapeHtml(run.feedback ?? "none")}</td>
+    </tr>
+  `).join("") ?? "";
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Evaluations</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("evaluations")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Evaluations</h1>
+        <p class="muted">Compare workflow quality, latency, fallback behavior, cost mix, and feedback across provider, tier, and prompt variants.</p>
+      </div>
+      <a class="button secondary" href="/api/evaluations${selected ? `?suite=${encodeURIComponent(selected.id)}` : ""}">JSON</a>
+    </div>
+    <div class="comparison-layout">
+      <aside class="suite-list" aria-label="Evaluation suites">
+        <h2>Suites</h2>
+        ${suiteLinks || '<p class="muted">No evaluation runs found.</p>'}
+      </aside>
+      <div>
+        ${selected ? `
+          <section class="panel">
+            <div class="section-heading">
+              <div><h2>${escapeHtml(selected.name)}</h2><span class="muted">${escapeHtml(selected.workflowId)} · latest ${escapeHtml(selected.latestAt)}</span></div>
+              <span class="flag good">Leader: ${escapeHtml(selected.leader ?? "none")}</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Variant</th><th>Provider</th><th>Tier</th><th>Completed</th><th>Quality</th><th>Latency</th><th>Fallbacks/run</th><th>Cost mix</th><th>Feedback</th></tr></thead>
+                <tbody>${variantRows}</tbody>
+              </table>
+            </div>
+          </section>
+          <section class="panel">
+            <h2>Run matrix</h2>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Run</th><th>Case</th><th>Variant</th><th>Status</th><th>Quality</th><th>Latency</th><th>Fallbacks</th><th>Feedback</th></tr></thead>
+                <tbody>${runRows}</tbody>
+              </table>
+            </div>
+          </section>
+        ` : '<section class="panel"><h2>No evaluation data</h2><p>Run <code>agentflow evaluate</code> to populate this comparison view.</p></section>'}
+      </div>
+    </div>
   </main>
 </body>
 </html>`;
@@ -4569,6 +4939,9 @@ async function processDashboardQueueAction(input: {
   action: string;
   runId: string;
   workerLimit: string;
+  project: string;
+  reason: string;
+  confirmed: boolean;
 }): Promise<DashboardFollowUpResult> {
   const action = input.action.trim();
   const runId = input.runId.trim();
@@ -4581,6 +4954,30 @@ async function processDashboardQueueAction(input: {
       title: "Worker batch processed",
       output: [
         `Worker claimed ${workerResult.claimed}, completed ${workerResult.completed}, failed ${workerResult.failed}.`,
+        "Open: /queue"
+      ].join("\n")
+    };
+  }
+
+  if (action === "dismiss-all-failed") {
+    if (!input.confirmed) {
+      return { ok: false, error: "Confirm bulk dismissal before clearing failed queue items." };
+    }
+    const project = input.project.trim();
+    const reason = input.reason.trim() || "Bulk-dismissed from the dashboard queue.";
+    const count = await dismissAllFailedWorkflowRuns({
+      projectRootUri: project || undefined,
+      actor: "dashboard",
+      reason
+    });
+    return {
+      ok: true,
+      title: "Failed runs dismissed",
+      output: [
+        `Dismissed failed runs: ${count}`,
+        project ? `Project filter: ${project}` : "Project filter: all projects",
+        `Reason: ${reason}`,
+        "History, artifacts, and receipts were preserved.",
         "Open: /queue"
       ].join("\n")
     };
@@ -4623,6 +5020,24 @@ async function processDashboardQueueAction(input: {
         `Open: /run?id=${encodeURIComponent(runId)}`
       ].join("\n")
     };
+  }
+
+  if (action === "dismiss-failed") {
+    const reason = input.reason.trim() || "Dismissed from the dashboard queue.";
+    const dismissed = await dismissFailedWorkflowRun({ runId, actor: "dashboard", reason });
+    return dismissed
+      ? {
+        ok: true,
+        title: "Failed run dismissed",
+        runId,
+        output: [
+          `Run: ${runId}`,
+          `Reason: ${reason}`,
+          "History, artifacts, and receipts were preserved.",
+          "Open: /queue"
+        ].join("\n")
+      }
+      : { ok: false, error: `Run has no failed queue items or does not exist: ${runId}` };
   }
 
   return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
@@ -5202,12 +5617,13 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
     ["projects", "/projects", "Projects"],
     ["runs", "/runs", "Runs"],
+    ["evaluations", "/evaluations", "Evaluations"],
     ["providers", "/providers", "Providers"],
     ["info", "/info", "Settings"]
   ] as const;
@@ -5299,6 +5715,13 @@ function dashboardCss(): string {
     input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .worker-form { display: inline-flex; }
+    .dismiss-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+    .dismiss-form input { min-width: 140px; max-width: 190px; }
+    .bulk-dismiss-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; align-items: end; }
+    .bulk-dismiss-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .bulk-dismiss-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .bulk-dismiss-form .check-row { display: flex; align-items: center; gap: 8px; min-height: 36px; text-transform: none; font-weight: 500; }
+    .bulk-dismiss-form .check-row input { width: auto; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
     .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
     .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
@@ -5308,6 +5731,8 @@ function dashboardCss(): string {
     .wide { grid-column: 1 / -1; }
     .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
+    .danger { border-color: #b91c1c; background: #b91c1c; color: white; }
+    .warn-panel { border-color: #fcd34d; background: #fffbeb; }
     .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
     .section-heading div { display: grid; gap: 4px; }
     .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
@@ -5328,6 +5753,13 @@ function dashboardCss(): string {
     .metric small, .muted { color: #64748b; }
     .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .meta-grid div { display: grid; gap: 5px; font-size: 14px; }
+    .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
+    .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
+    .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }
+    .suite-link:hover, .suite-link.active { border-color: #93c5fd; background: #eff6ff; }
+    .suite-link span, .suite-link small { color: #64748b; }
+    .leader-row { background: #f0fdf4; }
+    .table-wrap { width: 100%; overflow-x: auto; }
     .compact { margin-bottom: 12px; }
     .artifact { border: 1px solid #e2e7f0; margin-bottom: 8px; padding: 10px; }
     .artifact summary { cursor: pointer; }
@@ -5347,6 +5779,8 @@ function dashboardCss(): string {
       .side-nav strong { display: none; }
       .topbar, .section-heading { display: grid; }
       .attention-item { display: grid; }
+      .comparison-layout { grid-template-columns: 1fr; }
+      .suite-list { position: static; }
       table { display: block; overflow-x: auto; }
     }
   `;
@@ -5373,6 +5807,7 @@ function queueItemForms(item: DashboardQueueItem): string {
   }
   if (item.failedTasks > 0 || item.runStatus === "failed") {
     forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
+    forms.push(queueDismissRunForm(item.runId));
   }
   if (item.runStatus === "queued" || item.runStatus === "running") {
     forms.push(queueRunActionForm(item.runId, "cancel", "Cancel"));
@@ -5382,6 +5817,20 @@ function queueItemForms(item: DashboardQueueItem): string {
 
 function queueRunActionForm(runId: string, action: string, label: string): string {
   return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+}
+
+function queueDismissRunForm(runId: string): string {
+  return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="dismiss-failed"><input name="reason" aria-label="Dismissal reason" placeholder="Optional reason"><button class="danger" type="submit">Dismiss</button></form>`;
+}
+
+function queueDismissAllForm(): string {
+  return `<form class="bulk-dismiss-form" method="post" action="/api/queue-action">
+    <input type="hidden" name="action" value="dismiss-all-failed">
+    <label>Project path (optional)<input name="project" placeholder="All projects"></label>
+    <label>Reason<input name="reason" placeholder="Bulk-dismissed after review"></label>
+    <label class="check-row"><input type="checkbox" name="confirmed" required> I reviewed these failures and want to dismiss them.</label>
+    <button class="danger" type="submit">Dismiss Failed Runs</button>
+  </form>`;
 }
 
 function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {
@@ -6089,6 +6538,9 @@ async function queueWorkflow(input: {
   projectPath: string;
   task: string;
   policyProfile?: string;
+  modelTierOverride?: "fast" | "standard" | "reasoning";
+  providerOverride?: string;
+  evaluationMetadata?: Record<string, unknown>;
   workflowOverride?: Awaited<ReturnType<typeof loadWorkflows>>[number];
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
@@ -6161,6 +6613,9 @@ async function queueWorkflow(input: {
     policyProfile: resolvedPolicy.profile,
     policySnapshot: resolvedPolicy.snapshot,
     policySnapshotHash: resolvedPolicy.snapshotHash,
+    modelTierOverride: input.modelTierOverride,
+    providerOverride: input.providerOverride,
+    evaluationMetadata: input.evaluationMetadata,
     compiledBrief: brief
   });
 

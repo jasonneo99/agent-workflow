@@ -1,0 +1,27 @@
+version: 1
+id: synthetic-review-comparison
+name: Synthetic review provider comparison
+description: Safe baseline for comparing provider and model-tier behavior on a review workflow.
+workflow: review-pr
+cases:
+  - id: auth-boundary-review
+    task: Review the synthetic authentication boundary for correctness, missing tests, and security risks. Do not modify files or run commands.
+    expectations:
+      status: completed
+      minimum_average_quality: 0.7
+      maximum_fallbacks: 0
+  - id: data-migration-review
+    task: Review the synthetic migration plan for rollback safety, data integrity, observability, and verification gaps. Do not modify files or run commands.
+    expectations:
+      status: completed
+      minimum_average_quality: 0.7
+      maximum_fallbacks: 0
+variants:
+  - id: mock-fast-concise
+    provider: mock
+    model_tier: fast
+    prompt_suffix: Return concise findings ordered by severity with evidence and a recommended next action.
+  - id: mock-reasoning-structured
+    provider: mock
+    model_tier: reasoning
+    prompt_suffix: Separate confirmed findings, uncertainties, and verification steps. Rank risks by impact and likelihood.

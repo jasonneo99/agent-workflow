@@ -54,6 +54,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   policy_profile text NOT NULL DEFAULT 'local',
   policy_snapshot jsonb NOT NULL DEFAULT '{}',
   policy_snapshot_hash text NOT NULL DEFAULT '',
+  model_tier_override text,
+  provider_override text,
+  evaluation_metadata jsonb NOT NULL DEFAULT '{}',
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz

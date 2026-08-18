@@ -71,11 +71,11 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
 
 Goal: improve quality and cost while keeping personalization auditable and portable.
 
-- [ ] Evaluation harness for comparing providers, tiers, and prompts.
+- [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.
 
-- [ ] Dashboard run comparison view.
+- [x] Dashboard run comparison view.
   - Compare runs by workflow, stage, agent, provider, tier, quality, fallback, and feedback.
   - Highlight regressions and improvement candidates.
 
