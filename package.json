@@ -26,6 +26,7 @@
     "export-run": "tsx apps/cli/src/index.ts export-run",
     "index-project": "tsx apps/cli/src/index.ts index-project",
     "init-project": "tsx apps/cli/src/index.ts init-project",
+    "ide-onboard": "tsx apps/cli/src/index.ts ide-onboard",
     "migrate-storage": "tsx apps/cli/src/index.ts migrate-storage",
     "onboard-project": "tsx apps/cli/src/index.ts onboard-project",
     "validate": "tsx apps/cli/src/index.ts validate",

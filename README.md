@@ -36,6 +36,7 @@ npm run validate
 
 # Initialize tailored agent workflow files in your project
 npm run onboard-project -- --project /path/to/your/project --profile enterprise --write
+npm run ide-onboard -- --project /path/to/your/project --write --check
 
 # Run your first workflow (dry run)
 npm run agentflow -- orchestrate --project /path/to/your/project --task "Review code quality" --dry-run

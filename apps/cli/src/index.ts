@@ -23,6 +23,7 @@ import { compileContext } from "../../../packages/context-compiler/src/index.js"
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
+import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
@@ -487,6 +488,72 @@ program
     }
 
     printOnboardingResult(result, Boolean(options.write));
+  });
+
+program
+  .command("ide-onboard")
+  .description("Generate, install, and validate Agent Workflow MCP setup for VS Code, Cursor, and Codex")
+  .option("-p, --project <dir>", "target project directory", ".")
+  .option("--client <client>", "vscode, cursor, codex, or all", "all")
+  .option("--write", "merge MCP configuration into the target project")
+  .option("--check", "probe enterprise services and the configured model provider")
+  .option("--json", "print machine-readable output")
+  .action(async (options: { project: string; client: string; write?: boolean; check?: boolean; json?: boolean }) => {
+    const clients: IdeClient[] = options.client === "all"
+      ? ["vscode", "cursor", "codex"]
+      : [options.client as IdeClient];
+    if (clients.some((client) => !["vscode", "cursor", "codex"].includes(client))) {
+      throw new Error("--client must be vscode, cursor, codex, or all");
+    }
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const checks: Array<{ name: string; ready: boolean; detail: string }> = [];
+    checks.push({ name: "project", ready: await pathExists(projectDir), detail: projectDir });
+    checks.push({ name: "AGENTS.md", ready: await pathExists(path.join(projectDir, "AGENTS.md")), detail: "durable project guidance" });
+    checks.push({ name: "project config", ready: await pathExists(path.join(projectDir, ".agent-workflow", "project.yaml")), detail: ".agent-workflow/project.yaml" });
+    const [agents, workflows] = await Promise.all([loadAgents(rootDir), loadWorkflows(rootDir)]);
+    checks.push({ name: "definitions", ready: agents.length > 0 && workflows.length > 0, detail: `${agents.length} agents, ${workflows.length} workflows` });
+
+    if (options.check) {
+      for (const check of await checkServices()) checks.push({ name: check.endpoint.name, ready: check.reachable, detail: check.message });
+      const provider = providerFromEnv();
+      if (provider.check) {
+        const result = await provider.check();
+        checks.push({ name: `provider:${provider.id}`, ready: result.ready, detail: result.details.join("; ") });
+      } else {
+        checks.push({ name: `provider:${provider.id}`, ready: true, detail: "provider adapter loaded" });
+      }
+    }
+
+    const snippets = clients.map((client) => buildIdeConfigSnippet(client, rootDir));
+    const files: Array<{ client: IdeClient; path: string; status: "preview" | "written" | "unchanged" }> = [];
+    for (const snippet of snippets) {
+      const target = path.join(projectDir, snippet.relativePath);
+      let existing: string | undefined;
+      try { existing = await fs.readFile(target, "utf8"); } catch {}
+      const content = mergeIdeConfig(snippet.client, existing, snippet);
+      let status: "preview" | "written" | "unchanged" = "preview";
+      if (options.write) {
+        status = existing === content ? "unchanged" : "written";
+        if (status === "written") {
+          await fs.mkdir(path.dirname(target), { recursive: true });
+          await fs.writeFile(target, content, "utf8");
+        }
+      }
+      files.push({ client: snippet.client, path: target, status });
+    }
+    const result = { projectDir, agentWorkflowRoot: rootDir, ready: checks.every((check) => check.ready), checks, files, snippets };
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`IDE onboarding: ${projectDir}`);
+      for (const check of checks) console.log(`${check.ready ? "OK" : "MISSING"}: ${check.name} - ${check.detail}`);
+      for (const file of files) console.log(`${file.status.toUpperCase()}: ${file.client} - ${file.path}`);
+      if (!options.write) {
+        for (const snippet of snippets) console.log(`\n# ${snippet.client}: ${snippet.relativePath}\n${snippet.content.trimEnd()}`);
+        console.log("\nPreview only. Re-run with --write to merge workspace MCP configuration.");
+      }
+      console.log("Restart or reload the selected IDE after writing MCP configuration.");
+    }
+    if (!result.ready) process.exitCode = 1;
   });
 
 program
@@ -2968,6 +3035,15 @@ async function loadProjectSchedules(projectDir: string): Promise<ScheduleEntry[]
     return Array.isArray(parsed) ? parsed : parsed.schedules ?? [];
   } catch {
     return [];
+  }
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
   }
 }
 

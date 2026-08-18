@@ -15,6 +15,28 @@ npm run setup
 npm run provider-check
 ```
 
+## Generate And Validate Workspace Setup
+
+Preview ready-to-use snippets for all supported IDEs:
+
+```bash
+npm run ide-onboard -- --project /path/to/project
+```
+
+Safely merge them into `.vscode/mcp.json`, `.cursor/mcp.json`, and the trusted project's `.codex/config.toml`:
+
+```bash
+npm run ide-onboard -- --project /path/to/project --write
+```
+
+Existing unrelated JSON servers and settings are preserved. An existing Codex `agent-workflow` table is left unchanged. Add `--client vscode`, `--client cursor`, or `--client codex` to configure one surface. Add `--check` to probe enterprise storage and the configured provider in addition to checking project context and reusable definitions.
+
+```bash
+npm run ide-onboard -- --project /path/to/project --client codex --check
+```
+
+Codex CLI, its IDE extension, and the desktop app share MCP configuration on the same host. Project-scoped `.codex/config.toml` is loaded only for trusted projects, so reload the IDE and trust the workspace after installation.
+
 For BYO model usage, `.env` only needs a reachable OpenAI-compatible endpoint:
 
 ```env

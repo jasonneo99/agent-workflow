@@ -25,6 +25,21 @@ export class OpenAIProvider implements ModelProvider {
     this.model = process.env.OPENAI_MODEL ?? "gpt-5.5";
   }
 
+  async check(): Promise<{ ready: boolean; details: string[] }> {
+    try {
+      const models = await this.client.models.list();
+      const available = models.data.some((model) => model.id === this.model);
+      return {
+        ready: available,
+        details: available
+          ? [`OpenAI API reachable`, `Model available: ${this.model}`]
+          : [`OpenAI API reachable`, `Configured model was not listed: ${this.model}`]
+      };
+    } catch (error) {
+      return { ready: false, details: [`OpenAI provider check failed: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+  }
+
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
     const model = this.resolveModelForTier(input.modelTier);
     const response = await this.client.responses.create({

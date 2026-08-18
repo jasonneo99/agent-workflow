@@ -91,7 +91,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 
 Goal: make Agent Workflow easy to install, operate, and govern across projects.
 
-- [ ] First-class IDE onboarding for VS Code, Cursor, and Codex.
+- [x] First-class IDE onboarding for VS Code, Cursor, and Codex.
   - Generate MCP config snippets.
   - Validate local server/provider readiness.
   - Explain model-provider ownership clearly.
