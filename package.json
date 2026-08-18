@@ -21,6 +21,7 @@
     "templates/",
     "scripts/provider-smoke.sh",
     "agent-workflow.bundle.json",
+    "agent-workflow.bundle.sig.json",
     ".env.example",
     "README.md",
     "LICENSE"

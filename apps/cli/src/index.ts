@@ -24,6 +24,7 @@ import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteS
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
+import { bundleTrustStorePath, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -64,6 +65,14 @@ const configuredEnvPath = agentWorkflowEnvPath(rootDir);
 dotenv.config({ path: configuredEnvPath, quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
+
+program.hook("preAction", async (_command, actionCommand) => {
+  if (["validate", "bundle-manifest", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
+  const verification = await verifyBundle(rootDir, policy);
+  if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
+  if (policy === "warn" && verification.status !== "trusted") console.error(`WARNING: bundle ${verification.status}: ${verification.reasons.join(" ")}`);
+});
 
 type WorkerHeartbeat = {
   pid: number;
@@ -304,6 +313,73 @@ program
       console.log(`Wrote ${path.relative(rootDir, outputPath)}`);
     } else {
       console.log(formatBundleManifest(manifest));
+    }
+  });
+
+program
+  .command("bundle-verify")
+  .description("Verify bundle integrity, signature, compatibility, and signer trust")
+  .option("--policy <policy>", "allow, warn, or require", process.env.AGENTFLOW_BUNDLE_TRUST_POLICY ?? "allow")
+  .option("--json", "print machine-readable verification")
+  .action(async (options: { policy: string; json?: boolean }) => {
+    if (!["allow", "warn", "require"].includes(options.policy)) throw new Error("--policy must be allow, warn, or require");
+    const result = await verifyBundle(rootDir, options.policy as BundleTrustPolicy);
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else {
+      console.log(`Bundle ${result.bundleId}@${result.bundleVersion}: ${result.status}`);
+      console.log(`Policy: ${result.policy} (${result.allowed ? "allowed" : "rejected"})`);
+      console.log(`Signer: ${result.signerId ?? "none"}`);
+      console.log(`Fingerprint: ${result.keyFingerprint ?? "none"}`);
+      for (const reason of result.reasons) console.log(`- ${reason}`);
+    }
+    if (!result.allowed) process.exitCode = 2;
+  });
+
+program
+  .command("bundle-sign")
+  .description("Create a detached Ed25519 signature using an external private key")
+  .requiredOption("--private-key <file>", "PEM Ed25519 private key file")
+  .requiredOption("--signer <id>", "signer identity")
+  .option("--expires-at <timestamp>", "optional ISO-8601 expiration")
+  .option("--out <file>", "signature output", path.join(rootDir, "agent-workflow.bundle.sig.json"))
+  .action(async (options: { privateKey: string; signer: string; expiresAt?: string; out: string }) => {
+    if (options.expiresAt && !Number.isFinite(Date.parse(options.expiresAt))) throw new Error("--expires-at must be an ISO-8601 timestamp");
+    const manifest = await loadCommittedBundleManifest(rootDir);
+    if (!manifest) throw new Error("Bundle manifest is missing.");
+    const current = await buildBundleManifest(rootDir);
+    const drift = compareBundleManifests(manifest, current);
+    if (drift.length) throw new Error(`Refusing to sign a modified bundle: ${drift.join("; ")}`);
+    const signature = signBundleManifest({ manifest, privateKey: await fs.readFile(path.resolve(options.privateKey), "utf8"), signerId: options.signer, expiresAt: options.expiresAt });
+    const output = path.resolve(options.out);
+    await fs.writeFile(output, `${JSON.stringify(signature, null, 2)}\n`, { encoding: "utf8", mode: 0o644 });
+    console.log(`Wrote ${output}`);
+    console.log(`Signer fingerprint: ${signature.signer.keyFingerprint}`);
+  });
+
+program
+  .command("bundle-trust")
+  .description("List, add, or remove trusted bundle signer public keys")
+  .option("--public-key <file>", "PEM public key to trust")
+  .option("--signer <id>", "signer identity for the trusted key")
+  .option("--remove <fingerprint>", "remove a trusted fingerprint")
+  .option("--json", "print trust store JSON")
+  .action(async (options: { publicKey?: string; signer?: string; remove?: string; json?: boolean }) => {
+    const store = await readBundleTrustStore();
+    if (options.publicKey) {
+      if (!options.signer) throw new Error("--signer is required with --public-key");
+      const publicKey = await fs.readFile(path.resolve(options.publicKey), "utf8");
+      const fingerprint = publicKeyFingerprint(publicKey);
+      store.keys = [...store.keys.filter((key) => key.fingerprint !== fingerprint), { fingerprint, signerId: options.signer, publicKey, trustedAt: new Date().toISOString() }];
+      await writeBundleTrustStore(store);
+    }
+    if (options.remove) {
+      store.keys = store.keys.filter((key) => key.fingerprint !== options.remove);
+      await writeBundleTrustStore(store);
+    }
+    if (options.json) console.log(JSON.stringify(store, null, 2));
+    else {
+      console.log(`Bundle trust store: ${bundleTrustStorePath()}`);
+      console.log(store.keys.length ? store.keys.map((key) => `- ${key.signerId}: ${key.fingerprint}`).join("\n") : "- No trusted signer keys.");
     }
   });
 
@@ -3322,6 +3398,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/bundles") {
+    const verification = await verifyBundle(rootDir, normalizePolicy(requestUrl.searchParams.get("policy") ?? process.env.AGENTFLOW_BUNDLE_TRUST_POLICY));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(verification, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/info") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -3478,6 +3561,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderGovernanceHtml(filterGovernanceReport(report, requestUrl.searchParams), requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/bundles") {
+    const verification = await verifyBundle(rootDir, normalizePolicy(requestUrl.searchParams.get("policy") ?? process.env.AGENTFLOW_BUNDLE_TRUST_POLICY));
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderBundleTrustHtml(verification));
     return;
   }
 
@@ -3929,6 +4019,18 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
   <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
   <form method="get" class="form-grid"><label>Health<select name="health"><option value="all">all</option>${["healthy", "warning", "critical"].map((value) => `<option${params.get("health") === value ? " selected" : ""}>${value}</option>`).join("")}</select></label><label>Provider<select name="provider"><option value="">all</option>${providers.map((value) => `<option${params.get("provider") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>Policy profile<select name="policyProfile"><option value="">all</option>${profiles.map((value) => `<option${params.get("policyProfile") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Filter</button></div></form></section>
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderBundleTrustHtml(verification: BundleVerification): string {
+  const statusClass = verification.status === "trusted" ? "good" : verification.allowed ? "warn" : "bad";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Bundle Trust</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("bundles")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Trust</h1><p class="muted">Origin, integrity, compatibility, and signer trust. A signature never expands project execution permissions.</p></div><a class="button secondary" href="/api/bundles">JSON</a></div>
+  <section class="panel"><div class="section-heading"><div><h2>${escapeHtml(verification.bundleId)} ${escapeHtml(verification.bundleVersion)}</h2><span class="muted">Manifest ${escapeHtml(verification.manifestChecksum)}</span></div><span class="flag ${statusClass}">${escapeHtml(verification.status)}</span></div>
+  <div class="meta-grid"><div><strong>Policy</strong>${escapeHtml(verification.policy)}</div><div><strong>Decision</strong>${verification.allowed ? "allowed" : "rejected"}</div><div><strong>Signer</strong>${escapeHtml(verification.signerId ?? "none")}</div><div><strong>Trusted</strong>${verification.trusted}</div></div>
+  <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${escapeHtml(verification.signedAt ?? "not signed")}<br><strong>Expires:</strong> ${escapeHtml(verification.expiresAt ?? "none")}</p>
+  <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
+  <section class="panel"><h2>Trust policy</h2><p>Set <code>AGENTFLOW_BUNDLE_TRUST_POLICY</code> to <code>allow</code>, <code>warn</code>, or <code>require</code>. Use the CLI to add public signer keys; private signing keys are never stored by Agent Workflow.</p></section></main></body></html>`;
 }
 
 function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
@@ -5942,7 +6044,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "governance" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "governance" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -5950,6 +6052,7 @@ function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "eva
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
     ["governance", "/governance", "Governance"],
+    ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
     ["info", "/info", "Settings"]
   ] as const;

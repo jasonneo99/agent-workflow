@@ -12,6 +12,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 - **Multi-project governance** — read-only health, provider, policy-drift, queue, and remediation reporting
+- **Trusted workflow bundles** — detached Ed25519 signatures, public-key trust policy, and tamper detection
 
 ## Quick Start
 

@@ -104,7 +104,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Inspect registered projects, storage health, provider settings, and policy drift.
   - Support enterprise teams that operate many repositories.
 
-- [ ] Signed or trusted workflow bundles.
+- [x] Signed or trusted workflow bundles.
   - Prepare for sharing agent/workflow packs without silently accepting untrusted behavior.
 
 ## Contribution Boundary

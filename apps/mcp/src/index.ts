@@ -91,6 +91,19 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_bundle_verify",
+  {
+    title: "AgentFlow bundle trust verification",
+    description: "Read-only verification of workflow bundle integrity, compatibility, signature, and signer trust.",
+    inputSchema: {
+      policy: z.enum(["allow", "warn", "require"]).optional(),
+      json: z.boolean().optional()
+    }
+  },
+  async ({ policy, json }) => toolResult(await runAgentflow(["bundle-verify", "--policy", policy ?? "allow", ...(json ? ["--json"] : [])], { timeoutMs: 60_000 }))
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",
