@@ -27,6 +27,7 @@
     "agents/",
     "workflows/",
     "templates/",
+    "docs/",
     "scripts/provider-smoke.sh",
     "agent-workflow.bundle.json",
     "agent-workflow.bundle.sig.json",

@@ -13,6 +13,8 @@ agentflow ide-onboard --project /path/to/project --write --check
 
 The package installs `agentflow` for CLI/dashboard/worker commands, `agentflow-mcp` for stdio MCP clients, and `agentflow-setup` for interactive provider setup.
 
+The package also includes the documentation site content under `docs/`, including dashboard screenshots used by the README and user guide.
+
 Installed-package setup writes provider configuration to `~/.config/agent-workflow/.env`. Clone-based development continues using the repository `.env`. Set `AGENTFLOW_ENV_FILE` or add `.agent-workflow/.env` in the current project to select another configuration explicitly.
 
 ## Verify a release package

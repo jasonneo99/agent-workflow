@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   model_tier_override text,
   provider_override text,
   evaluation_metadata jsonb NOT NULL DEFAULT '{}',
+  workflow_snapshot jsonb NOT NULL DEFAULT '{}',
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz

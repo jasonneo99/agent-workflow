@@ -107,6 +107,71 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
 - [x] Signed or trusted workflow bundles.
   - Prepare for sharing agent/workflow packs without silently accepting untrusted behavior.
 
+## Phase 4: Reliable Workflow Operations
+
+Goal: make long-running, partially automated workflows recoverable, observable,
+and safe under real development conditions.
+
+Priority order: checkpointed resume and replay, human action approvals, and CI
+evaluation gates should land first because they close the largest operational
+trust gaps.
+
+- [ ] Checkpointed resume and deterministic replay.
+  - In progress: dashboard and CLI controls can resume unfinished stages from the last completed checkpoint.
+  - In progress: new runs persist workflow snapshots, and replay can queue a fresh run from stored task, provider settings, policy snapshot, workflow snapshot, and compiled context.
+  - In progress: resume and replay warn when project config, execution policy, bundle checksum, workflow definition, or selected source file hashes differ from queued run evidence.
+  - Make retried actions idempotent and preserve their receipts.
+
+- [ ] Human approval inbox for agent-requested actions.
+  - Centralize pending command, file-write, deployment, and autonomy approvals.
+  - Show each proposed action, rationale, policy decision, and expected impact.
+  - Support approve once, reject, or create a narrowly scoped reusable rule.
+  - Preserve an immutable approval audit trail.
+
+- [ ] Evaluation gates and regression budgets.
+  - Define project-local quality, latency, fallback, and cost thresholds.
+  - Compare candidate bundles, prompts, and routing changes against a pinned baseline.
+  - Return machine-readable pass or fail results for CI.
+  - Block bundle promotion when a protected metric regresses.
+
+- [ ] OpenTelemetry-compatible observability.
+  - Emit traces and metrics across compilation, retrieval, queueing, provider calls, actions, and storage.
+  - Correlate workflow runs with provider requests and action receipts.
+  - Report queue delay, stage latency, retries, token use, cost, and failures.
+  - Keep prompt and artifact payload export disabled by default.
+
+- [ ] Incremental and event-driven context indexing.
+  - Refresh only files changed since the last indexed commit.
+  - Support filesystem-watch and CI-triggered indexing.
+  - Explain why each retrieved source was included in a compiled brief.
+  - Detect stale summaries, renamed files, and deleted sources.
+
+- [ ] Workflow authoring and compatibility tooling.
+  - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.
+  - Provide a dry-run graph showing stages, dependencies, permissions, and context budgets.
+  - Add bundle compatibility checks and definition migrations.
+  - Add contract tests for custom agents, workflows, and provider adapters.
+
+## Phase 5: Governed Distribution
+
+Goal: support controlled sharing and operation across teams after the reliability
+foundation is complete.
+
+- [ ] Trusted bundle registry.
+  - Support bundle discovery, installation, version pinning, upgrade previews, and rollback.
+
+- [ ] Distributed worker pools.
+  - Support bounded concurrency, project isolation, worker health, and safe task leasing.
+
+- [ ] Team roles and separation of duties.
+  - Distinguish operators, approvers, workflow authors, and auditors.
+
+- [ ] Artifact lifecycle governance.
+  - Add configurable retention, archival, deletion receipts, and legal-hold-aware controls.
+
+- [ ] Backup, restore, and disaster-recovery validation.
+  - Provide documented recovery procedures and automated restore verification.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

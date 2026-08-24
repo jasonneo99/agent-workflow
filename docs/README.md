@@ -69,6 +69,16 @@ Use `--scrub` when exporting reports for docs, issues, or public sharing.
 See [Scrubbed Examples](examples/README.md) for safe sample Markdown and JSON exports.
 The root `agent-workflow.bundle.json` records reusable agent/workflow bundle version, source, compatibility, file checksums, and migration notes.
 
+## Dashboard Preview
+
+The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, and run evidence.
+
+![Agent Workflow dashboard](assets/screenshots/dashboard-home.png)
+
+![Queue control panel](assets/screenshots/dashboard-queue.png)
+
+![Run detail page](assets/screenshots/dashboard-run-detail.png)
+
 ## BYO Model Config
 
 For local models, hosted gateways, enterprise routers, LiteLLM, vLLM, LM Studio, Ollama, or any OpenAI-compatible chat-completions endpoint:

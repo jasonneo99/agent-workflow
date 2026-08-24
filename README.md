@@ -160,6 +160,8 @@ npm run worker:daemon          # Continuously process queued tasks locally
 
 # Inspection
 npm run status                 # List recent runs
+npm run agentflow -- resume-run --run <id> # Resume unfinished stages from the last completed checkpoint
+npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored run metadata
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
 npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
@@ -177,6 +179,8 @@ npm run agentflow -- dashboard # Start local web dashboard
 
 The dashboard includes an **Evaluations** view for comparing provider, model
 tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
+
+![Agent Workflow dashboard](docs/assets/screenshots/dashboard-home.png)
 
 Execution policy profiles (`local`, `staging`, and `production`) control
 autonomy, commands, and write access without creating separate workflow

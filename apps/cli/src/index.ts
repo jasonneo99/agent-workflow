@@ -17,7 +17,7 @@ import {
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
 import { buildBundleManifest, compareBundleManifests, formatBundleManifest, loadCommittedBundleManifest, writeBundleManifest } from "../../../packages/agent-registry/src/manifest.js";
-import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig } from "../../../packages/agent-registry/src/schemas.js";
+import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -47,6 +47,8 @@ import {
   migrateStorage,
   recordRunAction,
   requeueRunningWorkflowTasks,
+  replayWorkflowRun,
+  resumeWorkflowRunFromCheckpoint,
   resetStorage,
   retryFailedWorkflowRun,
   seedRegistry,
@@ -1342,6 +1344,79 @@ program
     for (const run of runs) {
       console.log(`${run.id} ${run.status} ${run.workflowId} - ${run.task}`);
     }
+  });
+
+program
+  .command("resume-run")
+  .description("Resume an interrupted run from the last completed checkpoint")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .option("--include-failed", "also requeue failed stages after preserving completed checkpoints")
+  .option("--reason <text>", "receipt reason", "Checkpoint resume requested from CLI.")
+  .action(async (options: { run: string; includeFailed?: boolean; reason: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const staleReport = await assessRunStaleInputs(options.run);
+    const result = await resumeWorkflowRunFromCheckpoint({
+      runId: options.run,
+      actor: "cli",
+      reason: options.reason,
+      includeFailed: options.includeFailed === true
+    });
+    if (result.totalTasks === 0) {
+      console.error(`Run cannot be resumed or does not exist: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Run: ${options.run}`);
+    console.log(`Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`);
+    console.log(`Requeued unfinished stages: ${result.requeuedTasks}`);
+    console.log(formatStaleInputWarnings(staleReport).join("\n"));
+    console.log("Process queued stages with:");
+    console.log("npm run worker -- --limit 6");
+  });
+
+program
+  .command("replay-run")
+  .description("Create a new queued run from an existing run's stored task, policy, provider, and compiled context")
+  .requiredOption("-r, --run <id>", "source workflow run id")
+  .option("--reason <text>", "receipt reason", "Deterministic replay requested from CLI.")
+  .action(async (options: { run: string; reason: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const staleReport = await assessRunStaleInputs(options.run);
+    const result = await replayWorkflowRun({
+      sourceRunId: options.run,
+      actor: "cli",
+      reason: options.reason
+    });
+    if (!result) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Replayed source run ${options.run}`);
+    console.log(`Queued workflow run ${result.runId}`);
+    console.log(`Project ${result.projectId}`);
+    console.log(`Queued ${result.tasks} stage tasks`);
+    console.log(formatStaleInputWarnings(staleReport).join("\n"));
+    console.log("Process queued stages with:");
+    console.log("npm run worker -- --limit 6");
   });
 
 program
@@ -3661,7 +3736,7 @@ function renderDashboardHtml(
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.projectName)}</td>
       <td>${escapeHtml(run.task)}</td>
-      <td>${escapeHtml(run.startedAt)}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
     </tr>
   `).join("");
   const workflowOptions = workflows
@@ -3782,7 +3857,7 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
         <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
         <td>${escapeHtml(item.task)}</td>
         <td>${escapeHtml(taskSummary)}<br><span class="muted">current: ${escapeHtml(currentStage)}</span></td>
-        <td>${escapeHtml(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</td>
+        <td>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</td>
         <td><div class="actions">${queueItemForms(item)}</div></td>
       </tr>
     `;
@@ -3845,8 +3920,8 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
           return;
         }
         status.textContent = event.data.active > 0
-          ? "Watching " + event.data.active + " active run" + (event.data.active === 1 ? "" : "s") + " · updated " + new Date(event.data.checkedAt).toLocaleTimeString()
-          : "Queue watcher idle · checked " + new Date(event.data.checkedAt).toLocaleTimeString();
+          ? "Watching " + event.data.active + " active run" + (event.data.active === 1 ? "" : "s") + " · updated " + new Date(event.data.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
+          : "Queue watcher idle · checked " + new Date(event.data.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
         if (event.data.changed) window.location.reload();
       };
       watcher.postMessage({ type: "start", signature: ${JSON.stringify(queueSnapshotSignature(queue))} });
@@ -3865,7 +3940,7 @@ function renderRunsHtml(runs: DashboardRunStatus[]): string {
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
       <td>${escapeHtml(run.task)}</td>
-      <td>${escapeHtml(run.startedAt)}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
     </tr>
   `).join("");
 
@@ -3904,7 +3979,7 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
     <a class="suite-link ${selected?.id === suite.id ? "active" : ""}" href="/evaluations?suite=${encodeURIComponent(suite.id)}">
       <strong>${escapeHtml(suite.name)}</strong>
       <span>${escapeHtml(suite.workflowId)} · ${suite.runs.length} runs</span>
-      <small>${escapeHtml(suite.latestAt)}</small>
+      <small>${renderDashboardDateTime(suite.latestAt)}</small>
     </a>
   `).join("");
   const variantRows = selected?.variants.map((variant) => `
@@ -3961,7 +4036,7 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
         ${selected ? `
           <section class="panel">
             <div class="section-heading">
-              <div><h2>${escapeHtml(selected.name)}</h2><span class="muted">${escapeHtml(selected.workflowId)} · latest ${escapeHtml(selected.latestAt)}</span></div>
+              <div><h2>${escapeHtml(selected.name)}</h2><span class="muted">${escapeHtml(selected.workflowId)} · latest ${renderDashboardDateTime(selected.latestAt)}</span></div>
               <span class="flag good">Leader: ${escapeHtml(selected.leader ?? "none")}</span>
             </div>
             <div class="table-wrap">
@@ -4028,7 +4103,7 @@ function renderBundleTrustHtml(verification: BundleVerification): string {
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Trust</h1><p class="muted">Origin, integrity, compatibility, and signer trust. A signature never expands project execution permissions.</p></div><a class="button secondary" href="/api/bundles">JSON</a></div>
   <section class="panel"><div class="section-heading"><div><h2>${escapeHtml(verification.bundleId)} ${escapeHtml(verification.bundleVersion)}</h2><span class="muted">Manifest ${escapeHtml(verification.manifestChecksum)}</span></div><span class="flag ${statusClass}">${escapeHtml(verification.status)}</span></div>
   <div class="meta-grid"><div><strong>Policy</strong>${escapeHtml(verification.policy)}</div><div><strong>Decision</strong>${verification.allowed ? "allowed" : "rejected"}</div><div><strong>Signer</strong>${escapeHtml(verification.signerId ?? "none")}</div><div><strong>Trusted</strong>${verification.trusted}</div></div>
-  <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${escapeHtml(verification.signedAt ?? "not signed")}<br><strong>Expires:</strong> ${escapeHtml(verification.expiresAt ?? "none")}</p>
+  <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${renderDashboardDateTime(verification.signedAt, "not signed")}<br><strong>Expires:</strong> ${renderDashboardDateTime(verification.expiresAt, "none")}</p>
   <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
   <section class="panel"><h2>Trust policy</h2><p>Set <code>AGENTFLOW_BUNDLE_TRUST_POLICY</code> to <code>allow</code>, <code>warn</code>, or <code>require</code>. Use the CLI to add public signer keys; private signing keys are never stored by Agent Workflow.</p></section></main></body></html>`;
 }
@@ -4042,7 +4117,7 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
       <td>${formatNumber(project.memoryItems)}</td>
       <td>${formatNumber(project.runCount)}<br><span class="muted">${project.completedRuns} ok / ${project.failedRuns} failed / ${project.queuedRuns + project.runningRuns} active</span></td>
       <td>${project.lastRunId ? `<a href="/run?id=${encodeURIComponent(project.lastRunId)}">${escapeHtml(project.lastRunId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(project.lastWorkflowId ?? "unknown")} ${escapeHtml(project.lastRunStatus ?? "")}</span>` : "none"}</td>
-      <td>${escapeHtml(project.lastIndexedAt ?? "not indexed")}</td>
+      <td>${renderDashboardDateTime(project.lastIndexedAt, "not indexed")}</td>
     </tr>
   `).join("");
 
@@ -4090,21 +4165,21 @@ function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.task)}</td>
-      <td>${escapeHtml(run.startedAt)}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
     </tr>
   `).join("");
   const fileRows = detail.files.map((file) => `
     <tr>
       <td>${escapeHtml(file.sourceUri)}</td>
       <td>${formatNumber(file.tokenEstimate)}</td>
-      <td>${escapeHtml(file.updatedAt)}</td>
+      <td>${renderDashboardDateTime(file.updatedAt)}</td>
       <td>${escapeHtml(file.summary)}</td>
     </tr>
   `).join("");
   const memoryRows = detail.memory.map((item) => `
     <tr>
       <td>${escapeHtml(item.sourceUri)}</td>
-      <td>${escapeHtml(item.updatedAt)}</td>
+      <td>${renderDashboardDateTime(item.updatedAt)}</td>
       <td>${escapeHtml(item.summary)}</td>
     </tr>
   `).join("");
@@ -4137,7 +4212,7 @@ function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
         <div><strong>Indexed Tokens</strong>${formatNumber(project.indexedTokens)}</div>
         <div><strong>Memory Items</strong>${formatNumber(project.memoryItems)}</div>
         <div><strong>Runs</strong>${formatNumber(project.runCount)}</div>
-        <div><strong>Last Indexed</strong>${escapeHtml(project.lastIndexedAt ?? "not indexed")}</div>
+        <div><strong>Last Indexed</strong>${renderDashboardDateTime(project.lastIndexedAt, "not indexed")}</div>
       </div>
     </section>
     <section class="panel">
@@ -4229,7 +4304,7 @@ function renderRunDetailHtml(input: {
         <div><strong>Status</strong><span class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span></div>
         <div><strong>Workflow</strong>${escapeHtml(input.run.workflowId)}</div>
         <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
-        <div><strong>Started</strong>${escapeHtml(input.run.startedAt)}</div>
+        <div><strong>Started</strong>${renderDashboardDateTime(input.run.startedAt)}</div>
         <div><strong>Tasks</strong>${completedTasks}/${input.tasks.length} completed</div>
         <div><strong>Failed</strong>${failedTasks}</div>
         <div><strong>Active</strong>${activeTasks}</div>
@@ -4239,6 +4314,8 @@ function renderRunDetailHtml(input: {
       <div class="actions">
         ${workerActionForm(input.run.id, "batch", "Process Next Batch")}
         ${workerActionForm(input.run.id, "watch", "Run Until Complete")}
+        ${queueRunActionForm(input.run.id, "resume-checkpoint", "Resume Checkpoint")}
+        ${queueRunActionForm(input.run.id, "replay-run", "Replay Run")}
         ${runActionForm(input.run.id, "summarize", "Summarize Run")}
         ${runActionForm(input.run.id, "debug-failure", "Debug Failure")}
         ${runActionForm(input.run.id, "mira-ux-pass", "Ask Mira")}
@@ -5449,6 +5526,53 @@ async function processDashboardQueueAction(input: {
     };
   }
 
+  if (action === "resume-checkpoint") {
+    const staleReport = await assessRunStaleInputs(runId);
+    const result = await resumeWorkflowRunFromCheckpoint({
+      runId,
+      actor: "dashboard",
+      reason: "Checkpoint resume requested from dashboard.",
+      includeFailed: true
+    });
+    return result.totalTasks > 0
+      ? {
+        ok: true,
+        title: "Run resumed from checkpoint",
+        runId,
+        output: [
+          `Run: ${runId}`,
+          `Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`,
+          `Requeued unfinished stages: ${result.requeuedTasks}`,
+          ...formatStaleInputWarnings(staleReport),
+          `Open: /run?id=${encodeURIComponent(runId)}`
+        ].join("\n")
+      }
+      : { ok: false, error: `Run cannot be resumed or does not exist: ${runId}` };
+  }
+
+  if (action === "replay-run") {
+    const staleReport = await assessRunStaleInputs(runId);
+    const replayed = await replayWorkflowRun({
+      sourceRunId: runId,
+      actor: "dashboard",
+      reason: "Replay requested from dashboard."
+    });
+    return replayed
+      ? {
+        ok: true,
+        title: "Run replay queued",
+        runId: replayed.runId,
+        output: [
+          `Source run: ${runId}`,
+          `Replay run: ${replayed.runId}`,
+          `Queued stages: ${replayed.tasks}`,
+          ...formatStaleInputWarnings(staleReport),
+          `Open: /run?id=${encodeURIComponent(replayed.runId)}`
+        ].join("\n")
+      }
+      : { ok: false, error: `Unknown workflow run: ${runId}` };
+  }
+
   if (action === "dismiss-failed") {
     const reason = input.reason.trim() || "Dismissed from the dashboard queue.";
     const dismissed = await dismissFailedWorkflowRun({ runId, actor: "dashboard", reason });
@@ -5836,7 +5960,7 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
       <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
       <div><strong>PID</strong>${worker.pid ?? "none"}</div>
       <div><strong>Process</strong>${worker.processAlive ? "alive" : "not running"}</div>
-      <div><strong>Last Heartbeat</strong>${escapeHtml(worker.lastHeartbeatAt ?? "none")}</div>
+      <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(worker.lastHeartbeatAt, "none")}</div>
       <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
       <div><strong>Tick Count</strong>${formatNumber(worker.ticks)}</div>
       <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
@@ -5857,7 +5981,7 @@ function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): stri
       <div><strong>Status</strong><span class="status ${supervisor.status === "running" ? "completed" : supervisor.status === "missing" ? "queued" : "failed"}">${escapeHtml(supervisor.status)}</span></div>
       <div><strong>PID</strong>${supervisor.pid ?? "none"}</div>
       <div><strong>Process</strong>${supervisor.processAlive ? "alive" : "not running"}</div>
-      <div><strong>Last Heartbeat</strong>${escapeHtml(supervisor.lastHeartbeatAt ?? "none")}</div>
+      <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(supervisor.lastHeartbeatAt, "none")}</div>
       <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
       <div><strong>Tick Count</strong>${formatNumber(supervisor.ticks)}</div>
       <div><strong>Dashboard</strong>${supervisor.dashboardManaged ? "managed" : "external or stopped"}</div>
@@ -6089,6 +6213,25 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(value));
 }
 
+function renderDashboardDateTime(value: string | null | undefined, fallback = "n/a"): string {
+  if (!value) {
+    return escapeHtml(fallback);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return escapeHtml(value);
+  }
+  const label = new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short"
+  }).format(parsed);
+  return `<time datetime="${escapeHtml(parsed.toISOString())}" title="${escapeHtml(value)}">${escapeHtml(label)}</time>`;
+}
+
 function formatDuration(ms: number): string {
   if (ms < 1000) {
     return `${ms}ms`;
@@ -6233,6 +6376,9 @@ function queueItemForms(item: DashboardQueueItem): string {
   ];
   if (item.runningTasks > 0) {
     forms.push(queueRunActionForm(item.runId, "requeue-running", "Requeue Running"));
+  }
+  if (item.queuedTasks > 0 || item.runningTasks > 0 || item.failedTasks > 0 || item.runStatus === "failed") {
+    forms.push(queueRunActionForm(item.runId, "resume-checkpoint", "Resume Checkpoint"));
   }
   if (item.failedTasks > 0 || item.runStatus === "failed") {
     forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
@@ -6962,6 +7108,210 @@ function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[n
   };
 }
 
+type SourceSummaryWithHash = {
+  sourceUri: string;
+  tokenEstimate: number;
+  summary: string;
+  contentHash?: string;
+  score?: number;
+  matchedTerms?: string[];
+};
+
+type RunInputSnapshot = {
+  schemaVersion: 1;
+  capturedAt: string;
+  bundle: {
+    version: string;
+    checksum: string;
+  } | null;
+  projectConfigHash: string;
+  policySnapshotHash: string;
+  workflowHash: string;
+  selectedSources: Array<{
+    sourceUri: string;
+    contentHash: string | null;
+  }>;
+};
+
+type RunStaleInputReport = {
+  available: boolean;
+  warnings: string[];
+  snapshot: RunInputSnapshot | null;
+};
+
+async function buildRunInputSnapshot(input: {
+  projectConfig: ProjectConfig;
+  policySnapshotHash: string;
+  workflow: WorkflowDefinition;
+  sourceSummaries: SourceSummaryWithHash[];
+}): Promise<RunInputSnapshot> {
+  const manifest = await buildBundleManifest(rootDir).catch(() => null);
+  return {
+    schemaVersion: 1,
+    capturedAt: new Date().toISOString(),
+    bundle: manifest
+      ? {
+        version: manifest.bundle.version,
+        checksum: manifest.checksum.value
+      }
+      : null,
+    projectConfigHash: stableHash(input.projectConfig),
+    policySnapshotHash: input.policySnapshotHash,
+    workflowHash: stableHash(input.workflow),
+    selectedSources: input.sourceSummaries.map((summary) => ({
+      sourceUri: summary.sourceUri,
+      contentHash: summary.contentHash ?? null
+    }))
+  };
+}
+
+async function assessRunStaleInputs(runId: string): Promise<RunStaleInputReport> {
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) {
+    return {
+      available: false,
+      warnings: [`Unknown workflow run: ${runId}`],
+      snapshot: null
+    };
+  }
+  const artifacts = await listArtifacts({ runId, kind: "compiled_brief" });
+  const snapshot = readRunInputSnapshot(artifacts.at(-1)?.content);
+  if (!snapshot) {
+    return {
+      available: false,
+      warnings: ["This run was created before run-input snapshots were recorded; stale input detection is limited."],
+      snapshot: null
+    };
+  }
+
+  const warnings: string[] = [];
+  try {
+    const currentConfig = await loadProjectConfig(details.run.projectRootUri);
+    const currentConfigHash = stableHash(currentConfig);
+    if (currentConfigHash !== snapshot.projectConfigHash) {
+      warnings.push("Project config changed since the run was queued.");
+    }
+    try {
+      const currentPolicy = resolveExecutionPolicy(currentConfig, details.run.policyProfile);
+      if (currentPolicy.snapshotHash !== snapshot.policySnapshotHash) {
+        warnings.push(`Execution policy profile '${details.run.policyProfile}' changed since the run was queued.`);
+      }
+    } catch (error) {
+      warnings.push(`Execution policy profile '${details.run.policyProfile}' can no longer be resolved: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  } catch (error) {
+    warnings.push(`Project config could not be loaded for stale-checking: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  const currentBundle = await buildBundleManifest(rootDir).catch(() => null);
+  if (!snapshot.bundle) {
+    warnings.push("Original bundle checksum was not recorded for this run.");
+  } else if (!currentBundle) {
+    warnings.push("Current bundle checksum could not be computed.");
+  } else {
+    if (currentBundle.bundle.version !== snapshot.bundle.version) {
+      warnings.push(`Bundle version changed from ${snapshot.bundle.version} to ${currentBundle.bundle.version}.`);
+    }
+    if (currentBundle.checksum.value !== snapshot.bundle.checksum) {
+      warnings.push("Agent/workflow bundle checksum changed since the run was queued.");
+    }
+  }
+
+  const workflows = await loadWorkflows(rootDir).catch(() => []);
+  const currentWorkflow = resolveWorkflow(workflows, details.run!.workflowId);
+  if (!currentWorkflow) {
+    warnings.push(`Current workflow definition is unavailable: ${details.run.workflowId}.`);
+  } else if (stableHash(currentWorkflow) !== snapshot.workflowHash) {
+    warnings.push(`Workflow definition '${details.run.workflowId}' changed since the run was queued; replay will use the stored workflow snapshot when available.`);
+  }
+
+  for (const source of snapshot.selectedSources) {
+    if (!source.contentHash) {
+      warnings.push(`Selected source '${source.sourceUri}' did not record a content hash.`);
+      continue;
+    }
+    if (source.contentHash === "skipped-large-file") {
+      continue;
+    }
+    const absolutePath = path.join(details.run.projectRootUri, source.sourceUri);
+    try {
+      const currentHash = createHash("sha256").update(await fs.readFile(absolutePath)).digest("hex");
+      if (currentHash !== source.contentHash) {
+        warnings.push(`Selected source changed: ${source.sourceUri}.`);
+      }
+    } catch {
+      warnings.push(`Selected source is missing or unreadable: ${source.sourceUri}.`);
+    }
+  }
+
+  return {
+    available: true,
+    warnings,
+    snapshot
+  };
+}
+
+function readRunInputSnapshot(content: Record<string, unknown> | undefined): RunInputSnapshot | null {
+  const metadata = objectValue(content?.metadata);
+  const snapshot = objectValue(metadata?.runInputSnapshot);
+  if (!snapshot || snapshot.schemaVersion !== 1) {
+    return null;
+  }
+  const bundle = objectValue(snapshot.bundle);
+  return {
+    schemaVersion: 1,
+    capturedAt: stringValue(snapshot.capturedAt) ?? "",
+    bundle: bundle
+      ? {
+        version: stringValue(bundle.version) ?? "unknown",
+        checksum: stringValue(bundle.checksum) ?? ""
+      }
+      : null,
+    projectConfigHash: stringValue(snapshot.projectConfigHash) ?? "",
+    policySnapshotHash: stringValue(snapshot.policySnapshotHash) ?? "",
+    workflowHash: stringValue(snapshot.workflowHash) ?? "",
+    selectedSources: Array.isArray(snapshot.selectedSources)
+      ? snapshot.selectedSources.map((item) => {
+        const source = objectValue(item) ?? {};
+        return {
+          sourceUri: stringValue(source.sourceUri) ?? "",
+          contentHash: stringValue(source.contentHash) ?? null
+        };
+      }).filter((item) => item.sourceUri)
+      : []
+  };
+}
+
+function formatStaleInputWarnings(report: RunStaleInputReport): string[] {
+  if (!report.available) {
+    return report.warnings.map((warning) => `Stale-check limited: ${warning}`);
+  }
+  if (!report.warnings.length) {
+    return ["Stale-check: no changed project inputs detected."];
+  }
+  return [
+    "Stale-check warnings:",
+    ...report.warnings.map((warning) => `- ${warning}`)
+  ];
+}
+
+function stableHash(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableStringify).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    return `{${Object.entries(value as Record<string, unknown>)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, item]) => `${JSON.stringify(key)}:${stableStringify(item)}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
 async function queueWorkflow(input: {
   workflowId: string;
   projectPath: string;
@@ -7013,22 +7363,29 @@ async function queueWorkflow(input: {
   }
 
   const selectedAgentList = [...selectedAgents.values()];
+  const sourceSummaries = await loadSourceSummaries({
+    projectDir,
+    project,
+    workflow,
+    agents: selectedAgentList,
+    task: input.task,
+    sourceTokenBudget: input.sourceTokenBudget,
+    sourceMaxFiles: input.sourceMaxFiles
+  });
   const brief = await compileContext({
     task: input.task,
     projectDir,
     project,
     workflow,
     agents: selectedAgentList,
-    sourceSummaries: await loadSourceSummaries({
-      projectDir,
-      project,
-      workflow,
-      agents: selectedAgentList,
-      task: input.task,
-      sourceTokenBudget: input.sourceTokenBudget,
-      sourceMaxFiles: input.sourceMaxFiles
-    }),
+    sourceSummaries,
     preferenceNotes: await loadPreferenceNotes(projectDir)
+  });
+  const runInputSnapshot = await buildRunInputSnapshot({
+    projectConfig: configuredProject,
+    policySnapshotHash: resolvedPolicy.snapshotHash,
+    workflow,
+    sourceSummaries
   });
 
   const run = await createWorkflowRun({
@@ -7045,7 +7402,10 @@ async function queueWorkflow(input: {
     modelTierOverride: input.modelTierOverride,
     providerOverride: input.providerOverride,
     evaluationMetadata: input.evaluationMetadata,
-    compiledBrief: brief
+    compiledBrief: brief,
+    compiledBriefMetadata: {
+      runInputSnapshot
+    }
   });
 
   return {
@@ -7893,7 +8253,7 @@ async function loadSourceSummaries(input: {
   task: string;
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
-}): Promise<Array<{ sourceUri: string; tokenEstimate: number; summary: string }>> {
+}): Promise<SourceSummaryWithHash[]> {
   try {
     const summaries = await listProjectFileSummaries({
       projectRootUri: input.projectDir,

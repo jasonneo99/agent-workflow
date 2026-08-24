@@ -453,13 +453,19 @@ Run detail pages:
 
 The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
+![Dashboard home](assets/screenshots/dashboard-home.png)
+
 The Settings page shows safe local runtime details: selected provider summary, enterprise service reachability, supervisor heartbeat, worker heartbeat, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
+
+![Dashboard settings](assets/screenshots/dashboard-settings.png)
 
 The dashboard home page and Settings page include Local Supervisor and Background Worker status. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 
 The Providers page gives model/provider controls their own workspace. Use it to inspect the selected provider, update selectable model names, and tune provider routing by tier. It renders from local config first so the dashboard stays fast; run `npm run provider-check` when you want full live provider validation.
+
+![Providers and model routing](assets/screenshots/dashboard-providers.png)
 
 If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. It also shows an available-provider status table with safe details for each provider: whether required config exists, whether an API key or auth path is configured, the selected model, base URL, AWS profile/region, and readiness details. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
 
@@ -476,6 +482,9 @@ The detail page shows:
 - artifact JSON viewers
 - fixed follow-up buttons
 - worker controls for processing the next batch or running until complete with a bounded timeout
+- checkpoint controls for resuming unfinished stages or replaying a run from stored run metadata
+
+![Run detail page](assets/screenshots/dashboard-run-detail.png)
 
 The dashboard home page includes a Usage & Performance panel across recent runs. It summarizes run status, routed model stages, provider/cost/tier mix, average latency, estimated compact prompt tokens, and estimated tokens saved by loading compiled briefs instead of the full indexed project context. These token values are planning estimates, not provider billing records.
 
@@ -483,13 +492,25 @@ Mock provider runs are excluded from Usage & Performance cost metrics by default
 
 The Projects page lists known projects from local enterprise storage. It shows each project's indexed files, indexed token estimate, memory count, run counts, latest run, and last index time. Open a project to inspect context files, recent runs, indexed summaries, memory, and project-scoped quick actions such as Index Project, UX Pass, Review, Production Readiness, and Maintain Context.
 
-The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages when no daemon is running, Requeue Running to unlock stages left running after an interrupted worker, Retry Failed to requeue failed stages, and Cancel to stop queued or running work. Use Dismiss after reviewing a failure that should leave the active queue; this changes the run and all unfinished tasks to `dismissed` while preserving history, artifacts, and an audit receipt. Bulk dismissal requires explicit confirmation and can be filtered to one project path.
+![Projects page](assets/screenshots/dashboard-projects.png)
+
+The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages when no daemon is running, Requeue Running to unlock stages left running after an interrupted worker, Resume Checkpoint to preserve completed stages while requeueing unfinished or failed stages, Retry Failed to requeue only failed stages, and Cancel to stop queued or running work. Use Dismiss after reviewing a failure that should leave the active queue; this changes the run and all unfinished tasks to `dismissed` while preserving history, artifacts, and an audit receipt. Bulk dismissal requires explicit confirmation and can be filtered to one project path.
+
+![Queue control panel](assets/screenshots/dashboard-queue.png)
 
 While the Queue page is open, a browser Web Worker watches `/api/queue` and refreshes the view only when task progress changes. It polls active queues every two seconds and backs off to ten seconds when idle. This watcher is read-only; the managed server-side worker remains responsible for claiming and executing tasks.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
 
-Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, or Run Until Complete for a bounded watch pass.
+Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, Run Until Complete for a bounded watch pass, Resume Checkpoint to continue from the last completed stage, or Replay Run to create a fresh queued run from the source run's stored task, policy, provider overrides, workflow snapshot, and compiled context. Resume and replay actions run a stale-input check first. The check warns when project config, execution policy, bundle checksum, workflow definition, or selected source files differ from the evidence captured when the run was queued. Legacy runs created before input snapshots show a limited-check warning instead of pretending the inputs are known.
+
+CLI equivalents:
+
+```bash
+npm run agentflow -- resume-run --run <id>
+npm run agentflow -- resume-run --run <id> --include-failed
+npm run agentflow -- replay-run --run <id>
+```
 
 If an agent asks for a command or file write outside the project policy, Agent Workflow records an action rejection receipt and artifact. The blocked action is not executed. Rejected optional actions do not fail the stage by themselves; allowed commands that run and exit nonzero still fail the stage.
 
@@ -716,7 +737,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next best improvement is production, staging, and local policy profiles. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvements focus on reliable workflow operations: checkpointed resume and replay, human action approvals, and CI evaluation gates. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

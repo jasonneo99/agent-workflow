@@ -78,7 +78,8 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS policy_snapshot_hash text NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS model_tier_override text,
       ADD COLUMN IF NOT EXISTS provider_override text,
-      ADD COLUMN IF NOT EXISTS evaluation_metadata jsonb NOT NULL DEFAULT '{}'
+      ADD COLUMN IF NOT EXISTS evaluation_metadata jsonb NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS workflow_snapshot jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -306,7 +307,7 @@ export async function cancelWorkflowRun(runId: string): Promise<boolean> {
         `update workflow_tasks
          set status = 'cancelled',
              finished_at = now()
-         where run_id = $1
+         where run_id = $1::uuid
            and status in ('queued', 'running')`,
         [runId]
       );
@@ -329,7 +330,7 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
              started_at = null,
              finished_at = null,
              available_at = now()
-         where run_id = $1
+         where run_id = $1::uuid
            and status = 'running'
          returning id::text`,
         [runId]
@@ -380,6 +381,92 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
       }
       await client.query("commit");
       return result.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function resumeWorkflowRunFromCheckpoint(input: {
+  runId: string;
+  actor: string;
+  reason: string;
+  includeFailed?: boolean;
+}): Promise<{
+  requeuedTasks: number;
+  completedTasks: number;
+  totalTasks: number;
+}> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const run = await client.query<{ id: string }>(
+        `select id::text
+         from workflow_runs
+         where id = $1::uuid
+           and status in ('queued', 'running', 'failed')
+         for update`,
+        [input.runId]
+      );
+      if (!run.rows[0]) {
+        await client.query("rollback");
+        return { requeuedTasks: 0, completedTasks: 0, totalTasks: 0 };
+      }
+
+      const resumableStatuses = input.includeFailed
+        ? ["queued", "running", "failed"]
+        : ["queued", "running"];
+      const result = await client.query<{ id: string }>(
+        `update workflow_tasks
+         set status = 'queued',
+             started_at = null,
+             finished_at = null,
+             available_at = now()
+         where run_id = $1::uuid
+           and status = any($2::text[])
+         returning id::text`,
+        [input.runId, resumableStatuses]
+      );
+      const counts = await client.query<{ total: number; completed: number }>(
+        `select
+           count(*)::int as total,
+           count(*) filter (where status = 'completed')::int as completed
+         from workflow_tasks
+         where run_id = $1::uuid`,
+        [input.runId]
+      );
+      if ((result.rowCount ?? 0) > 0) {
+        await client.query(
+          `update workflow_runs
+           set status = 'queued',
+               finished_at = null
+           where id = $1::uuid`,
+          [input.runId]
+        );
+      }
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', $1::text, $2, $3)`,
+        [
+          input.runId,
+          input.reason,
+          JSON.stringify({
+            actor: input.actor,
+            reason: input.reason,
+            includeFailed: input.includeFailed === true,
+            requeuedTasks: result.rowCount ?? 0,
+            completedTasks: counts.rows[0]?.completed ?? 0,
+            totalTasks: counts.rows[0]?.total ?? 0
+          })
+        ]
+      );
+      await client.query("commit");
+      return {
+        requeuedTasks: result.rowCount ?? 0,
+        completedTasks: counts.rows[0]?.completed ?? 0,
+        totalTasks: counts.rows[0]?.total ?? 0
+      };
     } catch (error) {
       await client.query("rollback");
       throw error;
@@ -614,6 +701,7 @@ export interface CreateRunInput {
   providerOverride?: string;
   evaluationMetadata?: Record<string, unknown>;
   compiledBrief?: string;
+  compiledBriefMetadata?: Record<string, unknown>;
 }
 
 export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number }> {
@@ -642,9 +730,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         `insert into workflow_runs (
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
-           model_tier_override, provider_override, evaluation_metadata, compiled_brief_uri
+           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, compiled_brief_uri
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          returning id`,
         [
           projectId,
@@ -657,6 +745,7 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           input.modelTierOverride ?? null,
           input.providerOverride ?? null,
           JSON.stringify(input.evaluationMetadata ?? {}),
+          JSON.stringify(input.workflow),
           null
         ]
       );
@@ -672,7 +761,10 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           [
             runId,
             compiledBriefUri,
-            JSON.stringify({ text: input.compiledBrief })
+            JSON.stringify({
+              text: input.compiledBrief,
+              metadata: input.compiledBriefMetadata ?? {}
+            })
           ]
         );
         await client.query(
@@ -701,6 +793,182 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         projectId,
         runId,
         tasks: input.workflow.stages.length
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function replayWorkflowRun(input: {
+  sourceRunId: string;
+  actor: string;
+  reason: string;
+}): Promise<{ projectId: string; runId: string; tasks: number } | null> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const source = await client.query<{
+        projectId: string;
+        projectName: string;
+        projectRootUri: string;
+        projectProfile: string;
+        projectConfig: Record<string, unknown>;
+        workflowId: string;
+        workflowSnapshot: WorkflowDefinition | null;
+        workflowDefinition: WorkflowDefinition | null;
+        task: string;
+        autonomy: string;
+        policyProfile: string;
+        policySnapshot: Record<string, unknown>;
+        policySnapshotHash: string;
+        modelTierOverride: string | null;
+        providerOverride: string | null;
+        evaluationMetadata: Record<string, unknown>;
+        compiledBrief: string | null;
+        compiledBriefMetadata: Record<string, unknown> | null;
+      }>(
+        `select
+           p.id::text as "projectId",
+           p.name as "projectName",
+           p.root_uri as "projectRootUri",
+           p.profile as "projectProfile",
+           p.config as "projectConfig",
+           wr.workflow_id as "workflowId",
+           nullif(wr.workflow_snapshot, '{}'::jsonb) as "workflowSnapshot",
+           wf.definition as "workflowDefinition",
+           wr.task,
+           wr.autonomy,
+           wr.policy_profile as "policyProfile",
+           wr.policy_snapshot as "policySnapshot",
+           wr.policy_snapshot_hash as "policySnapshotHash",
+           wr.model_tier_override as "modelTierOverride",
+           wr.provider_override as "providerOverride",
+           wr.evaluation_metadata as "evaluationMetadata",
+           artifact.content->>'text' as "compiledBrief",
+           artifact.content->'metadata' as "compiledBriefMetadata"
+         from workflow_runs wr
+         join projects p on p.id = wr.project_id
+         left join workflows wf on wf.id = wr.workflow_id
+         left join artifacts artifact on artifact.uri = wr.compiled_brief_uri
+         where wr.id = $1`,
+        [input.sourceRunId]
+      );
+      const sourceRun = source.rows[0];
+      if (!sourceRun) {
+        await client.query("rollback");
+        return null;
+      }
+      const workflow = sourceRun.workflowSnapshot ?? sourceRun.workflowDefinition;
+      if (!workflow) {
+        throw new Error(`Source run workflow is unavailable: ${input.sourceRunId}`);
+      }
+
+      const projectResult = await client.query<{ id: string }>(
+        `insert into projects (name, root_uri, profile, config, updated_at)
+         values ($1, $2, $3, $4, now())
+         on conflict (root_uri) do update
+         set name = excluded.name,
+             profile = excluded.profile,
+             config = excluded.config,
+             updated_at = now()
+         returning id`,
+        [
+          sourceRun.projectName,
+          sourceRun.projectRootUri,
+          sourceRun.projectProfile,
+          JSON.stringify(sourceRun.projectConfig)
+        ]
+      );
+      const projectId = projectResult.rows[0].id;
+      const replayMetadata = {
+        ...sourceRun.evaluationMetadata,
+        replayOfRunId: input.sourceRunId,
+        replayedBy: input.actor,
+        replayReason: input.reason
+      };
+      const runResult = await client.query<{ id: string }>(
+        `insert into workflow_runs (
+           project_id, workflow_id, status, task, autonomy,
+           policy_profile, policy_snapshot, policy_snapshot_hash,
+           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, compiled_brief_uri
+         )
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, null)
+         returning id`,
+        [
+          projectId,
+          sourceRun.workflowId,
+          sourceRun.task,
+          sourceRun.autonomy,
+          sourceRun.policyProfile,
+          JSON.stringify(sourceRun.policySnapshot),
+          sourceRun.policySnapshotHash,
+          sourceRun.modelTierOverride,
+          sourceRun.providerOverride,
+          JSON.stringify(replayMetadata),
+          JSON.stringify(workflow)
+        ]
+      );
+      const runId = runResult.rows[0].id;
+      const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
+      if (sourceRun.compiledBrief) {
+        await client.query(
+          `insert into artifacts (run_id, kind, uri, content)
+           values ($1, 'compiled_brief', $2, $3)`,
+          [
+            runId,
+            compiledBriefUri,
+            JSON.stringify({
+              text: sourceRun.compiledBrief,
+              metadata: {
+                ...(sourceRun.compiledBriefMetadata ?? {}),
+                replayOfRunId: input.sourceRunId
+              }
+            })
+          ]
+        );
+        await client.query(
+          `update workflow_runs
+           set compiled_brief_uri = $2
+           where id = $1`,
+          [runId, compiledBriefUri]
+        );
+      }
+
+      for (const stage of workflow.stages) {
+        await client.query(
+          `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
+           values ($1, $2, $3, 'queued', $4)`,
+          [
+            runId,
+            stage.id,
+            stage.agent,
+            `${runId}:${stage.id}:${stage.agent}`
+          ]
+        );
+      }
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, 'workflow-orchestrator', 'workflow_replayed', $2, $3, $4)`,
+        [
+          runId,
+          input.sourceRunId,
+          input.reason,
+          JSON.stringify({
+            actor: input.actor,
+            sourceRunId: input.sourceRunId,
+            policySnapshotHash: sourceRun.policySnapshotHash,
+            workflowSnapshot: sourceRun.workflowSnapshot ? "source-run" : "current-registry"
+          })
+        ]
+      );
+
+      await client.query("commit");
+      return {
+        projectId,
+        runId,
+        tasks: workflow.stages.length
       };
     } catch (error) {
       await client.query("rollback");
@@ -741,7 +1009,7 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            from workflow_tasks wt
            join workflow_runs wr on wr.id = wt.run_id
            join workflows wf on wf.id = wr.workflow_id
-           join lateral jsonb_array_elements(wf.definition->'stages') with ordinality stage(definition, stage_order)
+           join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality stage(definition, stage_order)
              on stage.definition->>'id' = wt.stage_id
            where wt.status = 'queued'
              and wr.status in ('queued', 'running')
@@ -749,7 +1017,7 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
              and not exists (
                select 1
                from workflow_tasks prior
-               join lateral jsonb_array_elements(wf.definition->'stages') with ordinality prior_stage(definition, stage_order)
+               join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality prior_stage(definition, stage_order)
                  on prior_stage.definition->>'id' = prior.stage_id
                where prior.run_id = wt.run_id
                  and prior_stage.stage_order < stage.stage_order
@@ -779,7 +1047,7 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            wt.stage_id as "stageId",
            coalesce((
              select stage->>'goal'
-             from jsonb_array_elements(wf.definition->'stages') stage
+             from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') stage
              where stage->>'id' = wt.stage_id
              limit 1
            ), '') as "stageGoal",
