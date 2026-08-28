@@ -12,6 +12,15 @@ export interface PolicyDecision {
   approvalRequired: boolean;
 }
 
+export interface ActionApprovalRuleMatch {
+  id: string;
+  description: string;
+  actionType: "local_command" | "file_write";
+  target: string;
+  effect: "auto_execute";
+  reasons: string[];
+}
+
 const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
   local: {
     policies: {},
@@ -133,4 +142,78 @@ export function evaluateAgentAutonomy(agent: AgentCard, project: ProjectConfig):
     approvalRequired: agent.requires_approval.length > 0,
     reasons
   };
+}
+
+export function evaluateActionApprovalRule(input: {
+  project: ProjectConfig;
+  actionType: "local_command" | "file_write";
+  target: string;
+  bytes?: number;
+}): ActionApprovalRuleMatch | null {
+  const target = input.actionType === "local_command" ? normalizeCommand(input.target) : normalizePath(input.target);
+  for (const rule of input.project.actions.approval_rules) {
+    if (rule.action_type !== input.actionType) continue;
+    if (input.actionType === "local_command" && !matchesCommandPattern(target, rule.target)) continue;
+    if (input.actionType === "file_write" && !matchesGlob(target, rule.target)) continue;
+    if (rule.max_bytes !== undefined && input.bytes !== undefined && input.bytes > rule.max_bytes) continue;
+
+    const reasons = [`matched approval rule ${rule.id}`];
+    if (rule.max_bytes !== undefined) {
+      reasons.push(`max_bytes ${rule.max_bytes}`);
+    }
+    return {
+      id: rule.id,
+      description: rule.description,
+      actionType: rule.action_type,
+      target: rule.target,
+      effect: rule.effect,
+      reasons
+    };
+  }
+  return null;
+}
+
+function matchesCommandPattern(commandLine: string, pattern: string): boolean {
+  const normalizedPattern = normalizeCommand(pattern);
+  if (normalizedPattern.endsWith(" *")) {
+    const prefix = normalizedPattern.slice(0, -2);
+    return commandLine === prefix || commandLine.startsWith(`${prefix} `);
+  }
+  return commandLine === normalizedPattern;
+}
+
+function matchesGlob(value: string, pattern: string): boolean {
+  const normalizedPattern = normalizePath(pattern);
+  const regex = globToRegExp(normalizedPattern);
+  return regex.test(value);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  let source = "^";
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i];
+    const next = pattern[i + 1];
+    if (char === "*" && next === "*") {
+      source += ".*";
+      i += 1;
+    } else if (char === "*") {
+      source += "[^/]*";
+    } else {
+      source += escapeRegExp(char);
+    }
+  }
+  source += "$";
+  return new RegExp(source);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
+}
+
+function normalizeCommand(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizePath(value: string): string {
+  return value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
 }

@@ -110,7 +110,17 @@ function formatActionPolicy(project: ProjectConfig): string {
     ...project.actions.allowed_write_paths.map((pattern) => `- ${pattern}`),
     "Blocked paths:",
     ...project.actions.blocked_write_paths.map((pattern) => `- ${pattern}`),
-    `Max write size: ${project.actions.max_write_bytes} bytes`
+    `Max write size: ${project.actions.max_write_bytes} bytes`,
+    "",
+    "### Approval Rules",
+    ...(
+      project.actions.approval_rules.length
+        ? project.actions.approval_rules.map((rule) => {
+          const byteLimit = rule.max_bytes ? `, max ${rule.max_bytes} bytes` : "";
+          return `- ${rule.id}: ${rule.effect} ${rule.action_type} ${rule.target}${byteLimit}`;
+        })
+        : ["- none"]
+    )
   ].join("\n");
 }
 

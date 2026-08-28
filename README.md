@@ -189,7 +189,8 @@ tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
 Execution policy profiles (`local`, `staging`, and `production`) control
 autonomy, commands, and write access without creating separate workflow
 storage. Every queued run records the resolved policy snapshot used by its
-worker. See [Autonomy Policy](docs/autonomy.md).
+worker. Narrow approval rules can auto-execute recurring low-risk actions after
+the normal allowlist/blocklist checks pass. See [Autonomy Policy](docs/autonomy.md).
 
 ## IDE Clients
 
@@ -283,6 +284,7 @@ stages:
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Approval inbox** — review, approve, or reject agent-requested commands and file writes when project policy requires approval
+- **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary
 - **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, and heartbeat monitoring together
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing

@@ -5,6 +5,7 @@ import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-too
 import { providerFromEnv } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
+import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import {
   claimNextWorkflowTask,
   completeWorkflowTask,
@@ -127,6 +128,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           continue;
         }
 
+        let commandApprovalRule: ActionApprovalRuleMatch | null = null;
         if (project.policies.require_approval_for_external_actions) {
           try {
             assertCommandAllowed(commandLine, project);
@@ -155,33 +157,40 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             });
             continue;
           }
-          const approval = await requestActionApproval({
-            runId: task.runId,
-            taskId: task.taskId,
-            stageId: task.stageId,
-            agentId: task.agentId,
+          commandApprovalRule = evaluateActionApprovalRule({
+            project,
             actionType: "local_command",
-            target: normalizeActionText(commandLine),
-            rationale: `Policy requires approval before executing command requested by ${task.agentId} during ${task.stageId}.`,
-            policyDecision: {
-              approvalRequired: true,
-              allowedByPolicy: true,
-              policyProfile: project.execution.policy_profile
-            },
-            payload: {
-              commandLine: normalizeActionText(commandLine),
-              payloadHash: hashText(normalizeActionText(commandLine))
-            },
-            idempotencyKey: commandIdempotencyKey
+            target: commandLine
           });
-          actionResults.push({
-            type: "local_command_approval_pending",
-            commandLine,
-            approvalId: approval.approvalId,
-            artifactUri: approval.artifactUri,
-            status: approval.status
-          });
-          continue;
+          if (!commandApprovalRule) {
+            const approval = await requestActionApproval({
+              runId: task.runId,
+              taskId: task.taskId,
+              stageId: task.stageId,
+              agentId: task.agentId,
+              actionType: "local_command",
+              target: normalizeActionText(commandLine),
+              rationale: `Policy requires approval before executing command requested by ${task.agentId} during ${task.stageId}.`,
+              policyDecision: {
+                approvalRequired: true,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              payload: {
+                commandLine: normalizeActionText(commandLine),
+                payloadHash: hashText(normalizeActionText(commandLine))
+              },
+              idempotencyKey: commandIdempotencyKey
+            });
+            actionResults.push({
+              type: "local_command_approval_pending",
+              commandLine,
+              approvalId: approval.approvalId,
+              artifactUri: approval.artifactUri,
+              status: approval.status
+            });
+            continue;
+          }
         }
 
         let commandResult;
@@ -230,6 +239,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           artifactKind: "command_output",
           artifactContent: {
             ...commandResult,
+            approvalRule: commandApprovalRule ?? undefined,
             requestedByTaskId: task.taskId,
             requestedByStageId: task.stageId
           },
@@ -239,7 +249,8 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           commandLine,
           artifactUri,
           exitCode: commandResult.exitCode,
-          timedOut: commandResult.timedOut
+          timedOut: commandResult.timedOut,
+          approvalRule: commandApprovalRule ?? undefined
         });
 
         if (commandResult.exitCode !== 0 || commandResult.timedOut) {
@@ -286,6 +297,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           continue;
         }
 
+        let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
         if (project.policies.require_approval_for_external_actions) {
           try {
             assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
@@ -314,34 +326,42 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             });
             continue;
           }
-          const approval = await requestActionApproval({
-            runId: task.runId,
-            taskId: task.taskId,
-            stageId: task.stageId,
-            agentId: task.agentId,
+          fileWriteApprovalRule = evaluateActionApprovalRule({
+            project,
             actionType: "file_write",
             target: fileWrite.path,
-            rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
-            policyDecision: {
-              approvalRequired: true,
-              allowedByPolicy: true,
-              policyProfile: project.execution.policy_profile
-            },
-            payload: {
-              relativePath: fileWrite.path,
-              bytes: Buffer.byteLength(fileWrite.content, "utf8"),
-              payloadHash: hashText(fileWrite.content)
-            },
-            idempotencyKey: fileWriteIdempotencyKey
+            bytes: Buffer.byteLength(fileWrite.content, "utf8")
           });
-          actionResults.push({
-            type: "file_write_approval_pending",
-            path: fileWrite.path,
-            approvalId: approval.approvalId,
-            artifactUri: approval.artifactUri,
-            status: approval.status
-          });
-          continue;
+          if (!fileWriteApprovalRule) {
+            const approval = await requestActionApproval({
+              runId: task.runId,
+              taskId: task.taskId,
+              stageId: task.stageId,
+              agentId: task.agentId,
+              actionType: "file_write",
+              target: fileWrite.path,
+              rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
+              policyDecision: {
+                approvalRequired: true,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              payload: {
+                relativePath: fileWrite.path,
+                bytes: Buffer.byteLength(fileWrite.content, "utf8"),
+                payloadHash: hashText(fileWrite.content)
+              },
+              idempotencyKey: fileWriteIdempotencyKey
+            });
+            actionResults.push({
+              type: "file_write_approval_pending",
+              path: fileWrite.path,
+              approvalId: approval.approvalId,
+              artifactUri: approval.artifactUri,
+              status: approval.status
+            });
+            continue;
+          }
         }
 
         let writeResult;
@@ -391,6 +411,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           artifactKind: "file_write",
           artifactContent: {
             ...writeResult,
+            approvalRule: fileWriteApprovalRule ?? undefined,
             requestedByTaskId: task.taskId,
             requestedByStageId: task.stageId
           },
@@ -401,7 +422,8 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           path: writeResult.relativePath,
           artifactUri,
           bytesWritten: writeResult.bytesWritten,
-          nextHash: writeResult.nextHash
+          nextHash: writeResult.nextHash,
+          approvalRule: fileWriteApprovalRule ?? undefined
         });
       }
       await completeWorkflowTask({

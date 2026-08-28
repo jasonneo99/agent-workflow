@@ -510,6 +510,31 @@ npm run agentflow -- approvals --execute <approval-id> --actor "Your Name"
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --note "Not needed"
 ```
 
+Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
+
+```yaml
+actions:
+  allowed_commands:
+    - npm test
+    - npm run lint
+  allowed_write_paths:
+    - .agent-workflow/notes/**
+  approval_rules:
+    - id: local-tests
+      description: Auto-execute the standard local test command.
+      action_type: local_command
+      target: npm test
+      effect: auto_execute
+    - id: workflow-notes
+      description: Auto-execute small workflow note writes.
+      action_type: file_write
+      target: .agent-workflow/notes/**
+      effect: auto_execute
+      max_bytes: 4096
+```
+
+Keep approval rules exact and boring. A rule can reduce repeated approvals, but it should not be used to approve broad command families, deployment commands, secret-touching files, or production actions.
+
 While the Queue page is open, a browser Web Worker watches `/api/queue` and refreshes the view only when task progress changes. It polls active queues every two seconds and backs off to ten seconds when idle. This watcher is read-only; the managed server-side worker remains responsible for claiming and executing tasks.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.

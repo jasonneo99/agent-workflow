@@ -47,6 +47,12 @@ policy snapshot, and a SHA-256 snapshot hash. Workers execute against that
 immutable snapshot, so later edits to project configuration do not change the
 policy of an already queued run.
 
+Projects can add narrowly scoped `actions.approval_rules` for recurring
+low-risk local commands or file writes. Approval rules do not expand policy:
+the action must still pass allowed and blocked command/path checks first. A
+matching `auto_execute` rule lets the worker execute the action immediately
+while preserving normal receipts and artifacts.
+
 Storage isolation remains an optional deployment concern. Teams that require
 separate infrastructure for production can run a separate Agent Workflow
 deployment, but the policy-profile feature does not require it.

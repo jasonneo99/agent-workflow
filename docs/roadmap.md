@@ -128,7 +128,7 @@ trust gaps.
   - In progress: show each proposed action, rationale, policy decision, and payload hash.
   - In progress: support approve once and reject decisions with receipt audit trails.
   - Done: execute approved local commands and file writes with current project policy rechecked and normal action receipts preserved.
-  - Add narrowly scoped reusable approval rules.
+  - Done: add narrowly scoped reusable approval rules for low-risk allowed actions.
   - Extend the same inbox shape to deployment and autonomy approvals.
 
 - [ ] Evaluation gates and regression budgets.

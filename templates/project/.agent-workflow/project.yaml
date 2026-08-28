@@ -63,3 +63,4 @@ actions:
     - .env.*
     - .agent-workflow/schedule-state.json
   max_write_bytes: 200000
+  approval_rules: []

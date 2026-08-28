@@ -75,7 +75,15 @@ const actionOverridesSchema = z.object({
   max_output_chars: z.number().int().positive().optional(),
   allowed_write_paths: z.array(z.string()).optional(),
   blocked_write_paths: z.array(z.string()).optional(),
-  max_write_bytes: z.number().int().positive().optional()
+  max_write_bytes: z.number().int().positive().optional(),
+  approval_rules: z.array(z.object({
+    id: z.string().min(1),
+    description: z.string().default(""),
+    action_type: z.enum(["local_command", "file_write"]),
+    target: z.string().min(1),
+    effect: z.enum(["auto_execute"]).default("auto_execute"),
+    max_bytes: z.number().int().positive().optional()
+  })).optional()
 }).default({});
 
 export const executionPolicyProfileSchema = z.object({
@@ -139,7 +147,15 @@ export const projectConfigSchema = z.object({
       ".env",
       ".env.*"
     ]),
-    max_write_bytes: z.number().int().positive().default(200000)
+    max_write_bytes: z.number().int().positive().default(200000),
+    approval_rules: z.array(z.object({
+      id: z.string().min(1),
+      description: z.string().default(""),
+      action_type: z.enum(["local_command", "file_write"]),
+      target: z.string().min(1),
+      effect: z.enum(["auto_execute"]).default("auto_execute"),
+      max_bytes: z.number().int().positive().optional()
+    })).default([])
   }).default({
     allowed_commands: ["npm test", "npm run typecheck", "npm run lint"],
     blocked_commands: ["rm *", "git reset *", "git clean *", "sudo *"],
@@ -147,7 +163,8 @@ export const projectConfigSchema = z.object({
     max_output_chars: 20000,
     allowed_write_paths: [".agent-workflow/**", "docs/**"],
     blocked_write_paths: [".git/**", "node_modules/**", ".env", ".env.*"],
-    max_write_bytes: 200000
+    max_write_bytes: 200000,
+    approval_rules: []
   })
 });
 

@@ -8279,7 +8279,8 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         "**/build/**",
         "**/coverage/**"
       ],
-      max_write_bytes: 250000
+      max_write_bytes: 250000,
+      approval_rules: []
     }
   };
 

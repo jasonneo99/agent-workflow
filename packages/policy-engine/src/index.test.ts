@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { resolveExecutionPolicy } from "./index.js";
+import { evaluateActionApprovalRule, resolveExecutionPolicy } from "./index.js";
 
 const project = projectConfigSchema.parse({
   project: {
@@ -15,7 +15,22 @@ const project = projectConfigSchema.parse({
   },
   actions: {
     allowed_commands: ["npm test"],
-    allowed_write_paths: ["src/**"]
+    allowed_write_paths: ["src/**"],
+    approval_rules: [
+      {
+        id: "tests",
+        action_type: "local_command",
+        target: "npm test",
+        effect: "auto_execute"
+      },
+      {
+        id: "small-source-note",
+        action_type: "file_write",
+        target: "src/**/*.md",
+        effect: "auto_execute",
+        max_bytes: 128
+      }
+    ]
   }
 });
 
@@ -66,4 +81,31 @@ test("policy snapshots are stable and unknown profiles fail closed", () => {
     resolveExecutionPolicy(project, "production").snapshotHash
   );
   assert.throws(() => resolveExecutionPolicy(project, "missing"), /Unknown execution policy profile/);
+});
+
+test("approval rules match scoped commands and file writes", () => {
+  const commandRule = evaluateActionApprovalRule({
+    project,
+    actionType: "local_command",
+    target: " npm   test "
+  });
+  assert.equal(commandRule?.id, "tests");
+
+  const fileRule = evaluateActionApprovalRule({
+    project,
+    actionType: "file_write",
+    target: "./src/notes/review.md",
+    bytes: 12
+  });
+  assert.equal(fileRule?.id, "small-source-note");
+});
+
+test("approval rules do not match writes above their byte cap", () => {
+  const fileRule = evaluateActionApprovalRule({
+    project,
+    actionType: "file_write",
+    target: "src/notes/review.md",
+    bytes: 256
+  });
+  assert.equal(fileRule, null);
 });
