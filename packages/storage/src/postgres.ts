@@ -1197,16 +1197,21 @@ export async function failWorkflowTask(input: {
 
 export async function recordRunAction(input: {
   runId: string;
+  taskId?: string | null;
   agentId: string;
   actionType: string;
   target: string;
   summary: string;
   artifactKind: string;
   artifactContent: Record<string, unknown>;
+  idempotencyKey?: string;
 }): Promise<string> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      const artifactContent = input.idempotencyKey
+        ? { ...input.artifactContent, idempotencyKey: input.idempotencyKey }
+        : input.artifactContent;
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1, $2, $3, $4, $5, $6)`,
@@ -1216,19 +1221,24 @@ export async function recordRunAction(input: {
           input.actionType,
           input.target,
           input.summary,
-          JSON.stringify(input.artifactContent)
+          JSON.stringify(artifactContent)
         ]
       );
 
-      const artifactUri = `db://workflow_runs/${input.runId}/${input.artifactKind}/${Date.now()}`;
+      const artifactUri = input.idempotencyKey
+        ? `db://workflow_runs/${input.runId}/${input.artifactKind}/${input.idempotencyKey}`
+        : `db://workflow_runs/${input.runId}/${input.artifactKind}/${Date.now()}`;
       await client.query(
-        `insert into artifacts (run_id, kind, uri, content)
-         values ($1, $2, $3, $4)`,
+        `insert into artifacts (run_id, task_id, kind, uri, content)
+         values ($1, $2, $3, $4, $5)
+         on conflict (uri) do update
+         set content = excluded.content`,
         [
           input.runId,
+          input.taskId ?? null,
           input.artifactKind,
           artifactUri,
-          JSON.stringify(input.artifactContent)
+          JSON.stringify(artifactContent)
         ]
       );
 
@@ -1238,6 +1248,34 @@ export async function recordRunAction(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+}
+
+export async function findRunActionByIdempotencyKey(input: {
+  runId: string;
+  artifactKind: string;
+  idempotencyKey: string;
+}): Promise<ArtifactStatus | null> {
+  return withClient(async (client) => {
+    const artifactUri = `db://workflow_runs/${input.runId}/${input.artifactKind}/${input.idempotencyKey}`;
+    const result = await client.query<ArtifactStatus>(
+      `select
+         id::text,
+         run_id::text as "runId",
+         task_id::text as "taskId",
+         kind,
+         uri,
+         content,
+         created_at::text as "createdAt"
+       from artifacts
+       where run_id = $1::uuid
+         and kind = $2
+         and uri = $3
+         and content->>'idempotencyKey' = $4
+       limit 1`,
+      [input.runId, input.artifactKind, artifactUri, input.idempotencyKey]
+    );
+    return result.rows[0] ?? null;
   });
 }
 

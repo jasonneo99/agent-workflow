@@ -504,6 +504,8 @@ The dashboard home page includes a Run Workflow panel. Select a workflow, projec
 
 Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, Run Until Complete for a bounded watch pass, Resume Checkpoint to continue from the last completed stage, or Replay Run to create a fresh queued run from the source run's stored task, policy, provider overrides, workflow snapshot, and compiled context. Resume and replay actions run a stale-input check first. The check warns when project config, execution policy, bundle checksum, workflow definition, or selected source files differ from the evidence captured when the run was queued. Legacy runs created before input snapshots show a limited-check warning instead of pretending the inputs are known.
 
+When a retried stage asks for the same successful command or file write again, Agent Workflow uses a deterministic action idempotency key to avoid repeating the side effect. The worker records a `local_command_reused` or `file_write_reused` receipt that points back to the original action artifact, preserving the audit trail without duplicating the command or write.
+
 CLI equivalents:
 
 ```bash

@@ -121,7 +121,7 @@ trust gaps.
   - In progress: dashboard and CLI controls can resume unfinished stages from the last completed checkpoint.
   - In progress: new runs persist workflow snapshots, and replay can queue a fresh run from stored task, provider settings, policy snapshot, workflow snapshot, and compiled context.
   - In progress: resume and replay warn when project config, execution policy, bundle checksum, workflow definition, or selected source file hashes differ from queued run evidence.
-  - Make retried actions idempotent and preserve their receipts.
+  - Done: retried command and file-write actions use deterministic idempotency keys, skip duplicate side effects, and record reuse receipts that point to the original artifacts.
 
 - [ ] Human approval inbox for agent-requested actions.
   - Centralize pending command, file-write, deployment, and autonomy approvals.

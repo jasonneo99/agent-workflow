@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
@@ -7,6 +8,7 @@ import { selectModelRoute } from "../../model-providers/src/routing.js";
 import {
   claimNextWorkflowTask,
   completeWorkflowTask,
+  findRunActionByIdempotencyKey,
   failWorkflowTask,
   recordRunAction
 } from "../../storage/src/postgres.js";
@@ -84,6 +86,46 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
       });
 
       for (const commandLine of output.requestedCommands ?? []) {
+        const commandIdempotencyKey = actionIdempotencyKey({
+          taskId: task.taskId,
+          stageId: task.stageId,
+          agentId: task.agentId,
+          actionType: "local_command",
+          target: commandLine,
+          payload: commandLine,
+          normalizePayload: true
+        });
+        const previousCommand = await findRunActionByIdempotencyKey({
+          runId: task.runId,
+          artifactKind: "command_output",
+          idempotencyKey: commandIdempotencyKey
+        });
+        if (previousCommand) {
+          const reuseArtifactUri = await recordRunAction({
+            runId: task.runId,
+            taskId: task.taskId,
+            agentId: task.agentId,
+            actionType: "local_command_reused",
+            target: commandLine,
+            summary: `Skipped duplicate command; reused receipt ${previousCommand.uri}.`,
+            artifactKind: "action_reuse",
+            artifactContent: {
+              actionType: "local_command",
+              target: commandLine,
+              originalArtifactUri: previousCommand.uri,
+              requestedByTaskId: task.taskId,
+              requestedByStageId: task.stageId
+            }
+          });
+          actionResults.push({
+            type: "local_command_reused",
+            commandLine,
+            artifactUri: previousCommand.uri,
+            reuseArtifactUri
+          });
+          continue;
+        }
+
         let commandResult;
         try {
           commandResult = await executeAllowedCommand({
@@ -94,6 +136,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         } catch (error) {
           const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,
+            taskId: task.taskId,
             agentId: task.agentId,
             actionType: "local_command_rejected",
             target: commandLine,
@@ -121,6 +164,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         ].join(" ");
         const artifactUri = await recordRunAction({
           runId: task.runId,
+          taskId: task.taskId,
           agentId: task.agentId,
           actionType: "local_command",
           target: commandResult.commandLine,
@@ -130,7 +174,8 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             ...commandResult,
             requestedByTaskId: task.taskId,
             requestedByStageId: task.stageId
-          }
+          },
+          idempotencyKey: commandIdempotencyKey
         });
         actionResults.push({
           commandLine,
@@ -144,6 +189,45 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         }
       }
       for (const fileWrite of output.requestedFileWrites ?? []) {
+        const fileWriteIdempotencyKey = actionIdempotencyKey({
+          taskId: task.taskId,
+          stageId: task.stageId,
+          agentId: task.agentId,
+          actionType: "file_write",
+          target: fileWrite.path,
+          payload: fileWrite.content
+        });
+        const previousWrite = await findRunActionByIdempotencyKey({
+          runId: task.runId,
+          artifactKind: "file_write",
+          idempotencyKey: fileWriteIdempotencyKey
+        });
+        if (previousWrite) {
+          const reuseArtifactUri = await recordRunAction({
+            runId: task.runId,
+            taskId: task.taskId,
+            agentId: task.agentId,
+            actionType: "file_write_reused",
+            target: fileWrite.path,
+            summary: `Skipped duplicate file write; reused receipt ${previousWrite.uri}.`,
+            artifactKind: "action_reuse",
+            artifactContent: {
+              actionType: "file_write",
+              target: fileWrite.path,
+              originalArtifactUri: previousWrite.uri,
+              requestedByTaskId: task.taskId,
+              requestedByStageId: task.stageId
+            }
+          });
+          actionResults.push({
+            type: "file_write_reused",
+            path: fileWrite.path,
+            artifactUri: previousWrite.uri,
+            reuseArtifactUri
+          });
+          continue;
+        }
+
         let writeResult;
         try {
           writeResult = await executeAllowedFileWrite({
@@ -155,6 +239,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         } catch (error) {
           const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,
+            taskId: task.taskId,
             agentId: task.agentId,
             actionType: "file_write_rejected",
             target: fileWrite.path,
@@ -182,6 +267,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
         ].join(" ");
         const artifactUri = await recordRunAction({
           runId: task.runId,
+          taskId: task.taskId,
           agentId: task.agentId,
           actionType: "file_write",
           target: writeResult.relativePath,
@@ -191,7 +277,8 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             ...writeResult,
             requestedByTaskId: task.taskId,
             requestedByStageId: task.stageId
-          }
+          },
+          idempotencyKey: fileWriteIdempotencyKey
         });
         actionResults.push({
           type: "file_write",
@@ -230,6 +317,32 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
   }
 
   return result;
+}
+
+export function actionIdempotencyKey(input: {
+  taskId: string;
+  stageId: string;
+  agentId: string;
+  actionType: string;
+  target: string;
+  payload: string;
+  normalizePayload?: boolean;
+}): string {
+  const payload = input.normalizePayload ? normalizeActionText(input.payload) : input.payload;
+  return createHash("sha256")
+    .update(JSON.stringify({
+      taskId: input.taskId,
+      stageId: input.stageId,
+      agentId: input.agentId,
+      actionType: input.actionType,
+      target: normalizeActionText(input.target),
+      payloadHash: createHash("sha256").update(payload).digest("hex")
+    }))
+    .digest("hex");
+}
+
+function normalizeActionText(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
 }
 
 export async function runWorkerWatch(input: {
