@@ -28,6 +28,7 @@ import { bundleTrustStorePath, normalizePolicy, publicKeyFingerprint, readBundle
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
+import { executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
@@ -36,9 +37,11 @@ import {
   decideActionApproval,
   dismissAllFailedWorkflowRuns,
   dismissFailedWorkflowRun,
+  getActionApproval,
   getArtifactByUri,
   getLatestMemory,
   getWorkflowRunDetails,
+  findRunActionByIdempotencyKey,
   listActionApprovals,
   listArtifacts,
   listProjectFileSummaries,
@@ -47,6 +50,7 @@ import {
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
+  markActionApprovalExecution,
   recordRunAction,
   requeueRunningWorkflowTasks,
   replayWorkflowRun,
@@ -1351,16 +1355,17 @@ program
 program
   .command("approvals")
   .description("List, approve, or reject pending agent-requested actions")
-  .option("--status <status>", "pending, approved, rejected, or all", "pending")
+  .option("--status <status>", "pending, approved, executed, failed, rejected, or all", "pending")
   .option("-r, --run <id>", "filter by workflow run id")
   .option("-p, --project <dir>", "filter by project directory")
   .option("--approve <id>", "approval id to approve")
   .option("--reject <id>", "approval id to reject")
+  .option("--execute <id>", "execute an approved action")
   .option("--actor <name>", "person or tool making the decision", "cli")
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; actor: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; actor: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1371,9 +1376,28 @@ program
       return;
     }
 
-    if (options.approve && options.reject) {
-      console.error("Choose --approve or --reject, not both.");
+    if ([options.approve, options.reject, options.execute].filter(Boolean).length > 1) {
+      console.error("Choose only one of --approve, --reject, or --execute.");
       process.exitCode = 1;
+      return;
+    }
+
+    if (options.execute) {
+      const result = await executeApprovedAction({
+        approvalId: options.execute,
+        actor: options.actor
+      });
+      if (!result.ok) {
+        console.error(result.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(result.title);
+      console.log(result.output);
       return;
     }
 
@@ -4063,7 +4087,7 @@ function renderApprovalsHtml(
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
       <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
-      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
   const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
@@ -4091,6 +4115,8 @@ function renderApprovalsHtml(
       <div class="actions">
         ${filterLink("pending", "Pending")}
         ${filterLink("approved", "Approved")}
+        ${filterLink("executed", "Executed")}
+        ${filterLink("failed", "Failed")}
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
       </div>
@@ -5779,6 +5805,9 @@ async function processDashboardApprovalAction(input: {
   if (!approvalId) {
     return { ok: false, error: "Missing approval id." };
   }
+  if (decision === "execute") {
+    return executeApprovedAction({ approvalId, actor: "dashboard" });
+  }
   if (decision !== "approved" && decision !== "rejected") {
     return { ok: false, error: "Decision must be approved or rejected." };
   }
@@ -5805,6 +5834,203 @@ async function processDashboardApprovalAction(input: {
       "Open: /approvals"
     ].join("\n")
   };
+}
+
+async function executeApprovedAction(input: {
+  approvalId: string;
+  actor: string;
+}): Promise<DashboardFollowUpResult> {
+  const approval = await getActionApproval(input.approvalId);
+  if (!approval) {
+    return { ok: false, error: `Unknown approval: ${input.approvalId}` };
+  }
+  if (approval.status === "executed") {
+    return {
+      ok: true,
+      title: "Action already executed",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        `Action: ${approval.actionType}`,
+        `Target: ${approval.target}`,
+        "Existing execution status was preserved."
+      ].join("\n")
+    };
+  }
+  if (approval.status !== "approved" && approval.status !== "failed") {
+    return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
+  }
+
+  const project = await loadProjectConfig(approval.projectRootUri);
+  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : "";
+  if (!artifactKind) {
+    return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
+  }
+
+  const previous = await findRunActionByIdempotencyKey({
+    runId: approval.runId,
+    artifactKind,
+    idempotencyKey: approval.idempotencyKey
+  });
+  if (previous) {
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "executed",
+      actor: input.actor,
+      summary: `Approved action already had an execution artifact: ${previous.uri}`,
+      artifactUri: previous.uri
+    });
+    return {
+      ok: true,
+      title: "Approved action reused",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        `Action: ${approval.actionType}`,
+        `Target: ${approval.target}`,
+        `Artifact: ${previous.uri}`
+      ].join("\n")
+    };
+  }
+
+  try {
+    if (approval.actionType === "local_command") {
+      const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
+      const result = await executeAllowedCommand({
+        commandLine,
+        cwd: approval.projectRootUri,
+        project
+      });
+      const summary = [
+        `Command \`${result.commandLine}\` exited with ${result.exitCode}`,
+        result.timedOut ? "after timing out" : `in ${result.durationMs}ms`
+      ].join(" ");
+      const artifactUri = await recordRunAction({
+        runId: approval.runId,
+        taskId: approval.taskId,
+        agentId: approval.agentId,
+        actionType: "local_command",
+        target: result.commandLine,
+        summary,
+        artifactKind: "command_output",
+        artifactContent: {
+          ...result,
+          executedFromApprovalId: approval.id,
+          requestedByTaskId: approval.taskId,
+          requestedByStageId: approval.stageId
+        },
+        idempotencyKey: approval.idempotencyKey
+      });
+      if (result.exitCode !== 0 || result.timedOut) {
+        await markActionApprovalExecution({
+          approvalId: approval.id,
+          status: "failed",
+          actor: input.actor,
+          summary: `Approved command failed: ${summary}`,
+          artifactUri
+        });
+        return { ok: false, error: `Approved command failed. ${summary}` };
+      }
+      await markActionApprovalExecution({
+        approvalId: approval.id,
+        status: "executed",
+        actor: input.actor,
+        summary: `Approved command executed. ${summary}`,
+        artifactUri
+      });
+      return {
+        ok: true,
+        title: "Approved command executed",
+        runId: approval.runId,
+        output: [
+          `Approval: ${approval.id}`,
+          summary,
+          `Artifact: ${artifactUri}`
+        ].join("\n")
+      };
+    }
+
+    const fileWrite = await loadApprovedFileWrite(approval);
+    const result = await executeAllowedFileWrite({
+      relativePath: fileWrite.path,
+      content: fileWrite.content,
+      cwd: approval.projectRootUri,
+      project
+    });
+    const summary = [
+      `Wrote ${result.bytesWritten} bytes to \`${result.relativePath}\`.`,
+      result.existed ? "Updated existing file." : "Created new file."
+    ].join(" ");
+    const artifactUri = await recordRunAction({
+      runId: approval.runId,
+      taskId: approval.taskId,
+      agentId: approval.agentId,
+      actionType: "file_write",
+      target: result.relativePath,
+      summary,
+      artifactKind: "file_write",
+      artifactContent: {
+        ...result,
+        executedFromApprovalId: approval.id,
+        requestedByTaskId: approval.taskId,
+        requestedByStageId: approval.stageId
+      },
+      idempotencyKey: approval.idempotencyKey
+    });
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "executed",
+      actor: input.actor,
+      summary: `Approved file write executed. ${summary}`,
+      artifactUri
+    });
+    return {
+      ok: true,
+      title: "Approved file write executed",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        summary,
+        `Artifact: ${artifactUri}`
+      ].join("\n")
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "failed",
+      actor: input.actor,
+      summary: `Approved action execution failed: ${message}`,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+}
+
+async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>): Promise<{ path: string; content: string }> {
+  if (!approval.taskId) {
+    throw new Error("Approved file write is missing the source task id.");
+  }
+  const expectedHash = stringFromRecord(approval.payload, "payloadHash");
+  const artifacts = await listArtifacts({ runId: approval.runId, kind: "stage_output" });
+  const source = artifacts.find((artifact) => artifact.taskId === approval.taskId);
+  const writes = Array.isArray(source?.content.requestedFileWrites) ? source.content.requestedFileWrites : [];
+  for (const item of writes) {
+    if (!item || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const filePath = stringFromRecord(record, "path");
+    const content = stringFromRecord(record, "content");
+    if (!filePath || content === undefined) continue;
+    if (filePath === approval.target && (!expectedHash || textHash(content) === expectedHash)) {
+      return { path: filePath, content };
+    }
+  }
+  throw new Error("Approved file write content was not found in the source stage artifact.");
+}
+
+function stringFromRecord(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key];
+  return typeof value === "string" ? value : undefined;
 }
 
 function safeDisplayUrl(value?: string): string | undefined {
@@ -6438,6 +6664,14 @@ function approvalDecisionForms(approvalId: string): string {
       <button class="danger" type="submit">Reject</button>
     </form>
   </div>`;
+}
+
+function approvalExecuteForm(approvalId: string): string {
+  return `<form class="approval-form" method="post" action="/api/approval-action">
+    <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+    <input type="hidden" name="decision" value="execute">
+    <button type="submit">Execute</button>
+  </form>`;
 }
 
 function formatApprovalPayload(payload: Record<string, unknown>): string {
@@ -7536,6 +7770,10 @@ function formatStaleInputWarnings(report: RunStaleInputReport): string[] {
 
 function stableHash(value: unknown): string {
   return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function textHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 function stableStringify(value: unknown): string {

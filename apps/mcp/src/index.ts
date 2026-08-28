@@ -89,18 +89,20 @@ server.registerTool(
       project: z.string().optional().describe("Filter by project directory."),
       approve: z.string().optional().describe("Approval id to approve."),
       reject: z.string().optional().describe("Approval id to reject."),
+      execute: z.string().optional().describe("Approval id to execute after it has been approved."),
       actor: z.string().optional().describe("Person or tool making the decision."),
       note: z.string().optional().describe("Decision note."),
       limit: z.number().int().positive().max(100).optional(),
       json: z.boolean().optional().describe("Return approval JSON.")
     }
   },
-  async ({ status, run, project, approve, reject, actor, note, limit, json }) => {
+  async ({ status, run, project, approve, reject, execute, actor, note, limit, json }) => {
     const args = ["approvals", "--status", status ?? "pending"];
     if (run) args.push("--run", run);
     if (project) args.push("--project", project);
     if (approve) args.push("--approve", approve);
     if (reject) args.push("--reject", reject);
+    if (execute) args.push("--execute", execute);
     if (actor) args.push("--actor", actor);
     if (note) args.push("--note", note);
     if (limit) args.push("--limit", String(limit));

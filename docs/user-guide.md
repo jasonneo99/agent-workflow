@@ -506,6 +506,7 @@ CLI equivalents:
 npm run agentflow -- approvals
 npm run agentflow -- approvals --status all
 npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --note "Looks safe"
+npm run agentflow -- approvals --execute <approval-id> --actor "Your Name"
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --note "Not needed"
 ```
 

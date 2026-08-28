@@ -127,7 +127,7 @@ trust gaps.
   - In progress: centralize pending command and file-write approvals in storage, CLI, JSON API, and dashboard.
   - In progress: show each proposed action, rationale, policy decision, and payload hash.
   - In progress: support approve once and reject decisions with receipt audit trails.
-  - Add execution of approved local actions without bypassing project policy.
+  - Done: execute approved local commands and file writes with current project policy rechecked and normal action receipts preserved.
   - Add narrowly scoped reusable approval rules.
   - Extend the same inbox shape to deployment and autonomy approvals.
 
