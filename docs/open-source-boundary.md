@@ -11,6 +11,7 @@ The open source project can include patterns that help any team operate agent wo
 - Context indexing, source summaries, compiled briefs, and token-budget controls.
 - Model-provider abstraction for BYO, OpenAI-compatible gateways, OpenAI, Bedrock, Kiro, and mock mode.
 - Adaptive routing patterns based on feedback, quality, fallback, latency, and cost.
+- Optional model-improvement orchestration for evals, dataset preparation, provider fine-tune commands, and promotion reports.
 - Receipts, artifacts, exports, dashboards, and MCP tools for observability.
 - Safety boundaries such as command allowlists, writable path allowlists, secret protection, dry-run defaults, and explicit write flags.
 - Generic developer workflow agents for architecture, implementation, testing, frontend, UX, security, docs, release readiness, and project maintenance.
@@ -24,6 +25,7 @@ Product-specific agent engines should keep their private intelligence outside th
 - Domain ontologies, business rules, customer workflows, and product-specific decision logic.
 - Private schemas, tenant logic, authorization rules, deployment assumptions, and operational runbooks.
 - Training data, customer-derived examples, private feedback, or production incidents.
+- Raw ML training infrastructure, GPU scheduling, model registries, and large model artifacts.
 - Product-specific agents whose value depends on non-public context.
 - Any generated tuning overlay that reveals private project behavior, priorities, users, customers, or architecture.
 

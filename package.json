@@ -33,6 +33,7 @@
     "agent-workflow.bundle.sig.json",
     ".env.example",
     "README.md",
+    "SECURITY.md",
     "LICENSE"
   ],
   "engines": {

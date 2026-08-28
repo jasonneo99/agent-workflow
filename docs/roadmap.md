@@ -13,6 +13,7 @@ operations layer for any project:
 - durable runs, receipts, artifacts, and exports
 - feedback memory and preference scorecards
 - safe tuning proposal workflows
+- optional model-improvement orchestration
 - MCP, CLI, dashboard, and IDE control surfaces
 
 The current center of gravity is local developer use cases: planning,
@@ -151,6 +152,13 @@ trust gaps.
   - Provide a dry-run graph showing stages, dependencies, permissions, and context budgets.
   - Add bundle compatibility checks and definition migrations.
   - Add contract tests for custom agents, workflows, and provider adapters.
+
+- [ ] Optional model-improvement workflow pack.
+  - Diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
+  - Prepare scrubbed eval cases and provider-specific fine-tune datasets only from explicitly approved project-local feedback.
+  - Orchestrate provider fine-tune jobs and candidate model comparisons when a project opts in and supplies its own provider credentials.
+  - Promote routing changes only after baseline-versus-candidate evaluation evidence is recorded.
+  - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
 ## Phase 5: Governed Distribution
 
