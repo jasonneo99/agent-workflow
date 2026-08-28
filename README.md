@@ -168,6 +168,7 @@ npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored ru
 npm run agentflow -- approvals # Review pending agent-requested actions
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
+npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
 npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
@@ -287,6 +288,7 @@ stages:
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Approval inbox** — review, approve, or reject agent-requested commands and file writes when project policy requires approval
 - **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary
+- **OpenTelemetry-style observability** — export run spans and metrics without prompt or artifact payload bodies
 - **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, and heartbeat monitoring together
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing

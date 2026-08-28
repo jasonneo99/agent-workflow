@@ -788,7 +788,24 @@ Use shared gates for generic developer workflow health. Keep product-specific
 ranking rubrics, customer-derived thresholds, and private scoring logic inside
 the project that owns them.
 
-## 18. Tuning Proposals
+## 18. Observability
+
+Use `observe` to export OpenTelemetry-compatible spans and metrics for a stored
+workflow run. The export includes run, stage, model-route, command, file-write,
+and rejection spans plus summary metrics for queue delay, model latency,
+quality, fallbacks, receipts, and artifacts.
+
+```bash
+npm run agentflow -- observe --run <run-id>
+npm run agentflow -- observe --run <run-id> --json
+```
+
+The dashboard run page includes an Observability panel and an `OTEL JSON` link.
+Prompt text and artifact payload bodies are not exported by default; use regular
+run artifacts locally when you need trusted detailed debugging. String metadata
+attributes are truncated and common secret-shaped values are redacted before export.
+
+## 19. Tuning Proposals
 
 Turn scorecard findings into reviewable prompt, context-budget, and routing suggestions:
 
@@ -798,7 +815,7 @@ npm run agentflow -- tuning-proposals --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact tuning proposal panel for the run's project. These are reviewable hints, not automatic edits.
 
-## 19. Apply Tuning Proposals
+## 20. Apply Tuning Proposals
 
 Create project-local overlays from selected tuning proposals without changing shared reusable agents or workflows:
 

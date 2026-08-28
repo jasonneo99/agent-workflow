@@ -68,6 +68,7 @@ import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 
 const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
@@ -1833,6 +1834,37 @@ program
   });
 
 program
+  .command("observe")
+  .description("Export OpenTelemetry-compatible spans and metrics for a workflow run")
+  .requiredOption("-r, --run <id>", "workflow run id")
+  .option("--json", "print OpenTelemetry-style JSON")
+  .action(async (options: { run: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = await loadObservabilityReport(options.run);
+    if (!report) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    console.log(formatObservabilityReport(report));
+  });
+
+program
   .command("gate")
   .description("Evaluate a workflow run against project-local quality, latency, fallback, and cost gates")
   .requiredOption("-r, --run <id>", "candidate workflow run id")
@@ -2640,6 +2672,22 @@ async function loadCostQualityReport(runId: string): Promise<CostQualityReport |
     tasks: details.tasks,
     receipts: details.receipts,
     artifacts
+  });
+}
+
+async function loadObservabilityReport(runId: string): Promise<ReturnType<typeof buildObservabilityReport> | null> {
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) {
+    return null;
+  }
+
+  const artifacts = await listArtifacts({ runId });
+  return buildObservabilityReport({
+    run: details.run,
+    tasks: details.tasks,
+    receipts: details.receipts,
+    artifacts,
+    version: program.version()
   });
 }
 
@@ -3755,6 +3803,24 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/observability") {
+    const runId = requestUrl.searchParams.get("id");
+    if (!runId) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing id");
+      return;
+    }
+    const report = await loadObservabilityReport(runId);
+    if (!report) {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Run not found");
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/preferences") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -3823,6 +3889,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const artifacts = await listArtifacts({ runId });
     const summary = await summarizeWorkflowRun(runId);
     const qualityReport = await loadCostQualityReport(runId);
+    const observabilityReport = buildObservabilityReport({
+      run: details.run,
+      tasks: details.tasks,
+      receipts: details.receipts,
+      artifacts,
+      version: program.version()
+    });
     const usageEstimate = qualityReport
       ? await buildRunUsageEstimate({
         run: details.run,
@@ -3843,6 +3916,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       artifacts,
       summary: summary.ok ? summary.value : null,
       qualityReport,
+      observabilityReport,
       usageEstimate,
       preferenceScorecard,
       tuningProposals
@@ -4561,6 +4635,7 @@ function renderRunDetailHtml(input: {
   artifacts: Awaited<ReturnType<typeof listArtifacts>>;
   summary: RunSummary | null;
   qualityReport: CostQualityReport | null;
+  observabilityReport: ObservabilityReport | null;
   usageEstimate: RunUsageEstimate | null;
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
@@ -4604,6 +4679,7 @@ function renderRunDetailHtml(input: {
       </div>
       <a class="button secondary" href="/api/run?id=${encodeURIComponent(input.run.id)}">JSON</a>
       <a class="button secondary" href="/api/quality?id=${encodeURIComponent(input.run.id)}">Quality JSON</a>
+      <a class="button secondary" href="/api/observability?id=${encodeURIComponent(input.run.id)}">OTEL JSON</a>
       <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
       <a class="button secondary" href="/api/tuning?project=${encodeURIComponent(input.run.projectRootUri)}">Tuning JSON</a>
     </div>
@@ -4642,6 +4718,10 @@ function renderRunDetailHtml(input: {
     <section class="panel">
       <h2>Cost & Quality</h2>
       ${input.qualityReport ? renderCostQualityHtml(input.qualityReport) : "<p>No routing data available.</p>"}
+    </section>
+    <section class="panel">
+      <h2>Observability</h2>
+      ${input.observabilityReport ? renderObservabilityHtml(input.observabilityReport) : "<p>No observability data available.</p>"}
     </section>
     <section class="panel">
       <h2>Token Savings Estimate</h2>
@@ -6597,6 +6677,25 @@ function renderCostQualityHtml(report: CostQualityReport): string {
     </table>
     <h3>Recommendations</h3>
     <ul>${recommendations}</ul>
+  `;
+}
+
+function renderObservabilityHtml(report: ObservabilityReport): string {
+  const spanCount = report.resourceSpans.flatMap((resource) => resource.scopeSpans.flatMap((scope) => scope.spans)).length;
+  const metricCount = report.resourceMetrics.flatMap((resource) => resource.scopeMetrics.flatMap((scope) => scope.metrics)).length;
+  return `
+    <div class="metric-grid">
+      ${metricCard("Run Duration", report.summary.runDurationMs === null ? "n/a" : `${report.summary.runDurationMs}ms`, "workflow wall time")}
+      ${metricCard("Queue Delay", report.summary.queueDelayMs === null ? "n/a" : `${report.summary.queueDelayMs}ms`, "created to first stage")}
+      ${metricCard("Model Latency", `${report.summary.totalModelLatencyMs}ms`, `avg ${report.summary.averageModelLatencyMs ?? "n/a"}ms`)}
+      ${metricCard("Spans", spanCount, `${metricCount} metrics`)}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Provider Calls</strong>${formatNumber(report.summary.providerCalls)}</div>
+      <div><strong>Fallbacks</strong>${formatNumber(report.summary.fallbackCount)}</div>
+      <div><strong>Compact Prompt</strong>${report.summary.estimatedCompactPromptTokens === null ? "n/a" : `${formatNumber(report.summary.estimatedCompactPromptTokens)} tokens`}</div>
+      <div><strong>Payload Export</strong>disabled</div>
+    </div>
   `;
 }
 

@@ -161,6 +161,23 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_observe",
+  {
+    title: "AgentFlow observe",
+    description: "Export OpenTelemetry-compatible spans and metrics for a workflow run.",
+    inputSchema: {
+      run: z.string().describe("Workflow run id."),
+      json: z.boolean().optional().describe("Return OpenTelemetry-style JSON.")
+    }
+  },
+  async ({ run, json }) => {
+    const args = ["observe", "--run", run];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_bundle_manifest",
   {
     title: "AgentFlow bundle manifest",

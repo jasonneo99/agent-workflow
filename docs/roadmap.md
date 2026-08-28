@@ -137,11 +137,12 @@ trust gaps.
   - Done: return machine-readable pass or fail results for CI.
   - Done: block bundle promotion when a protected metric regresses through the optional release gate hook.
 
-- [ ] OpenTelemetry-compatible observability.
-  - Emit traces and metrics across compilation, retrieval, queueing, provider calls, actions, and storage.
-  - Correlate workflow runs with provider requests and action receipts.
-  - Report queue delay, stage latency, retries, token use, cost, and failures.
-  - Keep prompt and artifact payload export disabled by default.
+- [x] OpenTelemetry-compatible observability.
+  - Done: export run, stage, model-route, command, file-write, and rejection spans from durable run evidence.
+  - Done: correlate workflow runs with provider requests, artifacts, and action receipts.
+  - Done: report queue delay, stage/model latency, fallback use, quality, compact prompt token estimates, receipts, artifacts, and failures.
+  - Done: keep prompt and artifact payload export disabled by default.
+  - Future extension: add optional OTLP collector/exporter wiring for teams that want live telemetry streams.
 
 - [ ] Incremental and event-driven context indexing.
   - Refresh only files changed since the last indexed commit.
