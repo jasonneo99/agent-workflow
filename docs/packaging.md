@@ -46,14 +46,19 @@ Allowed actions: Allow npm publish
 The workflow must exist at `.github/workflows/publish.yml`. It uses `id-token: write` so npm can verify the GitHub Actions OIDC identity. The release bundle still needs to be signed before publishing:
 
 ```bash
-npm version patch --no-git-tag-version
-npm run bundle-manifest -- --write
-npm run agentflow -- bundle-sign --private-key /Users/jasonmiller/.local/share/agent-workflow-release/signing-ed25519-private.pem --signer jasonneo99-release
-npm run validate
-npm run pack:check
+npm run release:prepare
 git add package.json package-lock.json agent-workflow.bundle.json agent-workflow.bundle.sig.json
 git commit -m "Prepare vX.Y.Z package release"
 git push origin master
 ```
 
 Then run the `Publish Package` workflow from GitHub Actions.
+
+`release:prepare` defaults to a patch bump and uses the local release signing key at `~/.local/share/agent-workflow-release/signing-ed25519-private.pem`. Override the default when needed:
+
+```bash
+npm run release:prepare -- minor
+npm run release:prepare -- 1.2.3
+npm run release:prepare -- --dry-run
+npm run release:prepare -- patch --signing-key /secure/release-private.pem --signer release@example.com
+```
