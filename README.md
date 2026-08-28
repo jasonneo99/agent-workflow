@@ -200,6 +200,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [User Guide](docs/user-guide.md): full install and usage guide
 - [Provider Matrix](docs/providers.md): BYO, OpenAI, Bedrock, OpenAI-compatible, and Kiro setup
 - [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
+- [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing
 - [Integration Examples](docs/integration-examples.md): copyable model-provider and IDE/client examples
 - [Scrubbed Examples](docs/examples/README.md): synthetic exports safe for docs and issue reports
 - [Bundle Manifest](agent-workflow.bundle.json): versioned reusable agent/workflow bundle checksum
