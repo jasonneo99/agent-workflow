@@ -510,6 +510,25 @@ npm run agentflow -- approvals --execute <approval-id> --actor "Your Name"
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --note "Not needed"
 ```
 
+Deployment and autonomy approvals use the same inbox. They record a human
+decision for a risky operation, but they do not execute a local command by
+themselves. Run the actual deployment or autonomy-changing command separately
+under project policy after approval.
+
+```bash
+npm run agentflow -- request-approval \
+  --project /path/to/project \
+  --type deployment \
+  --target production \
+  --rationale "Release candidate passed checks and needs owner approval."
+
+npm run agentflow -- request-approval \
+  --project /path/to/project \
+  --type autonomy \
+  --target "wide-open for local maintenance only" \
+  --rationale "Owner-approved maintenance window for trusted local automation."
+```
+
 Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
 
 ```yaml

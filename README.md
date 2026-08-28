@@ -166,6 +166,7 @@ npm run status                 # List recent runs
 npm run agentflow -- resume-run --run <id> # Resume unfinished stages from the last completed checkpoint
 npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored run metadata
 npm run agentflow -- approvals # Review pending agent-requested actions
+npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
 npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix

@@ -123,13 +123,13 @@ trust gaps.
   - In progress: resume and replay warn when project config, execution policy, bundle checksum, workflow definition, or selected source file hashes differ from queued run evidence.
   - Done: retried command and file-write actions use deterministic idempotency keys, skip duplicate side effects, and record reuse receipts that point to the original artifacts.
 
-- [ ] Human approval inbox for agent-requested actions.
-  - In progress: centralize pending command and file-write approvals in storage, CLI, JSON API, and dashboard.
-  - In progress: show each proposed action, rationale, policy decision, and payload hash.
-  - In progress: support approve once and reject decisions with receipt audit trails.
+- [x] Human approval inbox for agent-requested actions.
+  - Done: centralize pending command and file-write approvals in storage, CLI, JSON API, and dashboard.
+  - Done: show each proposed action, rationale, policy decision, and payload hash.
+  - Done: support approve once and reject decisions with receipt audit trails.
   - Done: execute approved local commands and file writes with current project policy rechecked and normal action receipts preserved.
   - Done: add narrowly scoped reusable approval rules for low-risk allowed actions.
-  - Extend the same inbox shape to deployment and autonomy approvals.
+  - Done: extend the same inbox shape to deployment and autonomy approvals.
 
 - [ ] Evaluation gates and regression budgets.
   - Define project-local quality, latency, fallback, and cost thresholds.

@@ -114,6 +114,10 @@ CREATE TABLE IF NOT EXISTS action_approvals (
 CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
 ON action_approvals(status, created_at);
 
+CREATE UNIQUE INDEX IF NOT EXISTS action_approvals_run_level_idempotency_idx
+ON action_approvals(run_id, action_type, idempotency_key)
+WHERE task_id IS NULL;
+
 CREATE TABLE IF NOT EXISTS artifacts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid REFERENCES workflow_runs(id),

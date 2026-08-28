@@ -22,7 +22,7 @@ type CommandResult = {
 const server = new McpServer(
   {
     name: "portable-agent-workflows",
-    version: "0.2.0"
+    version: "0.2.1"
   },
   {
     instructions:
@@ -82,9 +82,9 @@ server.registerTool(
   "agentflow_approvals",
   {
     title: "AgentFlow action approvals",
-    description: "List, approve, or reject agent-requested commands and file writes that require human approval.",
+    description: "List, approve, reject, or execute agent-requested actions that require human approval.",
     inputSchema: {
-      status: z.enum(["pending", "approved", "rejected", "all"]).optional(),
+      status: z.enum(["pending", "approved", "executed", "failed", "rejected", "all"]).optional(),
       run: z.string().optional().describe("Filter by workflow run id."),
       project: z.string().optional().describe("Filter by project directory."),
       approve: z.string().optional().describe("Approval id to approve."),
@@ -106,6 +106,32 @@ server.registerTool(
     if (actor) args.push("--actor", actor);
     if (note) args.push("--note", note);
     if (limit) args.push("--limit", String(limit));
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_request_approval",
+  {
+    title: "AgentFlow request approval",
+    description: "Create a run-level deployment or autonomy approval request in the shared approval inbox.",
+    inputSchema: {
+      project: z.string().describe("Project directory."),
+      type: z.enum(["deployment", "autonomy"]).describe("Kind of approval request."),
+      target: z.string().describe("Approval target, such as staging, production, or an autonomy level."),
+      rationale: z.string().describe("Why this approval is needed."),
+      workflow: z.string().optional().describe("Workflow context for the approval request."),
+      policyProfile: z.string().optional().describe("Execution policy profile snapshot to attach."),
+      actor: z.string().optional().describe("Person or tool requesting approval."),
+      json: z.boolean().optional().describe("Return request JSON.")
+    }
+  },
+  async ({ project, type, target, rationale, workflow, policyProfile, actor, json }) => {
+    const args = ["request-approval", "--project", project, "--type", type, "--target", target, "--rationale", rationale];
+    if (workflow) args.push("--workflow", workflow);
+    if (policyProfile) args.push("--policy-profile", policyProfile);
+    if (actor) args.push("--actor", actor);
     if (json) args.push("--json");
     return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
   }

@@ -44,6 +44,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
 - `agentflow_approvals`: list, approve, reject, or execute approved agent-requested actions.
+- `agentflow_request_approval`: create deployment or autonomy approval requests in the shared inbox.
 - `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
 - `agentflow_feedback`: record accepted, revised, or rejected feedback for a run.
 - `agentflow_preference_scorecard`: aggregate feedback and routing performance by workflow, stage, agent, provider, and tier.

@@ -122,6 +122,11 @@ export async function migrateStorage(): Promise<void> {
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
       ON action_approvals(status, created_at)
     `);
+    await client.query(`
+      CREATE UNIQUE INDEX IF NOT EXISTS action_approvals_run_level_idempotency_idx
+      ON action_approvals(run_id, action_type, idempotency_key)
+      WHERE task_id IS NULL
+    `);
   });
 }
 
@@ -1401,7 +1406,7 @@ const actionApprovalSelect = `
 
 export async function requestActionApproval(input: {
   runId: string;
-  taskId: string;
+  taskId?: string | null;
   stageId: string;
   agentId: string;
   actionType: string;
@@ -1425,7 +1430,7 @@ export async function requestActionApproval(input: {
          returning id::text, status`,
         [
           input.runId,
-          input.taskId,
+          input.taskId ?? null,
           input.stageId,
           input.agentId,
           input.actionType,
@@ -1468,13 +1473,56 @@ export async function requestActionApproval(input: {
          set content = excluded.content`,
         [
           input.runId,
-          input.taskId,
+          input.taskId ?? null,
           artifactUri,
           JSON.stringify(artifactContent)
         ]
       );
       await client.query("commit");
       return { approvalId, artifactUri, status: approval.rows[0].status };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function completeApprovalRequestRun(input: {
+  runId: string;
+  agentId: string;
+  summary: string;
+  metadata: Record<string, unknown>;
+}): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      await client.query(
+        `update workflow_tasks
+         set status = 'completed',
+             finished_at = now()
+         where run_id = $1::uuid
+           and status = 'queued'`,
+        [input.runId]
+      );
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, $2, 'approval_request_completed', $3, $4, $5)`,
+        [
+          input.runId,
+          input.agentId,
+          String(input.metadata.target ?? "approval-request"),
+          input.summary,
+          JSON.stringify(input.metadata)
+        ]
+      );
+      await client.query(
+        `update workflow_runs
+         set status = 'completed',
+             finished_at = now()
+         where id = $1::uuid`,
+        [input.runId]
+      );
+      await client.query("commit");
     } catch (error) {
       await client.query("rollback");
       throw error;

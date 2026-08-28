@@ -33,6 +33,7 @@ import { indexProjectFiles } from "../../../packages/project-indexer/src/index.j
 import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
   cancelWorkflowRun,
+  completeApprovalRequestRun,
   createWorkflowRun,
   decideActionApproval,
   dismissAllFailedWorkflowRuns,
@@ -52,6 +53,7 @@ import {
   migrateStorage,
   markActionApprovalExecution,
   recordRunAction,
+  requestActionApproval,
   requeueRunningWorkflowTasks,
   replayWorkflowRun,
   resumeWorkflowRunFromCheckpoint,
@@ -240,7 +242,7 @@ const workflowPresets: WorkflowPreset[] = [
 program
   .name("agentflow")
   .description("Portable, model-agnostic agent workflow runner")
-  .version("0.2.0");
+  .version("0.2.1");
 
 program
   .command("list")
@@ -1448,6 +1450,50 @@ program
         console.log(`  Decided: ${approval.decidedBy} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
       }
     }
+  });
+
+program
+  .command("request-approval")
+  .description("Create a run-level approval request for deployment or autonomy decisions")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("--type <type>", "deployment or autonomy")
+  .requiredOption("--target <target>", "approval target, such as staging, production, or autonomy level")
+  .requiredOption("--rationale <text>", "why this approval is needed")
+  .option("-w, --workflow <id>", "workflow context for the approval request")
+  .option("--policy-profile <name>", "execution policy profile snapshot to attach")
+  .option("--actor <name>", "person or tool requesting approval", "cli")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; type: string; target: string; rationale: string; workflow?: string; policyProfile?: string; actor: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const result = await requestRunLevelApproval({
+      projectPath: options.project,
+      type: options.type,
+      target: options.target,
+      rationale: options.rationale,
+      workflowId: options.workflow,
+      policyProfile: options.policyProfile,
+      actor: options.actor
+    });
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(result.title);
+    console.log(result.output);
   });
 
 program
@@ -4087,7 +4133,7 @@ function renderApprovalsHtml(
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
       <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
-      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
   const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
@@ -4107,7 +4153,7 @@ function renderApprovalsHtml(
       <div>
         <a href="/">Dashboard</a>
         <h1>Approvals</h1>
-        <p class="muted">Human inbox for agent-requested local commands and file writes when project policy requires approval.</p>
+        <p class="muted">Human inbox for agent-requested local commands, file writes, deployment decisions, and autonomy decisions.</p>
       </div>
       <a class="button secondary" href="/api/approvals?status=${encodeURIComponent(status)}">JSON</a>
     </div>
@@ -5836,6 +5882,143 @@ async function processDashboardApprovalAction(input: {
   };
 }
 
+async function requestRunLevelApproval(input: {
+  projectPath: string;
+  type: string;
+  target: string;
+  rationale: string;
+  workflowId?: string;
+  policyProfile?: string;
+  actor: string;
+}): Promise<DashboardFollowUpResult & { approvalId?: string }> {
+  const approvalType = input.type.trim().toLowerCase();
+  if (approvalType !== "deployment" && approvalType !== "autonomy") {
+    return { ok: false, error: "--type must be deployment or autonomy" };
+  }
+  const target = input.target.trim();
+  const rationale = input.rationale.trim();
+  if (!target) {
+    return { ok: false, error: "Approval target is required." };
+  }
+  if (!rationale) {
+    return { ok: false, error: "Approval rationale is required." };
+  }
+
+  const projectDir = path.resolve(process.cwd(), input.projectPath);
+  const configuredProject = await loadProjectConfig(projectDir);
+  let resolvedPolicy: ReturnType<typeof resolveExecutionPolicy>;
+  try {
+    resolvedPolicy = resolveExecutionPolicy(configuredProject, input.policyProfile);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+
+  const workflows = await loadWorkflows(rootDir);
+  const workflowId = input.workflowId ?? (approvalType === "deployment" ? "ship-release" : "wide-open-automation");
+  const workflow = resolveWorkflow(workflows, workflowId);
+  if (!workflow) {
+    return { ok: false, error: `Unknown workflow: ${workflowId}` };
+  }
+
+  const agents = await loadAgentRecords(rootDir);
+  const workflowRecords = await loadWorkflowRecords(rootDir);
+  await seedRegistry(agents, workflowRecords);
+
+  const actionType = approvalType === "deployment" ? "deployment" : "autonomy";
+  const runTask = approvalType === "deployment"
+    ? `Approval requested to deploy or release: ${target}`
+    : `Approval requested for autonomy change: ${target}`;
+  const payload = {
+    requestType: approvalType,
+    target,
+    requestedBy: input.actor,
+    policyProfile: resolvedPolicy.profile,
+    projectAutonomy: String(resolvedPolicy.project.project.autonomy),
+    workflowId: workflow.id,
+    requestedAt: new Date().toISOString()
+  };
+  const idempotencyKey = stableHash({
+    requestType: approvalType,
+    projectDir,
+    workflowId: workflow.id,
+    target,
+    rationale,
+    policySnapshotHash: resolvedPolicy.snapshotHash
+  });
+
+  const run = await createWorkflowRun({
+    projectName: resolvedPolicy.project.project.name,
+    projectRootUri: projectDir,
+    projectProfile: resolvedPolicy.project.project.autonomy === "wide-open" ? "enterprise" : "custom",
+    projectConfig: configuredProject,
+    workflow,
+    task: runTask,
+    autonomy: String(resolvedPolicy.project.project.autonomy),
+    policyProfile: resolvedPolicy.profile,
+    policySnapshot: resolvedPolicy.snapshot,
+    policySnapshotHash: resolvedPolicy.snapshotHash,
+    compiledBrief: [
+      "# Approval Request",
+      "",
+      `Type: ${approvalType}`,
+      `Target: ${target}`,
+      `Project: ${resolvedPolicy.project.project.name}`,
+      `Policy profile: ${resolvedPolicy.profile}`,
+      `Policy snapshot: ${resolvedPolicy.snapshotHash}`,
+      "",
+      "## Rationale",
+      rationale
+    ].join("\n"),
+    compiledBriefMetadata: {
+      approvalRequest: payload
+    }
+  });
+
+  const approval = await requestActionApproval({
+    runId: run.runId,
+    taskId: null,
+    stageId: `${approvalType}-approval`,
+    agentId: workflow.lead,
+    actionType,
+    target,
+    rationale,
+    policyDecision: {
+      approvalRequired: true,
+      requestType: approvalType,
+      policyProfile: resolvedPolicy.profile,
+      policySnapshotHash: resolvedPolicy.snapshotHash
+    },
+    payload,
+    idempotencyKey
+  });
+  await completeApprovalRequestRun({
+    runId: run.runId,
+    agentId: workflow.lead,
+    summary: `${approvalType} approval request queued for ${target}`,
+    metadata: {
+      ...payload,
+      target,
+      approvalId: approval.approvalId
+    }
+  });
+
+  return {
+    ok: true,
+    title: "Approval request queued",
+    runId: run.runId,
+    approvalId: approval.approvalId,
+    output: [
+      `Approval: ${approval.approvalId}`,
+      `Type: ${actionType}`,
+      `Target: ${target}`,
+      `Run: ${run.runId}`,
+      `Workflow context: ${workflow.id}`,
+      `Project: ${projectDir}`,
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
 async function executeApprovedAction(input: {
   approvalId: string;
   actor: string;
@@ -5859,6 +6042,21 @@ async function executeApprovedAction(input: {
   }
   if (approval.status !== "approved" && approval.status !== "failed") {
     return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
+  }
+
+  if (approval.actionType === "deployment" || approval.actionType === "autonomy") {
+    return {
+      ok: true,
+      title: "Approval decision recorded",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        `Action: ${approval.actionType}`,
+        `Target: ${approval.target}`,
+        "This approval records a human decision; it does not execute a local command.",
+        "Run any deployment or autonomy-changing command separately under project policy."
+      ].join("\n")
+    };
   }
 
   const project = await loadProjectConfig(approval.projectRootUri);
@@ -6647,6 +6845,10 @@ function metricCard(label: string, value: string | number, detail: string): stri
 function formatInlineCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts);
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(", ") : "none";
+}
+
+function isExecutableApprovalAction(actionType: string): boolean {
+  return actionType === "local_command" || actionType === "file_write";
 }
 
 function approvalDecisionForms(approvalId: string): string {
