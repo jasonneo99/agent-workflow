@@ -1,21 +1,18 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const defaultSigningKey = path.join(os.homedir(), ".local", "share", "agent-workflow-release", "signing-ed25519-private.pem");
-const defaultSigner = "jasonneo99-release";
 
 const args = process.argv.slice(2);
 const dryRun = takeFlag("--dry-run");
 const allowDirty = takeFlag("--allow-dirty");
 const skipTests = takeFlag("--skip-tests");
-const signingKey = takeOption("--signing-key") ?? process.env.AGENTFLOW_RELEASE_SIGNING_KEY ?? defaultSigningKey;
-const signer = takeOption("--signer") ?? process.env.AGENTFLOW_RELEASE_SIGNER ?? defaultSigner;
+const signingKey = takeOption("--signing-key") ?? process.env.AGENTFLOW_RELEASE_SIGNING_KEY ?? null;
+const signer = takeOption("--signer") ?? process.env.AGENTFLOW_RELEASE_SIGNER ?? null;
 const bump = args.shift() ?? "patch";
 
 if (args.length) {
@@ -35,10 +32,15 @@ function main() {
   console.log(`Agent Workflow release prepare`);
   console.log(`Current version: ${currentVersion}`);
   console.log(`Requested bump: ${bump}`);
-  console.log(`Signer: ${signer}`);
-  console.log(`Signing key: ${signingKey}`);
+  console.log(`Signer: ${signer ?? "not configured"}`);
+  console.log(`Signing key: ${signingKey ?? "not configured"}`);
 
-  if (!fs.existsSync(signingKey)) {
+  if (!signingKey || !signer) {
+    const message = "Release signing requires --signing-key and --signer, or AGENTFLOW_RELEASE_SIGNING_KEY and AGENTFLOW_RELEASE_SIGNER.";
+    if (!dryRun) fail(message);
+    console.log(`\n${message}`);
+    console.log("Dry-run output will use placeholder signing values.");
+  } else if (!fs.existsSync(signingKey)) {
     fail(`Signing key was not found: ${signingKey}`);
   }
 
@@ -76,9 +78,11 @@ function main() {
 }
 
 function printPlan() {
+  const key = signingKey ?? "/secure/release-private.pem";
+  const signerId = signer ?? "release@example.com";
   console.log(`npm version ${bump} --no-git-tag-version`);
   console.log("npm run bundle-manifest -- --write");
-  console.log(`npm run agentflow -- bundle-sign --private-key ${signingKey} --signer ${signer}`);
+  console.log(`npm run agentflow -- bundle-sign --private-key ${key} --signer ${signerId}`);
   console.log("npm run validate");
   console.log("npm run validate-examples");
   console.log("npm run typecheck");
