@@ -33,11 +33,13 @@ import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
   cancelWorkflowRun,
   createWorkflowRun,
+  decideActionApproval,
   dismissAllFailedWorkflowRuns,
   dismissFailedWorkflowRun,
   getArtifactByUri,
   getLatestMemory,
   getWorkflowRunDetails,
+  listActionApprovals,
   listArtifacts,
   listProjectFileSummaries,
   listProjectStorageSummaries,
@@ -1343,6 +1345,84 @@ program
     const runs = await listWorkflowRuns(Number.isFinite(limit) && limit > 0 ? limit : 10);
     for (const run of runs) {
       console.log(`${run.id} ${run.status} ${run.workflowId} - ${run.task}`);
+    }
+  });
+
+program
+  .command("approvals")
+  .description("List, approve, or reject pending agent-requested actions")
+  .option("--status <status>", "pending, approved, rejected, or all", "pending")
+  .option("-r, --run <id>", "filter by workflow run id")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("--approve <id>", "approval id to approve")
+  .option("--reject <id>", "approval id to reject")
+  .option("--actor <name>", "person or tool making the decision", "cli")
+  .option("--note <text>", "decision note")
+  .option("-l, --limit <number>", "number of approvals to show", "25")
+  .option("--json", "print JSON")
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; actor: string; note?: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.approve && options.reject) {
+      console.error("Choose --approve or --reject, not both.");
+      process.exitCode = 1;
+      return;
+    }
+
+    if (options.approve || options.reject) {
+      const approval = await decideActionApproval({
+        approvalId: options.approve ?? options.reject ?? "",
+        decision: options.approve ? "approved" : "rejected",
+        actor: options.actor,
+        note: options.note
+      });
+      if (!approval) {
+        console.error("Approval was not found or is no longer pending.");
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(approval, null, 2));
+        return;
+      }
+      console.log(`${approval.status}: ${approval.id}`);
+      console.log(`${approval.actionType} ${approval.target}`);
+      console.log(`Run: ${approval.runId}`);
+      return;
+    }
+
+    const status = options.status === "all" ? undefined : options.status;
+    const approvals = await listActionApprovals({
+      status,
+      runId: options.run,
+      projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      limit: parsePositiveInteger(options.limit, 25)
+    });
+    if (options.json) {
+      console.log(JSON.stringify(approvals, null, 2));
+      return;
+    }
+    if (!approvals.length) {
+      console.log("No action approvals found.");
+      return;
+    }
+    for (const approval of approvals) {
+      console.log(`${approval.id} ${approval.status} ${approval.actionType} ${approval.target}`);
+      console.log(`  Run: ${approval.runId} ${approval.workflowId}`);
+      console.log(`  Stage: ${approval.stageId} (${approval.agentId})`);
+      console.log(`  Project: ${approval.projectRootUri}`);
+      console.log(`  Rationale: ${approval.rationale}`);
+      if (approval.decidedBy) {
+        console.log(`  Decided: ${approval.decidedBy} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
+      }
     }
   });
 
@@ -3365,6 +3445,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardApprovalAction({
+      approvalId: form.get("approvalId") ?? "",
+      decision: form.get("decision") ?? "",
+      note: form.get("note") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/workflow-run") {
     const form = await readFormBody(request);
     const result = await queueDashboardWorkflowRun({
@@ -3456,6 +3548,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const queue = await listWorkflowQueue(100);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(queue, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/approvals") {
+    const status = requestUrl.searchParams.get("status") ?? "pending";
+    const approvals = await listActionApprovals({
+      status: status === "all" ? undefined : status,
+      runId: requestUrl.searchParams.get("run") ?? undefined,
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(approvals, null, 2));
     return;
   }
 
@@ -3618,6 +3723,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const queue = await listWorkflowQueue(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderQueueHtml(queue));
+    return;
+  }
+
+  if (requestUrl.pathname === "/approvals") {
+    const status = requestUrl.searchParams.get("status") ?? "pending";
+    const approvals = await listActionApprovals({
+      status: status === "all" ? undefined : status,
+      runId: requestUrl.searchParams.get("run") ?? undefined,
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    });
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderApprovalsHtml(approvals, status));
     return;
   }
 
@@ -3928,6 +4046,63 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
       window.addEventListener("pagehide", () => watcher.postMessage({ type: "stop" }), { once: true });
     })();
   </script>
+</body>
+</html>`;
+}
+
+function renderApprovalsHtml(
+  approvals: Awaited<ReturnType<typeof listActionApprovals>>,
+  status: string
+): string {
+  const rows = approvals.map((approval) => `
+    <tr>
+      <td>${escapeHtml(approval.id.slice(0, 8))}<br><span class="muted">${escapeHtml(approval.id)}</span></td>
+      <td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td>
+      <td>${escapeHtml(approval.actionType)}<br><span class="muted">${escapeHtml(approval.stageId)} (${escapeHtml(approval.agentId)})</span></td>
+      <td><code>${escapeHtml(approval.target)}</code><br><span class="muted">${escapeHtml(formatApprovalPayload(approval.payload))}</span></td>
+      <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
+      <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
+      <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+    </tr>
+  `).join("");
+  const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
+
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Approvals</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("approvals")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Approvals</h1>
+        <p class="muted">Human inbox for agent-requested local commands and file writes when project policy requires approval.</p>
+      </div>
+      <a class="button secondary" href="/api/approvals?status=${encodeURIComponent(status)}">JSON</a>
+    </div>
+    <section class="panel">
+      <div class="actions">
+        ${filterLink("pending", "Pending")}
+        ${filterLink("approved", "Approved")}
+        ${filterLink("rejected", "Rejected")}
+        ${filterLink("all", "All")}
+      </div>
+    </section>
+    <section class="panel">
+      <h2>Action Requests</h2>
+      <table>
+        <thead><tr><th>Approval</th><th>Status</th><th>Action</th><th>Target</th><th>Run</th><th>Project</th><th>Rationale</th><th>Decision</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"8\">No approvals found.</td></tr>"}</tbody>
+      </table>
+    </section>
+  </main>
 </body>
 </html>`;
 }
@@ -5594,6 +5769,44 @@ async function processDashboardQueueAction(input: {
   return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
 }
 
+async function processDashboardApprovalAction(input: {
+  approvalId: string;
+  decision: string;
+  note: string;
+}): Promise<DashboardFollowUpResult> {
+  const approvalId = input.approvalId.trim();
+  const decision = input.decision.trim();
+  if (!approvalId) {
+    return { ok: false, error: "Missing approval id." };
+  }
+  if (decision !== "approved" && decision !== "rejected") {
+    return { ok: false, error: "Decision must be approved or rejected." };
+  }
+  const approval = await decideActionApproval({
+    approvalId,
+    decision,
+    actor: "dashboard",
+    note: input.note.trim() || undefined
+  });
+  if (!approval) {
+    return { ok: false, error: "Approval was not found or is no longer pending." };
+  }
+  return {
+    ok: true,
+    title: `Action ${decision}`,
+    runId: approval.runId,
+    output: [
+      `Approval: ${approval.id}`,
+      `Action: ${approval.actionType}`,
+      `Target: ${approval.target}`,
+      `Run: ${approval.runId}`,
+      `Project: ${approval.projectRootUri}`,
+      "Decision receipt was recorded.",
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
 function safeDisplayUrl(value?: string): string | undefined {
   if (!value) {
     return undefined;
@@ -6168,10 +6381,11 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "projects" | "runs" | "evaluations" | "governance" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "governance" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
+    ["approvals", "/approvals", "Approvals"],
     ["projects", "/projects", "Projects"],
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
@@ -6207,6 +6421,29 @@ function metricCard(label: string, value: string | number, detail: string): stri
 function formatInlineCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts);
   return entries.length ? entries.map(([key, value]) => `${key}: ${value}`).join(", ") : "none";
+}
+
+function approvalDecisionForms(approvalId: string): string {
+  return `<div class="actions">
+    <form class="approval-form" method="post" action="/api/approval-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+      <input type="hidden" name="decision" value="approved">
+      <input name="note" aria-label="Approval note" placeholder="Optional note">
+      <button type="submit">Approve</button>
+    </form>
+    <form class="approval-form" method="post" action="/api/approval-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+      <input type="hidden" name="decision" value="rejected">
+      <input name="note" aria-label="Rejection note" placeholder="Optional note">
+      <button class="danger" type="submit">Reject</button>
+    </form>
+  </div>`;
+}
+
+function formatApprovalPayload(payload: Record<string, unknown>): string {
+  const hash = typeof payload.payloadHash === "string" ? payload.payloadHash.slice(0, 12) : "unknown";
+  const bytes = typeof payload.bytes === "number" ? `, ${formatNumber(payload.bytes)} bytes` : "";
+  return `payload hash ${hash}${bytes}`;
 }
 
 function formatNumber(value: number): string {
@@ -6289,6 +6526,8 @@ function dashboardCss(): string {
     .worker-form { display: inline-flex; }
     .dismiss-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
     .dismiss-form input { min-width: 140px; max-width: 190px; }
+    .approval-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+    .approval-form input { min-width: 120px; max-width: 180px; }
     .bulk-dismiss-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; align-items: end; }
     .bulk-dismiss-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .bulk-dismiss-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }

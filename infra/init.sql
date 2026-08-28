@@ -90,6 +90,30 @@ CREATE TABLE IF NOT EXISTS action_receipts (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS action_approvals (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid REFERENCES workflow_runs(id),
+  task_id uuid REFERENCES workflow_tasks(id),
+  stage_id text NOT NULL,
+  agent_id text REFERENCES agents(id),
+  action_type text NOT NULL,
+  target text NOT NULL,
+  status text NOT NULL DEFAULT 'pending',
+  rationale text NOT NULL,
+  policy_decision jsonb NOT NULL DEFAULT '{}',
+  payload jsonb NOT NULL DEFAULT '{}',
+  idempotency_key text NOT NULL,
+  decided_by text,
+  decided_at timestamptz,
+  decision_note text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_id, task_id, action_type, idempotency_key)
+);
+
+CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
+ON action_approvals(status, created_at);
+
 CREATE TABLE IF NOT EXISTS artifacts (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid REFERENCES workflow_runs(id),

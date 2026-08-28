@@ -59,6 +59,8 @@ Agent Workflow should keep these guarantees easy to inspect and test:
 - project-specific context stays in the target project
 - reusable agents and workflows remain provider-neutral
 - risky commands and file writes pass project policy before execution
+- approval-required command and file-write requests are stored as pending inbox items instead of running immediately
+- approval decisions create audit receipts and do not bypass project command or write allowlists
 - meaningful automation actions produce receipts
 - live provider use is explicit and visible
 - secrets are never printed, exported, or committed

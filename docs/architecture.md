@@ -56,6 +56,8 @@ Local commands and file writes are project-policy controlled.
 - stdout/stderr are bounded
 - every execution records an action receipt and command-output artifact
 - worker stages may request commands, but the same project policy gate applies
+- when policy requires approval, allowed action requests are stored in the approval inbox and are not executed immediately
+- approval decisions record receipts; approval does not bypass command or write policy
 - writable paths are limited by `allowed_write_paths` and `blocked_write_paths`
 - file writes must stay inside the project root and below `max_write_bytes`
 - every accepted file write records a receipt with before/after hashes

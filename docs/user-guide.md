@@ -498,6 +498,17 @@ The Queue page shows queued, running, and failed workflow runs that need attenti
 
 ![Queue control panel](assets/screenshots/dashboard-queue.png)
 
+The Approvals page shows pending, approved, and rejected agent-requested actions. When `require_approval_for_external_actions` is true, allowed command and file-write requests are written to the inbox instead of executed immediately. Approval decisions record receipts, but they do not bypass project policy.
+
+CLI equivalents:
+
+```bash
+npm run agentflow -- approvals
+npm run agentflow -- approvals --status all
+npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --note "Looks safe"
+npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --note "Not needed"
+```
+
 While the Queue page is open, a browser Web Worker watches `/api/queue` and refreshes the view only when task progress changes. It polls active queues every two seconds and backs off to ten seconds when idle. This watcher is read-only; the managed server-side worker remains responsible for claiming and executing tasks.
 
 The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
@@ -584,6 +595,7 @@ agentflow_summarize_run
 agentflow_schedule
 agentflow_worker
 agentflow_status
+agentflow_approvals
 agentflow_quality_report
 agentflow_feedback
 agentflow_preference_scorecard
@@ -739,7 +751,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next improvements focus on reliable workflow operations: checkpointed resume and replay, human action approvals, and CI evaluation gates. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvements focus on reliable workflow operations: completing human action approvals, CI evaluation gates, and observability. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

@@ -79,6 +79,37 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_approvals",
+  {
+    title: "AgentFlow action approvals",
+    description: "List, approve, or reject agent-requested commands and file writes that require human approval.",
+    inputSchema: {
+      status: z.enum(["pending", "approved", "rejected", "all"]).optional(),
+      run: z.string().optional().describe("Filter by workflow run id."),
+      project: z.string().optional().describe("Filter by project directory."),
+      approve: z.string().optional().describe("Approval id to approve."),
+      reject: z.string().optional().describe("Approval id to reject."),
+      actor: z.string().optional().describe("Person or tool making the decision."),
+      note: z.string().optional().describe("Decision note."),
+      limit: z.number().int().positive().max(100).optional(),
+      json: z.boolean().optional().describe("Return approval JSON.")
+    }
+  },
+  async ({ status, run, project, approve, reject, actor, note, limit, json }) => {
+    const args = ["approvals", "--status", status ?? "pending"];
+    if (run) args.push("--run", run);
+    if (project) args.push("--project", project);
+    if (approve) args.push("--approve", approve);
+    if (reject) args.push("--reject", reject);
+    if (actor) args.push("--actor", actor);
+    if (note) args.push("--note", note);
+    if (limit) args.push("--limit", String(limit));
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_bundle_manifest",
   {
     title: "AgentFlow bundle manifest",

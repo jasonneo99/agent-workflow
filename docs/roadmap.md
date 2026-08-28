@@ -124,10 +124,12 @@ trust gaps.
   - Done: retried command and file-write actions use deterministic idempotency keys, skip duplicate side effects, and record reuse receipts that point to the original artifacts.
 
 - [ ] Human approval inbox for agent-requested actions.
-  - Centralize pending command, file-write, deployment, and autonomy approvals.
-  - Show each proposed action, rationale, policy decision, and expected impact.
-  - Support approve once, reject, or create a narrowly scoped reusable rule.
-  - Preserve an immutable approval audit trail.
+  - In progress: centralize pending command and file-write approvals in storage, CLI, JSON API, and dashboard.
+  - In progress: show each proposed action, rationale, policy decision, and payload hash.
+  - In progress: support approve once and reject decisions with receipt audit trails.
+  - Add execution of approved local actions without bypassing project policy.
+  - Add narrowly scoped reusable approval rules.
+  - Extend the same inbox shape to deployment and autonomy approvals.
 
 - [ ] Evaluation gates and regression budgets.
   - Define project-local quality, latency, fallback, and cost thresholds.

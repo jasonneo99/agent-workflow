@@ -96,6 +96,32 @@ export async function migrateStorage(): Promise<void> {
       CREATE INDEX IF NOT EXISTS artifacts_run_kind_idx
       ON artifacts(run_id, kind, created_at)
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS action_approvals (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid REFERENCES workflow_runs(id),
+        task_id uuid REFERENCES workflow_tasks(id),
+        stage_id text NOT NULL,
+        agent_id text REFERENCES agents(id),
+        action_type text NOT NULL,
+        target text NOT NULL,
+        status text NOT NULL DEFAULT 'pending',
+        rationale text NOT NULL,
+        policy_decision jsonb NOT NULL DEFAULT '{}',
+        payload jsonb NOT NULL DEFAULT '{}',
+        idempotency_key text NOT NULL,
+        decided_by text,
+        decided_at timestamptz,
+        decision_note text,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(run_id, task_id, action_type, idempotency_key)
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
+      ON action_approvals(status, created_at)
+    `);
   });
 }
 
@@ -1323,6 +1349,238 @@ export interface ArtifactStatus {
   uri: string;
   content: Record<string, unknown>;
   createdAt: string;
+}
+
+export interface ActionApprovalStatus {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  stageId: string;
+  agentId: string;
+  actionType: string;
+  target: string;
+  status: string;
+  rationale: string;
+  policyDecision: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+  decidedBy: string | null;
+  decidedAt: string | null;
+  decisionNote: string | null;
+  createdAt: string;
+  updatedAt: string;
+  workflowId: string;
+  workflowTask: string;
+  projectName: string;
+  projectRootUri: string;
+}
+
+export async function requestActionApproval(input: {
+  runId: string;
+  taskId: string;
+  stageId: string;
+  agentId: string;
+  actionType: string;
+  target: string;
+  rationale: string;
+  policyDecision: Record<string, unknown>;
+  payload: Record<string, unknown>;
+  idempotencyKey: string;
+}): Promise<{ approvalId: string; artifactUri: string; status: string }> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const approval = await client.query<{ id: string; status: string }>(
+        `insert into action_approvals (
+           run_id, task_id, stage_id, agent_id, action_type, target,
+           rationale, policy_decision, payload, idempotency_key
+         )
+         values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)
+         on conflict (run_id, task_id, action_type, idempotency_key) do update
+         set updated_at = now()
+         returning id::text, status`,
+        [
+          input.runId,
+          input.taskId,
+          input.stageId,
+          input.agentId,
+          input.actionType,
+          input.target,
+          input.rationale,
+          JSON.stringify(input.policyDecision),
+          JSON.stringify(input.payload),
+          input.idempotencyKey
+        ]
+      );
+      const approvalId = approval.rows[0].id;
+      const artifactContent = {
+        approvalId,
+        actionType: input.actionType,
+        target: input.target,
+        rationale: input.rationale,
+        policyDecision: input.policyDecision,
+        payload: input.payload,
+        idempotencyKey: input.idempotencyKey,
+        requestedByTaskId: input.taskId,
+        requestedByStageId: input.stageId,
+        status: approval.rows[0].status
+      };
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, $2, 'action_approval_requested', $3, $4, $5)`,
+        [
+          input.runId,
+          input.agentId,
+          input.target,
+          `Approval requested for ${input.actionType}: ${input.target}`,
+          JSON.stringify(artifactContent)
+        ]
+      );
+      const artifactUri = `db://workflow_runs/${input.runId}/action_approval/${input.idempotencyKey}`;
+      await client.query(
+        `insert into artifacts (run_id, task_id, kind, uri, content)
+         values ($1::uuid, $2::uuid, 'action_approval', $3, $4)
+         on conflict (uri) do update
+         set content = excluded.content`,
+        [
+          input.runId,
+          input.taskId,
+          artifactUri,
+          JSON.stringify(artifactContent)
+        ]
+      );
+      await client.query("commit");
+      return { approvalId, artifactUri, status: approval.rows[0].status };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function listActionApprovals(input: {
+  status?: string;
+  runId?: string;
+  projectRootUri?: string;
+  limit?: number;
+} = {}): Promise<ActionApprovalStatus[]> {
+  return withClient(async (client) => {
+    const result = await client.query<ActionApprovalStatus>(
+      `select
+         aa.id::text,
+         aa.run_id::text as "runId",
+         aa.task_id::text as "taskId",
+         aa.stage_id as "stageId",
+         aa.agent_id as "agentId",
+         aa.action_type as "actionType",
+         aa.target,
+         aa.status,
+         aa.rationale,
+         aa.policy_decision as "policyDecision",
+         aa.payload,
+         aa.idempotency_key as "idempotencyKey",
+         aa.decided_by as "decidedBy",
+         aa.decided_at::text as "decidedAt",
+         aa.decision_note as "decisionNote",
+         aa.created_at::text as "createdAt",
+         aa.updated_at::text as "updatedAt",
+         wr.workflow_id as "workflowId",
+         wr.task as "workflowTask",
+         p.name as "projectName",
+         p.root_uri as "projectRootUri"
+       from action_approvals aa
+       join workflow_runs wr on wr.id = aa.run_id
+       join projects p on p.id = wr.project_id
+       where ($1::text is null or aa.status = $1)
+         and ($2::uuid is null or aa.run_id = $2::uuid)
+         and ($3::text is null or p.root_uri = $3)
+       order by
+         case aa.status when 'pending' then 0 when 'approved' then 1 when 'rejected' then 2 else 3 end,
+         aa.created_at desc
+       limit $4`,
+      [input.status ?? null, input.runId ?? null, input.projectRootUri ?? null, input.limit ?? 50]
+    );
+    return result.rows;
+  });
+}
+
+export async function decideActionApproval(input: {
+  approvalId: string;
+  decision: "approved" | "rejected";
+  actor: string;
+  note?: string;
+}): Promise<ActionApprovalStatus | null> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<ActionApprovalStatus>(
+        `update action_approvals aa
+         set status = $2,
+             decided_by = $3,
+             decided_at = now(),
+             decision_note = $4,
+             updated_at = now()
+         from workflow_runs wr, projects p
+         where aa.id = $1::uuid
+           and aa.status = 'pending'
+           and wr.id = aa.run_id
+           and p.id = wr.project_id
+         returning
+           aa.id::text,
+           aa.run_id::text as "runId",
+           aa.task_id::text as "taskId",
+           aa.stage_id as "stageId",
+           aa.agent_id as "agentId",
+           aa.action_type as "actionType",
+           aa.target,
+           aa.status,
+           aa.rationale,
+           aa.policy_decision as "policyDecision",
+           aa.payload,
+           aa.idempotency_key as "idempotencyKey",
+           aa.decided_by as "decidedBy",
+           aa.decided_at::text as "decidedAt",
+           aa.decision_note as "decisionNote",
+           aa.created_at::text as "createdAt",
+           aa.updated_at::text as "updatedAt",
+           wr.workflow_id as "workflowId",
+           wr.task as "workflowTask",
+           p.name as "projectName",
+           p.root_uri as "projectRootUri"`,
+        [input.approvalId, input.decision, input.actor, input.note ?? null]
+      );
+      const approval = result.rows[0];
+      if (!approval) {
+        await client.query("rollback");
+        return null;
+      }
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, $2, $3, $4, $5, $6)`,
+        [
+          approval.runId,
+          approval.agentId,
+          `action_approval_${input.decision}`,
+          approval.target,
+          `${input.decision} by ${input.actor}${input.note ? `: ${input.note}` : ""}`,
+          JSON.stringify({
+            approvalId: approval.id,
+            decision: input.decision,
+            actor: input.actor,
+            note: input.note ?? "",
+            actionType: approval.actionType,
+            target: approval.target,
+            idempotencyKey: approval.idempotencyKey
+          })
+        ]
+      );
+      await client.query("commit");
+      return approval;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 }
 
 export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus[]> {

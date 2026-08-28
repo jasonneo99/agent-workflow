@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
-import { executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
+import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
+import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { providerFromEnv } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
@@ -10,7 +10,8 @@ import {
   completeWorkflowTask,
   findRunActionByIdempotencyKey,
   failWorkflowTask,
-  recordRunAction
+  recordRunAction,
+  requestActionApproval
 } from "../../storage/src/postgres.js";
 
 export interface WorkerResult {
@@ -126,6 +127,63 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
           continue;
         }
 
+        if (project.policies.require_approval_for_external_actions) {
+          try {
+            assertCommandAllowed(commandLine, project);
+          } catch (error) {
+            const rejectionArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "local_command_rejected",
+              target: commandLine,
+              summary: error instanceof Error ? error.message : String(error),
+              artifactKind: "action_rejection",
+              artifactContent: {
+                actionType: "local_command",
+                target: commandLine,
+                error: error instanceof Error ? error.message : String(error),
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              }
+            });
+            actionResults.push({
+              type: "local_command_rejected",
+              commandLine,
+              artifactUri: rejectionArtifactUri,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            continue;
+          }
+          const approval = await requestActionApproval({
+            runId: task.runId,
+            taskId: task.taskId,
+            stageId: task.stageId,
+            agentId: task.agentId,
+            actionType: "local_command",
+            target: normalizeActionText(commandLine),
+            rationale: `Policy requires approval before executing command requested by ${task.agentId} during ${task.stageId}.`,
+            policyDecision: {
+              approvalRequired: true,
+              allowedByPolicy: true,
+              policyProfile: project.execution.policy_profile
+            },
+            payload: {
+              commandLine: normalizeActionText(commandLine),
+              payloadHash: hashText(normalizeActionText(commandLine))
+            },
+            idempotencyKey: commandIdempotencyKey
+          });
+          actionResults.push({
+            type: "local_command_approval_pending",
+            commandLine,
+            approvalId: approval.approvalId,
+            artifactUri: approval.artifactUri,
+            status: approval.status
+          });
+          continue;
+        }
+
         let commandResult;
         try {
           commandResult = await executeAllowedCommand({
@@ -224,6 +282,64 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
             path: fileWrite.path,
             artifactUri: previousWrite.uri,
             reuseArtifactUri
+          });
+          continue;
+        }
+
+        if (project.policies.require_approval_for_external_actions) {
+          try {
+            assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
+          } catch (error) {
+            const rejectionArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "file_write_rejected",
+              target: fileWrite.path,
+              summary: error instanceof Error ? error.message : String(error),
+              artifactKind: "action_rejection",
+              artifactContent: {
+                actionType: "file_write",
+                target: fileWrite.path,
+                error: error instanceof Error ? error.message : String(error),
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              }
+            });
+            actionResults.push({
+              type: "file_write_rejected",
+              path: fileWrite.path,
+              artifactUri: rejectionArtifactUri,
+              error: error instanceof Error ? error.message : String(error)
+            });
+            continue;
+          }
+          const approval = await requestActionApproval({
+            runId: task.runId,
+            taskId: task.taskId,
+            stageId: task.stageId,
+            agentId: task.agentId,
+            actionType: "file_write",
+            target: fileWrite.path,
+            rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
+            policyDecision: {
+              approvalRequired: true,
+              allowedByPolicy: true,
+              policyProfile: project.execution.policy_profile
+            },
+            payload: {
+              relativePath: fileWrite.path,
+              bytes: Buffer.byteLength(fileWrite.content, "utf8"),
+              payloadHash: hashText(fileWrite.content)
+            },
+            idempotencyKey: fileWriteIdempotencyKey
+          });
+          actionResults.push({
+            type: "file_write_approval_pending",
+            path: fileWrite.path,
+            approvalId: approval.approvalId,
+            artifactUri: approval.artifactUri,
+            status: approval.status
           });
           continue;
         }
@@ -343,6 +459,10 @@ export function actionIdempotencyKey(input: {
 
 function normalizeActionText(value: string): string {
   return value.trim().replace(/\s+/g, " ");
+}
+
+function hashText(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
 }
 
 export async function runWorkerWatch(input: {
