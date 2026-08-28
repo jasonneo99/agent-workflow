@@ -35,7 +35,7 @@ npm run provider-check
 docker compose -f infra/docker-compose.yml up -d
 npm run doctor
 npm run bootstrap-storage
-npm run validate
+npm run check
 npm run bundle-manifest
 ```
 

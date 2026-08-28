@@ -7,6 +7,12 @@ This guide separates contributor checks from maintainer-only publishing. Release
 Contributors can verify a checkout without release credentials:
 
 ```bash
+npm run check
+```
+
+For release-specific readiness checks:
+
+```bash
 npm run release:check -- --allow-current-version
 ```
 

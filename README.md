@@ -138,6 +138,7 @@ templates/       — Project initialization templates
 
 ```bash
 npm run setup                  # Interactive onboarding
+npm run check                  # Contributor checks before opening a PR
 npm run release:check -- --allow-current-version # Verify release readiness without changing files
 npm run release:prepare -- --dry-run # Preview signed npm release prep
 npm run provider-check         # Verify model provider
@@ -289,7 +290,7 @@ stages:
 1. Fork the repo
 2. Create a feature branch
 3. Check the [Open Source Boundary](docs/open-source-boundary.md) before adding product-specific agent behavior
-4. Run `npm run validate` and `npm run typecheck` before submitting
+4. Run `npm run check` before submitting
 5. Open a PR with a clear description of what changed and why
 
 ## License

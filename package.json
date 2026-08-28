@@ -44,6 +44,7 @@
   "scripts": {
     "setup": "tsx apps/cli/src/setup.ts",
     "build": "tsc",
+    "check": "npm run validate && npm run validate-examples && npm run typecheck && npm test",
     "prepack": "npm run build",
     "pack:check": "node scripts/verify-package.mjs",
     "release:check": "node scripts/release-check.mjs",
