@@ -138,6 +138,7 @@ templates/       — Project initialization templates
 
 ```bash
 npm run setup                  # Interactive onboarding
+npm run release:check -- --allow-current-version # Verify release readiness without changing files
 npm run release:prepare -- --dry-run # Preview signed npm release prep
 npm run provider-check         # Verify model provider
 npm run validate               # Validate agent/workflow definitions

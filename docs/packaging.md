@@ -22,9 +22,12 @@ Installed-package setup writes provider configuration to `~/.config/agent-workfl
 ```bash
 npm run build
 npm run pack:check
+npm run release:check -- --allow-current-version
 ```
 
 `pack:check` verifies the dry-run package contents and executes the compiled CLI against the packaged runtime layout. The `prepack` lifecycle rebuilds JavaScript before creating a package.
+
+`release:check` is read-only. It verifies repository cleanliness and sync, bundle manifest/signature consistency, Trusted Publisher workflow configuration, package contents, npm published-version readiness, local npm auth status, and the standard validation/test commands. Use `--allow-current-version` when checking a post-release checkout where the local package version is already published. Use `--allow-dirty` only when testing the checker while editing.
 
 Publishing changes external registry state and remains an explicit release step. Before `npm publish`, update the version, run repository validation and package verification, inspect the dry-run contents, and confirm npm authentication and package ownership.
 
