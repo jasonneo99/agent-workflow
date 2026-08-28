@@ -1,0 +1,16 @@
+version: 1
+id: local-developer-quality
+description: Default local developer gate for workflow quality, latency, fallback, and cost discipline.
+thresholds:
+  allowed_statuses:
+    - completed
+  minimum_average_quality: 0.7
+  maximum_quality_failures: 0
+  maximum_fallbacks: 1
+  maximum_average_latency_ms: 30000
+  maximum_high_cost_stages: 1
+regression_budgets:
+  maximum_quality_drop: 0.1
+  maximum_average_latency_increase_ms: 10000
+  maximum_fallback_increase: 1
+  maximum_high_cost_stage_increase: 1

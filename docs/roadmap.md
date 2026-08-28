@@ -131,11 +131,11 @@ trust gaps.
   - Done: add narrowly scoped reusable approval rules for low-risk allowed actions.
   - Done: extend the same inbox shape to deployment and autonomy approvals.
 
-- [ ] Evaluation gates and regression budgets.
-  - Define project-local quality, latency, fallback, and cost thresholds.
-  - Compare candidate bundles, prompts, and routing changes against a pinned baseline.
-  - Return machine-readable pass or fail results for CI.
-  - Block bundle promotion when a protected metric regresses.
+- [x] Evaluation gates and regression budgets.
+  - Done: define project-local quality, latency, fallback, and cost thresholds.
+  - Done: compare candidate runs against a pinned or supplied baseline.
+  - Done: return machine-readable pass or fail results for CI.
+  - Done: block bundle promotion when a protected metric regresses through the optional release gate hook.
 
 - [ ] OpenTelemetry-compatible observability.
   - Emit traces and metrics across compilation, retrieval, queueing, provider calls, actions, and storage.

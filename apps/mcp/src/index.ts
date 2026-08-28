@@ -138,6 +138,29 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_gate",
+  {
+    title: "AgentFlow evaluation gate",
+    description: "Evaluate a workflow run against project-local quality, latency, fallback, and cost gates.",
+    inputSchema: {
+      run: z.string().describe("Candidate workflow run id."),
+      project: z.string().optional().describe("Project directory; defaults to the run project."),
+      gate: z.string().optional().describe("Gate YAML file; defaults to <project>/.agent-workflow/evaluation-gates.yaml."),
+      baselineRun: z.string().optional().describe("Baseline workflow run id for regression budgets."),
+      json: z.boolean().optional().describe("Return gate JSON.")
+    }
+  },
+  async ({ run, project, gate, baselineRun, json }) => {
+    const args = ["gate", "--run", run];
+    if (project) args.push("--project", project);
+    if (gate) args.push("--gate", gate);
+    if (baselineRun) args.push("--baseline-run", baselineRun);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_bundle_manifest",
   {
     title: "AgentFlow bundle manifest",

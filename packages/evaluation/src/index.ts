@@ -40,10 +40,54 @@ export const evaluationScoringProfileSchema = z.object({
   latency_budget_ms: z.number().positive().default(30000)
 });
 
+export const evaluationGateSchema = z.object({
+  version: z.literal(1).default(1),
+  id: z.string().min(1),
+  description: z.string().default(""),
+  baseline_run_id: z.string().min(1).optional(),
+  thresholds: z.object({
+    allowed_statuses: z.array(z.string().min(1)).default(["completed"]),
+    minimum_average_quality: z.number().min(0).max(1).optional(),
+    maximum_quality_failures: z.number().int().nonnegative().optional(),
+    maximum_fallbacks: z.number().int().nonnegative().optional(),
+    maximum_average_latency_ms: z.number().positive().optional(),
+    maximum_total_latency_ms: z.number().positive().optional(),
+    maximum_high_cost_stages: z.number().int().nonnegative().optional(),
+    minimum_byo_savings_stages: z.number().int().nonnegative().optional()
+  }).default({ allowed_statuses: ["completed"] }),
+  regression_budgets: z.object({
+    maximum_quality_drop: z.number().min(0).max(1).optional(),
+    maximum_average_latency_increase_ms: z.number().nonnegative().optional(),
+    maximum_fallback_increase: z.number().int().nonnegative().optional(),
+    maximum_high_cost_stage_increase: z.number().int().nonnegative().optional()
+  }).default({})
+});
+
 export type EvaluationSuite = z.infer<typeof evaluationSuiteSchema>;
 export type EvaluationCase = EvaluationSuite["cases"][number];
 export type EvaluationVariant = EvaluationSuite["variants"][number];
 export type EvaluationScoringProfile = z.infer<typeof evaluationScoringProfileSchema>;
+export type EvaluationGate = z.infer<typeof evaluationGateSchema>;
+
+export interface EvaluationGateCheck {
+  id: string;
+  metric: string;
+  passed: boolean;
+  actual: string | number | null;
+  expected: string | number;
+  severity: "error";
+}
+
+export interface EvaluationGateReport {
+  gateId: string;
+  description: string;
+  generatedAt: string;
+  candidateRunId: string;
+  baselineRunId: string | null;
+  passed: boolean;
+  checks: EvaluationGateCheck[];
+  summary: string[];
+}
 
 export interface EvaluationObservation {
   caseId: string;
@@ -222,6 +266,168 @@ export function formatEvaluationReport(report: EvaluationReport): string {
   ].join("\n");
 }
 
+export function buildEvaluationGateReport(input: {
+  gate: EvaluationGate;
+  candidate: CostQualityReport;
+  baseline?: CostQualityReport | null;
+}): EvaluationGateReport {
+  const checks: EvaluationGateCheck[] = [];
+  const thresholds = input.gate.thresholds;
+  const budgets = input.gate.regression_budgets;
+  const highCostStages = countHighCostStages(input.candidate);
+  const baselineHighCostStages = input.baseline ? countHighCostStages(input.baseline) : null;
+
+  addCheck(checks, {
+    id: "status",
+    metric: "status",
+    actual: input.candidate.status,
+    expected: thresholds.allowed_statuses.join(", "),
+    passed: thresholds.allowed_statuses.includes(input.candidate.status)
+  });
+  if (thresholds.minimum_average_quality !== undefined) {
+    addCheck(checks, {
+      id: "minimum_average_quality",
+      metric: "averageQuality",
+      actual: input.candidate.averageQuality,
+      expected: `>= ${thresholds.minimum_average_quality}`,
+      passed: input.candidate.averageQuality !== null && input.candidate.averageQuality >= thresholds.minimum_average_quality
+    });
+  }
+  if (thresholds.maximum_quality_failures !== undefined) {
+    addCheck(checks, {
+      id: "maximum_quality_failures",
+      metric: "qualityFailCount",
+      actual: input.candidate.qualityFailCount,
+      expected: `<= ${thresholds.maximum_quality_failures}`,
+      passed: input.candidate.qualityFailCount <= thresholds.maximum_quality_failures
+    });
+  }
+  if (thresholds.maximum_fallbacks !== undefined) {
+    addCheck(checks, {
+      id: "maximum_fallbacks",
+      metric: "fallbackCount",
+      actual: input.candidate.fallbackCount,
+      expected: `<= ${thresholds.maximum_fallbacks}`,
+      passed: input.candidate.fallbackCount <= thresholds.maximum_fallbacks
+    });
+  }
+  if (thresholds.maximum_average_latency_ms !== undefined) {
+    addCheck(checks, {
+      id: "maximum_average_latency_ms",
+      metric: "averageLatencyMs",
+      actual: input.candidate.averageLatencyMs,
+      expected: `<= ${thresholds.maximum_average_latency_ms}`,
+      passed: input.candidate.averageLatencyMs !== null && input.candidate.averageLatencyMs <= thresholds.maximum_average_latency_ms
+    });
+  }
+  if (thresholds.maximum_total_latency_ms !== undefined) {
+    addCheck(checks, {
+      id: "maximum_total_latency_ms",
+      metric: "totalLatencyMs",
+      actual: input.candidate.totalLatencyMs,
+      expected: `<= ${thresholds.maximum_total_latency_ms}`,
+      passed: input.candidate.totalLatencyMs <= thresholds.maximum_total_latency_ms
+    });
+  }
+  if (thresholds.maximum_high_cost_stages !== undefined) {
+    addCheck(checks, {
+      id: "maximum_high_cost_stages",
+      metric: "highCostStages",
+      actual: highCostStages,
+      expected: `<= ${thresholds.maximum_high_cost_stages}`,
+      passed: highCostStages <= thresholds.maximum_high_cost_stages
+    });
+  }
+  if (thresholds.minimum_byo_savings_stages !== undefined) {
+    addCheck(checks, {
+      id: "minimum_byo_savings_stages",
+      metric: "estimatedByoSavingsStages",
+      actual: input.candidate.estimatedByoSavingsStages,
+      expected: `>= ${thresholds.minimum_byo_savings_stages}`,
+      passed: input.candidate.estimatedByoSavingsStages >= thresholds.minimum_byo_savings_stages
+    });
+  }
+
+  if (input.baseline) {
+    if (budgets.maximum_quality_drop !== undefined) {
+      const qualityDrop = input.baseline.averageQuality === null || input.candidate.averageQuality === null
+        ? null
+        : round(input.baseline.averageQuality - input.candidate.averageQuality);
+      addCheck(checks, {
+        id: "maximum_quality_drop",
+        metric: "qualityDropVsBaseline",
+        actual: qualityDrop,
+        expected: `<= ${budgets.maximum_quality_drop}`,
+        passed: qualityDrop !== null && qualityDrop <= budgets.maximum_quality_drop
+      });
+    }
+    if (budgets.maximum_average_latency_increase_ms !== undefined) {
+      const latencyIncrease = input.baseline.averageLatencyMs === null || input.candidate.averageLatencyMs === null
+        ? null
+        : input.candidate.averageLatencyMs - input.baseline.averageLatencyMs;
+      addCheck(checks, {
+        id: "maximum_average_latency_increase_ms",
+        metric: "averageLatencyIncreaseVsBaseline",
+        actual: latencyIncrease,
+        expected: `<= ${budgets.maximum_average_latency_increase_ms}`,
+        passed: latencyIncrease !== null && latencyIncrease <= budgets.maximum_average_latency_increase_ms
+      });
+    }
+    if (budgets.maximum_fallback_increase !== undefined) {
+      const fallbackIncrease = input.candidate.fallbackCount - input.baseline.fallbackCount;
+      addCheck(checks, {
+        id: "maximum_fallback_increase",
+        metric: "fallbackIncreaseVsBaseline",
+        actual: fallbackIncrease,
+        expected: `<= ${budgets.maximum_fallback_increase}`,
+        passed: fallbackIncrease <= budgets.maximum_fallback_increase
+      });
+    }
+    if (budgets.maximum_high_cost_stage_increase !== undefined && baselineHighCostStages !== null) {
+      const highCostIncrease = highCostStages - baselineHighCostStages;
+      addCheck(checks, {
+        id: "maximum_high_cost_stage_increase",
+        metric: "highCostStageIncreaseVsBaseline",
+        actual: highCostIncrease,
+        expected: `<= ${budgets.maximum_high_cost_stage_increase}`,
+        passed: highCostIncrease <= budgets.maximum_high_cost_stage_increase
+      });
+    }
+  }
+
+  const failed = checks.filter((check) => !check.passed);
+  return {
+    gateId: input.gate.id,
+    description: input.gate.description,
+    generatedAt: new Date().toISOString(),
+    candidateRunId: input.candidate.runId,
+    baselineRunId: input.baseline?.runId ?? null,
+    passed: failed.length === 0,
+    checks,
+    summary: failed.length
+      ? failed.map((check) => `${check.metric} ${check.actual ?? "n/a"} failed ${check.expected}`)
+      : [`${input.gate.id} passed ${checks.length} gate check(s).`]
+  };
+}
+
+export function formatEvaluationGateReport(report: EvaluationGateReport): string {
+  return [
+    `Evaluation Gate: ${report.gateId}`,
+    `Status: ${report.passed ? "PASS" : "FAIL"}`,
+    `Candidate run: ${report.candidateRunId}`,
+    `Baseline run: ${report.baselineRunId ?? "none"}`,
+    report.description ? `Description: ${report.description}` : "",
+    "",
+    "Checks",
+    ...report.checks.map((check) =>
+      `- ${check.passed ? "PASS" : "FAIL"} ${check.metric}: actual=${check.actual ?? "n/a"}, expected=${check.expected}`
+    ),
+    "",
+    "Summary",
+    ...report.summary.map((item) => `- ${item}`)
+  ].filter(Boolean).join("\n");
+}
+
 function required<T>(value: T | undefined, message: string): T {
   if (value === undefined) {
     throw new Error(message);
@@ -245,4 +451,12 @@ function countBy<T>(items: T[], keyFor: (item: T) => string): Record<string, num
 function formatCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts);
   return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "none";
+}
+
+function addCheck(checks: EvaluationGateCheck[], input: Omit<EvaluationGateCheck, "severity">): void {
+  checks.push({ ...input, severity: "error" });
+}
+
+function countHighCostStages(report: CostQualityReport): number {
+  return report.stages.filter((stage) => stage.estimatedCostTier === "high").length;
 }

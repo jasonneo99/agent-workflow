@@ -20,7 +20,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
-import { buildEvaluationReport, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
+import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
@@ -1830,6 +1830,67 @@ program
     }
 
     console.log(formatCostQualityReport(report));
+  });
+
+program
+  .command("gate")
+  .description("Evaluate a workflow run against project-local quality, latency, fallback, and cost gates")
+  .requiredOption("-r, --run <id>", "candidate workflow run id")
+  .option("-p, --project <dir>", "project directory; defaults to the run project")
+  .option("-g, --gate <file>", "gate YAML file; defaults to <project>/.agent-workflow/evaluation-gates.yaml")
+  .option("--baseline-run <id>", "baseline workflow run id for regression budgets")
+  .option("--json", "print report JSON")
+  .action(async (options: { run: string; project?: string; gate?: string; baselineRun?: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const candidate = await loadCostQualityReport(options.run);
+    if (!candidate) {
+      console.error(`Unknown workflow run: ${options.run}`);
+      process.exitCode = 1;
+      return;
+    }
+    const details = await getWorkflowRunDetails(options.run);
+    const projectDir = path.resolve(process.cwd(), options.project ?? details.run?.projectRootUri ?? ".");
+    const gatePath = path.resolve(process.cwd(), options.gate ?? path.join(projectDir, ".agent-workflow", "evaluation-gates.yaml"));
+    let gateRaw = "";
+    try {
+      gateRaw = await fs.readFile(gatePath, "utf8");
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") {
+        console.error(`Gate config not found: ${gatePath}`);
+        console.error("Create one at <project>/.agent-workflow/evaluation-gates.yaml or pass --gate <file>.");
+        process.exitCode = 1;
+        return;
+      }
+      throw error;
+    }
+    const gate = evaluationGateSchema.parse(YAML.parse(gateRaw));
+    const baselineRunId = options.baselineRun ?? gate.baseline_run_id;
+    const baseline = baselineRunId ? await loadCostQualityReport(baselineRunId) : null;
+    if (baselineRunId && !baseline) {
+      console.error(`Unknown baseline workflow run: ${baselineRunId}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = buildEvaluationGateReport({ gate, candidate, baseline });
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+    } else {
+      console.log(formatEvaluationGateReport(report));
+    }
+    if (!report.passed) {
+      process.exitCode = 2;
+    }
   });
 
 program

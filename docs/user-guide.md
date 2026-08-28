@@ -752,7 +752,43 @@ npm run agentflow -- preference-scorecard --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact scorecard for the run's project. Use it to find combinations that repeatedly need revision, fallback often, or produce low quality scores.
 
-## 17. Tuning Proposals
+## 17. Evaluation Gates
+
+Evaluation gates turn run quality, latency, fallback, and cost signals into a
+machine-readable pass/fail result. The default project template includes
+`.agent-workflow/evaluation-gates.yaml`.
+
+```bash
+npm run agentflow -- gate --run <candidate-run-id> --project /path/to/project
+npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project /path/to/project --json
+```
+
+Gate failures exit with code `2`, so CI can distinguish a regression from a
+tooling failure.
+
+```yaml
+version: 1
+id: local-developer-quality
+thresholds:
+  allowed_statuses:
+    - completed
+  minimum_average_quality: 0.7
+  maximum_quality_failures: 0
+  maximum_fallbacks: 1
+  maximum_average_latency_ms: 30000
+  maximum_high_cost_stages: 1
+regression_budgets:
+  maximum_quality_drop: 0.1
+  maximum_average_latency_increase_ms: 10000
+  maximum_fallback_increase: 1
+  maximum_high_cost_stage_increase: 1
+```
+
+Use shared gates for generic developer workflow health. Keep product-specific
+ranking rubrics, customer-derived thresholds, and private scoring logic inside
+the project that owns them.
+
+## 18. Tuning Proposals
 
 Turn scorecard findings into reviewable prompt, context-budget, and routing suggestions:
 
@@ -762,7 +798,7 @@ npm run agentflow -- tuning-proposals --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact tuning proposal panel for the run's project. These are reviewable hints, not automatic edits.
 
-## 18. Apply Tuning Proposals
+## 19. Apply Tuning Proposals
 
 Create project-local overlays from selected tuning proposals without changing shared reusable agents or workflows:
 
@@ -796,7 +832,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next improvements focus on reliable workflow operations: completing human action approvals, CI evaluation gates, and observability. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvements focus on reliable workflow operations: OpenTelemetry-compatible observability, incremental indexing, and workflow authoring tools. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

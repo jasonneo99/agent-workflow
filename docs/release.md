@@ -24,6 +24,18 @@ npm run release:check -- --allow-current-version --skip-tests
 
 This command is read-only. It checks repository state, bundle metadata, package contents, Trusted Publisher workflow setup, npm published-version readiness, local npm auth status, and the normal validation commands.
 
+Maintainers can also enforce a project-local evaluation gate before promotion:
+
+```bash
+npm run release:check -- \
+  --allow-current-version \
+  --gate-run <candidate-run-id> \
+  --gate-project .
+```
+
+Add `--baseline-run <baseline-run-id>` to enforce regression budgets against a
+pinned prior run. A failing gate fails the release check.
+
 ## Maintainer Release Prep
 
 Maintainers prepare a release locally because the bundle signature requires a private signing key. Do not commit private keys, npm tokens, generated `.env` files, or machine-specific release paths.

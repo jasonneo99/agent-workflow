@@ -11,6 +11,10 @@ const skipTests = takeFlag("--skip-tests");
 const noFetch = takeFlag("--no-fetch");
 const allowCurrentVersion = takeFlag("--allow-current-version");
 const allowDirty = takeFlag("--allow-dirty");
+const gateRun = takeOption("--gate-run");
+const gateProject = takeOption("--gate-project");
+const gateConfig = takeOption("--gate-config");
+const baselineRun = takeOption("--baseline-run");
 
 if (args.length) fail(`Unknown argument(s): ${args.join(" ")}`);
 
@@ -41,6 +45,7 @@ function main() {
   runCheck("Typecheck", ["npm", ["run", "typecheck"]]);
   if (!skipTests) runCheck("Tests", ["npm", ["test"]]);
   runCheck("Package verification", ["npm", ["run", "pack:check"]]);
+  checkEvaluationGate();
 
   console.log("\nRelease check summary");
   if (warnings.length) {
@@ -162,6 +167,18 @@ function checkNpmAuth() {
   }
 }
 
+function checkEvaluationGate() {
+  if (!gateRun) {
+    warnings.push("No evaluation gate run supplied; skipping release gate. Use --gate-run <id> to enforce project-local quality/cost budgets.");
+    return;
+  }
+  const commandArgs = ["run", "agentflow", "--", "gate", "--run", gateRun];
+  if (gateProject) commandArgs.push("--project", gateProject);
+  if (gateConfig) commandArgs.push("--gate", gateConfig);
+  if (baselineRun) commandArgs.push("--baseline-run", baselineRun);
+  runCheck("Evaluation gate", ["npm", commandArgs]);
+}
+
 function runCheck(label, [command, commandArgs]) {
   const result = spawnSync(command, commandArgs, { cwd: rootDir, stdio: "inherit" });
   record(result.status === 0, label, `${label} failed.`);
@@ -200,6 +217,15 @@ function takeFlag(name) {
   if (index === -1) return false;
   args.splice(index, 1);
   return true;
+}
+
+function takeOption(name) {
+  const index = args.indexOf(name);
+  if (index === -1) return undefined;
+  const value = args[index + 1];
+  if (!value || value.startsWith("--")) fail(`${name} requires a value.`);
+  args.splice(index, 2);
+  return value;
 }
 
 function fail(message) {
