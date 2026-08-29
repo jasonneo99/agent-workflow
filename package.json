@@ -1,6 +1,6 @@
 {
   "name": "@jasonneo99/agent-workflow",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "type": "module",
   "description": "Portable, model-agnostic agent workflows for any codebase",
   "license": "MIT",

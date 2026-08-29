@@ -3,7 +3,7 @@
   "bundle": {
     "id": "agent-workflow-core",
     "name": "Agent Workflow Core Bundle",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "source": "https://github.com/jasonneo99/agent-workflow.git",
     "description": "Portable, model-agnostic agent workflows for any codebase"
   },
