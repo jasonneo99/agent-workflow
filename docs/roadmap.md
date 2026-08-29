@@ -144,12 +144,12 @@ trust gaps.
   - Done: keep prompt and artifact payload export disabled by default.
   - Future extension: add optional OTLP collector/exporter wiring for teams that want live telemetry streams.
 
-- [ ] Incremental and event-driven context indexing.
+- [x] Incremental and event-driven context indexing.
   - Done: refresh only files changed since the last indexed commit after a baseline exists.
   - Done: detect renamed and deleted sources and prune stale stored summaries.
   - Done: expose incremental defaults through CLI, dashboard-triggered runs, and MCP tools.
   - Done: explain why each retrieved source was included in a compiled brief.
-  - Support filesystem-watch and CI-triggered indexing.
+  - Done: support lightweight local watch polling and CI-triggered `--since-commit` indexing.
 
 - [ ] Workflow authoring and compatibility tooling.
   - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.

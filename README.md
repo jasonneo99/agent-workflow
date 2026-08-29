@@ -151,6 +151,8 @@ npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
 npm run index-project -- -p . --incremental # Refresh only changed files after a baseline exists
+npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
+npm run index-project -- -p . --incremental --watch # Keep local context warm
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
 
 # Workflow execution (requires enterprise storage)

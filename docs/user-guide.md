@@ -140,6 +140,18 @@ staged, untracked, renamed, or deleted files:
 npm run index-project -- --project /path/to/project --max-files 100 --incremental
 ```
 
+For CI or pre-merge checks, pass the base commit explicitly:
+
+```bash
+npm run index-project -- --project /path/to/project --max-files 100 --incremental --since-commit origin/main
+```
+
+For local development, keep an incremental index loop running in a terminal:
+
+```bash
+npm run index-project -- --project /path/to/project --incremental --watch --interval-ms 10000
+```
+
 `run-and-watch`, `agent-task`, dashboard run actions, and MCP workflow tools use
 incremental indexing automatically after the first successful baseline. Use
 `--full-index` when you intentionally want to rebuild the stored context from

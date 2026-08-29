@@ -763,7 +763,9 @@ program
   .option("--since-commit <sha>", "reference commit for incremental indexing")
   .option("--refine", "refine file summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
-  .action(async (options: { project: string; maxFiles: string; incremental?: boolean; sinceCommit?: string; refine?: boolean; forceRefine?: boolean }) => {
+  .option("--watch", "keep polling for changed files and refresh incrementally")
+  .option("--interval-ms <number>", "watch polling interval in milliseconds", "10000")
+  .action(async (options: { project: string; maxFiles: string; incremental?: boolean; sinceCommit?: string; refine?: boolean; forceRefine?: boolean; watch?: boolean; intervalMs: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -777,26 +779,43 @@ program
     const projectDir = path.resolve(process.cwd(), options.project);
     const project = await loadProjectConfig(projectDir);
     const maxFiles = Number.parseInt(options.maxFiles, 10);
-    const projectId = await upsertProject({
-      name: project.project.name,
-      rootUri: projectDir,
-      profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
-      config: project
-    });
-    const state = await getProjectIndexState({ projectId });
-    const incremental = Boolean(options.incremental || options.sinceCommit);
-    const result = await indexProjectWithStorage({
-      projectId,
-      projectDir,
-      project,
-      maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 200,
-      refineProvider: options.refine ? providerFromEnv() : undefined,
-      forceRefine: Boolean(options.forceRefine),
-      incremental,
-      sinceCommit: options.sinceCommit ?? state?.headCommit ?? undefined
-    });
+    const parsedMaxFiles = Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 200;
+    const runOnce = async (incrementalOverride: boolean) => {
+      const projectId = await upsertProject({
+        name: project.project.name,
+        rootUri: projectDir,
+        profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
+        config: project
+      });
+      const state = await getProjectIndexState({ projectId });
+      return indexProjectWithStorage({
+        projectId,
+        projectDir,
+        project,
+        maxFiles: parsedMaxFiles,
+        refineProvider: options.refine ? providerFromEnv() : undefined,
+        forceRefine: Boolean(options.forceRefine),
+        incremental: incrementalOverride,
+        sinceCommit: options.sinceCommit ?? state?.headCommit ?? undefined
+      });
+    };
 
+    const incremental = Boolean(options.incremental || options.sinceCommit || options.watch);
+    const result = await runOnce(incremental);
     console.log(formatIndexResult(result));
+    if (!options.watch) {
+      return;
+    }
+
+    const intervalMs = parsePositiveInteger(options.intervalMs, 10_000);
+    console.log(`Watching ${projectDir} for incremental indexing every ${intervalMs}ms. Press Ctrl+C to stop.`);
+    while (true) {
+      await sleep(intervalMs);
+      const tick = await runOnce(true);
+      if (tick.count > 0 || tick.deleted > 0 || tick.fullIndexFallback || tick.truncated) {
+        console.log(formatIndexResult(tick));
+      }
+    }
   });
 
 program
