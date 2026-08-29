@@ -195,6 +195,7 @@ npm run agentflow -- queue-tuning-approvals -p . --ids all # Dry-run approval qu
 npm run agentflow -- tuning-approvals -p . --approve tune-001 # Approve a queued item
 npm run agentflow -- generate-tuning-patches -p . # Dry-run reviewable patch-plan files
 npm run agentflow -- model-improvement-plan -p . # Dry-run scrubbed eval/dataset plan files
+npm run agentflow -- candidate-comparison-plan -p . # Dry-run baseline/candidate eval suites
 npm run agentflow -- apply-tuning-patches -p . # Dry-run applied local tuning notes
 npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-local tuning overlays
 npm run artifacts -- -r <id>   # View run artifacts

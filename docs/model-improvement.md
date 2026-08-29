@@ -94,6 +94,22 @@ After approving tuning proposals with `queue-tuning-approvals` and
 and provider dataset-plan proposals. The command is a dry run unless `--write`
 is passed. Written files stay under `.agent-workflow/model-improvement/`.
 
+Then prepare an opt-in baseline-versus-candidate comparison plan:
+
+```bash
+npm run agentflow -- candidate-comparison-plan \
+  --project /path/to/project \
+  --baseline-provider auto \
+  --baseline-tier standard \
+  --candidate-provider auto \
+  --candidate-tier reasoning
+```
+
+This command generates private evaluation suite YAML and promotion gate commands
+from the scrubbed model-improvement plan. It does not run models or call provider
+fine-tune APIs. With `--write`, files are written only under
+`.agent-workflow/model-improvement/` and `.agent-workflow/evaluations/`.
+
 ## Safety Boundary
 
 The workflow may recommend eval cases, dataset shapes, or fine-tune experiments,

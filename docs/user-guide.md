@@ -979,18 +979,20 @@ provider dataset-plan files:
 ```bash
 npm run agentflow -- model-improvement-plan --project /path/to/project
 npm run agentflow -- model-improvement-plan --project /path/to/project --write
+npm run agentflow -- candidate-comparison-plan --project /path/to/project
 ```
 
 The dry run prints the plan. With `--write`, files are written only under
-`.agent-workflow/model-improvement/`.
+`.agent-workflow/model-improvement/` for model-improvement plans, and under
+`.agent-workflow/model-improvement/` plus `.agent-workflow/evaluations/` for
+candidate comparison plans.
 
 ## 24. Recommended Next Improvement
 
-The next improvement is opt-in candidate comparison planning for provider
-fine-tune or routing experiments. It should stay plan-only by default, require
-project credentials and explicit approval before provider calls, and promote
-changes only after baseline-versus-candidate evaluation evidence passes. See the
-[Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is dashboard visibility for candidate comparison plans:
+show proposed suites, baseline/candidate providers, gate commands, and whether
+the private eval files have been written. See the [Roadmap](roadmap.md) for the
+shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

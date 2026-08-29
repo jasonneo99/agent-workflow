@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { appendTuningApprovalHistory, buildModelImprovementPlan, formatTuningApprovalHistory, type TuningApprovalQueue } from "./index.js";
+import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildModelImprovementPlan, formatTuningApprovalHistory, type TuningApprovalQueue } from "./index.js";
 
 test("tuning history preserves every proposal lifecycle transition", () => {
   const queued = appendTuningApprovalHistory(undefined, {
@@ -101,4 +101,40 @@ test("model improvement plan uses approved tuning proposals only", () => {
   ]);
   assert.match(plan.files[0]?.content ?? "", /scrubbed, project-local proposal shapes/);
   assert.match(plan.files[1]?.content ?? "", /No automatic uploads/);
+});
+
+test("candidate comparison plan writes local suite and gate instructions", () => {
+  const modelPlan = {
+    kind: "agentflow_model_improvement_plan" as const,
+    projectRootUri: "/project",
+    generatedAt: "2026-08-17T10:00:00.000Z",
+    sourceQueueGeneratedAt: "2026-08-17T09:00:00.000Z",
+    selectedIds: ["tune-001"],
+    skippedIds: [],
+    evalCases: [
+      {
+        id: "evalcase-001",
+        proposalId: "tune-001",
+        workflowId: "review-pr",
+        stageId: "specialist-review",
+        agentId: "security-reviewer",
+        scenario: "Compare security review routing.",
+        expectedSignals: ["Quality holds while cost improves."],
+        source: "approved_project_local_tuning_feedback"
+      }
+    ],
+    datasetPlans: []
+  };
+
+  const plan = buildCandidateComparisonPlan({
+    modelPlan,
+    baseline: { provider: "byo", modelTier: "fast" },
+    candidate: { provider: "openai", modelTier: "reasoning" }
+  });
+  assert.equal(plan.suites.length, 1);
+  assert.equal(plan.suites[0]?.suitePath, ".agent-workflow/evaluations/model-improvement-review-pr-01.yaml");
+  assert.match(plan.files[0]?.content ?? "", /does not run models/);
+  assert.match(plan.files[2]?.content ?? "", /provider: "byo"/);
+  assert.match(plan.files[2]?.content ?? "", /provider: "openai"/);
+  assert.match(plan.gateCommands[0] ?? "", /baseline-run/);
 });

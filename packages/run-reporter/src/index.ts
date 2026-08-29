@@ -299,6 +299,32 @@ export interface ModelImprovementDatasetPlan {
   exclusions: string[];
 }
 
+export interface CandidateComparisonPlan {
+  kind: "agentflow_candidate_comparison_plan";
+  projectRootUri: string;
+  generatedAt: string;
+  sourcePlanGeneratedAt: string;
+  baseline: CandidateVariantPlan;
+  candidate: CandidateVariantPlan;
+  suites: CandidateComparisonSuitePlan[];
+  gateCommands: string[];
+  files: TuningApplicationFile[];
+}
+
+export interface CandidateVariantPlan {
+  provider: string;
+  modelTier: "fast" | "standard" | "reasoning";
+  promptSuffix: string;
+}
+
+export interface CandidateComparisonSuitePlan {
+  id: string;
+  workflowId: string;
+  caseCount: number;
+  suitePath: string;
+  command: string;
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const redaction = input.scrub ? buildRedactedRunExport(input) : input;
   const stageOutputs = redaction.artifacts.filter((artifact) => artifact.kind === "stage_output");
@@ -1060,6 +1086,83 @@ export function formatModelImprovementPlan(plan: ModelImprovementPlan): string {
   ].filter(Boolean).join("\n");
 }
 
+export function buildCandidateComparisonPlan(input: {
+  modelPlan: Omit<ModelImprovementPlan, "files">;
+  baseline?: Partial<CandidateVariantPlan>;
+  candidate?: Partial<CandidateVariantPlan>;
+}): CandidateComparisonPlan {
+  const generatedAt = new Date().toISOString();
+  const baseline: CandidateVariantPlan = {
+    provider: input.baseline?.provider ?? "auto",
+    modelTier: input.baseline?.modelTier ?? "standard",
+    promptSuffix: input.baseline?.promptSuffix ?? "Use the current project-local Agent Workflow instructions."
+  };
+  const candidate: CandidateVariantPlan = {
+    provider: input.candidate?.provider ?? "auto",
+    modelTier: input.candidate?.modelTier ?? "reasoning",
+    promptSuffix: input.candidate?.promptSuffix ?? "Apply the approved model-improvement proposal while preserving evidence, brevity, and safety boundaries."
+  };
+  const casesByWorkflow = groupBy(input.modelPlan.evalCases, (item) => item.workflowId);
+  const suiteFiles = [...casesByWorkflow.entries()].map(([workflowId, cases], index) => {
+    const id = `model-improvement-${safeId(workflowId)}-${String(index + 1).padStart(2, "0")}`;
+    const suitePath = `.agent-workflow/evaluations/${id}.yaml`;
+    return {
+      id,
+      workflowId,
+      caseCount: cases.length,
+      suitePath,
+      command: `npm run agentflow -- evaluate --suite ${suitePath} --project ${input.modelPlan.projectRootUri}`,
+      content: formatCandidateEvaluationSuiteYaml({ id, workflowId, cases, baseline, candidate })
+    };
+  });
+  const suites = suiteFiles.map(({ content: _content, ...suite }) => suite);
+  const gateCommands = suites.map((suite) => `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${input.modelPlan.projectRootUri}`);
+  const document = {
+    kind: "agentflow_candidate_comparison_plan" as const,
+    projectRootUri: input.modelPlan.projectRootUri,
+    generatedAt,
+    sourcePlanGeneratedAt: input.modelPlan.generatedAt,
+    baseline,
+    candidate,
+    suites,
+    gateCommands
+  };
+
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/candidate-comparison-plan.md",
+        content: formatCandidateComparisonPlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/candidate-comparison-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      },
+      ...suiteFiles.map((suite) => ({
+        relativePath: suite.suitePath,
+        content: suite.content
+      }))
+    ]
+  };
+}
+
+export function formatCandidateComparisonPlan(plan: CandidateComparisonPlan): string {
+  return [
+    `Candidate Comparison Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Baseline: ${plan.baseline.provider}/${plan.baseline.modelTier}`,
+    `Candidate: ${plan.candidate.provider}/${plan.candidate.modelTier}`,
+    `Suites: ${plan.suites.length}`,
+    "",
+    "Evaluation Suites",
+    plan.suites.length ? plan.suites.map((suite) => `- ${suite.suitePath}: ${suite.caseCount} case(s), workflow=${suite.workflowId}`).join("\n") : "- No eval cases available.",
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].join("\n");
+}
+
 export function buildTuningPatchApplicationPlan(
   patchPlan: TuningPatchPlanDocument,
   selectedIds: string[] | "all" = "all"
@@ -1279,6 +1382,80 @@ function formatModelImprovementDatasetPlanMarkdown(plan: Omit<ModelImprovementPl
         ""
       ].join("\n")).join("\n")
       : "_No approved tuning proposals selected._",
+    ""
+  ].join("\n");
+}
+
+function formatCandidateComparisonPlanMarkdown(plan: Omit<CandidateComparisonPlan, "files">): string {
+  return [
+    "# Agent Workflow Candidate Comparison Plan",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    `Source model-improvement plan: ${plan.sourcePlanGeneratedAt}`,
+    "",
+    "This plan is opt-in and local. It prepares evaluation suites and gate commands, but it does not run models, upload datasets, or promote routing.",
+    "",
+    "## Variants",
+    "",
+    `- Baseline: ${plan.baseline.provider} / ${plan.baseline.modelTier}`,
+    `- Candidate: ${plan.candidate.provider} / ${plan.candidate.modelTier}`,
+    "",
+    "## Suites",
+    "",
+    plan.suites.length
+      ? plan.suites.map((suite) => [
+        `- ${suite.id}`,
+        `  - Workflow: ${suite.workflowId}`,
+        `  - Cases: ${suite.caseCount}`,
+        `  - Suite: ${suite.suitePath}`,
+        `  - Run: ${suite.command}`
+      ].join("\n")).join("\n")
+      : "- No suites generated.",
+    "",
+    "## Promotion Gate",
+    "",
+    plan.gateCommands.length
+      ? plan.gateCommands.map((command) => `- ${command}`).join("\n")
+      : "- Run baseline and candidate evaluations before promotion.",
+    "",
+    "Promotion should require explicit project approval and a passing baseline-versus-candidate gate.",
+    ""
+  ].join("\n");
+}
+
+function formatCandidateEvaluationSuiteYaml(input: {
+  id: string;
+  workflowId: string;
+  cases: ModelImprovementEvalCase[];
+  baseline: CandidateVariantPlan;
+  candidate: CandidateVariantPlan;
+}): string {
+  const cases = input.cases.map((item) => [
+    `  - id: ${yamlScalar(safeId(item.id))}`,
+    `    task: ${yamlScalar(`${item.scenario} Do not modify files or run commands.`)}`,
+    "    expectations:",
+    "      status: completed",
+    "      minimum_average_quality: 0.7",
+    "      maximum_fallbacks: 0"
+  ].join("\n")).join("\n");
+  return [
+    "version: 1",
+    `id: ${yamlScalar(input.id)}`,
+    `name: ${yamlScalar(`Model improvement comparison for ${input.workflowId}`)}`,
+    "description: Safe local comparison generated from approved Agent Workflow model-improvement proposals.",
+    `workflow: ${yamlScalar(input.workflowId)}`,
+    "cases:",
+    cases || "  - id: placeholder\n    task: Collect approved model-improvement feedback before running this suite.\n    expectations:\n      status: completed\n      minimum_average_quality: 0.7\n      maximum_fallbacks: 0",
+    "variants:",
+    `  - id: ${yamlScalar(`baseline-${safeId(input.baseline.provider)}-${input.baseline.modelTier}`)}`,
+    `    provider: ${yamlScalar(input.baseline.provider)}`,
+    `    model_tier: ${input.baseline.modelTier}`,
+    `    prompt_suffix: ${yamlScalar(input.baseline.promptSuffix)}`,
+    `  - id: ${yamlScalar(`candidate-${safeId(input.candidate.provider)}-${input.candidate.modelTier}`)}`,
+    `    provider: ${yamlScalar(input.candidate.provider)}`,
+    `    model_tier: ${input.candidate.modelTier}`,
+    `    prompt_suffix: ${yamlScalar(input.candidate.promptSuffix)}`,
     ""
   ].join("\n");
 }
@@ -1760,4 +1937,21 @@ function stringValue(value: unknown, fallback: string): string {
     return String(value);
   }
   return fallback;
+}
+
+function groupBy<T>(items: T[], selectKey: (item: T) => string): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const item of items) {
+    const key = selectKey(item);
+    groups.set(key, [...(groups.get(key) ?? []), item]);
+  }
+  return groups;
+}
+
+function safeId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
+}
+
+function yamlScalar(value: string): string {
+  return JSON.stringify(value);
 }

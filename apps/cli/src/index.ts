@@ -70,7 +70,7 @@ import {
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
-import { appendTuningApprovalHistory, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
@@ -2448,6 +2448,63 @@ program
   });
 
 program
+  .command("candidate-comparison-plan")
+  .description("Prepare opt-in baseline-versus-candidate evaluation suites from a model-improvement plan")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--baseline-provider <provider>", "baseline provider id", "auto")
+  .option("--candidate-provider <provider>", "candidate provider id", "auto")
+  .option("--baseline-tier <tier>", "fast, standard, or reasoning", "standard")
+  .option("--candidate-tier <tier>", "fast, standard, or reasoning", "reasoning")
+  .option("--baseline-prompt <text>", "baseline prompt suffix")
+  .option("--candidate-prompt <text>", "candidate prompt suffix")
+  .option("--write", "write plan and private evaluation suite files into the project")
+  .option("--json", "print candidate comparison plan JSON")
+  .action(async (options: {
+    project: string;
+    baselineProvider: string;
+    candidateProvider: string;
+    baselineTier: string;
+    candidateTier: string;
+    baselinePrompt?: string;
+    candidatePrompt?: string;
+    write?: boolean;
+    json?: boolean;
+  }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const modelPlan = await readModelImprovementPlan(projectDir);
+    const baseline: Partial<CandidateVariantPlan> = {
+      provider: normalizeProviderRef(options.baselineProvider),
+      modelTier: parseModelTierOption(options.baselineTier)
+    };
+    const candidate: Partial<CandidateVariantPlan> = {
+      provider: normalizeProviderRef(options.candidateProvider),
+      modelTier: parseModelTierOption(options.candidateTier)
+    };
+    if (options.baselinePrompt) baseline.promptSuffix = options.baselinePrompt;
+    if (options.candidatePrompt) candidate.promptSuffix = options.candidatePrompt;
+    const plan = buildCandidateComparisonPlan({ modelPlan, baseline, candidate });
+
+    if (options.write) {
+      await writeCandidateComparisonPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatCandidateComparisonPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create local comparison plan and evaluation suite files.");
+    }
+  });
+
+program
   .command("apply-tuning-patches")
   .description("Apply reviewed tuning patch-plan items into project-local tuning note files")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3554,6 +3611,34 @@ async function writeModelImprovementPlan(projectDir: string, plan: ModelImprovem
     const projectRoot = path.resolve(projectDir);
     if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Refusing to write model-improvement plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function readModelImprovementPlan(projectDir: string): Promise<Omit<ModelImprovementPlan, "files">> {
+  const planPath = path.join(projectDir, ".agent-workflow", "model-improvement", "model-improvement-plan.json");
+  const raw = await fs.readFile(planPath, "utf8");
+  const parsed = JSON.parse(raw) as Omit<ModelImprovementPlan, "files">;
+  if (parsed.kind !== "agentflow_model_improvement_plan" || !Array.isArray(parsed.evalCases) || !Array.isArray(parsed.datasetPlans)) {
+    throw new Error(`Invalid model-improvement plan: ${planPath}`);
+  }
+  return parsed;
+}
+
+async function writeCandidateComparisonPlan(projectDir: string, plan: CandidateComparisonPlan): Promise<void> {
+  for (const file of plan.files) {
+    const allowed =
+      file.relativePath.startsWith(".agent-workflow/model-improvement/") ||
+      file.relativePath.startsWith(".agent-workflow/evaluations/");
+    if (!allowed) {
+      throw new Error(`Refusing to write candidate comparison plan outside project-local Agent Workflow paths: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write candidate comparison plan outside project: ${file.relativePath}`);
     }
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
@@ -9110,6 +9195,14 @@ function parseProposalIds(value: string | undefined): string[] | "all" {
     return "all";
   }
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseModelTierOption(value: string): CandidateVariantPlan["modelTier"] {
+  const normalized = normalizeLookup(value);
+  if (normalized === "fast" || normalized === "standard" || normalized === "reasoning") {
+    return normalized;
+  }
+  throw new Error(`Model tier must be one of: fast, standard, reasoning. Received: ${value}`);
 }
 
 function shellQuote(value: string): string {
