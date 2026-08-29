@@ -1,0 +1,38 @@
+schema_version: 1
+migrations:
+  - id: core-0.0.x-to-0.1.0
+    from: 0.0.x
+    to: 0.1.0
+    summary: Initial public portable workflow bundle.
+    definition_changes:
+      - Reusable agent cards live under agents/**/*.yaml.
+      - Reusable workflow definitions live under workflows/**/*.yaml.
+      - Project-specific context moves into AGENTS.md and .agent-workflow/.
+    upgrade_steps:
+      - Run agentflow validate to check shared agent and workflow definitions.
+      - Run agentflow onboard-project --project /path/to/project --profile enterprise --write for each target project.
+      - Keep private project facts in AGENTS.md and .agent-workflow/context.md instead of editing shared agents.
+    rollback_steps:
+      - Restore the prior project AGENTS.md and .agent-workflow files from version control.
+      - Re-run agentflow bundle-upgrade-preview before adopting another bundle.
+    validation:
+      - agentflow validate
+      - agentflow workflow-graph --workflow review-pr --project /path/to/project
+  - id: core-0.2.0-to-0.2.1-upgrade-safety
+    from: 0.2.0
+    to: 0.2.1
+    summary: Add bundle compatibility, upgrade preview, and project adoption state.
+    definition_changes:
+      - Project templates include .agent-workflow/bundle-state.json.
+      - Onboarding records the adopted bundle id, version, checksum, and timestamp.
+      - Upgrade previews can compare a project baseline with the current reusable bundle.
+    upgrade_steps:
+      - Run agentflow bundle-compat in the Agent Workflow install.
+      - Run agentflow bundle-upgrade-preview --project /path/to/project.
+      - If the preview is acceptable, run agentflow bundle-adopt --project /path/to/project --force.
+    rollback_steps:
+      - Restore the previous .agent-workflow/bundle-state.json from version control.
+      - Re-run agentflow bundle-upgrade-preview --project /path/to/project to confirm the older baseline.
+    validation:
+      - agentflow bundle-compat
+      - agentflow bundle-upgrade-preview --project /path/to/project

@@ -69,6 +69,9 @@ environment before sharing a bundle.
 previews migration notes and safe actions for a project without changing files.
 When available, it reads `.agent-workflow/bundle-state.json`; otherwise use
 `--from-version` and `--from-checksum` to compare against a known source bundle.
+`npm run agentflow -- definition-migrations --project /path/to/project`
+adds concrete definition changes, upgrade steps, validation commands, and
+rollback guidance from the shared migration catalog.
 After reviewing the preview, run
 `npm run agentflow -- bundle-adopt --project /path/to/project --force` to record
 the current bundle as the new local baseline.
@@ -719,6 +722,7 @@ agentflow_schemas
 agentflow_bundle_compat
 agentflow_bundle_upgrade_preview
 agentflow_bundle_adopt
+agentflow_definition_migrations
 agentflow_onboard_project
 agentflow_index_project
 agentflow_compile
@@ -939,7 +943,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is definition migration planning for changed agent and workflow contracts, so upgrade previews can point to concrete migration steps instead of notes only. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is contract tests for custom agents, workflows, and provider adapters, so extension authors can verify compatibility before sharing local packs. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

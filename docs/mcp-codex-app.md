@@ -33,6 +33,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_bundle_compat`: check bundle runtime, Node.js, MCP compatibility, and migration notes.
 - `agentflow_bundle_upgrade_preview`: preview project bundle migration notes and safe upgrade actions without changing files.
 - `agentflow_bundle_adopt`: record the current reusable bundle as adopted by a project.
+- `agentflow_definition_migrations`: preview definition contract changes, validation, and rollback guidance.
 - `agentflow_list`: list available agents and workflows.
 - `agentflow_schemas`: list JSON Schemas or write VS Code/Cursor YAML validation settings.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.

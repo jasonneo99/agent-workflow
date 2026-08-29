@@ -158,7 +158,7 @@ trust gaps.
   - Done: add read-only project bundle upgrade previews with applicable migration notes and safe next actions.
   - Done: add project bundle-state recording during onboarding/adoption.
   - Done: add explicit bundle adoption recording after reviewed upgrades.
-  - Add definition migrations and rollback guidance for changed bundle contracts.
+  - Done: add definition migration and rollback guidance for changed bundle contracts.
   - Add contract tests for custom agents, workflows, and provider adapters.
 
 - [ ] Optional model-improvement workflow pack.

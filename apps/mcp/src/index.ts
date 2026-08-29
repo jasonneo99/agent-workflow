@@ -268,6 +268,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_definition_migrations",
+  {
+    title: "AgentFlow definition migrations",
+    description: "Preview definition contract migration steps, validation, and rollback guidance.",
+    inputSchema: {
+      project: z.string().optional().describe("Project directory with .agent-workflow/bundle-state.json."),
+      fromVersion: z.string().optional().describe("Source bundle version to compare from."),
+      fromChecksum: z.string().optional().describe("Source bundle checksum to compare from."),
+      json: z.boolean().optional().describe("Return machine-readable migration plan.")
+    }
+  },
+  async ({ project, fromVersion, fromChecksum, json }) => {
+    const args = ["definition-migrations"];
+    if (project) args.push("--project", project);
+    if (fromVersion) args.push("--from-version", fromVersion);
+    if (fromChecksum) args.push("--from-checksum", fromChecksum);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",

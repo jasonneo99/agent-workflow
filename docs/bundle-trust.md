@@ -24,6 +24,13 @@ agentflow bundle-upgrade-preview --project /path/to/project
 agentflow bundle-upgrade-preview --from-version 0.1.0 --from-checksum <sha256>
 ```
 
+For concrete definition contract changes, upgrade steps, validation commands,
+and rollback guidance, run:
+
+```bash
+agentflow definition-migrations --project /path/to/project
+```
+
 After reviewing compatibility, trust, and migration notes, record the current
 bundle as the project baseline:
 

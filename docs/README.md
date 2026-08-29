@@ -12,18 +12,19 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 6. [Security Policy](../SECURITY.md): responsible disclosure, scope, and local automation safety boundaries.
 7. [Release Guide](release.md): contributor-safe checks, maintainer signing, and Trusted Publishing.
 8. [Bundle Trust](bundle-trust.md): verify signatures and manage trusted workflow-bundle signer keys.
-9. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
-10. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
-11. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
-12. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
-13. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-14. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-15. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-16. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-17. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-18. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-19. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-20. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+9. [Definition Migrations](definition-migrations.md): upgrade and rollback guidance for reusable agent/workflow contracts.
+10. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
+11. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
+12. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
+13. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
+14. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+15. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+16. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+17. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+18. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+19. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+20. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+21. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
