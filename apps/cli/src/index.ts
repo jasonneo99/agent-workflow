@@ -75,6 +75,7 @@ import { buildObservabilityReport, formatObservabilityReport, type Observability
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../packages/definition-migrations/src/index.js";
+import { formatContractTestReport, runDefinitionContractTests } from "../../../packages/contract-tests/src/index.js";
 
 const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
@@ -84,7 +85,7 @@ const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtim
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "bundle-manifest", "bundle-compat", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -317,6 +318,30 @@ program
     if (committedManifest) {
       console.log(`Bundle manifest ${committedManifest.bundle.version} checksum ${committedManifest.checksum.value}`);
     }
+  });
+
+program
+  .command("contract-test")
+  .description("Run contract tests for reusable definitions, project-local agents, and provider adapters")
+  .option("--definitions <dir>", "definition bundle root with agents/ and workflows/", rootDir)
+  .option("-p, --project <dir>", "project directory with optional .agent-workflow/agents")
+  .option("--provider <provider>", "provider adapter to check", "mock")
+  .option("--live-provider", "allow execution against non-mock providers")
+  .option("--json", "print machine-readable contract report")
+  .action(async (options: { definitions: string; project?: string; provider: string; liveProvider?: boolean; json?: boolean }) => {
+    const providerId = normalizeProviderRef(options.provider);
+    const provider = providerFromEnv(providerId);
+    if (provider.id !== "mock" && !options.liveProvider) {
+      console.error(`Provider ${provider.id} will be loaded but not executed. Pass --live-provider to run the adapter contract against a live model.`);
+    }
+    const report = await runDefinitionContractTests({
+      definitionsDir: path.resolve(process.cwd(), options.definitions),
+      projectDir: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      provider,
+      liveProvider: Boolean(options.liveProvider)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatContractTestReport(report));
+    if (!report.passed) process.exitCode = 1;
   });
 
 program

@@ -159,7 +159,8 @@ trust gaps.
   - Done: add project bundle-state recording during onboarding/adoption.
   - Done: add explicit bundle adoption recording after reviewed upgrades.
   - Done: add definition migration and rollback guidance for changed bundle contracts.
-  - Add contract tests for custom agents, workflows, and provider adapters.
+  - Done: add contract tests for custom agents, workflows, and provider adapters.
+  - Add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
 - [ ] Optional model-improvement workflow pack.
   - Diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

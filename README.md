@@ -143,6 +143,7 @@ npm run release:check -- --allow-current-version # Verify release readiness with
 npm run release:prepare -- --dry-run # Preview signed npm release prep
 npm run provider-check         # Verify model provider
 npm run validate               # Validate agent/workflow definitions
+npm run agentflow -- contract-test # Contract-test definitions and mock provider output
 npm run bundle-manifest        # Inspect versioned bundle checksums
 npm run agentflow -- bundle-compat # Check runtime, Node.js, MCP compatibility, and migration notes
 npm run agentflow -- bundle-upgrade-preview -p . # Preview project bundle migration notes without changing files
@@ -220,6 +221,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [Provider Matrix](docs/providers.md): BYO, OpenAI, Bedrock, OpenAI-compatible, and Kiro setup
 - [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
 - [Definition Migrations](docs/definition-migrations.md): upgrade and rollback guidance for reusable agent/workflow contracts
+- [Contract Tests](docs/contract-tests.md): verify custom agents, workflows, and provider adapters
 - [Contributing](CONTRIBUTING.md): local checks, contribution boundaries, and PR guidance
 - [Security Policy](SECURITY.md): responsible disclosure, scope, and local automation safety boundaries
 - [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing

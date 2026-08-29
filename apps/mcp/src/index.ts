@@ -55,6 +55,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_contract_test",
+  {
+    title: "AgentFlow contract test",
+    description: "Run contract tests for reusable definitions, project-local agents, and provider adapters.",
+    inputSchema: {
+      definitions: z.string().optional().describe("Definition bundle root with agents/ and workflows/."),
+      project: z.string().optional().describe("Project directory with optional .agent-workflow/agents."),
+      provider: z.string().optional().describe("Provider adapter to check; defaults to mock."),
+      liveProvider: z.boolean().optional().describe("Allow execution against non-mock providers."),
+      json: z.boolean().optional().describe("Return machine-readable contract report.")
+    }
+  },
+  async ({ definitions, project, provider, liveProvider, json }) => {
+    const args = ["contract-test"];
+    if (definitions) args.push("--definitions", definitions);
+    if (project) args.push("--project", project);
+    if (provider) args.push("--provider", provider);
+    if (liveProvider) args.push("--live-provider");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: liveProvider ? 180_000 : 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_governance",
   {
     title: "AgentFlow multi-project governance",

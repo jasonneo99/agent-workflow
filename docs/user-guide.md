@@ -717,6 +717,7 @@ MCP clients can call these tools:
 ```text
 agentflow_doctor
 agentflow_validate
+agentflow_contract_test
 agentflow_list
 agentflow_schemas
 agentflow_bundle_compat
@@ -943,7 +944,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is contract tests for custom agents, workflows, and provider adapters, so extension authors can verify compatibility before sharing local packs. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness, so users can see adoption health without remembering every CLI command. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
