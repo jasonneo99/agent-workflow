@@ -135,3 +135,16 @@ baseline-versus-candidate comparison passes the project evaluation gate.
 ```bash
 npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project /path/to/project
 ```
+
+After the dashboard shows `propose_routing_note`, prepare a reviewed
+project-local promotion note plan:
+
+```bash
+npm run agentflow -- promotion-note-plan --project /path/to/project
+npm run agentflow -- promotion-note-plan --project /path/to/project --write
+```
+
+The command is a dry run by default. With `--write`, it writes only
+`.agent-workflow/tuning/promotion-routing-note-plan.md` and
+`.agent-workflow/tuning/promotion-routing-note-plan.json`. It does not update
+active routing preferences.

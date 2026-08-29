@@ -2506,6 +2506,38 @@ program
   });
 
 program
+  .command("promotion-note-plan")
+  .description("Prepare reviewed project-local routing-note patch plans from promotable candidate comparisons")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--suite <ids>", "comma-separated suite ids to include, or all", "all")
+  .option("--write", "write review plan files into .agent-workflow/tuning")
+  .option("--json", "print promotion note plan JSON")
+  .action(async (options: { project: string; suite: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadDashboardCandidateComparisonReport({ projectDir });
+    const plan = buildPromotionRoutingNotePlan(report, parseProposalIds(options.suite));
+
+    if (options.write) {
+      await writePromotionRoutingNotePlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatPromotionRoutingNotePlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create reviewable promotion note files.");
+    }
+  });
+
+program
   .command("apply-tuning-patches")
   .description("Apply reviewed tuning patch-plan items into project-local tuning note files")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3702,6 +3734,118 @@ function buildCandidatePromotionRecommendation(input: {
   };
 }
 
+function buildPromotionRoutingNotePlan(
+  report: DashboardCandidateComparisonReport,
+  selectedSuiteIds: string[] | "all" = "all"
+): DashboardPromotionRoutingNotePlan {
+  const requestedSuiteIds = selectedSuiteIds === "all"
+    ? report.promotionRecommendations.map((recommendation) => recommendation.suiteId)
+    : selectedSuiteIds;
+  const requestedSet = new Set(requestedSuiteIds);
+  const selectedRecommendations = report.promotionRecommendations.filter((recommendation) =>
+    requestedSet.has(recommendation.suiteId) && recommendation.decision === "propose_routing_note"
+  );
+  const selectedSet = new Set(selectedRecommendations.map((recommendation) => recommendation.suiteId));
+  const generatedAt = new Date().toISOString();
+  const notes = selectedRecommendations.map((recommendation) => {
+    const suite = report.comparisonPlan?.suites.find((item) => item.id === recommendation.suiteId) ?? null;
+    const outcome = report.outcomes.find((item) => item.suiteId === recommendation.suiteId) ?? null;
+    const gateCommand = report.comparisonPlan?.gateCommands.find((command) => command.includes("--gate") || command.includes(" gate ")) ?? report.comparisonPlan?.gateCommands[0] ?? null;
+    return {
+      suiteId: recommendation.suiteId,
+      workflowId: suite?.workflowId ?? "unknown",
+      baseline: report.comparisonPlan?.baseline ?? null,
+      candidate: report.comparisonPlan?.candidate ?? null,
+      qualityDelta: outcome?.qualityDelta ?? null,
+      latencyDeltaMs: outcome?.latencyDeltaMs ?? null,
+      gateCommand,
+      rationale: recommendation.rationale,
+      draftNote: [
+        `Prefer the candidate route for ${suite?.workflowId ?? recommendation.suiteId} only after the recorded gate passes.`,
+        report.comparisonPlan?.candidate
+          ? `Candidate: ${report.comparisonPlan.candidate.provider}/${report.comparisonPlan.candidate.modelTier}.`
+          : "Candidate route details were not available.",
+        outcome?.qualityDelta !== null && outcome?.qualityDelta !== undefined
+          ? `Observed quality delta: ${outcome.qualityDelta}.`
+          : "Quality delta must be confirmed before applying.",
+        outcome?.latencyDeltaMs !== null && outcome?.latencyDeltaMs !== undefined
+          ? `Observed latency delta: ${formatDurationDelta(outcome.latencyDeltaMs)}.`
+          : "Latency delta must be confirmed before applying."
+      ].join(" ")
+    };
+  });
+  const document = {
+    kind: "agentflow_promotion_routing_note_plan" as const,
+    projectRootUri: report.projectDir,
+    generatedAt,
+    sourceComparisonPlanGeneratedAt: report.comparisonPlan?.generatedAt ?? null,
+    selectedSuiteIds: selectedRecommendations.map((recommendation) => recommendation.suiteId),
+    skippedSuiteIds: requestedSuiteIds.filter((suiteId) => !selectedSet.has(suiteId)),
+    notes
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/promotion-routing-note-plan.md",
+        content: formatPromotionRoutingNotePlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/promotion-routing-note-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function formatPromotionRoutingNotePlan(plan: DashboardPromotionRoutingNotePlan): string {
+  return [
+    `Promotion Routing Note Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected promotable suites: ${plan.selectedSuiteIds.length ? plan.selectedSuiteIds.join(", ") : "none"}`,
+    plan.skippedSuiteIds.length ? `Skipped suites: ${plan.skippedSuiteIds.join(", ")}` : "",
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
+function formatPromotionRoutingNotePlanMarkdown(plan: Omit<DashboardPromotionRoutingNotePlan, "files">): string {
+  return [
+    "# Agent Workflow Promotion Routing Note Plan",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    plan.sourceComparisonPlanGeneratedAt ? `Source comparison plan: ${plan.sourceComparisonPlanGeneratedAt}` : "Source comparison plan: unavailable",
+    "",
+    "This plan is review-only. It does not change live routing. Apply any routing preference only after a project-local gate passes and a human reviews the note.",
+    "",
+    "## Draft Notes",
+    "",
+    plan.notes.length
+      ? plan.notes.map((note) => [
+        `### ${note.suiteId}`,
+        "",
+        `- Workflow: ${note.workflowId}`,
+        `- Baseline: ${note.baseline ? `${note.baseline.provider}/${note.baseline.modelTier}` : "unavailable"}`,
+        `- Candidate: ${note.candidate ? `${note.candidate.provider}/${note.candidate.modelTier}` : "unavailable"}`,
+        `- Quality delta: ${note.qualityDelta ?? "unavailable"}`,
+        `- Latency delta: ${note.latencyDeltaMs === null ? "unavailable" : formatDurationDelta(note.latencyDeltaMs)}`,
+        note.gateCommand ? `- Gate: ${note.gateCommand}` : "- Gate: run a baseline-versus-candidate gate before applying.",
+        "",
+        "Rationale:",
+        note.rationale.map((item) => `- ${item}`).join("\n"),
+        "",
+        "Draft routing note:",
+        "",
+        note.draftNote,
+        ""
+      ].join("\n")).join("\n")
+      : "_No promotable candidate comparison suites selected._",
+    ""
+  ].join("\n");
+}
+
 async function writeTuningApplicationPlan(projectDir: string, plan: TuningApplicationPlan): Promise<void> {
   for (const file of plan.files) {
     if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
@@ -3804,6 +3948,21 @@ async function writeCandidateComparisonPlan(projectDir: string, plan: CandidateC
     const projectRoot = path.resolve(projectDir);
     if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Refusing to write candidate comparison plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function writePromotionRoutingNotePlan(projectDir: string, plan: DashboardPromotionRoutingNotePlan): Promise<void> {
+  for (const file of plan.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
+      throw new Error(`Refusing to write promotion routing note plan outside .agent-workflow/tuning: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write promotion routing note plan outside project: ${file.relativePath}`);
     }
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
@@ -8985,6 +9144,30 @@ type DashboardCandidateComparisonReport = {
   }>;
   readiness: string[];
   nextCommands: string[];
+};
+
+type DashboardPromotionRoutingNotePlan = {
+  kind: "agentflow_promotion_routing_note_plan";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceComparisonPlanGeneratedAt: string | null;
+  selectedSuiteIds: string[];
+  skippedSuiteIds: string[];
+  notes: Array<{
+    suiteId: string;
+    workflowId: string;
+    baseline: CandidateVariantPlan | null;
+    candidate: CandidateVariantPlan | null;
+    qualityDelta: number | null;
+    latencyDeltaMs: number | null;
+    gateCommand: string | null;
+    rationale: string[];
+    draftNote: string;
+  }>;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
 };
 
 type RunStaleInputReport = {

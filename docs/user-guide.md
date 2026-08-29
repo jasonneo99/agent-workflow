@@ -980,6 +980,7 @@ provider dataset-plan files:
 npm run agentflow -- model-improvement-plan --project /path/to/project
 npm run agentflow -- model-improvement-plan --project /path/to/project --write
 npm run agentflow -- candidate-comparison-plan --project /path/to/project
+npm run agentflow -- promotion-note-plan --project /path/to/project
 ```
 
 The dry run prints the plan. With `--write`, files are written only under
@@ -994,13 +995,11 @@ recommendations without running models.
 
 ## 24. Recommended Next Improvement
 
-The next improvement is reviewed routing-note generation from promotion
-recommendations. The dashboard now combines candidate comparison outcomes with
-project evaluation readiness and produces a safe next action: keep baseline,
-run more evals, or propose a reviewed project-local routing note. The follow-up
-should generate that note as a dry-run patch under `.agent-workflow/tuning/`
-without changing live routing automatically. See the [Roadmap](roadmap.md) for
-the shared-platform implementation sequence.
+The next improvement is dashboard follow-up actions for promotion note plans.
+The CLI can now turn a promotable candidate comparison into review-only files
+under `.agent-workflow/tuning/`; the dashboard should expose that as a fixed
+local action while preserving the same dry-run-by-default behavior. See the
+[Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

@@ -170,7 +170,8 @@ trust gaps.
   - Done: add dashboard visibility for candidate comparison plans, generated suite files, baseline/candidate variants, and promotion gates.
   - Done: surface candidate comparison outcomes, leader, quality delta, latency delta, and gate readiness after evaluations run.
   - Done: recommend keep-baseline, run-more-evals, or reviewed-routing-note promotion actions only after baseline-versus-candidate evaluation evidence is recorded.
-  - Generate reviewed project-local routing-note patch plans from promotion recommendations without automatically changing live routing.
+  - Done: generate reviewed project-local routing-note patch plans from promotion recommendations without automatically changing live routing.
+  - Add dashboard follow-up actions for promotion note plans while preserving dry-run-by-default behavior.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
 ## Phase 5: Governed Distribution
