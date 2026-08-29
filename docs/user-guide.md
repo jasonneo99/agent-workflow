@@ -975,9 +975,11 @@ promotion remain approval-gated and project-local. See
 
 ## 24. Recommended Next Improvement
 
-The next improvement is adding a read-only model-improvement dashboard panel
-that summarizes scorecard health, proposed eval gaps, routing recommendations,
-and promotion readiness from existing local evidence. See the [Roadmap](roadmap.md)
+The next improvement is preparing scrubbed eval-case and provider dataset-plan
+proposals from explicitly approved project-local feedback. That keeps the cost
+savings loop practical while preserving the open-source boundary: Agent Workflow
+can recommend safer test data shapes, but it should not export private examples
+or start provider fine-tune jobs without project approval. See the [Roadmap](roadmap.md)
 for the shared-platform implementation sequence.
 ### Tuning approval history
 

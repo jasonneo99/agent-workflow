@@ -3395,6 +3395,59 @@ async function loadTuningProposals(input: {
   return buildTuningProposals(scorecard);
 }
 
+async function loadDashboardModelImprovementReport(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<DashboardModelImprovementReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit: input.limit });
+  const proposals = buildTuningProposals(scorecard);
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const evaluationRunList = projectRuns.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
+  const proposalCounts = countStrings(proposals.proposals.map((proposal) => proposal.kind));
+  const highPriorityProposals = proposals.proposals.filter((proposal) => proposal.priority === "high").length;
+  const feedbackNeeded = proposals.proposals.filter((proposal) => proposal.kind === "feedback_needed").length;
+  const routingProposals = proposals.proposals.filter((proposal) => proposal.kind === "routing_preference").length;
+  const feedbackTotal = Object.values(scorecard.feedbackCounts).reduce((sum, value) => sum + value, 0);
+  const readiness: string[] = [];
+  if (scorecard.runsAnalyzed === 0) {
+    readiness.push("Run at least one workflow before diagnosing model improvement.");
+  }
+  if (feedbackTotal === 0) {
+    readiness.push("Record accepted, revised, or rejected feedback before applying tuning.");
+  }
+  if (evaluationRunList.length === 0) {
+    readiness.push("Add or run an evaluation suite before promoting routing or prompt changes.");
+  }
+  if (highPriorityProposals > 0) {
+    readiness.push("Review high-priority proposals before repeating affected workflows.");
+  }
+  if (!readiness.length) {
+    readiness.push("Local evidence is ready for baseline-versus-candidate comparison.");
+  }
+  const promotionReady = scorecard.runsAnalyzed > 0 && feedbackTotal > 0 && evaluationRunList.length > 0 && highPriorityProposals === 0;
+  return {
+    generatedAt: new Date().toISOString(),
+    projectDir,
+    scorecard,
+    proposals,
+    evaluationRuns: evaluationRunList.length,
+    latestEvaluationAt: evaluationRunList.map((run) => run.startedAt).sort().at(-1) ?? null,
+    proposalCounts,
+    highPriorityProposals,
+    feedbackNeeded,
+    routingProposals,
+    promotionReady,
+    readiness,
+    nextCommands: [
+      `npm run agentflow -- quality-report --run <run-id>`,
+      `npm run agentflow -- feedback --run <run-id> --rating accepted|revised|rejected --note "<why>"`,
+      `npm run agentflow -- tuning-proposals --project ${shellQuote(projectDir)}`,
+      `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve quality while reducing cost"`
+    ]
+  };
+}
+
 async function writeTuningApplicationPlan(projectDir: string, plan: TuningApplicationPlan): Promise<void> {
   for (const file of plan.files) {
     if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
@@ -4077,6 +4130,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/model-improvement") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadDashboardModelImprovementReport({
+      projectDir: project,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/apply-tuning") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -4174,6 +4243,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : suites[0] ?? null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderEvaluationsHtml(suites, selected));
+    return;
+  }
+
+  if (requestUrl.pathname === "/model-improvement") {
+    const projects = await listProjectStorageSummaries(100);
+    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+    const report = project
+      ? await loadDashboardModelImprovementReport({
+        projectDir: project,
+        limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+      })
+      : null;
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderModelImprovementHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -4665,6 +4748,94 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
   </main>
 </body>
 </html>`;
+}
+
+function renderModelImprovementHtml(
+  report: DashboardModelImprovementReport | null,
+  projects: DashboardProjectSummary[],
+  params: URLSearchParams
+): string {
+  const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
+  const jsonHref = report ? `/api/model-improvement?project=${encodeURIComponent(report.projectDir)}` : "";
+  const body = report
+    ? renderModelImprovementReportHtml(report)
+    : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Run onboarding or enter a project path to inspect local model-improvement evidence.</p></section>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Model Improvement</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("model-improvement")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Model Improvement</h1>
+        <p class="muted">Read-only local evidence for quality, cost, feedback, eval coverage, routing, and promotion readiness.</p>
+      </div>
+      ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
+    </div>
+    <section class="panel">
+      <form method="get" class="workflow-form">
+        <label class="wide">Project path
+          <input name="project" value="${escapeHtml(selectedProject)}" list="model-improvement-projects" placeholder="/path/to/project">
+          <datalist id="model-improvement-projects">${projectOptions}</datalist>
+        </label>
+        <label>Run limit
+          <input name="limit" value="${escapeHtml(params.get("limit") ?? "50")}" inputmode="numeric">
+        </label>
+        <div class="form-actions"><button type="submit">Inspect</button></div>
+      </form>
+    </section>
+    ${body}
+  </main>
+</body>
+</html>`;
+}
+
+function renderModelImprovementReportHtml(report: DashboardModelImprovementReport): string {
+  const proposalRows = Object.entries(report.proposalCounts).map(([kind, count]) => `
+    <tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>
+  `).join("");
+  const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  return `
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Runs Analyzed", report.scorecard.runsAnalyzed, "recent project runs")}
+        ${metricCard("Feedback", formatInlineCounts(report.scorecard.feedbackCounts) || "none", "accepted / revised / rejected")}
+        ${metricCard("Eval Runs", report.evaluationRuns, report.latestEvaluationAt ? `latest ${new Date(report.latestEvaluationAt).toLocaleDateString()}` : "none found")}
+        ${metricCard("High Priority", report.highPriorityProposals, "tuning proposals")}
+        ${metricCard("Routing Proposals", report.routingProposals, "provider or tier changes")}
+        ${metricCard("Promotion Ready", report.promotionReady ? "yes" : "not yet", "baseline evidence gate")}
+      </div>
+      <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
+    </section>
+    <section class="panel">
+      <h2>Readiness</h2>
+      <ul>${report.readiness.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </section>
+    <section class="panel">
+      <h2>Proposal Mix</h2>
+      <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposals yet.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <h2>Preference Scorecard</h2>
+      ${renderPreferenceScorecardHtml(report.scorecard)}
+    </section>
+    <section class="panel">
+      <h2>Tuning Proposals</h2>
+      ${renderTuningProposalsHtml(report.proposals)}
+    </section>
+    <section class="panel">
+      <h2>Next Commands</h2>
+      <ul>${commandRows}</ul>
+    </section>
+  `;
 }
 
 function filterGovernanceReport(report: GovernanceReport, params: URLSearchParams): GovernanceReport {
@@ -7284,7 +7455,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "governance" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "model-improvement" | "governance" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -7292,6 +7463,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["projects", "/projects", "Projects"],
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
+    ["model-improvement", "/model-improvement", "Model Improve"],
     ["governance", "/governance", "Governance"],
     ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
@@ -8286,6 +8458,22 @@ type RunInputSnapshot = {
     sourceUri: string;
     contentHash: string | null;
   }>;
+};
+
+type DashboardModelImprovementReport = {
+  generatedAt: string;
+  projectDir: string;
+  scorecard: PreferenceScorecard;
+  proposals: TuningProposalSet;
+  evaluationRuns: number;
+  latestEvaluationAt: string | null;
+  proposalCounts: Record<string, number>;
+  highPriorityProposals: number;
+  feedbackNeeded: number;
+  routingProposals: number;
+  promotionReady: boolean;
+  readiness: string[];
+  nextCommands: string[];
 };
 
 type RunStaleInputReport = {

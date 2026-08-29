@@ -164,7 +164,7 @@ trust gaps.
 
 - [ ] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
-  - Add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
+  - Done: add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
   - Prepare scrubbed eval cases and provider-specific fine-tune dataset plans only from explicitly approved project-local feedback.
   - Orchestrate provider fine-tune job plans and candidate model comparisons when a project opts in and supplies its own provider credentials.
   - Promote routing changes only after baseline-versus-candidate evaluation evidence is recorded.

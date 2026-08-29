@@ -55,6 +55,19 @@ Use Agent Workflow to run model-improvement on this project and diagnose how to
 reduce token cost while preserving review quality.
 ```
 
+## Dashboard
+
+Open the local dashboard at `/model-improvement?project=/path/to/project` to
+inspect scorecard health, feedback coverage, evaluation coverage, tuning
+proposal mix, routing recommendations, and promotion readiness. The dashboard
+view is read-only and uses existing project-local evidence.
+
+For tools and IDE integrations, the same report is available as JSON:
+
+```text
+/api/model-improvement?project=/path/to/project
+```
+
 ## Evidence To Include
 
 The workflow is most useful after you have at least one of these:

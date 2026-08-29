@@ -202,6 +202,8 @@ npm run agentflow -- dashboard # Start local web dashboard
 
 The dashboard includes an **Evaluations** view for comparing provider, model
 tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
+It also includes a **Model Improvement** view for scorecard health, eval
+coverage, tuning proposal mix, routing recommendations, and promotion readiness.
 
 ![Agent Workflow dashboard](docs/assets/screenshots/dashboard-home.png)
 
