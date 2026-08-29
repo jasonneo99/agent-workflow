@@ -508,6 +508,14 @@ npm run dev:agentflow
 
 This starts Docker services, starts the dashboard when port `17888` is free, starts the background worker, and writes a supervisor heartbeat to `.agent-workflow/runtime/supervisor-heartbeat.json`.
 
+Stop the supervised dashboard and worker:
+
+```bash
+npm run dev:agentflow:stop
+```
+
+This leaves Docker services running so future local workflow runs start quickly.
+
 Open:
 
 ```text
