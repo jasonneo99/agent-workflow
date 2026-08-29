@@ -19,15 +19,16 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 13. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
 14. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
 15. [Model Improvement Workflow](model-improvement.md): diagnose quality, cost, prompt, context, eval, routing, retrieval, or fine-tune paths.
-16. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
-17. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-18. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-19. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-20. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-21. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-22. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-23. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-24. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+16. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
+17. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
+18. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+19. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+20. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+21. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+22. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+23. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+24. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+25. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 

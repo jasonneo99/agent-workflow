@@ -9,6 +9,8 @@ answers that need too much manual correction.
 
 For a complete command-by-command example, see the
 [Model Improvement Walkthrough](model-improvement-walkthrough.md).
+For the open-source/private-system boundary, see
+[Model Boundary](model-boundary.md).
 
 ## What It Diagnoses
 
