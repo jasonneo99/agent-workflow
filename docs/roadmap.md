@@ -163,7 +163,7 @@ trust gaps.
   - Done: add contract tests for custom agents, workflows, and provider adapters.
   - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
-- [ ] Optional model-improvement workflow pack.
+- [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
   - Done: add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
   - Done: prepare scrubbed eval cases and provider-specific fine-tune dataset plans only from explicitly approved project-local feedback.
