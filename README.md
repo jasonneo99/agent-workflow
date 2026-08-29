@@ -207,7 +207,8 @@ tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
 It also includes a **Model Improvement** view for scorecard health, eval
 coverage, tuning proposal mix, routing recommendations, and promotion readiness.
 The **Comparisons** view shows written candidate comparison plans, generated
-private eval suites, baseline/candidate variants, and promotion gate commands.
+private eval suites, baseline/candidate variants, quality and latency deltas,
+gate readiness, and promotion gate commands.
 
 ![Agent Workflow dashboard](docs/assets/screenshots/dashboard-home.png)
 

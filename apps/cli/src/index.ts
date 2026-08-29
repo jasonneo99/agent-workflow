@@ -3559,6 +3559,31 @@ async function loadDashboardCandidateComparisonReport(input: {
       exists: absolutePath.startsWith(`${projectDir}${path.sep}`) && fsSync.existsSync(absolutePath)
     };
   });
+  const evaluationSuites = comparisonPlan ? await loadDashboardEvaluations(500) : [];
+  const outcomes = (comparisonPlan?.suites ?? []).map((suite) => {
+    const evaluation = evaluationSuites.find((item) => item.id === suite.id);
+    const baseline = evaluation?.variants.find((variant) => variant.id.startsWith("baseline-")) ?? null;
+    const candidate = evaluation?.variants.find((variant) => variant.id.startsWith("candidate-")) ?? null;
+    return {
+      suiteId: suite.id,
+      runs: evaluation?.runs.length ?? 0,
+      leader: evaluation?.leader ?? null,
+      latestAt: evaluation?.latestAt || null,
+      baselineRuns: baseline?.runs ?? 0,
+      candidateRuns: candidate?.runs ?? 0,
+      baselineQuality: baseline?.averageQuality ?? null,
+      candidateQuality: candidate?.averageQuality ?? null,
+      qualityDelta: baseline?.averageQuality !== null && baseline?.averageQuality !== undefined && candidate?.averageQuality !== null && candidate?.averageQuality !== undefined
+        ? Math.round((candidate.averageQuality - baseline.averageQuality) * 1000) / 1000
+        : null,
+      baselineLatencyMs: baseline?.averageLatencyMs ?? null,
+      candidateLatencyMs: candidate?.averageLatencyMs ?? null,
+      latencyDeltaMs: baseline?.averageLatencyMs !== null && baseline?.averageLatencyMs !== undefined && candidate?.averageLatencyMs !== null && candidate?.averageLatencyMs !== undefined
+        ? candidate.averageLatencyMs - baseline.averageLatencyMs
+        : null,
+      gateReady: Boolean((baseline?.runs ?? 0) > 0 && (candidate?.runs ?? 0) > 0)
+    };
+  });
   const readiness: string[] = [];
   if (!modelPlanResult.exists) {
     readiness.push("Write a model-improvement plan before preparing candidate comparisons.");
@@ -3574,8 +3599,12 @@ async function loadDashboardCandidateComparisonReport(input: {
   if (missingSuites) {
     readiness.push(`${missingSuites} generated evaluation suite file(s) are missing.`);
   }
+  const unevaluatedSuites = outcomes.filter((outcome) => outcome.runs === 0).length;
+  if (comparisonPlan && unevaluatedSuites) {
+    readiness.push(`${unevaluatedSuites} candidate comparison suite(s) have not been evaluated yet.`);
+  }
   if (!readiness.length) {
-    readiness.push("Candidate comparison files are present. Run the generated evaluation suite when ready.");
+    readiness.push("Candidate comparison evidence is present. Run the gate before promoting routing or prompt changes.");
   }
   return {
     generatedAt: new Date().toISOString(),
@@ -3589,6 +3618,7 @@ async function loadDashboardCandidateComparisonReport(input: {
     modelPlan: modelPlanResult.value,
     comparisonPlan,
     suiteFiles,
+    outcomes,
     readiness,
     nextCommands: [
       `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,
@@ -5103,6 +5133,7 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
   const comparison = report.comparisonPlan;
   const suiteRows = comparison?.suites.map((suite) => {
     const file = report.suiteFiles.find((item) => item.path === suite.suitePath);
+    const outcome = report.outcomes.find((item) => item.suiteId === suite.id);
     return `
       <tr>
         <td>${escapeHtml(suite.id)}</td>
@@ -5110,11 +5141,27 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
         <td>${formatNumber(suite.caseCount)}</td>
         <td><code>${escapeHtml(suite.suitePath)}</code></td>
         <td><span class="status ${file?.exists ? "completed" : "queued"}">${file?.exists ? "present" : "missing"}</span></td>
+        <td>${outcome?.runs ?? 0}</td>
+        <td>${outcome?.gateReady ? '<span class="flag good">ready</span>' : '<span class="flag warn">not yet</span>'}</td>
       </tr>
     `;
   }).join("") ?? "";
+  const outcomeRows = report.outcomes.map((outcome) => `
+    <tr>
+      <td>${escapeHtml(outcome.suiteId)}</td>
+      <td>${escapeHtml(outcome.leader ?? "none")}</td>
+      <td>${outcome.baselineRuns}</td>
+      <td>${outcome.candidateRuns}</td>
+      <td>${outcome.baselineQuality ?? "n/a"}</td>
+      <td>${outcome.candidateQuality ?? "n/a"}</td>
+      <td>${outcome.qualityDelta ?? "n/a"}</td>
+      <td>${outcome.latencyDeltaMs === null ? "n/a" : formatDurationDelta(outcome.latencyDeltaMs)}</td>
+      <td>${outcome.latestAt ? renderDashboardDateTime(outcome.latestAt) : "n/a"}</td>
+    </tr>
+  `).join("");
   const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const gateRows = comparison?.gateCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
+  const gateReadyCount = report.outcomes.filter((outcome) => outcome.gateReady).length;
   return `
     <section class="panel">
       <div class="metric-grid">
@@ -5123,6 +5170,7 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
         ${metricCard("Eval Cases", report.modelPlan?.evalCases.length ?? 0, "from approved feedback")}
         ${metricCard("Suites", comparison?.suites.length ?? 0, "generated private eval files")}
         ${metricCard("Suite Files", `${report.suiteFiles.filter((suite) => suite.exists).length}/${report.suiteFiles.length}`, "present")}
+        ${metricCard("Gate Ready", `${gateReadyCount}/${report.outcomes.length}`, "baseline and candidate runs")}
         ${metricCard("Generated", formatDashboardDateTimeText(report.generatedAt), "local read")}
       </div>
       <p class="muted">Project ${escapeHtml(report.projectDir)}.</p>
@@ -5142,7 +5190,11 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
     </section>
     <section class="panel">
       <h2>Suites</h2>
-      <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Workflow</th><th>Cases</th><th>Path</th><th>File</th></tr></thead><tbody>${suiteRows || "<tr><td colspan=\"5\">No suites generated.</td></tr>"}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Workflow</th><th>Cases</th><th>Path</th><th>File</th><th>Runs</th><th>Gate</th></tr></thead><tbody>${suiteRows || "<tr><td colspan=\"7\">No suites generated.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <h2>Outcomes</h2>
+      <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Leader</th><th>Baseline Runs</th><th>Candidate Runs</th><th>Baseline Quality</th><th>Candidate Quality</th><th>Quality Delta</th><th>Latency Delta</th><th>Latest</th></tr></thead><tbody>${outcomeRows || "<tr><td colspan=\"9\">No evaluation outcomes yet.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel">
       <h2>Promotion Gates</h2>
@@ -7892,6 +7944,11 @@ function formatDuration(ms: number): string {
   return `${formatOneDecimal(ms / 60_000)}m`;
 }
 
+function formatDurationDelta(ms: number): string {
+  const prefix = ms > 0 ? "+" : ms < 0 ? "-" : "";
+  return `${prefix}${formatDuration(Math.abs(ms))}`;
+}
+
 function formatOneDecimal(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
@@ -8816,6 +8873,21 @@ type DashboardCandidateComparisonReport = {
   suiteFiles: Array<{
     path: string;
     exists: boolean;
+  }>;
+  outcomes: Array<{
+    suiteId: string;
+    runs: number;
+    leader: string | null;
+    latestAt: string | null;
+    baselineRuns: number;
+    candidateRuns: number;
+    baselineQuality: number | null;
+    candidateQuality: number | null;
+    qualityDelta: number | null;
+    baselineLatencyMs: number | null;
+    candidateLatencyMs: number | null;
+    latencyDeltaMs: number | null;
+    gateReady: boolean;
   }>;
   readiness: string[];
   nextCommands: string[];
