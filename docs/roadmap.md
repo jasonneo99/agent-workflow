@@ -117,10 +117,10 @@ Priority order: checkpointed resume and replay, human action approvals, and CI
 evaluation gates should land first because they close the largest operational
 trust gaps.
 
-- [ ] Checkpointed resume and deterministic replay.
-  - In progress: dashboard and CLI controls can resume unfinished stages from the last completed checkpoint.
-  - In progress: new runs persist workflow snapshots, and replay can queue a fresh run from stored task, provider settings, policy snapshot, workflow snapshot, and compiled context.
-  - In progress: resume and replay warn when project config, execution policy, bundle checksum, workflow definition, or selected source file hashes differ from queued run evidence.
+- [x] Checkpointed resume and deterministic replay.
+  - Done: dashboard and CLI controls can resume unfinished stages from the last completed checkpoint.
+  - Done: new runs persist workflow snapshots, and replay can queue a fresh run from stored task, provider settings, policy snapshot, workflow snapshot, and compiled context.
+  - Done: resume and replay warn when project config, execution policy, bundle checksum, workflow definition, or selected source file hashes differ from queued run evidence.
   - Done: retried command and file-write actions use deterministic idempotency keys, skip duplicate side effects, and record reuse receipts that point to the original artifacts.
 
 - [x] Human approval inbox for agent-requested actions.
