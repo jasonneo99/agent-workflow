@@ -3623,6 +3623,7 @@ async function loadDashboardCandidateComparisonReport(input: {
       outcome
     })
   );
+  const promotionNoteFiles = await readPromotionRoutingNoteFiles(projectDir);
   const readiness: string[] = [];
   if (!modelPlanResult.exists) {
     readiness.push("Write a model-improvement plan before preparing candidate comparisons.");
@@ -3659,6 +3660,7 @@ async function loadDashboardCandidateComparisonReport(input: {
     suiteFiles,
     outcomes,
     promotionRecommendations,
+    promotionNoteFiles,
     readiness,
     nextCommands: [
       `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,
@@ -3967,6 +3969,55 @@ async function writePromotionRoutingNotePlan(projectDir: string, plan: Dashboard
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
   }
+}
+
+async function readPromotionRoutingNoteFiles(projectDir: string): Promise<DashboardPromotionNoteFileSummary[]> {
+  const files = [
+    ".agent-workflow/tuning/promotion-routing-note-plan.md",
+    ".agent-workflow/tuning/promotion-routing-note-plan.json"
+  ];
+  const projectRoot = path.resolve(projectDir);
+  const summaries: DashboardPromotionNoteFileSummary[] = [];
+  for (const relativePath of files) {
+    const targetPath = path.resolve(projectRoot, relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      summaries.push({ path: relativePath, exists: false, bytes: 0, modifiedAt: null, preview: null, error: "path escaped project" });
+      continue;
+    }
+    try {
+      const stat = await fs.stat(targetPath);
+      const content = await fs.readFile(targetPath, "utf8");
+      summaries.push({
+        path: relativePath,
+        exists: true,
+        bytes: stat.size,
+        modifiedAt: stat.mtime.toISOString(),
+        preview: relativePath.endsWith(".md") ? truncateDashboardPreview(content, 4000) : null,
+        error: null
+      });
+    } catch (error) {
+      if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+        summaries.push({ path: relativePath, exists: false, bytes: 0, modifiedAt: null, preview: null, error: null });
+      } else {
+        summaries.push({
+          path: relativePath,
+          exists: true,
+          bytes: 0,
+          modifiedAt: null,
+          preview: null,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+  }
+  return summaries;
+}
+
+function truncateDashboardPreview(content: string, maxChars: number): string {
+  if (content.length <= maxChars) {
+    return content;
+  }
+  return `${content.slice(0, maxChars).trimEnd()}\n\n...truncated for dashboard preview...`;
 }
 
 async function readTuningPatchPlan(projectDir: string): Promise<TuningPatchPlanDocument> {
@@ -5399,6 +5450,16 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
       <td>${recommendation.nextAction.includes("npm run ") ? `<code>${escapeHtml(recommendation.nextAction)}</code>` : escapeHtml(recommendation.nextAction)}</td>
     </tr>
   `).join("");
+  const promotionFileRows = report.promotionNoteFiles.map((file) => `
+    <tr>
+      <td><code>${escapeHtml(file.path)}</code></td>
+      <td><span class="status ${file.exists && !file.error ? "completed" : file.error ? "failed" : "queued"}">${file.exists && !file.error ? "present" : file.error ? "error" : "missing"}</span></td>
+      <td>${file.exists ? formatNumber(file.bytes) : "n/a"}</td>
+      <td>${file.modifiedAt ? renderDashboardDateTime(file.modifiedAt) : "n/a"}</td>
+      <td>${file.error ? escapeHtml(file.error) : file.preview ? "preview below" : "n/a"}</td>
+    </tr>
+  `).join("");
+  const promotionMarkdownPreview = report.promotionNoteFiles.find((file) => file.path.endsWith(".md") && file.preview)?.preview ?? "";
   const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const gateRows = comparison?.gateCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
   const gateReadyCount = report.outcomes.filter((outcome) => outcome.gateReady).length;
@@ -5442,6 +5503,11 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
       <h2>Promotion Recommendation</h2>
       <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Decision</th><th>Rationale</th><th>Next Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"4\">No comparison outcomes available yet.</td></tr>"}</tbody></table></div>
       ${promotionNotePlanForm(report)}
+    </section>
+    <section class="panel">
+      <h2>Promotion Note Files</h2>
+      <div class="table-wrap"><table><thead><tr><th>Path</th><th>Status</th><th>Bytes</th><th>Modified</th><th>Preview</th></tr></thead><tbody>${promotionFileRows}</tbody></table></div>
+      ${promotionMarkdownPreview ? `<h3>Markdown Preview</h3><pre>${escapeHtml(promotionMarkdownPreview)}</pre>` : '<p class="muted">No written promotion note plan yet. Preview or write one from a promotable recommendation.</p>'}
     </section>
     <section class="panel">
       <h2>Promotion Gates</h2>
@@ -9171,8 +9237,18 @@ type DashboardCandidateComparisonReport = {
     rationale: string[];
     nextAction: string;
   }>;
+  promotionNoteFiles: DashboardPromotionNoteFileSummary[];
   readiness: string[];
   nextCommands: string[];
+};
+
+type DashboardPromotionNoteFileSummary = {
+  path: string;
+  exists: boolean;
+  bytes: number;
+  modifiedAt: string | null;
+  preview: string | null;
+  error: string | null;
 };
 
 type DashboardPromotionRoutingNotePlan = {

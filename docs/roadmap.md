@@ -172,7 +172,8 @@ trust gaps.
   - Done: recommend keep-baseline, run-more-evals, or reviewed-routing-note promotion actions only after baseline-versus-candidate evaluation evidence is recorded.
   - Done: generate reviewed project-local routing-note patch plans from promotion recommendations without automatically changing live routing.
   - Done: add dashboard follow-up actions for promotion note plans while preserving dry-run-by-default behavior.
-  - Surface written promotion note plan files in the dashboard for review and sharing.
+  - Done: surface written promotion note plan files in the dashboard for review and sharing.
+  - Add an end-to-end model-improvement walkthrough with sample local evidence, screenshots, and expected command output.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
 ## Phase 5: Governed Distribution

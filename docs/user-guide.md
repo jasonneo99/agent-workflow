@@ -991,15 +991,16 @@ candidate comparison plans.
 Open `/candidate-comparisons?project=/path/to/project` in the dashboard to
 inspect the written comparison plan, suite files, baseline/candidate providers,
 evaluation outcomes, quality and latency deltas, gate readiness, and promotion
-recommendations without running models.
+recommendations without running models. After a promotion note plan is written,
+the same page shows the review file status and markdown preview.
 
 ## 24. Recommended Next Improvement
 
-The next improvement is showing promotion note plan files back inside the
-dashboard after they are written. The Candidate Comparisons page can now preview
-promotion note plans from promotable suites while preserving dry-run-by-default
-behavior. See the [Roadmap](roadmap.md) for the shared-platform implementation
-sequence.
+The next improvement is an end-to-end model-improvement walkthrough with sample
+local evidence, screenshots, and expected command output. Candidate Comparisons
+now previews promotion note plans and shows written review files without
+changing live routing. See the [Roadmap](roadmap.md) for the shared-platform
+implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
