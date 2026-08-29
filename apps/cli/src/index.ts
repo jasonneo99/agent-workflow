@@ -5441,6 +5441,7 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
     <section class="panel">
       <h2>Promotion Recommendation</h2>
       <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Decision</th><th>Rationale</th><th>Next Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"4\">No comparison outcomes available yet.</td></tr>"}</tbody></table></div>
+      ${promotionNotePlanForm(report)}
     </section>
     <section class="panel">
       <h2>Promotion Gates</h2>
@@ -8376,6 +8377,21 @@ function projectActionForm(project: string, action: string, label: string): stri
   return `<form method="post" action="/api/follow-up"><input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
+function promotionNotePlanForm(report: DashboardCandidateComparisonReport): string {
+  const suiteIds = report.promotionRecommendations
+    .filter((recommendation) => recommendation.decision === "propose_routing_note")
+    .map((recommendation) => recommendation.suiteId);
+  if (!suiteIds.length) {
+    return '<p class="muted">Run baseline and candidate evaluations until a suite is promotable before generating a promotion note plan.</p>';
+  }
+  return `<form class="inline-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectDir)}">
+    <input type="hidden" name="action" value="promotion-note-plan">
+    <input type="hidden" name="ids" value="${escapeHtml(suiteIds.join(","))}">
+    <button type="submit">Preview Promotion Note Plan</button>
+  </form>`;
+}
+
 function projectIndexForm(project: string): string {
   return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
 }
@@ -8457,6 +8473,19 @@ async function runDashboardFollowUp(input: {
       ok: true,
       title: "Tuning Overlay Dry Run",
       output: `${formatTuningApplicationPlan(plan)}\n\nRun this command to write the overlay files:\nnpm run agentflow -- apply-tuning-proposals --project ${shellQuote(sourceProject)} --ids ${shellQuote(input.ids?.trim() || "all")} --write`
+    };
+  }
+
+  if (action === "promotion-note-plan") {
+    const report = await loadDashboardCandidateComparisonReport({
+      projectDir: sourceProject
+    });
+    const suiteIds = input.ids?.trim() || "all";
+    const plan = buildPromotionRoutingNotePlan(report, parseProposalIds(suiteIds));
+    return {
+      ok: true,
+      title: "Promotion Note Plan Dry Run",
+      output: `${formatPromotionRoutingNotePlan(plan)}\n\nRun this command to write the review files:\nnpm run agentflow -- promotion-note-plan --project ${shellQuote(sourceProject)} --suite ${shellQuote(suiteIds)} --write`
     };
   }
 

@@ -995,11 +995,11 @@ recommendations without running models.
 
 ## 24. Recommended Next Improvement
 
-The next improvement is dashboard follow-up actions for promotion note plans.
-The CLI can now turn a promotable candidate comparison into review-only files
-under `.agent-workflow/tuning/`; the dashboard should expose that as a fixed
-local action while preserving the same dry-run-by-default behavior. See the
-[Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is showing promotion note plan files back inside the
+dashboard after they are written. The Candidate Comparisons page can now preview
+promotion note plans from promotable suites while preserving dry-run-by-default
+behavior. See the [Roadmap](roadmap.md) for the shared-platform implementation
+sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

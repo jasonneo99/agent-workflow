@@ -137,7 +137,8 @@ npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-
 ```
 
 After the dashboard shows `propose_routing_note`, prepare a reviewed
-project-local promotion note plan:
+project-local promotion note plan from the Candidate Comparisons page, or from
+the CLI:
 
 ```bash
 npm run agentflow -- promotion-note-plan --project /path/to/project
