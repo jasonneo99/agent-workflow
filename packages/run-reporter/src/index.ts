@@ -266,6 +266,39 @@ export interface TuningPatchPlanEntry {
   note?: string;
 }
 
+export interface ModelImprovementPlan {
+  kind: "agentflow_model_improvement_plan";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceQueueGeneratedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  evalCases: ModelImprovementEvalCase[];
+  datasetPlans: ModelImprovementDatasetPlan[];
+  files: TuningApplicationFile[];
+}
+
+export interface ModelImprovementEvalCase {
+  id: string;
+  proposalId: string;
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  scenario: string;
+  expectedSignals: string[];
+  source: string;
+}
+
+export interface ModelImprovementDatasetPlan {
+  id: string;
+  proposalId: string;
+  providerFamily: string;
+  purpose: string;
+  records: string[];
+  approvalRequired: true;
+  exclusions: string[];
+}
+
 export function buildRunExport(input: RunExportInput): RunExportDocument {
   const redaction = input.scrub ? buildRedactedRunExport(input) : input;
   const stageOutputs = redaction.artifacts.filter((artifact) => artifact.kind === "stage_output");
@@ -946,6 +979,87 @@ export function formatTuningPatchPlan(plan: TuningPatchPlan): string {
   ].filter(Boolean).join("\n");
 }
 
+export function buildModelImprovementPlan(
+  queue: TuningApprovalQueue,
+  selectedIds: string[] | "all" = "all"
+): ModelImprovementPlan {
+  const approvedItems = queue.items.filter((item) => item.status === "approved");
+  const requestedIds = selectedIds === "all" ? approvedItems.map((item) => item.proposalId) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = approvedItems.filter((item) => requestedIdSet.has(item.id) || requestedIdSet.has(item.proposalId));
+  const matchedIds = new Set(selected.flatMap((item) => [item.id, item.proposalId]));
+  const generatedAt = new Date().toISOString();
+  const evalCases = selected.map((item, index): ModelImprovementEvalCase => ({
+    id: `evalcase-${String(index + 1).padStart(3, "0")}`,
+    proposalId: item.proposalId,
+    workflowId: item.proposal.workflowId,
+    stageId: item.proposal.stageId,
+    agentId: item.proposal.agentId,
+    scenario: modelImprovementScenario(item.proposal),
+    expectedSignals: modelImprovementSignals(item.proposal),
+    source: "approved_project_local_tuning_feedback"
+  }));
+  const datasetPlans = selected.map((item, index): ModelImprovementDatasetPlan => ({
+    id: `dataset-plan-${String(index + 1).padStart(3, "0")}`,
+    proposalId: item.proposalId,
+    providerFamily: "provider-owned-fine-tune-or-eval-import",
+    purpose: modelImprovementDatasetPurpose(item.proposal),
+    records: [
+      "Use only explicitly approved, scrubbed project-local examples.",
+      "Include task intent, allowed context categories, expected output contract, and review outcome labels.",
+      "Keep raw prompts, customer data, secrets, private schemas, and proprietary scoring formulas out of exported records."
+    ],
+    approvalRequired: true,
+    exclusions: [
+      "No automatic uploads.",
+      "No production routing promotion.",
+      "No private customer examples in open-source docs or shared bundles."
+    ]
+  }));
+  const document = {
+    kind: "agentflow_model_improvement_plan" as const,
+    projectRootUri: queue.projectRootUri,
+    generatedAt,
+    sourceQueueGeneratedAt: queue.generatedAt,
+    selectedIds: selected.map((item) => item.proposalId),
+    skippedIds: requestedIds.filter((id) => !matchedIds.has(id)),
+    evalCases,
+    datasetPlans
+  };
+
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/eval-case-proposals.md",
+        content: formatModelImprovementEvalCasesMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/provider-dataset-plan.md",
+        content: formatModelImprovementDatasetPlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/model-improvement-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+export function formatModelImprovementPlan(plan: ModelImprovementPlan): string {
+  return [
+    `Model Improvement Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected approved proposals: ${plan.selectedIds.length ? plan.selectedIds.join(", ") : "none"}`,
+    plan.skippedIds.length ? `Skipped unavailable ids: ${plan.skippedIds.join(", ")}` : "",
+    `Eval case proposals: ${plan.evalCases.length}`,
+    `Dataset plans: ${plan.datasetPlans.length}`,
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
 export function buildTuningPatchApplicationPlan(
   patchPlan: TuningPatchPlanDocument,
   selectedIds: string[] | "all" = "all"
@@ -1112,6 +1226,105 @@ function formatTuningPatchMarkdown(item: TuningApprovalItem, generatedAt: string
     "- The change can be verified with a local command or a follow-up Agent Workflow run.",
     ""
   ].filter(Boolean).join("\n");
+}
+
+function formatModelImprovementEvalCasesMarkdown(plan: Omit<ModelImprovementPlan, "files">): string {
+  return [
+    "# Agent Workflow Model Improvement Eval Case Proposals",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    `Source queue generated: ${plan.sourceQueueGeneratedAt}`,
+    "",
+    "These are scrubbed, project-local proposal shapes. They are not provider upload files and should be reviewed before becoming an evaluation suite.",
+    "",
+    plan.evalCases.length
+      ? plan.evalCases.map((item) => [
+        `## ${item.id} (${item.proposalId})`,
+        "",
+        `- Workflow: ${item.workflowId}`,
+        `- Stage: ${item.stageId}`,
+        `- Agent: ${item.agentId}`,
+        `- Scenario: ${item.scenario}`,
+        `- Source: ${item.source}`,
+        "- Expected signals:",
+        item.expectedSignals.map((signal) => `  - ${signal}`).join("\n"),
+        ""
+      ].join("\n")).join("\n")
+      : "_No approved tuning proposals selected._",
+    ""
+  ].join("\n");
+}
+
+function formatModelImprovementDatasetPlanMarkdown(plan: Omit<ModelImprovementPlan, "files">): string {
+  return [
+    "# Agent Workflow Provider Dataset Plan",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    "",
+    "This plan describes provider-neutral dataset shapes for optional eval imports or fine-tune experiments. It does not export examples, upload data, or promote routing.",
+    "",
+    plan.datasetPlans.length
+      ? plan.datasetPlans.map((item) => [
+        `## ${item.id} (${item.proposalId})`,
+        "",
+        `- Provider family: ${item.providerFamily}`,
+        `- Purpose: ${item.purpose}`,
+        `- Approval required: ${item.approvalRequired ? "yes" : "no"}`,
+        "- Record shape:",
+        item.records.map((record) => `  - ${record}`).join("\n"),
+        "- Exclusions:",
+        item.exclusions.map((exclusion) => `  - ${exclusion}`).join("\n"),
+        ""
+      ].join("\n")).join("\n")
+      : "_No approved tuning proposals selected._",
+    ""
+  ].join("\n");
+}
+
+function modelImprovementScenario(proposal: TuningProposal): string {
+  if (proposal.kind === "agent_prompt") {
+    return `Verify ${proposal.agentId} produces file-grounded, assumption-aware output for ${proposal.workflowId}/${proposal.stageId}.`;
+  }
+  if (proposal.kind === "context_budget") {
+    return `Compare compact versus expanded context for ${proposal.workflowId}/${proposal.stageId} without changing private project facts.`;
+  }
+  if (proposal.kind === "routing_preference") {
+    return `Compare provider or tier routing for ${proposal.workflowId}/${proposal.stageId} using the same scrubbed task shape.`;
+  }
+  return `Collect explicit feedback before changing ${proposal.workflowId}/${proposal.stageId}.`;
+}
+
+function modelImprovementSignals(proposal: TuningProposal): string[] {
+  const base = [
+    "Output follows the expected workflow contract.",
+    "Findings are grounded in supplied project evidence.",
+    "No secrets, private customer data, or proprietary scoring logic are exposed."
+  ];
+  if (proposal.kind === "routing_preference") {
+    return [...base, "Quality is maintained while latency, fallback, or estimated cost improves."];
+  }
+  if (proposal.kind === "context_budget") {
+    return [...base, "The selected context budget is sufficient without unnecessary token growth."];
+  }
+  if (proposal.kind === "agent_prompt") {
+    return [...base, "The agent names assumptions and concrete verification steps."];
+  }
+  return [...base, "The run receives accepted, revised, or rejected human feedback."];
+}
+
+function modelImprovementDatasetPurpose(proposal: TuningProposal): string {
+  if (proposal.kind === "routing_preference") {
+    return `Evaluate candidate routing for ${proposal.workflowId}/${proposal.stageId} before promotion.`;
+  }
+  if (proposal.kind === "context_budget") {
+    return `Evaluate whether context selection improves ${proposal.agentId} quality per token.`;
+  }
+  if (proposal.kind === "agent_prompt") {
+    return `Evaluate prompt or instruction changes for ${proposal.agentId} before reuse.`;
+  }
+  return "Collect feedback before preparing provider-specific dataset records.";
 }
 
 function tuningPatchTarget(proposal: TuningProposal): string {

@@ -85,8 +85,14 @@ npm run agentflow -- quality-report --run <run-id>
 npm run agentflow -- feedback --run <run-id> --rating revised --note "Good context, but too expensive for docs-only stages"
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project
+npm run agentflow -- model-improvement-plan --project /path/to/project
 npm run agentflow -- evaluate --suite evaluations/synthetic-provider-comparison.yaml --project /path/to/project --dry-run
 ```
+
+After approving tuning proposals with `queue-tuning-approvals` and
+`tuning-approvals`, run `model-improvement-plan` to prepare scrubbed eval-case
+and provider dataset-plan proposals. The command is a dry run unless `--write`
+is passed. Written files stay under `.agent-workflow/model-improvement/`.
 
 ## Safety Boundary
 

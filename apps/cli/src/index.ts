@@ -70,7 +70,7 @@ import {
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
-import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { appendTuningApprovalHistory, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
@@ -2416,6 +2416,38 @@ program
   });
 
 program
+  .command("model-improvement-plan")
+  .description("Prepare scrubbed eval-case and provider dataset-plan proposals from approved project-local feedback")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated approved proposal ids or approval ids to include, or all", "all")
+  .option("--write", "write plan files into the project")
+  .option("--json", "print model-improvement plan JSON")
+  .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readTuningApprovalQueue(projectDir);
+    const plan = buildModelImprovementPlan(queue, parseProposalIds(options.ids));
+
+    if (options.write) {
+      await writeModelImprovementPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatModelImprovementPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create project-local model-improvement plan files.");
+    }
+  });
+
+program
   .command("apply-tuning-patches")
   .description("Apply reviewed tuning patch-plan items into project-local tuning note files")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3507,6 +3539,21 @@ async function writeTuningPatchPlan(projectDir: string, plan: TuningPatchPlan): 
     const projectRoot = path.resolve(projectDir);
     if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Refusing to write tuning patch plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function writeModelImprovementPlan(projectDir: string, plan: ModelImprovementPlan): Promise<void> {
+  for (const file of plan.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write model-improvement plan outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write model-improvement plan outside project: ${file.relativePath}`);
     }
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");

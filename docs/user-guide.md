@@ -973,14 +973,24 @@ changes, but private dataset export, provider fine-tune jobs, and candidate
 promotion remain approval-gated and project-local. See
 [Model Improvement Workflow](model-improvement.md).
 
+After approving project-local tuning proposals, prepare scrubbed eval-case and
+provider dataset-plan files:
+
+```bash
+npm run agentflow -- model-improvement-plan --project /path/to/project
+npm run agentflow -- model-improvement-plan --project /path/to/project --write
+```
+
+The dry run prints the plan. With `--write`, files are written only under
+`.agent-workflow/model-improvement/`.
+
 ## 24. Recommended Next Improvement
 
-The next improvement is preparing scrubbed eval-case and provider dataset-plan
-proposals from explicitly approved project-local feedback. That keeps the cost
-savings loop practical while preserving the open-source boundary: Agent Workflow
-can recommend safer test data shapes, but it should not export private examples
-or start provider fine-tune jobs without project approval. See the [Roadmap](roadmap.md)
-for the shared-platform implementation sequence.
+The next improvement is opt-in candidate comparison planning for provider
+fine-tune or routing experiments. It should stay plan-only by default, require
+project credentials and explicit approval before provider calls, and promote
+changes only after baseline-versus-candidate evaluation evidence passes. See the
+[Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
