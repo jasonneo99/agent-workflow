@@ -150,6 +150,7 @@ npm run agentflow -- bundle-upgrade-preview -p . # Preview project bundle migrat
 npm run agentflow -- definition-migrations -p . # Show definition changes, upgrade steps, validation, and rollback
 npm run agentflow -- bundle-adopt -p . --force # Record current bundle as the reviewed project baseline
 npm run doctor                 # Check local services
+npm run dashboard              # Inspect runs, providers, usage, projects, and bundle readiness
 
 # Project operations
 npm run init-project -- -p .   # Install agent workflow into a project

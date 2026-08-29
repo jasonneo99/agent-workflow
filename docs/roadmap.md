@@ -151,7 +151,7 @@ trust gaps.
   - Done: explain why each retrieved source was included in a compiled brief.
   - Done: support lightweight local watch polling and CI-triggered `--since-commit` indexing.
 
-- [ ] Workflow authoring and compatibility tooling.
+- [x] Workflow authoring and compatibility tooling.
   - Done: add JSON Schema and editor validation for agents, workflows, project policies, and schedules.
   - Done: provide a dry-run graph showing stages, dependencies, permissions, approvals, agents, and context budgets.
   - Done: add a standalone bundle compatibility report for runtime, Node.js, MCP requirements, and migration notes.
@@ -160,7 +160,7 @@ trust gaps.
   - Done: add explicit bundle adoption recording after reviewed upgrades.
   - Done: add definition migration and rollback guidance for changed bundle contracts.
   - Done: add contract tests for custom agents, workflows, and provider adapters.
-  - Add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
+  - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
 - [ ] Optional model-improvement workflow pack.
   - Diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

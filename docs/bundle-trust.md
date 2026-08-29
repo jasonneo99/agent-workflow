@@ -84,4 +84,8 @@ agentflow bundle-trust --remove <sha256-fingerprint>
 
 The trust store contains public keys only at `~/.config/agent-workflow/trusted-bundle-keys.json` by default. Override it with `AGENTFLOW_BUNDLE_TRUST_STORE` for managed environments.
 
-The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes `agentflow_bundle_verify`, `agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and `agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.
+The dashboard exposes `/bundles` and `/api/bundles`. Add `?project=/path/to/project`
+to include project adoption state, upgrade status, definition migration guidance,
+and mock-provider contract-test readiness. MCP exposes `agentflow_bundle_verify`,
+`agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and
+`agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.

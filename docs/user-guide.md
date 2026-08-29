@@ -76,6 +76,18 @@ After reviewing the preview, run
 `npm run agentflow -- bundle-adopt --project /path/to/project --force` to record
 the current bundle as the new local baseline.
 
+The dashboard bundles page shows the same adoption readiness checks in one
+place:
+
+```bash
+npm run dashboard
+# open /bundles?project=/path/to/project
+```
+
+Use it to inspect bundle trust, runtime compatibility, upgrade status,
+definition migration guidance, and mock-provider contract-test readiness without
+changing project files.
+
 ## 3. Use From An MCP Client
 
 Agent Workflow can run from VS Code, Cursor, Codex, or another MCP-capable client. The client only launches the local MCP server; model/provider selection stays in Agent Workflow's `.env`.
@@ -944,7 +956,11 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness, so users can see adoption health without remembering every CLI command. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is the optional model-improvement workflow pack: diagnose
+whether quality issues should be handled through context, prompts, routing,
+evals, retrieval, or provider-side fine tuning, while keeping private datasets
+and model artifacts outside the core open source package. See the
+[Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

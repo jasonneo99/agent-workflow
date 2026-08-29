@@ -24,7 +24,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { buildBundleCompatibilityReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleUpgradePreview, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleUpgradePreview, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleCompatibilityReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -74,8 +74,8 @@ import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceSco
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
-import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../packages/definition-migrations/src/index.js";
-import { formatContractTestReport, runDefinitionContractTests } from "../../../packages/contract-tests/src/index.js";
+import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
+import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
 
 const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
@@ -3980,9 +3980,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/bundles") {
-    const verification = await verifyBundle(rootDir, normalizePolicy(requestUrl.searchParams.get("policy") ?? process.env.AGENTFLOW_BUNDLE_TRUST_POLICY));
+    const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(verification, null, 2));
+    response.end(JSON.stringify(readiness, null, 2));
     return;
   }
 
@@ -4185,9 +4185,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/bundles") {
-    const verification = await verifyBundle(rootDir, normalizePolicy(requestUrl.searchParams.get("policy") ?? process.env.AGENTFLOW_BUNDLE_TRUST_POLICY));
+    const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderBundleTrustHtml(verification));
+    response.end(renderBundleTrustHtml(readiness, requestUrl.searchParams));
     return;
   }
 
@@ -4700,15 +4700,114 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
 
-function renderBundleTrustHtml(verification: BundleVerification): string {
+type DashboardBundleReadiness = {
+  generatedAt: string;
+  projectDir: string | null;
+  verification: BundleVerification;
+  compatibility: BundleCompatibilityReport;
+  upgradePreview: BundleUpgradePreview;
+  migrationPlan: DefinitionMigrationPlan;
+  contractTests: ContractTestReport;
+  errors: string[];
+};
+
+async function loadDashboardBundleReadiness(params: URLSearchParams): Promise<DashboardBundleReadiness> {
+  const projectParam = params.get("project")?.trim();
+  const projectDir = projectParam ? path.resolve(process.cwd(), projectParam) : undefined;
+  const errors: string[] = [];
+  if (projectDir) {
+    try {
+      await fs.access(projectDir);
+    } catch {
+      errors.push(`Project path is not reachable: ${projectDir}`);
+    }
+  }
+
+  const policy = normalizePolicy(params.get("policy") ?? process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
+  const manifest = await loadCommittedBundleManifest(rootDir);
+  if (!manifest) throw new Error("Bundle manifest is missing.");
+  const packageJson = await readJsonFile<{ version?: string }>(path.join(rootDir, "package.json"));
+  const statePath = projectDir ? path.join(projectDir, ".agent-workflow", "bundle-state.json") : undefined;
+  const state = statePath ? await readJsonFile<ProjectBundleState>(statePath) : null;
+  const compatibility = buildBundleCompatibilityReport(manifest, {
+    agentWorkflow: packageJson?.version ?? "0.0.0",
+    node: process.version.slice(1),
+    mcp: manifest.compatibility.mcp
+  });
+  const upgradePreview = buildBundleUpgradePreview(manifest, {
+    state: state ?? undefined,
+    statePath
+  });
+  const catalog = await loadDefinitionMigrationCatalog(rootDir);
+  const migrationPlan = buildDefinitionMigrationPlan({
+    manifest,
+    catalog,
+    state: state ?? undefined,
+    statePath
+  });
+  const contractTests = await runDefinitionContractTests({
+    definitionsDir: rootDir,
+    projectDir,
+    provider: providerFromEnv("mock"),
+    liveProvider: false
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    projectDir: projectDir ?? null,
+    verification: await verifyBundle(rootDir, policy),
+    compatibility,
+    upgradePreview,
+    migrationPlan,
+    contractTests,
+    errors
+  };
+}
+
+function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLSearchParams): string {
+  const verification = readiness.verification;
   const statusClass = verification.status === "trusted" ? "good" : verification.allowed ? "warn" : "bad";
+  const query = params.toString();
+  const jsonHref = `/api/bundles${query ? `?${query}` : ""}`;
+  const projectValue = readiness.projectDir ?? "";
+  const failedContracts = readiness.contractTests.results.filter((result) => result.status === "fail").length;
+  const skippedContracts = readiness.contractTests.results.filter((result) => result.status === "skip").length;
+  const migrationCount = readiness.migrationPlan.migrations.length;
+  const compatibilityRows = readiness.compatibility.checks.map((check) => `
+    <tr><td>${escapeHtml(check.label)}</td><td><span class="flag ${check.compatible ? "good" : "bad"}">${check.compatible ? "pass" : "fail"}</span></td><td><code>${escapeHtml(check.actual)}</code></td><td><code>${escapeHtml(check.required)}</code></td><td>${escapeHtml(check.detail)}</td></tr>
+  `).join("");
+  const contractRows = readiness.contractTests.results.slice(0, 16).map((result) => `
+    <tr><td><span class="flag ${result.status === "pass" ? "good" : result.status === "skip" ? "warn" : "bad"}">${escapeHtml(result.status)}</span></td><td>${escapeHtml(result.id)}</td><td>${escapeHtml(result.detail)}</td></tr>
+  `).join("");
+  const migrationItems = readiness.migrationPlan.migrations.map((migration) => `
+    <details class="artifact"><summary>${escapeHtml(migration.id)}: ${escapeHtml(migration.from)} to ${escapeHtml(migration.to)}</summary>
+      <p>${escapeHtml(migration.summary)}</p>
+      <h3>Validation</h3><ul>${migration.validation.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      <h3>Rollback</h3><ul>${migration.rollbackSteps.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </details>
+  `).join("");
+  const errorBlock = readiness.errors.length
+    ? `<section class="panel warn-panel"><h2>Needs attention</h2><ul>${readiness.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></section>`
+    : "";
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Bundle Trust</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("bundles")}
-  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Trust</h1><p class="muted">Origin, integrity, compatibility, and signer trust. A signature never expands project execution permissions.</p></div><a class="button secondary" href="/api/bundles">JSON</a></div>
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Readiness</h1><p class="muted">Read-only trust, compatibility, migration, and contract-test visibility. A signature never expands project execution permissions.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
+  <section class="panel"><form method="get" class="workflow-form"><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}" placeholder="/path/to/project"></label><label>Trust policy<select name="policy">${["allow", "warn", "require"].map((policy) => `<option value="${policy}"${verification.policy === policy ? " selected" : ""}>${policy}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Inspect</button></div></form><p class="muted">Leave project path blank to inspect shared bundle readiness without project adoption state.</p></section>
+  ${errorBlock}
+  <section class="panel"><div class="metric-grid">
+    ${metricCard("Trust", verification.status, verification.allowed ? "Current policy allows this bundle" : "Current policy rejects this bundle")}
+    ${metricCard("Compatibility", readiness.compatibility.compatible ? "pass" : "fail", `${readiness.compatibility.checks.length} runtime checks`)}
+    ${metricCard("Upgrade", readiness.upgradePreview.status, readiness.upgradePreview.source.kind)}
+    ${metricCard("Migrations", migrationCount, readiness.migrationPlan.status)}
+    ${metricCard("Contract Tests", readiness.contractTests.passed ? "pass" : "fail", `${failedContracts} failed, ${skippedContracts} skipped`)}
+  </div><p class="muted">Generated ${renderDashboardDateTime(readiness.generatedAt)}${readiness.projectDir ? ` for ${escapeHtml(readiness.projectDir)}` : ""}.</p></section>
   <section class="panel"><div class="section-heading"><div><h2>${escapeHtml(verification.bundleId)} ${escapeHtml(verification.bundleVersion)}</h2><span class="muted">Manifest ${escapeHtml(verification.manifestChecksum)}</span></div><span class="flag ${statusClass}">${escapeHtml(verification.status)}</span></div>
   <div class="meta-grid"><div><strong>Policy</strong>${escapeHtml(verification.policy)}</div><div><strong>Decision</strong>${verification.allowed ? "allowed" : "rejected"}</div><div><strong>Signer</strong>${escapeHtml(verification.signerId ?? "none")}</div><div><strong>Trusted</strong>${verification.trusted}</div></div>
   <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${renderDashboardDateTime(verification.signedAt, "not signed")}<br><strong>Expires:</strong> ${renderDashboardDateTime(verification.expiresAt, "none")}</p>
   <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
+  <section class="panel"><h2>Compatibility</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Actual</th><th>Required</th><th>Detail</th></tr></thead><tbody>${compatibilityRows}</tbody></table></div></section>
+  <section class="panel"><h2>Project Adoption</h2><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(readiness.upgradePreview.source.kind)}</div><div><strong>Status</strong>${escapeHtml(readiness.upgradePreview.status)}</div><div><strong>Source Version</strong>${escapeHtml(readiness.upgradePreview.source.version ?? "none")}</div><div><strong>Recorded</strong>${renderDashboardDateTime(readiness.upgradePreview.source.recordedAt, "none")}</div></div><h3>Recommended Actions</h3><ul>${readiness.upgradePreview.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
+  <section class="panel"><h2>Definition Migrations</h2>${migrationItems || "<p>No applicable definition migrations.</p>"}<h3>Recommended Actions</h3><ul>${readiness.migrationPlan.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
+  <section class="panel"><h2>Contract-Test Readiness</h2><div class="meta-grid compact"><div><strong>Definitions</strong>${escapeHtml(readiness.contractTests.definitionsDir)}</div><div><strong>Project</strong>${escapeHtml(readiness.contractTests.projectDir ?? "none")}</div><div><strong>Provider</strong>${escapeHtml(readiness.contractTests.providerId)}</div><div><strong>Live Provider</strong>${readiness.contractTests.liveProvider ? "yes" : "no"}</div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Detail</th></tr></thead><tbody>${contractRows}</tbody></table></div>${readiness.contractTests.results.length > 16 ? `<p class="muted">${formatNumber(readiness.contractTests.results.length - 16)} additional checks are available in JSON.</p>` : ""}</section>
   <section class="panel"><h2>Trust policy</h2><p>Set <code>AGENTFLOW_BUNDLE_TRUST_POLICY</code> to <code>allow</code>, <code>warn</code>, or <code>require</code>. Use the CLI to add public signer keys; private signing keys are never stored by Agent Workflow.</p></section></main></body></html>`;
 }
 
