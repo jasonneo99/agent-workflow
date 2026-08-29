@@ -47,6 +47,8 @@ AGENTFLOW_RELEASE_SIGNER=release@example.com \
 ```
 
 `release:prepare` defaults to a patch bump. It updates package metadata, refreshes the bundle manifest, signs the bundle, and runs validation.
+The command reports whether a signing key is configured, but it does not print
+the local signing-key path.
 
 Use an explicit bump when needed:
 

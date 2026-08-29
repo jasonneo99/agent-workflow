@@ -33,7 +33,7 @@ function main() {
   console.log(`Current version: ${currentVersion}`);
   console.log(`Requested bump: ${bump}`);
   console.log(`Signer: ${signer ?? "not configured"}`);
-  console.log(`Signing key: ${signingKey ?? "not configured"}`);
+  console.log(`Signing key: ${signingKey ? "configured" : "not configured"}`);
 
   if (!signingKey || !signer) {
     const message = "Release signing requires --signing-key and --signer, or AGENTFLOW_RELEASE_SIGNING_KEY and AGENTFLOW_RELEASE_SIGNER.";
@@ -78,7 +78,7 @@ function main() {
 }
 
 function printPlan() {
-  const key = signingKey ?? "/secure/release-private.pem";
+  const key = signingKey ? "<configured-signing-key>" : "/secure/release-private.pem";
   const signerId = signer ?? "release@example.com";
   console.log(`npm version ${bump} --no-git-tag-version`);
   console.log("npm run bundle-manifest -- --write");
