@@ -147,9 +147,9 @@ trust gaps.
 - [ ] Incremental and event-driven context indexing.
   - Done: refresh only files changed since the last indexed commit after a baseline exists.
   - Done: detect renamed and deleted sources and prune stale stored summaries.
-  - In progress: expose incremental defaults through CLI, dashboard-triggered runs, and MCP tools.
+  - Done: expose incremental defaults through CLI, dashboard-triggered runs, and MCP tools.
+  - Done: explain why each retrieved source was included in a compiled brief.
   - Support filesystem-watch and CI-triggered indexing.
-  - Explain why each retrieved source was included in a compiled brief.
 
 - [ ] Workflow authoring and compatibility tooling.
   - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.

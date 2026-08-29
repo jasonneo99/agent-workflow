@@ -7942,6 +7942,7 @@ type SourceSummaryWithHash = {
   contentHash?: string;
   score?: number;
   matchedTerms?: string[];
+  selectionReason?: string;
 };
 
 type RunInputSnapshot = {

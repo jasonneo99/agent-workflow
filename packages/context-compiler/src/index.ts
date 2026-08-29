@@ -14,6 +14,7 @@ export interface CompileInput {
     summary: string;
     score?: number;
     matchedTerms?: string[];
+    selectionReason?: string;
   }>;
   preferenceNotes?: string[];
   tuningNotes?: Array<{
@@ -124,7 +125,7 @@ function formatActionPolicy(project: ProjectConfig): string {
   ].join("\n");
 }
 
-function formatSourceSummaries(summaries: Array<{ sourceUri: string; tokenEstimate: number; summary: string; score?: number; matchedTerms?: string[] }>): string {
+function formatSourceSummaries(summaries: Array<{ sourceUri: string; tokenEstimate: number; summary: string; score?: number; matchedTerms?: string[]; selectionReason?: string }>): string {
   if (!summaries.length) {
     return "_No indexed source summaries available. Run `npm run index-project -- --project <path>`._";
   }
@@ -134,6 +135,7 @@ function formatSourceSummaries(summaries: Array<{ sourceUri: string; tokenEstima
     `Approx tokens: ${summary.tokenEstimate}`,
     typeof summary.score === "number" ? `Relevance score: ${summary.score}` : "",
     summary.matchedTerms?.length ? `Matched terms: ${summary.matchedTerms.join(", ")}` : "",
+    summary.selectionReason ? `Why selected: ${summary.selectionReason}` : "",
     summary.summary
   ].filter(Boolean).join("\n")).join("\n\n");
 }

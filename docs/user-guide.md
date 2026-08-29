@@ -145,6 +145,10 @@ incremental indexing automatically after the first successful baseline. Use
 `--full-index` when you intentionally want to rebuild the stored context from
 scratch, for example after changing include/exclude patterns.
 
+Compiled briefs show a `Why selected` line for each indexed source summary.
+Use those explanations to tune `--source-token-budget`, `--source-max-files`,
+and project include/exclude patterns without guessing why context was loaded.
+
 For large repos, start with a compact non-refined pass:
 
 ```bash

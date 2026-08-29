@@ -9,6 +9,7 @@ export interface SourceSummary {
 export interface RankedSourceSummary extends SourceSummary {
   score: number;
   matchedTerms: string[];
+  selectionReason: string;
 }
 
 export function selectRelevantSourceSummaries(input: {
@@ -74,11 +75,14 @@ function scoreSummary(summary: SourceSummary, queryTerms: Set<string>): RankedSo
   const pathTerms = tokenize(summary.sourceUri);
   const summaryTerms = tokenize(summary.summary);
   const matchedTerms = new Set<string>();
+  const pathMatches = new Set<string>();
+  const summaryMatches = new Set<string>();
   let score = 0;
 
   for (const term of pathTerms) {
     if (queryTerms.has(term)) {
       matchedTerms.add(term);
+      pathMatches.add(term);
       score += 4;
     }
   }
@@ -86,19 +90,34 @@ function scoreSummary(summary: SourceSummary, queryTerms: Set<string>): RankedSo
   for (const term of summaryTerms) {
     if (queryTerms.has(term)) {
       matchedTerms.add(term);
+      summaryMatches.add(term);
       score += 1;
     }
   }
 
+  const reasons: string[] = [];
+  if (pathMatches.size) {
+    reasons.push(`path matched ${formatTerms(pathMatches)}`);
+  }
+  if (summaryMatches.size) {
+    reasons.push(`summary matched ${formatTerms(summaryMatches)}`);
+  }
   if (summary.sourceUri === "AGENTS.md") {
     score += 2;
+    reasons.push("project agent instructions are prioritized");
   }
 
   return {
     ...summary,
     score,
-    matchedTerms: [...matchedTerms].sort()
+    matchedTerms: [...matchedTerms].sort(),
+    selectionReason: reasons.length ? reasons.join("; ") : "selected by relevance score"
   };
+}
+
+function formatTerms(terms: Set<string>): string {
+  const values = [...terms].sort().slice(0, 8);
+  return values.join(", ");
 }
 
 function tokenize(value: string): string[] {
@@ -122,4 +141,3 @@ const stopWords = new Set([
   "you",
   "your"
 ]);
-
