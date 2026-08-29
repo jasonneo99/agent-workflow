@@ -25,7 +25,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { buildBundleCompatibilityReport, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -87,7 +87,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -428,6 +428,35 @@ program
     }
     console.log(options.json ? JSON.stringify(plan, null, 2) : formatBundlePinPlan(plan));
     if (plan.status === "unknown-bundle") process.exitCode = 2;
+  });
+
+program
+  .command("bundle-lifecycle-plan")
+  .description("Prepare reviewed upgrade or rollback command plans without executing them")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--bundle-id <id>", "registry bundle id", "agent-workflow-core")
+  .option("--mode <mode>", "upgrade or rollback", "upgrade")
+  .option("--target-version <version>", "target version; required for rollback and defaults to registry latest for upgrade")
+  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
+  .option("--write", "write .agent-workflow/bundle-lifecycle-plan.json")
+  .option("--json", "print machine-readable lifecycle plan")
+  .action(async (options: { project: string; bundleId: string; mode: string; targetVersion?: string; registry: string; write?: boolean; json?: boolean }) => {
+    if (options.mode !== "upgrade" && options.mode !== "rollback") throw new Error("--mode must be upgrade or rollback");
+    const registryPath = path.resolve(process.cwd(), options.registry);
+    const registry = await loadBundleRegistry(registryPath);
+    const plan = buildBundleLifecyclePlan({
+      registry,
+      projectDir: path.resolve(process.cwd(), options.project),
+      bundleId: options.bundleId,
+      mode: options.mode,
+      targetVersion: options.targetVersion,
+      write: Boolean(options.write)
+    });
+    if (options.write && plan.status === "ready") {
+      await writeBundleLifecyclePlan(plan);
+    }
+    console.log(options.json ? JSON.stringify(plan, null, 2) : formatBundleLifecyclePlan(plan));
+    if (plan.status !== "ready") process.exitCode = 2;
   });
 
 program

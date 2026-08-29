@@ -166,6 +166,7 @@ npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, appr
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
 npm run bundle-registry      # Inspect trusted bundle registry entries and local install status
 npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
+npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
 
 # Workflow execution (requires enterprise storage)
 npm run dev:agentflow       # Start services, dashboard, and supervised worker

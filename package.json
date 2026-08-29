@@ -62,6 +62,7 @@
     "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
     "bundle-registry": "tsx apps/cli/src/index.ts bundle-registry",
     "bundle-pin": "tsx apps/cli/src/index.ts bundle-pin",
+    "bundle-lifecycle-plan": "tsx apps/cli/src/index.ts bundle-lifecycle-plan",
     "bundle-manifest": "tsx apps/cli/src/index.ts bundle-manifest",
     "doctor": "tsx apps/cli/src/index.ts doctor",
     "exec-command": "tsx apps/cli/src/index.ts exec-command",

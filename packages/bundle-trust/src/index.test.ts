@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { BundleManifest } from "../../agent-registry/src/manifest.js";
-import { buildBundleCompatibilityReport, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
+import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
 
 const manifest = { schemaVersion: 1, bundle: { id: "bundle", name: "Bundle", version: "0.1.0", source: "test", description: "test" }, compatibility: { agentWorkflow: ">=0.1.0 <1.0.0", node: ">=24", mcp: ">=1.29.0" }, counts: { agents: 0, workflows: 0, files: 0 }, checksum: { algorithm: "sha256", value: "abc" }, agents: [], workflows: [], files: [], migrations: [] } satisfies BundleManifest;
 const migrationManifest = {
@@ -214,4 +214,58 @@ test("bundle pin plan warns on unknown bundles and version mismatches", () => {
   const mismatch = buildBundlePinPlan({ registry, projectDir: "/tmp/example", bundleId: "bundle", version: "0.1.0" });
   assert.equal(mismatch.status, "version-mismatch");
   assert.equal(mismatch.warnings.length, 1);
+});
+
+test("bundle lifecycle plan prepares reviewed upgrade commands", () => {
+  const plan = buildBundleLifecyclePlan({
+    registry: {
+      schemaVersion: 1,
+      entries: [
+        {
+          id: "bundle",
+          name: "Bundle",
+          description: "test",
+          source: "https://example.com/bundle.git",
+          packageName: "@example/bundle",
+          latestVersion: "0.2.0",
+          trustPolicy: "warn",
+          signerFingerprints: [],
+          install: {},
+          tags: [],
+          notes: []
+        }
+      ]
+    },
+    projectDir: "/tmp/example",
+    bundleId: "bundle"
+  });
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.mode, "upgrade");
+  assert.ok(plan.commands.includes("npm install -g @example/bundle@0.2.0"));
+  assert.ok(plan.commands.some((command) => command.includes("bundle-adopt")));
+});
+
+test("bundle lifecycle plan requires explicit rollback target", () => {
+  const registry = {
+    schemaVersion: 1 as const,
+    entries: [
+      {
+        id: "bundle",
+        name: "Bundle",
+        description: "test",
+        source: "https://example.com/bundle.git",
+        packageName: "@example/bundle",
+        latestVersion: "0.2.0",
+        trustPolicy: "warn" as const,
+        signerFingerprints: [],
+        install: {},
+        tags: [],
+        notes: []
+      }
+    ]
+  };
+  assert.equal(buildBundleLifecyclePlan({ registry, projectDir: "/tmp/example", bundleId: "bundle", mode: "rollback" }).status, "missing-target");
+  const rollback = buildBundleLifecyclePlan({ registry, projectDir: "/tmp/example", bundleId: "bundle", mode: "rollback", targetVersion: "0.1.0" });
+  assert.equal(rollback.status, "ready");
+  assert.ok(rollback.commands.includes("npm install -g @example/bundle@0.1.0"));
 });

@@ -42,6 +42,19 @@ package, adopt a bundle, or change execution policy. Use it when a team wants to
 record the intended reusable bundle version before reviewing upgrade previews,
 definition migrations, and trust status.
 
+Prepare a reviewed upgrade or rollback command plan:
+
+```bash
+agentflow bundle-lifecycle-plan --project /path/to/project
+agentflow bundle-lifecycle-plan --project /path/to/project --write
+agentflow bundle-lifecycle-plan --project /path/to/project --mode rollback --target-version 0.2.2 --write
+```
+
+This writes `.agent-workflow/bundle-lifecycle-plan.json` only when `--write` is
+passed. The plan lists commands for trust verification, upgrade preview,
+package-manager installation, compatibility checks, contract tests, pinning, and
+adoption. It does not execute those commands.
+
 Preview migration notes for a project or an explicit source version without
 changing files:
 

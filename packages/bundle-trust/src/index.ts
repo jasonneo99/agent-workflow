@@ -154,6 +154,23 @@ export interface BundlePinPlan {
   recommendations: string[];
 }
 
+export interface BundleLifecyclePlan {
+  projectDir: string;
+  planPath: string;
+  mode: "upgrade" | "rollback";
+  status: "ready" | "unknown-bundle" | "missing-target";
+  write: boolean;
+  bundle: {
+    id: string;
+    packageName?: string;
+    source: string;
+    targetVersion: string;
+  } | null;
+  commands: string[];
+  warnings: string[];
+  recommendations: string[];
+}
+
 export function canonicalManifest(manifest: BundleManifest): string {
   return stableStringify(manifest);
 }
@@ -540,6 +557,104 @@ export function formatBundlePinPlan(plan: BundlePinPlan): string {
   ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
+export function buildBundleLifecyclePlan(input: {
+  registry: BundleRegistry;
+  projectDir: string;
+  bundleId: string;
+  mode?: "upgrade" | "rollback";
+  targetVersion?: string;
+  write?: boolean;
+}): BundleLifecyclePlan {
+  const projectDir = path.resolve(input.projectDir);
+  const planPath = path.join(projectDir, ".agent-workflow", "bundle-lifecycle-plan.json");
+  const mode = input.mode ?? "upgrade";
+  const entry = input.registry.entries.find((item) => item.id === input.bundleId);
+  if (!entry) {
+    return {
+      projectDir,
+      planPath,
+      mode,
+      status: "unknown-bundle",
+      write: Boolean(input.write),
+      bundle: null,
+      commands: [],
+      warnings: [`Bundle '${input.bundleId}' is not present in the selected registry.`],
+      recommendations: ["Run bundle-registry to choose a known bundle before planning upgrade or rollback commands."]
+    };
+  }
+  const targetVersion = input.targetVersion ?? (mode === "upgrade" ? entry.latestVersion : "");
+  if (!targetVersion) {
+    return {
+      projectDir,
+      planPath,
+      mode,
+      status: "missing-target",
+      write: Boolean(input.write),
+      bundle: null,
+      commands: [],
+      warnings: ["Rollback planning requires --target-version."],
+      recommendations: ["Choose a previously validated bundle version from project history or git tags."]
+    };
+  }
+  const installCommand = entry.packageName
+    ? `npm install -g ${entry.packageName}@${targetVersion}`
+    : entry.install.git ?? `git clone ${entry.source}`;
+  return {
+    projectDir,
+    planPath,
+    mode,
+    status: "ready",
+    write: Boolean(input.write),
+    bundle: {
+      id: entry.id,
+      ...(entry.packageName ? { packageName: entry.packageName } : {}),
+      source: entry.source,
+      targetVersion
+    },
+    commands: [
+      "agentflow bundle-registry",
+      "agentflow bundle-verify --policy warn",
+      `agentflow bundle-upgrade-preview --project ${shellArg(projectDir)}`,
+      installCommand,
+      "agentflow bundle-compat",
+      `agentflow contract-test --project ${shellArg(projectDir)}`,
+      `agentflow bundle-pin --project ${shellArg(projectDir)} --bundle-id ${shellArg(entry.id)} --version ${shellArg(targetVersion)} --write`,
+      `agentflow bundle-adopt --project ${shellArg(projectDir)} --force`
+    ],
+    warnings: [
+      "This is a reviewed command plan only; Agent Workflow did not install code or change project adoption state.",
+      mode === "rollback" ? "Rollback should use a previously validated version, not an arbitrary older package." : "Upgrade should be adopted only after trust, compatibility, and contract tests pass."
+    ],
+    recommendations: [
+      "Run the commands one at a time in a clean terminal.",
+      "Commit project-local pin/adoption changes only after review.",
+      "Use the dashboard Bundles page to verify the final project state."
+    ]
+  };
+}
+
+export async function writeBundleLifecyclePlan(plan: BundleLifecyclePlan): Promise<string> {
+  await fs.mkdir(path.dirname(plan.planPath), { recursive: true });
+  await fs.writeFile(plan.planPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  return plan.planPath;
+}
+
+export function formatBundleLifecyclePlan(plan: BundleLifecyclePlan): string {
+  return [
+    `Bundle Lifecycle Plan: ${plan.mode} ${plan.status}`,
+    `Project: ${plan.projectDir}`,
+    `Plan file: ${plan.planPath}`,
+    `Mode: ${plan.write ? "write" : "dry-run"}`,
+    plan.bundle ? `Bundle: ${plan.bundle.id}@${plan.bundle.targetVersion}` : "Bundle: none",
+    "Commands",
+    ...(plan.commands.length ? plan.commands.map((command) => `- ${command}`) : ["- none"]),
+    "Warnings",
+    ...(plan.warnings.length ? plan.warnings.map((warning) => `- ${warning}`) : ["- none"]),
+    "Recommended actions",
+    ...plan.recommendations.map((recommendation) => `- ${recommendation}`)
+  ].join("\n");
+}
+
 export function normalizePolicy(value?: string): BundleTrustPolicy {
   return value === "warn" || value === "require" ? value : "allow";
 }
@@ -666,4 +781,8 @@ function registryEntryRecommendations(entry: BundleRegistryEntry, status: Bundle
     case "checksum-drift":
       return ["The installed bundle version does not match the registry latest version ordering. Verify source and checksum before adopting."];
   }
+}
+
+function shellArg(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

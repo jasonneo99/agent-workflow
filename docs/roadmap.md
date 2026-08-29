@@ -187,7 +187,8 @@ foundation is complete.
   - Done: add a local trusted bundle registry file for discovery, install guidance, version visibility, and signer fingerprints.
   - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
   - Done: add dry-run-by-default project-local bundle version pinning.
-  - Next: support reviewed upgrade/rollback command plans without automatic code installation.
+  - Done: add reviewed upgrade/rollback command plans without automatic code installation.
+  - Next: add a dashboard action to generate lifecycle plans from the Bundles page.
 
 - [ ] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
