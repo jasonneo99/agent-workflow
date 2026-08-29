@@ -24,7 +24,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { buildBundleCompatibilityReport, bundleTrustStorePath, formatBundleCompatibilityReport, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleUpgradePreview, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -83,7 +83,7 @@ const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtim
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "bundle-manifest", "bundle-compat", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "bundle-manifest", "bundle-compat", "bundle-upgrade-preview", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -350,6 +350,30 @@ program
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleCompatibilityReport(report));
     if (!report.compatible) process.exitCode = 2;
+  });
+
+program
+  .command("bundle-upgrade-preview")
+  .description("Preview project bundle migration notes and safe upgrade actions without changing files")
+  .option("-p, --project <dir>", "project directory with .agent-workflow/bundle-state.json")
+  .option("--from-version <version>", "source bundle version to compare from")
+  .option("--from-checksum <checksum>", "source bundle checksum to compare from")
+  .option("--from-bundle-id <id>", "source bundle id to compare from")
+  .option("--json", "print machine-readable upgrade preview")
+  .action(async (options: { project?: string; fromVersion?: string; fromChecksum?: string; fromBundleId?: string; json?: boolean }) => {
+    const manifest = await loadCommittedBundleManifest(rootDir);
+    if (!manifest) throw new Error("Bundle manifest is missing.");
+    const statePath = options.project ? path.join(path.resolve(process.cwd(), options.project), ".agent-workflow", "bundle-state.json") : undefined;
+    const state = statePath ? await readJsonFile<ProjectBundleState>(statePath) : null;
+    const preview = buildBundleUpgradePreview(manifest, {
+      state: state ?? undefined,
+      statePath,
+      fromVersion: options.fromVersion,
+      fromChecksum: options.fromChecksum,
+      fromBundleId: options.fromBundleId
+    });
+    console.log(options.json ? JSON.stringify(preview, null, 2) : formatBundleUpgradePreview(preview));
+    if (preview.status === "checksum-drift" || preview.status === "different-bundle") process.exitCode = 2;
   });
 
 program

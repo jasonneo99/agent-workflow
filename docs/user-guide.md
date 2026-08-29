@@ -65,6 +65,11 @@ current runtime, Node.js, MCP requirements, and migration notes. Use
 `--runtime-version`, `--node-version`, or `--mcp-version` to test another target
 environment before sharing a bundle.
 
+`npm run agentflow -- bundle-upgrade-preview --project /path/to/project`
+previews migration notes and safe actions for a project without changing files.
+When available, it reads `.agent-workflow/bundle-state.json`; otherwise use
+`--from-version` and `--from-checksum` to compare against a known source bundle.
+
 ## 3. Use From An MCP Client
 
 Agent Workflow can run from VS Code, Cursor, Codex, or another MCP-capable client. The client only launches the local MCP server; model/provider selection stays in Agent Workflow's `.env`.
@@ -706,6 +711,7 @@ agentflow_validate
 agentflow_list
 agentflow_schemas
 agentflow_bundle_compat
+agentflow_bundle_upgrade_preview
 agentflow_onboard_project
 agentflow_index_project
 agentflow_compile
@@ -926,7 +932,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is definition migration planning for reusable agents and workflows, so shared workflow packs can evolve without silently breaking existing projects. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is recording project bundle state during onboarding/adoption, so upgrade previews can compare against a known local baseline instead of an unknown source. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

@@ -225,6 +225,30 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_bundle_upgrade_preview",
+  {
+    title: "AgentFlow bundle upgrade preview",
+    description: "Preview project bundle migration notes and safe upgrade actions without changing files.",
+    inputSchema: {
+      project: z.string().optional().describe("Project directory with .agent-workflow/bundle-state.json."),
+      fromVersion: z.string().optional().describe("Source bundle version to compare from."),
+      fromChecksum: z.string().optional().describe("Source bundle checksum to compare from."),
+      fromBundleId: z.string().optional().describe("Source bundle id to compare from."),
+      json: z.boolean().optional().describe("Return machine-readable upgrade preview.")
+    }
+  },
+  async ({ project, fromVersion, fromChecksum, fromBundleId, json }) => {
+    const args = ["bundle-upgrade-preview"];
+    if (project) args.push("--project", project);
+    if (fromVersion) args.push("--from-version", fromVersion);
+    if (fromChecksum) args.push("--from-checksum", fromChecksum);
+    if (fromBundleId) args.push("--from-bundle-id", fromBundleId);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",

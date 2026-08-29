@@ -2,9 +2,17 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { BundleManifest } from "../../agent-registry/src/manifest.js";
-import { buildBundleCompatibilityReport, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
+import { buildBundleCompatibilityReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
 
 const manifest = { schemaVersion: 1, bundle: { id: "bundle", name: "Bundle", version: "0.1.0", source: "test", description: "test" }, compatibility: { agentWorkflow: ">=0.1.0 <1.0.0", node: ">=24", mcp: ">=1.29.0" }, counts: { agents: 0, workflows: 0, files: 0 }, checksum: { algorithm: "sha256", value: "abc" }, agents: [], workflows: [], files: [], migrations: [] } satisfies BundleManifest;
+const migrationManifest = {
+  ...manifest,
+  bundle: { ...manifest.bundle, version: "0.3.0" },
+  migrations: [
+    { from: "0.1.x", to: "0.2.0", notes: ["Review project policy profiles."] },
+    { from: "0.2.x", to: "0.3.0", notes: ["Review workflow stage ids."] }
+  ]
+} satisfies BundleManifest;
 
 test("valid signatures distinguish trusted and unknown signers", () => {
   const { privateKey, publicKey } = generateKeyPairSync("ed25519");
@@ -47,4 +55,32 @@ test("bundle compatibility report fails unsupported runtime requirements", () =>
   });
   assert.equal(report.compatible, false);
   assert.deepEqual(report.checks.map((check) => check.compatible), [false, false, false]);
+});
+
+test("bundle upgrade preview reports current project state", () => {
+  const preview = buildBundleUpgradePreview(manifest, {
+    state: { schemaVersion: 1, bundle: { id: "bundle", version: "0.1.0", checksum: "abc" } }
+  });
+  assert.equal(preview.status, "current");
+  assert.equal(preview.applicableMigrations.length, 0);
+});
+
+test("bundle upgrade preview reports applicable migrations", () => {
+  const preview = buildBundleUpgradePreview(migrationManifest, {
+    fromVersion: "0.1.0",
+    fromChecksum: "old"
+  });
+  assert.equal(preview.status, "upgrade-available");
+  assert.deepEqual(preview.applicableMigrations.map((migration) => migration.to), ["0.2.0", "0.3.0"]);
+});
+
+test("bundle upgrade preview reports unknown source and checksum drift", () => {
+  const unknown = buildBundleUpgradePreview(manifest);
+  assert.equal(unknown.status, "unknown-source");
+  assert.equal(unknown.applicableMigrations.length, manifest.migrations.length);
+
+  const drift = buildBundleUpgradePreview(manifest, {
+    state: { schemaVersion: 1, bundle: { id: "bundle", version: "0.1.0", checksum: "changed" } }
+  });
+  assert.equal(drift.status, "checksum-drift");
 });

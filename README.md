@@ -145,6 +145,7 @@ npm run provider-check         # Verify model provider
 npm run validate               # Validate agent/workflow definitions
 npm run bundle-manifest        # Inspect versioned bundle checksums
 npm run agentflow -- bundle-compat # Check runtime, Node.js, MCP compatibility, and migration notes
+npm run agentflow -- bundle-upgrade-preview -p . # Preview project bundle migration notes without changing files
 npm run doctor                 # Check local services
 
 # Project operations

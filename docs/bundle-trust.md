@@ -16,6 +16,29 @@ agentflow bundle-compat
 agentflow bundle-compat --runtime-version 0.2.1 --node-version 26.3.0 --mcp-version 1.29.0 --json
 ```
 
+Preview migration notes for a project or an explicit source version without
+changing files:
+
+```bash
+agentflow bundle-upgrade-preview --project /path/to/project
+agentflow bundle-upgrade-preview --from-version 0.1.0 --from-checksum <sha256>
+```
+
+When present, project state is read from
+`.agent-workflow/bundle-state.json`:
+
+```json
+{
+  "schemaVersion": 1,
+  "bundle": {
+    "id": "agent-workflow-core",
+    "version": "0.2.1",
+    "checksum": "sha256...",
+    "recordedAt": "2026-08-29T00:00:00.000Z"
+  }
+}
+```
+
 Statuses are `trusted`, `valid-untrusted`, `unsigned`, `modified`, `expired`, `incompatible`, and `invalid`. Trust policies are:
 
 - `allow`: unsigned and valid-untrusted bundles may run; modified, invalid, or incompatible bundles are rejected.
@@ -46,4 +69,4 @@ agentflow bundle-trust --remove <sha256-fingerprint>
 
 The trust store contains public keys only at `~/.config/agent-workflow/trusted-bundle-keys.json` by default. Override it with `AGENTFLOW_BUNDLE_TRUST_STORE` for managed environments.
 
-The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes read-only `agentflow_bundle_verify` and `agentflow_bundle_compat`; trust-store mutations remain explicit CLI actions.
+The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes read-only `agentflow_bundle_verify`, `agentflow_bundle_compat`, and `agentflow_bundle_upgrade_preview`; trust-store mutations remain explicit CLI actions.

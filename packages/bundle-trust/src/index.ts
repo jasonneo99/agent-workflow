@@ -63,6 +63,33 @@ export interface BundleCompatibilityReport {
   migrations: BundleManifest["migrations"];
 }
 
+export interface ProjectBundleState {
+  schemaVersion: 1;
+  bundle: {
+    id: string;
+    version: string;
+    checksum: string;
+    recordedAt?: string;
+  };
+}
+
+export interface BundleUpgradePreview {
+  bundleId: string;
+  currentVersion: string;
+  currentChecksum: string;
+  source: {
+    kind: "project-state" | "explicit" | "unknown";
+    path?: string;
+    bundleId?: string;
+    version?: string;
+    checksum?: string;
+    recordedAt?: string;
+  };
+  status: "current" | "upgrade-available" | "unknown-source" | "different-bundle" | "checksum-drift";
+  applicableMigrations: BundleManifest["migrations"];
+  recommendations: string[];
+}
+
 export function canonicalManifest(manifest: BundleManifest): string {
   return stableStringify(manifest);
 }
@@ -235,6 +262,72 @@ export function formatBundleCompatibilityReport(report: BundleCompatibilityRepor
   ].join("\n");
 }
 
+export function buildBundleUpgradePreview(manifest: BundleManifest, input?: {
+  state?: ProjectBundleState;
+  statePath?: string;
+  fromVersion?: string;
+  fromChecksum?: string;
+  fromBundleId?: string;
+}): BundleUpgradePreview {
+  const explicit = input?.fromVersion || input?.fromChecksum || input?.fromBundleId
+    ? {
+        kind: "explicit" as const,
+        bundleId: input.fromBundleId ?? manifest.bundle.id,
+        version: input.fromVersion,
+        checksum: input.fromChecksum
+      }
+    : undefined;
+  const source = explicit ?? (input?.state
+    ? {
+        kind: "project-state" as const,
+        path: input.statePath,
+        bundleId: input.state.bundle.id,
+        version: input.state.bundle.version,
+        checksum: input.state.bundle.checksum,
+        recordedAt: input.state.bundle.recordedAt
+      }
+    : { kind: "unknown" as const });
+
+  const sourceVersion = source.version;
+  const sourceChecksum = source.checksum;
+  const sourceBundleId = source.bundleId;
+  let status: BundleUpgradePreview["status"] = "unknown-source";
+  if (sourceBundleId && sourceBundleId !== manifest.bundle.id) {
+    status = "different-bundle";
+  } else if (sourceVersion && sourceVersion === manifest.bundle.version && sourceChecksum && sourceChecksum !== manifest.checksum.value) {
+    status = "checksum-drift";
+  } else if (sourceVersion && compareParsedVersions(sourceVersion, manifest.bundle.version) < 0) {
+    status = "upgrade-available";
+  } else if (sourceVersion && sourceVersion === manifest.bundle.version) {
+    status = "current";
+  }
+
+  return {
+    bundleId: manifest.bundle.id,
+    currentVersion: manifest.bundle.version,
+    currentChecksum: manifest.checksum.value,
+    source,
+    status,
+    applicableMigrations: applicableMigrations(manifest, sourceVersion, status),
+    recommendations: upgradeRecommendations(status)
+  };
+}
+
+export function formatBundleUpgradePreview(preview: BundleUpgradePreview): string {
+  return [
+    `Bundle Upgrade Preview: ${preview.bundleId}@${preview.currentVersion}`,
+    `Status: ${preview.status}`,
+    `Current checksum: ${preview.currentChecksum}`,
+    `Source: ${preview.source.kind}${preview.source.version ? ` ${preview.source.version}` : ""}${preview.source.path ? ` (${preview.source.path})` : ""}`,
+    "Applicable migrations",
+    ...(preview.applicableMigrations.length
+      ? preview.applicableMigrations.map((migration) => `- ${migration.from} -> ${migration.to}: ${migration.notes.join(" ")}`)
+      : ["- none"]),
+    "Recommended actions",
+    ...preview.recommendations.map((recommendation) => `- ${recommendation}`)
+  ].join("\n");
+}
+
 export function normalizePolicy(value?: string): BundleTrustPolicy {
   return value === "warn" || value === "require" ? value : "allow";
 }
@@ -278,4 +371,45 @@ function compareVersions(a: [number, number, number], b: [number, number, number
     if (a[index] !== b[index]) return a[index] - b[index];
   }
   return 0;
+}
+
+function compareParsedVersions(a: string, b: string): number {
+  const parsedA = parseVersion(a);
+  const parsedB = parseVersion(b);
+  if (!parsedA || !parsedB) return a.localeCompare(b);
+  return compareVersions(parsedA, parsedB);
+}
+
+function applicableMigrations(manifest: BundleManifest, fromVersion: string | undefined, status: BundleUpgradePreview["status"]): BundleManifest["migrations"] {
+  if (!fromVersion || status === "unknown-source") return manifest.migrations;
+  if (status !== "upgrade-available") return [];
+  return manifest.migrations.filter((migration) => compareParsedVersions(migration.to, fromVersion) > 0 && compareParsedVersions(migration.to, manifest.bundle.version) <= 0);
+}
+
+function upgradeRecommendations(status: BundleUpgradePreview["status"]): string[] {
+  switch (status) {
+    case "current":
+      return ["No bundle migration is required for this project state."];
+    case "upgrade-available":
+      return [
+        "Review applicable migration notes before adopting the current bundle.",
+        "Run bundle-compat and bundle-verify in the target environment.",
+        "Run validate and workflow-graph previews before queueing write-capable workflows."
+      ];
+    case "checksum-drift":
+      return [
+        "The project records the same bundle version with a different checksum.",
+        "Verify whether the shared bundle was modified without a version bump before adopting it."
+      ];
+    case "different-bundle":
+      return [
+        "The recorded project bundle id differs from this bundle.",
+        "Treat this as a bundle replacement and review trust, compatibility, and migration notes manually."
+      ];
+    case "unknown-source":
+      return [
+        "No prior project bundle state was found or supplied.",
+        "Treat this as a fresh adoption and review all migration notes plus bundle trust before use."
+      ];
+  }
 }
