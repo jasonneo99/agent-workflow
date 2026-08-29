@@ -65,7 +65,7 @@ view is read-only and uses existing project-local evidence.
 Open `/candidate-comparisons?project=/path/to/project` to inspect written
 candidate comparison plans, generated private evaluation suite files,
 baseline/candidate variants, evaluation outcomes, quality and latency deltas,
-gate readiness, and promotion gate commands.
+gate readiness, promotion recommendations, and promotion gate commands.
 
 For tools and IDE integrations, the same report is available as JSON:
 

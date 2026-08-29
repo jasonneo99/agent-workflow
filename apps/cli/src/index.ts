@@ -3584,6 +3584,13 @@ async function loadDashboardCandidateComparisonReport(input: {
       gateReady: Boolean((baseline?.runs ?? 0) > 0 && (candidate?.runs ?? 0) > 0)
     };
   });
+  const promotionRecommendations = outcomes.map((outcome) =>
+    buildCandidatePromotionRecommendation({
+      projectDir,
+      suite: comparisonPlan?.suites.find((suite) => suite.id === outcome.suiteId) ?? null,
+      outcome
+    })
+  );
   const readiness: string[] = [];
   if (!modelPlanResult.exists) {
     readiness.push("Write a model-improvement plan before preparing candidate comparisons.");
@@ -3619,6 +3626,7 @@ async function loadDashboardCandidateComparisonReport(input: {
     comparisonPlan,
     suiteFiles,
     outcomes,
+    promotionRecommendations,
     readiness,
     nextCommands: [
       `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,
@@ -3626,6 +3634,71 @@ async function loadDashboardCandidateComparisonReport(input: {
       ...(comparisonPlan?.suites.map((suite) => suite.command) ?? []),
       `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${shellQuote(projectDir)}`
     ]
+  };
+}
+
+function buildCandidatePromotionRecommendation(input: {
+  projectDir: string;
+  suite: Omit<CandidateComparisonPlan, "files">["suites"][number] | null;
+  outcome: DashboardCandidateComparisonReport["outcomes"][number];
+}): DashboardCandidateComparisonReport["promotionRecommendations"][number] {
+  const rationale: string[] = [];
+  const suiteCommand = input.suite?.command ?? `npm run agentflow -- evaluate -s .agent-workflow/evaluations/${input.outcome.suiteId}.yaml -p ${shellQuote(input.projectDir)}`;
+  if (!input.outcome.gateReady || input.outcome.qualityDelta === null) {
+    rationale.push("Baseline and candidate evidence must both be present before promotion.");
+    if (input.outcome.baselineRuns === 0) {
+      rationale.push("No baseline evaluation run is recorded.");
+    }
+    if (input.outcome.candidateRuns === 0) {
+      rationale.push("No candidate evaluation run is recorded.");
+    }
+    return {
+      suiteId: input.outcome.suiteId,
+      decision: "run_more_evals",
+      severity: "warning",
+      rationale,
+      nextAction: suiteCommand
+    };
+  }
+  const latencyDelta = input.outcome.latencyDeltaMs;
+  const isMaterialQualityGain = input.outcome.qualityDelta >= 0.05;
+  const isQualityRegression = input.outcome.qualityDelta < 0;
+  const isLatencyRegression = latencyDelta !== null && latencyDelta > 500;
+  if (isQualityRegression) {
+    rationale.push(`Candidate quality is lower than baseline by ${input.outcome.qualityDelta}.`);
+    if (latencyDelta !== null) {
+      rationale.push(`Latency delta is ${formatDurationDelta(latencyDelta)}.`);
+    }
+    return {
+      suiteId: input.outcome.suiteId,
+      decision: "keep_baseline",
+      severity: "warning",
+      rationale,
+      nextAction: "Keep the current baseline routing and review candidate prompt/provider changes before retesting."
+    };
+  }
+  if (isLatencyRegression && !isMaterialQualityGain) {
+    rationale.push(`Candidate quality delta is ${input.outcome.qualityDelta}, but latency is ${formatDurationDelta(latencyDelta)} slower.`);
+    rationale.push("The quality gain is not large enough to justify a slower default route.");
+    return {
+      suiteId: input.outcome.suiteId,
+      decision: "run_more_evals",
+      severity: "warning",
+      rationale,
+      nextAction: "Add more representative eval cases or retest with a cheaper/faster candidate before changing routing."
+    };
+  }
+  rationale.push(`Candidate quality delta is ${input.outcome.qualityDelta}.`);
+  if (latencyDelta !== null) {
+    rationale.push(`Latency delta is ${formatDurationDelta(latencyDelta)}.`);
+  }
+  rationale.push("Promotion should still be applied as a reviewed project-local routing note.");
+  return {
+    suiteId: input.outcome.suiteId,
+    decision: "propose_routing_note",
+    severity: "ready",
+    rationale,
+    nextAction: `Create a reviewed project-local note under .agent-workflow/tuning/ after running the gate command for ${input.outcome.suiteId}.`
   };
 }
 
@@ -5159,9 +5232,18 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
       <td>${outcome.latestAt ? renderDashboardDateTime(outcome.latestAt) : "n/a"}</td>
     </tr>
   `).join("");
+  const recommendationRows = report.promotionRecommendations.map((recommendation) => `
+    <tr>
+      <td>${escapeHtml(recommendation.suiteId)}</td>
+      <td><span class="flag ${recommendation.severity === "ready" ? "good" : recommendation.severity === "warning" ? "warn" : "queued"}">${escapeHtml(recommendation.decision.replace(/_/g, " "))}</span></td>
+      <td><ul>${recommendation.rationale.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></td>
+      <td>${recommendation.nextAction.includes("npm run ") ? `<code>${escapeHtml(recommendation.nextAction)}</code>` : escapeHtml(recommendation.nextAction)}</td>
+    </tr>
+  `).join("");
   const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const gateRows = comparison?.gateCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
   const gateReadyCount = report.outcomes.filter((outcome) => outcome.gateReady).length;
+  const recommendationReadyCount = report.promotionRecommendations.filter((recommendation) => recommendation.decision === "propose_routing_note").length;
   return `
     <section class="panel">
       <div class="metric-grid">
@@ -5171,6 +5253,7 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
         ${metricCard("Suites", comparison?.suites.length ?? 0, "generated private eval files")}
         ${metricCard("Suite Files", `${report.suiteFiles.filter((suite) => suite.exists).length}/${report.suiteFiles.length}`, "present")}
         ${metricCard("Gate Ready", `${gateReadyCount}/${report.outcomes.length}`, "baseline and candidate runs")}
+        ${metricCard("Promotable", `${recommendationReadyCount}/${report.promotionRecommendations.length}`, "reviewed routing note")}
         ${metricCard("Generated", formatDashboardDateTimeText(report.generatedAt), "local read")}
       </div>
       <p class="muted">Project ${escapeHtml(report.projectDir)}.</p>
@@ -5195,6 +5278,10 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
     <section class="panel">
       <h2>Outcomes</h2>
       <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Leader</th><th>Baseline Runs</th><th>Candidate Runs</th><th>Baseline Quality</th><th>Candidate Quality</th><th>Quality Delta</th><th>Latency Delta</th><th>Latest</th></tr></thead><tbody>${outcomeRows || "<tr><td colspan=\"9\">No evaluation outcomes yet.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <h2>Promotion Recommendation</h2>
+      <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Decision</th><th>Rationale</th><th>Next Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"4\">No comparison outcomes available yet.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel">
       <h2>Promotion Gates</h2>
@@ -8888,6 +8975,13 @@ type DashboardCandidateComparisonReport = {
     candidateLatencyMs: number | null;
     latencyDeltaMs: number | null;
     gateReady: boolean;
+  }>;
+  promotionRecommendations: Array<{
+    suiteId: string;
+    decision: "keep_baseline" | "run_more_evals" | "propose_routing_note";
+    severity: "info" | "warning" | "ready";
+    rationale: string[];
+    nextAction: string;
   }>;
   readiness: string[];
   nextCommands: string[];

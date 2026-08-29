@@ -990,15 +990,17 @@ candidate comparison plans.
 Open `/candidate-comparisons?project=/path/to/project` in the dashboard to
 inspect the written comparison plan, suite files, baseline/candidate providers,
 evaluation outcomes, quality and latency deltas, gate readiness, and promotion
-gate commands without running models.
+recommendations without running models.
 
 ## 24. Recommended Next Improvement
 
-The next improvement is a promotion recommendation report that combines
-candidate comparison outcomes with the project evaluation gate and produces a
-safe next action: keep baseline, run more evals, or propose a reviewed
-project-local routing note. See the [Roadmap](roadmap.md) for the
-shared-platform implementation sequence.
+The next improvement is reviewed routing-note generation from promotion
+recommendations. The dashboard now combines candidate comparison outcomes with
+project evaluation readiness and produces a safe next action: keep baseline,
+run more evals, or propose a reviewed project-local routing note. The follow-up
+should generate that note as a dry-run patch under `.agent-workflow/tuning/`
+without changing live routing automatically. See the [Roadmap](roadmap.md) for
+the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
