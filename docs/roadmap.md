@@ -145,10 +145,11 @@ trust gaps.
   - Future extension: add optional OTLP collector/exporter wiring for teams that want live telemetry streams.
 
 - [ ] Incremental and event-driven context indexing.
-  - Refresh only files changed since the last indexed commit.
+  - Done: refresh only files changed since the last indexed commit after a baseline exists.
+  - Done: detect renamed and deleted sources and prune stale stored summaries.
+  - In progress: expose incremental defaults through CLI, dashboard-triggered runs, and MCP tools.
   - Support filesystem-watch and CI-triggered indexing.
   - Explain why each retrieved source was included in a compiled brief.
-  - Detect stale summaries, renamed files, and deleted sources.
 
 - [ ] Workflow authoring and compatibility tooling.
   - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.

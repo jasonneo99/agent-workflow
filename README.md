@@ -150,11 +150,14 @@ npm run doctor                 # Check local services
 npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
+npm run index-project -- -p . --incremental # Refresh only changed files after a baseline exists
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
 
 # Workflow execution (requires enterprise storage)
 npm run dev:agentflow       # Start services, dashboard, and supervised worker
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
+npm run agentflow -- run-and-watch build-feature -p . -t "task" # Incrementally index, run, export, summarize
+npm run agentflow -- run-and-watch build-feature -p . -t "task" --full-index # Force a clean full context refresh
 npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
 npm run agentflow -- run build-feature -p . -t "task" --policy-profile staging # Apply target guardrails
 npm run agentflow -- agent-task security -p . -t "task"  # Run single agent
@@ -281,7 +284,7 @@ stages:
 ## Cost Optimization
 
 - **Model tier routing** — fast agents use cheap models, reasoning agents use capable ones
-- **Delta indexing** — only re-indexes files that changed since last run
+- **Incremental context indexing** — reuses unchanged summaries, refreshes changed files first, and prunes deleted summaries after a baseline exists
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
 - **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Settings, and home health cards
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions

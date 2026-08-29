@@ -247,14 +247,22 @@ server.registerTool(
     inputSchema: {
       project: z.string().describe("Absolute or relative project directory."),
       maxFiles: z.number().int().positive().optional().describe("Maximum files to index."),
+      incremental: z.boolean().optional().describe("Only refresh files changed since the last indexed commit."),
+      sinceCommit: z.string().optional().describe("Reference commit for incremental indexing."),
       refine: z.boolean().optional().describe("Use the configured model provider to refine summaries."),
       forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged.")
     }
   },
-  async ({ project, maxFiles, refine, forceRefine }) => {
+  async ({ project, maxFiles, incremental, sinceCommit, refine, forceRefine }) => {
     const args = ["index-project", "--project", project];
     if (maxFiles) {
       args.push("--max-files", String(maxFiles));
+    }
+    if (incremental) {
+      args.push("--incremental");
+    }
+    if (sinceCommit) {
+      args.push("--since-commit", sinceCommit);
     }
     if (refine) {
       args.push("--refine");
@@ -300,13 +308,21 @@ server.registerTool(
       workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick when queueOnly is false."),
       timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for completion when queueOnly is false."),
       out: z.string().optional().describe("Export directory when queueOnly is false."),
+      skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
+      fullIndex: z.boolean().optional().describe("Force a full project index instead of the default incremental refresh."),
       sourceTokenBudget: z.number().int().positive().optional().describe("Token budget for indexed source summaries."),
       sourceMaxFiles: z.number().int().positive().optional().describe("Maximum indexed source summaries to include.")
     }
   },
-  async ({ workflow, project, task, queueOnly, includeBrief, workerLimit, timeoutMs, out, sourceTokenBudget, sourceMaxFiles }) => {
+  async ({ workflow, project, task, queueOnly, includeBrief, workerLimit, timeoutMs, out, skipIndex, fullIndex, sourceTokenBudget, sourceMaxFiles }) => {
     if (!queueOnly) {
-      const args = ["run-and-watch", workflow, "--project", project, "--task", task, "--skip-index"];
+      const args = ["run-and-watch", workflow, "--project", project, "--task", task];
+      if (skipIndex) {
+        args.push("--skip-index");
+      }
+      if (fullIndex) {
+        args.push("--full-index");
+      }
       if (workerLimit) {
         args.push("--worker-limit", String(workerLimit));
       }
@@ -340,6 +356,7 @@ server.registerTool(
       task: z.string().describe("Task description."),
       skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
       indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index first."),
+      fullIndex: z.boolean().optional().describe("Force a full project index instead of the default incremental refresh."),
       refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
       forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
       workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick."),
@@ -356,6 +373,7 @@ server.registerTool(
     task,
     skipIndex,
     indexMaxFiles,
+    fullIndex,
     refineIndex,
     forceRefine,
     workerLimit,
@@ -371,6 +389,9 @@ server.registerTool(
     }
     if (indexMaxFiles) {
       args.push("--index-max-files", String(indexMaxFiles));
+    }
+    if (fullIndex) {
+      args.push("--full-index");
     }
     if (refineIndex) {
       args.push("--refine-index");
@@ -406,6 +427,7 @@ server.registerTool(
       task: z.string().describe("Task description."),
       skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
       indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index first."),
+      fullIndex: z.boolean().optional().describe("Force a full project index instead of the default incremental refresh."),
       refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
       forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
       intervalMs: z.number().int().positive().optional().describe("Polling interval while waiting for run status."),
@@ -421,6 +443,7 @@ server.registerTool(
     task,
     skipIndex,
     indexMaxFiles,
+    fullIndex,
     refineIndex,
     forceRefine,
     intervalMs,
@@ -435,6 +458,9 @@ server.registerTool(
     }
     if (indexMaxFiles) {
       args.push("--index-max-files", String(indexMaxFiles));
+    }
+    if (fullIndex) {
+      args.push("--full-index");
     }
     if (refineIndex) {
       args.push("--refine-index");

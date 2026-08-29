@@ -28,7 +28,12 @@ export interface IndexProjectFilesResult {
   files: IndexedProjectFile[];
   refined: number;
   reused: number;
+  changed: number;
+  deletedSourceUris: string[];
   headCommit?: string;
+  incremental: boolean;
+  fullIndexFallback: boolean;
+  truncated: boolean;
 }
 
 const defaultTextExtensions = new Set([
@@ -66,10 +71,12 @@ export async function indexProjectFiles(input: {
   const maxFiles = input.maxFiles ?? 200;
   const maxBytesPerFile = input.maxBytesPerFile ?? 160_000;
 
-  // Delta-only mode: only index files that changed since a reference commit
+  // Delta-only mode: only index files that changed since a reference commit.
   let changedFiles: Set<string> | null = null;
+  let fullIndexFallback = false;
   if (input.deltaOnly) {
     changedFiles = await getChangedFilesSince(input.projectDir, input.sinceCommit);
+    fullIndexFallback = changedFiles === null;
   }
 
   const files = await fg(include, {
@@ -84,30 +91,26 @@ export async function indexProjectFiles(input: {
   const indexed: IndexedProjectFile[] = [];
   let refined = 0;
   let reused = 0;
+  let changed = 0;
+  let truncated = false;
   const existingByPath = new Map((input.existingSummaries ?? []).map((summary) => [summary.sourceUri, summary]));
+  const sortedFiles = files.sort();
+  const headCommit = await getHeadCommit(input.projectDir);
+  const currentSourceUris = new Set(sortedFiles.map((filePath) => path.relative(input.projectDir, filePath)));
+  const deletedSourceUris = (input.existingSummaries ?? [])
+    .map((summary) => summary.sourceUri)
+    .filter((sourceUri) => !currentSourceUris.has(sourceUri));
+  const candidateFiles = changedFiles
+    ? sortedFiles.filter((filePath) => changedFiles.has(path.relative(input.projectDir, filePath)))
+    : sortedFiles;
 
-  for (const filePath of files.sort()) {
+  for (const filePath of candidateFiles) {
     if (indexed.length >= maxFiles) {
+      truncated = true;
       break;
     }
 
     const relativePath = path.relative(input.projectDir, filePath);
-
-    // In delta mode, skip files not in the changed set (reuse existing summary)
-    if (changedFiles && !changedFiles.has(relativePath)) {
-      const existing = existingByPath.get(relativePath);
-      if (existing) {
-        reused += 1;
-        indexed.push({
-          sourceUri: relativePath,
-          contentHash: existing.contentHash,
-          tokenEstimate: existing.tokenEstimate,
-          summary: existing.summary,
-          metadata: { reused: true, deltaSkipped: true }
-        });
-      }
-      continue;
-    }
 
     if (!isLikelyTextFile(filePath)) {
       continue;
@@ -150,10 +153,13 @@ export async function indexProjectFiles(input: {
       continue;
     }
 
+    changed += existing?.contentHash === contentHash ? 0 : 1;
     let summary = deterministicSummary;
     const metadata: Record<string, unknown> = {
       bytes: stat.size,
-      extension: path.extname(filePath)
+      extension: path.extname(filePath),
+      indexHeadCommit: headCommit,
+      indexedIncrementally: Boolean(changedFiles)
     };
 
     if (input.refineProvider?.summarizeFile) {
@@ -177,7 +183,25 @@ export async function indexProjectFiles(input: {
     });
   }
 
-  return { files: indexed, refined, reused, headCommit: await getHeadCommit(input.projectDir) };
+  if (changedFiles) {
+    for (const sourceUri of currentSourceUris) {
+      if (!changedFiles.has(sourceUri) && existingByPath.has(sourceUri)) {
+        reused += 1;
+      }
+    }
+  }
+
+  return {
+    files: indexed,
+    refined,
+    reused,
+    changed,
+    deletedSourceUris,
+    headCommit,
+    incremental: Boolean(changedFiles),
+    fullIndexFallback,
+    truncated
+  };
 }
 
 export function summarizeText(relativePath: string, content: string): string {

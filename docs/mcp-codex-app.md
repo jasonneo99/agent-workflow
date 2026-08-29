@@ -32,11 +32,11 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_bundle_manifest`: print or write the versioned reusable agent/workflow bundle manifest.
 - `agentflow_list`: list available agents and workflows.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
-- `agentflow_index_project`: index a project into compact durable context.
+- `agentflow_index_project`: index a project into compact durable context; pass `incremental` to refresh only changed files after a baseline exists.
 - `agentflow_compile`: compile a workflow brief without queueing work.
-- `agentflow_run_workflow`: run a workflow and process worker stages by default; set `queueOnly=true` only when you want to leave work queued for a separate worker.
-- `agentflow_run_and_watch`: index, queue, process, export, and summarize a workflow run.
-- `agentflow_agent_task`: run one specialist agent directly and export the result.
+- `agentflow_run_workflow`: run a workflow and process worker stages by default; set `queueOnly=true` only when you want to leave work queued for a separate worker. It incrementally indexes by default unless `skipIndex` is true.
+- `agentflow_run_and_watch`: incrementally index, queue, process, export, and summarize a workflow run; pass `fullIndex` for a clean context refresh.
+- `agentflow_agent_task`: incrementally index, run one specialist agent directly, and export the result.
 - `agentflow_preset`: run a named workflow preset such as `tellara-ux-pass`.
 - `agentflow_orchestrate`: route a natural-language task to agents and workflows.
 - `agentflow_summarize_run`: print a decision-ready run summary.

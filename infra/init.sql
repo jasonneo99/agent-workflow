@@ -44,6 +44,15 @@ CREATE TABLE IF NOT EXISTS project_files (
   UNIQUE(project_id, source_uri)
 );
 
+CREATE TABLE IF NOT EXISTS project_index_state (
+  project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+  head_commit text,
+  indexed_files integer NOT NULL DEFAULT 0,
+  deleted_files integer NOT NULL DEFAULT 0,
+  metadata jsonb NOT NULL DEFAULT '{}',
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS workflow_runs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   project_id uuid REFERENCES projects(id),

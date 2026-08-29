@@ -127,6 +127,16 @@ export async function migrateStorage(): Promise<void> {
       ON action_approvals(run_id, action_type, idempotency_key)
       WHERE task_id IS NULL
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS project_index_state (
+        project_id uuid PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+        head_commit text,
+        indexed_files integer NOT NULL DEFAULT 0,
+        deleted_files integer NOT NULL DEFAULT 0,
+        metadata jsonb NOT NULL DEFAULT '{}',
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
   });
 }
 
@@ -242,11 +252,87 @@ export async function upsertProjectFiles(input: {
   });
 }
 
+export async function deleteProjectFiles(input: {
+  projectId: string;
+  sourceUris: string[];
+}): Promise<number> {
+  if (!input.sourceUris.length) {
+    return 0;
+  }
+  return withClient(async (client) => {
+    const result = await client.query(
+      `delete from project_files
+       where project_id = $1
+         and source_uri = any($2::text[])`,
+      [input.projectId, input.sourceUris]
+    );
+    return result.rowCount ?? 0;
+  });
+}
+
+export interface ProjectIndexState {
+  projectId: string;
+  headCommit: string | null;
+  indexedFiles: number;
+  deletedFiles: number;
+  metadata: Record<string, unknown>;
+  updatedAt: string;
+}
+
+export async function getProjectIndexState(input: {
+  projectId: string;
+}): Promise<ProjectIndexState | null> {
+  return withClient(async (client) => {
+    const result = await client.query<ProjectIndexState>(
+      `select
+         project_id::text as "projectId",
+         head_commit as "headCommit",
+         indexed_files as "indexedFiles",
+         deleted_files as "deletedFiles",
+         metadata,
+         updated_at::text as "updatedAt"
+       from project_index_state
+       where project_id = $1`,
+      [input.projectId]
+    );
+    return result.rows[0] ?? null;
+  });
+}
+
+export async function upsertProjectIndexState(input: {
+  projectId: string;
+  headCommit?: string;
+  indexedFiles: number;
+  deletedFiles: number;
+  metadata?: Record<string, unknown>;
+}): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(
+      `insert into project_index_state (project_id, head_commit, indexed_files, deleted_files, metadata, updated_at)
+       values ($1, $2, $3, $4, $5, now())
+       on conflict (project_id) do update
+       set head_commit = excluded.head_commit,
+           indexed_files = excluded.indexed_files,
+           deleted_files = excluded.deleted_files,
+           metadata = excluded.metadata,
+           updated_at = now()`,
+      [
+        input.projectId,
+        input.headCommit ?? null,
+        input.indexedFiles,
+        input.deletedFiles,
+        JSON.stringify(input.metadata ?? {})
+      ]
+    );
+  });
+}
+
 export interface ProjectFileSummary {
   sourceUri: string;
   contentHash: string;
   tokenEstimate: number;
   summary: string;
+  metadata: Record<string, unknown>;
   updatedAt: string;
 }
 
@@ -705,6 +791,7 @@ export async function listProjectFileSummaries(input: {
          pf.content_hash as "contentHash",
          pf.token_estimate as "tokenEstimate",
          pf.summary,
+         pf.metadata,
          pf.updated_at::text as "updatedAt"
        from project_files pf
        join projects p on p.id = pf.project_id

@@ -35,12 +35,14 @@ import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
   createWorkflowRun,
+  deleteProjectFiles,
   decideActionApproval,
   dismissAllFailedWorkflowRuns,
   dismissFailedWorkflowRun,
   getActionApproval,
   getArtifactByUri,
   getLatestMemory,
+  getProjectIndexState,
   getWorkflowRunDetails,
   findRunActionByIdempotencyKey,
   listActionApprovals,
@@ -62,6 +64,7 @@ import {
   seedRegistry,
   upsertMemoryItem,
   upsertProject,
+  upsertProjectIndexState,
   upsertProjectFiles
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
@@ -756,9 +759,11 @@ program
   .description("Index project files into durable compact summaries")
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--max-files <number>", "maximum files to index", "200")
+  .option("--incremental", "only refresh files changed since the last indexed commit")
+  .option("--since-commit <sha>", "reference commit for incremental indexing")
   .option("--refine", "refine file summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
-  .action(async (options: { project: string; maxFiles: string; refine?: boolean; forceRefine?: boolean }) => {
+  .action(async (options: { project: string; maxFiles: string; incremental?: boolean; sinceCommit?: string; refine?: boolean; forceRefine?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -778,28 +783,20 @@ program
       profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
       config: project
     });
-    const existingSummaries = await listProjectFileSummaries({
-      projectRootUri: projectDir,
-      limit: 1000
-    });
-    const result = await indexProjectFiles({
+    const state = await getProjectIndexState({ projectId });
+    const incremental = Boolean(options.incremental || options.sinceCommit);
+    const result = await indexProjectWithStorage({
+      projectId,
       projectDir,
       project,
       maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : 200,
       refineProvider: options.refine ? providerFromEnv() : undefined,
-      existingSummaries,
-      forceRefine: Boolean(options.forceRefine)
+      forceRefine: Boolean(options.forceRefine),
+      incremental,
+      sinceCommit: options.sinceCommit ?? state?.headCommit ?? undefined
     });
 
-    const count = await upsertProjectFiles({ projectId, files: result.files });
-    const skipped = result.files.filter((file) => file.metadata.skipped).length;
-    console.log(`Indexed ${count} files for ${project.project.name}.`);
-    if (options.refine) {
-      console.log(`Refined ${result.refined}; reused ${result.reused}.`);
-    }
-    if (skipped) {
-      console.log(`Skipped ${skipped} large files.`);
-    }
+    console.log(formatIndexResult(result));
   });
 
 program
@@ -948,6 +945,7 @@ program
   .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--skip-index", "skip project indexing before queueing")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--full-index", "force a full project index instead of the default incremental refresh")
   .option("--refine-index", "refine indexed summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
   .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
@@ -962,6 +960,7 @@ program
     policyProfile?: string;
     skipIndex?: boolean;
     indexMaxFiles: string;
+    fullIndex?: boolean;
     refineIndex?: boolean;
     forceRefine?: boolean;
     workerLimit: string;
@@ -994,15 +993,10 @@ program
         projectDir,
         maxFiles: indexMaxFiles,
         refine: Boolean(options.refineIndex),
-        forceRefine: Boolean(options.forceRefine)
+        forceRefine: Boolean(options.forceRefine),
+        fullIndex: Boolean(options.fullIndex)
       });
-      console.log(`Indexed ${indexResult.count} files for ${indexResult.projectName}.`);
-      if (options.refineIndex) {
-        console.log(`Refined ${indexResult.refined}; reused ${indexResult.reused}.`);
-      }
-      if (indexResult.skipped) {
-        console.log(`Skipped ${indexResult.skipped} large files.`);
-      }
+      console.log(formatIndexResult(indexResult));
     }
 
     const queued = await queueWorkflow({
@@ -1073,6 +1067,7 @@ program
   .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
   .option("--skip-index", "skip project indexing before queueing")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--full-index", "force a full project index instead of the default incremental refresh")
   .option("--refine-index", "refine indexed summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
   .option("--interval-ms <number>", "polling interval while waiting for run status", "1000")
@@ -1086,6 +1081,7 @@ program
     policyProfile?: string;
     skipIndex?: boolean;
     indexMaxFiles: string;
+    fullIndex?: boolean;
     refineIndex?: boolean;
     forceRefine?: boolean;
     intervalMs: string;
@@ -1124,15 +1120,10 @@ program
         projectDir,
         maxFiles: indexMaxFiles,
         refine: Boolean(options.refineIndex),
-        forceRefine: Boolean(options.forceRefine)
+        forceRefine: Boolean(options.forceRefine),
+        fullIndex: Boolean(options.fullIndex)
       });
-      console.log(`Indexed ${indexResult.count} files for ${indexResult.projectName}.`);
-      if (options.refineIndex) {
-        console.log(`Refined ${indexResult.refined}; reused ${indexResult.reused}.`);
-      }
-      if (indexResult.skipped) {
-        console.log(`Skipped ${indexResult.skipped} large files.`);
-      }
+      console.log(formatIndexResult(indexResult));
     }
 
     const workflow = createAgentTaskWorkflow(agent);
@@ -1692,6 +1683,7 @@ program
   .option("--dry-run", "validate and print the evaluation matrix without running it")
   .option("--skip-index", "skip project indexing before evaluation")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
+  .option("--full-index", "force a full project index instead of the default incremental refresh")
   .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
   .option("--timeout-ms <number>", "maximum time to wait for each run", "900000")
   .option("-o, --out <dir>", "report directory; defaults to <project>/.agent-workflow/evaluations")
@@ -1702,6 +1694,7 @@ program
     dryRun?: boolean;
     skipIndex?: boolean;
     indexMaxFiles: string;
+    fullIndex?: boolean;
     workerLimit: string;
     timeoutMs: string;
     out?: string;
@@ -1737,9 +1730,10 @@ program
         projectDir,
         maxFiles: parsePositiveInteger(options.indexMaxFiles, 100),
         refine: false,
-        forceRefine: false
+        forceRefine: false,
+        fullIndex: Boolean(options.fullIndex)
       });
-      console.log(`Indexed ${indexed.count} files for ${indexed.projectName}.`);
+      console.log(formatIndexResult(indexed));
     }
 
     const observations: EvaluationObservation[] = [];
@@ -5669,9 +5663,7 @@ async function indexDashboardProject(input: {
       output: [
         `Project: ${result.projectName}`,
         `Path: ${resolvedProjectDir}`,
-        `Indexed: ${result.count} files`,
-        `Skipped: ${result.skipped} large files`,
-        input.refine ? `Refined: ${result.refined}, reused: ${result.reused}` : "",
+        formatIndexResult(result),
         `Open: /project?root=${encodeURIComponent(resolvedProjectDir)}`
       ].filter(Boolean).join("\n")
     };
@@ -8261,12 +8253,19 @@ async function indexProjectForRun(input: {
   maxFiles: number;
   refine: boolean;
   forceRefine: boolean;
+  fullIndex?: boolean;
 }): Promise<{
   projectName: string;
   count: number;
   skipped: number;
   refined: number;
   reused: number;
+  changed: number;
+  deleted: number;
+  incremental: boolean;
+  fullIndexFallback: boolean;
+  truncated: boolean;
+  headCommit?: string;
 }> {
   const project = await loadProjectConfig(input.projectDir);
   const projectId = await upsertProject({
@@ -8275,27 +8274,121 @@ async function indexProjectForRun(input: {
     profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
     config: project
   });
-  const existingSummaries = await listProjectFileSummaries({
-    projectRootUri: input.projectDir,
-    limit: 1000
-  });
-  const result = await indexProjectFiles({
+
+  return indexProjectWithStorage({
+    projectId,
     projectDir: input.projectDir,
     project,
     maxFiles: input.maxFiles,
     refineProvider: input.refine ? providerFromEnv() : undefined,
+    forceRefine: input.forceRefine,
+    incremental: !input.fullIndex && !input.forceRefine
+  });
+}
+
+async function indexProjectWithStorage(input: {
+  projectId: string;
+  projectDir: string;
+  project: ProjectConfig;
+  maxFiles: number;
+  refineProvider?: ReturnType<typeof providerFromEnv>;
+  forceRefine: boolean;
+  incremental: boolean;
+  sinceCommit?: string;
+}): Promise<{
+  projectName: string;
+  count: number;
+  skipped: number;
+  refined: number;
+  reused: number;
+  changed: number;
+  deleted: number;
+  incremental: boolean;
+  fullIndexFallback: boolean;
+  truncated: boolean;
+  headCommit?: string;
+}> {
+  const existingSummaries = await listProjectFileSummaries({
+    projectRootUri: input.projectDir,
+    limit: 100_000
+  });
+  const state = await getProjectIndexState({ projectId: input.projectId });
+  const sinceCommit = input.sinceCommit ?? state?.headCommit ?? undefined;
+  const shouldIncrement = input.incremental && Boolean(sinceCommit);
+  const result = await indexProjectFiles({
+    projectDir: input.projectDir,
+    project: input.project,
+    maxFiles: input.maxFiles,
+    refineProvider: input.refineProvider,
     existingSummaries,
-    forceRefine: input.forceRefine
+    forceRefine: input.forceRefine,
+    deltaOnly: shouldIncrement,
+    sinceCommit
   });
 
-  const count = await upsertProjectFiles({ projectId, files: result.files });
+  const count = await upsertProjectFiles({ projectId: input.projectId, files: result.files });
+  const deleted = await deleteProjectFiles({
+    projectId: input.projectId,
+    sourceUris: result.deletedSourceUris
+  });
+  const storedSourceUris = new Set(existingSummaries.map((summary) => summary.sourceUri));
+  for (const sourceUri of result.deletedSourceUris) {
+    storedSourceUris.delete(sourceUri);
+  }
+  for (const file of result.files) {
+    storedSourceUris.add(file.sourceUri);
+  }
+  await upsertProjectIndexState({
+    projectId: input.projectId,
+    headCommit: result.headCommit,
+    indexedFiles: storedSourceUris.size,
+    deletedFiles: deleted,
+    metadata: {
+      mode: result.incremental ? "incremental" : "full",
+      fullIndexFallback: result.fullIndexFallback,
+      indexedFilesThisRun: count,
+      indexedFilesTotal: storedSourceUris.size,
+      changed: result.changed,
+      reused: result.reused,
+      truncated: result.truncated,
+      sinceCommit: shouldIncrement ? sinceCommit : null
+    }
+  });
   return {
-    projectName: project.project.name,
+    projectName: input.project.project.name,
     count,
     skipped: result.files.filter((file) => file.metadata.skipped).length,
     refined: result.refined,
-    reused: result.reused
+    reused: result.reused,
+    changed: result.changed,
+    deleted,
+    incremental: result.incremental,
+    fullIndexFallback: result.fullIndexFallback,
+    truncated: result.truncated,
+    headCommit: result.headCommit
   };
+}
+
+function formatIndexResult(result: {
+  projectName: string;
+  count: number;
+  skipped: number;
+  refined: number;
+  reused: number;
+  changed: number;
+  deleted: number;
+  incremental: boolean;
+  fullIndexFallback: boolean;
+  truncated: boolean;
+  headCommit?: string;
+}): string {
+  return [
+    `${result.incremental ? "Incrementally indexed" : "Indexed"} ${result.count} file${result.count === 1 ? "" : "s"} for ${result.projectName}.`,
+    `Changed: ${result.changed}; reused: ${result.reused}; deleted: ${result.deleted}; refined: ${result.refined}; skipped large: ${result.skipped}.`,
+    result.headCommit ? `Head commit: ${result.headCommit}` : "",
+    result.fullIndexFallback ? "Git delta unavailable; fell back to a full index." : "",
+    result.truncated ? "Index limit reached before all changed files were processed; rerun with a higher --max-files or --index-max-files value." : ""
+  ].filter(Boolean).join("\n");
 }
 
 async function watchWorkflowRun(input: {

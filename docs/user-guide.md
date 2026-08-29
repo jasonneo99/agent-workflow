@@ -133,6 +133,18 @@ Index a project into compact durable summaries:
 npm run index-project -- --project /path/to/project --max-files 100
 ```
 
+After a baseline exists, run an incremental refresh to process only changed,
+staged, untracked, renamed, or deleted files:
+
+```bash
+npm run index-project -- --project /path/to/project --max-files 100 --incremental
+```
+
+`run-and-watch`, `agent-task`, dashboard run actions, and MCP workflow tools use
+incremental indexing automatically after the first successful baseline. Use
+`--full-index` when you intentionally want to rebuild the stored context from
+scratch, for example after changing include/exclude patterns.
+
 For large repos, start with a compact non-refined pass:
 
 ```bash
@@ -849,7 +861,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 19. Recommended Next Improvement
 
-The next improvements focus on reliable workflow operations: OpenTelemetry-compatible observability, incremental indexing, and workflow authoring tools. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvements focus on reliable workflow operations: filesystem/CI-triggered indexing, source-selection explanations, and workflow authoring tools. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
