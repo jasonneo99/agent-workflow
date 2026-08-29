@@ -69,6 +69,9 @@ environment before sharing a bundle.
 previews migration notes and safe actions for a project without changing files.
 When available, it reads `.agent-workflow/bundle-state.json`; otherwise use
 `--from-version` and `--from-checksum` to compare against a known source bundle.
+After reviewing the preview, run
+`npm run agentflow -- bundle-adopt --project /path/to/project --force` to record
+the current bundle as the new local baseline.
 
 ## 3. Use From An MCP Client
 
@@ -715,6 +718,7 @@ agentflow_list
 agentflow_schemas
 agentflow_bundle_compat
 agentflow_bundle_upgrade_preview
+agentflow_bundle_adopt
 agentflow_onboard_project
 agentflow_index_project
 agentflow_compile

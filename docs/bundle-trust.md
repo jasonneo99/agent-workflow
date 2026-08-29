@@ -24,6 +24,13 @@ agentflow bundle-upgrade-preview --project /path/to/project
 agentflow bundle-upgrade-preview --from-version 0.1.0 --from-checksum <sha256>
 ```
 
+After reviewing compatibility, trust, and migration notes, record the current
+bundle as the project baseline:
+
+```bash
+agentflow bundle-adopt --project /path/to/project --force
+```
+
 When present, project state is read from
 `.agent-workflow/bundle-state.json`. `init-project` and `onboard-project --write`
 create this file during adoption:
@@ -70,4 +77,4 @@ agentflow bundle-trust --remove <sha256-fingerprint>
 
 The trust store contains public keys only at `~/.config/agent-workflow/trusted-bundle-keys.json` by default. Override it with `AGENTFLOW_BUNDLE_TRUST_STORE` for managed environments.
 
-The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes read-only `agentflow_bundle_verify`, `agentflow_bundle_compat`, and `agentflow_bundle_upgrade_preview`; trust-store mutations remain explicit CLI actions.
+The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes `agentflow_bundle_verify`, `agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and `agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.

@@ -249,6 +249,25 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_bundle_adopt",
+  {
+    title: "AgentFlow bundle adopt",
+    description: "Record the current reusable bundle as adopted by a project.",
+    inputSchema: {
+      project: z.string().describe("Project directory."),
+      force: z.boolean().optional().describe("Overwrite an existing .agent-workflow/bundle-state.json after review."),
+      json: z.boolean().optional().describe("Return machine-readable adoption output.")
+    }
+  },
+  async ({ project, force, json }) => {
+    const args = ["bundle-adopt", "--project", project];
+    if (force) args.push("--force");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",

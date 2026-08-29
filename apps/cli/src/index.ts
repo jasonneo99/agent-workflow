@@ -377,6 +377,26 @@ program
   });
 
 program
+  .command("bundle-adopt")
+  .description("Record the current reusable bundle as adopted by a project")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--force", "overwrite an existing .agent-workflow/bundle-state.json")
+  .option("--json", "print machine-readable adoption output")
+  .action(async (options: { project: string; force?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const result = await writeProjectBundleState(projectDir, Boolean(options.force));
+    const statePath = path.join(projectDir, result.relativePath);
+    const state = await readJsonFile<ProjectBundleState>(statePath);
+    const output = { projectDir, statePath, status: result.status, state };
+    if (options.json) {
+      console.log(JSON.stringify(output, null, 2));
+      return;
+    }
+    console.log(`${result.status === "written" ? "Recorded" : "Skipped existing"} bundle state: ${statePath}`);
+    if (result.status === "skipped") console.log("Use --force after reviewing bundle-upgrade-preview to replace the recorded baseline.");
+  });
+
+program
   .command("bundle-verify")
   .description("Verify bundle integrity, signature, compatibility, and signer trust")
   .option("--policy <policy>", "allow, warn, or require", process.env.AGENTFLOW_BUNDLE_TRUST_POLICY ?? "allow")
