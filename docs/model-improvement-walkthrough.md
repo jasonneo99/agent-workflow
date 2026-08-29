@@ -240,6 +240,11 @@ http://127.0.0.1:17888/model-improvement?project=/path/to/project
 http://127.0.0.1:17888/candidate-comparisons?project=/path/to/project
 ```
 
+The Model Improvement page summarizes the local evidence and next readiness
+steps:
+
+![Model improvement dashboard](assets/screenshots/dashboard-model-improvement.png)
+
 The Candidate Comparisons page shows:
 
 - comparison plan status
@@ -248,6 +253,10 @@ The Candidate Comparisons page shows:
 - promotion recommendation
 - promotion gate command
 - promotion note plan files after they are written
+
+![Candidate comparisons dashboard](assets/screenshots/dashboard-candidate-comparisons.png)
+
+![Promotion note files](assets/screenshots/dashboard-candidate-promotion-notes.png)
 
 The Queue and Run Detail pages are useful when a comparison run needs attention:
 

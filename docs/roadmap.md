@@ -100,6 +100,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
 - [x] Package/install story beyond cloning the repo.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
   - Keep repo-based development workflow available.
+  - Next: prepare the next signed npm/GitHub package release so recent dashboard and model-improvement improvements reach installed users.
 
 - [x] Multi-project governance.
   - Inspect registered projects, storage health, provider settings, and policy drift.
@@ -174,7 +175,7 @@ trust gaps.
   - Done: add dashboard follow-up actions for promotion note plans while preserving dry-run-by-default behavior.
   - Done: surface written promotion note plan files in the dashboard for review and sharing.
   - Done: add an end-to-end model-improvement walkthrough with sample local evidence, screenshots, and expected command output.
-  - Add synthetic candidate-comparison screenshot assets for npm, GitHub, and docs.
+  - Done: add synthetic candidate-comparison screenshot assets for npm, GitHub, and docs.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
 ## Phase 5: Governed Distribution

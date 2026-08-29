@@ -83,6 +83,12 @@ The local dashboard gives developers a control center for run health, queue reco
 
 ![Agent Workflow dashboard](assets/screenshots/dashboard-home.png)
 
+![Model improvement dashboard](assets/screenshots/dashboard-model-improvement.png)
+
+![Candidate comparisons dashboard](assets/screenshots/dashboard-candidate-comparisons.png)
+
+![Promotion note files](assets/screenshots/dashboard-candidate-promotion-notes.png)
+
 ![Queue control panel](assets/screenshots/dashboard-queue.png)
 
 ![Run detail page](assets/screenshots/dashboard-run-detail.png)

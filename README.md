@@ -213,6 +213,8 @@ gate readiness, promotion recommendations, and promotion gate commands.
 
 ![Agent Workflow dashboard](docs/assets/screenshots/dashboard-home.png)
 
+![Candidate comparisons dashboard](docs/assets/screenshots/dashboard-candidate-comparisons.png)
+
 Execution policy profiles (`local`, `staging`, and `production`) control
 autonomy, commands, and write access without creating separate workflow
 storage. Every queued run records the resolved policy snapshot used by its

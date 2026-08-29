@@ -65,11 +65,17 @@ inspect scorecard health, feedback coverage, evaluation coverage, tuning
 proposal mix, routing recommendations, and promotion readiness. The dashboard
 view is read-only and uses existing project-local evidence.
 
+![Model improvement dashboard](assets/screenshots/dashboard-model-improvement.png)
+
 Open `/candidate-comparisons?project=/path/to/project` to inspect written
 candidate comparison plans, generated private evaluation suite files,
 baseline/candidate variants, evaluation outcomes, quality and latency deltas,
 gate readiness, promotion recommendations, written promotion note files, and
 promotion gate commands.
+
+![Candidate comparisons dashboard](assets/screenshots/dashboard-candidate-comparisons.png)
+
+![Promotion note files](assets/screenshots/dashboard-candidate-promotion-notes.png)
 
 For tools and IDE integrations, the same report is available as JSON:
 

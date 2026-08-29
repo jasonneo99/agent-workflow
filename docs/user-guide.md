@@ -994,13 +994,16 @@ evaluation outcomes, quality and latency deltas, gate readiness, and promotion
 recommendations without running models. After a promotion note plan is written,
 the same page shows the review file status and markdown preview.
 
+![Candidate comparisons dashboard](assets/screenshots/dashboard-candidate-comparisons.png)
+
+![Promotion note files](assets/screenshots/dashboard-candidate-promotion-notes.png)
+
 ## 24. Recommended Next Improvement
 
-The next improvement is an end-to-end model-improvement walkthrough with sample
-local evidence, screenshots, and expected command output. Candidate Comparisons
-now previews promotion note plans and shows written review files without
-changing live routing. See the [Roadmap](roadmap.md) for the shared-platform
-implementation sequence.
+The next improvement is release preparation for the next npm/GitHub package
+version so the newer dashboard screenshots, model-improvement walkthrough, and
+promotion-note flow reach installed users. See the [Roadmap](roadmap.md) for
+the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:
