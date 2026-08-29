@@ -30,6 +30,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_doctor`: check definitions and local enterprise services.
 - `agentflow_validate`: validate agent and workflow files.
 - `agentflow_bundle_manifest`: print or write the versioned reusable agent/workflow bundle manifest.
+- `agentflow_bundle_compat`: check bundle runtime, Node.js, MCP compatibility, and migration notes.
 - `agentflow_list`: list available agents and workflows.
 - `agentflow_schemas`: list JSON Schemas or write VS Code/Cursor YAML validation settings.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.

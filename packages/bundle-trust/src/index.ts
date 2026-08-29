@@ -46,6 +46,23 @@ export interface BundleVerification {
   allowed: boolean;
 }
 
+export interface BundleCompatibilityCheck {
+  id: "agentWorkflow" | "node" | "mcp";
+  label: string;
+  required: string;
+  actual: string;
+  compatible: boolean;
+  detail: string;
+}
+
+export interface BundleCompatibilityReport {
+  bundleId: string;
+  bundleVersion: string;
+  compatible: boolean;
+  checks: BundleCompatibilityCheck[];
+  migrations: BundleManifest["migrations"];
+}
+
 export function canonicalManifest(manifest: BundleManifest): string {
   return stableStringify(manifest);
 }
@@ -162,28 +179,64 @@ export async function verifyBundle(rootDir: string, policy: BundleTrustPolicy = 
   let signature: BundleSignature | undefined;
   try { signature = JSON.parse(await fs.readFile(path.join(rootDir, "agent-workflow.bundle.sig.json"), "utf8")) as BundleSignature; } catch {}
   const runtimePackage = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8")) as { version?: string };
+  const compatibility = buildBundleCompatibilityReport(committed, {
+    agentWorkflow: runtimePackage.version ?? "0.0.0"
+  });
   return verifyBundleSignature({
     manifest: committed,
     signature,
     trustStore: await readBundleTrustStore(),
     modified,
-    compatible: bundleCompatible(committed, runtimePackage.version ?? "0.0.0"),
+    compatible: compatibility.compatible,
     policy
   });
 }
 
-export function normalizePolicy(value?: string): BundleTrustPolicy {
-  return value === "warn" || value === "require" ? value : "allow";
+export function buildBundleCompatibilityReport(manifest: BundleManifest, actual?: { agentWorkflow?: string; node?: string; mcp?: string }): BundleCompatibilityReport {
+  const checks: BundleCompatibilityCheck[] = [
+    versionRangeCheck({
+      id: "agentWorkflow",
+      label: "Agent Workflow runtime",
+      required: manifest.compatibility.agentWorkflow,
+      actual: actual?.agentWorkflow ?? manifest.bundle.version
+    }),
+    versionRangeCheck({
+      id: "node",
+      label: "Node.js",
+      required: manifest.compatibility.node,
+      actual: actual?.node ?? process.version.slice(1)
+    }),
+    versionRangeCheck({
+      id: "mcp",
+      label: "MCP SDK",
+      required: manifest.compatibility.mcp,
+      actual: actual?.mcp ?? manifest.compatibility.mcp
+    })
+  ];
+  return {
+    bundleId: manifest.bundle.id,
+    bundleVersion: manifest.bundle.version,
+    compatible: checks.every((check) => check.compatible),
+    checks,
+    migrations: manifest.migrations
+  };
 }
 
-function bundleCompatible(manifest: BundleManifest, runtimeVersion: string): boolean {
-  const nodeMinimum = Number(manifest.compatibility.node.match(/>=\s*(\d+)/)?.[1] ?? 0);
-  const currentMajor = Number(process.version.slice(1).split(".")[0] ?? 0);
-  const runtime = runtimeVersion.split(".").map(Number);
-  const minimum = manifest.compatibility.agentWorkflow.match(/>=\s*(\d+)\.(\d+)\.(\d+)/)?.slice(1).map(Number);
-  const maximumMajor = Number(manifest.compatibility.agentWorkflow.match(/<\s*(\d+)\./)?.[1] ?? Number.MAX_SAFE_INTEGER);
-  const atLeastMinimum = !minimum || runtime[0] > minimum[0] || runtime[0] === minimum[0] && (runtime[1] > minimum[1] || runtime[1] === minimum[1] && runtime[2] >= minimum[2]);
-  return currentMajor >= nodeMinimum && atLeastMinimum && runtime[0] < maximumMajor;
+export function formatBundleCompatibilityReport(report: BundleCompatibilityReport): string {
+  return [
+    `Bundle Compatibility: ${report.bundleId}@${report.bundleVersion}`,
+    `Status: ${report.compatible ? "compatible" : "incompatible"}`,
+    "Checks",
+    ...report.checks.map((check) => `- ${check.compatible ? "PASS" : "FAIL"} ${check.label}: actual=${check.actual}, required=${check.required} (${check.detail})`),
+    "Migration notes",
+    ...(report.migrations.length
+      ? report.migrations.map((migration) => `- ${migration.from} -> ${migration.to}: ${migration.notes.join(" ")}`)
+      : ["- none"])
+  ].join("\n");
+}
+
+export function normalizePolicy(value?: string): BundleTrustPolicy {
+  return value === "warn" || value === "require" ? value : "allow";
 }
 
 function stableStringify(value: unknown): string {
@@ -194,4 +247,35 @@ function stableStringify(value: unknown): string {
 
 function signaturePayload(manifest: BundleManifest, signature: Omit<BundleSignature, "signature">): string {
   return stableStringify({ manifest, signature });
+}
+
+function versionRangeCheck(input: { id: BundleCompatibilityCheck["id"]; label: string; required: string; actual: string }): BundleCompatibilityCheck {
+  const actualVersion = parseVersion(input.actual);
+  const minimum = input.required.match(/>=\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?/)?.slice(1).map((part) => Number(part ?? 0));
+  const maximum = input.required.match(/<\s*(\d+)(?:\.(\d+))?(?:\.(\d+))?/)?.slice(1).map((part) => Number(part ?? 0));
+  const compatible = actualVersion
+    ? (!minimum || compareVersions(actualVersion, toVersionTuple(minimum)) >= 0) &&
+      (!maximum || compareVersions(actualVersion, toVersionTuple(maximum)) < 0)
+    : false;
+  return {
+    ...input,
+    compatible,
+    detail: compatible ? "requirement satisfied" : "requirement not satisfied"
+  };
+}
+
+function parseVersion(value: string): [number, number, number] | null {
+  const match = value.match(/v?(\d+)(?:\.(\d+))?(?:\.(\d+))?/);
+  return match ? [Number(match[1]), Number(match[2] ?? 0), Number(match[3] ?? 0)] : null;
+}
+
+function toVersionTuple(parts: number[]): [number, number, number] {
+  return [parts[0] ?? 0, parts[1] ?? 0, parts[2] ?? 0];
+}
+
+function compareVersions(a: [number, number, number], b: [number, number, number]): number {
+  for (let index = 0; index < 3; index += 1) {
+    if (a[index] !== b[index]) return a[index] - b[index];
+  }
+  return 0;
 }

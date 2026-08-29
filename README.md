@@ -144,6 +144,7 @@ npm run release:prepare -- --dry-run # Preview signed npm release prep
 npm run provider-check         # Verify model provider
 npm run validate               # Validate agent/workflow definitions
 npm run bundle-manifest        # Inspect versioned bundle checksums
+npm run agentflow -- bundle-compat # Check runtime, Node.js, MCP compatibility, and migration notes
 npm run doctor                 # Check local services
 
 # Project operations

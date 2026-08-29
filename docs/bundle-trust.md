@@ -9,6 +9,13 @@ agentflow bundle-verify
 agentflow bundle-verify --policy require --json
 ```
 
+Check compatibility and migration notes without signer policy:
+
+```bash
+agentflow bundle-compat
+agentflow bundle-compat --runtime-version 0.2.1 --node-version 26.3.0 --mcp-version 1.29.0 --json
+```
+
 Statuses are `trusted`, `valid-untrusted`, `unsigned`, `modified`, `expired`, `incompatible`, and `invalid`. Trust policies are:
 
 - `allow`: unsigned and valid-untrusted bundles may run; modified, invalid, or incompatible bundles are rejected.
@@ -39,4 +46,4 @@ agentflow bundle-trust --remove <sha256-fingerprint>
 
 The trust store contains public keys only at `~/.config/agent-workflow/trusted-bundle-keys.json` by default. Override it with `AGENTFLOW_BUNDLE_TRUST_STORE` for managed environments.
 
-The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes read-only `agentflow_bundle_verify`; trust-store mutations remain explicit CLI actions.
+The dashboard exposes `/bundles` and `/api/bundles`. MCP exposes read-only `agentflow_bundle_verify` and `agentflow_bundle_compat`; trust-store mutations remain explicit CLI actions.

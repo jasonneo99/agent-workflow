@@ -24,7 +24,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { bundleTrustStorePath, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, bundleTrustStorePath, formatBundleCompatibilityReport, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleTrustPolicy, type BundleVerification } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -83,7 +83,7 @@ const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtim
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "bundle-manifest", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "bundle-manifest", "bundle-compat", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -330,6 +330,26 @@ program
     } else {
       console.log(formatBundleManifest(manifest));
     }
+  });
+
+program
+  .command("bundle-compat")
+  .description("Check the current bundle against runtime, Node.js, and MCP compatibility requirements")
+  .option("--runtime-version <version>", "Agent Workflow runtime version to check; defaults to this package version")
+  .option("--node-version <version>", "Node.js version to check; defaults to the current process version")
+  .option("--mcp-version <version>", "MCP SDK version to check; defaults to the manifest MCP requirement")
+  .option("--json", "print machine-readable compatibility report")
+  .action(async (options: { runtimeVersion?: string; nodeVersion?: string; mcpVersion?: string; json?: boolean }) => {
+    const manifest = await loadCommittedBundleManifest(rootDir);
+    if (!manifest) throw new Error("Bundle manifest is missing.");
+    const packageJson = await readJsonFile<{ version?: string }>(path.join(rootDir, "package.json"));
+    const report = buildBundleCompatibilityReport(manifest, {
+      agentWorkflow: options.runtimeVersion ?? packageJson?.version ?? "0.0.0",
+      node: options.nodeVersion ?? process.version.slice(1),
+      mcp: options.mcpVersion ?? manifest.compatibility.mcp
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleCompatibilityReport(report));
+    if (!report.compatible) process.exitCode = 2;
   });
 
 program

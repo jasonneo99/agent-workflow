@@ -60,6 +60,11 @@ This verifies Docker services, workflow definitions, queueing, storage, receipts
 
 `npm run bundle-manifest` prints the versioned reusable agent/workflow bundle manifest. Run `npm run bundle-manifest -- --write` after changing shared files under `agents/` or `workflows/`; `npm run validate` checks the committed manifest checksum.
 
+`npm run agentflow -- bundle-compat` checks the committed bundle against the
+current runtime, Node.js, MCP requirements, and migration notes. Use
+`--runtime-version`, `--node-version`, or `--mcp-version` to test another target
+environment before sharing a bundle.
+
 ## 3. Use From An MCP Client
 
 Agent Workflow can run from VS Code, Cursor, Codex, or another MCP-capable client. The client only launches the local MCP server; model/provider selection stays in Agent Workflow's `.env`.
@@ -700,6 +705,7 @@ agentflow_doctor
 agentflow_validate
 agentflow_list
 agentflow_schemas
+agentflow_bundle_compat
 agentflow_onboard_project
 agentflow_index_project
 agentflow_compile
@@ -920,7 +926,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is bundle compatibility checks and definition migrations, so shared workflow packs can evolve without silently breaking existing projects. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is definition migration planning for reusable agents and workflows, so shared workflow packs can evolve without silently breaking existing projects. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

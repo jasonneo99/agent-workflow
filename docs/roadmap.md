@@ -154,7 +154,8 @@ trust gaps.
 - [ ] Workflow authoring and compatibility tooling.
   - Done: add JSON Schema and editor validation for agents, workflows, project policies, and schedules.
   - Done: provide a dry-run graph showing stages, dependencies, permissions, approvals, agents, and context budgets.
-  - Add bundle compatibility checks and definition migrations.
+  - Done: add a standalone bundle compatibility report for runtime, Node.js, MCP requirements, and migration notes.
+  - Add definition migrations, upgrade previews, and rollback guidance for changed bundle contracts.
   - Add contract tests for custom agents, workflows, and provider adapters.
 
 - [ ] Optional model-improvement workflow pack.

@@ -203,6 +203,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_bundle_compat",
+  {
+    title: "AgentFlow bundle compatibility",
+    description: "Check bundle runtime, Node.js, MCP compatibility requirements, and migration notes.",
+    inputSchema: {
+      runtimeVersion: z.string().optional().describe("Agent Workflow runtime version to check."),
+      nodeVersion: z.string().optional().describe("Node.js version to check."),
+      mcpVersion: z.string().optional().describe("MCP SDK version to check."),
+      json: z.boolean().optional().describe("Return machine-readable compatibility report.")
+    }
+  },
+  async ({ runtimeVersion, nodeVersion, mcpVersion, json }) => {
+    const args = ["bundle-compat"];
+    if (runtimeVersion) args.push("--runtime-version", runtimeVersion);
+    if (nodeVersion) args.push("--node-version", nodeVersion);
+    if (mcpVersion) args.push("--mcp-version", mcpVersion);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_list",
   {
     title: "AgentFlow list",
