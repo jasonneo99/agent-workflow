@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
@@ -3537,6 +3538,67 @@ async function loadDashboardModelImprovementReport(input: {
   };
 }
 
+async function loadDashboardCandidateComparisonReport(input: {
+  projectDir: string;
+}): Promise<DashboardCandidateComparisonReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const modelPlanPath = path.join(projectDir, ".agent-workflow", "model-improvement", "model-improvement-plan.json");
+  const comparisonPlanPath = path.join(projectDir, ".agent-workflow", "model-improvement", "candidate-comparison-plan.json");
+  const modelPlanResult = await readDashboardJsonFile<Omit<ModelImprovementPlan, "files">>(modelPlanPath, (value) =>
+    value.kind === "agentflow_model_improvement_plan" && Array.isArray(value.evalCases)
+  );
+  const comparisonPlanResult = await readDashboardJsonFile<Omit<CandidateComparisonPlan, "files">>(comparisonPlanPath, (value) =>
+    value.kind === "agentflow_candidate_comparison_plan" && Array.isArray(value.suites)
+  );
+  const comparisonPlan = comparisonPlanResult.value;
+  const suiteFiles = (comparisonPlan?.suites ?? []).map((suite) => {
+    const relativePath = suite.suitePath;
+    const absolutePath = path.resolve(projectDir, relativePath);
+    return {
+      path: relativePath,
+      exists: absolutePath.startsWith(`${projectDir}${path.sep}`) && fsSync.existsSync(absolutePath)
+    };
+  });
+  const readiness: string[] = [];
+  if (!modelPlanResult.exists) {
+    readiness.push("Write a model-improvement plan before preparing candidate comparisons.");
+  } else if (modelPlanResult.error) {
+    readiness.push(`Model-improvement plan is unreadable: ${modelPlanResult.error}`);
+  }
+  if (!comparisonPlanResult.exists) {
+    readiness.push("Run candidate-comparison-plan with --write to create local comparison files.");
+  } else if (comparisonPlanResult.error) {
+    readiness.push(`Candidate comparison plan is unreadable: ${comparisonPlanResult.error}`);
+  }
+  const missingSuites = suiteFiles.filter((suite) => !suite.exists).length;
+  if (missingSuites) {
+    readiness.push(`${missingSuites} generated evaluation suite file(s) are missing.`);
+  }
+  if (!readiness.length) {
+    readiness.push("Candidate comparison files are present. Run the generated evaluation suite when ready.");
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    projectDir,
+    modelPlanPath,
+    comparisonPlanPath,
+    modelPlanExists: modelPlanResult.exists,
+    comparisonPlanExists: comparisonPlanResult.exists,
+    modelPlanError: modelPlanResult.error,
+    comparisonPlanError: comparisonPlanResult.error,
+    modelPlan: modelPlanResult.value,
+    comparisonPlan,
+    suiteFiles,
+    readiness,
+    nextCommands: [
+      `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,
+      `npm run agentflow -- candidate-comparison-plan --project ${shellQuote(projectDir)} --write`,
+      ...(comparisonPlan?.suites.map((suite) => suite.command) ?? []),
+      `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${shellQuote(projectDir)}`
+    ]
+  };
+}
+
 async function writeTuningApplicationPlan(projectDir: string, plan: TuningApplicationPlan): Promise<void> {
   for (const file of plan.files) {
     if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
@@ -4278,6 +4340,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/candidate-comparisons") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadDashboardCandidateComparisonReport({ projectDir: project });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/apply-tuning") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -4389,6 +4464,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelImprovementHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/candidate-comparisons") {
+    const projects = await listProjectStorageSummaries(100);
+    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+    const report = project ? await loadDashboardCandidateComparisonReport({ projectDir: project }) : null;
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -4962,6 +5046,107 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
     <section class="panel">
       <h2>Tuning Proposals</h2>
       ${renderTuningProposalsHtml(report.proposals)}
+    </section>
+    <section class="panel">
+      <h2>Next Commands</h2>
+      <ul>${commandRows}</ul>
+    </section>
+  `;
+}
+
+function renderCandidateComparisonsHtml(
+  report: DashboardCandidateComparisonReport | null,
+  projects: DashboardProjectSummary[],
+  params: URLSearchParams
+): string {
+  const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
+  const jsonHref = report ? `/api/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}` : "";
+  const body = report
+    ? renderCandidateComparisonReportHtml(report)
+    : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Run onboarding or enter a project path to inspect local candidate comparison evidence.</p></section>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Candidate Comparisons</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("candidate-comparisons")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Candidate Comparisons</h1>
+        <p class="muted">Read-only local visibility for model-improvement comparison suites, baseline/candidate variants, and promotion gates.</p>
+      </div>
+      ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
+    </div>
+    <section class="panel">
+      <form method="get" class="workflow-form">
+        <label class="wide">Project path
+          <input name="project" value="${escapeHtml(selectedProject)}" list="candidate-comparison-projects" placeholder="/path/to/project">
+          <datalist id="candidate-comparison-projects">${projectOptions}</datalist>
+        </label>
+        <div class="form-actions"><button type="submit">Inspect</button></div>
+      </form>
+    </section>
+    ${body}
+  </main>
+</body>
+</html>`;
+}
+
+function renderCandidateComparisonReportHtml(report: DashboardCandidateComparisonReport): string {
+  const comparison = report.comparisonPlan;
+  const suiteRows = comparison?.suites.map((suite) => {
+    const file = report.suiteFiles.find((item) => item.path === suite.suitePath);
+    return `
+      <tr>
+        <td>${escapeHtml(suite.id)}</td>
+        <td>${escapeHtml(suite.workflowId)}</td>
+        <td>${formatNumber(suite.caseCount)}</td>
+        <td><code>${escapeHtml(suite.suitePath)}</code></td>
+        <td><span class="status ${file?.exists ? "completed" : "queued"}">${file?.exists ? "present" : "missing"}</span></td>
+      </tr>
+    `;
+  }).join("") ?? "";
+  const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const gateRows = comparison?.gateCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
+  return `
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Model Plan", report.modelPlanExists && !report.modelPlanError ? "ready" : "missing", report.modelPlanError ?? ".agent-workflow/model-improvement")}
+        ${metricCard("Comparison Plan", report.comparisonPlanExists && !report.comparisonPlanError ? "ready" : "missing", report.comparisonPlanError ?? "candidate-comparison-plan.json")}
+        ${metricCard("Eval Cases", report.modelPlan?.evalCases.length ?? 0, "from approved feedback")}
+        ${metricCard("Suites", comparison?.suites.length ?? 0, "generated private eval files")}
+        ${metricCard("Suite Files", `${report.suiteFiles.filter((suite) => suite.exists).length}/${report.suiteFiles.length}`, "present")}
+        ${metricCard("Generated", formatDashboardDateTimeText(report.generatedAt), "local read")}
+      </div>
+      <p class="muted">Project ${escapeHtml(report.projectDir)}.</p>
+    </section>
+    <section class="panel">
+      <h2>Readiness</h2>
+      <ul>${report.readiness.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+    </section>
+    <section class="panel">
+      <h2>Variants</h2>
+      ${comparison ? `
+        <div class="meta-grid compact">
+          <div><strong>Baseline</strong>${escapeHtml(comparison.baseline.provider)} / ${escapeHtml(comparison.baseline.modelTier)}<br><span class="muted">${escapeHtml(comparison.baseline.promptSuffix)}</span></div>
+          <div><strong>Candidate</strong>${escapeHtml(comparison.candidate.provider)} / ${escapeHtml(comparison.candidate.modelTier)}<br><span class="muted">${escapeHtml(comparison.candidate.promptSuffix)}</span></div>
+        </div>
+      ` : '<p class="muted">No candidate comparison plan found.</p>'}
+    </section>
+    <section class="panel">
+      <h2>Suites</h2>
+      <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Workflow</th><th>Cases</th><th>Path</th><th>File</th></tr></thead><tbody>${suiteRows || "<tr><td colspan=\"5\">No suites generated.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <h2>Promotion Gates</h2>
+      <ul>${gateRows || "<li>Run baseline and candidate evaluations before promotion.</li>"}</ul>
     </section>
     <section class="panel">
       <h2>Next Commands</h2>
@@ -7587,7 +7772,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "model-improvement" | "governance" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "model-improvement" | "candidate-comparisons" | "governance" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -7596,6 +7781,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
     ["model-improvement", "/model-improvement", "Model Improve"],
+    ["candidate-comparisons", "/candidate-comparisons", "Comparisons"],
     ["governance", "/governance", "Governance"],
     ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
@@ -7677,7 +7863,16 @@ function renderDashboardDateTime(value: string | null | undefined, fallback = "n
   if (Number.isNaN(parsed.getTime())) {
     return escapeHtml(value);
   }
-  const label = new Intl.DateTimeFormat(undefined, {
+  const label = formatDashboardDateTimeText(value);
+  return `<time datetime="${escapeHtml(parsed.toISOString())}" title="${escapeHtml(value)}">${escapeHtml(label)}</time>`;
+}
+
+function formatDashboardDateTimeText(value: string): string {
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return new Intl.DateTimeFormat(undefined, {
     month: "short",
     day: "numeric",
     year: "numeric",
@@ -7685,7 +7880,6 @@ function renderDashboardDateTime(value: string | null | undefined, fallback = "n
     minute: "2-digit",
     timeZoneName: "short"
   }).format(parsed);
-  return `<time datetime="${escapeHtml(parsed.toISOString())}" title="${escapeHtml(value)}">${escapeHtml(label)}</time>`;
 }
 
 function formatDuration(ms: number): string {
@@ -8604,6 +8798,25 @@ type DashboardModelImprovementReport = {
   feedbackNeeded: number;
   routingProposals: number;
   promotionReady: boolean;
+  readiness: string[];
+  nextCommands: string[];
+};
+
+type DashboardCandidateComparisonReport = {
+  generatedAt: string;
+  projectDir: string;
+  modelPlanPath: string;
+  comparisonPlanPath: string;
+  modelPlanExists: boolean;
+  comparisonPlanExists: boolean;
+  modelPlanError: string | null;
+  comparisonPlanError: string | null;
+  modelPlan: Omit<ModelImprovementPlan, "files"> | null;
+  comparisonPlan: Omit<CandidateComparisonPlan, "files"> | null;
+  suiteFiles: Array<{
+    path: string;
+    exists: boolean;
+  }>;
   readiness: string[];
   nextCommands: string[];
 };
@@ -9615,6 +9828,26 @@ async function readJsonFile<T>(filePath: string): Promise<T | null> {
     return JSON.parse(await fs.readFile(filePath, "utf8")) as T;
   } catch {
     return null;
+  }
+}
+
+async function readDashboardJsonFile<T>(
+  filePath: string,
+  validate: (value: Record<string, unknown>) => boolean
+): Promise<{ exists: boolean; value: T | null; error: string | null }> {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    const record = objectValue(parsed);
+    if (!validate(record)) {
+      return { exists: true, value: null, error: "unexpected file shape" };
+    }
+    return { exists: true, value: parsed as T, error: null };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { exists: false, value: null, error: null };
+    }
+    return { exists: true, value: null, error: error instanceof Error ? error.message : String(error) };
   }
 }
 

@@ -167,6 +167,7 @@ trust gaps.
   - Done: add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
   - Done: prepare scrubbed eval cases and provider-specific fine-tune dataset plans only from explicitly approved project-local feedback.
   - Done: orchestrate plan-only provider fine-tune job plans and candidate model comparisons when a project opts in and supplies its own provider credentials.
+  - Done: add dashboard visibility for candidate comparison plans, generated suite files, baseline/candidate variants, and promotion gates.
   - Promote routing changes only after baseline-versus-candidate evaluation evidence is recorded.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
