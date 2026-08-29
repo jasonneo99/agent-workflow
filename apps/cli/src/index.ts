@@ -25,7 +25,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { buildBundleCompatibilityReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleUpgradePreview, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleCompatibilityReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -84,9 +84,10 @@ const configuredEnvPath = agentWorkflowEnvPath(rootDir);
 dotenv.config({ path: configuredEnvPath, quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
+const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -377,6 +378,24 @@ program
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleCompatibilityReport(report));
     if (!report.compatible) process.exitCode = 2;
+  });
+
+program
+  .command("bundle-registry")
+  .description("List trusted bundle registry entries and local install status")
+  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
+  .option("--json", "print machine-readable registry report")
+  .action(async (options: { registry: string; json?: boolean }) => {
+    const registryPath = path.resolve(process.cwd(), options.registry);
+    const registry = await loadBundleRegistry(registryPath);
+    const manifest = await loadCommittedBundleManifest(rootDir);
+    const report = buildBundleRegistryReport({
+      registry,
+      registryPath,
+      installedManifest: manifest,
+      installedChecksum: manifest?.checksum.value
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleRegistryReport(report));
   });
 
 program
@@ -4546,6 +4565,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/bundle-registry") {
+    const report = await loadDashboardBundleRegistry(requestUrl.searchParams);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/info") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -5558,11 +5584,24 @@ type DashboardBundleReadiness = {
   projectDir: string | null;
   verification: BundleVerification;
   compatibility: BundleCompatibilityReport;
+  registry: BundleRegistryReport;
   upgradePreview: BundleUpgradePreview;
   migrationPlan: DefinitionMigrationPlan;
   contractTests: ContractTestReport;
   errors: string[];
 };
+
+async function loadDashboardBundleRegistry(params: URLSearchParams): Promise<BundleRegistryReport> {
+  const registryPath = path.resolve(process.cwd(), params.get("registry")?.trim() || defaultBundleRegistryPath);
+  const registry = await loadBundleRegistry(registryPath);
+  const manifest = await loadCommittedBundleManifest(rootDir);
+  return buildBundleRegistryReport({
+    registry,
+    registryPath,
+    installedManifest: manifest,
+    installedChecksum: manifest?.checksum.value
+  });
+}
 
 async function loadDashboardBundleReadiness(params: URLSearchParams): Promise<DashboardBundleReadiness> {
   const projectParam = params.get("project")?.trim();
@@ -5604,11 +5643,13 @@ async function loadDashboardBundleReadiness(params: URLSearchParams): Promise<Da
     provider: providerFromEnv("mock"),
     liveProvider: false
   });
+  const registry = await loadDashboardBundleRegistry(params);
   return {
     generatedAt: new Date().toISOString(),
     projectDir: projectDir ?? null,
     verification: await verifyBundle(rootDir, policy),
     compatibility,
+    registry,
     upgradePreview,
     migrationPlan,
     contractTests,
@@ -5625,6 +5666,9 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   const failedContracts = readiness.contractTests.results.filter((result) => result.status === "fail").length;
   const skippedContracts = readiness.contractTests.results.filter((result) => result.status === "skip").length;
   const migrationCount = readiness.migrationPlan.migrations.length;
+  const registryRows = readiness.registry.entries.map((entry) => `
+    <tr><td>${entry.selected ? "<strong>" : ""}${escapeHtml(entry.name)}${entry.selected ? "</strong>" : ""}<br><span class="muted">${escapeHtml(entry.id)}</span></td><td><span class="flag ${entry.status === "installed-current" ? "good" : entry.status === "upgrade-available" ? "warn" : "neutral"}">${escapeHtml(entry.status)}</span></td><td>${escapeHtml(entry.latestVersion)}</td><td>${escapeHtml(entry.packageName ?? "none")}</td><td>${entry.install.npm ? `<code>${escapeHtml(entry.install.npm)}</code>` : escapeHtml(entry.source)}</td></tr>
+  `).join("");
   const compatibilityRows = readiness.compatibility.checks.map((check) => `
     <tr><td>${escapeHtml(check.label)}</td><td><span class="flag ${check.compatible ? "good" : "bad"}">${check.compatible ? "pass" : "fail"}</span></td><td><code>${escapeHtml(check.actual)}</code></td><td><code>${escapeHtml(check.required)}</code></td><td>${escapeHtml(check.detail)}</td></tr>
   `).join("");
@@ -5657,6 +5701,7 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   <div class="meta-grid"><div><strong>Policy</strong>${escapeHtml(verification.policy)}</div><div><strong>Decision</strong>${verification.allowed ? "allowed" : "rejected"}</div><div><strong>Signer</strong>${escapeHtml(verification.signerId ?? "none")}</div><div><strong>Trusted</strong>${verification.trusted}</div></div>
   <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${renderDashboardDateTime(verification.signedAt, "not signed")}<br><strong>Expires:</strong> ${renderDashboardDateTime(verification.expiresAt, "none")}</p>
   <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
+  <section class="panel"><div class="section-heading"><div><h2>Trusted Registry</h2><span class="muted">${escapeHtml(readiness.registry.registryPath)}</span></div><a class="button secondary" href="/api/bundle-registry">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Bundle</th><th>Status</th><th>Latest</th><th>Package</th><th>Install</th></tr></thead><tbody>${registryRows || '<tr><td colspan="5">No registry entries found.</td></tr>'}</tbody></table></div><p class="muted">Registry entries are discovery and governance metadata. Installing or adopting a bundle still requires explicit package-manager and trust-verification steps.</p></section>
   <section class="panel"><h2>Compatibility</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Actual</th><th>Required</th><th>Detail</th></tr></thead><tbody>${compatibilityRows}</tbody></table></div></section>
   <section class="panel"><h2>Project Adoption</h2><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(readiness.upgradePreview.source.kind)}</div><div><strong>Status</strong>${escapeHtml(readiness.upgradePreview.status)}</div><div><strong>Source Version</strong>${escapeHtml(readiness.upgradePreview.source.version ?? "none")}</div><div><strong>Recorded</strong>${renderDashboardDateTime(readiness.upgradePreview.source.recordedAt, "none")}</div></div><h3>Recommended Actions</h3><ul>${readiness.upgradePreview.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
   <section class="panel"><h2>Definition Migrations</h2>${migrationItems || "<p>No applicable definition migrations.</p>"}<h3>Recommended Actions</h3><ul>${readiness.migrationPlan.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>

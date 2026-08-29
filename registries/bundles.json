@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-08-29T00:00:00.000Z",
+  "entries": [
+    {
+      "id": "agent-workflow-core",
+      "name": "Agent Workflow Core Bundle",
+      "description": "Portable, model-agnostic local developer workflows with reusable agents, durable receipts, context indexing, and MCP/CLI/dashboard controls.",
+      "source": "https://github.com/jasonneo99/agent-workflow.git",
+      "packageName": "@jasonneo99/agent-workflow",
+      "homepage": "https://github.com/jasonneo99/agent-workflow#readme",
+      "latestVersion": "0.2.3",
+      "trustPolicy": "warn",
+      "signerFingerprints": [
+        "028a0874342c9b138c5a3bea541af705c65e6c03b0a5906dd33c30364d371cbc"
+      ],
+      "install": {
+        "npm": "npm install -g @jasonneo99/agent-workflow",
+        "git": "git clone https://github.com/jasonneo99/agent-workflow.git"
+      },
+      "tags": [
+        "local-first",
+        "developer-workflows",
+        "mcp",
+        "model-agnostic",
+        "open-source"
+      ],
+      "notes": [
+        "Use enterprise mode for durable run history and dashboard inspection.",
+        "Keep project-specific context in AGENTS.md and .agent-workflow/.",
+        "Trust verification never expands project execution permissions."
+      ]
+    }
+  ]
+}

@@ -90,6 +90,46 @@ export interface BundleUpgradePreview {
   recommendations: string[];
 }
 
+export interface BundleRegistryEntry {
+  id: string;
+  name: string;
+  description: string;
+  source: string;
+  packageName?: string;
+  homepage?: string;
+  latestVersion: string;
+  trustPolicy: BundleTrustPolicy;
+  signerFingerprints: string[];
+  install: {
+    npm?: string;
+    git?: string;
+  };
+  tags: string[];
+  notes: string[];
+}
+
+export interface BundleRegistry {
+  schemaVersion: 1;
+  generatedAt?: string;
+  entries: BundleRegistryEntry[];
+}
+
+export interface BundleRegistryReportEntry extends BundleRegistryEntry {
+  selected: boolean;
+  installedVersion: string | null;
+  installedChecksum: string | null;
+  status: "installed-current" | "upgrade-available" | "not-installed" | "different-bundle" | "checksum-drift";
+  recommendations: string[];
+}
+
+export interface BundleRegistryReport {
+  generatedAt: string;
+  registryPath: string;
+  installedBundleId: string | null;
+  installedVersion: string | null;
+  entries: BundleRegistryReportEntry[];
+}
+
 export function canonicalManifest(manifest: BundleManifest): string {
   return stableStringify(manifest);
 }
@@ -336,6 +376,66 @@ export function formatBundleUpgradePreview(preview: BundleUpgradePreview): strin
   ].join("\n");
 }
 
+export async function loadBundleRegistry(filePath: string): Promise<BundleRegistry> {
+  const parsed = JSON.parse(await fs.readFile(filePath, "utf8")) as BundleRegistry;
+  if (parsed.schemaVersion !== 1 || !Array.isArray(parsed.entries)) {
+    throw new Error(`Invalid bundle registry: ${filePath}`);
+  }
+  return {
+    schemaVersion: 1,
+    generatedAt: parsed.generatedAt,
+    entries: parsed.entries.map(normalizeRegistryEntry)
+  };
+}
+
+export function buildBundleRegistryReport(input: {
+  registry: BundleRegistry;
+  registryPath: string;
+  installedManifest?: BundleManifest | null;
+  installedChecksum?: string | null;
+}): BundleRegistryReport {
+  const installedBundleId = input.installedManifest?.bundle.id ?? null;
+  const installedVersion = input.installedManifest?.bundle.version ?? null;
+  const installedChecksum = input.installedChecksum ?? input.installedManifest?.checksum.value ?? null;
+  return {
+    generatedAt: new Date().toISOString(),
+    registryPath: input.registryPath,
+    installedBundleId,
+    installedVersion,
+    entries: input.registry.entries.map((entry) => {
+      const selected = entry.id === installedBundleId;
+      const status = registryEntryStatus(entry, {
+        selected,
+        installedVersion,
+        installedChecksum
+      });
+      return {
+        ...entry,
+        selected,
+        installedVersion: selected ? installedVersion : null,
+        installedChecksum: selected ? installedChecksum : null,
+        status,
+        recommendations: registryEntryRecommendations(entry, status)
+      };
+    })
+  };
+}
+
+export function formatBundleRegistryReport(report: BundleRegistryReport): string {
+  const lines = [
+    `Bundle Registry: ${report.registryPath}`,
+    `Installed: ${report.installedBundleId ?? "none"}${report.installedVersion ? `@${report.installedVersion}` : ""}`,
+    "Bundles"
+  ];
+  for (const entry of report.entries) {
+    lines.push(`- ${entry.id}@${entry.latestVersion}: ${entry.status}`);
+    lines.push(`  Source: ${entry.source}`);
+    if (entry.packageName) lines.push(`  Package: ${entry.packageName}`);
+    for (const recommendation of entry.recommendations) lines.push(`  - ${recommendation}`);
+  }
+  return lines.join("\n");
+}
+
 export function normalizePolicy(value?: string): BundleTrustPolicy {
   return value === "warn" || value === "require" ? value : "allow";
 }
@@ -419,5 +519,47 @@ function upgradeRecommendations(status: BundleUpgradePreview["status"]): string[
         "No prior project bundle state was found or supplied.",
         "Treat this as a fresh adoption and review all migration notes plus bundle trust before use."
       ];
+  }
+}
+
+function normalizeRegistryEntry(entry: BundleRegistryEntry): BundleRegistryEntry {
+  return {
+    id: String(entry.id),
+    name: String(entry.name),
+    description: String(entry.description),
+    source: String(entry.source),
+    packageName: entry.packageName ? String(entry.packageName) : undefined,
+    homepage: entry.homepage ? String(entry.homepage) : undefined,
+    latestVersion: String(entry.latestVersion),
+    trustPolicy: normalizePolicy(entry.trustPolicy),
+    signerFingerprints: Array.isArray(entry.signerFingerprints) ? entry.signerFingerprints.map(String) : [],
+    install: {
+      npm: entry.install?.npm ? String(entry.install.npm) : undefined,
+      git: entry.install?.git ? String(entry.install.git) : undefined
+    },
+    tags: Array.isArray(entry.tags) ? entry.tags.map(String) : [],
+    notes: Array.isArray(entry.notes) ? entry.notes.map(String) : []
+  };
+}
+
+function registryEntryStatus(entry: BundleRegistryEntry, input: { selected: boolean; installedVersion: string | null; installedChecksum: string | null }): BundleRegistryReportEntry["status"] {
+  if (!input.selected) return "not-installed";
+  if (input.installedVersion && compareParsedVersions(input.installedVersion, entry.latestVersion) < 0) return "upgrade-available";
+  if (input.installedVersion === entry.latestVersion) return "installed-current";
+  return "checksum-drift";
+}
+
+function registryEntryRecommendations(entry: BundleRegistryEntry, status: BundleRegistryReportEntry["status"]): string[] {
+  switch (status) {
+    case "installed-current":
+      return ["This bundle is current. Run bundle-verify when changing trust policy or signer keys."];
+    case "upgrade-available":
+      return ["Review bundle-upgrade-preview and definition-migrations before adopting the newer bundle.", "Run release or package manager upgrade commands only after trust verification passes."];
+    case "not-installed":
+      return [`Install with ${entry.install.npm ?? entry.install.git ?? "the registry source"} only if this bundle matches your project workflow policy.`];
+    case "different-bundle":
+      return ["Treat this as a bundle replacement and review trust, compatibility, and migration notes manually."];
+    case "checksum-drift":
+      return ["The installed bundle version does not match the registry latest version ordering. Verify source and checksum before adopting."];
   }
 }

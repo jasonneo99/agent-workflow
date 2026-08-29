@@ -16,6 +16,19 @@ agentflow bundle-compat
 agentflow bundle-compat --runtime-version 0.2.1 --node-version 26.3.0 --mcp-version 1.29.0 --json
 ```
 
+Inspect the local trusted bundle registry:
+
+```bash
+agentflow bundle-registry
+agentflow bundle-registry --json
+agentflow bundle-registry --registry /path/to/bundles.json
+```
+
+The default registry lives at `registries/bundles.json`. Registry entries are
+discovery and governance metadata: bundle id, source, package name, latest
+known version, signer fingerprints, install commands, and notes. They do not
+install code, change project adoption state, or trust a signer automatically.
+
 Preview migration notes for a project or an explicit source version without
 changing files:
 
@@ -89,8 +102,9 @@ agentflow bundle-trust --remove <sha256-fingerprint>
 
 The trust store contains public keys only at `~/.config/agent-workflow/trusted-bundle-keys.json` by default. Override it with `AGENTFLOW_BUNDLE_TRUST_STORE` for managed environments.
 
-The dashboard exposes `/bundles` and `/api/bundles`. Add `?project=/path/to/project`
-to include project adoption state, upgrade status, definition migration guidance,
-and mock-provider contract-test readiness. MCP exposes `agentflow_bundle_verify`,
+The dashboard exposes `/bundles`, `/api/bundles`, and `/api/bundle-registry`.
+Add `?project=/path/to/project` to include project adoption state, upgrade
+status, definition migration guidance, registry status, and mock-provider
+contract-test readiness. MCP exposes `agentflow_bundle_verify`,
 `agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and
 `agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.

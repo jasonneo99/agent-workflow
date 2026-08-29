@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { BundleManifest } from "../../agent-registry/src/manifest.js";
-import { buildBundleCompatibilityReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
+import { buildBundleCompatibilityReport, buildBundleRegistryReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
 
 const manifest = { schemaVersion: 1, bundle: { id: "bundle", name: "Bundle", version: "0.1.0", source: "test", description: "test" }, compatibility: { agentWorkflow: ">=0.1.0 <1.0.0", node: ">=24", mcp: ">=1.29.0" }, counts: { agents: 0, workflows: 0, files: 0 }, checksum: { algorithm: "sha256", value: "abc" }, agents: [], workflows: [], files: [], migrations: [] } satisfies BundleManifest;
 const migrationManifest = {
@@ -95,4 +95,66 @@ test("bundle upgrade preview reports unknown source and checksum drift", () => {
     state: { schemaVersion: 1, bundle: { id: "bundle", version: "0.1.0", checksum: "changed" } }
   });
   assert.equal(drift.status, "checksum-drift");
+});
+
+test("bundle registry report marks the installed bundle current or upgradeable", () => {
+  const registry = {
+    schemaVersion: 1 as const,
+    entries: [
+      {
+        id: "bundle",
+        name: "Bundle",
+        description: "test",
+        source: "https://example.com/bundle.git",
+        packageName: "@example/bundle",
+        latestVersion: "0.1.0",
+        trustPolicy: "warn" as const,
+        signerFingerprints: ["abc"],
+        install: { npm: "npm install -g @example/bundle" },
+        tags: ["test"],
+        notes: ["note"]
+      }
+    ]
+  };
+  const current = buildBundleRegistryReport({
+    registry,
+    registryPath: "registries/bundles.json",
+    installedManifest: manifest
+  });
+  assert.equal(current.entries[0].selected, true);
+  assert.equal(current.entries[0].status, "installed-current");
+
+  const upgradeable = buildBundleRegistryReport({
+    registry: { ...registry, entries: [{ ...registry.entries[0], latestVersion: "0.2.0" }] },
+    registryPath: "registries/bundles.json",
+    installedManifest: manifest
+  });
+  assert.equal(upgradeable.entries[0].status, "upgrade-available");
+});
+
+test("bundle registry report lists uninstalled bundles without selecting them", () => {
+  const report = buildBundleRegistryReport({
+    registry: {
+      schemaVersion: 1,
+      entries: [
+        {
+          id: "other",
+          name: "Other",
+          description: "test",
+          source: "https://example.com/other.git",
+          latestVersion: "0.1.0",
+          trustPolicy: "require",
+          signerFingerprints: [],
+          install: { git: "git clone https://example.com/other.git" },
+          tags: [],
+          notes: []
+        }
+      ]
+    },
+    registryPath: "registries/bundles.json",
+    installedManifest: manifest
+  });
+  assert.equal(report.entries[0].selected, false);
+  assert.equal(report.entries[0].status, "not-installed");
+  assert.equal(report.entries[0].installedVersion, null);
 });

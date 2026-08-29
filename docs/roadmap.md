@@ -184,7 +184,9 @@ Goal: support controlled sharing and operation across teams after the reliabilit
 foundation is complete.
 
 - [ ] Trusted bundle registry.
-  - Support bundle discovery, installation, version pinning, upgrade previews, and rollback.
+  - Done: add a local trusted bundle registry file for discovery, install guidance, version visibility, and signer fingerprints.
+  - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
+  - Next: support registry-driven version pinning and reviewed upgrade/rollback commands without automatic code installation.
 
 - [ ] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
