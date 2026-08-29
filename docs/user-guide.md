@@ -190,7 +190,29 @@ wide-open-automation
 
 Use `review-pr` for reviewing local changes, PR-like work, or risk-sensitive areas.
 
-## 7. Run Workflows From CLI
+## 7. Preview Workflow Graphs
+
+Before queueing work, inspect the workflow graph, agents, subagents, context
+budgets, approval points, and selected policy profile:
+
+```bash
+npm run agentflow -- workflow-graph \
+  --workflow build-feature \
+  --project /path/to/project
+```
+
+Print machine-readable JSON or a renderable Mermaid flowchart:
+
+```bash
+npm run agentflow -- workflow-graph -w ship-release -p /path/to/project --json
+npm run agentflow -- workflow-graph -w ship-release -p /path/to/project --mermaid
+```
+
+Use `--policy-profile staging` or `--policy-profile production` to preview
+whether stricter execution policy would require approvals or block stages before
+you run the workflow.
+
+## 8. Run Workflows From CLI
 
 Run one specialist agent directly:
 
@@ -385,7 +407,7 @@ JSON summary:
 npm run agentflow -- summarize-run --run <run-id> --json
 ```
 
-## 8. Schedules
+## 9. Schedules
 
 Projects can define disabled-by-default schedules in:
 
@@ -426,7 +448,7 @@ npm run agentflow -- schedule --project /path/to/project --watch --interval-ms 6
 
 Schedule state is stored in `.agent-workflow/schedule-state.json`.
 
-## 9. Dashboard
+## 10. Dashboard
 
 Start the recommended local developer supervisor:
 
@@ -618,7 +640,7 @@ The dashboard home also includes Tellara presets:
 
 These actions still use the project `.agent-workflow/project.yaml` policy and create normal run receipts and artifacts.
 
-## 10. MCP Prompt Examples
+## 11. MCP Prompt Examples
 
 After adding the MCP server to VS Code, Cursor, Codex, or another MCP-capable client, use prompts like:
 
@@ -650,7 +672,7 @@ Use Agent Workflow to maintain project context after these recent architecture c
 Use Agent Workflow to index this repo and run build-feature for "Add audit logging".
 ```
 
-## 11. MCP Tools
+## 12. MCP Tools
 
 MCP clients can call these tools:
 
@@ -661,6 +683,7 @@ agentflow_list
 agentflow_onboard_project
 agentflow_index_project
 agentflow_compile
+agentflow_workflow_graph
 agentflow_run_workflow
 agentflow_run_and_watch
 agentflow_agent_task
@@ -688,7 +711,7 @@ Tool definitions and input schemas live in:
 apps/mcp/src/index.ts
 ```
 
-## 12. Storage And Reset
+## 13. Storage And Reset
 
 Reset local enterprise run history:
 
@@ -705,7 +728,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run bootstrap-storage
 ```
 
-## 13. Provider Checks
+## 14. Provider Checks
 
 Check the configured provider:
 
@@ -719,7 +742,7 @@ Run a provider contract smoke test:
 npm run provider-smoke
 ```
 
-## 14. Adaptive Routing
+## 15. Adaptive Routing
 
 The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, dashboard commands, adaptive model routing, quality scoring, and cost/quality reporting are now implemented.
 
@@ -756,7 +779,7 @@ Each worker stage records:
 - durable preference notes that shaped the result
 ```
 
-## 15. Feedback Memory
+## 16. Feedback Memory
 
 Record whether a run was useful:
 
@@ -770,7 +793,7 @@ The dashboard run page also includes Accept, Mark Revised, and Reject buttons. F
 
 Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report. Compiled briefs also include approved project-local tuning notes from `.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and `routing-preferences.md` with a small context cap.
 
-## 16. Preference Scorecard
+## 17. Preference Scorecard
 
 Aggregate feedback by workflow, stage, agent, provider, and model tier:
 
@@ -780,7 +803,7 @@ npm run agentflow -- preference-scorecard --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact scorecard for the run's project. Use it to find combinations that repeatedly need revision, fallback often, or produce low quality scores.
 
-## 17. Evaluation Gates
+## 18. Evaluation Gates
 
 Evaluation gates turn run quality, latency, fallback, and cost signals into a
 machine-readable pass/fail result. The default project template includes
@@ -816,7 +839,7 @@ Use shared gates for generic developer workflow health. Keep product-specific
 ranking rubrics, customer-derived thresholds, and private scoring logic inside
 the project that owns them.
 
-## 18. Observability
+## 19. Observability
 
 Use `observe` to export OpenTelemetry-compatible spans and metrics for a stored
 workflow run. The export includes run, stage, model-route, command, file-write,
@@ -833,7 +856,7 @@ Prompt text and artifact payload bodies are not exported by default; use regular
 run artifacts locally when you need trusted detailed debugging. String metadata
 attributes are truncated and common secret-shaped values are redacted before export.
 
-## 19. Tuning Proposals
+## 20. Tuning Proposals
 
 Turn scorecard findings into reviewable prompt, context-budget, and routing suggestions:
 
@@ -843,7 +866,7 @@ npm run agentflow -- tuning-proposals --project /path/to/project --limit 25
 
 The dashboard run page also shows a compact tuning proposal panel for the run's project. These are reviewable hints, not automatic edits.
 
-## 20. Apply Tuning Proposals
+## 21. Apply Tuning Proposals
 
 Create project-local overlays from selected tuning proposals without changing shared reusable agents or workflows:
 
@@ -875,9 +898,9 @@ Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approv
 
 The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
-## 19. Recommended Next Improvement
+## 22. Recommended Next Improvement
 
-The next improvements focus on reliable workflow operations: filesystem/CI-triggered indexing, source-selection explanations, and workflow authoring tools. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is JSON Schema and editor validation for agents, workflows, project policies, and schedules. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

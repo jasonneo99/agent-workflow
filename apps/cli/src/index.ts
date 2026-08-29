@@ -72,6 +72,7 @@ import { providerFromEnv } from "../../../packages/model-providers/src/index.js"
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
+import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 
 const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
@@ -904,6 +905,46 @@ program
     });
 
     console.log(brief);
+  });
+
+program
+  .command("workflow-graph")
+  .alias("graph")
+  .description("Inspect a workflow graph, policy fit, approvals, agents, and context budgets without queueing work")
+  .requiredOption("-w, --workflow <id>", "workflow id or alias")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
+  .option("--json", "print machine-readable graph report")
+  .option("--mermaid", "print only the Mermaid flowchart")
+  .action(async (options: { workflow: string; project: string; policyProfile?: string; json?: boolean; mermaid?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const agents = await loadAgentsForProject(projectDir);
+    const workflows = await loadWorkflows(rootDir);
+    const workflow = resolveWorkflow(workflows, options.workflow);
+    if (!workflow) {
+      console.error(`Unknown workflow: ${options.workflow}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const configuredProject = await loadProjectConfig(projectDir);
+    const resolvedPolicy = resolveExecutionPolicy(configuredProject, options.policyProfile);
+    const report = buildWorkflowGraphReport({
+      workflow,
+      agents,
+      project: configuredProject,
+      resolvedPolicy
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    if (options.mermaid) {
+      console.log(report.mermaid);
+      return;
+    }
+    console.log(formatWorkflowGraphReport(report));
   });
 
 program

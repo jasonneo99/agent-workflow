@@ -154,6 +154,8 @@ npm run index-project -- -p . --incremental # Refresh only changed files after a
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
+npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
+npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
 
 # Workflow execution (requires enterprise storage)
 npm run dev:agentflow       # Start services, dashboard, and supervised worker

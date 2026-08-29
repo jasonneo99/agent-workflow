@@ -34,6 +34,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
 - `agentflow_index_project`: index a project into compact durable context; pass `incremental` to refresh only changed files after a baseline exists.
 - `agentflow_compile`: compile a workflow brief without queueing work.
+- `agentflow_workflow_graph`: inspect workflow stages, dependencies, agents, policy fit, approvals, and context budgets without queueing work.
 - `agentflow_run_workflow`: run a workflow and process worker stages by default; set `queueOnly=true` only when you want to leave work queued for a separate worker. It incrementally indexes by default unless `skipIndex` is true.
 - `agentflow_run_and_watch`: incrementally index, queue, process, export, and summarize a workflow run; pass `fullIndex` for a clean context refresh.
 - `agentflow_agent_task`: incrementally index, run one specialist agent directly, and export the result.
@@ -68,6 +69,10 @@ After Docker services are running, ask Codex:
 
 ```text
 Use the agent-workflow MCP to run-and-watch the review-pr workflow for /path/to/project with task "Review the current changes".
+```
+
+```text
+Use the agent-workflow MCP to show the Mermaid workflow graph for build-feature in /path/to/project.
 ```
 
 For Codex review requests such as "ask Nash to review this", prefer `agentflow_run_workflow` or `agentflow_run_and_watch` without `queueOnly`. That prevents the run from staying queued after the MCP call returns.

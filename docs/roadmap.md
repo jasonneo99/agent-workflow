@@ -153,7 +153,7 @@ trust gaps.
 
 - [ ] Workflow authoring and compatibility tooling.
   - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.
-  - Provide a dry-run graph showing stages, dependencies, permissions, and context budgets.
+  - Done: provide a dry-run graph showing stages, dependencies, permissions, approvals, agents, and context budgets.
   - Add bundle compatibility checks and definition migrations.
   - Add contract tests for custom agents, workflows, and provider adapters.
 

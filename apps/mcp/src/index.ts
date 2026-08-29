@@ -295,6 +295,28 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_workflow_graph",
+  {
+    title: "AgentFlow workflow graph",
+    description: "Inspect a workflow graph, policy fit, approvals, agents, and context budgets without queueing work.",
+    inputSchema: {
+      workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
+      project: z.string().describe("Absolute or relative project directory."),
+      policyProfile: z.string().optional().describe("Execution policy profile, for example local, staging, or production."),
+      json: z.boolean().optional().describe("Return machine-readable graph JSON."),
+      mermaid: z.boolean().optional().describe("Return only the Mermaid flowchart.")
+    }
+  },
+  async ({ workflow, project, policyProfile, json, mermaid }) => {
+    const args = ["workflow-graph", "--workflow", workflow, "--project", project];
+    if (policyProfile) args.push("--policy-profile", policyProfile);
+    if (json) args.push("--json");
+    if (mermaid) args.push("--mermaid");
+    return toolResult(await runAgentflow(args));
+  }
+);
+
+server.registerTool(
   "agentflow_run_workflow",
   {
     title: "AgentFlow run workflow",
