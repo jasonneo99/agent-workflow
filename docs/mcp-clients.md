@@ -47,6 +47,12 @@ Existing unrelated JSON servers and settings are preserved. An existing Codex `a
 npm run ide-onboard -- --project /path/to/project --client codex --check
 ```
 
+Add YAML schema validation for Agent Workflow files in VS Code or Cursor:
+
+```bash
+npm run agentflow -- schemas --project /path/to/project --write-vscode
+```
+
 Codex CLI, its IDE extension, and the desktop app share MCP configuration on the same host. Project-scoped `.codex/config.toml` is loaded only for trusted projects, so reload the IDE and trust the workspace after installation.
 
 For BYO model usage, `.env` only needs a reachable OpenAI-compatible endpoint:
@@ -125,6 +131,10 @@ Use Agent Workflow to update my model provider to BYO and run a provider check.
 
 ```text
 Use Agent Workflow to onboard this project, write the recommended config, then tell me the next command to run.
+```
+
+```text
+Use Agent Workflow to add editor schema validation to this workspace.
 ```
 
 ```text

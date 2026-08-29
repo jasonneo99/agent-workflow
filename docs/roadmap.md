@@ -152,7 +152,7 @@ trust gaps.
   - Done: support lightweight local watch polling and CI-triggered `--since-commit` indexing.
 
 - [ ] Workflow authoring and compatibility tooling.
-  - Add JSON Schema and editor validation for agents, workflows, policies, and schedules.
+  - Done: add JSON Schema and editor validation for agents, workflows, project policies, and schedules.
   - Done: provide a dry-run graph showing stages, dependencies, permissions, approvals, agents, and context budgets.
   - Add bundle compatibility checks and definition migrations.
   - Add contract tests for custom agents, workflows, and provider adapters.

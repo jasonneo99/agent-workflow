@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasonneo99.github.io/agent-workflow/schemas/workflow.schema.json",
+  "title": "Agent Workflow Definition",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "name", "description", "lead", "stages"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "description": { "type": "string", "minLength": 1 },
+    "lead": { "type": "string", "minLength": 1 },
+    "default_autonomy": { "$ref": "#/$defs/autonomy" },
+    "triggers": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "manual": { "type": "boolean", "default": true },
+        "schedule": { "type": "string" },
+        "events": { "type": "array", "items": { "type": "string" }, "default": [] }
+      },
+      "default": { "manual": true, "events": [] }
+    },
+    "stages": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "agent", "goal"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "agent": { "type": "string", "minLength": 1 },
+          "goal": { "type": "string", "minLength": 1 },
+          "subagents": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "context": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "load": { "type": "array", "items": { "type": "string" }, "default": [] },
+              "max_tokens": { "type": "integer", "minimum": 1, "default": 4000 }
+            },
+            "default": { "load": [], "max_tokens": 4000 }
+          },
+          "approval_required": { "type": "boolean", "default": false },
+          "output": { "type": "string", "default": "structured_summary" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "autonomy": { "enum": [0, 1, 2, 3, 4, 5, "wide-open"], "default": 2 }
+  }
+}

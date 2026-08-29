@@ -212,6 +212,26 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_schemas",
+  {
+    title: "AgentFlow schemas",
+    description: "List JSON Schemas and optionally write VS Code/Cursor YAML validation settings for a project.",
+    inputSchema: {
+      project: z.string().optional().describe("Project directory when writing editor settings."),
+      writeVscode: z.boolean().optional().describe("Write .vscode/settings.json YAML schema associations."),
+      json: z.boolean().optional().describe("Return machine-readable schema registry output.")
+    }
+  },
+  async ({ project, writeVscode, json }) => {
+    const args = ["schemas"];
+    if (project) args.push("--project", project);
+    if (writeVscode) args.push("--write-vscode");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_onboard_project",
   {
     title: "AgentFlow onboard project",

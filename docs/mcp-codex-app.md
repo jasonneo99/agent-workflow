@@ -31,6 +31,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_validate`: validate agent and workflow files.
 - `agentflow_bundle_manifest`: print or write the versioned reusable agent/workflow bundle manifest.
 - `agentflow_list`: list available agents and workflows.
+- `agentflow_schemas`: list JSON Schemas or write VS Code/Cursor YAML validation settings.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
 - `agentflow_index_project`: index a project into compact durable context; pass `incremental` to refresh only changed files after a baseline exists.
 - `agentflow_compile`: compile a workflow brief without queueing work.
@@ -73,6 +74,10 @@ Use the agent-workflow MCP to run-and-watch the review-pr workflow for /path/to/
 
 ```text
 Use the agent-workflow MCP to show the Mermaid workflow graph for build-feature in /path/to/project.
+```
+
+```text
+Use the agent-workflow MCP to write VS Code schema validation settings for /path/to/project.
 ```
 
 For Codex review requests such as "ask Nash to review this", prefer `agentflow_run_workflow` or `agentflow_run_and_watch` without `queueOnly`. That prevents the run from staying queued after the MCP call returns.

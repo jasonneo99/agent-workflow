@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasonneo99.github.io/agent-workflow/schemas/agent.schema.json",
+  "title": "Agent Workflow Agent",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "display_name", "category", "purpose", "prompt"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "display_name": { "type": "string", "minLength": 1 },
+    "category": { "enum": ["core", "development", "product", "operations", "automatic"] },
+    "purpose": { "type": "string", "minLength": 1 },
+    "model_strategy": { "type": "string", "default": "provider-agnostic" },
+    "model_tier": { "enum": ["fast", "standard", "reasoning"], "default": "standard" },
+    "autonomy": { "$ref": "#/$defs/autonomy" },
+    "use_when": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "avoid_when": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "can": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "cannot": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "requires_approval": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "context_budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_tokens": { "type": "integer", "minimum": 1, "default": 2500 },
+        "preferred_sources": { "type": "array", "items": { "type": "string" }, "default": [] }
+      },
+      "default": { "max_tokens": 2500, "preferred_sources": [] }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": { "type": "string", "default": "structured_summary" }
+      },
+      "default": { "schema": "structured_summary" }
+    },
+    "prompt": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "autonomy": { "enum": [0, 1, 2, 3, 4, 5, "wide-open"], "default": 1 }
+  }
+}

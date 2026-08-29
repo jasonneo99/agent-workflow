@@ -73,6 +73,7 @@ import { selectModelRoute } from "../../../packages/model-providers/src/routing.
 import { appendTuningApprovalHistory, buildCostQualityReport, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCostQualityReport, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CostQualityReport, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
+import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 
 const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
@@ -82,7 +83,7 @@ const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtim
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "bundle-manifest", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "bundle-manifest", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -651,6 +652,56 @@ program
       console.log("Restart or reload the selected IDE after writing MCP configuration.");
     }
     if (!result.ready) process.exitCode = 1;
+  });
+
+program
+  .command("schemas")
+  .description("List JSON Schemas and optionally write VS Code/Cursor YAML validation settings")
+  .option("-p, --project <dir>", "project directory for editor settings")
+  .option("--write-vscode", "write .vscode/settings.json YAML schema associations")
+  .option("--json", "print machine-readable schema registry output")
+  .action(async (options: { project?: string; writeVscode?: boolean; json?: boolean }) => {
+    const schemas = buildSchemaSummary(rootDir);
+    const vscode = buildVsCodeSettings(rootDir);
+    let settingsPath: string | undefined;
+    let settingsStatus: "not-requested" | "written" | "unchanged" = "not-requested";
+
+    if (options.writeVscode) {
+      if (!options.project) throw new Error("--write-vscode requires --project");
+      const projectDir = path.resolve(process.cwd(), options.project);
+      settingsPath = path.join(projectDir, ".vscode", "settings.json");
+      const existing = objectValue(await readJsonFile<Record<string, unknown>>(settingsPath));
+      const existingYamlSchemas = objectValue(existing["yaml.schemas"]);
+      const nextSettings = {
+        ...existing,
+        "yaml.schemas": {
+          ...existingYamlSchemas,
+          ...objectValue(vscode["yaml.schemas"])
+        }
+      };
+      const nextContent = `${JSON.stringify(nextSettings, null, 2)}\n`;
+      let currentContent: string | undefined;
+      try { currentContent = await fs.readFile(settingsPath, "utf8"); } catch {}
+      settingsStatus = currentContent === nextContent ? "unchanged" : "written";
+      if (settingsStatus === "written") {
+        await fs.mkdir(path.dirname(settingsPath), { recursive: true });
+        await fs.writeFile(settingsPath, nextContent, "utf8");
+      }
+    }
+
+    const result = { schemas, vscode, settingsPath, settingsStatus };
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log("Agent Workflow Schemas");
+    for (const schema of schemas) {
+      console.log(`- ${schema.id}: ${schema.path}`);
+      console.log(`  YAML: ${schema.yamlGlobs.join(", ")}`);
+    }
+    if (settingsPath) console.log(`${settingsStatus.toUpperCase()}: ${settingsPath}`);
+    else console.log("\nEditor setup: npm run agentflow -- schemas --write-vscode --project /path/to/project");
   });
 
 program

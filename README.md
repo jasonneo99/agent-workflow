@@ -154,6 +154,8 @@ npm run index-project -- -p . --incremental # Refresh only changed files after a
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
+npm run agentflow -- schemas       # List JSON Schemas for agents, workflows, project config, and schedules
+npm run agentflow -- schemas -p . --write-vscode # Add YAML validation to VS Code/Cursor workspace settings
 npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
 
@@ -292,6 +294,7 @@ stages:
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
 - **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Settings, and home health cards
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
+- **Editor validation** — ship JSON Schemas for agents, workflows, project config, and schedules, with VS Code/Cursor YAML associations
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Approval inbox** — review, approve, or reject agent-requested commands and file writes when project policy requires approval
 - **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary

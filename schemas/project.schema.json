@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasonneo99.github.io/agent-workflow/schemas/project.schema.json",
+  "title": "Agent Workflow Project Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["project"],
+  "properties": {
+    "project": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "summary": { "type": "string", "default": "" },
+        "default_workflows": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "autonomy": { "$ref": "#/$defs/autonomy" }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "include": { "type": "array", "items": { "type": "string" }, "default": [] },
+        "exclude": { "type": "array", "items": { "type": "string" }, "default": ["node_modules/**", ".git/**", "dist/**"] },
+        "max_project_tokens": { "type": "integer", "minimum": 1, "default": 12000 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cache_summaries": { "type": "boolean", "default": true },
+        "semantic_index": { "type": "boolean", "default": true }
+      }
+    },
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "policy_profile": { "type": "string", "minLength": 1, "default": "local" },
+        "policy_profiles": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/executionPolicyProfile" },
+          "default": {}
+        }
+      }
+    },
+    "policies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_wide_open": { "type": "boolean", "default": false },
+        "require_approval_for_external_actions": { "type": "boolean", "default": true },
+        "require_receipts": { "type": "boolean", "default": true }
+      }
+    },
+    "actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_commands": { "type": "array", "items": { "type": "string" }, "default": ["npm test", "npm run typecheck", "npm run lint"] },
+        "blocked_commands": { "type": "array", "items": { "type": "string" }, "default": ["rm *", "git reset *", "git clean *", "sudo *"] },
+        "command_timeout_ms": { "type": "integer", "minimum": 1, "default": 120000 },
+        "max_output_chars": { "type": "integer", "minimum": 1, "default": 20000 },
+        "allowed_write_paths": { "type": "array", "items": { "type": "string" }, "default": [".agent-workflow/**", "docs/**"] },
+        "blocked_write_paths": { "type": "array", "items": { "type": "string" }, "default": [".git/**", "node_modules/**", ".env", ".env.*"] },
+        "max_write_bytes": { "type": "integer", "minimum": 1, "default": 200000 },
+        "approval_rules": { "type": "array", "items": { "$ref": "#/$defs/approvalRule" }, "default": [] }
+      }
+    }
+  },
+  "$defs": {
+    "autonomy": { "enum": [0, 1, 2, 3, 4, 5, "wide-open"], "default": 2 },
+    "executionPolicyProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "autonomy": { "$ref": "#/$defs/autonomy" },
+        "policies": { "$ref": "#/$defs/policyOverrides" },
+        "actions": { "$ref": "#/$defs/actionOverrides" }
+      }
+    },
+    "policyOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow_wide_open": { "type": "boolean" },
+        "require_approval_for_external_actions": { "type": "boolean" },
+        "require_receipts": { "type": "boolean" }
+      }
+    },
+    "actionOverrides": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_commands": { "type": "array", "items": { "type": "string" } },
+        "blocked_commands": { "type": "array", "items": { "type": "string" } },
+        "command_timeout_ms": { "type": "integer", "minimum": 1 },
+        "max_output_chars": { "type": "integer", "minimum": 1 },
+        "allowed_write_paths": { "type": "array", "items": { "type": "string" } },
+        "blocked_write_paths": { "type": "array", "items": { "type": "string" } },
+        "max_write_bytes": { "type": "integer", "minimum": 1 },
+        "approval_rules": { "type": "array", "items": { "$ref": "#/$defs/approvalRule" } }
+      }
+    },
+    "approvalRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "action_type", "target"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "default": "" },
+        "action_type": { "enum": ["local_command", "file_write"] },
+        "target": { "type": "string", "minLength": 1 },
+        "effect": { "enum": ["auto_execute"], "default": "auto_execute" },
+        "max_bytes": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

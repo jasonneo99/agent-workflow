@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasonneo99.github.io/agent-workflow/schemas/schedules.schema.json",
+  "title": "Agent Workflow Schedules",
+  "oneOf": [
+    { "$ref": "#/$defs/scheduleArray" },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schedules"],
+      "properties": {
+        "schedules": { "$ref": "#/$defs/scheduleArray" }
+      }
+    }
+  ],
+  "$defs": {
+    "scheduleArray": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/schedule" }
+    },
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "task"],
+      "anyOf": [
+        { "required": ["workflow"] },
+        { "required": ["agent"] }
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "enabled": { "type": "boolean", "default": false },
+        "every_minutes": { "type": "integer", "minimum": 1, "default": 1440 },
+        "workflow": { "type": "string", "minLength": 1 },
+        "agent": { "type": "string", "minLength": 1 },
+        "task": { "type": "string", "minLength": 1 },
+        "index_max_files": { "type": "integer", "minimum": 1, "default": 100 },
+        "worker_limit": { "type": "integer", "minimum": 1, "default": 6 }
+      }
+    }
+  }
+}
