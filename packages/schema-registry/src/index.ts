@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export interface AgentWorkflowSchema {
-  id: "agent" | "workflow" | "project" | "schedules" | "bundle-state";
+  id: "agent" | "workflow" | "project" | "schedules" | "bundle-state" | "bundle-pin";
   title: string;
   fileName: string;
   description: string;
@@ -43,6 +43,13 @@ export const agentWorkflowSchemas: AgentWorkflowSchema[] = [
     fileName: "bundle-state.schema.json",
     description: "Project-local recorded reusable bundle adoption state.",
     fileGlobs: [".agent-workflow/bundle-state.json"]
+  },
+  {
+    id: "bundle-pin",
+    title: "Agent Workflow Bundle Pin",
+    fileName: "bundle-pin.schema.json",
+    description: "Project-local desired reusable bundle version pin.",
+    fileGlobs: [".agent-workflow/bundle-pin.json"]
   }
 ];
 

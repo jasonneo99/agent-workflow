@@ -130,6 +130,30 @@ export interface BundleRegistryReport {
   entries: BundleRegistryReportEntry[];
 }
 
+export interface ProjectBundlePin {
+  schemaVersion: 1;
+  bundle: {
+    id: string;
+    version: string;
+    source: string;
+    packageName?: string;
+    checksum?: string;
+    pinnedAt: string;
+    pinnedBy: string;
+    reason: string;
+  };
+}
+
+export interface BundlePinPlan {
+  projectDir: string;
+  pinPath: string;
+  status: "ready" | "unknown-bundle" | "version-mismatch";
+  write: boolean;
+  pin: ProjectBundlePin | null;
+  warnings: string[];
+  recommendations: string[];
+}
+
 export function canonicalManifest(manifest: BundleManifest): string {
   return stableStringify(manifest);
 }
@@ -434,6 +458,86 @@ export function formatBundleRegistryReport(report: BundleRegistryReport): string
     for (const recommendation of entry.recommendations) lines.push(`  - ${recommendation}`);
   }
   return lines.join("\n");
+}
+
+export function buildBundlePinPlan(input: {
+  registry: BundleRegistry;
+  projectDir: string;
+  bundleId: string;
+  version?: string;
+  checksum?: string;
+  actor?: string;
+  reason?: string;
+  write?: boolean;
+  now?: Date;
+}): BundlePinPlan {
+  const projectDir = path.resolve(input.projectDir);
+  const pinPath = path.join(projectDir, ".agent-workflow", "bundle-pin.json");
+  const entry = input.registry.entries.find((item) => item.id === input.bundleId);
+  const requestedVersion = input.version ?? entry?.latestVersion;
+  if (!entry || !requestedVersion) {
+    return {
+      projectDir,
+      pinPath,
+      status: "unknown-bundle",
+      write: Boolean(input.write),
+      pin: null,
+      warnings: [`Bundle '${input.bundleId}' is not present in the selected registry.`],
+      recommendations: ["Run bundle-registry to choose a known bundle id and version before pinning."]
+    };
+  }
+  const status = requestedVersion === entry.latestVersion ? "ready" : "version-mismatch";
+  const warnings = status === "version-mismatch"
+    ? [`Requested version ${requestedVersion} differs from registry latest ${entry.latestVersion}.`]
+    : [];
+  return {
+    projectDir,
+    pinPath,
+    status,
+    write: Boolean(input.write),
+    pin: {
+      schemaVersion: 1,
+      bundle: {
+        id: entry.id,
+        version: requestedVersion,
+        source: entry.source,
+        ...(entry.packageName ? { packageName: entry.packageName } : {}),
+        ...(input.checksum ? { checksum: input.checksum } : {}),
+        pinnedAt: (input.now ?? new Date()).toISOString(),
+        pinnedBy: input.actor ?? "local-user",
+        reason: input.reason ?? "Project-local bundle version pin."
+      }
+    },
+    warnings,
+    recommendations: [
+      "Run bundle-verify and bundle-upgrade-preview before changing project adoption state.",
+      "Commit bundle-pin.json with the project only after the team agrees on the pinned version.",
+      "Use bundle-adopt separately after validating the installed bundle."
+    ]
+  };
+}
+
+export async function writeBundlePin(plan: BundlePinPlan): Promise<string> {
+  if (!plan.pin) throw new Error("Cannot write a bundle pin without a pin plan.");
+  await fs.mkdir(path.dirname(plan.pinPath), { recursive: true });
+  await fs.writeFile(plan.pinPath, `${JSON.stringify(plan.pin, null, 2)}\n`, "utf8");
+  return plan.pinPath;
+}
+
+export function formatBundlePinPlan(plan: BundlePinPlan): string {
+  return [
+    `Bundle Pin Plan: ${plan.status}`,
+    `Project: ${plan.projectDir}`,
+    `Pin file: ${plan.pinPath}`,
+    `Mode: ${plan.write ? "write" : "dry-run"}`,
+    plan.pin ? `Bundle: ${plan.pin.bundle.id}@${plan.pin.bundle.version}` : "Bundle: none",
+    plan.pin?.bundle.packageName ? `Package: ${plan.pin.bundle.packageName}` : null,
+    plan.pin?.bundle.source ? `Source: ${plan.pin.bundle.source}` : null,
+    "Warnings",
+    ...(plan.warnings.length ? plan.warnings.map((warning) => `- ${warning}`) : ["- none"]),
+    "Recommended actions",
+    ...plan.recommendations.map((recommendation) => `- ${recommendation}`)
+  ].filter((line): line is string => Boolean(line)).join("\n");
 }
 
 export function normalizePolicy(value?: string): BundleTrustPolicy {

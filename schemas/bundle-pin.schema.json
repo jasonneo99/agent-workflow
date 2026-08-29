@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.dev/schemas/bundle-pin.schema.json",
+  "title": "Agent Workflow Bundle Pin",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "bundle"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "source", "pinnedAt", "pinnedBy", "reason"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "source": { "type": "string", "minLength": 1 },
+        "packageName": { "type": "string", "minLength": 1 },
+        "checksum": { "type": "string", "minLength": 1 },
+        "pinnedAt": { "type": "string", "format": "date-time" },
+        "pinnedBy": { "type": "string", "minLength": 1 },
+        "reason": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

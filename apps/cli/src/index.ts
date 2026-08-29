@@ -25,7 +25,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
-import { buildBundleCompatibilityReport, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
+import { buildBundleCompatibilityReport, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
@@ -87,7 +87,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -396,6 +396,38 @@ program
       installedChecksum: manifest?.checksum.value
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleRegistryReport(report));
+  });
+
+program
+  .command("bundle-pin")
+  .description("Prepare or write a project-local bundle version pin")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--bundle-id <id>", "registry bundle id", "agent-workflow-core")
+  .option("--version <version>", "version to pin; defaults to registry latest")
+  .option("--checksum <sha256>", "optional expected bundle checksum")
+  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
+  .option("--actor <id>", "actor recorded in the pin", process.env.USER ?? "local-user")
+  .option("--reason <text>", "reason recorded in the pin", "Project-local bundle version pin.")
+  .option("--write", "write .agent-workflow/bundle-pin.json")
+  .option("--json", "print machine-readable pin plan")
+  .action(async (options: { project: string; bundleId: string; version?: string; checksum?: string; registry: string; actor: string; reason: string; write?: boolean; json?: boolean }) => {
+    const registryPath = path.resolve(process.cwd(), options.registry);
+    const registry = await loadBundleRegistry(registryPath);
+    const plan = buildBundlePinPlan({
+      registry,
+      projectDir: path.resolve(process.cwd(), options.project),
+      bundleId: options.bundleId,
+      version: options.version,
+      checksum: options.checksum,
+      actor: options.actor,
+      reason: options.reason,
+      write: Boolean(options.write)
+    });
+    if (options.write && plan.pin) {
+      await writeBundlePin(plan);
+    }
+    console.log(options.json ? JSON.stringify(plan, null, 2) : formatBundlePinPlan(plan));
+    if (plan.status === "unknown-bundle") process.exitCode = 2;
   });
 
 program
@@ -5585,6 +5617,7 @@ type DashboardBundleReadiness = {
   verification: BundleVerification;
   compatibility: BundleCompatibilityReport;
   registry: BundleRegistryReport;
+  pin: { path: string; value: ProjectBundlePin | null } | null;
   upgradePreview: BundleUpgradePreview;
   migrationPlan: DefinitionMigrationPlan;
   contractTests: ContractTestReport;
@@ -5620,7 +5653,9 @@ async function loadDashboardBundleReadiness(params: URLSearchParams): Promise<Da
   if (!manifest) throw new Error("Bundle manifest is missing.");
   const packageJson = await readJsonFile<{ version?: string }>(path.join(rootDir, "package.json"));
   const statePath = projectDir ? path.join(projectDir, ".agent-workflow", "bundle-state.json") : undefined;
+  const pinPath = projectDir ? path.join(projectDir, ".agent-workflow", "bundle-pin.json") : undefined;
   const state = statePath ? await readJsonFile<ProjectBundleState>(statePath) : null;
+  const pin = pinPath ? await readJsonFile<ProjectBundlePin>(pinPath) : null;
   const compatibility = buildBundleCompatibilityReport(manifest, {
     agentWorkflow: packageJson?.version ?? "0.0.0",
     node: process.version.slice(1),
@@ -5650,6 +5685,7 @@ async function loadDashboardBundleReadiness(params: URLSearchParams): Promise<Da
     verification: await verifyBundle(rootDir, policy),
     compatibility,
     registry,
+    pin: pinPath ? { path: pinPath, value: pin } : null,
     upgradePreview,
     migrationPlan,
     contractTests,
@@ -5669,6 +5705,11 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   const registryRows = readiness.registry.entries.map((entry) => `
     <tr><td>${entry.selected ? "<strong>" : ""}${escapeHtml(entry.name)}${entry.selected ? "</strong>" : ""}<br><span class="muted">${escapeHtml(entry.id)}</span></td><td><span class="flag ${entry.status === "installed-current" ? "good" : entry.status === "upgrade-available" ? "warn" : "neutral"}">${escapeHtml(entry.status)}</span></td><td>${escapeHtml(entry.latestVersion)}</td><td>${escapeHtml(entry.packageName ?? "none")}</td><td>${entry.install.npm ? `<code>${escapeHtml(entry.install.npm)}</code>` : escapeHtml(entry.source)}</td></tr>
   `).join("");
+  const pinHtml = readiness.pin
+    ? readiness.pin.value
+      ? `<h3>Project Pin</h3><div class="meta-grid compact"><div><strong>Bundle</strong>${escapeHtml(readiness.pin.value.bundle.id)} ${escapeHtml(readiness.pin.value.bundle.version)}</div><div><strong>Package</strong>${escapeHtml(readiness.pin.value.bundle.packageName ?? "none")}</div><div><strong>Pinned</strong>${renderDashboardDateTime(readiness.pin.value.bundle.pinnedAt)}</div><div><strong>By</strong>${escapeHtml(readiness.pin.value.bundle.pinnedBy)}</div></div><p class="muted">${escapeHtml(readiness.pin.path)}</p>`
+      : `<h3>Project Pin</h3><p class="muted">No project-local bundle pin found at ${escapeHtml(readiness.pin.path)}.</p>`
+    : "";
   const compatibilityRows = readiness.compatibility.checks.map((check) => `
     <tr><td>${escapeHtml(check.label)}</td><td><span class="flag ${check.compatible ? "good" : "bad"}">${check.compatible ? "pass" : "fail"}</span></td><td><code>${escapeHtml(check.actual)}</code></td><td><code>${escapeHtml(check.required)}</code></td><td>${escapeHtml(check.detail)}</td></tr>
   `).join("");
@@ -5701,7 +5742,7 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   <div class="meta-grid"><div><strong>Policy</strong>${escapeHtml(verification.policy)}</div><div><strong>Decision</strong>${verification.allowed ? "allowed" : "rejected"}</div><div><strong>Signer</strong>${escapeHtml(verification.signerId ?? "none")}</div><div><strong>Trusted</strong>${verification.trusted}</div></div>
   <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${renderDashboardDateTime(verification.signedAt, "not signed")}<br><strong>Expires:</strong> ${renderDashboardDateTime(verification.expiresAt, "none")}</p>
   <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
-  <section class="panel"><div class="section-heading"><div><h2>Trusted Registry</h2><span class="muted">${escapeHtml(readiness.registry.registryPath)}</span></div><a class="button secondary" href="/api/bundle-registry">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Bundle</th><th>Status</th><th>Latest</th><th>Package</th><th>Install</th></tr></thead><tbody>${registryRows || '<tr><td colspan="5">No registry entries found.</td></tr>'}</tbody></table></div><p class="muted">Registry entries are discovery and governance metadata. Installing or adopting a bundle still requires explicit package-manager and trust-verification steps.</p></section>
+  <section class="panel"><div class="section-heading"><div><h2>Trusted Registry</h2><span class="muted">${escapeHtml(readiness.registry.registryPath)}</span></div><a class="button secondary" href="/api/bundle-registry">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Bundle</th><th>Status</th><th>Latest</th><th>Package</th><th>Install</th></tr></thead><tbody>${registryRows || '<tr><td colspan="5">No registry entries found.</td></tr>'}</tbody></table></div>${pinHtml}<p class="muted">Registry entries are discovery and governance metadata. Installing or adopting a bundle still requires explicit package-manager and trust-verification steps.</p></section>
   <section class="panel"><h2>Compatibility</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Actual</th><th>Required</th><th>Detail</th></tr></thead><tbody>${compatibilityRows}</tbody></table></div></section>
   <section class="panel"><h2>Project Adoption</h2><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(readiness.upgradePreview.source.kind)}</div><div><strong>Status</strong>${escapeHtml(readiness.upgradePreview.status)}</div><div><strong>Source Version</strong>${escapeHtml(readiness.upgradePreview.source.version ?? "none")}</div><div><strong>Recorded</strong>${renderDashboardDateTime(readiness.upgradePreview.source.recordedAt, "none")}</div></div><h3>Recommended Actions</h3><ul>${readiness.upgradePreview.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
   <section class="panel"><h2>Definition Migrations</h2>${migrationItems || "<p>No applicable definition migrations.</p>"}<h3>Recommended Actions</h3><ul>${readiness.migrationPlan.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>

@@ -186,7 +186,8 @@ foundation is complete.
 - [ ] Trusted bundle registry.
   - Done: add a local trusted bundle registry file for discovery, install guidance, version visibility, and signer fingerprints.
   - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
-  - Next: support registry-driven version pinning and reviewed upgrade/rollback commands without automatic code installation.
+  - Done: add dry-run-by-default project-local bundle version pinning.
+  - Next: support reviewed upgrade/rollback command plans without automatic code installation.
 
 - [ ] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.

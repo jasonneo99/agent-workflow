@@ -61,6 +61,7 @@
     "dev:agentflow:stop": "node scripts/dev-agentflow-stop.mjs",
     "bootstrap-storage": "tsx apps/cli/src/index.ts bootstrap-storage",
     "bundle-registry": "tsx apps/cli/src/index.ts bundle-registry",
+    "bundle-pin": "tsx apps/cli/src/index.ts bundle-pin",
     "bundle-manifest": "tsx apps/cli/src/index.ts bundle-manifest",
     "doctor": "tsx apps/cli/src/index.ts doctor",
     "exec-command": "tsx apps/cli/src/index.ts exec-command",

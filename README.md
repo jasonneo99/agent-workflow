@@ -165,6 +165,7 @@ npm run agentflow -- schemas -p . --write-vscode # Add YAML validation to VS Cod
 npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
 npm run bundle-registry      # Inspect trusted bundle registry entries and local install status
+npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
 
 # Workflow execution (requires enterprise storage)
 npm run dev:agentflow       # Start services, dashboard, and supervised worker

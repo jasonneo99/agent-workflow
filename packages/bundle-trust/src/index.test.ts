@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { generateKeyPairSync } from "node:crypto";
 import test from "node:test";
 import type { BundleManifest } from "../../agent-registry/src/manifest.js";
-import { buildBundleCompatibilityReport, buildBundleRegistryReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
+import { buildBundleCompatibilityReport, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, publicKeyFingerprint, signBundleManifest, verifyBundleSignature } from "./index.js";
 
 const manifest = { schemaVersion: 1, bundle: { id: "bundle", name: "Bundle", version: "0.1.0", source: "test", description: "test" }, compatibility: { agentWorkflow: ">=0.1.0 <1.0.0", node: ">=24", mcp: ">=1.29.0" }, counts: { agents: 0, workflows: 0, files: 0 }, checksum: { algorithm: "sha256", value: "abc" }, agents: [], workflows: [], files: [], migrations: [] } satisfies BundleManifest;
 const migrationManifest = {
@@ -157,4 +157,61 @@ test("bundle registry report lists uninstalled bundles without selecting them", 
   assert.equal(report.entries[0].selected, false);
   assert.equal(report.entries[0].status, "not-installed");
   assert.equal(report.entries[0].installedVersion, null);
+});
+
+test("bundle pin plan prepares project-local pin metadata", () => {
+  const plan = buildBundlePinPlan({
+    registry: {
+      schemaVersion: 1,
+      entries: [
+        {
+          id: "bundle",
+          name: "Bundle",
+          description: "test",
+          source: "https://example.com/bundle.git",
+          packageName: "@example/bundle",
+          latestVersion: "0.2.0",
+          trustPolicy: "warn",
+          signerFingerprints: [],
+          install: {},
+          tags: [],
+          notes: []
+        }
+      ]
+    },
+    projectDir: "/tmp/example",
+    bundleId: "bundle",
+    actor: "tester",
+    reason: "Pin for tests.",
+    now: new Date("2026-08-29T00:00:00.000Z")
+  });
+  assert.equal(plan.status, "ready");
+  assert.equal(plan.write, false);
+  assert.equal(plan.pin?.bundle.version, "0.2.0");
+  assert.equal(plan.pin?.bundle.pinnedBy, "tester");
+  assert.equal(plan.pin?.bundle.reason, "Pin for tests.");
+});
+
+test("bundle pin plan warns on unknown bundles and version mismatches", () => {
+  const registry = {
+    schemaVersion: 1 as const,
+    entries: [
+      {
+        id: "bundle",
+        name: "Bundle",
+        description: "test",
+        source: "https://example.com/bundle.git",
+        latestVersion: "0.2.0",
+        trustPolicy: "warn" as const,
+        signerFingerprints: [],
+        install: {},
+        tags: [],
+        notes: []
+      }
+    ]
+  };
+  assert.equal(buildBundlePinPlan({ registry, projectDir: "/tmp/example", bundleId: "missing" }).status, "unknown-bundle");
+  const mismatch = buildBundlePinPlan({ registry, projectDir: "/tmp/example", bundleId: "bundle", version: "0.1.0" });
+  assert.equal(mismatch.status, "version-mismatch");
+  assert.equal(mismatch.warnings.length, 1);
 });

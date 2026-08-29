@@ -29,6 +29,19 @@ discovery and governance metadata: bundle id, source, package name, latest
 known version, signer fingerprints, install commands, and notes. They do not
 install code, change project adoption state, or trust a signer automatically.
 
+Prepare a project-local bundle pin:
+
+```bash
+agentflow bundle-pin --project /path/to/project
+agentflow bundle-pin --project /path/to/project --version 0.2.3 --write
+```
+
+The dry-run output shows the exact bundle id, version, source, and pin file path.
+`--write` creates `.agent-workflow/bundle-pin.json`; it does not install a new
+package, adopt a bundle, or change execution policy. Use it when a team wants to
+record the intended reusable bundle version before reviewing upgrade previews,
+definition migrations, and trust status.
+
 Preview migration notes for a project or an explicit source version without
 changing files:
 
@@ -104,7 +117,7 @@ The trust store contains public keys only at `~/.config/agent-workflow/trusted-b
 
 The dashboard exposes `/bundles`, `/api/bundles`, and `/api/bundle-registry`.
 Add `?project=/path/to/project` to include project adoption state, upgrade
-status, definition migration guidance, registry status, and mock-provider
-contract-test readiness. MCP exposes `agentflow_bundle_verify`,
+status, definition migration guidance, registry status, project-local pins, and
+mock-provider contract-test readiness. MCP exposes `agentflow_bundle_verify`,
 `agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and
 `agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.
