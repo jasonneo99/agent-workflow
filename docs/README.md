@@ -18,14 +18,15 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 12. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
 13. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
 14. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
-15. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-16. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-17. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-18. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-19. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-20. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-21. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-22. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+15. [Model Improvement Workflow](model-improvement.md): diagnose quality, cost, prompt, context, eval, routing, retrieval, or fine-tune paths.
+16. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+17. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+18. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+19. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+20. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+21. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+22. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+23. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
@@ -57,6 +58,7 @@ npm run agentflow -- evaluate --suite evaluations/synthetic-provider-comparison.
 npm run agentflow -- feedback --run <run-id> --rating accepted --note "Good production-readiness scope"
 npm run agentflow -- preference-scorecard --project /path/to/project
 npm run agentflow -- tuning-proposals --project /path/to/project
+npm run agentflow -- run-and-watch model-improvement --project /path/to/project --task "Improve quality while reducing cost"
 npm run agentflow -- queue-tuning-approvals --project /path/to/project --ids all --write
 npm run agentflow -- tuning-approvals --project /path/to/project --approve tune-001 --reviewer "Your Name"
 npm run agentflow -- generate-tuning-patches --project /path/to/project

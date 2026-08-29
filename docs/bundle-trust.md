@@ -62,6 +62,11 @@ Statuses are `trusted`, `valid-untrusted`, `unsigned`, `modified`, `expired`, `i
 
 Set the default with `AGENTFLOW_BUNDLE_TRUST_POLICY=allow|warn|require`.
 
+During local development, a detached signature from an older manifest checksum is
+treated as `unsigned` rather than trusted. The default `allow` policy can run
+that local checkout, while `require` and the release checker still block until a
+maintainer signs the refreshed manifest.
+
 ## Sign
 
 Keep private keys outside the repository and Agent Workflow configuration:

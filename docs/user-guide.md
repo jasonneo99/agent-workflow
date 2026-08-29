@@ -954,13 +954,31 @@ Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approv
 
 The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
-## 23. Recommended Next Improvement
+## 23. Model Improvement Workflow
 
-The next improvement is the optional model-improvement workflow pack: diagnose
-whether quality issues should be handled through context, prompts, routing,
-evals, retrieval, or provider-side fine tuning, while keeping private datasets
-and model artifacts outside the core open source package. See the
-[Roadmap](roadmap.md) for the shared-platform implementation sequence.
+Use `model-improvement` when a workflow is too expensive, too slow,
+inconsistent, or producing answers that need too much manual correction. It
+diagnoses whether the next fix should be context, prompts, routing, eval
+coverage, retrieval, or provider-side fine tuning.
+
+```bash
+npm run agentflow -- run-and-watch model-improvement \
+  --project /path/to/project \
+  --task "Find the cheapest way to improve review-pr quality without losing security coverage"
+```
+
+The workflow uses `model-improvement-diagnostician`, `eval-curator`, and
+`routing-optimizer`. It can propose scrubbed local eval cases and routing
+changes, but private dataset export, provider fine-tune jobs, and candidate
+promotion remain approval-gated and project-local. See
+[Model Improvement Workflow](model-improvement.md).
+
+## 24. Recommended Next Improvement
+
+The next improvement is adding a read-only model-improvement dashboard panel
+that summarizes scorecard health, proposed eval gaps, routing recommendations,
+and promotion readiness from existing local evidence. See the [Roadmap](roadmap.md)
+for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

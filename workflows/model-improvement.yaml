@@ -1,0 +1,58 @@
+id: model-improvement
+name: Model Improvement
+description: Diagnose and plan quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.
+lead: workflow-orchestrator
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: diagnose
+    agent: model-improvement-diagnostician
+    goal: Classify the quality or cost problem and identify the smallest effective improvement lever.
+    subagents:
+      - context-curator
+      - routing-optimizer
+      - eval-curator
+    context:
+      load:
+        - project_context
+        - run_receipts
+        - quality_reports
+        - feedback_memory
+      max_tokens: 7000
+    output: model_improvement_diagnosis
+  - id: eval-plan
+    agent: eval-curator
+    goal: Propose scrubbed local evaluation coverage from explicitly approved feedback and known failure patterns.
+    context:
+      load:
+        - model_improvement_diagnosis
+        - evaluation_results
+        - feedback_memory
+      max_tokens: 5000
+    approval_required: true
+    output: eval_curation_plan
+  - id: routing-plan
+    agent: routing-optimizer
+    goal: Recommend provider routing, fallback, context budget, or prompt tuning changes that can be validated against a baseline.
+    context:
+      load:
+        - model_improvement_diagnosis
+        - eval_curation_plan
+        - quality_reports
+        - provider_status
+      max_tokens: 5000
+    approval_required: true
+    output: routing_optimization_plan
+  - id: promotion-plan
+    agent: release-manager
+    goal: Define the evidence required before adopting candidate prompt, context, routing, retrieval, or fine-tuning changes.
+    context:
+      load:
+        - routing_optimization_plan
+        - evaluation_gates
+        - project_policy
+      max_tokens: 3500
+    approval_required: true
+    output: model_improvement_promotion_plan

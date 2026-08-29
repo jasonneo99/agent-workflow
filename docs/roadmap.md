@@ -163,9 +163,10 @@ trust gaps.
   - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
 - [ ] Optional model-improvement workflow pack.
-  - Diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
-  - Prepare scrubbed eval cases and provider-specific fine-tune datasets only from explicitly approved project-local feedback.
-  - Orchestrate provider fine-tune jobs and candidate model comparisons when a project opts in and supplies its own provider credentials.
+  - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
+  - Add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
+  - Prepare scrubbed eval cases and provider-specific fine-tune dataset plans only from explicitly approved project-local feedback.
+  - Orchestrate provider fine-tune job plans and candidate model comparisons when a project opts in and supplies its own provider credentials.
   - Promote routing changes only after baseline-versus-candidate evaluation evidence is recorded.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 

@@ -146,9 +146,16 @@ export function verifyBundleSignature(input: {
   } else {
     try {
       const fingerprint = publicKeyFingerprint(signature.signer.publicKey);
-      const metadataMatches = signature.bundleId === input.manifest.bundle.id && signature.bundleVersion === input.manifest.bundle.version && signature.manifestChecksum === input.manifest.checksum.value && fingerprint === signature.signer.keyFingerprint;
+      const manifestMatches = signature.bundleId === input.manifest.bundle.id && signature.bundleVersion === input.manifest.bundle.version && signature.manifestChecksum === input.manifest.checksum.value;
+      if (!manifestMatches) {
+        status = "unsigned";
+        reasons.push("Detached bundle signature does not apply to this manifest.");
+      } else if (fingerprint !== signature.signer.keyFingerprint) {
+        status = "invalid";
+        reasons.push("Signature signer fingerprint does not match the public key.");
+      } else {
       const { signature: encodedSignature, ...unsigned } = signature;
-      const valid = metadataMatches && verify(null, Buffer.from(signaturePayload(input.manifest, unsigned)), signature.signer.publicKey, Buffer.from(encodedSignature, "base64"));
+      const valid = verify(null, Buffer.from(signaturePayload(input.manifest, unsigned)), signature.signer.publicKey, Buffer.from(encodedSignature, "base64"));
       if (!valid) {
         status = "invalid";
         reasons.push("Signature or signed manifest metadata is invalid.");
@@ -159,6 +166,7 @@ export function verifyBundleSignature(input: {
         const trusted = input.trustStore?.keys.some((key) => key.fingerprint === fingerprint && publicKeyFingerprint(key.publicKey) === fingerprint) ?? false;
         status = trusted ? "trusted" : "valid-untrusted";
         reasons.push(trusted ? "Signature is valid and the signer is trusted." : "Signature is valid but the signer is not in the trust store.");
+      }
       }
     } catch (error) {
       status = "invalid";

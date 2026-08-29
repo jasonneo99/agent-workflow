@@ -37,6 +37,18 @@ test("signed metadata tampering invalidates the signature", () => {
   assert.equal(verifyBundleSignature({ manifest, signature, compatible: true, now: new Date("2040-01-01T00:00:00.000Z") }).status, "expired");
 });
 
+test("stale detached signatures are treated as unsigned", () => {
+  const { privateKey } = generateKeyPairSync("ed25519");
+  const signature = signBundleManifest({ manifest, privateKey: privateKey.export({ type: "pkcs8", format: "pem" }).toString(), signerId: "release" });
+  const changedManifest = { ...manifest, checksum: { ...manifest.checksum, value: "changed" } } satisfies BundleManifest;
+  const allowed = verifyBundleSignature({ manifest: changedManifest, signature, compatible: true, policy: "allow" });
+  const required = verifyBundleSignature({ manifest: changedManifest, signature, compatible: true, policy: "require" });
+  assert.equal(allowed.status, "unsigned");
+  assert.equal(allowed.allowed, true);
+  assert.equal(required.status, "unsigned");
+  assert.equal(required.allowed, false);
+});
+
 test("bundle compatibility report passes supported runtime requirements", () => {
   const report = buildBundleCompatibilityReport(manifest, {
     agentWorkflow: "0.2.1",

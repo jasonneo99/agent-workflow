@@ -13,13 +13,13 @@
     "mcp": ">=1.29.0"
   },
   "counts": {
-    "agents": 22,
-    "workflows": 8,
-    "files": 30
+    "agents": 25,
+    "workflows": 9,
+    "files": 34
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "6bc4c943d8894d764f2c4ee22ab283f56256edcb80aaa207e2df61100beb7170"
+    "value": "1882938698d0f40740fb0fb7db6890a55997ac3a3ce7a3eea4fd2cd3bd30e8b3"
   },
   "agents": [
     {
@@ -83,6 +83,11 @@
       "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
     },
     {
+      "id": "eval-curator",
+      "path": "agents/development/eval-curator.yaml",
+      "checksum": "720b638e6977c1313e5ad5de0f96968d9a491632cdce478b6fae3c37aa15759f"
+    },
+    {
       "id": "frontend-engineer",
       "path": "agents/development/frontend-engineer.yaml",
       "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
@@ -91,6 +96,16 @@
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
       "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+    },
+    {
+      "id": "model-improvement-diagnostician",
+      "path": "agents/development/model-improvement-diagnostician.yaml",
+      "checksum": "6a891ef3a09cc5d6133e21a189aa5934757c87336c68b76cc99063ef6131bf7e"
+    },
+    {
+      "id": "routing-optimizer",
+      "path": "agents/development/routing-optimizer.yaml",
+      "checksum": "0b714f85e2fa5a59b894390e89803cc55dd376ad530efcb03a619fed18a99686"
     },
     {
       "id": "security-reviewer",
@@ -148,6 +163,11 @@
       "id": "maintain-context",
       "path": "workflows/maintain-context.yaml",
       "checksum": "6af9398c60c35375b678de98104ba869d1d06a1a74b90442f08a36dbf1634bd9"
+    },
+    {
+      "id": "model-improvement",
+      "path": "workflows/model-improvement.yaml",
+      "checksum": "0a118212a1c13241303b11b54ce068f750b06d96ce027687da1757d92bb076b7"
     },
     {
       "id": "production-readiness",
@@ -225,12 +245,24 @@
       "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
     },
     {
+      "path": "agents/development/eval-curator.yaml",
+      "checksum": "720b638e6977c1313e5ad5de0f96968d9a491632cdce478b6fae3c37aa15759f"
+    },
+    {
       "path": "agents/development/frontend-engineer.yaml",
       "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
     },
     {
       "path": "agents/development/implementation-agent.yaml",
       "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+    },
+    {
+      "path": "agents/development/model-improvement-diagnostician.yaml",
+      "checksum": "6a891ef3a09cc5d6133e21a189aa5934757c87336c68b76cc99063ef6131bf7e"
+    },
+    {
+      "path": "agents/development/routing-optimizer.yaml",
+      "checksum": "0b714f85e2fa5a59b894390e89803cc55dd376ad530efcb03a619fed18a99686"
     },
     {
       "path": "agents/development/security-reviewer.yaml",
@@ -275,6 +307,10 @@
     {
       "path": "workflows/maintain-context.yaml",
       "checksum": "6af9398c60c35375b678de98104ba869d1d06a1a74b90442f08a36dbf1634bd9"
+    },
+    {
+      "path": "workflows/model-improvement.yaml",
+      "checksum": "0a118212a1c13241303b11b54ce068f750b06d96ce027687da1757d92bb076b7"
     },
     {
       "path": "workflows/production-readiness.yaml",

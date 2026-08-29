@@ -18,6 +18,9 @@ This roster is mirrored in `AGENTS.md` for agent tools and in `agents/**/*.yaml`
 - `test-engineer`
 - `ci-debugger`
 - `security-reviewer`
+- `model-improvement-diagnostician`
+- `eval-curator`
+- `routing-optimizer`
 
 ## Product
 
@@ -38,4 +41,3 @@ This roster is mirrored in `AGENTS.md` for agent tools and in `agents/**/*.yaml`
 - `auto-ci-triage`
 - `auto-release-check`
 - `auto-wide-open-executor`
-

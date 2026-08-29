@@ -29,6 +29,9 @@ Development agents:
 - `test-engineer`: adds and runs focused tests.
 - `ci-debugger`: diagnoses failing checks and builds.
 - `security-reviewer`: reviews auth, permissions, secrets, dependencies, and deployment risk.
+- `model-improvement-diagnostician`: diagnoses whether quality or cost issues should be handled with context, prompts, routing, evals, retrieval, or fine tuning.
+- `eval-curator`: turns approved feedback and failure patterns into scrubbed local evaluation cases.
+- `routing-optimizer`: recommends provider, tier, fallback, and promotion changes from quality, latency, cost, and feedback evidence.
 
 Product agents:
 
@@ -57,6 +60,7 @@ Automatic agents:
 - `debug-failure`: reproduce, diagnose, fix, and verify a failure.
 - `ship-release`: check readiness and prepare release approval.
 - `maintain-context`: refresh project context and reusable memory.
+- `model-improvement`: diagnose and plan local quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.
 - `wide-open-automation`: run trusted automation with explicit maximum autonomy.
 
 ## Autonomy

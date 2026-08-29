@@ -4,8 +4,8 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 
 ## What it does
 
-- **22 specialist agents** — architecture, frontend, backend, security, UX, testing, docs, and more
-- **8 composable workflows** — build features, review PRs, debug failures, check production readiness
+- **25 specialist agents** — architecture, frontend, backend, security, UX, testing, model improvement, docs, and more
+- **9 composable workflows** — build features, review PRs, debug failures, improve model routing, check production readiness
 - **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
 - **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
 - **Adaptive routing** — send cheap stages to local/BYO models, promote stages from feedback, and use stronger providers where needed
@@ -187,6 +187,7 @@ npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans a
 npm run export-run -- --run <id> --scrub # Export a shareable redacted report
 npm run agentflow -- quality-report -r <id>  # View cost, routing, fallback, and quality scores
 npm run agentflow -- evaluate -s evaluations/synthetic-provider-comparison.yaml -p . --dry-run # Preview an eval matrix
+npm run agentflow -- run-and-watch model-improvement -p . -t "Improve quality while reducing cost" # Diagnose prompt, context, eval, routing, retrieval, or fine-tune paths
 npm run agentflow -- feedback -r <id> --rating accepted  # Teach future runs from outcomes
 npm run agentflow -- preference-scorecard -p . # See agent/provider/tier performance
 npm run agentflow -- tuning-proposals -p . # Generate reviewable tuning suggestions
@@ -223,6 +224,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [MCP Client Setup](docs/mcp-clients.md): VS Code, Cursor, Codex, and generic MCP clients
 - [Definition Migrations](docs/definition-migrations.md): upgrade and rollback guidance for reusable agent/workflow contracts
 - [Contract Tests](docs/contract-tests.md): verify custom agents, workflows, and provider adapters
+- [Model Improvement Workflow](docs/model-improvement.md): diagnose quality and cost issues without exporting private data by default
 - [Contributing](CONTRIBUTING.md): local checks, contribution boundaries, and PR guidance
 - [Security Policy](SECURITY.md): responsible disclosure, scope, and local automation safety boundaries
 - [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing
