@@ -1298,6 +1298,16 @@ export async function failWorkflowTask(input: {
       );
 
       await client.query(
+        `update workflow_tasks
+         set status = 'cancelled',
+             finished_at = now()
+         where run_id = $1
+           and id <> $2
+           and status in ('queued', 'running')`,
+        [input.runId, input.taskId]
+      );
+
+      await client.query(
         `update workflow_runs
          set status = 'failed',
              finished_at = now()

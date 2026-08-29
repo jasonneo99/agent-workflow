@@ -19,6 +19,10 @@ export function assertCommandAllowed(commandLine: string, project: ProjectConfig
     throw new Error("Command rejected: shell metacharacters are not allowed.");
   }
 
+  if (isLikelyLongRunningServerCommand(normalized)) {
+    throw new Error("Command rejected: long-running server commands must be started outside worker-requested blocking commands.");
+  }
+
   for (const pattern of project.actions.blocked_commands) {
     if (matchesPattern(normalized, pattern)) {
       throw new Error(`Command rejected by blocked pattern: ${pattern}`);
@@ -113,6 +117,21 @@ function matchesPattern(commandLine: string, pattern: string): boolean {
 
 function containsShellMetacharacters(commandLine: string): boolean {
   return /[;&|<>`$(){}[\]\n\r]/.test(commandLine);
+}
+
+function isLikelyLongRunningServerCommand(commandLine: string): boolean {
+  const tokens = splitCommand(commandLine);
+  const normalized = tokens.join(" ");
+  if (/^python3? -m http\.server(?:\s|$)/.test(normalized)) {
+    return true;
+  }
+  if (/^(npm|pnpm|yarn|bun) (run )?(dev|start|serve|preview)(?:\s|$)/.test(normalized)) {
+    return true;
+  }
+  if (/^(vite|next|astro|remix|nuxt|wrangler) (dev|preview)?(?:\s|$)/.test(normalized)) {
+    return true;
+  }
+  return false;
 }
 
 function normalizeCommand(commandLine: string): string {
