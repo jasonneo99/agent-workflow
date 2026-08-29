@@ -156,7 +156,7 @@ trust gaps.
   - Done: provide a dry-run graph showing stages, dependencies, permissions, approvals, agents, and context budgets.
   - Done: add a standalone bundle compatibility report for runtime, Node.js, MCP requirements, and migration notes.
   - Done: add read-only project bundle upgrade previews with applicable migration notes and safe next actions.
-  - Add project bundle-state recording during onboarding/adoption.
+  - Done: add project bundle-state recording during onboarding/adoption.
   - Add definition migrations and rollback guidance for changed bundle contracts.
   - Add contract tests for custom agents, workflows, and provider adapters.
 

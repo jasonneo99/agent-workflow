@@ -62,7 +62,7 @@ npm run agentflow -- run-and-watch production-readiness --project /path/to/your/
 
 For a no-services setup, initialize a project with `--profile simple` and use `npm run compile` to produce file-based briefs.
 
-`onboard-project` is dry-run by default. Add `--write` to create `AGENTS.md` and tailored `.agent-workflow/` files; existing files are skipped unless `--force` is provided. Use `init-project` only when you want the generic template instead of stack-detected onboarding.
+`onboard-project` is dry-run by default. Add `--write` to create `AGENTS.md` and tailored `.agent-workflow/` files, including `.agent-workflow/bundle-state.json` for future upgrade previews; existing files are skipped unless `--force` is provided. Use `init-project` only when you want the generic template instead of stack-detected onboarding.
 
 ## Providers
 
@@ -156,7 +156,7 @@ npm run index-project -- -p . --incremental # Refresh only changed files after a
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm
 npm run compile -- -w build-feature -p . -t "task"  # Compile a workflow brief, including approved local tuning notes
-npm run agentflow -- schemas       # List JSON Schemas for agents, workflows, project config, and schedules
+npm run agentflow -- schemas       # List JSON Schemas for agents, workflows, project config, schedules, and bundle state
 npm run agentflow -- schemas -p . --write-vscode # Add YAML validation to VS Code/Cursor workspace settings
 npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph

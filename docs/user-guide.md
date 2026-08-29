@@ -108,6 +108,9 @@ npm run onboard-project -- --project /path/to/project --profile enterprise --wri
 ```
 
 This writes `AGENTS.md` when missing plus `.agent-workflow/project.yaml`, `context.md`, `commands.md`, `decisions.md`, and `schedules.yaml`. Existing files are skipped unless `--force` is provided.
+It also records `.agent-workflow/bundle-state.json`, which gives future
+`bundle-upgrade-preview` runs a local baseline for migration notes and checksum
+drift checks.
 
 Enterprise mode is the default:
 
@@ -225,7 +228,7 @@ you run the workflow.
 ## 8. Editor Schema Validation
 
 Agent Workflow ships JSON Schemas for reusable agents, workflows, project
-config, and schedules. List the schema paths:
+config, schedules, and bundle state. List the schema paths:
 
 ```bash
 npm run agentflow -- schemas
@@ -932,7 +935,7 @@ The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agent
 
 ## 23. Recommended Next Improvement
 
-The next improvement is recording project bundle state during onboarding/adoption, so upgrade previews can compare against a known local baseline instead of an unknown source. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is definition migration planning for changed agent and workflow contracts, so upgrade previews can point to concrete migration steps instead of notes only. See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

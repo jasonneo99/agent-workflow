@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "bundle": {
+    "id": "agent-workflow-core",
+    "version": "0.2.1",
+    "checksum": "6bc4c943d8894d764f2c4ee22ab283f56256edcb80aaa207e2df61100beb7170",
+    "recordedAt": "2026-08-29T00:00:00.000Z"
+  }
+}

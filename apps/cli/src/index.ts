@@ -582,9 +582,12 @@ program
 
     const projectDir = path.resolve(process.cwd(), options.project);
     const templateDir = path.join(rootDir, "templates", templateNameForProfile(options.profile));
+    const hadBundleState = await exists(path.join(projectDir, ".agent-workflow", "bundle-state.json"));
     const result = await copyTemplate(templateDir, projectDir, Boolean(options.force));
+    const bundleState = await writeProjectBundleState(projectDir, Boolean(options.force) || !hadBundleState);
     console.log(`Initialized ${options.profile} agent workflow files in ${projectDir}`);
     console.log(`Wrote ${result.written}; skipped ${result.skipped}.`);
+    console.log(`${bundleState.status === "written" ? "Wrote" : "Skipped"} ${bundleState.relativePath}.`);
     console.log("");
     console.log("Next steps:");
     console.log(`  npm run index-project -- --project ${projectDir}`);
@@ -742,7 +745,7 @@ program
     console.log("Agent Workflow Schemas");
     for (const schema of schemas) {
       console.log(`- ${schema.id}: ${schema.path}`);
-      console.log(`  YAML: ${schema.yamlGlobs.join(", ")}`);
+      console.log(`  Files: ${schema.fileGlobs.join(", ")}`);
     }
     if (settingsPath) console.log(`${settingsStatus.toUpperCase()}: ${settingsPath}`);
     else console.log("\nEditor setup: npm run agentflow -- schemas --write-vscode --project /path/to/project");
@@ -8735,6 +8738,28 @@ async function copyTemplate(templateDir: string, targetDir: string, force: boole
   return { written, skipped };
 }
 
+async function writeProjectBundleState(projectDir: string, force: boolean): Promise<{ relativePath: string; status: "written" | "skipped" }> {
+  const manifest = await loadCommittedBundleManifest(rootDir);
+  if (!manifest) throw new Error("Bundle manifest is missing.");
+  const filePath = path.join(projectDir, ".agent-workflow", "bundle-state.json");
+  const relativePath = path.relative(projectDir, filePath);
+  if (!force && await exists(filePath)) {
+    return { relativePath, status: "skipped" };
+  }
+  const state: ProjectBundleState = {
+    schemaVersion: 1,
+    bundle: {
+      id: manifest.bundle.id,
+      version: manifest.bundle.version,
+      checksum: manifest.checksum.value,
+      recordedAt: new Date().toISOString()
+    }
+  };
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(state, null, 2)}\n`, "utf8");
+  return { relativePath, status: "written" };
+}
+
 async function walk(dir: string): Promise<string[]> {
   const entries = await fs.readdir(dir, { withFileTypes: true });
   const files: string[] = [];
@@ -9024,6 +9049,12 @@ async function writeOnboardingFiles(projectDir: string, result: OnboardingResult
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, `${content.replace(/\n+$/u, "")}\n`, "utf8");
     written.push(relativePath);
+  }
+  const bundleState = await writeProjectBundleState(projectDir, force);
+  if (bundleState.status === "written") {
+    written.push(bundleState.relativePath);
+  } else {
+    skipped.push(bundleState.relativePath);
   }
   return { written, skipped };
 }

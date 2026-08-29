@@ -25,7 +25,8 @@ agentflow bundle-upgrade-preview --from-version 0.1.0 --from-checksum <sha256>
 ```
 
 When present, project state is read from
-`.agent-workflow/bundle-state.json`:
+`.agent-workflow/bundle-state.json`. `init-project` and `onboard-project --write`
+create this file during adoption:
 
 ```json
 {

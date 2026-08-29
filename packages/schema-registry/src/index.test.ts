@@ -9,7 +9,7 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../.
 
 test("registered schema files exist and contain json schema ids", async () => {
   const schemas = buildSchemaSummary(rootDir);
-  assert.equal(schemas.length, 4);
+  assert.equal(schemas.length, 5);
 
   for (const schema of schemas) {
     const raw = await fs.readFile(schema.path, "utf8");
@@ -27,6 +27,7 @@ test("vscode settings map schemas to agent workflow yaml files", () => {
 
   assert.ok(globs.includes(".agent-workflow/project.yaml"));
   assert.ok(globs.includes(".agent-workflow/schedules.yaml"));
+  assert.ok(globs.includes(".agent-workflow/bundle-state.json"));
   assert.ok(globs.includes(".agent-workflow/agents/**/*.yaml"));
   assert.ok(globs.includes("workflows/**/*.yaml"));
 });
