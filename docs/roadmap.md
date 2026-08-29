@@ -173,7 +173,8 @@ trust gaps.
   - Done: generate reviewed project-local routing-note patch plans from promotion recommendations without automatically changing live routing.
   - Done: add dashboard follow-up actions for promotion note plans while preserving dry-run-by-default behavior.
   - Done: surface written promotion note plan files in the dashboard for review and sharing.
-  - Add an end-to-end model-improvement walkthrough with sample local evidence, screenshots, and expected command output.
+  - Done: add an end-to-end model-improvement walkthrough with sample local evidence, screenshots, and expected command output.
+  - Add synthetic candidate-comparison screenshot assets for npm, GitHub, and docs.
   - Keep GPU training infrastructure, model registries, private datasets, and large model artifacts outside the core open source package.
 
 ## Phase 5: Governed Distribution

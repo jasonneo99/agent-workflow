@@ -7,6 +7,9 @@ project-local by default.
 Use it when a workflow is too expensive, too slow, inconsistent, or producing
 answers that need too much manual correction.
 
+For a complete command-by-command example, see the
+[Model Improvement Walkthrough](model-improvement-walkthrough.md).
+
 ## What It Diagnoses
 
 The workflow asks which lever is most likely to help:

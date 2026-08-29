@@ -233,6 +233,7 @@ See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex co
 - [Definition Migrations](docs/definition-migrations.md): upgrade and rollback guidance for reusable agent/workflow contracts
 - [Contract Tests](docs/contract-tests.md): verify custom agents, workflows, and provider adapters
 - [Model Improvement Workflow](docs/model-improvement.md): diagnose quality and cost issues without exporting private data by default
+- [Model Improvement Walkthrough](docs/model-improvement-walkthrough.md): follow the local feedback, comparison, and promotion-note loop end to end
 - [Contributing](CONTRIBUTING.md): local checks, contribution boundaries, and PR guidance
 - [Security Policy](SECURITY.md): responsible disclosure, scope, and local automation safety boundaries
 - [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing
