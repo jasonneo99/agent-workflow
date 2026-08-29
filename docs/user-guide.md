@@ -540,7 +540,7 @@ JSON endpoints:
 
 ```text
 /api/runs
-/api/info
+/api/settings
 /api/queue
 /api/projects
 /api/run?id=<run-id>
@@ -550,7 +550,7 @@ JSON endpoints:
 Run detail pages:
 
 ```text
-/info
+/settings
 /queue
 /providers
 /projects

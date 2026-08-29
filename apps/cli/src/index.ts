@@ -3388,7 +3388,7 @@ function fallbackDashboardUsageSummary(runs: DashboardRunStatus[], input: { incl
   };
 }
 
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T): Promise<T> {
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, onTimeout: () => T | Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout | undefined;
   try {
     return await Promise.race([
@@ -4633,7 +4633,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  if (requestUrl.pathname === "/api/info") {
+  if (requestUrl.pathname === "/api/info" || requestUrl.pathname === "/api/settings") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(info, null, 2));
@@ -4929,8 +4929,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  if (requestUrl.pathname === "/info") {
-    const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
+  if (requestUrl.pathname === "/info" || requestUrl.pathname === "/settings") {
+    const info = await withTimeout(
+      loadDashboardInfo(dashboardUrlFromRequest(request)),
+      1200,
+      () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
+    );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardInfoHtml(info));
     return;
@@ -5011,7 +5015,7 @@ function renderDashboardHtml(
         <a class="button secondary" href="/queue">Queue</a>
         <a class="button secondary" href="/projects">Projects</a>
         <a class="button secondary" href="/providers">Providers</a>
-        <a class="button secondary" href="/info">Info</a>
+        <a class="button secondary" href="/settings">Settings</a>
         <a class="button secondary" href="/api/runs">JSON</a>
       </div>
     </div>
@@ -7697,7 +7701,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Workflow Info</title>
+      <title>Agent Workflow Settings</title>
   <style>${dashboardCss()}</style>
 </head>
 <body>
@@ -7708,7 +7712,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
         <a href="/">Dashboard</a>
         <h1>Settings</h1>
       </div>
-      <a class="button secondary" href="/api/info">JSON</a>
+      <a class="button secondary" href="/api/settings">JSON</a>
     </div>
     <section class="panel">
       <h2>Runtime</h2>
@@ -7834,7 +7838,7 @@ function renderProvidersHtml(info: DashboardInfo): string {
         <a href="/">Dashboard</a>
         <h1>Providers & Models</h1>
       </div>
-      <a class="button secondary" href="/api/info">Info JSON</a>
+      <a class="button secondary" href="/api/settings">Settings JSON</a>
     </div>
     <section class="panel">
       <h2>Selected Provider</h2>
@@ -8093,14 +8097,14 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
         status: health.supervisor.status === "running" ? "good" : health.supervisor.status === "missing" ? "warn" : "bad",
         value: health.supervisor.status,
         detail: supervisorStatusDetail(health.supervisor),
-        href: "/info"
+        href: "/settings"
       })}
       ${healthCard({
         label: "Worker",
         status: health.worker.status === "running" ? "good" : health.worker.status === "missing" ? "warn" : "bad",
         value: health.worker.status,
         detail: workerStatusDetail(health.worker),
-        href: "/info"
+        href: "/settings"
       })}
       ${healthCard({
         label: "Queue",
@@ -8121,7 +8125,7 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
         status: servicesReady ? "good" : "bad",
         value: servicesReady ? "ready" : "attention",
         detail: servicesReady ? "Postgres, Redis, and object storage are reachable" : "One or more enterprise services are unavailable",
-        href: "/info"
+        href: "/settings"
       })}
       ${healthCard({
         label: "Projects",
@@ -8156,7 +8160,7 @@ function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
     items.push(attentionItem({
       title: "Start the background worker",
       detail: workerStatusDetail(health.worker),
-      href: "/info",
+      href: "/settings",
       action: "Open Settings"
     }));
   }
@@ -8164,7 +8168,7 @@ function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
     items.push(attentionItem({
       title: "Use one-command local dev",
       detail: supervisorStatusDetail(health.supervisor),
-      href: "/info",
+      href: "/settings",
       action: "Open Settings"
     }));
   }
@@ -8196,7 +8200,7 @@ function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
     items.push(attentionItem({
       title: "Restore enterprise services",
       detail: missingServices.map((service) => service.endpoint.name).join(", "),
-      href: "/info",
+      href: "/settings",
       action: "Open Settings"
     }));
   }
@@ -8265,7 +8269,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["governance", "/governance", "Governance"],
     ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
-    ["info", "/info", "Settings"]
+    ["info", "/settings", "Settings"]
   ] as const;
   return `<nav class="side-nav" aria-label="Dashboard navigation">
     <strong>Agent Workflow</strong>
