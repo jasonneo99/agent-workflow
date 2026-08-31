@@ -82,6 +82,8 @@ CREATE TABLE IF NOT EXISTS workflow_tasks (
   output_uri text,
   attempts integer NOT NULL DEFAULT 0,
   idempotency_key text NOT NULL,
+  worker_id text,
+  lease_expires_at timestamptz,
   available_at timestamptz NOT NULL DEFAULT now(),
   started_at timestamptz,
   finished_at timestamptz,

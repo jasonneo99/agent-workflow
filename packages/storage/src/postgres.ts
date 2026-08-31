@@ -82,6 +82,11 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS workflow_snapshot jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
+      ALTER TABLE workflow_tasks
+      ADD COLUMN IF NOT EXISTS worker_id text,
+      ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         run_id uuid REFERENCES workflow_runs(id),
@@ -355,6 +360,8 @@ export interface WorkflowQueueItem {
   nextAgentId: string | null;
   runningStageId: string | null;
   runningAgentId: string | null;
+  runningWorkerId: string | null;
+  runningLeaseExpiresAt: string | null;
   oldestQueuedAt: string | null;
   oldestRunningAt: string | null;
 }
@@ -381,6 +388,8 @@ export async function listWorkflowQueue(limit = 50): Promise<WorkflowQueueItem[]
          (array_agg(wt.agent_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextAgentId",
          (array_agg(wt.stage_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningStageId",
          (array_agg(wt.agent_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningAgentId",
+         (array_agg(wt.worker_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningWorkerId",
+         (array_agg(wt.lease_expires_at::text order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningLeaseExpiresAt",
          (min(wt.available_at) filter (where wt.status = 'queued'))::text as "oldestQueuedAt",
          (min(wt.started_at) filter (where wt.status = 'running'))::text as "oldestRunningAt"
        from workflow_runs wr
@@ -1109,6 +1118,8 @@ export interface ClaimedWorkflowTask {
   agentPrompt: string;
   modelTier: string | null;
   providerOverride: string | null;
+  workerId: string | null;
+  leaseExpiresAt: string | null;
   compiledBrief: string;
   priorReceipts: Array<{
     agentId: string;
@@ -1117,10 +1128,12 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      const workerId = input?.workerId?.trim() || null;
+      const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">>(
         `with next_task as (
            select wt.id
@@ -1148,6 +1161,8 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
          update workflow_tasks wt
          set status = 'running',
              attempts = wt.attempts + 1,
+             worker_id = $1,
+             lease_expires_at = now() + ($2::int * interval '1 second'),
              started_at = now()
          from next_task, workflow_runs wr, workflows wf, agents a, projects p
          where wt.id = next_task.id
@@ -1173,7 +1188,11 @@ export async function claimNextWorkflowTask(): Promise<ClaimedWorkflowTask | nul
            a.display_name as "agentName",
            a.definition->>'prompt' as "agentPrompt",
            wr.provider_override as "providerOverride",
+           wt.worker_id as "workerId",
+           wt.lease_expires_at::text as "leaseExpiresAt",
            coalesce(wr.model_tier_override, a.definition->>'model_tier') as "modelTier"`
+        ,
+        [workerId, leaseSeconds]
       );
 
       if (!result.rows[0]) {

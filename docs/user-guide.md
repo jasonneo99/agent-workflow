@@ -543,6 +543,18 @@ npm run worker:daemon
 
 The daemon continuously processes queued stages and writes a heartbeat to `.agent-workflow/runtime/worker-heartbeat.json`. The dashboard uses that heartbeat to show whether the worker is running, stale, stopped, or missing.
 
+Workers can be named for lease ownership visibility:
+
+```bash
+npm run worker -- --watch --limit 6 --worker-id local-dev
+```
+
+When a worker claims a stage, enterprise storage records the worker id and a
+lease expiration timestamp. The Queue page shows the current running stage,
+owning worker, and lease deadline so interrupted work is easier to diagnose.
+This is a visibility foundation for worker pools; it does not yet reassign
+expired leases automatically.
+
 JSON endpoints:
 
 ```text

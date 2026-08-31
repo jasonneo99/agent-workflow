@@ -2,6 +2,7 @@
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
@@ -96,6 +97,7 @@ program.hook("preAction", async (_command, actionCommand) => {
 
 type WorkerHeartbeat = {
   pid: number;
+  workerId: string;
   startedAt: string;
   lastHeartbeatAt: string;
   limit: number;
@@ -111,6 +113,7 @@ type WorkerHeartbeat = {
 type DashboardWorkerStatus = {
   heartbeatPath: string;
   configured: boolean;
+  workerId: string | null;
   status: "running" | "stale" | "stopped" | "missing";
   pid: number | null;
   startedAt: string | null;
@@ -942,6 +945,7 @@ program
 
     const agents = await loadAgentRecords(rootDir);
     const workflows = await loadWorkflowRecords(rootDir);
+    await migrateStorage();
     const result = await seedRegistry(agents, workflows);
     console.log(`Seeded ${result.agents} agents and ${result.workflows} workflows into enterprise storage.`);
   });
@@ -2782,8 +2786,10 @@ program
   .option("-l, --limit <number>", "maximum tasks to execute", "1")
   .option("--watch", "keep polling for queued workflow tasks")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "2000")
+  .option("--worker-id <id>", "stable worker identity for leases and dashboard visibility")
+  .option("--lease-seconds <number>", "running task lease duration in seconds", "900")
   .option("--heartbeat-file <path>", "worker heartbeat file path", defaultWorkerHeartbeatPath)
-  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; heartbeatFile: string }) => {
+  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; heartbeatFile: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2802,10 +2808,17 @@ program
       process.exitCode = 1;
       return;
     }
+    const workerId = normalizeWorkerId(options.workerId);
+    const leaseSeconds = Number.parseInt(options.leaseSeconds, 10);
+    if (!Number.isFinite(leaseSeconds) || leaseSeconds < 30) {
+      console.error("--lease-seconds must be an integer >= 30");
+      process.exitCode = 1;
+      return;
+    }
 
     if (!options.watch) {
-      const result = await runWorkerOnce(limit);
-      console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds });
+      console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       return;
     }
 
@@ -2826,6 +2839,7 @@ program
       }
       const heartbeat: WorkerHeartbeat = {
         pid: process.pid,
+        workerId,
         startedAt,
         lastHeartbeatAt: new Date().toISOString(),
         limit,
@@ -2835,7 +2849,7 @@ program
         completed: tick?.completed ?? 0,
         failed: tick?.failed ?? 0,
         status,
-        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs}`
+        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}`
       };
       await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
       await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
@@ -2848,10 +2862,12 @@ program
     process.once("SIGTERM", stopWorker);
 
     await writeHeartbeat("starting");
-    console.log(`Worker watching. limit=${limit} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
+    console.log(`Worker watching. id=${workerId} limit=${limit} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
     await runWorkerWatch({
       limitPerTick: limit,
       intervalMs,
+      workerId,
+      leaseSeconds,
       shouldStop: () => stop,
       onTick: async (result) => {
         await writeHeartbeat(stop ? "stopping" : "running", result);
@@ -5129,13 +5145,18 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
       : item.nextStageId
         ? `${item.nextStageId} (${item.nextAgentId ?? "unknown"})`
         : "none";
+    const leaseDetail = item.runningWorkerId
+      ? `worker: ${item.runningWorkerId}${item.runningLeaseExpiresAt ? `; lease expires ${renderDashboardDateTime(item.runningLeaseExpiresAt)}` : ""}`
+      : item.runningTasks > 0
+        ? "worker: unknown"
+        : "worker: none";
     return `
       <tr>
         <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span></td>
         <td><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span></td>
         <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
         <td>${escapeHtml(item.task)}</td>
-        <td>${escapeHtml(taskSummary)}<br><span class="muted">current: ${escapeHtml(currentStage)}</span></td>
+        <td>${escapeHtml(taskSummary)}<br><span class="muted">current: ${escapeHtml(currentStage)}</span><br><span class="muted">${escapeHtml(leaseDetail)}</span></td>
         <td>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</td>
         <td><div class="actions">${queueItemForms(item)}</div></td>
       </tr>
@@ -6363,6 +6384,7 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
     return {
       heartbeatPath,
       configured: true,
+      workerId: typeof heartbeat.workerId === "string" ? heartbeat.workerId : null,
       status: running ? "running" : heartbeatStatus === "stopped" ? "stopped" : "stale",
       pid,
       startedAt: typeof heartbeat.startedAt === "string" ? heartbeat.startedAt : null,
@@ -6381,6 +6403,7 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
     return {
       heartbeatPath,
       configured: false,
+      workerId: null,
       status: "missing",
       pid: null,
       startedAt: null,
@@ -6453,6 +6476,15 @@ function isProcessAlive(pid: number): boolean {
   } catch {
     return false;
   }
+}
+
+function normalizeWorkerId(value?: string): string {
+  const configured = value?.trim() || process.env.AGENTFLOW_WORKER_ID?.trim();
+  if (configured) {
+    return configured;
+  }
+  const host = os.hostname().replace(/[^a-zA-Z0-9_.-]/g, "-") || "local";
+  return `${host}:${process.pid}`;
 }
 
 function dashboardUrlFromRequest(request: http.IncomingMessage): string {
@@ -7201,7 +7233,7 @@ async function processDashboardRun(input: {
     };
   }
 
-  const workerResult = await runWorkerOnce(workerLimit);
+  const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard") });
   const updated = await getWorkflowRunDetails(runId);
   const completedTasks = updated.tasks.filter((task) => task.status === "completed").length;
   const failedTasks = updated.tasks.filter((task) => task.status === "failed").length;
@@ -7233,7 +7265,7 @@ async function processDashboardQueueAction(input: {
 
   if (action === "process") {
     const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
-    const workerResult = await runWorkerOnce(workerLimit);
+    const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard") });
     return {
       ok: true,
       title: "Worker batch processed",
@@ -8148,6 +8180,7 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
   return `
     <div class="meta-grid">
       <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
+      <div><strong>Worker ID</strong>${escapeHtml(worker.workerId ?? "none")}</div>
       <div><strong>PID</strong>${worker.pid ?? "none"}</div>
       <div><strong>Process</strong>${worker.processAlive ? "alive" : "not running"}</div>
       <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(worker.lastHeartbeatAt, "none")}</div>
@@ -8331,7 +8364,7 @@ function compactDashboardText(value: string, maxLength: number): string {
 
 function workerStatusDetail(worker: DashboardWorkerStatus): string {
   if (worker.status === "running") {
-    return `Worker is processing queued stages. Last heartbeat ${worker.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, worker.ageMs))} ago`}.`;
+    return `Worker ${worker.workerId ?? "unknown"} is processing queued stages. Last heartbeat ${worker.ageMs === null ? "unknown" : `${formatDuration(Math.max(0, worker.ageMs))} ago`}.`;
   }
   if (worker.status === "missing") {
     return "No worker heartbeat found. Start one with npm run worker:daemon.";
@@ -10021,7 +10054,7 @@ async function watchWorkflowRun(input: {
 }> {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= input.timeoutMs) {
-    const workerResult = await runWorkerOnce(input.workerLimit);
+    const workerResult = await runWorkerOnce(input.workerLimit, { workerId: normalizeWorkerId("dashboard") });
     input.onTick?.(workerResult);
 
     const details = await getWorkflowRunDetails(input.runId);

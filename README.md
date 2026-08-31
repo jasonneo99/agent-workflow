@@ -171,6 +171,7 @@ npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
 # Workflow execution (requires enterprise storage)
 npm run dev:agentflow       # Start services, dashboard, and supervised worker
 npm run dev:agentflow:stop  # Stop the local dashboard and worker
+npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run-and-watch build-feature -p . -t "task" # Incrementally index, run, export, summarize
 npm run agentflow -- run-and-watch build-feature -p . -t "task" --full-index # Force a clean full context refresh

@@ -21,7 +21,7 @@ export interface WorkerResult {
   failed: number;
 }
 
-export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
+export async function runWorkerOnce(limit: number, options?: { workerId?: string; leaseSeconds?: number }): Promise<WorkerResult> {
   const result: WorkerResult = {
     claimed: 0,
     completed: 0,
@@ -29,7 +29,7 @@ export async function runWorkerOnce(limit: number): Promise<WorkerResult> {
   };
 
   for (let i = 0; i < limit; i += 1) {
-    const task = await claimNextWorkflowTask();
+    const task = await claimNextWorkflowTask(options);
     if (!task) {
       break;
     }
@@ -490,11 +490,16 @@ function hashText(value: string): string {
 export async function runWorkerWatch(input: {
   limitPerTick: number;
   intervalMs: number;
+  workerId?: string;
+  leaseSeconds?: number;
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
   while (!input.shouldStop()) {
-    const result = await runWorkerOnce(input.limitPerTick);
+    const result = await runWorkerOnce(input.limitPerTick, {
+      workerId: input.workerId,
+      leaseSeconds: input.leaseSeconds
+    });
     await input.onTick(result);
     await sleep(input.intervalMs);
   }
