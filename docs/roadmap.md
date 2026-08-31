@@ -169,7 +169,8 @@ trust gaps.
   - Done: show stages, primary agents, subagents, context budgets, approvals, policy status, and Mermaid output.
   - Done: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
   - Done: add filter controls for agent category, approval requirement, and policy status when workflows grow beyond quick scanning.
-  - Next: add a screenshot/export-friendly graph capture flow for docs and project handoffs.
+  - Done: add a screenshot/export-friendly graph capture flow for docs and project handoffs.
+  - Next: add reusable screenshot assets for the graph and mind-map views after the dashboard visual language settles.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

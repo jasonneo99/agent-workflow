@@ -251,7 +251,9 @@ context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
 presentation-friendly agent connection map. The page also includes filters for
 agent category, approval requirement, and policy status so larger workflows stay
-scannable.
+scannable. Add `&capture=1` for a clean screenshot/print view that hides the
+dashboard navigation and form controls while preserving the selected workflow,
+view, and filters.
 
 ## 8. Editor Schema Validation
 

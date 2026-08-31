@@ -5474,13 +5474,16 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
     .join("");
   const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
-  const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
-  const graphHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=graph`;
-  const mindMapHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=mind-map`;
   const view = params.get("view") === "mind-map" ? "mind-map" : "graph";
   const categoryFilter = params.get("category")?.trim() || "";
   const approvalFilter = params.get("approval")?.trim() || "all";
   const policyFilter = params.get("policyStatus")?.trim() || "all";
+  const capture = params.get("capture") === "1";
+  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture });
+  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture });
+  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture: true });
+  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture: false });
+  const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
   const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
   const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
   const stageCards = filteredStages.map((stage, index) => {
@@ -5515,11 +5518,14 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body>
-  ${dashboardNav("workflow-graph")}
+  const captureActions = capture
+    ? `<a class="button secondary" href="${escapeHtml(exitCaptureHref)}">Exit Capture</a><button type="button" onclick="window.print()">Print</button>`
+    : `<a class="button secondary" href="${escapeHtml(captureHref)}">Capture View</a>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
+  ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
-    <div class="topbar"><div><a href="/">Dashboard</a><h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
-    <section class="panel"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
+    <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
+    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
     ${warnings}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
@@ -5528,7 +5534,7 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
-    <section class="panel"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a></div></section>
+    <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a></div></section>
     ${visual}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
@@ -5546,6 +5552,25 @@ function filterWorkflowGraphStages(report: WorkflowGraphReport, filters: { categ
     if (filters.policyStatus === "blocked" && stage.policyAllowed) return false;
     return true;
   });
+}
+
+function workflowGraphDashboardHref(
+  workflowId: string,
+  project: string,
+  policyProfile: string,
+  options: { view: string; category: string; approval: string; policyStatus: string; capture: boolean }
+): string {
+  const query = new URLSearchParams({
+    workflow: workflowId,
+    project,
+    policyProfile,
+    view: options.view
+  });
+  if (options.category) query.set("category", options.category);
+  if (options.approval !== "all") query.set("approval", options.approval);
+  if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
+  if (options.capture) query.set("capture", "1");
+  return `/workflow-graph?${query.toString()}`;
 }
 
 function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
@@ -8660,6 +8685,8 @@ function dashboardCss(): string {
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 12px; }
     .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
+    .capture-page main { max-width: 1440px; padding: 24px; }
+    .capture-page .panel { break-inside: avoid; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
@@ -8754,6 +8781,13 @@ function dashboardCss(): string {
     .failed { background: #fee2e2; color: #991b1b; }
     .cancelled { background: #e5e7eb; color: #374151; }
     .running, .queued { background: #fef3c7; color: #92400e; }
+    @media print {
+      body { background: white; }
+      main, .capture-page main { max-width: none; padding: 0; }
+      .side-nav, .capture-hide, .print-hide { display: none !important; }
+      .panel { border-color: #d0d7e2; box-shadow: none; }
+      a { color: inherit; }
+    }
     @media (max-width: 820px) {
       main { padding: 94px 12px 24px; }
       .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; padding: 10px 12px; }
