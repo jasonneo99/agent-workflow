@@ -73,7 +73,7 @@ import { providerFromEnv } from "../../../packages/model-providers/src/index.js"
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
-import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
+import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -4633,6 +4633,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/workflow-graph") {
+    const report = await loadDashboardWorkflowGraph(requestUrl.searchParams);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/info" || requestUrl.pathname === "/api/settings") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -4853,6 +4860,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/workflow-graph") {
+    const report = await loadDashboardWorkflowGraph(requestUrl.searchParams);
+    const workflows = await loadWorkflows(rootDir);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderWorkflowGraphDashboardHtml(report, workflows, requestUrl.searchParams));
+    return;
+  }
+
   if (requestUrl.pathname === "/model-improvement") {
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
@@ -5014,6 +5029,7 @@ function renderDashboardHtml(
       <div class="actions">
         <a class="button secondary" href="/queue">Queue</a>
         <a class="button secondary" href="/projects">Projects</a>
+        <a class="button secondary" href="/workflow-graph">Graph</a>
         <a class="button secondary" href="/providers">Providers</a>
         <a class="button secondary" href="/settings">Settings</a>
         <a class="button secondary" href="/api/runs">JSON</a>
@@ -5368,6 +5384,75 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
   </main>
 </body>
 </html>`;
+}
+
+async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<WorkflowGraphReport> {
+  const projectDir = path.resolve(process.cwd(), params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+  const workflows = await loadWorkflows(rootDir);
+  const workflowId = params.get("workflow")?.trim() || workflows.find((workflow) => workflow.triggers.manual)?.id || workflows[0]?.id;
+  if (!workflowId) throw new Error("No workflow definitions are available.");
+  const workflow = resolveWorkflow(workflows, workflowId);
+  if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
+  const project = await loadProjectConfig(projectDir);
+  const resolvedPolicy = resolveExecutionPolicy(project, params.get("policyProfile")?.trim() || undefined);
+  return buildWorkflowGraphReport({
+    workflow,
+    agents: await loadAgentsForProject(projectDir),
+    project,
+    resolvedPolicy
+  });
+}
+
+function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
+  const workflowOptions = workflows
+    .filter((workflow) => workflow.triggers.manual)
+    .map((workflow) => `<option value="${escapeHtml(workflow.id)}"${workflow.id === report.workflow.id ? " selected" : ""}>${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
+    .join("");
+  const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
+  const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
+  const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
+  const stageCards = report.stages.map((stage, index) => {
+    const subagents = stage.subagents.length
+      ? stage.subagents.map((subagent) => `<span class="chip">${escapeHtml(subagent.id)}</span>`).join("")
+      : `<span class="muted">No subagents</span>`;
+    const className = stage.policyAllowed ? stage.approvalRequired || stage.policyApprovalRequired ? "warn" : "good" : "bad";
+    return `<div class="graph-stage ${className}">
+      <div class="graph-step">${index + 1}</div>
+      <div>
+        <h3>${escapeHtml(stage.id)}</h3>
+        <p>${escapeHtml(stage.goal)}</p>
+        <div class="meta-grid compact">
+          <div><strong>Agent</strong>${escapeHtml(stage.agentDisplayName ?? stage.agentId)}</div>
+          <div><strong>Tier</strong>${escapeHtml(stage.modelTier ?? "not set")}</div>
+          <div><strong>Context</strong>${formatNumber(stage.contextMaxTokens)} tokens</div>
+          <div><strong>Policy</strong>${stage.policyAllowed ? "allowed" : "blocked"}</div>
+        </div>
+        <div class="chip-row">${subagents}</div>
+      </div>
+    </div>`;
+  }).join("");
+  const stageRows = report.stages.map((stage) => `
+    <tr><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
+  `).join("");
+  const warnings = report.warnings.length
+    ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
+    : "";
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("workflow-graph")}
+  <main>
+    <div class="topbar"><div><a href="/">Dashboard</a><h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
+    <section class="panel"><form method="get" class="workflow-form"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
+    ${warnings}
+    <section class="panel"><div class="metric-grid">
+      ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
+      ${metricCard("Stages", report.totals.stages, `${report.totals.subagentLinks} subagent links`)}
+      ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
+      ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
+    </div></section>
+    <section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>
+    <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
+    <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
+  </main></body></html>`;
 }
 
 function renderModelImprovementHtml(
@@ -8256,7 +8341,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "model-improvement" | "candidate-comparisons" | "governance" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -8264,6 +8349,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["projects", "/projects", "Projects"],
     ["runs", "/runs", "Runs"],
     ["evaluations", "/evaluations", "Evaluations"],
+    ["workflow-graph", "/workflow-graph", "Graph"],
     ["model-improvement", "/model-improvement", "Model Improve"],
     ["candidate-comparisons", "/candidate-comparisons", "Comparisons"],
     ["governance", "/governance", "Governance"],
@@ -8466,6 +8552,17 @@ function dashboardCss(): string {
     .metric small, .muted { color: #64748b; }
     .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .meta-grid div { display: grid; gap: 5px; font-size: 14px; }
+    .graph-flow { display: grid; gap: 12px; }
+    .graph-stage { position: relative; display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 12px; border: 1px solid #e2e7f0; padding: 14px; background: #fff; }
+    .graph-stage + .graph-stage::before { content: ""; position: absolute; left: 34px; top: -13px; width: 2px; height: 12px; background: #94a3b8; }
+    .graph-stage h3 { margin: 0 0 6px; }
+    .graph-stage p { margin: 0 0 10px; }
+    .graph-stage.good { border-color: #bbf7d0; background: #f0fdf4; }
+    .graph-stage.warn { border-color: #fde68a; background: #fffbeb; }
+    .graph-stage.bad { border-color: #fecaca; background: #fef2f2; }
+    .graph-step { width: 32px; height: 32px; display: grid; place-items: center; background: #111827; color: white; font-weight: 700; }
+    .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+    .chip { display: inline-flex; align-items: center; border: 1px solid #cbd5e1; background: white; color: #334155; padding: 4px 7px; font-size: 12px; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }

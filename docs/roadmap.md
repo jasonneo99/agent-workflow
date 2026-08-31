@@ -188,6 +188,7 @@ foundation is complete.
   - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
   - Done: add dry-run-by-default project-local bundle version pinning.
   - Done: add reviewed upgrade/rollback command plans without automatic code installation.
+  - Done: add a dashboard workflow graph view for stages, agents, subagents, context budgets, approvals, and policy fit.
   - Next: add a dashboard action to generate lifecycle plans from the Bundles page.
 
 - [ ] Distributed worker pools.

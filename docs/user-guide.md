@@ -243,6 +243,12 @@ Use `--policy-profile staging` or `--policy-profile production` to preview
 whether stricter execution policy would require approvals or block stages before
 you run the workflow.
 
+The local dashboard exposes the same inspection surface at
+`/workflow-graph?workflow=build-feature&project=/path/to/project`. Use it when
+you want a browser-readable graph of workflow stages, primary agents, subagents,
+context budgets, approval points, and policy fit before spending live model
+tokens.
+
 ## 8. Editor Schema Validation
 
 Agent Workflow ships JSON Schemas for reusable agents, workflows, project
@@ -541,6 +547,7 @@ JSON endpoints:
 ```text
 /api/runs
 /api/settings
+/api/workflow-graph
 /api/queue
 /api/projects
 /api/run?id=<run-id>
@@ -551,6 +558,7 @@ Run detail pages:
 
 ```text
 /settings
+/workflow-graph
 /queue
 /providers
 /projects
@@ -559,7 +567,7 @@ Run detail pages:
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
 ![Dashboard home](assets/screenshots/dashboard-home.png)
 

@@ -80,7 +80,7 @@ The root `agent-workflow.bundle.json` records reusable agent/workflow bundle ver
 
 ## Dashboard Preview
 
-The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, model-improvement evidence, candidate comparisons, and run evidence.
+The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, workflow graphs, model-improvement evidence, candidate comparisons, and run evidence.
 
 ![Agent Workflow dashboard](assets/screenshots/dashboard-home.png)
 
