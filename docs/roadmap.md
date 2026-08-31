@@ -36,6 +36,7 @@ Completed foundations:
 - Project onboarding profiles.
 - Context indexing and compact brief compilation.
 - Run receipts, artifacts, exports, dashboard, and MCP tools.
+- Dashboard workflow graph view for agent, subagent, stage, approval, policy, and context-budget connections.
 - Cost/quality reports, feedback memory, preference scorecards, and tuning proposals.
 - Opt-in project-local tuning overlays under `.agent-workflow/tuning/`.
 - Open-source boundary and shared-IP comparison docs.
@@ -163,6 +164,11 @@ trust gaps.
   - Done: add contract tests for custom agents, workflows, and provider adapters.
   - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
+- [ ] Dashboard graph and mind-map visualization.
+  - Done: add `/workflow-graph` and `/api/workflow-graph` for browser and machine-readable workflow connection inspection.
+  - Done: show stages, primary agents, subagents, context budgets, approvals, policy status, and Mermaid output.
+  - Next: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
+
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
   - Done: add dashboard visibility for scorecard health, eval gaps, routing recommendations, and promotion readiness.
@@ -188,7 +194,6 @@ foundation is complete.
   - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
   - Done: add dry-run-by-default project-local bundle version pinning.
   - Done: add reviewed upgrade/rollback command plans without automatic code installation.
-  - Done: add a dashboard workflow graph view for stages, agents, subagents, context budgets, approvals, and policy fit.
   - Done: add a dashboard action to generate lifecycle plans from the Bundles page.
 
 - [ ] Distributed worker pools.
