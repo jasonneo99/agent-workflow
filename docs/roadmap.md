@@ -167,7 +167,8 @@ trust gaps.
 - [ ] Dashboard graph and mind-map visualization.
   - Done: add `/workflow-graph` and `/api/workflow-graph` for browser and machine-readable workflow connection inspection.
   - Done: show stages, primary agents, subagents, context budgets, approvals, policy status, and Mermaid output.
-  - Next: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
+  - Done: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
+  - Next: add filter controls for agent category, approval requirement, and policy status when workflows grow beyond quick scanning.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

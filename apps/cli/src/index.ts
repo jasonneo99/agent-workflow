@@ -5475,6 +5475,9 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
   const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
+  const graphHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=graph`;
+  const mindMapHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=mind-map`;
+  const view = params.get("view") === "mind-map" ? "mind-map" : "graph";
   const stageCards = report.stages.map((stage, index) => {
     const subagents = stage.subagents.length
       ? stage.subagents.map((subagent) => `<span class="chip">${escapeHtml(subagent.id)}</span>`).join("")
@@ -5501,6 +5504,9 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   const warnings = report.warnings.length
     ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
     : "";
+  const visual = view === "mind-map"
+    ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report)}</section>`
+    : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("workflow-graph")}
   <main>
@@ -5513,10 +5519,39 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
-    <section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>
+    <section class="panel"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a></div></section>
+    ${visual}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
+}
+
+function renderWorkflowMindMapHtml(report: WorkflowGraphReport): string {
+  const branches = report.stages.map((stage) => {
+    const subagents = stage.subagents.length
+      ? stage.subagents.map((subagent) => `<span class="chip">${escapeHtml(subagent.displayName ?? subagent.id)}</span>`).join("")
+      : '<span class="muted">No subagents</span>';
+    const state = stage.policyAllowed ? stage.approvalRequired || stage.policyApprovalRequired ? "warn" : "good" : "bad";
+    return `<article class="mind-node ${state}">
+      <strong>${formatNumber(stage.order)}. ${escapeHtml(stage.id)}</strong>
+      <span>${escapeHtml(stage.agentDisplayName ?? stage.agentId)}</span>
+      <small>${escapeHtml(stage.goal)}</small>
+      <div class="mind-node-meta">
+        <span>${formatNumber(stage.contextMaxTokens)} tokens</span>
+        <span>${stage.approvalRequired || stage.policyApprovalRequired ? "approval" : "no approval"}</span>
+        <span>${stage.policyAllowed ? "allowed" : "blocked"}</span>
+      </div>
+      <div class="chip-row">${subagents}</div>
+    </article>`;
+  }).join("");
+  return `<div class="mind-map">
+    <div class="mind-center">
+      <strong>${escapeHtml(report.workflow.name)}</strong>
+      <span>${escapeHtml(report.workflow.id)}</span>
+      <small>${formatNumber(report.totals.stages)} stages &middot; ${formatNumber(report.totals.subagentLinks)} subagent links</small>
+    </div>
+    <div class="mind-branches">${branches}</div>
+  </div>`;
 }
 
 function renderModelImprovementHtml(
@@ -8661,6 +8696,22 @@ function dashboardCss(): string {
     .graph-step { width: 32px; height: 32px; display: grid; place-items: center; background: #111827; color: white; font-weight: 700; }
     .chip-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
     .chip { display: inline-flex; align-items: center; border: 1px solid #cbd5e1; background: white; color: #334155; padding: 4px 7px; font-size: 12px; }
+    .mind-map { display: grid; grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); gap: 18px; align-items: center; }
+    .mind-center { display: grid; gap: 6px; border: 2px solid #111827; background: #fff; padding: 18px; min-height: 120px; align-content: center; }
+    .mind-center strong { font-size: 18px; line-height: 1.25; }
+    .mind-center span, .mind-center small { color: #64748b; line-height: 1.35; }
+    .mind-branches { position: relative; display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+    .mind-branches::before { content: ""; position: absolute; left: -18px; top: 50%; width: 18px; height: 2px; background: #94a3b8; }
+    .mind-node { position: relative; display: grid; gap: 6px; border: 1px solid #e2e7f0; background: #fff; padding: 12px; min-height: 148px; }
+    .mind-node::before { content: ""; position: absolute; left: -13px; top: 50%; width: 12px; height: 2px; background: #cbd5e1; }
+    .mind-node strong { font-size: 14px; line-height: 1.25; }
+    .mind-node span, .mind-node small { line-height: 1.35; }
+    .mind-node small { color: #64748b; }
+    .mind-node.good { border-color: #bbf7d0; background: #f0fdf4; }
+    .mind-node.warn { border-color: #fde68a; background: #fffbeb; }
+    .mind-node.bad { border-color: #fecaca; background: #fef2f2; }
+    .mind-node-meta { display: flex; flex-wrap: wrap; gap: 6px; }
+    .mind-node-meta span { border: 1px solid #cbd5e1; background: rgba(255,255,255,0.72); padding: 3px 6px; font-size: 12px; color: #334155; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }
@@ -8689,6 +8740,8 @@ function dashboardCss(): string {
       .attention-item { display: grid; }
       .comparison-layout { grid-template-columns: 1fr; }
       .suite-list { position: static; }
+      .mind-map { grid-template-columns: 1fr; }
+      .mind-branches::before, .mind-node::before { display: none; }
       table { display: block; overflow-x: auto; }
     }
   `;
