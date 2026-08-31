@@ -5450,7 +5450,22 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
 </html>`;
 }
 
-async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<WorkflowGraphReport> {
+type DashboardWorkflowGraphRun = {
+  id: string;
+  status: string;
+  task: string;
+  startedAt: string;
+  finishedAt: string | null;
+  providerOverride: string | null;
+  modelTierOverride: string | null;
+};
+
+type DashboardWorkflowGraphReport = WorkflowGraphReport & {
+  runs: DashboardWorkflowGraphRun[];
+  runWarnings: string[];
+};
+
+async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
   const projectDir = path.resolve(process.cwd(), params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
   const workflows = await loadWorkflows(rootDir);
   const workflowId = params.get("workflow")?.trim() || workflows.find((workflow) => workflow.triggers.manual)?.id || workflows[0]?.id;
@@ -5459,30 +5474,56 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Work
   if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
   const project = await loadProjectConfig(projectDir);
   const resolvedPolicy = resolveExecutionPolicy(project, params.get("policyProfile")?.trim() || undefined);
-  return buildWorkflowGraphReport({
+  const report = buildWorkflowGraphReport({
     workflow,
     agents: await loadAgentsForProject(projectDir),
     project,
     resolvedPolicy
   });
+  const runLimit = parseDashboardRunLimit(params.get("runLimit") ?? "50", 50);
+  const safeRunLimit = Math.min(Math.max(runLimit, 0), 250);
+  const runWarnings: string[] = [];
+  let runs: DashboardWorkflowGraphRun[] = [];
+  if (safeRunLimit > 0) {
+    try {
+      const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
+      runs = projectRuns
+        .filter((run) => run.workflowId === workflow.id)
+        .map((run) => ({
+          id: run.id,
+          status: run.status,
+          task: run.task,
+          startedAt: run.startedAt,
+          finishedAt: run.finishedAt,
+          providerOverride: run.providerOverride,
+          modelTierOverride: run.modelTierOverride
+        }));
+    } catch (error) {
+      runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { ...report, runs, runWarnings };
 }
 
-function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
+function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
   const workflowOptions = workflows
     .filter((workflow) => workflow.triggers.manual)
     .map((workflow) => `<option value="${escapeHtml(workflow.id)}"${workflow.id === report.workflow.id ? " selected" : ""}>${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
     .join("");
   const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
-  const view = params.get("view") === "mind-map" ? "mind-map" : "graph";
+  const viewParam = params.get("view");
+  const view = viewParam === "mind-map" || viewParam === "network" ? viewParam : "graph";
   const categoryFilter = params.get("category")?.trim() || "";
   const approvalFilter = params.get("approval")?.trim() || "all";
   const policyFilter = params.get("policyStatus")?.trim() || "all";
+  const runLimit = String(parseDashboardRunLimit(params.get("runLimit") ?? "50", 50));
   const capture = params.get("capture") === "1";
-  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture });
-  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture });
-  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture: true });
-  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, capture: false });
+  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
+  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
+  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
+  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture: true });
+  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture: false });
   const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
   const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
   const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
@@ -5509,12 +5550,15 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   const stageRows = filteredStages.map((stage) => `
     <tr><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
   `).join("") || '<tr><td colspan="7">No stages match the selected filters.</td></tr>';
-  const warnings = report.warnings.length
-    ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
+  const warnings = [...report.warnings, ...report.runWarnings];
+  const warningHtml = warnings.length
+    ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
     : "";
   const visual = view === "mind-map"
     ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
-    : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
+    : view === "network"
+      ? `<section class="panel"><h2>Network Map</h2>${renderWorkflowNetworkHtml(report, filteredStages)}</section>`
+      : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
@@ -5525,16 +5569,17 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
     <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
-    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
-    ${warnings}
+    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
+    ${warningHtml}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
       ${metricCard("Stages", report.totals.stages, `${report.totals.subagentLinks} subagent links`)}
       ${metricCard("Visible", filteredStages.length, "stages after filters")}
+      ${metricCard("Runs", report.runs.length, `recent ${escapeHtml(report.workflow.id)} runs`)}
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
-    <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a></div></section>
+    <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
     ${visual}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
@@ -5558,7 +5603,7 @@ function workflowGraphDashboardHref(
   workflowId: string,
   project: string,
   policyProfile: string,
-  options: { view: string; category: string; approval: string; policyStatus: string; capture: boolean }
+  options: { view: string; category: string; approval: string; policyStatus: string; runLimit: string; capture: boolean }
 ): string {
   const query = new URLSearchParams({
     workflow: workflowId,
@@ -5569,6 +5614,7 @@ function workflowGraphDashboardHref(
   if (options.category) query.set("category", options.category);
   if (options.approval !== "all") query.set("approval", options.approval);
   if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
+  if (options.runLimit !== "50") query.set("runLimit", options.runLimit);
   if (options.capture) query.set("capture", "1");
   return `/workflow-graph?${query.toString()}`;
 }
@@ -5599,6 +5645,199 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: Workflow
     </div>
     <div class="mind-branches">${branches}</div>
   </div>`;
+}
+
+function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
+  if (!stages.length) return '<p class="muted">No stages match the selected filters.</p>';
+  const width = 1120;
+  const height = 680;
+  const centerX = width / 2;
+  const centerY = height / 2;
+  const stageRadiusX = 330;
+  const stageRadiusY = 145;
+  const palette: Record<string, string> = {
+    automatic: "#f59e0b",
+    core: "#2563eb",
+    development: "#0891b2",
+    operations: "#9333ea",
+    product: "#db2777",
+    uncategorized: "#64748b"
+  };
+  const runPalette: Record<string, string> = {
+    completed: "#16a34a",
+    failed: "#dc2626",
+    running: "#f59e0b",
+    queued: "#f59e0b",
+    cancelled: "#64748b"
+  };
+  const nodeById = new Map<string, { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string }>();
+  const links: Array<{ from: string; to: string; width: number; dashed?: boolean }> = [];
+  nodeById.set("workflow", {
+    id: "workflow",
+    label: report.workflow.id,
+    title: `${report.workflow.name} workflow`,
+    x: centerX,
+    y: centerY,
+    r: 34,
+    color: "#111827",
+    kind: "workflow"
+  });
+
+  const agentEntries = new Map<string, { id: string; label: string; category: string; stageIds: Set<string>; isPrimary: boolean }>();
+  stages.forEach((stage, index) => {
+    const angle = stages.length === 1 ? -Math.PI / 2 : -Math.PI + (Math.PI * (index + 1)) / (stages.length + 1);
+    const stageNodeId = `stage:${stage.id}`;
+    nodeById.set(stageNodeId, {
+      id: stageNodeId,
+      label: String(stage.order),
+      title: `${stage.id}: ${stage.goal}`,
+      x: centerX + Math.cos(angle) * stageRadiusX,
+      y: centerY + Math.sin(angle) * stageRadiusY,
+      r: 22,
+      color: stage.policyAllowed ? (stage.approvalRequired || stage.policyApprovalRequired ? "#f59e0b" : "#2563eb") : "#dc2626",
+      kind: "stage"
+    });
+    links.push({ from: "workflow", to: stageNodeId, width: 1.2 });
+    if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.4 });
+    const primary = agentEntries.get(stage.agentId) ?? {
+      id: stage.agentId,
+      label: stage.agentDisplayName ?? stage.agentId,
+      category: stage.agentCategory ?? "uncategorized",
+      stageIds: new Set<string>(),
+      isPrimary: true
+    };
+    primary.stageIds.add(stageNodeId);
+    primary.isPrimary = true;
+    agentEntries.set(stage.agentId, primary);
+    links.push({ from: stageNodeId, to: `agent:${stage.agentId}`, width: 2 });
+    stage.subagents.forEach((subagent) => {
+      const entry = agentEntries.get(subagent.id) ?? {
+        id: subagent.id,
+        label: subagent.displayName ?? subagent.id,
+        category: subagent.category ?? "uncategorized",
+        stageIds: new Set<string>(),
+        isPrimary: false
+      };
+      entry.stageIds.add(stageNodeId);
+      agentEntries.set(subagent.id, entry);
+      links.push({ from: stageNodeId, to: `agent:${subagent.id}`, width: 1, dashed: true });
+    });
+  });
+
+  const agentsByCategory = new Map<string, Array<{ id: string; label: string; category: string; stageIds: Set<string>; isPrimary: boolean }>>();
+  for (const agent of agentEntries.values()) {
+    const category = agent.category || "uncategorized";
+    const group = agentsByCategory.get(category) ?? [];
+    group.push(agent);
+    agentsByCategory.set(category, group);
+  }
+  const categories = uniqueSorted([...agentsByCategory.keys()]);
+  categories.forEach((category, categoryIndex) => {
+    const group = agentsByCategory.get(category) ?? [];
+    const categoryAngle = -Math.PI * 0.9 + ((Math.PI * 1.8) * categoryIndex) / Math.max(categories.length - 1, 1);
+    const anchorX = centerX + Math.cos(categoryAngle) * 500;
+    const anchorY = centerY + Math.sin(categoryAngle) * 255;
+    group
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .forEach((agent, agentIndex) => {
+        const offsetAngle = (Math.PI * 2 * agentIndex) / Math.max(group.length, 1);
+        const radius = 34 + Math.floor(agentIndex / 6) * 28;
+        nodeById.set(`agent:${agent.id}`, {
+          id: `agent:${agent.id}`,
+          label: agent.id,
+          title: `${agent.label} (${category})`,
+          x: anchorX + Math.cos(offsetAngle) * radius,
+          y: anchorY + Math.sin(offsetAngle) * radius,
+          r: agent.isPrimary ? 17 : 12,
+          color: palette[category] ?? palette.uncategorized,
+          kind: agent.isPrimary ? "primary agent" : "subagent"
+        });
+      });
+  });
+  const activeRuns = report.runs.filter((run) => run.status === "queued" || run.status === "running");
+  const historicalRuns = report.runs.filter((run) => run.status !== "queued" && run.status !== "running");
+  activeRuns.forEach((run, index) => {
+    const x = centerX - 90 + index * 60;
+    const y = centerY - 84;
+    nodeById.set(`run:${run.id}`, {
+      id: `run:${run.id}`,
+      label: run.status === "running" ? "run" : "q",
+      title: `${run.status}: ${run.task} (${run.id})`,
+      x,
+      y,
+      r: 14,
+      color: runPalette[run.status] ?? "#64748b",
+      kind: "run"
+    });
+    links.push({ from: "workflow", to: `run:${run.id}`, width: 2.2 });
+  });
+  const historyRadiusX = 430;
+  const historyRadiusY = 96;
+  historicalRuns.forEach((run, index) => {
+    const angle = Math.PI * 0.08 + (Math.PI * 0.84 * index) / Math.max(historicalRuns.length - 1, 1);
+    const x = centerX + Math.cos(angle) * historyRadiusX;
+    const y = centerY + 210 + Math.sin(angle) * historyRadiusY;
+    nodeById.set(`run:${run.id}`, {
+      id: `run:${run.id}`,
+      label: "",
+      title: `${run.status}: ${run.task} (${run.id})`,
+      x,
+      y,
+      r: run.status === "failed" ? 10 : 8,
+      color: runPalette[run.status] ?? "#64748b",
+      kind: "run"
+    });
+    links.push({ from: "workflow", to: `run:${run.id}`, width: run.status === "failed" ? 1.4 : 0.8, dashed: true });
+  });
+
+  const linkSvg = links.map((link) => {
+    const from = nodeById.get(link.from);
+    const to = nodeById.get(link.to);
+    if (!from || !to) return "";
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2 - Math.min(42, Math.abs(from.x - to.x) / 10);
+    const dash = link.dashed ? ' stroke-dasharray="4 5"' : "";
+    return `<path d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} Q ${formatSvgNumber(midX)} ${formatSvgNumber(midY)} ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
+  }).join("");
+  const nodeSvg = [...nodeById.values()].map((node) => `
+    <g class="network-node network-${escapeHtml(node.kind.replace(/\s+/g, "-"))}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
+      <title>${escapeHtml(node.title)}</title>
+      <circle r="${node.r}" fill="${node.color}"></circle>
+      ${node.kind === "stage" || node.kind === "workflow" || (node.kind === "run" && node.label) ? `<text text-anchor="middle" dominant-baseline="central">${escapeHtml(node.label)}</text>` : ""}
+    </g>`).join("");
+  const labelSvg = [...nodeById.values()]
+    .filter((node) => node.kind === "workflow" || node.kind === "primary agent")
+    .map((node) => `<text class="network-label" x="${formatSvgNumber(node.x)}" y="${formatSvgNumber(node.y + node.r + 18)}" text-anchor="middle">${escapeHtml(truncateMiddle(node.label, 26))}</text>`)
+    .join("");
+  const runCounts = countBy(report.runs.map((run) => run.status));
+  const runLegend = Object.entries(runCounts).map(([status, count]) => `<span><i style="background:${runPalette[status] ?? "#64748b"}"></i>${escapeHtml(status)} runs (${count})</span>`).join("");
+  const legend = categories.map((category) => `<span><i style="background:${palette[category] ?? palette.uncategorized}"></i>${escapeHtml(category)}</span>`).join("");
+  return `<div class="network-shell">
+    <svg class="network-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Workflow network map for ${escapeHtml(report.workflow.name)}">
+      <rect width="${width}" height="${height}" rx="0"></rect>
+      <g class="network-links">${linkSvg}</g>
+      <g class="network-nodes">${nodeSvg}</g>
+      <g>${labelSvg}</g>
+    </svg>
+    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span>${runLegend}</div>
+  </div>`;
+}
+
+function countBy(values: string[]): Record<string, number> {
+  return values.reduce<Record<string, number>>((counts, value) => {
+    counts[value] = (counts[value] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function formatSvgNumber(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
+function truncateMiddle(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  const keep = Math.max(4, Math.floor((maxLength - 1) / 2));
+  return `${value.slice(0, keep)}...${value.slice(-keep)}`;
 }
 
 function renderModelImprovementHtml(
@@ -8761,6 +9000,19 @@ function dashboardCss(): string {
     .mind-node.bad { border-color: #fecaca; background: #fef2f2; }
     .mind-node-meta { display: flex; flex-wrap: wrap; gap: 6px; }
     .mind-node-meta span { border: 1px solid #cbd5e1; background: rgba(255,255,255,0.72); padding: 3px 6px; font-size: 12px; color: #334155; }
+    .network-shell { display: grid; gap: 12px; }
+    .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #e2e7f0; background: #fbfcff; }
+    .network-map rect { fill: #fbfcff; }
+    .network-links path { fill: none; stroke: #94a3b8; stroke-opacity: 0.28; }
+    .network-node circle { stroke: white; stroke-width: 4; filter: drop-shadow(0 4px 8px rgba(15,23,42,0.12)); }
+    .network-node text { fill: white; font-size: 13px; font-weight: 800; pointer-events: none; }
+    .network-workflow circle { stroke: #cbd5e1; stroke-width: 5; }
+    .network-label { fill: #334155; font-size: 12px; font-weight: 700; }
+    .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #4b5870; font-size: 12px; }
+    .network-legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid white; box-shadow: 0 0 0 1px #cbd5e1; }
+    .network-legend .legend-stage { background: #2563eb; }
+    .network-legend .legend-workflow { background: #111827; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }
@@ -8798,6 +9050,7 @@ function dashboardCss(): string {
       .suite-list { position: static; }
       .mind-map { grid-template-columns: 1fr; }
       .mind-branches::before, .mind-node::before { display: none; }
+      .network-map { min-height: 360px; }
       table { display: block; overflow-x: auto; }
     }
   `;
@@ -10356,6 +10609,12 @@ function templateNameForProfile(profile: string): string {
 function parsePositiveInteger(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseDashboardRunLimit(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(Math.max(parsed, 0), 250);
 }
 
 function parseProposalIds(value: string | undefined): string[] | "all" {

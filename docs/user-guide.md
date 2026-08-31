@@ -249,11 +249,14 @@ The local dashboard exposes the same inspection surface at
 you want a browser-readable graph of workflow stages, primary agents, subagents,
 context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
-presentation-friendly agent connection map. The page also includes filters for
-agent category, approval requirement, and policy status so larger workflows stay
-scannable. Add `&capture=1` for a clean screenshot/print view that hides the
-dashboard navigation and form controls while preserving the selected workflow,
-view, and filters.
+presentation-friendly agent connection map, or `&view=network` for a visual SVG
+network map of workflow, stage, primary-agent, subagent, and recent run-history
+relationships. Use `runLimit=0` for definition-only diagrams or raise the limit
+up to `250` when you want more historical runs in the graph. The page also
+includes filters for agent category, approval requirement, and policy status so
+larger workflows stay scannable. Add `&capture=1` for a clean screenshot/print
+view that hides the dashboard navigation and form controls while preserving the
+selected workflow, view, run limit, and filters.
 
 ## 8. Editor Schema Validation
 

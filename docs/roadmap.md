@@ -170,6 +170,7 @@ trust gaps.
   - Done: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
   - Done: add filter controls for agent category, approval requirement, and policy status when workflows grow beyond quick scanning.
   - Done: add a screenshot/export-friendly graph capture flow for docs and project handoffs.
+  - Done: add a lightweight SVG network map mode with workflow, stage, primary-agent, subagent, current-run, and historical-run nodes.
   - Next: add reusable screenshot assets for the graph and mind-map views after the dashboard visual language settles.
 
 - [x] Optional model-improvement workflow pack.
