@@ -85,8 +85,9 @@ npm run dashboard
 ```
 
 Use it to inspect bundle trust, runtime compatibility, upgrade status,
-definition migration guidance, and mock-provider contract-test readiness without
-changing project files.
+definition migration guidance, lifecycle command plans, and mock-provider
+contract-test readiness without changing project files unless you explicitly
+write a reviewed lifecycle plan.
 
 ## 3. Use From An MCP Client
 
@@ -548,6 +549,7 @@ JSON endpoints:
 /api/runs
 /api/settings
 /api/workflow-graph
+/api/bundle-lifecycle-plan
 /api/queue
 /api/projects
 /api/run?id=<run-id>

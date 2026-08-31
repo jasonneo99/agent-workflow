@@ -131,6 +131,8 @@ The trust store contains public keys only at `~/.config/agent-workflow/trusted-b
 The dashboard exposes `/bundles`, `/api/bundles`, and `/api/bundle-registry`.
 Add `?project=/path/to/project` to include project adoption state, upgrade
 status, definition migration guidance, registry status, project-local pins, and
-mock-provider contract-test readiness. MCP exposes `agentflow_bundle_verify`,
+mock-provider contract-test readiness. The Bundles page can also generate a
+dry-run lifecycle plan from the browser and optionally write
+`.agent-workflow/bundle-lifecycle-plan.json` for review. MCP exposes `agentflow_bundle_verify`,
 `agentflow_bundle_compat`, `agentflow_bundle_upgrade_preview`, and
 `agentflow_bundle_adopt`; trust-store mutations remain explicit CLI actions.

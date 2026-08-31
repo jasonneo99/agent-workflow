@@ -189,10 +189,11 @@ foundation is complete.
   - Done: add dry-run-by-default project-local bundle version pinning.
   - Done: add reviewed upgrade/rollback command plans without automatic code installation.
   - Done: add a dashboard workflow graph view for stages, agents, subagents, context budgets, approvals, and policy fit.
-  - Next: add a dashboard action to generate lifecycle plans from the Bundles page.
+  - Done: add a dashboard action to generate lifecycle plans from the Bundles page.
 
 - [ ] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
+  - Next: define worker identity, lease ownership, and heartbeat visibility before adding multi-worker execution.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

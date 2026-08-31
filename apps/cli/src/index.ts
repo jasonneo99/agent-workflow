@@ -4554,6 +4554,21 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/bundle-lifecycle-plan") {
+    const form = await readFormBody(request);
+    const result = await processDashboardBundleLifecyclePlan({
+      project: form.get("project") ?? "",
+      bundleId: form.get("bundleId") ?? "",
+      mode: form.get("mode") ?? "",
+      targetVersion: form.get("targetVersion") ?? "",
+      registry: form.get("registry") ?? "",
+      write: form.get("write") === "on"
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/follow-up") {
     const form = await readFormBody(request);
     const result = await runDashboardFollowUp({
@@ -5834,6 +5849,7 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   const contractRows = readiness.contractTests.results.slice(0, 16).map((result) => `
     <tr><td><span class="flag ${result.status === "pass" ? "good" : result.status === "skip" ? "warn" : "bad"}">${escapeHtml(result.status)}</span></td><td>${escapeHtml(result.id)}</td><td>${escapeHtml(result.detail)}</td></tr>
   `).join("");
+  const lifecycleForm = bundleLifecyclePlanForm(readiness, params);
   const migrationItems = readiness.migrationPlan.migrations.map((migration) => `
     <details class="artifact"><summary>${escapeHtml(migration.id)}: ${escapeHtml(migration.from)} to ${escapeHtml(migration.to)}</summary>
       <p>${escapeHtml(migration.summary)}</p>
@@ -5861,6 +5877,7 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   <p><strong>Fingerprint:</strong> <code>${escapeHtml(verification.keyFingerprint ?? "none")}</code></p><p><strong>Signed:</strong> ${renderDashboardDateTime(verification.signedAt, "not signed")}<br><strong>Expires:</strong> ${renderDashboardDateTime(verification.expiresAt, "none")}</p>
   <h3>Verification</h3><ul>${verification.reasons.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></section>
   <section class="panel"><div class="section-heading"><div><h2>Trusted Registry</h2><span class="muted">${escapeHtml(readiness.registry.registryPath)}</span></div><a class="button secondary" href="/api/bundle-registry">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Bundle</th><th>Status</th><th>Latest</th><th>Package</th><th>Install</th></tr></thead><tbody>${registryRows || '<tr><td colspan="5">No registry entries found.</td></tr>'}</tbody></table></div>${pinHtml}<p class="muted">Registry entries are discovery and governance metadata. Installing or adopting a bundle still requires explicit package-manager and trust-verification steps.</p></section>
+  <section class="panel"><h2>Lifecycle Plan</h2><p class="muted">Generate a reviewed upgrade or rollback command plan. The dashboard never installs packages or changes adoption state.</p>${lifecycleForm}</section>
   <section class="panel"><h2>Compatibility</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Actual</th><th>Required</th><th>Detail</th></tr></thead><tbody>${compatibilityRows}</tbody></table></div></section>
   <section class="panel"><h2>Project Adoption</h2><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(readiness.upgradePreview.source.kind)}</div><div><strong>Status</strong>${escapeHtml(readiness.upgradePreview.status)}</div><div><strong>Source Version</strong>${escapeHtml(readiness.upgradePreview.source.version ?? "none")}</div><div><strong>Recorded</strong>${renderDashboardDateTime(readiness.upgradePreview.source.recordedAt, "none")}</div></div><h3>Recommended Actions</h3><ul>${readiness.upgradePreview.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
   <section class="panel"><h2>Definition Migrations</h2>${migrationItems || "<p>No applicable definition migrations.</p>"}<h3>Recommended Actions</h3><ul>${readiness.migrationPlan.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></section>
@@ -8674,6 +8691,25 @@ function promotionNotePlanForm(report: DashboardCandidateComparisonReport): stri
   </form>`;
 }
 
+function bundleLifecyclePlanForm(readiness: DashboardBundleReadiness, params: URLSearchParams): string {
+  if (!readiness.projectDir) {
+    return '<p class="muted">Enter a project path and inspect readiness before generating a project-local lifecycle plan.</p>';
+  }
+  const selectedEntry = readiness.registry.entries.find((entry) => entry.selected) ?? readiness.registry.entries[0];
+  const bundleId = params.get("bundleId")?.trim() || selectedEntry?.id || "agent-workflow-core";
+  const targetVersion = params.get("targetVersion")?.trim() || selectedEntry?.latestVersion || "";
+  const registry = params.get("registry")?.trim() || readiness.registry.registryPath;
+  return `<form class="workflow-form" method="post" action="/api/bundle-lifecycle-plan">
+    <input type="hidden" name="project" value="${escapeHtml(readiness.projectDir)}">
+    <input type="hidden" name="registry" value="${escapeHtml(registry)}">
+    <label>Bundle id<input name="bundleId" value="${escapeHtml(bundleId)}"></label>
+    <label>Mode<select name="mode"><option value="upgrade">upgrade</option><option value="rollback">rollback</option></select></label>
+    <label>Target version<input name="targetVersion" value="${escapeHtml(targetVersion)}" placeholder="latest for upgrade, required for rollback"></label>
+    <label class="check-row"><input type="checkbox" name="write"> Write plan file</label>
+    <div class="form-actions"><button type="submit">Generate Plan</button></div>
+  </form>`;
+}
+
 function projectIndexForm(project: string): string {
   return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
 }
@@ -8688,6 +8724,54 @@ async function readFormBody(request: http.IncomingMessage): Promise<URLSearchPar
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function processDashboardBundleLifecyclePlan(input: {
+  project: string;
+  bundleId: string;
+  mode: string;
+  targetVersion: string;
+  registry: string;
+  write: boolean;
+}): Promise<DashboardFollowUpResult> {
+  const projectDir = input.project.trim();
+  if (!projectDir) {
+    return { ok: false, error: "Missing project path." };
+  }
+  const mode = input.mode.trim() || "upgrade";
+  if (mode !== "upgrade" && mode !== "rollback") {
+    return { ok: false, error: "Mode must be upgrade or rollback." };
+  }
+  const registryPath = path.resolve(process.cwd(), input.registry.trim() || defaultBundleRegistryPath);
+  const registry = await loadBundleRegistry(registryPath);
+  const plan = buildBundleLifecyclePlan({
+    registry,
+    projectDir: path.resolve(process.cwd(), projectDir),
+    bundleId: input.bundleId.trim() || "agent-workflow-core",
+    mode,
+    targetVersion: input.targetVersion.trim() || undefined,
+    write: input.write
+  });
+  let writtenPath: string | null = null;
+  if (input.write && plan.status === "ready") {
+    writtenPath = await writeBundleLifecyclePlan(plan);
+  }
+  const writeCommand = [
+    "npm run agentflow -- bundle-lifecycle-plan",
+    "--project", shellQuote(plan.projectDir),
+    "--bundle-id", shellQuote(input.bundleId.trim() || "agent-workflow-core"),
+    "--mode", shellQuote(mode),
+    ...(input.targetVersion.trim() ? ["--target-version", shellQuote(input.targetVersion.trim())] : []),
+    "--write"
+  ].join(" ");
+  const output = [
+    formatBundleLifecyclePlan(plan),
+    writtenPath ? `\nWritten: ${writtenPath}` : `\nDry run only. To write the review file:\n${writeCommand}`,
+    "Open: /bundles"
+  ].join("\n");
+  return plan.status === "ready"
+    ? { ok: true, title: input.write ? "Bundle Lifecycle Plan Written" : "Bundle Lifecycle Plan Dry Run", output }
+    : { ok: false, error: output };
 }
 
 async function runDashboardFollowUp(input: {
