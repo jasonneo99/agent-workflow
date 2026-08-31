@@ -8926,6 +8926,7 @@ function dashboardCss(): string {
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
     .capture-page main { max-width: 1440px; padding: 24px; }
     .capture-page .panel { break-inside: avoid; }
+    .capture-page .capture-hide { display: none !important; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }

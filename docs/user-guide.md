@@ -258,6 +258,16 @@ larger workflows stay scannable. Add `&capture=1` for a clean screenshot/print
 view that hides the dashboard navigation and form controls while preserving the
 selected workflow, view, run limit, and filters.
 
+![Workflow network map](assets/screenshots/dashboard-workflow-network.png)
+
+![Workflow mind map](assets/screenshots/dashboard-workflow-mind-map.png)
+
+Regenerate the committed dashboard screenshots after intentional visual changes:
+
+```bash
+npm run screenshots:dashboard
+```
+
 ## 8. Editor Schema Validation
 
 Agent Workflow ships JSON Schemas for reusable agents, workflows, project

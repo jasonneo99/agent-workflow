@@ -213,6 +213,10 @@ The dashboard includes a **Graph** view for inspecting workflow stages, primary
 agents, subagents, context budgets, approval points, and policy fit before
 queueing work.
 
+![Workflow network map](docs/assets/screenshots/dashboard-workflow-network.png)
+
+![Workflow mind map](docs/assets/screenshots/dashboard-workflow-mind-map.png)
+
 The dashboard includes an **Evaluations** view for comparing provider, model
 tier, prompt, quality, latency, fallback, estimated cost, and feedback results.
 It also includes a **Model Improvement** view for scorecard health, eval

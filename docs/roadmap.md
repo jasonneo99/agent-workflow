@@ -171,7 +171,8 @@ trust gaps.
   - Done: add filter controls for agent category, approval requirement, and policy status when workflows grow beyond quick scanning.
   - Done: add a screenshot/export-friendly graph capture flow for docs and project handoffs.
   - Done: add a lightweight SVG network map mode with workflow, stage, primary-agent, subagent, current-run, and historical-run nodes.
-  - Next: add reusable screenshot assets for the graph and mind-map views after the dashboard visual language settles.
+  - Done: add reusable screenshot assets and a local regeneration command for the graph and mind-map views.
+  - Next: improve network-map label placement for dense workflows.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

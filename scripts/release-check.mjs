@@ -152,7 +152,9 @@ function checkPackageContents() {
     "docs/README.md",
     "docs/user-guide.md",
     "docs/assets/screenshots/dashboard-home.png",
-    "docs/assets/screenshots/dashboard-run-detail.png"
+    "docs/assets/screenshots/dashboard-run-detail.png",
+    "docs/assets/screenshots/dashboard-workflow-mind-map.png",
+    "docs/assets/screenshots/dashboard-workflow-network.png"
   ];
   const missing = required.filter((file) => !files.has(file));
   record(missing.length === 0, "Package contents", `Package is missing expected release/docs files: ${missing.join(", ")}`);
