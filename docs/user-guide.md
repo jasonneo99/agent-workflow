@@ -249,7 +249,9 @@ The local dashboard exposes the same inspection surface at
 you want a browser-readable graph of workflow stages, primary agents, subagents,
 context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
-presentation-friendly agent connection map.
+presentation-friendly agent connection map. The page also includes filters for
+agent category, approval requirement, and policy status so larger workflows stay
+scannable.
 
 ## 8. Editor Schema Validation
 

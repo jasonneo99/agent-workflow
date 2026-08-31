@@ -5478,7 +5478,12 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   const graphHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=graph`;
   const mindMapHref = `/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}&view=mind-map`;
   const view = params.get("view") === "mind-map" ? "mind-map" : "graph";
-  const stageCards = report.stages.map((stage, index) => {
+  const categoryFilter = params.get("category")?.trim() || "";
+  const approvalFilter = params.get("approval")?.trim() || "all";
+  const policyFilter = params.get("policyStatus")?.trim() || "all";
+  const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
+  const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
+  const stageCards = filteredStages.map((stage, index) => {
     const subagents = stage.subagents.length
       ? stage.subagents.map((subagent) => `<span class="chip">${escapeHtml(subagent.id)}</span>`).join("")
       : `<span class="muted">No subagents</span>`;
@@ -5498,24 +5503,28 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
       </div>
     </div>`;
   }).join("");
-  const stageRows = report.stages.map((stage) => `
+  const stageRows = filteredStages.map((stage) => `
     <tr><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
-  `).join("");
+  `).join("") || '<tr><td colspan="7">No stages match the selected filters.</td></tr>';
   const warnings = report.warnings.length
     ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
     : "";
   const visual = view === "mind-map"
-    ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report)}</section>`
+    ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
     : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
+  const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
+  const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
+  const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("workflow-graph")}
   <main>
     <div class="topbar"><div><a href="/">Dashboard</a><h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
-    <section class="panel"><form method="get" class="workflow-form"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
+    <section class="panel"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
     ${warnings}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
       ${metricCard("Stages", report.totals.stages, `${report.totals.subagentLinks} subagent links`)}
+      ${metricCard("Visible", filteredStages.length, "stages after filters")}
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
@@ -5526,8 +5535,21 @@ function renderWorkflowGraphDashboardHtml(report: WorkflowGraphReport, workflows
   </main></body></html>`;
 }
 
-function renderWorkflowMindMapHtml(report: WorkflowGraphReport): string {
-  const branches = report.stages.map((stage) => {
+function filterWorkflowGraphStages(report: WorkflowGraphReport, filters: { category: string; approval: string; policyStatus: string }): WorkflowGraphReport["stages"] {
+  return report.stages.filter((stage) => {
+    const category = stage.agentCategory ?? "uncategorized";
+    const needsApproval = stage.approvalRequired || stage.policyApprovalRequired;
+    if (filters.category && category !== filters.category) return false;
+    if (filters.approval === "required" && !needsApproval) return false;
+    if (filters.approval === "not-required" && needsApproval) return false;
+    if (filters.policyStatus === "allowed" && !stage.policyAllowed) return false;
+    if (filters.policyStatus === "blocked" && stage.policyAllowed) return false;
+    return true;
+  });
+}
+
+function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
+  const branches = stages.map((stage) => {
     const subagents = stage.subagents.length
       ? stage.subagents.map((subagent) => `<span class="chip">${escapeHtml(subagent.displayName ?? subagent.id)}</span>`).join("")
       : '<span class="muted">No subagents</span>';
@@ -5543,7 +5565,7 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport): string {
       </div>
       <div class="chip-row">${subagents}</div>
     </article>`;
-  }).join("");
+  }).join("") || '<p class="muted">No stages match the selected filters.</p>';
   return `<div class="mind-map">
     <div class="mind-center">
       <strong>${escapeHtml(report.workflow.name)}</strong>
