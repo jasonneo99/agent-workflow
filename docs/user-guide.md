@@ -555,6 +555,17 @@ owning worker, and lease deadline so interrupted work is easier to diagnose.
 This is a visibility foundation for worker pools; it does not yet reassign
 expired leases automatically.
 
+Recover tasks owned by interrupted workers after their lease expires:
+
+```bash
+npm run agentflow -- recover-leases
+npm run agentflow -- recover-leases --run <workflow-run-id>
+```
+
+The command only requeues `running` tasks whose `lease_expires_at` timestamp is
+already in the past. It writes an audit receipt for each affected run. The Queue
+page shows **Recover Expired Leases** when expired leases are present.
+
 JSON endpoints:
 
 ```text
@@ -624,7 +635,7 @@ The Projects page lists known projects from local enterprise storage. It shows e
 
 ![Projects page](assets/screenshots/dashboard-projects.png)
 
-The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages when no daemon is running, Requeue Running to unlock stages left running after an interrupted worker, Resume Checkpoint to preserve completed stages while requeueing unfinished or failed stages, Retry Failed to requeue only failed stages, and Cancel to stop queued or running work. Use Dismiss after reviewing a failure that should leave the active queue; this changes the run and all unfinished tasks to `dismissed` while preserving history, artifacts, and an audit receipt. Bulk dismissal requires explicit confirmation and can be filtered to one project path.
+The Queue page shows queued, running, and failed workflow runs that need attention. Use Process Worker Batch to run the next available stages when no daemon is running, Recover Expired Leases to unlock only tasks whose worker lease has elapsed, Requeue Running to manually unlock all running stages for a run, Resume Checkpoint to preserve completed stages while requeueing unfinished or failed stages, Retry Failed to requeue only failed stages, and Cancel to stop queued or running work. Use Dismiss after reviewing a failure that should leave the active queue; this changes the run and all unfinished tasks to `dismissed` while preserving history, artifacts, and an audit receipt. Bulk dismissal requires explicit confirmation and can be filtered to one project path.
 
 ![Queue control panel](assets/screenshots/dashboard-queue.png)
 

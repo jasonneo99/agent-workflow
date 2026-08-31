@@ -58,6 +58,7 @@ import {
   markActionApprovalExecution,
   recordRunAction,
   requestActionApproval,
+  requeueExpiredWorkflowTaskLeases,
   requeueRunningWorkflowTasks,
   replayWorkflowRun,
   resumeWorkflowRunFromCheckpoint,
@@ -2879,6 +2880,31 @@ program
     await writeHeartbeat("stopped");
   });
 
+program
+  .command("recover-leases")
+  .description("Requeue running workflow tasks whose worker lease has expired")
+  .option("-r, --run <id>", "limit recovery to one workflow run")
+  .option("-p, --project <dir>", "limit recovery to one project root")
+  .option("--reason <text>", "audit reason", "Expired worker lease recovery requested.")
+  .action(async (options: { run?: string; project?: string; reason: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const result = await requeueExpiredWorkflowTaskLeases({
+      runId: options.run,
+      projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      actor: "cli",
+      reason: options.reason
+    });
+    console.log(`Requeued expired leases: ${result.requeuedTasks} task(s) across ${result.affectedRuns} run(s).`);
+  });
+
 function requiredAgent<T extends { id: string }>(agents: Map<string, T>, id: string): T {
   const agent = agents.get(id);
   if (!agent) {
@@ -5138,6 +5164,7 @@ function renderDashboardHtml(
 function renderQueueHtml(queue: DashboardQueueItem[]): string {
   const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
   const failed = queue.filter((item) => item.runStatus === "failed");
+  const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
   const rows = queue.map((item) => {
     const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} running, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
@@ -5191,6 +5218,7 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
       </div>
       <div class="actions">
         ${queueProcessForm()}
+        ${expiredLeaseRows.length ? queueRecoverExpiredLeasesForm() : ""}
       </div>
     </section>
     ${failed.length ? `<section class="panel warn-panel">
@@ -7300,6 +7328,26 @@ async function processDashboardQueueAction(input: {
     };
   }
 
+  if (action === "recover-expired-leases") {
+    const result = await requeueExpiredWorkflowTaskLeases({
+      runId: runId || undefined,
+      actor: "dashboard",
+      reason: input.reason.trim() || "Expired worker lease recovery requested from dashboard."
+    });
+    return {
+      ok: true,
+      title: "Expired worker leases recovered",
+      runId: runId || undefined,
+      output: [
+        runId ? `Run: ${runId}` : "Run filter: all active runs",
+        `Requeued expired tasks: ${result.requeuedTasks}`,
+        `Affected runs: ${result.affectedRuns}`,
+        "History, artifacts, and receipts were preserved.",
+        runId ? `Open: /run?id=${encodeURIComponent(runId)}` : "Open: /queue"
+      ].join("\n")
+    };
+  }
+
   if (!runId) {
     return { ok: false, error: "Missing run id." };
   }
@@ -8658,12 +8706,19 @@ function queueProcessForm(): string {
   return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><button type="submit">Process Worker Batch</button></form>`;
 }
 
+function queueRecoverExpiredLeasesForm(): string {
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">Recover Expired Leases</button></form>`;
+}
+
 function queueItemForms(item: DashboardQueueItem): string {
   const forms = [
     `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">Open</a>`
   ];
   if (item.runningTasks > 0) {
     forms.push(queueRunActionForm(item.runId, "requeue-running", "Requeue Running"));
+  }
+  if (hasExpiredLease(item)) {
+    forms.push(queueRunActionForm(item.runId, "recover-expired-leases", "Recover Expired Lease"));
   }
   if (item.queuedTasks > 0 || item.runningTasks > 0 || item.failedTasks > 0 || item.runStatus === "failed") {
     forms.push(queueRunActionForm(item.runId, "resume-checkpoint", "Resume Checkpoint"));
@@ -8676,6 +8731,10 @@ function queueItemForms(item: DashboardQueueItem): string {
     forms.push(queueRunActionForm(item.runId, "cancel", "Cancel"));
   }
   return forms.join("");
+}
+
+function hasExpiredLease(item: DashboardQueueItem): boolean {
+  return Boolean(item.runningLeaseExpiresAt && Date.parse(item.runningLeaseExpiresAt) < Date.now());
 }
 
 function queueRunActionForm(runId: string, action: string, label: string): string {

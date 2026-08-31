@@ -455,6 +455,8 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
          set status = 'queued',
              started_at = null,
              finished_at = null,
+             worker_id = null,
+             lease_expires_at = null,
              available_at = now()
          where run_id = $1::uuid
            and status = 'running'
@@ -480,6 +482,83 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
   });
 }
 
+export async function requeueExpiredWorkflowTaskLeases(input: {
+  runId?: string;
+  projectRootUri?: string;
+  actor: string;
+  reason: string;
+}): Promise<{ requeuedTasks: number; affectedRuns: number }> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<{ runId: string; taskId: string; workerId: string | null; leaseExpiresAt: string | null }>(
+        `with expired as (
+           select wt.id, wt.run_id, wt.worker_id, wt.lease_expires_at
+           from workflow_tasks wt
+           join workflow_runs wr on wr.id = wt.run_id
+           join projects p on p.id = wr.project_id
+           where wt.status = 'running'
+             and wt.lease_expires_at is not null
+             and wt.lease_expires_at < now()
+             and ($1::uuid is null or wt.run_id = $1::uuid)
+             and ($2::text is null or p.root_uri = $2)
+           for update of wt skip locked
+         )
+         update workflow_tasks wt
+         set status = 'queued',
+             started_at = null,
+             finished_at = null,
+             worker_id = null,
+             lease_expires_at = null,
+             available_at = now()
+         from expired
+         where wt.id = expired.id
+         returning wt.run_id::text as "runId",
+                   wt.id::text as "taskId",
+                   expired.worker_id as "workerId",
+                   expired.lease_expires_at::text as "leaseExpiresAt"`,
+        [input.runId ?? null, input.projectRootUri ?? null]
+      );
+      const runIds = [...new Set(result.rows.map((row) => row.runId))];
+      if (runIds.length) {
+        await client.query(
+          `update workflow_runs
+           set status = 'queued',
+               finished_at = null
+           where id = any($1::uuid[])
+             and status = 'running'`,
+          [runIds]
+        );
+        for (const runId of runIds) {
+          const tasks = result.rows.filter((row) => row.runId === runId);
+          await client.query(
+            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+             values ($1::uuid, 'workflow-orchestrator', 'expired_worker_lease_requeued', $1::text, $2, $3)`,
+            [
+              runId,
+              input.reason,
+              JSON.stringify({
+                actor: input.actor,
+                reason: input.reason,
+                requeuedTasks: tasks.length,
+                tasks
+              })
+            ]
+          );
+        }
+      }
+      await client.query("commit");
+      return {
+        requeuedTasks: result.rowCount ?? 0,
+        affectedRuns: runIds.length
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
 export async function retryFailedWorkflowRun(runId: string): Promise<number> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -489,6 +568,8 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
          set status = 'queued',
              started_at = null,
              finished_at = null,
+             worker_id = null,
+             lease_expires_at = null,
              available_at = now()
          where run_id = $1
            and status = 'failed'
@@ -548,6 +629,8 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
          set status = 'queued',
              started_at = null,
              finished_at = null,
+             worker_id = null,
+             lease_expires_at = null,
              available_at = now()
          where run_id = $1::uuid
            and status = any($2::text[])

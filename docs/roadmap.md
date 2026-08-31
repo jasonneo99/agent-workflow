@@ -194,7 +194,8 @@ foundation is complete.
 - [ ] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
   - Done: define worker identity, lease ownership, and heartbeat visibility before adding multi-worker execution.
-  - Next: add explicit expired-lease recovery so interrupted worker tasks can be safely requeued by policy.
+  - Done: add explicit expired-lease recovery so interrupted worker tasks can be safely requeued by policy.
+  - Next: add project-scoped worker filters and bounded concurrency settings before enabling true multi-worker pools.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
