@@ -4619,6 +4619,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       action: form.get("action") ?? "",
       runId: form.get("runId") ?? undefined,
       project: form.get("project") ?? undefined,
+      workflowId: form.get("workflowId") ?? undefined,
+      stageId: form.get("stageId") ?? undefined,
       ids: form.get("ids") ?? undefined,
       rating: form.get("rating") ?? undefined,
       note: form.get("note") ?? undefined
@@ -5616,7 +5618,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     </div></section>
     <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
     ${visual}
-    ${renderFocusedStageRunsHtml(report, clearStageHref)}
+    ${renderFocusedStageRunsHtml(report, projectValue, clearStageHref)}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
@@ -5662,10 +5664,16 @@ function renderNetworkOrientationActions(orientation: "horizontal" | "radial", h
   return `<div class="actions network-orientation-actions"><a class="button ${orientation === "horizontal" ? "" : "secondary"}" href="${escapeHtml(horizontalHref)}">Horizontal</a><a class="button ${orientation === "radial" ? "" : "secondary"}" href="${escapeHtml(radialHref)}">Radial Web</a></div>`;
 }
 
-function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, clearStageHref: string): string {
+function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, project: string, clearStageHref: string): string {
   if (!report.focusedStageId) return "";
   const stage = report.stages.find((item) => item.id === report.focusedStageId);
   const health = report.stageHealth.find((item) => item.stageId === report.focusedStageId);
+  const suggestFixForm = focusedStageSuggestFixForm({
+    project,
+    workflowId: report.workflow.id,
+    stageId: report.focusedStageId,
+    disabled: !stage
+  });
   const rows = report.focusedStageRuns.map((run) => `
     <tr>
       <td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td>
@@ -5684,7 +5692,10 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, clearS
         <h2>Focused Stage: ${escapeHtml(report.focusedStageId)}</h2>
         <span class="muted">${escapeHtml(stage?.goal ?? "Stage details unavailable.")}</span>
       </div>
-      <a class="button secondary" href="${escapeHtml(clearStageHref)}">Clear Stage</a>
+      <div class="actions">
+        ${suggestFixForm}
+        <a class="button secondary" href="${escapeHtml(clearStageHref)}">Clear Stage</a>
+      </div>
     </div>
     <p class="muted">${escapeHtml(healthText)}</p>
     <div class="table-wrap"><table><thead><tr><th>Run</th><th>Run Status</th><th>Stage Status</th><th>Attempts</th><th>Agent</th><th>Task</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -9417,6 +9428,21 @@ function projectIndexForm(project: string): string {
   return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
 }
 
+function focusedStageSuggestFixForm(input: {
+  project: string;
+  workflowId: string;
+  stageId: string;
+  disabled: boolean;
+}): string {
+  return `<form class="inline-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="action" value="suggest-stage-fix">
+    <input type="hidden" name="project" value="${escapeHtml(input.project)}">
+    <input type="hidden" name="workflowId" value="${escapeHtml(input.workflowId)}">
+    <input type="hidden" name="stageId" value="${escapeHtml(input.stageId)}">
+    <button type="submit"${input.disabled ? " disabled" : ""}>Suggest Fix</button>
+  </form>`;
+}
+
 type DashboardFollowUpResult =
   | { ok: true; title: string; output: string; runId?: string }
   | { ok: false; error: string };
@@ -9477,10 +9503,90 @@ async function processDashboardBundleLifecyclePlan(input: {
     : { ok: false, error: output };
 }
 
+async function queueDashboardStageFix(input: {
+  projectDir: string;
+  workflowId: string;
+  stageId: string;
+}): Promise<DashboardFollowUpResult> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir.trim());
+  const workflowId = input.workflowId.trim();
+  const stageId = input.stageId.trim();
+  if (!workflowId) {
+    return { ok: false, error: "Missing workflow id." };
+  }
+  if (!stageId) {
+    return { ok: false, error: "Missing stage id." };
+  }
+
+  const workflows = await loadWorkflows(rootDir);
+  const workflow = resolveWorkflow(workflows, workflowId);
+  if (!workflow) {
+    return { ok: false, error: `Unknown workflow: ${workflowId}` };
+  }
+  const stage = workflow.stages.find((item) => item.id === stageId);
+  if (!stage) {
+    return { ok: false, error: `Unknown stage '${stageId}' for workflow '${workflow.id}'.` };
+  }
+
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 100 });
+  const workflowRuns = projectRuns.filter((run) => run.workflowId === workflow.id).slice(0, 50);
+  const stageRuns = await listWorkflowStageRunsForRuns({
+    runIds: workflowRuns.map((run) => run.id),
+    stageId
+  });
+  const failedStageRuns = stageRuns.filter((run) => run.taskStatus === "failed" || run.runStatus === "failed").slice(0, 8);
+  const recentStageRuns = stageRuns.slice(0, 8);
+  const runLines = (failedStageRuns.length ? failedStageRuns : recentStageRuns).map((run) => (
+    `- ${run.runId}: run=${run.runStatus}, stage=${run.taskStatus}, attempts=${run.attempts}, agent=${run.agentId}, task="${run.task}"`
+  ));
+  const task = [
+    `Suggest a focused fix for workflow '${workflow.id}' stage '${stage.id}'.`,
+    "",
+    `Stage goal: ${stage.goal}`,
+    `Primary agent: ${stage.agent}`,
+    stage.subagents.length ? `Subagents: ${stage.subagents.join(", ")}` : "Subagents: none",
+    "",
+    "Use recent run history to identify the likely cause, files or commands to inspect, and the smallest safe next fix.",
+    "Do not make broad unrelated changes. Preserve project policy and write receipts for any requested action.",
+    "",
+    runLines.length ? "Recent relevant stage runs:" : "Recent relevant stage runs: none found for the selected project/workflow.",
+    ...runLines
+  ].join("\n");
+
+  const queued = await queueWorkflow({
+    workflowId: "debug-failure",
+    projectPath: projectDir,
+    task,
+    sourceTokenBudget: "3000",
+    sourceMaxFiles: "40"
+  });
+  if (!queued.ok) {
+    return { ok: false, error: queued.error };
+  }
+  return {
+    ok: true,
+    title: "Stage Fix Suggested",
+    runId: queued.run.runId,
+    output: [
+      `Queued debug run: ${queued.run.runId}`,
+      `Source workflow: ${workflow.id}`,
+      `Focused stage: ${stage.id}`,
+      `Recent stage records: ${stageRuns.length}`,
+      failedStageRuns.length ? `Failed records included: ${failedStageRuns.length}` : "No failed stage records found; queued from recent stage history.",
+      `Open: /run?id=${encodeURIComponent(queued.run.runId)}`,
+      "",
+      "Process queued stages with:",
+      "npm run worker -- --limit 6"
+    ].join("\n")
+  };
+}
+
 async function runDashboardFollowUp(input: {
   action: string;
   runId?: string;
   project?: string;
+  workflowId?: string;
+  stageId?: string;
   ids?: string;
   rating?: string;
   note?: string;
@@ -9531,6 +9637,14 @@ async function runDashboardFollowUp(input: {
 
   const sourceTask = sourceRun?.run?.task ?? "dashboard preset";
   const sourceLabel = input.runId ? `from run ${input.runId}` : "from dashboard preset";
+
+  if (action === "suggest-stage-fix") {
+    return queueDashboardStageFix({
+      projectDir: sourceProject,
+      workflowId: input.workflowId ?? "",
+      stageId: input.stageId ?? ""
+    });
+  }
 
   if (action === "apply-tuning-dry-run") {
     const proposalSet = await loadTuningProposals({

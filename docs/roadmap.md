@@ -182,7 +182,8 @@ trust gaps.
   - Done: add network-map orientation controls so developers can switch between horizontal and radial web layouts.
   - Done: overlay per-stage run health so the graph can show which workflow step tends to fail, stall, or complete.
   - Done: add stage-click run filtering so clicking a stage can focus recent runs and failures for that workflow step.
-  - Next: add a stage-level "suggest fix" action that prepares a targeted debug workflow from the focused failure history.
+  - Done: add a stage-level "suggest fix" action that prepares a targeted debug workflow from the focused failure history.
+  - Next: add a graph comparison view that shows before/after stage health for runs queued from focused-stage fixes.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
