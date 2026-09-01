@@ -4580,6 +4580,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/graph-handoff") {
+    const result = await loadDashboardGraphHandoffView(requestUrl.searchParams);
+    response.writeHead(result.ok ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardGraphHandoffView(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
     const form = await readFormBody(request);
     const result = await updateDashboardRouting({
@@ -5481,8 +5488,10 @@ type DashboardWorkflowStageRun = Awaited<ReturnType<typeof listWorkflowStageRuns
 type DashboardGraphExportSummary = {
   jsonPath: string;
   markdownPath: string | null;
+  fileName: string;
   generatedAt: string;
   graphPath: string;
+  projectPath: string;
   workflowId: string;
   workflowName: string;
   projectName: string;
@@ -5490,6 +5499,18 @@ type DashboardGraphExportSummary = {
   runCount: number;
   stageHealthCount: number;
 };
+
+type DashboardGraphHandoffViewResult =
+  | {
+    ok: true;
+    projectDir: string;
+    fileName: string;
+    markdownPath: string;
+    jsonPath: string | null;
+    markdown: string;
+    summary: DashboardGraphExportSummary | null;
+  }
+  | { ok: false; error: string; projectDir?: string };
 
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
@@ -5622,7 +5643,7 @@ async function listDashboardGraphHandoffExports(projectDir: string, limit: numbe
       const jsonPath = path.join(exportDir, entry.name);
       try {
         const payload = JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown;
-        return graphHandoffSummaryFromPayload(jsonPath, payload);
+        return graphHandoffSummaryFromPayload(projectDir, jsonPath, payload);
       } catch {
         return null;
       }
@@ -5633,7 +5654,7 @@ async function listDashboardGraphHandoffExports(projectDir: string, limit: numbe
     .slice(0, Math.max(0, limit));
 }
 
-function graphHandoffSummaryFromPayload(jsonPath: string, payload: unknown): DashboardGraphExportSummary | null {
+function graphHandoffSummaryFromPayload(projectDir: string, jsonPath: string, payload: unknown): DashboardGraphExportSummary | null {
   const record = objectValue(payload);
   if (record.kind !== "agentflow_graph_handoff") return null;
   const workflow = objectValue(record.workflow);
@@ -5649,8 +5670,10 @@ function graphHandoffSummaryFromPayload(jsonPath: string, payload: unknown): Das
   return {
     jsonPath,
     markdownPath: fsSync.existsSync(markdownPath) ? markdownPath : null,
+    fileName: path.basename(markdownPath),
     generatedAt,
     graphPath,
+    projectPath: projectDir,
     workflowId,
     workflowName,
     projectName,
@@ -5783,7 +5806,7 @@ function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[]): s
       <td>${formatNumber(item.runCount)}</td>
       <td>${formatNumber(item.stageHealthCount)}</td>
       <td><a class="button secondary" href="${escapeHtml(item.graphPath)}">Open Graph</a></td>
-      <td><code>${escapeHtml(item.markdownPath ?? "missing")}</code></td>
+      <td>${item.markdownPath ? `<a href="${escapeHtml(graphHandoffViewerHref(item.projectPath, item.fileName))}">View</a><br><code>${escapeHtml(item.markdownPath)}</code>` : "<code>missing</code>"}</td>
       <td><code>${escapeHtml(item.jsonPath)}</code></td>
     </tr>
   `).join("") || '<tr><td colspan="8">No graph handoff exports yet. Use Export Handoff to save the current graph state beside project reports.</td></tr>';
@@ -5796,6 +5819,66 @@ function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[]): s
     </div>
     <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Workflow</th><th>Stage</th><th>Runs</th><th>Health Rows</th><th>Graph</th><th>Markdown</th><th>JSON</th></tr></thead><tbody>${rows}</tbody></table></div>
   </section>`;
+}
+
+function graphHandoffViewerHref(project: string, fileName: string): string {
+  const query = new URLSearchParams({ project, file: fileName });
+  return `/graph-handoff?${query.toString()}`;
+}
+
+async function loadDashboardGraphHandoffView(params: URLSearchParams): Promise<DashboardGraphHandoffViewResult> {
+  const projectInput = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
+  const projectDir = path.resolve(process.cwd(), projectInput);
+  const fileInput = params.get("file")?.trim() || "";
+  const fileName = path.basename(fileInput);
+  if (!fileName || fileName !== fileInput || !fileName.endsWith(".md")) {
+    return { ok: false, error: "Missing or invalid graph handoff file name.", projectDir };
+  }
+  const exportDir = path.resolve(projectDir, ".agent-workflow", "exports", "graphs");
+  const markdownPath = path.resolve(exportDir, fileName);
+  if (!isPathInside(markdownPath, exportDir)) {
+    return { ok: false, error: "Graph handoff file must be inside the project graph export folder.", projectDir };
+  }
+  try {
+    const markdown = await fs.readFile(markdownPath, "utf8");
+    const jsonPath = markdownPath.replace(/\.md$/u, ".json");
+    let summary: DashboardGraphExportSummary | null = null;
+    if (fsSync.existsSync(jsonPath)) {
+      try {
+        summary = graphHandoffSummaryFromPayload(projectDir, jsonPath, JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown);
+      } catch {
+        summary = null;
+      }
+    }
+    return { ok: true, projectDir, fileName, markdownPath, jsonPath: fsSync.existsSync(jsonPath) ? jsonPath : null, markdown, summary };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { ok: false, error: "Graph handoff export was not found.", projectDir };
+    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error), projectDir };
+  }
+}
+
+function renderDashboardGraphHandoffView(result: DashboardGraphHandoffViewResult): string {
+  const backHref = result.ok
+    ? `/workflow-graph?project=${encodeURIComponent(result.projectDir)}`
+    : `/workflow-graph${result.projectDir ? `?project=${encodeURIComponent(result.projectDir)}` : ""}`;
+  const body = result.ok
+    ? `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Graph</a><h1>Graph Handoff</h1><p class="muted">${escapeHtml(result.fileName)}</p></div><div class="actions">${result.summary ? `<a class="button secondary" href="${escapeHtml(result.summary.graphPath)}">Open Saved Graph</a>` : ""}</div></div>
+      <section class="panel"><div class="meta-grid compact">
+        <div><strong>Project</strong>${escapeHtml(result.projectDir)}</div>
+        <div><strong>Markdown</strong>${escapeHtml(result.markdownPath)}</div>
+        <div><strong>JSON</strong>${escapeHtml(result.jsonPath ?? "missing")}</div>
+        <div><strong>Generated</strong>${result.summary ? renderDashboardDateTime(result.summary.generatedAt) : "unknown"}</div>
+      </div></section>
+      <section class="panel"><h2>Handoff Markdown</h2><pre class="markdown-view">${escapeHtml(result.markdown)}</pre></section>`
+    : `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Graph</a><h1>Graph Handoff</h1><p class="muted">Unable to open the requested export.</p></div></div><section class="panel warn-panel"><pre>${escapeHtml(result.error)}</pre></section>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Graph Handoff</title><style>${dashboardCss()}</style></head><body>${dashboardNav("workflow-graph")}<main>${body}</main></body></html>`;
+}
+
+function isPathInside(candidatePath: string, parentPath: string): boolean {
+  const relative = path.relative(parentPath, candidatePath);
+  return relative === "" || Boolean(relative && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 function filterWorkflowGraphStages(report: WorkflowGraphReport, filters: { category: string; approval: string; policyStatus: string }): WorkflowGraphReport["stages"] {
@@ -9491,6 +9574,7 @@ function dashboardCss(): string {
     th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
     a { color: #1d4ed8; text-decoration: none; }
     pre { overflow: auto; background: #101828; color: #eef4ff; padding: 14px; font-size: 13px; line-height: 1.45; }
+    .markdown-view { white-space: pre-wrap; word-break: break-word; }
     .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 6px; z-index: 10; }
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 12px; }
     .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }

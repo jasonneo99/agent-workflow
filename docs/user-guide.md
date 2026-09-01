@@ -274,7 +274,9 @@ after-signal, completed-rate, failed-rate, and active-rate delta cards. Use
 URL, filters, totals, run list, focused-stage deltas, and stage-health summary
 under `.agent-workflow/exports/graphs/`. The dashboard also shows a Recent Graph
 Handoffs panel with prior project-local exports, their saved graph URLs, and the
-Markdown/JSON paths for reopening or sharing a graph state during review. Use `runLimit=0` for definition-only diagrams or
+Markdown/JSON paths for reopening or sharing a graph state during review. Click
+**View** beside an export to inspect the saved Markdown handoff directly in the
+dashboard. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
 the run-status quick links for developer triage: Active Runs shows
 queued/running work, Failed Runs turns the map into a debugging surface, and
