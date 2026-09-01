@@ -5675,18 +5675,18 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const runX = 982;
   const palette: Record<string, string> = {
     automatic: "#f59e0b",
-    core: "#2563eb",
-    development: "#0891b2",
-    operations: "#9333ea",
-    product: "#db2777",
-    uncategorized: "#64748b"
+    core: "#38bdf8",
+    development: "#22d3ee",
+    operations: "#a855f7",
+    product: "#f43f5e",
+    uncategorized: "#94a3b8"
   };
   const runPalette: Record<string, string> = {
-    completed: "#16a34a",
-    failed: "#dc2626",
+    completed: "#22c55e",
+    failed: "#ef4444",
     running: "#f59e0b",
     queued: "#f59e0b",
-    cancelled: "#64748b"
+    cancelled: "#94a3b8"
   };
   type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string };
   const nodeById = new Map<string, NetworkNode>();
@@ -5698,7 +5698,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     x: workflowX,
     y: height / 2,
     r: 34,
-    color: "#111827",
+    color: "#0f172a",
     kind: "workflow",
     labelX: workflowX,
     labelY: height / 2 + 58,
@@ -5828,9 +5828,33 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const runCounts = countBy(report.runs.map((run) => run.status));
   const runLegend = Object.entries(runCounts).map(([status, count]) => `<span><i style="background:${runPalette[status] ?? "#64748b"}"></i>${escapeHtml(status)} runs (${count})</span>`).join("");
   const legend = categories.map((category) => `<span><i style="background:${palette[category] ?? palette.uncategorized}"></i>${escapeHtml(category)}</span>`).join("");
+  const networkDefs = `<defs>
+        <radialGradient id="neuralCoreGlow" cx="50%" cy="50%" r="65%">
+          <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.62"></stop>
+          <stop offset="42%" stop-color="#0f172a" stop-opacity="0.92"></stop>
+          <stop offset="100%" stop-color="#020617" stop-opacity="1"></stop>
+        </radialGradient>
+        <linearGradient id="neuralSignal" x1="0%" x2="100%" y1="0%" y2="0%">
+          <stop offset="0%" stop-color="#38bdf8"></stop>
+          <stop offset="54%" stop-color="#f59e0b"></stop>
+          <stop offset="100%" stop-color="#f43f5e"></stop>
+        </linearGradient>
+        <pattern id="neuralGrid" width="34" height="34" patternUnits="userSpaceOnUse">
+          <path d="M 34 0 L 0 0 0 34" fill="none" stroke="#38bdf8" stroke-opacity="0.06" stroke-width="1"></path>
+        </pattern>
+        <filter id="neuralGlow" x="-80%" y="-80%" width="260%" height="260%">
+          <feGaussianBlur stdDeviation="4" result="coloredBlur"></feGaussianBlur>
+          <feMerge>
+            <feMergeNode in="coloredBlur"></feMergeNode>
+            <feMergeNode in="SourceGraphic"></feMergeNode>
+          </feMerge>
+        </filter>
+      </defs>`;
   return `<div class="network-shell">
     <svg class="network-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Workflow network map for ${escapeHtml(report.workflow.name)}">
-      <rect width="${width}" height="${height}" rx="0"></rect>
+      ${networkDefs}
+      <rect class="network-backdrop" width="${width}" height="${height}" rx="0"></rect>
+      <rect class="network-grid" width="${width}" height="${height}" rx="0"></rect>
       <g>${layerLabels}</g>
       <g class="network-links">${linkSvg}</g>
       <g class="network-nodes">${nodeSvg}</g>
@@ -9034,27 +9058,28 @@ function dashboardCss(): string {
     .mind-node-meta { display: flex; flex-wrap: wrap; gap: 6px; }
     .mind-node-meta span { border: 1px solid #cbd5e1; background: rgba(255,255,255,0.72); padding: 3px 6px; font-size: 12px; color: #334155; }
     .network-shell { display: grid; gap: 12px; }
-    .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #e2e7f0; background: #fbfcff; }
-    .network-map rect { fill: #fbfcff; }
-    .network-links path { fill: none; stroke: #94a3b8; stroke-opacity: 0.24; }
-    .network-links .signal { stroke: #2563eb; stroke-opacity: 0.28; }
-    .network-links .support { stroke: #0891b2; stroke-opacity: 0.18; }
-    .network-links .sequence { stroke: #111827; stroke-opacity: 0.16; }
-    .network-links .outcome { stroke: #64748b; stroke-opacity: 0.16; }
-    .network-node circle { stroke: white; stroke-width: 4; filter: drop-shadow(0 4px 8px rgba(15,23,42,0.12)); }
+    .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
+    .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
+    .network-map .network-grid { fill: url(#neuralGrid); }
+    .network-links path { fill: none; stroke: url(#neuralSignal); stroke-opacity: 0.26; }
+    .network-links .signal { stroke: url(#neuralSignal); stroke-opacity: 0.48; }
+    .network-links .support { stroke: #22d3ee; stroke-opacity: 0.26; }
+    .network-links .sequence { stroke: #f59e0b; stroke-opacity: 0.22; }
+    .network-links .outcome { stroke: #94a3b8; stroke-opacity: 0.20; }
+    .network-node circle { stroke: rgba(255,255,255,0.92); stroke-width: 4; filter: url(#neuralGlow); }
     .network-node text { fill: white; font-size: 13px; font-weight: 800; pointer-events: none; }
     .network-node { cursor: default; }
     .network-map a .network-node { cursor: pointer; }
-    .network-node:hover circle, a:focus .network-node circle { stroke: #111827; stroke-width: 5; }
+    .network-node:hover circle, a:focus .network-node circle { stroke: #f59e0b; stroke-width: 5; }
     .network-map a { outline: none; }
-    .network-workflow circle { stroke: #cbd5e1; stroke-width: 5; }
-    .network-label { fill: #334155; font-size: 12px; font-weight: 700; }
-    .network-layer-label { fill: #64748b; font-size: 11px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
-    .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #4b5870; font-size: 12px; }
+    .network-workflow circle { stroke: #38bdf8; stroke-width: 5; }
+    .network-label { fill: #e2e8f0; font-size: 12px; font-weight: 700; }
+    .network-layer-label { fill: #93c5fd; font-size: 11px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
+    .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #dbeafe; background: #0f172a; border: 1px solid #1e3a5f; padding: 8px 10px; font-size: 12px; }
     .network-legend span { display: inline-flex; align-items: center; gap: 6px; }
-    .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid white; box-shadow: 0 0 0 1px #cbd5e1; }
+    .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid #020617; box-shadow: 0 0 0 1px rgba(147,197,253,0.6), 0 0 12px rgba(56,189,248,0.42); }
     .network-legend .legend-stage { background: #2563eb; }
-    .network-legend .legend-workflow { background: #111827; }
+    .network-legend .legend-workflow { background: #0f172a; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }
