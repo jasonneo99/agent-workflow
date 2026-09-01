@@ -178,6 +178,7 @@ trust gaps.
   - Done: reshape the network map into a layered neural-style developer view with workflow input, stage layer, agent layer, and run outputs.
   - Done: add high-contrast cinematic neural styling to make the network map feel like a developer command surface while staying inspectable.
   - Done: size network-map nodes by incoming request count so frequently invoked agents, stages, and run outputs stand out.
+  - Done: reshape the network map into a radial web with transparent nodes and color carried by stroke/glow.
   - Next: overlay per-stage run health so the graph can show which workflow step tends to fail or stall.
 
 - [x] Optional model-improvement workflow pack.
