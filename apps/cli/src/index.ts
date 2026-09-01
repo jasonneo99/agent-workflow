@@ -5548,7 +5548,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     </div>`;
   }).join("");
   const stageRows = filteredStages.map((stage) => `
-    <tr><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
+    <tr id="${escapeHtml(stageAnchorId(stage.id))}"><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
   `).join("") || '<tr><td colspan="7">No stages match the selected filters.</td></tr>';
   const warnings = [...report.warnings, ...report.runWarnings];
   const warningHtml = warnings.length
@@ -5670,7 +5670,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     queued: "#f59e0b",
     cancelled: "#64748b"
   };
-  const nodeById = new Map<string, { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string }>();
+  const nodeById = new Map<string, { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelOffsetY?: number; labelX?: number; labelY?: number; labelAnchor?: string }>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean }> = [];
   nodeById.set("workflow", {
     id: "workflow",
@@ -5695,7 +5695,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       y: centerY + Math.sin(angle) * stageRadiusY,
       r: 22,
       color: stage.policyAllowed ? (stage.approvalRequired || stage.policyApprovalRequired ? "#f59e0b" : "#2563eb") : "#dc2626",
-      kind: "stage"
+      kind: "stage",
+      href: `#${stageAnchorId(stage.id)}`
     });
     links.push({ from: "workflow", to: stageNodeId, width: 1.2 });
     if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.4 });
@@ -5733,15 +5734,19 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   }
   const categories = uniqueSorted([...agentsByCategory.keys()]);
   categories.forEach((category, categoryIndex) => {
-    const group = agentsByCategory.get(category) ?? [];
+    const group = (agentsByCategory.get(category) ?? []).sort((a, b) => a.id.localeCompare(b.id));
+    const primaryAgents = group.filter((agent) => agent.isPrimary);
+    const primaryRankById = new Map(primaryAgents.map((agent, index) => [agent.id, index]));
     const categoryAngle = -Math.PI * 0.9 + ((Math.PI * 1.8) * categoryIndex) / Math.max(categories.length - 1, 1);
     const anchorX = centerX + Math.cos(categoryAngle) * 500;
     const anchorY = centerY + Math.sin(categoryAngle) * 255;
     group
-      .sort((a, b) => a.id.localeCompare(b.id))
       .forEach((agent, agentIndex) => {
         const offsetAngle = (Math.PI * 2 * agentIndex) / Math.max(group.length, 1);
         const radius = 34 + Math.floor(agentIndex / 6) * 28;
+        const primaryRank = primaryRankById.get(agent.id);
+        const edgeCluster = anchorX < 170 || anchorX > width - 170;
+        const primaryOffset = primaryRank === undefined ? 0 : primaryRank - (primaryAgents.length - 1) / 2;
         nodeById.set(`agent:${agent.id}`, {
           id: `agent:${agent.id}`,
           label: agent.id,
@@ -5750,7 +5755,11 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           y: anchorY + Math.sin(offsetAngle) * radius,
           r: agent.isPrimary ? 17 : 12,
           color: palette[category] ?? palette.uncategorized,
-          kind: agent.isPrimary ? "primary agent" : "subagent"
+          kind: agent.isPrimary ? "primary agent" : "subagent",
+          labelOffsetY: primaryRank === undefined ? 0 : primaryOffset * 34,
+          labelX: edgeCluster && primaryRank !== undefined ? anchorX < centerX ? anchorX + 68 : anchorX - 68 : undefined,
+          labelY: edgeCluster && primaryRank !== undefined ? anchorY + 60 + primaryOffset * 34 : undefined,
+          labelAnchor: edgeCluster && primaryRank !== undefined ? anchorX < centerX ? "start" : "end" : undefined
         });
       });
   });
@@ -5767,7 +5776,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       y,
       r: 14,
       color: runPalette[run.status] ?? "#64748b",
-      kind: "run"
+      kind: "run",
+      href: `/run?id=${encodeURIComponent(run.id)}`
     });
     links.push({ from: "workflow", to: `run:${run.id}`, width: 2.2 });
   });
@@ -5785,7 +5795,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       y,
       r: run.status === "failed" ? 10 : 8,
       color: runPalette[run.status] ?? "#64748b",
-      kind: "run"
+      kind: "run",
+      href: `/run?id=${encodeURIComponent(run.id)}`
     });
     links.push({ from: "workflow", to: `run:${run.id}`, width: run.status === "failed" ? 1.4 : 0.8, dashed: true });
   });
@@ -5799,15 +5810,17 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const dash = link.dashed ? ' stroke-dasharray="4 5"' : "";
     return `<path d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} Q ${formatSvgNumber(midX)} ${formatSvgNumber(midY)} ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
   }).join("");
-  const nodeSvg = [...nodeById.values()].map((node) => `
-    <g class="network-node network-${escapeHtml(node.kind.replace(/\s+/g, "-"))}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
+  const nodeSvg = [...nodeById.values()].map((node) => {
+    const body = `<g class="network-node network-${escapeHtml(node.kind.replace(/\s+/g, "-"))}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
       <title>${escapeHtml(node.title)}</title>
       <circle r="${node.r}" fill="${node.color}"></circle>
       ${node.kind === "stage" || node.kind === "workflow" || (node.kind === "run" && node.label) ? `<text text-anchor="middle" dominant-baseline="central">${escapeHtml(node.label)}</text>` : ""}
-    </g>`).join("");
+    </g>`;
+    return node.href ? `<a href="${escapeHtml(node.href)}" aria-label="${escapeHtml(node.title)}">${body}</a>` : body;
+  }).join("");
   const labelSvg = [...nodeById.values()]
     .filter((node) => node.kind === "workflow" || node.kind === "primary agent")
-    .map((node) => `<text class="network-label" x="${formatSvgNumber(node.x)}" y="${formatSvgNumber(node.y + node.r + 18)}" text-anchor="middle">${escapeHtml(truncateMiddle(node.label, 26))}</text>`)
+    .map((node) => renderNetworkLabel(node, { width }))
     .join("");
   const runCounts = countBy(report.runs.map((run) => run.status));
   const runLegend = Object.entries(runCounts).map(([status, count]) => `<span><i style="background:${runPalette[status] ?? "#64748b"}"></i>${escapeHtml(status)} runs (${count})</span>`).join("");
@@ -5823,11 +5836,35 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   </div>`;
 }
 
+function renderNetworkLabel(node: { label: string; x: number; y: number; r: number; kind: string; labelOffsetY?: number; labelX?: number; labelY?: number; labelAnchor?: string }, bounds: { width: number }): string {
+  if (node.kind === "workflow") {
+    return `<text class="network-label workflow-label" x="${formatSvgNumber(node.x)}" y="${formatSvgNumber(node.y + node.r + 20)}" text-anchor="middle">${escapeHtml(truncateMiddle(node.label, 26))}</text>`;
+  }
+  if (node.labelX !== undefined && node.labelY !== undefined && node.labelAnchor) {
+    return `<text class="network-label" x="${formatSvgNumber(node.labelX)}" y="${formatSvgNumber(node.labelY)}" text-anchor="${node.labelAnchor}">${escapeHtml(truncateMiddle(node.label, 21))}</text>`;
+  }
+  const padding = 28;
+  const edgeBuffer = 160;
+  const textX = node.x < edgeBuffer
+    ? node.x + node.r + 8
+    : node.x > bounds.width - edgeBuffer
+      ? node.x - node.r - 8
+      : node.x;
+  const anchor = node.x < edgeBuffer ? "start" : node.x > bounds.width - edgeBuffer ? "end" : "middle";
+  const baseY = node.y > 590 ? node.y - node.r - 10 : node.y + node.r + padding;
+  const textY = baseY + (node.labelOffsetY ?? 0);
+  return `<text class="network-label" x="${formatSvgNumber(textX)}" y="${formatSvgNumber(textY)}" text-anchor="${anchor}">${escapeHtml(truncateMiddle(node.label, 21))}</text>`;
+}
+
 function countBy(values: string[]): Record<string, number> {
   return values.reduce<Record<string, number>>((counts, value) => {
     counts[value] = (counts[value] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function stageAnchorId(stageId: string): string {
+  return `stage-${stageId.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
 }
 
 function formatSvgNumber(value: number): string {
@@ -9007,8 +9044,13 @@ function dashboardCss(): string {
     .network-links path { fill: none; stroke: #94a3b8; stroke-opacity: 0.28; }
     .network-node circle { stroke: white; stroke-width: 4; filter: drop-shadow(0 4px 8px rgba(15,23,42,0.12)); }
     .network-node text { fill: white; font-size: 13px; font-weight: 800; pointer-events: none; }
+    .network-node { cursor: default; }
+    .network-map a .network-node { cursor: pointer; }
+    .network-node:hover circle, a:focus .network-node circle { stroke: #111827; stroke-width: 5; }
+    .network-map a { outline: none; }
     .network-workflow circle { stroke: #cbd5e1; stroke-width: 5; }
     .network-label { fill: #334155; font-size: 12px; font-weight: 700; }
+    .workflow-label { fill: #172033; font-size: 13px; }
     .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #4b5870; font-size: 12px; }
     .network-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid white; box-shadow: 0 0 0 1px #cbd5e1; }

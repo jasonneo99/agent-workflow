@@ -172,7 +172,9 @@ trust gaps.
   - Done: add a screenshot/export-friendly graph capture flow for docs and project handoffs.
   - Done: add a lightweight SVG network map mode with workflow, stage, primary-agent, subagent, current-run, and historical-run nodes.
   - Done: add reusable screenshot assets and a local regeneration command for the graph and mind-map views.
-  - Next: improve network-map label placement for dense workflows.
+  - Done: make network-map nodes inspectable by linking stages to the Stage Matrix and runs to run details.
+  - Done: improve network-map label placement near graph edges for dense workflows.
+  - Next: add focused graph filters for active runs, failed runs, and definition-only snapshots.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
