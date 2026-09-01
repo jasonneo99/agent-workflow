@@ -250,11 +250,13 @@ you want a browser-readable graph of workflow stages, primary agents, subagents,
 context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
 presentation-friendly agent connection map, or `&view=network` for a high-
-contrast radial neural-web SVG map of workflow core, stage ring, agent ring, and
-recent run-history orbit. In the network map, luminous signal paths show
-stage-to-agent and agent-to-run relationships, transparent nodes glow by type or
-status, stage nodes are labeled by stage name, and node size grows with incoming
-request count so heavily used agents, stages, and runs stand out. Stage nodes jump to the Stage Matrix, and run nodes
+contrast neural-web SVG map. Network Map defaults to a horizontal developer
+layout, and its orientation buttons can switch to `orientation=radial` for a
+circular web with workflow core, stage ring, agent ring, and recent run-history
+orbit. In the network map, luminous signal paths show stage-to-agent and
+agent-to-run relationships, transparent nodes glow by type or status, stage
+nodes are labeled by stage name, and node size grows with incoming request count
+so heavily used agents, stages, and runs stand out. Stage nodes jump to the Stage Matrix, and run nodes
 open the run detail page, so the visual becomes a lightweight inspection
 surface. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use

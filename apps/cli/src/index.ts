@@ -5517,17 +5517,20 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
   const viewParam = params.get("view");
   const view = viewParam === "mind-map" || viewParam === "network" ? viewParam : "graph";
+  const orientation = params.get("orientation") === "radial" ? "radial" : "horizontal";
   const categoryFilter = params.get("category")?.trim() || "";
   const approvalFilter = params.get("approval")?.trim() || "all";
   const policyFilter = params.get("policyStatus")?.trim() || "all";
   const runLimit = String(parseDashboardRunLimit(params.get("runLimit") ?? "50", 50));
   const runStatusFilter = report.runStatusFilter;
   const capture = params.get("capture") === "1";
-  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: true });
-  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: false });
+  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const networkHorizontalHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation: "horizontal", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const networkRadialHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation: "radial", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: true });
+  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: false });
   const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
   const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
   const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
@@ -5561,7 +5564,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const visual = view === "mind-map"
     ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
     : view === "network"
-      ? `<section class="panel"><h2>Network Map</h2>${renderWorkflowNetworkHtml(report, filteredStages)}</section>`
+      ? `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation)}</section>`
       : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
@@ -5577,14 +5580,14 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     { label: "Definition Only", runStatus: "all", runLimit: "0" }
   ].map((item) => {
     const active = runStatusFilter === item.runStatus && runLimit === item.runLimit;
-    const href = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit: item.runLimit, runStatus: item.runStatus, capture });
+    const href = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit: item.runLimit, runStatus: item.runStatus, capture });
     return `<a class="button ${active ? "" : "secondary"}" href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`;
   }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
   ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
     <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
-    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
+    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><input type="hidden" name="orientation" value="${escapeHtml(orientation)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
     ${warningHtml}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
@@ -5618,7 +5621,7 @@ function workflowGraphDashboardHref(
   workflowId: string,
   project: string,
   policyProfile: string,
-  options: { view: string; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; capture: boolean }
+  options: { view: string; orientation?: "horizontal" | "radial"; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; capture: boolean }
 ): string {
   const query = new URLSearchParams({
     workflow: workflowId,
@@ -5626,6 +5629,7 @@ function workflowGraphDashboardHref(
     policyProfile,
     view: options.view
   });
+  if (options.view === "network" && options.orientation === "radial") query.set("orientation", "radial");
   if (options.category) query.set("category", options.category);
   if (options.approval !== "all") query.set("approval", options.approval);
   if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
@@ -5633,6 +5637,10 @@ function workflowGraphDashboardHref(
   if (options.runStatus !== "all") query.set("runStatus", options.runStatus);
   if (options.capture) query.set("capture", "1");
   return `/workflow-graph?${query.toString()}`;
+}
+
+function renderNetworkOrientationActions(orientation: "horizontal" | "radial", horizontalHref: string, radialHref: string): string {
+  return `<div class="actions network-orientation-actions"><a class="button ${orientation === "horizontal" ? "" : "secondary"}" href="${escapeHtml(horizontalHref)}">Horizontal</a><a class="button ${orientation === "radial" ? "" : "secondary"}" href="${escapeHtml(radialHref)}">Radial Web</a></div>`;
 }
 
 function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
@@ -5663,15 +5671,22 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: Workflow
   </div>`;
 }
 
-function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
+function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"], orientation: "horizontal" | "radial"): string {
   if (!stages.length) return '<p class="muted">No stages match the selected filters.</p>';
+  const isRadial = orientation === "radial";
   const width = 1120;
-  const height = 760;
+  const height = isRadial ? 760 : 680;
   const centerX = width / 2;
   const centerY = height / 2;
   const stageRadius = 148;
   const agentRadius = 252;
   const runRadius = 338;
+  const layerTop = 118;
+  const layerBottom = 560;
+  const workflowX = 118;
+  const stageX = 350;
+  const agentX = 650;
+  const runX = 982;
   const palette: Record<string, string> = {
     automatic: "#f59e0b",
     core: "#38bdf8",
@@ -5705,23 +5720,23 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   };
   nodeById.set("workflow", {
     id: "workflow",
-    label: "core",
+    label: isRadial ? "core" : report.workflow.id,
     caption: report.workflow.id,
     title: `${report.workflow.name} workflow`,
-    x: centerX,
-    y: centerY,
-    r: 38,
+    x: isRadial ? centerX : workflowX,
+    y: isRadial ? centerY : height / 2,
+    r: isRadial ? 38 : 34,
     color: "#38bdf8",
     kind: "workflow",
-    labelX: centerX,
-    labelY: centerY + 62,
+    labelX: isRadial ? centerX : workflowX,
+    labelY: isRadial ? centerY + 62 : height / 2 + 58,
     labelAnchor: "middle"
   });
 
   const agentEntries = new Map<string, { id: string; label: string; category: string; stageIds: Set<string>; isPrimary: boolean }>();
   stages.forEach((stage, index) => {
     const angle = ringAngle(index, stages.length);
-    const point = radialPoint(angle, stageRadius);
+    const point = isRadial ? radialPoint(angle, stageRadius) : { x: stageX, y: distributeLayerY(index, stages.length, layerTop, layerBottom) };
     const stageNodeId = `stage:${stage.id}`;
     const stageNode: NetworkNode = {
       id: stageNodeId,
@@ -5769,7 +5784,9 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const categories = uniqueSorted(agents.map((agent) => agent.category || "uncategorized"));
   agents.forEach((agent, index) => {
     const angle = ringAngle(index, agents.length, -Math.PI / 2 + Math.PI / Math.max(agents.length, 8));
-    const point = radialPoint(angle, agent.isPrimary ? agentRadius - 18 : agentRadius + 22);
+    const point = isRadial
+      ? radialPoint(angle, agent.isPrimary ? agentRadius - 18 : agentRadius + 22)
+      : { x: agentX + (agent.isPrimary ? -28 : 34), y: distributeLayerY(index, agents.length, layerTop, layerBottom) };
     const agentNode: NetworkNode = {
       id: `agent:${agent.id}`,
       label: agent.id,
@@ -5780,14 +5797,21 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       color: palette[agent.category] ?? palette.uncategorized,
       kind: agent.isPrimary ? "primary agent" : "subagent"
     };
-    if (agent.isPrimary) applyRadialLabel(agentNode, angle, 10);
+    if (agent.isPrimary) {
+      if (isRadial) applyRadialLabel(agentNode, angle, 10);
+      else {
+        agentNode.labelX = agentNode.x + 30;
+        agentNode.labelY = agentNode.y + 4;
+        agentNode.labelAnchor = "start";
+      }
+    }
     nodeById.set(`agent:${agent.id}`, agentNode);
   });
 
   const runs = report.runs.slice(0, 36);
   runs.forEach((run, index) => {
     const angle = ringAngle(index, Math.max(runs.length, 1), -Math.PI / 2 + Math.PI / Math.max(runs.length, 10));
-    const point = radialPoint(angle, runRadius);
+    const point = isRadial ? radialPoint(angle, runRadius) : { x: runX, y: distributeLayerY(index, Math.max(runs.length, 1), layerTop, layerBottom) };
     const active = run.status === "queued" || run.status === "running";
     const runNode: NetworkNode = {
       id: `run:${run.id}`,
@@ -5800,7 +5824,14 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       kind: "run",
       href: `/run?id=${encodeURIComponent(run.id)}`
     };
-    if (active || run.status === "failed") applyRadialLabel(runNode, angle, 10);
+    if (active || run.status === "failed") {
+      if (isRadial) applyRadialLabel(runNode, angle, 10);
+      else {
+        runNode.labelX = runNode.x + 22;
+        runNode.labelY = runNode.y + 4;
+        runNode.labelAnchor = "start";
+      }
+    }
     nodeById.set(`run:${run.id}`, runNode);
     const sourceAgents = agents.filter((agent) => agent.isPrimary).slice(0, 5);
     sourceAgents.forEach((agent) => {
@@ -5816,10 +5847,12 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const maxExtra = node.kind === "run" ? 9 : node.kind === "subagent" ? 11 : node.kind === "primary agent" ? 12 : 7;
     node.r = requestSizedRadius(originalRadius, requestCount, maxExtra);
     node.title = `${node.title} - ${requestCount} incoming request${requestCount === 1 ? "" : "s"}`;
-    if (node.kind !== "stage" && node.kind !== "workflow" && node.labelX !== undefined && node.labelY !== undefined) {
+    if (isRadial && node.kind !== "stage" && node.kind !== "workflow" && node.labelX !== undefined && node.labelY !== undefined) {
       const angle = Math.atan2(node.y - centerY, node.x - centerX);
       applyRadialLabel(node, angle, node.kind === "stage" ? 14 : 10);
     }
+    if (!isRadial && node.kind === "primary agent") node.labelX = node.x + node.r + 12;
+    if (!isRadial && node.kind === "run" && node.labelX !== undefined) node.labelX = node.x + node.r + 10;
   });
 
   const linkSvg = links.map((link) => {
@@ -5829,11 +5862,13 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const dash = link.dashed ? ' stroke-dasharray="7 7"' : "";
     const classes = [link.className, link.dashed ? "dashed" : undefined].filter(Boolean).join(" ");
     const className = classes ? ` class="${escapeHtml(classes)}"` : "";
+    const midX = (from.x + to.x) / 2;
+    const midY = (from.y + to.y) / 2;
     const pull = link.from === "workflow" || link.to === "workflow" ? 0.42 : 0.22;
-    const controlOneX = from.x + (centerX - from.x) * pull;
-    const controlOneY = from.y + (centerY - from.y) * pull;
-    const controlTwoX = to.x + (centerX - to.x) * pull;
-    const controlTwoY = to.y + (centerY - to.y) * pull;
+    const controlOneX = isRadial ? from.x + (centerX - from.x) * pull : midX;
+    const controlOneY = isRadial ? from.y + (centerY - from.y) * pull : from.y;
+    const controlTwoX = isRadial ? to.x + (centerX - to.x) * pull : midX;
+    const controlTwoY = isRadial ? to.y + (centerY - to.y) * pull : midY;
     return `<path${className} d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} C ${formatSvgNumber(controlOneX)} ${formatSvgNumber(controlOneY)}, ${formatSvgNumber(controlTwoX)} ${formatSvgNumber(controlTwoY)}, ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
   }).join("");
   const nodeSvg = [...nodeById.values()].map((node) => {
@@ -5849,11 +5884,20 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     .map((node) => renderNetworkLabel(node))
     .join("");
   const layerLabels = [
-    { x: 62, y: 54, label: "core" },
-    { x: 134, y: 54, label: "stage web" },
-    { x: 252, y: 54, label: "agent web" },
-    { x: 374, y: 54, label: "run orbit" }
-  ].map((layer) => `<text class="network-layer-label" x="${formatSvgNumber(layer.x)}" y="${formatSvgNumber(layer.y)}" text-anchor="start">${escapeHtml(layer.label)}</text>`).join("");
+    ...(isRadial
+      ? [
+          { x: 62, y: 54, label: "core", anchor: "start" },
+          { x: 134, y: 54, label: "stage web", anchor: "start" },
+          { x: 252, y: 54, label: "agent web", anchor: "start" },
+          { x: 374, y: 54, label: "run orbit", anchor: "start" }
+        ]
+      : [
+          { x: workflowX, y: 54, label: "workflow input", anchor: "middle" },
+          { x: stageX, y: 54, label: "stage layer", anchor: "middle" },
+          { x: agentX, y: 54, label: "agent layer", anchor: "middle" },
+          { x: runX, y: 54, label: "run outputs", anchor: "middle" }
+        ])
+  ].map((layer) => `<text class="network-layer-label" x="${formatSvgNumber(layer.x)}" y="${formatSvgNumber(layer.y)}" text-anchor="${layer.anchor}">${escapeHtml(layer.label)}</text>`).join("");
   const runCounts = countBy(report.runs.map((run) => run.status));
   const runLegend = Object.entries(runCounts).map(([status, count]) => `<span><i style="background:${runPalette[status] ?? "#64748b"}"></i>${escapeHtml(status)} runs (${count})</span>`).join("");
   const legend = categories.map((category) => `<span><i style="background:${palette[category] ?? palette.uncategorized}"></i>${escapeHtml(category)}</span>`).join("");
@@ -5884,11 +5928,11 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       ${networkDefs}
       <rect class="network-backdrop" width="${width}" height="${height}" rx="0"></rect>
       <rect class="network-grid" width="${width}" height="${height}" rx="0"></rect>
-      <g class="network-rings">
+      ${isRadial ? `<g class="network-rings">
         <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${stageRadius}"></circle>
         <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${agentRadius}"></circle>
         <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${runRadius}"></circle>
-      </g>
+      </g>` : ""}
       <g>${layerLabels}</g>
       <g class="network-links">${linkSvg}</g>
       <g class="network-nodes">${nodeSvg}</g>
@@ -9092,6 +9136,7 @@ function dashboardCss(): string {
     .mind-node-meta { display: flex; flex-wrap: wrap; gap: 6px; }
     .mind-node-meta span { border: 1px solid #cbd5e1; background: rgba(255,255,255,0.72); padding: 3px 6px; font-size: 12px; color: #334155; }
     .network-shell { display: grid; gap: 12px; }
+    .network-orientation-actions { margin-bottom: 12px; }
     .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
     .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
     .network-map .network-grid { fill: url(#neuralGrid); }
