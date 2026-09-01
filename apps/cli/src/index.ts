@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import fsSync from "node:fs";
+import type { Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
@@ -5477,6 +5478,19 @@ type DashboardWorkflowGraphRun = {
 type DashboardWorkflowStageHealth = Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>[number];
 type DashboardWorkflowStageRun = Awaited<ReturnType<typeof listWorkflowStageRunsForRuns>>[number];
 
+type DashboardGraphExportSummary = {
+  jsonPath: string;
+  markdownPath: string | null;
+  generatedAt: string;
+  graphPath: string;
+  workflowId: string;
+  workflowName: string;
+  projectName: string;
+  focusedStageId: string | null;
+  runCount: number;
+  stageHealthCount: number;
+};
+
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
   runStatusFilter: string;
@@ -5486,6 +5500,7 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   focusedStageRuns: DashboardWorkflowStageRun[];
   focusedStageFixRuns: DashboardWorkflowGraphRun[];
   focusedStageVerificationRuns: DashboardWorkflowGraphRun[];
+  recentGraphExports: DashboardGraphExportSummary[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -5514,6 +5529,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   let focusedStageRuns: DashboardWorkflowStageRun[] = [];
   let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
   let focusedStageVerificationRuns: DashboardWorkflowGraphRun[] = [];
+  let recentGraphExports: DashboardGraphExportSummary[] = [];
   if (safeRunLimit > 0) {
     try {
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
@@ -5567,7 +5583,12 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns };
+  try {
+    recentGraphExports = await listDashboardGraphHandoffExports(projectDir, 8);
+  } catch (error) {
+    runWarnings.push(`Graph handoff exports unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports };
 }
 
 function isFocusedStageFixRun(run: Awaited<ReturnType<typeof listWorkflowRunsForProject>>[number], workflowId: string, stageId: string): boolean {
@@ -5582,6 +5603,61 @@ function isFocusedStageVerificationRun(run: Awaited<ReturnType<typeof listWorkfl
   return metadata.kind === "stage_fix_verification"
     && metadata.sourceWorkflowId === workflowId
     && metadata.sourceStageId === stageId;
+}
+
+async function listDashboardGraphHandoffExports(projectDir: string, limit: number): Promise<DashboardGraphExportSummary[]> {
+  const exportDir = path.join(projectDir, ".agent-workflow", "exports", "graphs");
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(exportDir, { withFileTypes: true });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const summaries = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map(async (entry) => {
+      const jsonPath = path.join(exportDir, entry.name);
+      try {
+        const payload = JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown;
+        return graphHandoffSummaryFromPayload(jsonPath, payload);
+      } catch {
+        return null;
+      }
+    }));
+  return summaries
+    .filter((summary): summary is DashboardGraphExportSummary => summary !== null)
+    .sort((left, right) => Date.parse(right.generatedAt) - Date.parse(left.generatedAt))
+    .slice(0, Math.max(0, limit));
+}
+
+function graphHandoffSummaryFromPayload(jsonPath: string, payload: unknown): DashboardGraphExportSummary | null {
+  const record = objectValue(payload);
+  if (record.kind !== "agentflow_graph_handoff") return null;
+  const workflow = objectValue(record.workflow);
+  const project = objectValue(record.project);
+  const focusedStage = objectValue(record.focusedStage);
+  const generatedAt = stringValue(record.generatedAt);
+  const graphPath = stringValue(record.graphPath);
+  const workflowId = stringValue(workflow.id);
+  const projectName = stringValue(project.name) ?? "project";
+  if (!generatedAt || !graphPath || !workflowId) return null;
+  const workflowName = stringValue(workflow.name) ?? workflowId;
+  const markdownPath = jsonPath.replace(/\.json$/u, ".md");
+  return {
+    jsonPath,
+    markdownPath: fsSync.existsSync(markdownPath) ? markdownPath : null,
+    generatedAt,
+    graphPath,
+    workflowId,
+    workflowName,
+    projectName,
+    focusedStageId: stringValue(focusedStage.id) ?? null,
+    runCount: Array.isArray(record.runs) ? record.runs.length : 0,
+    stageHealthCount: Array.isArray(record.stageHealth) ? record.stageHealth.length : 0
+  };
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -5691,10 +5767,35 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     </div></section>
     <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
     ${visual}
+    ${renderRecentGraphExportsHtml(report.recentGraphExports)}
     ${renderFocusedStageRunsHtml(report, projectValue, clearStageHref)}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
+}
+
+function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[]): string {
+  const rows = exports.map((item) => `
+    <tr>
+      <td>${renderDashboardDateTime(item.generatedAt)}</td>
+      <td><strong>${escapeHtml(item.workflowId)}</strong><br><span class="muted">${escapeHtml(item.workflowName)}</span></td>
+      <td>${escapeHtml(item.focusedStageId ?? "all stages")}</td>
+      <td>${formatNumber(item.runCount)}</td>
+      <td>${formatNumber(item.stageHealthCount)}</td>
+      <td><a class="button secondary" href="${escapeHtml(item.graphPath)}">Open Graph</a></td>
+      <td><code>${escapeHtml(item.markdownPath ?? "missing")}</code></td>
+      <td><code>${escapeHtml(item.jsonPath)}</code></td>
+    </tr>
+  `).join("") || '<tr><td colspan="8">No graph handoff exports yet. Use Export Handoff to save the current graph state beside project reports.</td></tr>';
+  return `<section class="panel capture-hide">
+    <div class="section-heading">
+      <div>
+        <h2>Recent Graph Handoffs</h2>
+        <span class="muted">Project-local graph exports that can be reopened, shared, or attached to a review.</span>
+      </div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Workflow</th><th>Stage</th><th>Runs</th><th>Health Rows</th><th>Graph</th><th>Markdown</th><th>JSON</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
 }
 
 function filterWorkflowGraphStages(report: WorkflowGraphReport, filters: { category: string; approval: string; policyStatus: string }): WorkflowGraphReport["stages"] {
