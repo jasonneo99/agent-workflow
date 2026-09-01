@@ -5720,6 +5720,10 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
   if (!report.focusedStageId) return "";
   const stage = report.stages.find((item) => item.id === report.focusedStageId);
   const health = report.stageHealth.find((item) => item.stageId === report.focusedStageId);
+  const verificationRunIds = new Set(report.focusedStageVerificationRuns.map((run) => run.id));
+  const baselineStageRuns = report.focusedStageRuns.filter((run) => !verificationRunIds.has(run.runId));
+  const verificationStageRuns = report.focusedStageRuns.filter((run) => verificationRunIds.has(run.runId));
+  const delta = summarizeFocusedStageDelta(baselineStageRuns, verificationStageRuns);
   const suggestFixForm = focusedStageSuggestFixForm({
     project,
     workflowId: report.workflow.id,
@@ -5769,6 +5773,7 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     </tr>
   `;
   }).join("") || '<tr><td colspan="5">No source workflow verification reruns have been queued from suggested fixes yet.</td></tr>';
+  const deltaHtml = renderFocusedStageDeltaHtml(delta);
   return `<section class="panel focused-stage-panel">
     <div class="section-heading">
       <div>
@@ -5781,6 +5786,7 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
       </div>
     </div>
     <p class="muted">${escapeHtml(healthText)}</p>
+    ${deltaHtml}
     <div class="table-wrap"><table><thead><tr><th>Run</th><th>Run Status</th><th>Stage Status</th><th>Attempts</th><th>Agent</th><th>Task</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table></div>
     <h3>Suggested Fix Runs</h3>
     <p class="muted">Debug runs queued from this focused stage, shown beside the source-stage health signal for quick before/after triage.</p>
@@ -5789,6 +5795,108 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     <p class="muted">Source workflow reruns queued after a suggested fix, tagged for stage-health comparison.</p>
     <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Fix Run</th><th>Task</th><th>Started</th></tr></thead><tbody>${verificationRows}</tbody></table></div>
   </section>`;
+}
+
+type FocusedStageDeltaSummary = {
+  baseline: FocusedStageOutcomeSummary;
+  verification: FocusedStageOutcomeSummary;
+  completedDelta: number | null;
+  failedDelta: number | null;
+  activeDelta: number | null;
+  label: string;
+};
+
+type FocusedStageOutcomeSummary = {
+  total: number;
+  completed: number;
+  failed: number;
+  active: number;
+  cancelled: number;
+  completedRate: number | null;
+  failedRate: number | null;
+  activeRate: number | null;
+};
+
+function summarizeFocusedStageDelta(baselineRows: DashboardWorkflowStageRun[], verificationRows: DashboardWorkflowStageRun[]): FocusedStageDeltaSummary {
+  const baseline = summarizeFocusedStageOutcomes(baselineRows);
+  const verification = summarizeFocusedStageOutcomes(verificationRows);
+  const completedDelta = rateDelta(verification.completedRate, baseline.completedRate);
+  const failedDelta = rateDelta(verification.failedRate, baseline.failedRate);
+  const activeDelta = rateDelta(verification.activeRate, baseline.activeRate);
+  let label = "Need verification";
+  if (verification.total > 0 && completedDelta !== null && failedDelta !== null) {
+    if (failedDelta < 0 || completedDelta > 0) {
+      label = "Improved";
+    } else if (failedDelta > 0 || completedDelta < 0) {
+      label = "Regressed";
+    } else {
+      label = "No change";
+    }
+  }
+  return { baseline, verification, completedDelta, failedDelta, activeDelta, label };
+}
+
+function summarizeFocusedStageOutcomes(rows: DashboardWorkflowStageRun[]): FocusedStageOutcomeSummary {
+  const total = rows.length;
+  const completed = rows.filter((row) => row.taskStatus === "completed").length;
+  const failed = rows.filter((row) => row.taskStatus === "failed").length;
+  const active = rows.filter((row) => row.taskStatus === "queued" || row.taskStatus === "running").length;
+  const cancelled = rows.filter((row) => row.taskStatus === "cancelled").length;
+  return {
+    total,
+    completed,
+    failed,
+    active,
+    cancelled,
+    completedRate: percentRate(completed, total),
+    failedRate: percentRate(failed, total),
+    activeRate: percentRate(active, total)
+  };
+}
+
+function percentRate(count: number, total: number): number | null {
+  if (!total) return null;
+  return Math.round((count / total) * 1000) / 10;
+}
+
+function rateDelta(after: number | null, before: number | null): number | null {
+  if (after === null || before === null) return null;
+  return Math.round((after - before) * 10) / 10;
+}
+
+function renderFocusedStageDeltaHtml(delta: FocusedStageDeltaSummary): string {
+  const statusClass = delta.label === "Improved" ? "good" : delta.label === "Regressed" ? "bad" : "warn";
+  return `<div class="stage-delta">
+    <div class="stage-delta-card ${statusClass}">
+      <strong>After Signal</strong>
+      <span>${escapeHtml(delta.label)}</span>
+      <small>${delta.verification.total ? "Verification reruns compared with source history." : "Run a source verification to calculate after health."}</small>
+    </div>
+    <div class="stage-delta-card">
+      <strong>Completed</strong>
+      <span>${formatNullableRate(delta.verification.completedRate)} <small>${formatSignedRate(delta.completedDelta)}</small></span>
+      <small>Before ${formatNullableRate(delta.baseline.completedRate)} from ${formatNumber(delta.baseline.total)} stage tasks</small>
+    </div>
+    <div class="stage-delta-card">
+      <strong>Failed</strong>
+      <span>${formatNullableRate(delta.verification.failedRate)} <small>${formatSignedRate(delta.failedDelta)}</small></span>
+      <small>Before ${formatNullableRate(delta.baseline.failedRate)} from ${formatNumber(delta.baseline.failed)} failures</small>
+    </div>
+    <div class="stage-delta-card">
+      <strong>Active</strong>
+      <span>${formatNullableRate(delta.verification.activeRate)} <small>${formatSignedRate(delta.activeDelta)}</small></span>
+      <small>${formatNumber(delta.verification.active)} queued/running, ${formatNumber(delta.verification.cancelled)} cancelled</small>
+    </div>
+  </div>`;
+}
+
+function formatNullableRate(value: number | null): string {
+  return value === null ? "n/a" : `${value}%`;
+}
+
+function formatSignedRate(value: number | null): string {
+  if (value === null) return "";
+  return `${value > 0 ? "+" : ""}${value}%`;
 }
 
 function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
@@ -9283,6 +9391,14 @@ function dashboardCss(): string {
     .health-card.good { border-color: #bbf7d0; background: #f0fdf4; }
     .health-card.warn { border-color: #fde68a; background: #fffbeb; }
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
+    .stage-delta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 12px 0 16px; }
+    .stage-delta-card { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; }
+    .stage-delta-card strong { color: #4b5870; font-size: 12px; text-transform: uppercase; }
+    .stage-delta-card span { font-size: 22px; font-weight: 750; color: #172033; }
+    .stage-delta-card small { color: #64748b; font-size: 12px; line-height: 1.35; }
+    .stage-delta-card.good { border-color: #86efac; background: #f0fdf4; }
+    .stage-delta-card.warn { border-color: #fde68a; background: #fffbeb; }
+    .stage-delta-card.bad { border-color: #fca5a5; background: #fef2f2; }
     .attention-list { display: grid; gap: 8px; }
     .attention-item { border: 1px solid #e2e7f0; padding: 12px; display: flex; justify-content: space-between; gap: 12px; align-items: center; background: #fff; }
     .attention-item div { display: grid; gap: 4px; }

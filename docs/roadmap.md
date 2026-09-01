@@ -185,7 +185,8 @@ trust gaps.
   - Done: add a stage-level "suggest fix" action that prepares a targeted debug workflow from the focused failure history.
   - Done: tag suggested fix runs with source workflow/stage metadata and show related debug-run outcomes in the focused stage panel.
   - Done: link completed suggested-fix runs to tagged source-workflow reruns for verification.
-  - Next: calculate and display visual before/after stage-health deltas between the source history and verification reruns.
+  - Done: calculate and display visual before/after stage-health deltas between the source history and verification reruns.
+  - Next: add a compact graph legend/state explainer for developer onboarding and screenshot readability.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
