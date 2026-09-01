@@ -174,7 +174,8 @@ trust gaps.
   - Done: add reusable screenshot assets and a local regeneration command for the graph and mind-map views.
   - Done: make network-map nodes inspectable by linking stages to the Stage Matrix and runs to run details.
   - Done: improve network-map label placement near graph edges for dense workflows.
-  - Next: add focused graph filters for active runs, failed runs, and definition-only snapshots.
+  - Done: add focused graph run-status filters for active runs, failed runs, exact statuses, and definition-only snapshots.
+  - Next: overlay per-stage run health so the graph can show which workflow step tends to fail or stall.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

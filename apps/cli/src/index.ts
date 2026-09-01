@@ -5462,6 +5462,7 @@ type DashboardWorkflowGraphRun = {
 
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
+  runStatusFilter: string;
   runWarnings: string[];
 };
 
@@ -5481,6 +5482,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
     resolvedPolicy
   });
   const runLimit = parseDashboardRunLimit(params.get("runLimit") ?? "50", 50);
+  const runStatusFilter = parseDashboardRunStatusFilter(params.get("runStatus") ?? "all");
   const safeRunLimit = Math.min(Math.max(runLimit, 0), 250);
   const runWarnings: string[] = [];
   let runs: DashboardWorkflowGraphRun[] = [];
@@ -5489,6 +5491,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
       runs = projectRuns
         .filter((run) => run.workflowId === workflow.id)
+        .filter((run) => dashboardRunMatchesStatus(run.status, runStatusFilter))
         .map((run) => ({
           id: run.id,
           status: run.status,
@@ -5502,7 +5505,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runWarnings };
+  return { ...report, runs, runStatusFilter, runWarnings };
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -5518,12 +5521,13 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const approvalFilter = params.get("approval")?.trim() || "all";
   const policyFilter = params.get("policyStatus")?.trim() || "all";
   const runLimit = String(parseDashboardRunLimit(params.get("runLimit") ?? "50", 50));
+  const runStatusFilter = report.runStatusFilter;
   const capture = params.get("capture") === "1";
-  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
-  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
-  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture });
-  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture: true });
-  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, capture: false });
+  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
+  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: true });
+  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: false });
   const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
   const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
   const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
@@ -5562,20 +5566,31 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
+  const runStatusOptions = ["all", "active", "failed", "completed", "queued", "running", "cancelled"].map((value) => `<option value="${value}"${runStatusFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const captureActions = capture
     ? `<a class="button secondary" href="${escapeHtml(exitCaptureHref)}">Exit Capture</a><button type="button" onclick="window.print()">Print</button>`
     : `<a class="button secondary" href="${escapeHtml(captureHref)}">Capture View</a>`;
+  const quickRunLinks = [
+    { label: "All Runs", runStatus: "all", runLimit: "50" },
+    { label: "Active Runs", runStatus: "active", runLimit: "50" },
+    { label: "Failed Runs", runStatus: "failed", runLimit: "50" },
+    { label: "Definition Only", runStatus: "all", runLimit: "0" }
+  ].map((item) => {
+    const active = runStatusFilter === item.runStatus && runLimit === item.runLimit;
+    const href = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit: item.runLimit, runStatus: item.runStatus, capture });
+    return `<a class="button ${active ? "" : "secondary"}" href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`;
+  }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
   ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
     <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
-    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form></section>
+    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
     ${warningHtml}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
       ${metricCard("Stages", report.totals.stages, `${report.totals.subagentLinks} subagent links`)}
       ${metricCard("Visible", filteredStages.length, "stages after filters")}
-      ${metricCard("Runs", report.runs.length, `recent ${escapeHtml(report.workflow.id)} runs`)}
+      ${metricCard("Runs", report.runs.length, `${escapeHtml(runStatusFilter)} ${escapeHtml(report.workflow.id)} runs`)}
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
@@ -5603,7 +5618,7 @@ function workflowGraphDashboardHref(
   workflowId: string,
   project: string,
   policyProfile: string,
-  options: { view: string; category: string; approval: string; policyStatus: string; runLimit: string; capture: boolean }
+  options: { view: string; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; capture: boolean }
 ): string {
   const query = new URLSearchParams({
     workflow: workflowId,
@@ -5615,6 +5630,7 @@ function workflowGraphDashboardHref(
   if (options.approval !== "all") query.set("approval", options.approval);
   if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
   if (options.runLimit !== "50") query.set("runLimit", options.runLimit);
+  if (options.runStatus !== "all") query.set("runStatus", options.runStatus);
   if (options.capture) query.set("capture", "1");
   return `/workflow-graph?${query.toString()}`;
 }
@@ -8967,6 +8983,7 @@ function dashboardCss(): string {
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .quick-actions { margin-top: 12px; }
     .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
     input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -10658,6 +10675,16 @@ function parseDashboardRunLimit(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.min(Math.max(parsed, 0), 250);
+}
+
+function parseDashboardRunStatusFilter(value: string): string {
+  return ["all", "active", "failed", "completed", "queued", "running", "cancelled"].includes(value) ? value : "all";
+}
+
+function dashboardRunMatchesStatus(status: string, filter: string): boolean {
+  if (filter === "all") return true;
+  if (filter === "active") return status === "queued" || status === "running";
+  return status === filter;
 }
 
 function parseProposalIds(value: string | undefined): string[] | "all" {
