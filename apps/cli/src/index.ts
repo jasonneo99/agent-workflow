@@ -5691,6 +5691,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const nodeById = new Map<string, NetworkNode>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
   const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
+  const stageNodeLabel = (stageId: string): string => truncateMiddle(stageId, 10);
   const radialPoint = (angle: number, radius: number): { x: number; y: number } => ({
     x: centerX + Math.cos(angle) * radius,
     y: centerY + Math.sin(angle) * radius
@@ -5724,7 +5725,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const stageNodeId = `stage:${stage.id}`;
     const stageNode: NetworkNode = {
       id: stageNodeId,
-      label: String(stage.order),
+      label: stageNodeLabel(stage.id),
       title: `${stage.id}: ${stage.goal}`,
       x: point.x,
       y: point.y,
@@ -5733,7 +5734,6 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       kind: "stage",
       href: `#${stageAnchorId(stage.id)}`
     };
-    applyRadialLabel(stageNode, angle, 14);
     nodeById.set(stageNodeId, stageNode);
     links.push({ from: "workflow", to: stageNodeId, width: 1.2, className: "signal" });
     if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.8, dashed: true, className: "sequence" });
@@ -5816,7 +5816,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const maxExtra = node.kind === "run" ? 9 : node.kind === "subagent" ? 11 : node.kind === "primary agent" ? 12 : 7;
     node.r = requestSizedRadius(originalRadius, requestCount, maxExtra);
     node.title = `${node.title} - ${requestCount} incoming request${requestCount === 1 ? "" : "s"}`;
-    if (node.kind !== "workflow" && node.labelX !== undefined && node.labelY !== undefined) {
+    if (node.kind !== "stage" && node.kind !== "workflow" && node.labelX !== undefined && node.labelY !== undefined) {
       const angle = Math.atan2(node.y - centerY, node.x - centerX);
       applyRadialLabel(node, angle, node.kind === "stage" ? 14 : 10);
     }
@@ -9106,7 +9106,8 @@ function dashboardCss(): string {
     .network-links .sequence.dashed { stroke: #fbbf24; stroke-opacity: 0.48; }
     .network-links .outcome.dashed { stroke: #bfdbfe; stroke-opacity: 0.34; }
     .network-node circle { fill: rgba(2,6,23,0.32); stroke: currentColor; stroke-width: 4; filter: url(#neuralGlow); }
-    .network-node text { fill: white; font-size: 13px; font-weight: 800; pointer-events: none; }
+    .network-node text { fill: white; font-size: 11px; font-weight: 800; pointer-events: none; }
+    .network-stage text { font-size: 9px; }
     .network-node { cursor: default; }
     .network-map a .network-node { cursor: pointer; }
     .network-node:hover circle, a:focus .network-node circle { fill: rgba(15,23,42,0.46); stroke-width: 5; }
