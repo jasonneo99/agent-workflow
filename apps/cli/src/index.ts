@@ -6168,6 +6168,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const stageHealthSummary = report.stageHealth.length
     ? `Stage health rings summarize ${formatNumber(totalStageHealthTasks)} task records across ${formatNumber(report.stageHealth.length)} stages.`
     : "Stage health rings appear when selected runs include task-level stage history.";
+  const explainer = renderNetworkStateExplainer(isRadial);
   const networkDefs = `<defs>
         <radialGradient id="neuralCoreGlow" cx="50%" cy="50%" r="65%">
           <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.62"></stop>
@@ -6207,7 +6208,24 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     </svg>
     <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span><i class="legend-health-completed"></i>stage completed</span><span><i class="legend-health-failed"></i>stage failed</span><span><i class="legend-health-active"></i>stage queued/running</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
     <p class="network-health-summary">${escapeHtml(stageHealthSummary)}</p>
+    ${explainer}
   </div>`;
+}
+
+function renderNetworkStateExplainer(isRadial: boolean): string {
+  const layoutText = isRadial
+    ? "Read outward from the workflow core through stage, agent, and run rings."
+    : "Read left to right from workflow input through stages, agents, and run outputs.";
+  const items = [
+    ["Layout", layoutText],
+    ["Solid Lines", "Primary stage-to-agent and agent-to-run paths."],
+    ["Dashed Lines", "Sequence or supporting subagent connections."],
+    ["Health Rings", "Stage task outcomes: completed, failed, queued/running, and cancelled."],
+    ["Click Targets", "Stage nodes focus history; run nodes open run details."]
+  ];
+  return `<div class="network-explainer">${items.map(([label, text]) => `
+    <div><strong>${escapeHtml(label)}</strong><span>${escapeHtml(text)}</span></div>
+  `).join("")}</div>`;
 }
 
 function formatStageHealthTitle(health: DashboardWorkflowStageHealth): string {
@@ -9477,6 +9495,10 @@ function dashboardCss(): string {
     .network-legend .legend-health-failed { background: #ef4444; }
     .network-legend .legend-health-active { background: #f59e0b; }
     .network-health-summary { margin: 0; color: #58708f; font-size: 12px; }
+    .network-explainer { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; background: #f8fafc; border: 1px solid #dbe4f0; padding: 10px; }
+    .network-explainer div { display: grid; gap: 3px; }
+    .network-explainer strong { color: #334155; font-size: 12px; text-transform: uppercase; }
+    .network-explainer span { color: #64748b; font-size: 12px; line-height: 1.35; }
     .focused-stage-panel { border-color: #93c5fd; box-shadow: inset 3px 0 0 #2563eb; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }

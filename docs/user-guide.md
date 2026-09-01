@@ -256,7 +256,9 @@ circular web with workflow core, stage ring, agent ring, and recent run-history
 orbit. In the network map, luminous signal paths show stage-to-agent and
 agent-to-run relationships, transparent nodes glow by type or status, stage
 nodes are labeled by stage name, and node size grows with incoming request count
-so heavily used agents, stages, and runs stand out. When selected runs include
+so heavily used agents, stages, and runs stand out. A compact explainer below
+the map describes layer direction, solid and dashed signal paths, health rings,
+and click targets for onboarding and screenshots. When selected runs include
 task-level stage history, stage nodes also show a health ring for completed,
 failed, queued/running, and cancelled task outcomes. Click a stage node to focus
 recent run/task history for that workflow step, use **Suggest Fix** to queue a
