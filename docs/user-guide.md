@@ -249,19 +249,19 @@ The local dashboard exposes the same inspection surface at
 you want a browser-readable graph of workflow stages, primary agents, subagents,
 context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
-presentation-friendly agent connection map, or `&view=network` for a visual SVG
-network map of workflow, stage, primary-agent, subagent, and recent run-history
-relationships. In the network map, stage nodes jump to the Stage Matrix and run
-nodes open the run detail page, so the visual becomes a lightweight inspection
-surface. Use `runLimit=0` for definition-only diagrams or raise the limit up to
-`250` when you want more historical runs in the graph. Use the run-status quick
-links for developer triage: Active Runs shows queued/running work, Failed Runs
-turns the map into a debugging surface, and Definition Only hides run history
-for clean architecture snapshots. The page also includes filters for agent
-category, approval requirement, and policy status so larger workflows stay
-scannable. Add `&capture=1` for a clean screenshot/print view that hides the
-dashboard navigation and form controls while preserving the selected workflow,
-view, run limit, run status, and filters.
+presentation-friendly agent connection map, or `&view=network` for a layered
+neural-style SVG map of workflow input, stage layer, agent layer, and recent
+run-history outputs. In the network map, stage nodes jump to the Stage Matrix
+and run nodes open the run detail page, so the visual becomes a lightweight
+inspection surface. Use `runLimit=0` for definition-only diagrams or raise the
+limit up to `250` when you want more historical runs in the graph. Use the
+run-status quick links for developer triage: Active Runs shows queued/running
+work, Failed Runs turns the map into a debugging surface, and Definition Only
+hides run history for clean architecture snapshots. The page also includes
+filters for agent category, approval requirement, and policy status so larger
+workflows stay scannable. Add `&capture=1` for a clean screenshot/print view
+that hides the dashboard navigation and form controls while preserving the
+selected workflow, view, run limit, run status, and filters.
 
 ![Workflow network map](assets/screenshots/dashboard-workflow-network.png)
 

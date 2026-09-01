@@ -175,6 +175,7 @@ trust gaps.
   - Done: make network-map nodes inspectable by linking stages to the Stage Matrix and runs to run details.
   - Done: improve network-map label placement near graph edges for dense workflows.
   - Done: add focused graph run-status filters for active runs, failed runs, exact statuses, and definition-only snapshots.
+  - Done: reshape the network map into a layered neural-style developer view with workflow input, stage layer, agent layer, and run outputs.
   - Next: overlay per-stage run health so the graph can show which workflow step tends to fail or stall.
 
 - [x] Optional model-improvement workflow pack.
