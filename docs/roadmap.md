@@ -187,7 +187,8 @@ trust gaps.
   - Done: link completed suggested-fix runs to tagged source-workflow reruns for verification.
   - Done: calculate and display visual before/after stage-health deltas between the source history and verification reruns.
   - Done: add a compact graph legend/state explainer for developer onboarding and screenshot readability.
-  - Next: add a graph handoff export that saves the selected graph URL, filters, and current health summary beside project reports.
+  - Done: add a graph handoff export that saves the selected graph URL, filters, and current health summary beside project reports.
+  - Next: add a small recent graph exports panel so developers can reopen or share prior graph handoffs from the dashboard.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

@@ -270,7 +270,9 @@ outcomes on later visits. After a suggested fix completes, use **Rerun Source**
 to queue the original workflow as a tagged verification run for before/after
 stage-health comparison. The focused panel summarizes that comparison with
 after-signal, completed-rate, failed-rate, and active-rate delta cards. Use
-`runLimit=0` for definition-only diagrams or
+**Export Handoff** to save a Markdown and JSON snapshot of the selected graph
+URL, filters, totals, run list, focused-stage deltas, and stage-health summary
+under `.agent-workflow/exports/graphs/`. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
 the run-status quick links for developer triage: Active Runs shows
 queued/running work, Failed Runs turns the map into a debugging surface, and

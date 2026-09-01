@@ -4571,6 +4571,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
+    const form = await readFormBody(request);
+    const result = await exportDashboardWorkflowGraphHandoff(form);
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
     const form = await readFormBody(request);
     const result = await updateDashboardRouting({
@@ -5644,6 +5652,19 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const captureActions = capture
     ? `<a class="button secondary" href="${escapeHtml(exitCaptureHref)}">Exit Capture</a><button type="button" onclick="window.print()">Print</button>`
     : `<a class="button secondary" href="${escapeHtml(captureHref)}">Capture View</a>`;
+  const exportHandoffForm = workflowGraphHandoffExportForm({
+    workflowId: report.workflow.id,
+    project: projectValue,
+    policyProfile: policyValue,
+    view,
+    orientation,
+    category: categoryFilter,
+    approval: approvalFilter,
+    policyStatus: policyFilter,
+    runStatus: runStatusFilter,
+    runLimit,
+    stage: focusedStageId
+  });
   const quickRunLinks = [
     { label: "All Runs", runStatus: "all", runLimit: "50" },
     { label: "Active Runs", runStatus: "active", runLimit: "50" },
@@ -5657,7 +5678,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
   ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
-    <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
+    <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${exportHandoffForm}${captureActions}</div></div>
     <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><input type="hidden" name="orientation" value="${escapeHtml(orientation)}"><input type="hidden" name="stage" value="${escapeHtml(focusedStageId)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
     ${warningHtml}
     <section class="panel"><div class="metric-grid">
@@ -9288,6 +9309,11 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat("en-US").format(Math.round(value));
 }
 
+function safeFileSegment(value: string): string {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "graph";
+}
+
 function renderDashboardDateTime(value: string | null | undefined, fallback = "n/a"): string {
   if (!value) {
     return escapeHtml(fallback);
@@ -9655,6 +9681,38 @@ function projectIndexForm(project: string): string {
   return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
 }
 
+function workflowGraphHandoffExportForm(input: {
+  workflowId: string;
+  project: string;
+  policyProfile: string;
+  view: string;
+  orientation: "horizontal" | "radial";
+  category: string;
+  approval: string;
+  policyStatus: string;
+  runStatus: string;
+  runLimit: string;
+  stage: string;
+}): string {
+  const fields: Record<string, string> = {
+    workflow: input.workflowId,
+    project: input.project,
+    policyProfile: input.policyProfile,
+    view: input.view,
+    orientation: input.orientation,
+    category: input.category,
+    approval: input.approval,
+    policyStatus: input.policyStatus,
+    runStatus: input.runStatus,
+    runLimit: input.runLimit,
+    stage: input.stage
+  };
+  const hiddenFields = Object.entries(fields)
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
+    .join("");
+  return `<form class="inline-form compact-form" method="post" action="/api/graph-handoff-export">${hiddenFields}<button type="submit">Export Handoff</button></form>`;
+}
+
 function focusedStageSuggestFixForm(input: {
   project: string;
   workflowId: string;
@@ -9745,6 +9803,187 @@ async function processDashboardBundleLifecyclePlan(input: {
   return plan.status === "ready"
     ? { ok: true, title: input.write ? "Bundle Lifecycle Plan Written" : "Bundle Lifecycle Plan Dry Run", output }
     : { ok: false, error: output };
+}
+
+async function exportDashboardWorkflowGraphHandoff(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const params = new URLSearchParams();
+  const copyFields = ["workflow", "project", "policyProfile", "view", "orientation", "category", "approval", "policyStatus", "runStatus", "runLimit", "stage"];
+  for (const field of copyFields) {
+    const value = form.get(field);
+    if (value !== null) params.set(field, value);
+  }
+
+  const report = await loadDashboardWorkflowGraph(params);
+  const projectDir = path.resolve(process.cwd(), params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+  const view = params.get("view") || "graph";
+  const orientation = params.get("orientation") === "radial" ? "radial" : "horizontal";
+  const graphPath = workflowGraphDashboardHref(report.workflow.id, params.get("project")?.trim() || projectDir, params.get("policyProfile")?.trim() || report.project.policyProfile, {
+    view,
+    orientation,
+    category: params.get("category")?.trim() || "",
+    approval: params.get("approval")?.trim() || "all",
+    policyStatus: params.get("policyStatus")?.trim() || "all",
+    runLimit: String(parseDashboardRunLimit(params.get("runLimit") ?? "50", 50)),
+    runStatus: report.runStatusFilter,
+    capture: true,
+    stage: report.focusedStageId
+  });
+  const generatedAt = new Date().toISOString();
+  const exportDir = path.join(projectDir, ".agent-workflow", "exports", "graphs");
+  const fileBase = [
+    generatedAt.replace(/[:.]/g, "-"),
+    safeFileSegment(report.workflow.id),
+    report.focusedStageId ? safeFileSegment(report.focusedStageId) : "all-stages"
+  ].join("-");
+  const jsonPath = path.join(exportDir, `${fileBase}.json`);
+  const markdownPath = path.join(exportDir, `${fileBase}.md`);
+  const payload = buildGraphHandoffPayload({
+    report,
+    generatedAt,
+    graphPath,
+    filters: {
+      view,
+      orientation,
+      category: params.get("category")?.trim() || "all",
+      approval: params.get("approval")?.trim() || "all",
+      policyStatus: params.get("policyStatus")?.trim() || "all",
+      runStatus: report.runStatusFilter,
+      runLimit: parseDashboardRunLimit(params.get("runLimit") ?? "50", 50),
+      stage: report.focusedStageId || "all"
+    }
+  });
+  await fs.mkdir(exportDir, { recursive: true });
+  await fs.writeFile(jsonPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await fs.writeFile(markdownPath, formatGraphHandoffMarkdown(payload), "utf8");
+  return {
+    ok: true,
+    title: "Graph Handoff Exported",
+    output: [
+      `Markdown: ${markdownPath}`,
+      `JSON: ${jsonPath}`,
+      `Graph URL: ${graphPath}`,
+      `Workflow: ${report.workflow.id}`,
+      `Runs included: ${report.runs.length}`,
+      report.focusedStageId ? `Focused stage: ${report.focusedStageId}` : "Focused stage: all",
+      `Open: ${graphPath}`
+    ].join("\n")
+  };
+}
+
+type GraphHandoffPayload = ReturnType<typeof buildGraphHandoffPayload>;
+
+function buildGraphHandoffPayload(input: {
+  report: DashboardWorkflowGraphReport;
+  generatedAt: string;
+  graphPath: string;
+  filters: Record<string, string | number>;
+}) {
+  const stageHealth = input.report.stageHealth.map((health) => ({
+    stageId: health.stageId,
+    totalTasks: health.totalTasks,
+    completedTasks: health.completedTasks,
+    failedTasks: health.failedTasks,
+    activeTasks: health.queuedTasks + health.runningTasks,
+    cancelledTasks: health.cancelledTasks
+  }));
+  const focusedStage = input.report.focusedStageId
+    ? {
+      id: input.report.focusedStageId,
+      historyRows: input.report.focusedStageRuns.length,
+      suggestedFixRuns: input.report.focusedStageFixRuns.map((run) => ({
+        id: run.id,
+        status: run.status,
+        startedAt: run.startedAt
+      })),
+      verificationRuns: input.report.focusedStageVerificationRuns.map((run) => ({
+        id: run.id,
+        status: run.status,
+        sourceFixRunId: stringValue(run.evaluationMetadata.sourceFixRunId),
+        startedAt: run.startedAt
+      })),
+      delta: summarizeFocusedStageDelta(
+        input.report.focusedStageRuns.filter((run) => !input.report.focusedStageVerificationRuns.some((verification) => verification.id === run.runId)),
+        input.report.focusedStageRuns.filter((run) => input.report.focusedStageVerificationRuns.some((verification) => verification.id === run.runId))
+      )
+    }
+    : null;
+  return {
+    kind: "agentflow_graph_handoff",
+    generatedAt: input.generatedAt,
+    graphPath: input.graphPath,
+    filters: input.filters,
+    workflow: input.report.workflow,
+    project: input.report.project,
+    totals: input.report.totals,
+    runs: input.report.runs.map((run) => ({
+      id: run.id,
+      workflowId: run.workflowId,
+      status: run.status,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt
+    })),
+    stageHealth,
+    focusedStage
+  };
+}
+
+function formatGraphHandoffMarkdown(payload: GraphHandoffPayload): string {
+  const stageRows = payload.stageHealth.map((stage) => (
+    `| ${stage.stageId} | ${stage.totalTasks} | ${stage.completedTasks} | ${stage.failedTasks} | ${stage.activeTasks} | ${stage.cancelledTasks} |`
+  )).join("\n") || "| none | 0 | 0 | 0 | 0 | 0 |";
+  const runRows = payload.runs.slice(0, 20).map((run) => (
+    `| ${run.id} | ${run.workflowId} | ${run.status} | ${run.startedAt} |`
+  )).join("\n") || "| none | none | none | none |";
+  const focused = payload.focusedStage
+    ? [
+      "## Focused Stage",
+      "",
+      `Stage: ${payload.focusedStage.id}`,
+      `History rows: ${payload.focusedStage.historyRows}`,
+      `Suggested fix runs: ${payload.focusedStage.suggestedFixRuns.length}`,
+      `Verification reruns: ${payload.focusedStage.verificationRuns.length}`,
+      `After signal: ${payload.focusedStage.delta.label}`,
+      `Completed delta: ${formatSignedRate(payload.focusedStage.delta.completedDelta) || "n/a"}`,
+      `Failed delta: ${formatSignedRate(payload.focusedStage.delta.failedDelta) || "n/a"}`,
+      ""
+    ].join("\n")
+    : "";
+  return [
+    `# Agent Workflow Graph Handoff`,
+    "",
+    `Generated: ${payload.generatedAt}`,
+    `Graph URL: ${payload.graphPath}`,
+    `Workflow: ${payload.workflow.id} (${payload.workflow.name})`,
+    `Project: ${payload.project.name}`,
+    "",
+    "## Filters",
+    "",
+    ...Object.entries(payload.filters).map(([key, value]) => `- ${key}: ${value}`),
+    "",
+    "## Totals",
+    "",
+    `- stages: ${payload.totals.stages}`,
+    `- subagent links: ${payload.totals.subagentLinks}`,
+    `- approval stages: ${payload.totals.approvalStages}`,
+    `- blocked stages: ${payload.totals.blockedStages}`,
+    `- context budget tokens: ${payload.totals.contextBudgetTokens}`,
+    `- runs: ${payload.runs.length}`,
+    "",
+    focused,
+    "## Stage Health",
+    "",
+    "| Stage | Tasks | Completed | Failed | Active | Cancelled |",
+    "| --- | ---: | ---: | ---: | ---: | ---: |",
+    stageRows,
+    "",
+    "## Runs",
+    "",
+    "| Run | Workflow | Status | Started |",
+    "| --- | --- | --- | --- |",
+    runRows,
+    payload.runs.length > 20 ? `\n${payload.runs.length - 20} additional runs are available in the JSON export.` : "",
+    ""
+  ].filter((line) => line !== undefined).join("\n");
 }
 
 async function queueDashboardStageFix(input: {
