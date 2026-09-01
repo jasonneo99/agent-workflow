@@ -5790,14 +5790,15 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     </div></section>
     <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
     ${visual}
-    ${renderRecentGraphExportsHtml(report.recentGraphExports)}
+    ${renderRecentGraphExportsHtml(report.recentGraphExports, projectValue)}
     ${renderFocusedStageRunsHtml(report, projectValue, clearStageHref)}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
 }
 
-function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[]): string {
+function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[], project: string): string {
+  const projectDir = path.resolve(process.cwd(), project);
   const rows = exports.map((item) => `
     <tr>
       <td>${renderDashboardDateTime(item.generatedAt)}</td>
@@ -5818,7 +5819,25 @@ function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[]): s
       </div>
     </div>
     <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Workflow</th><th>Stage</th><th>Runs</th><th>Health Rows</th><th>Graph</th><th>Markdown</th><th>JSON</th></tr></thead><tbody>${rows}</tbody></table></div>
+    ${renderGraphExportLifecycleHtml(projectDir, exports.length)}
   </section>`;
+}
+
+function renderGraphExportLifecycleHtml(projectDir: string, exportCount: number): string {
+  const exportDir = path.join(projectDir, ".agent-workflow", "exports", "graphs");
+  const quotedExportDir = shellQuote(exportDir);
+  const quotedProjectDir = shellQuote(projectDir);
+  const commands = [
+    `du -sh ${quotedExportDir}`,
+    `find ${quotedExportDir} -maxdepth 1 -type f \\( -name '*.md' -o -name '*.json' \\) -print | sort | tail -40`,
+    `find ${quotedExportDir} -maxdepth 1 -type f \\( -name '*.md' -o -name '*.json' \\) -mtime +30 -print`,
+    `tar -czf agentflow-graph-handoffs.tgz -C ${quotedProjectDir} .agent-workflow/exports/graphs`
+  ].join("\n");
+  return `<details class="lifecycle-help">
+    <summary>Export lifecycle commands</summary>
+    <p class="muted">${formatNumber(exportCount)} recent handoff export${exportCount === 1 ? "" : "s"} shown. These commands inspect, preview prune candidates, or package graph handoffs without deleting files.</p>
+    <pre>${escapeHtml(commands)}</pre>
+  </details>`;
 }
 
 function graphHandoffViewerHref(project: string, fileName: string): string {
@@ -5870,7 +5889,7 @@ function renderDashboardGraphHandoffView(result: DashboardGraphHandoffViewResult
         <div><strong>Markdown</strong>${escapeHtml(result.markdownPath)}</div>
         <div><strong>JSON</strong>${escapeHtml(result.jsonPath ?? "missing")}</div>
         <div><strong>Generated</strong>${result.summary ? renderDashboardDateTime(result.summary.generatedAt) : "unknown"}</div>
-      </div></section>
+      </div>${renderGraphExportLifecycleHtml(result.projectDir, result.summary ? 1 : 0)}</section>
       <section class="panel"><h2>Handoff Markdown</h2><pre class="markdown-view">${escapeHtml(result.markdown)}</pre></section>`
     : `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Graph</a><h1>Graph Handoff</h1><p class="muted">Unable to open the requested export.</p></div></div><section class="panel warn-panel"><pre>${escapeHtml(result.error)}</pre></section>`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Graph Handoff</title><style>${dashboardCss()}</style></head><body>${dashboardNav("workflow-graph")}<main>${body}</main></body></html>`;
@@ -9575,6 +9594,9 @@ function dashboardCss(): string {
     a { color: #1d4ed8; text-decoration: none; }
     pre { overflow: auto; background: #101828; color: #eef4ff; padding: 14px; font-size: 13px; line-height: 1.45; }
     .markdown-view { white-space: pre-wrap; word-break: break-word; }
+    .lifecycle-help { margin-top: 14px; border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
+    .lifecycle-help summary { cursor: pointer; font-weight: 700; color: #172033; }
+    .lifecycle-help pre { margin-bottom: 0; }
     .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 6px; z-index: 10; }
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 12px; }
     .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
