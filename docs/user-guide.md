@@ -258,9 +258,10 @@ agent-to-run relationships, transparent nodes glow by type or status, stage
 nodes are labeled by stage name, and node size grows with incoming request count
 so heavily used agents, stages, and runs stand out. When selected runs include
 task-level stage history, stage nodes also show a health ring for completed,
-failed, queued/running, and cancelled task outcomes. Stage nodes jump to the Stage Matrix, and run nodes
-open the run detail page, so the visual becomes a lightweight inspection
-surface. Use `runLimit=0` for definition-only diagrams or
+failed, queued/running, and cancelled task outcomes. Click a stage node to focus
+recent run/task history for that workflow step, or click a run node to open the
+run detail page, so the visual becomes a lightweight inspection surface. Use
+`runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
 the run-status quick links for developer triage: Active Runs shows
 queued/running work, Failed Runs turns the map into a debugging surface, and

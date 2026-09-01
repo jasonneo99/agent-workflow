@@ -53,6 +53,7 @@ import {
   listProjectStorageSummaries,
   listWorkflowQueue,
   listWorkflowStageHealthForRuns,
+  listWorkflowStageRunsForRuns,
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
@@ -5462,12 +5463,15 @@ type DashboardWorkflowGraphRun = {
 };
 
 type DashboardWorkflowStageHealth = Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>[number];
+type DashboardWorkflowStageRun = Awaited<ReturnType<typeof listWorkflowStageRunsForRuns>>[number];
 
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
   runStatusFilter: string;
   runWarnings: string[];
   stageHealth: DashboardWorkflowStageHealth[];
+  focusedStageId: string;
+  focusedStageRuns: DashboardWorkflowStageRun[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -5487,10 +5491,13 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   });
   const runLimit = parseDashboardRunLimit(params.get("runLimit") ?? "50", 50);
   const runStatusFilter = parseDashboardRunStatusFilter(params.get("runStatus") ?? "all");
+  const requestedStageFocus = params.get("stage")?.trim() || "";
+  const focusedStageId = report.stages.some((stage) => stage.id === requestedStageFocus) ? requestedStageFocus : "";
   const safeRunLimit = Math.min(Math.max(runLimit, 0), 250);
   const runWarnings: string[] = [];
   let runs: DashboardWorkflowGraphRun[] = [];
   let stageHealth: DashboardWorkflowStageHealth[] = [];
+  let focusedStageRuns: DashboardWorkflowStageRun[] = [];
   if (safeRunLimit > 0) {
     try {
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
@@ -5507,11 +5514,12 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
           modelTierOverride: run.modelTierOverride
         }));
       stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
+      if (focusedStageId) focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runStatusFilter, runWarnings, stageHealth };
+  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns };
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -5523,20 +5531,23 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
   const viewParam = params.get("view");
   const view = viewParam === "mind-map" || viewParam === "network" ? viewParam : "graph";
-  const orientation = params.get("orientation") === "radial" ? "radial" : "horizontal";
+  const orientation: "horizontal" | "radial" = params.get("orientation") === "radial" ? "radial" : "horizontal";
   const categoryFilter = params.get("category")?.trim() || "";
   const approvalFilter = params.get("approval")?.trim() || "all";
   const policyFilter = params.get("policyStatus")?.trim() || "all";
   const runLimit = String(parseDashboardRunLimit(params.get("runLimit") ?? "50", 50));
   const runStatusFilter = report.runStatusFilter;
+  const focusedStageId = report.focusedStageId;
   const capture = params.get("capture") === "1";
-  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "graph", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "mind-map", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const networkHorizontalHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation: "horizontal", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const networkRadialHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view: "network", orientation: "radial", category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture });
-  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: true });
-  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture: false });
+  const baseHrefOptions = { orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit, runStatus: runStatusFilter, capture, stage: focusedStageId };
+  const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "graph" });
+  const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "mind-map" });
+  const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network" });
+  const networkHorizontalHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", orientation: "horizontal" });
+  const networkRadialHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", orientation: "radial" });
+  const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, capture: true });
+  const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, capture: false });
+  const clearStageHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, stage: "" });
   const jsonHref = `/api/workflow-graph?workflow=${encodeURIComponent(report.workflow.id)}&project=${encodeURIComponent(projectValue)}&policyProfile=${encodeURIComponent(policyValue)}`;
   const filteredStages = filterWorkflowGraphStages(report, { category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter });
   const categories = uniqueSorted(report.stages.map((stage) => stage.agentCategory ?? "uncategorized"));
@@ -5570,7 +5581,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const visual = view === "mind-map"
     ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
     : view === "network"
-      ? `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation)}</section>`
+      ? `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation, (stageId) => workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", stage: stageId }), focusedStageId)}</section>`
       : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
@@ -5586,14 +5597,14 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     { label: "Definition Only", runStatus: "all", runLimit: "0" }
   ].map((item) => {
     const active = runStatusFilter === item.runStatus && runLimit === item.runLimit;
-    const href = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { view, orientation, category: categoryFilter, approval: approvalFilter, policyStatus: policyFilter, runLimit: item.runLimit, runStatus: item.runStatus, capture });
+    const href = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, runLimit: item.runLimit, runStatus: item.runStatus });
     return `<a class="button ${active ? "" : "secondary"}" href="${escapeHtml(href)}">${escapeHtml(item.label)}</a>`;
   }).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Graph</title><style>${dashboardCss()}</style></head><body${capture ? ' class="capture-page"' : ""}>
   ${capture ? "" : dashboardNav("workflow-graph")}
   <main>
     <div class="topbar"><div>${capture ? "" : '<a href="/">Dashboard</a>'}<h1>Agent Graph</h1><p class="muted">Read-only view of workflow stages, primary agents, subagents, context budgets, approvals, and policy fit.</p></div><div class="actions print-hide"><a class="button secondary capture-hide" href="${escapeHtml(jsonHref)}">JSON</a>${captureActions}</div></div>
-    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><input type="hidden" name="orientation" value="${escapeHtml(orientation)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
+    <section class="panel capture-hide"><form method="get" class="workflow-form"><input type="hidden" name="view" value="${escapeHtml(view)}"><input type="hidden" name="orientation" value="${escapeHtml(orientation)}"><input type="hidden" name="stage" value="${escapeHtml(focusedStageId)}"><label>Workflow<select name="workflow">${workflowOptions}</select></label><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}"></label><label>Policy profile<input name="policyProfile" value="${escapeHtml(policyValue)}"></label><label>Agent category<select name="category">${categoryOptions}</select></label><label>Approval<select name="approval">${approvalOptions}</select></label><label>Policy status<select name="policyStatus">${policyOptions}</select></label><label>Run status<select name="runStatus">${runStatusOptions}</select></label><label>Runs shown<input name="runLimit" inputmode="numeric" value="${escapeHtml(runLimit)}"></label><div class="form-actions"><button type="submit">Render Graph</button></div></form><div class="actions quick-actions">${quickRunLinks}</div></section>
     ${warningHtml}
     <section class="panel"><div class="metric-grid">
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
@@ -5605,6 +5616,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     </div></section>
     <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
     ${visual}
+    ${renderFocusedStageRunsHtml(report, clearStageHref)}
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
@@ -5627,7 +5639,7 @@ function workflowGraphDashboardHref(
   workflowId: string,
   project: string,
   policyProfile: string,
-  options: { view: string; orientation?: "horizontal" | "radial"; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; capture: boolean }
+  options: { view: string; orientation?: "horizontal" | "radial"; category: string; approval: string; policyStatus: string; runLimit: string; runStatus: string; capture: boolean; stage?: string }
 ): string {
   const query = new URLSearchParams({
     workflow: workflowId,
@@ -5641,12 +5653,42 @@ function workflowGraphDashboardHref(
   if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
   if (options.runLimit !== "50") query.set("runLimit", options.runLimit);
   if (options.runStatus !== "all") query.set("runStatus", options.runStatus);
+  if (options.stage) query.set("stage", options.stage);
   if (options.capture) query.set("capture", "1");
   return `/workflow-graph?${query.toString()}`;
 }
 
 function renderNetworkOrientationActions(orientation: "horizontal" | "radial", horizontalHref: string, radialHref: string): string {
   return `<div class="actions network-orientation-actions"><a class="button ${orientation === "horizontal" ? "" : "secondary"}" href="${escapeHtml(horizontalHref)}">Horizontal</a><a class="button ${orientation === "radial" ? "" : "secondary"}" href="${escapeHtml(radialHref)}">Radial Web</a></div>`;
+}
+
+function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, clearStageHref: string): string {
+  if (!report.focusedStageId) return "";
+  const stage = report.stages.find((item) => item.id === report.focusedStageId);
+  const health = report.stageHealth.find((item) => item.stageId === report.focusedStageId);
+  const rows = report.focusedStageRuns.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td>
+      <td><span class="status ${escapeHtml(run.runStatus)}">${escapeHtml(run.runStatus)}</span></td>
+      <td><span class="status ${escapeHtml(run.taskStatus)}">${escapeHtml(run.taskStatus)}</span></td>
+      <td>${formatNumber(run.attempts)}</td>
+      <td>${escapeHtml(run.agentId)}</td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${renderDashboardDateTime(run.taskStartedAt ?? run.runStartedAt)}</td>
+    </tr>
+  `).join("") || '<tr><td colspan="7">No task records found for this stage in the selected run history.</td></tr>';
+  const healthText = health ? formatStageHealthTitle(health) : "No task-level stage history found for selected runs.";
+  return `<section class="panel focused-stage-panel">
+    <div class="section-heading">
+      <div>
+        <h2>Focused Stage: ${escapeHtml(report.focusedStageId)}</h2>
+        <span class="muted">${escapeHtml(stage?.goal ?? "Stage details unavailable.")}</span>
+      </div>
+      <a class="button secondary" href="${escapeHtml(clearStageHref)}">Clear Stage</a>
+    </div>
+    <p class="muted">${escapeHtml(healthText)}</p>
+    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Run Status</th><th>Stage Status</th><th>Attempts</th><th>Agent</th><th>Task</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
 }
 
 function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: WorkflowGraphReport["stages"]): string {
@@ -5677,7 +5719,7 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: Workflow
   </div>`;
 }
 
-function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"], orientation: "horizontal" | "radial"): string {
+function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"], orientation: "horizontal" | "radial", stageHref: (stageId: string) => string, focusedStageId: string): string {
   if (!stages.length) return '<p class="muted">No stages match the selected filters.</p>';
   const isRadial = orientation === "radial";
   const width = 1120;
@@ -5708,7 +5750,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     queued: "#f59e0b",
     cancelled: "#94a3b8"
   };
-  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; stageHealth?: DashboardWorkflowStageHealth };
+  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; stageHealth?: DashboardWorkflowStageHealth; focused?: boolean };
   const nodeById = new Map<string, NetworkNode>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
   const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
@@ -5754,9 +5796,10 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       r: 22,
       color: stage.policyAllowed ? (stage.approvalRequired || stage.policyApprovalRequired ? "#f59e0b" : "#2563eb") : "#dc2626",
       kind: "stage",
-      href: `#${stageAnchorId(stage.id)}`,
+      href: stageHref(stage.id),
       stageId: stage.id,
-      stageHealth: stageHealthById.get(stage.id)
+      stageHealth: stageHealthById.get(stage.id),
+      focused: focusedStageId === stage.id
     };
     if (stageNode.stageHealth) stageNode.title = `${stageNode.title} - ${formatStageHealthTitle(stageNode.stageHealth)}`;
     nodeById.set(stageNodeId, stageNode);
@@ -5882,7 +5925,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     return `<path${className} d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} C ${formatSvgNumber(controlOneX)} ${formatSvgNumber(controlOneY)}, ${formatSvgNumber(controlTwoX)} ${formatSvgNumber(controlTwoY)}, ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
   }).join("");
   const nodeSvg = [...nodeById.values()].map((node) => {
-    const body = `<g class="network-node network-${escapeHtml(node.kind.replace(/\s+/g, "-"))}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
+    const nodeClasses = ["network-node", `network-${node.kind.replace(/\s+/g, "-")}`, node.focused ? "network-focused" : ""].filter(Boolean).join(" ");
+    const body = `<g class="${escapeHtml(nodeClasses)}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
       <title>${escapeHtml(node.title)}</title>
       ${node.kind === "stage" && node.stageHealth ? renderStageHealthRing(node.r, node.stageHealth) : ""}
       <circle r="${node.r}"></circle>
@@ -9202,6 +9246,7 @@ function dashboardCss(): string {
     .network-node { cursor: default; }
     .network-map a .network-node { cursor: pointer; }
     .network-node:hover circle, a:focus .network-node circle { fill: rgba(15,23,42,0.46); stroke-width: 5; }
+    .network-focused circle { stroke-width: 6; }
     .network-map a { outline: none; }
     .network-workflow circle { stroke-width: 5; }
     .network-label { fill: #e2e8f0; font-size: 12px; font-weight: 700; }
@@ -9216,6 +9261,7 @@ function dashboardCss(): string {
     .network-legend .legend-health-failed { background: #ef4444; }
     .network-legend .legend-health-active { background: #f59e0b; }
     .network-health-summary { margin: 0; color: #58708f; font-size: 12px; }
+    .focused-stage-panel { border-color: #93c5fd; box-shadow: inset 3px 0 0 #2563eb; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }

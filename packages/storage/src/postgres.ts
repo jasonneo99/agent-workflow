@@ -1546,6 +1546,20 @@ export interface WorkflowStageHealthStatus {
   cancelledTasks: number;
 }
 
+export interface WorkflowStageRunStatus {
+  runId: string;
+  runStatus: string;
+  task: string;
+  stageId: string;
+  agentId: string;
+  taskStatus: string;
+  attempts: number;
+  taskStartedAt: string | null;
+  taskFinishedAt: string | null;
+  runStartedAt: string;
+  runFinishedAt: string | null;
+}
+
 export interface ActionReceiptStatus {
   id: string;
   agentId: string;
@@ -1977,6 +1991,36 @@ export async function listWorkflowStageHealthForRuns(input: {
        group by wt.stage_id
        order by wt.stage_id asc`,
       [input.runIds]
+    );
+    return result.rows;
+  });
+}
+
+export async function listWorkflowStageRunsForRuns(input: {
+  runIds: string[];
+  stageId: string;
+}): Promise<WorkflowStageRunStatus[]> {
+  if (!input.runIds.length) return [];
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowStageRunStatus>(
+      `select
+         wr.id::text as "runId",
+         wr.status as "runStatus",
+         wr.task,
+         wt.stage_id as "stageId",
+         wt.agent_id as "agentId",
+         wt.status as "taskStatus",
+         wt.attempts,
+         wt.started_at::text as "taskStartedAt",
+         wt.finished_at::text as "taskFinishedAt",
+         wr.started_at::text as "runStartedAt",
+         wr.finished_at::text as "runFinishedAt"
+       from workflow_tasks wt
+       join workflow_runs wr on wr.id = wt.run_id
+       where wt.run_id = any($1::uuid[])
+         and wt.stage_id = $2
+       order by wr.started_at desc, wt.available_at asc`,
+      [input.runIds, input.stageId]
     );
     return result.rows;
   });
