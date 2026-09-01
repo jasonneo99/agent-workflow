@@ -180,7 +180,8 @@ trust gaps.
   - Done: size network-map nodes by incoming request count so frequently invoked agents, stages, and run outputs stand out.
   - Done: reshape the network map into a radial web with transparent nodes and color carried by stroke/glow.
   - Done: add network-map orientation controls so developers can switch between horizontal and radial web layouts.
-  - Next: overlay per-stage run health so the graph can show which workflow step tends to fail or stall.
+  - Done: overlay per-stage run health so the graph can show which workflow step tends to fail, stall, or complete.
+  - Next: add stage-click run filtering so clicking a stage can focus recent runs and failures for that workflow step.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

@@ -1536,6 +1536,16 @@ export interface WorkflowTaskStatus {
   finishedAt: string | null;
 }
 
+export interface WorkflowStageHealthStatus {
+  stageId: string;
+  totalTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  queuedTasks: number;
+  runningTasks: number;
+  cancelledTasks: number;
+}
+
 export interface ActionReceiptStatus {
   id: string;
   agentId: string;
@@ -1943,6 +1953,30 @@ export async function listWorkflowRunsForProject(input: {
        order by wr.started_at desc
        limit $2`,
       [input.projectRootUri, input.limit]
+    );
+    return result.rows;
+  });
+}
+
+export async function listWorkflowStageHealthForRuns(input: {
+  runIds: string[];
+}): Promise<WorkflowStageHealthStatus[]> {
+  if (!input.runIds.length) return [];
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowStageHealthStatus>(
+      `select
+         wt.stage_id as "stageId",
+         count(*)::int as "totalTasks",
+         count(*) filter (where wt.status = 'completed')::int as "completedTasks",
+         count(*) filter (where wt.status = 'failed')::int as "failedTasks",
+         count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
+         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks"
+       from workflow_tasks wt
+       where wt.run_id = any($1::uuid[])
+       group by wt.stage_id
+       order by wt.stage_id asc`,
+      [input.runIds]
     );
     return result.rows;
   });

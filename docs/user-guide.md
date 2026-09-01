@@ -256,7 +256,9 @@ circular web with workflow core, stage ring, agent ring, and recent run-history
 orbit. In the network map, luminous signal paths show stage-to-agent and
 agent-to-run relationships, transparent nodes glow by type or status, stage
 nodes are labeled by stage name, and node size grows with incoming request count
-so heavily used agents, stages, and runs stand out. Stage nodes jump to the Stage Matrix, and run nodes
+so heavily used agents, stages, and runs stand out. When selected runs include
+task-level stage history, stage nodes also show a health ring for completed,
+failed, queued/running, and cancelled task outcomes. Stage nodes jump to the Stage Matrix, and run nodes
 open the run detail page, so the visual becomes a lightweight inspection
 surface. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use

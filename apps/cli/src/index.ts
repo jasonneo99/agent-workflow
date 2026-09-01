@@ -52,6 +52,7 @@ import {
   listProjectFileSummaries,
   listProjectStorageSummaries,
   listWorkflowQueue,
+  listWorkflowStageHealthForRuns,
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
@@ -5460,10 +5461,13 @@ type DashboardWorkflowGraphRun = {
   modelTierOverride: string | null;
 };
 
+type DashboardWorkflowStageHealth = Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>[number];
+
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
   runStatusFilter: string;
   runWarnings: string[];
+  stageHealth: DashboardWorkflowStageHealth[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -5486,6 +5490,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   const safeRunLimit = Math.min(Math.max(runLimit, 0), 250);
   const runWarnings: string[] = [];
   let runs: DashboardWorkflowGraphRun[] = [];
+  let stageHealth: DashboardWorkflowStageHealth[] = [];
   if (safeRunLimit > 0) {
     try {
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
@@ -5501,11 +5506,12 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
           providerOverride: run.providerOverride,
           modelTierOverride: run.modelTierOverride
         }));
+      stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runStatusFilter, runWarnings };
+  return { ...report, runs, runStatusFilter, runWarnings, stageHealth };
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -5702,11 +5708,12 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     queued: "#f59e0b",
     cancelled: "#94a3b8"
   };
-  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string };
+  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; stageHealth?: DashboardWorkflowStageHealth };
   const nodeById = new Map<string, NetworkNode>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
   const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
   const stageNodeLabel = (stageId: string): string => truncateMiddle(stageId, 10);
+  const stageHealthById = new Map(report.stageHealth.map((health) => [health.stageId, health]));
   const radialPoint = (angle: number, radius: number): { x: number; y: number } => ({
     x: centerX + Math.cos(angle) * radius,
     y: centerY + Math.sin(angle) * radius
@@ -5747,8 +5754,11 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       r: 22,
       color: stage.policyAllowed ? (stage.approvalRequired || stage.policyApprovalRequired ? "#f59e0b" : "#2563eb") : "#dc2626",
       kind: "stage",
-      href: `#${stageAnchorId(stage.id)}`
+      href: `#${stageAnchorId(stage.id)}`,
+      stageId: stage.id,
+      stageHealth: stageHealthById.get(stage.id)
     };
+    if (stageNode.stageHealth) stageNode.title = `${stageNode.title} - ${formatStageHealthTitle(stageNode.stageHealth)}`;
     nodeById.set(stageNodeId, stageNode);
     links.push({ from: "workflow", to: stageNodeId, width: 1.2, className: "signal" });
     if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.8, dashed: true, className: "sequence" });
@@ -5874,6 +5884,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const nodeSvg = [...nodeById.values()].map((node) => {
     const body = `<g class="network-node network-${escapeHtml(node.kind.replace(/\s+/g, "-"))}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
       <title>${escapeHtml(node.title)}</title>
+      ${node.kind === "stage" && node.stageHealth ? renderStageHealthRing(node.r, node.stageHealth) : ""}
       <circle r="${node.r}"></circle>
       ${node.kind === "stage" || node.kind === "workflow" || (node.kind === "run" && node.label) ? `<text text-anchor="middle" dominant-baseline="central">${escapeHtml(node.label)}</text>` : ""}
     </g>`;
@@ -5901,6 +5912,10 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const runCounts = countBy(report.runs.map((run) => run.status));
   const runLegend = Object.entries(runCounts).map(([status, count]) => `<span><i style="background:${runPalette[status] ?? "#64748b"}"></i>${escapeHtml(status)} runs (${count})</span>`).join("");
   const legend = categories.map((category) => `<span><i style="background:${palette[category] ?? palette.uncategorized}"></i>${escapeHtml(category)}</span>`).join("");
+  const totalStageHealthTasks = report.stageHealth.reduce((total, health) => total + health.totalTasks, 0);
+  const stageHealthSummary = report.stageHealth.length
+    ? `Stage health rings summarize ${formatNumber(totalStageHealthTasks)} task records across ${formatNumber(report.stageHealth.length)} stages.`
+    : "Stage health rings appear when selected runs include task-level stage history.";
   const networkDefs = `<defs>
         <radialGradient id="neuralCoreGlow" cx="50%" cy="50%" r="65%">
           <stop offset="0%" stop-color="#38bdf8" stop-opacity="0.62"></stop>
@@ -5938,8 +5953,34 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       <g class="network-nodes">${nodeSvg}</g>
       <g>${labelSvg}</g>
     </svg>
-    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
+    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span><i class="legend-health-completed"></i>stage completed</span><span><i class="legend-health-failed"></i>stage failed</span><span><i class="legend-health-active"></i>stage queued/running</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
+    <p class="network-health-summary">${escapeHtml(stageHealthSummary)}</p>
   </div>`;
+}
+
+function formatStageHealthTitle(health: DashboardWorkflowStageHealth): string {
+  const active = health.queuedTasks + health.runningTasks;
+  return `${health.totalTasks} stage tasks: ${health.completedTasks} completed, ${health.failedTasks} failed, ${active} queued/running, ${health.cancelledTasks} cancelled`;
+}
+
+function renderStageHealthRing(radius: number, health: DashboardWorkflowStageHealth): string {
+  if (health.totalTasks <= 0) return "";
+  const ringRadius = radius + 7;
+  const circumference = Math.PI * 2 * ringRadius;
+  const segments = [
+    { className: "completed", value: health.completedTasks },
+    { className: "failed", value: health.failedTasks },
+    { className: "active", value: health.queuedTasks + health.runningTasks },
+    { className: "cancelled", value: health.cancelledTasks }
+  ].filter((segment) => segment.value > 0);
+  let offset = 0;
+  const gap = segments.length > 1 ? 2.2 : 0;
+  return segments.map((segment) => {
+    const length = Math.max(0, (segment.value / health.totalTasks) * circumference - gap);
+    const svg = `<circle class="network-health-ring ${segment.className}" r="${formatSvgNumber(ringRadius)}" fill="none" stroke-dasharray="${formatSvgNumber(length)} ${formatSvgNumber(circumference - length)}" stroke-dashoffset="${formatSvgNumber(-offset)}"></circle>`;
+    offset += length + gap;
+    return svg;
+  }).join("");
 }
 
 function distributeLayerY(index: number, total: number, top: number, bottom: number): number {
@@ -9150,6 +9191,11 @@ function dashboardCss(): string {
     .network-links .support.dashed { stroke: #38bdf8; stroke-opacity: 0.50; }
     .network-links .sequence.dashed { stroke: #fbbf24; stroke-opacity: 0.48; }
     .network-links .outcome.dashed { stroke: #bfdbfe; stroke-opacity: 0.34; }
+    .network-health-ring { transform: rotate(-90deg); transform-origin: center; stroke-width: 4; stroke-linecap: round; filter: url(#neuralGlow); }
+    .network-health-ring.completed { stroke: #22c55e; }
+    .network-health-ring.failed { stroke: #ef4444; }
+    .network-health-ring.active { stroke: #f59e0b; }
+    .network-health-ring.cancelled { stroke: #94a3b8; }
     .network-node circle { fill: rgba(2,6,23,0.32); stroke: currentColor; stroke-width: 4; filter: url(#neuralGlow); }
     .network-node text { fill: white; font-size: 11px; font-weight: 800; pointer-events: none; }
     .network-stage text { font-size: 9px; }
@@ -9166,6 +9212,10 @@ function dashboardCss(): string {
     .network-legend .legend-note { color: #93c5fd; }
     .network-legend .legend-stage { background: #2563eb; }
     .network-legend .legend-workflow { background: #0f172a; }
+    .network-legend .legend-health-completed { background: #22c55e; }
+    .network-legend .legend-health-failed { background: #ef4444; }
+    .network-legend .legend-health-active { background: #f59e0b; }
+    .network-health-summary { margin: 0; color: #58708f; font-size: 12px; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
     .suite-link { display: grid; gap: 4px; padding: 10px; color: #172033; border: 1px solid #e2e7f0; }
