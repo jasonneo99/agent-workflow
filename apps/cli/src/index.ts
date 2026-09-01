@@ -5463,6 +5463,7 @@ type DashboardWorkflowGraphRun = {
   finishedAt: string | null;
   providerOverride: string | null;
   modelTierOverride: string | null;
+  evaluationMetadata: Record<string, unknown>;
 };
 
 type DashboardWorkflowStageHealth = Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>[number];
@@ -5476,6 +5477,7 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   focusedStageId: string;
   focusedStageRuns: DashboardWorkflowStageRun[];
   focusedStageFixRuns: DashboardWorkflowGraphRun[];
+  focusedStageVerificationRuns: DashboardWorkflowGraphRun[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -5503,6 +5505,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   let stageHealth: DashboardWorkflowStageHealth[] = [];
   let focusedStageRuns: DashboardWorkflowStageRun[] = [];
   let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
+  let focusedStageVerificationRuns: DashboardWorkflowGraphRun[] = [];
   if (safeRunLimit > 0) {
     try {
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
@@ -5517,7 +5520,8 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
           startedAt: run.startedAt,
           finishedAt: run.finishedAt,
           providerOverride: run.providerOverride,
-          modelTierOverride: run.modelTierOverride
+          modelTierOverride: run.modelTierOverride,
+          evaluationMetadata: run.evaluationMetadata
         }));
       stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
       if (focusedStageId) {
@@ -5533,19 +5537,41 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
             startedAt: run.startedAt,
             finishedAt: run.finishedAt,
             providerOverride: run.providerOverride,
-            modelTierOverride: run.modelTierOverride
+            modelTierOverride: run.modelTierOverride,
+            evaluationMetadata: run.evaluationMetadata
+          }));
+        focusedStageVerificationRuns = projectRuns
+          .filter((run) => isFocusedStageVerificationRun(run, report.workflow.id, focusedStageId))
+          .slice(0, 8)
+          .map((run) => ({
+            id: run.id,
+            status: run.status,
+            workflowId: run.workflowId,
+            task: run.task,
+            startedAt: run.startedAt,
+            finishedAt: run.finishedAt,
+            providerOverride: run.providerOverride,
+            modelTierOverride: run.modelTierOverride,
+            evaluationMetadata: run.evaluationMetadata
           }));
       }
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns };
+  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns };
 }
 
 function isFocusedStageFixRun(run: Awaited<ReturnType<typeof listWorkflowRunsForProject>>[number], workflowId: string, stageId: string): boolean {
   const metadata = run.evaluationMetadata ?? {};
   return metadata.kind === "stage_fix_suggestion"
+    && metadata.sourceWorkflowId === workflowId
+    && metadata.sourceStageId === stageId;
+}
+
+function isFocusedStageVerificationRun(run: Awaited<ReturnType<typeof listWorkflowRunsForProject>>[number], workflowId: string, stageId: string): boolean {
+  const metadata = run.evaluationMetadata ?? {};
+  return metadata.kind === "stage_fix_verification"
     && metadata.sourceWorkflowId === workflowId
     && metadata.sourceStageId === stageId;
 }
@@ -5712,15 +5738,37 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     </tr>
   `).join("") || '<tr><td colspan="7">No task records found for this stage in the selected run history.</td></tr>';
   const healthText = health ? formatStageHealthTitle(health) : "No task-level stage history found for selected runs.";
-  const fixRows = report.focusedStageFixRuns.map((run) => `
+  const fixRows = report.focusedStageFixRuns.map((run) => {
+    const verifyForm = stageFixVerificationForm({
+      project,
+      workflowId: report.workflow.id,
+      stageId: report.focusedStageId,
+      fixRunId: run.id,
+      disabled: run.status === "queued" || run.status === "running"
+    });
+    return `
     <tr>
       <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.task)}</td>
       <td>${renderDashboardDateTime(run.startedAt)}</td>
+      <td>${verifyForm}</td>
     </tr>
-  `).join("") || '<tr><td colspan="5">No suggested fix runs have been queued from this stage yet.</td></tr>';
+  `;
+  }).join("") || '<tr><td colspan="6">No suggested fix runs have been queued from this stage yet.</td></tr>';
+  const verificationRows = report.focusedStageVerificationRuns.map((run) => {
+    const sourceFixRunId = stringValue(run.evaluationMetadata.sourceFixRunId);
+    return `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${sourceFixRunId ? `<a href="/run?id=${encodeURIComponent(sourceFixRunId)}">${escapeHtml(sourceFixRunId.slice(0, 8))}</a>` : "unknown"}</td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
+    </tr>
+  `;
+  }).join("") || '<tr><td colspan="5">No source workflow verification reruns have been queued from suggested fixes yet.</td></tr>';
   return `<section class="panel focused-stage-panel">
     <div class="section-heading">
       <div>
@@ -5736,7 +5784,10 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     <div class="table-wrap"><table><thead><tr><th>Run</th><th>Run Status</th><th>Stage Status</th><th>Attempts</th><th>Agent</th><th>Task</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table></div>
     <h3>Suggested Fix Runs</h3>
     <p class="muted">Debug runs queued from this focused stage, shown beside the source-stage health signal for quick before/after triage.</p>
-    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${fixRows}</tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Task</th><th>Started</th><th>Verify</th></tr></thead><tbody>${fixRows}</tbody></table></div>
+    <h3>Verification Reruns</h3>
+    <p class="muted">Source workflow reruns queued after a suggested fix, tagged for stage-health comparison.</p>
+    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Fix Run</th><th>Task</th><th>Started</th></tr></thead><tbody>${verificationRows}</tbody></table></div>
   </section>`;
 }
 
@@ -9481,6 +9532,23 @@ function focusedStageSuggestFixForm(input: {
   </form>`;
 }
 
+function stageFixVerificationForm(input: {
+  project: string;
+  workflowId: string;
+  stageId: string;
+  fixRunId: string;
+  disabled: boolean;
+}): string {
+  return `<form class="inline-form compact-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="action" value="verify-stage-fix">
+    <input type="hidden" name="project" value="${escapeHtml(input.project)}">
+    <input type="hidden" name="workflowId" value="${escapeHtml(input.workflowId)}">
+    <input type="hidden" name="stageId" value="${escapeHtml(input.stageId)}">
+    <input type="hidden" name="runId" value="${escapeHtml(input.fixRunId)}">
+    <button type="submit"${input.disabled ? " disabled" : ""}>Rerun Source</button>
+  </form>`;
+}
+
 type DashboardFollowUpResult =
   | { ok: true; title: string; output: string; runId?: string }
   | { ok: false; error: string };
@@ -9627,6 +9695,83 @@ async function queueDashboardStageFix(input: {
   };
 }
 
+async function queueDashboardStageVerification(input: {
+  projectDir: string;
+  workflowId: string;
+  stageId: string;
+  fixRunId: string;
+}): Promise<DashboardFollowUpResult> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir.trim());
+  const workflowId = input.workflowId.trim();
+  const stageId = input.stageId.trim();
+  const fixRunId = input.fixRunId.trim();
+  if (!workflowId) {
+    return { ok: false, error: "Missing workflow id." };
+  }
+  if (!stageId) {
+    return { ok: false, error: "Missing stage id." };
+  }
+  if (!fixRunId) {
+    return { ok: false, error: "Missing suggested fix run id." };
+  }
+
+  const fixRun = await getWorkflowRunDetails(fixRunId);
+  if (!fixRun.run) {
+    return { ok: false, error: `Unknown suggested fix run: ${fixRunId}` };
+  }
+  if (fixRun.run.status === "queued" || fixRun.run.status === "running") {
+    return { ok: false, error: "Wait for the suggested fix run to finish before rerunning the source workflow." };
+  }
+  const metadata = fixRun.run.evaluationMetadata ?? {};
+  if (metadata.kind !== "stage_fix_suggestion" || metadata.sourceWorkflowId !== workflowId || metadata.sourceStageId !== stageId) {
+    return { ok: false, error: "Run is not a suggested fix for the selected workflow stage." };
+  }
+
+  const task = [
+    `Rerun workflow '${workflowId}' after suggested fix run '${fixRunId}' to verify focused stage '${stageId}'.`,
+    "",
+    "Use this as the after run for focused-stage health comparison.",
+    "Preserve project policy, keep changes scoped, and write receipts for requested actions.",
+    "",
+    `Suggested fix status: ${fixRun.run.status}`,
+    `Suggested fix task: ${fixRun.run.task}`
+  ].join("\n");
+
+  const queued = await queueWorkflow({
+    workflowId,
+    projectPath: projectDir,
+    task,
+    sourceTokenBudget: "3000",
+    sourceMaxFiles: "40",
+    evaluationMetadata: {
+      kind: "stage_fix_verification",
+      sourceWorkflowId: workflowId,
+      sourceStageId: stageId,
+      sourceFixRunId: fixRunId,
+      sourceProjectRootUri: projectDir,
+      createdFrom: "dashboard-workflow-graph"
+    }
+  });
+  if (!queued.ok) {
+    return { ok: false, error: queued.error };
+  }
+  return {
+    ok: true,
+    title: "Source Workflow Rerun Queued",
+    runId: queued.run.runId,
+    output: [
+      `Verification run: ${queued.run.runId}`,
+      `Source workflow: ${workflowId}`,
+      `Focused stage: ${stageId}`,
+      `Suggested fix run: ${fixRunId}`,
+      `Open: /run?id=${encodeURIComponent(queued.run.runId)}`,
+      "",
+      "Process queued stages with:",
+      "npm run worker -- --limit 6"
+    ].join("\n")
+  };
+}
+
 async function runDashboardFollowUp(input: {
   action: string;
   runId?: string;
@@ -9689,6 +9834,15 @@ async function runDashboardFollowUp(input: {
       projectDir: sourceProject,
       workflowId: input.workflowId ?? "",
       stageId: input.stageId ?? ""
+    });
+  }
+
+  if (action === "verify-stage-fix") {
+    return queueDashboardStageVerification({
+      projectDir: sourceProject,
+      workflowId: input.workflowId ?? "",
+      stageId: input.stageId ?? "",
+      fixRunId: input.runId ?? ""
     });
   }
 

@@ -264,7 +264,9 @@ targeted `debug-failure` run from that stage history, or click a run node to
 open the run detail page, so the visual becomes a lightweight inspection
 surface. Suggested fix runs are tagged with their source workflow and stage, so
 the focused panel can show the stage health signal beside any related debug-run
-outcomes on later visits. Use `runLimit=0` for definition-only diagrams or
+outcomes on later visits. After a suggested fix completes, use **Rerun Source**
+to queue the original workflow as a tagged verification run for before/after
+stage-health comparison. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
 the run-status quick links for developer triage: Active Runs shows
 queued/running work, Failed Runs turns the map into a debugging surface, and
