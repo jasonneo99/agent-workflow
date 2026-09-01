@@ -5691,6 +5691,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string };
   const nodeById = new Map<string, NetworkNode>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
+  const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
   nodeById.set("workflow", {
     id: "workflow",
     label: report.workflow.id,
@@ -5797,6 +5798,19 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     });
   });
 
+  const inboundCounts = countBy(links.map((link) => link.to));
+  nodeById.forEach((node) => {
+    const requestCount = inboundCounts[node.id] ?? 0;
+    if (!requestCount) return;
+    const originalRadius = node.r;
+    const maxExtra = node.kind === "run" ? 9 : node.kind === "subagent" ? 11 : node.kind === "primary agent" ? 12 : 7;
+    node.r = requestSizedRadius(originalRadius, requestCount, maxExtra);
+    node.title = `${node.title} - ${requestCount} incoming request${requestCount === 1 ? "" : "s"}`;
+    if (node.kind === "stage") node.labelY = node.y + node.r + 20;
+    if (node.kind === "primary agent") node.labelX = node.x + node.r + 12;
+    if (node.kind === "run" && node.labelX !== undefined) node.labelX = node.x + node.r + 10;
+  });
+
   const linkSvg = links.map((link) => {
     const from = nodeById.get(link.from);
     const to = nodeById.get(link.to);
@@ -5861,7 +5875,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       <g class="network-nodes">${nodeSvg}</g>
       <g>${labelSvg}</g>
     </svg>
-    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span>${runLegend}</div>
+    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
   </div>`;
 }
 
@@ -9083,6 +9097,7 @@ function dashboardCss(): string {
     .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #dbeafe; background: #0f172a; border: 1px solid #1e3a5f; padding: 8px 10px; font-size: 12px; }
     .network-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid #020617; box-shadow: 0 0 0 1px rgba(147,197,253,0.6), 0 0 12px rgba(56,189,248,0.42); }
+    .network-legend .legend-note { color: #93c5fd; }
     .network-legend .legend-stage { background: #2563eb; }
     .network-legend .legend-workflow { background: #0f172a; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
