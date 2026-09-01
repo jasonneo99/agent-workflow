@@ -183,7 +183,8 @@ trust gaps.
   - Done: overlay per-stage run health so the graph can show which workflow step tends to fail, stall, or complete.
   - Done: add stage-click run filtering so clicking a stage can focus recent runs and failures for that workflow step.
   - Done: add a stage-level "suggest fix" action that prepares a targeted debug workflow from the focused failure history.
-  - Next: add a graph comparison view that shows before/after stage health for runs queued from focused-stage fixes.
+  - Done: tag suggested fix runs with source workflow/stage metadata and show related debug-run outcomes in the focused stage panel.
+  - Next: add a graph comparison view that links a completed suggested-fix run to a follow-up workflow rerun and shows before/after stage health.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.

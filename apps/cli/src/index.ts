@@ -5457,6 +5457,7 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
 type DashboardWorkflowGraphRun = {
   id: string;
   status: string;
+  workflowId: string;
   task: string;
   startedAt: string;
   finishedAt: string | null;
@@ -5474,6 +5475,7 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   stageHealth: DashboardWorkflowStageHealth[];
   focusedStageId: string;
   focusedStageRuns: DashboardWorkflowStageRun[];
+  focusedStageFixRuns: DashboardWorkflowGraphRun[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -5500,6 +5502,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   let runs: DashboardWorkflowGraphRun[] = [];
   let stageHealth: DashboardWorkflowStageHealth[] = [];
   let focusedStageRuns: DashboardWorkflowStageRun[] = [];
+  let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
   if (safeRunLimit > 0) {
     try {
       const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: safeRunLimit });
@@ -5509,6 +5512,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
         .map((run) => ({
           id: run.id,
           status: run.status,
+          workflowId: run.workflowId,
           task: run.task,
           startedAt: run.startedAt,
           finishedAt: run.finishedAt,
@@ -5516,12 +5520,34 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
           modelTierOverride: run.modelTierOverride
         }));
       stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
-      if (focusedStageId) focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
+      if (focusedStageId) {
+        focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
+        focusedStageFixRuns = projectRuns
+          .filter((run) => isFocusedStageFixRun(run, report.workflow.id, focusedStageId))
+          .slice(0, 8)
+          .map((run) => ({
+            id: run.id,
+            status: run.status,
+            workflowId: run.workflowId,
+            task: run.task,
+            startedAt: run.startedAt,
+            finishedAt: run.finishedAt,
+            providerOverride: run.providerOverride,
+            modelTierOverride: run.modelTierOverride
+          }));
+      }
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns };
+  return { ...report, runs, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns };
+}
+
+function isFocusedStageFixRun(run: Awaited<ReturnType<typeof listWorkflowRunsForProject>>[number], workflowId: string, stageId: string): boolean {
+  const metadata = run.evaluationMetadata ?? {};
+  return metadata.kind === "stage_fix_suggestion"
+    && metadata.sourceWorkflowId === workflowId
+    && metadata.sourceStageId === stageId;
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -5686,6 +5712,15 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     </tr>
   `).join("") || '<tr><td colspan="7">No task records found for this stage in the selected run history.</td></tr>';
   const healthText = health ? formatStageHealthTitle(health) : "No task-level stage history found for selected runs.";
+  const fixRows = report.focusedStageFixRuns.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
+      <td>${escapeHtml(run.workflowId)}</td>
+      <td>${escapeHtml(run.task)}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
+    </tr>
+  `).join("") || '<tr><td colspan="5">No suggested fix runs have been queued from this stage yet.</td></tr>';
   return `<section class="panel focused-stage-panel">
     <div class="section-heading">
       <div>
@@ -5699,6 +5734,9 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
     </div>
     <p class="muted">${escapeHtml(healthText)}</p>
     <div class="table-wrap"><table><thead><tr><th>Run</th><th>Run Status</th><th>Stage Status</th><th>Attempts</th><th>Agent</th><th>Task</th><th>Started</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <h3>Suggested Fix Runs</h3>
+    <p class="muted">Debug runs queued from this focused stage, shown beside the source-stage health signal for quick before/after triage.</p>
+    <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${fixRows}</tbody></table></div>
   </section>`;
 }
 
@@ -9558,7 +9596,15 @@ async function queueDashboardStageFix(input: {
     projectPath: projectDir,
     task,
     sourceTokenBudget: "3000",
-    sourceMaxFiles: "40"
+    sourceMaxFiles: "40",
+    evaluationMetadata: {
+      kind: "stage_fix_suggestion",
+      sourceWorkflowId: workflow.id,
+      sourceStageId: stage.id,
+      sourceProjectRootUri: projectDir,
+      sourceRunIds: (failedStageRuns.length ? failedStageRuns : recentStageRuns).map((run) => run.runId),
+      createdFrom: "dashboard-workflow-graph"
+    }
   });
   if (!queued.ok) {
     return { ok: false, error: queued.error };
