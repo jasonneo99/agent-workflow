@@ -5724,7 +5724,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       labelAnchor: "middle"
     });
     links.push({ from: "workflow", to: stageNodeId, width: 1.2, className: "signal" });
-    if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.2, dashed: true, className: "sequence" });
+    if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.8, dashed: true, className: "sequence" });
     const primary = agentEntries.get(stage.agentId) ?? {
       id: stage.agentId,
       label: stage.agentDisplayName ?? stage.agentId,
@@ -5746,7 +5746,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       };
       entry.stageIds.add(stageNodeId);
       agentEntries.set(subagent.id, entry);
-      links.push({ from: stageNodeId, to: `agent:${subagent.id}`, width: 1, dashed: true, className: "support" });
+      links.push({ from: stageNodeId, to: `agent:${subagent.id}`, width: 1.7, dashed: true, className: "support" });
     });
   });
 
@@ -5793,7 +5793,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     });
     const sourceAgents = agents.filter((agent) => agent.isPrimary).slice(0, 5);
     sourceAgents.forEach((agent) => {
-      links.push({ from: `agent:${agent.id}`, to: `run:${run.id}`, width: run.status === "failed" ? 1.3 : 0.7, dashed: !active, className: "outcome" });
+      links.push({ from: `agent:${agent.id}`, to: `run:${run.id}`, width: run.status === "failed" ? 1.8 : active ? 1.1 : 1.25, dashed: !active, className: "outcome" });
     });
   });
 
@@ -5803,8 +5803,9 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     if (!from || !to) return "";
     const midX = (from.x + to.x) / 2;
     const midY = (from.y + to.y) / 2;
-    const dash = link.dashed ? ' stroke-dasharray="4 5"' : "";
-    const className = link.className ? ` class="${escapeHtml(link.className)}"` : "";
+    const dash = link.dashed ? ' stroke-dasharray="7 7"' : "";
+    const classes = [link.className, link.dashed ? "dashed" : undefined].filter(Boolean).join(" ");
+    const className = classes ? ` class="${escapeHtml(classes)}"` : "";
     return `<path${className} d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} C ${formatSvgNumber(midX)} ${formatSvgNumber(from.y)}, ${formatSvgNumber(midX)} ${formatSvgNumber(midY)}, ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
   }).join("");
   const nodeSvg = [...nodeById.values()].map((node) => {
@@ -9061,11 +9062,15 @@ function dashboardCss(): string {
     .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
     .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
     .network-map .network-grid { fill: url(#neuralGrid); }
-    .network-links path { fill: none; stroke: url(#neuralSignal); stroke-opacity: 0.26; }
+    .network-links path { fill: none; stroke: url(#neuralSignal); stroke-linecap: round; stroke-opacity: 0.26; }
     .network-links .signal { stroke: url(#neuralSignal); stroke-opacity: 0.48; }
-    .network-links .support { stroke: #22d3ee; stroke-opacity: 0.26; }
-    .network-links .sequence { stroke: #f59e0b; stroke-opacity: 0.22; }
-    .network-links .outcome { stroke: #94a3b8; stroke-opacity: 0.20; }
+    .network-links .support { stroke: #22d3ee; stroke-opacity: 0.36; }
+    .network-links .sequence { stroke: #f59e0b; stroke-opacity: 0.34; }
+    .network-links .outcome { stroke: #94a3b8; stroke-opacity: 0.24; }
+    .network-links .dashed { stroke-opacity: 0.42; }
+    .network-links .support.dashed { stroke: #38bdf8; stroke-opacity: 0.50; }
+    .network-links .sequence.dashed { stroke: #fbbf24; stroke-opacity: 0.48; }
+    .network-links .outcome.dashed { stroke: #bfdbfe; stroke-opacity: 0.34; }
     .network-node circle { stroke: rgba(255,255,255,0.92); stroke-width: 4; filter: url(#neuralGlow); }
     .network-node text { fill: white; font-size: 13px; font-weight: 800; pointer-events: none; }
     .network-node { cursor: default; }
