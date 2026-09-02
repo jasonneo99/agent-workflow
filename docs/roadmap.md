@@ -274,8 +274,9 @@ foundation is complete.
   - [x] Improve provider/settings discoverability with stronger hierarchy and confirmation feedback.
   - [x] Group dashboard navigation into clearer operating areas.
   - [x] Rerun `ux-reviewer` after dashboard hierarchy changes.
-  - [ ] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
-  - Next: tighten grouped navigation consistency and make operations snapshot metrics more actionable.
+  - [x] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
+  - [ ] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
+  - Next: run a final dashboard UX review after the grouped navigation and operations snapshot updates.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.

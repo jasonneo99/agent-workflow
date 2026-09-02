@@ -10993,6 +10993,15 @@ function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): str
         : workerReady
           ? "ready"
           : "worker attention";
+  const nextAction = failedRuns
+    ? `<a class="button secondary" href="/queue">Review Failed Runs</a>`
+    : expiredLeases
+      ? queueRecoverExpiredLeasesForm()
+      : queuedTasks > 0 && workerReady
+        ? queueProcessForm("")
+        : queuedTasks > 0
+          ? `<a class="button secondary" href="/settings">Start Worker</a>`
+          : `<a class="button secondary" href="/queue">Open Queue</a>`;
   return `<section class="panel operations-panel">
     <div class="section-heading">
       <div>
@@ -11005,12 +11014,12 @@ function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): str
       </div>
     </div>
     <div class="ops-strip">
-      <div class="ops-state ${statusClass}"><strong>${escapeHtml(statusText)}</strong><span>${escapeHtml(workerStatusDetail(health.worker))}</span></div>
-      <div><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></div>
-      <div><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></div>
-      <div><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></div>
-      <div><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></div>
-      <div><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></div>
+      <div class="ops-state ${statusClass}"><strong>${escapeHtml(statusText)}</strong><span>${escapeHtml(workerStatusDetail(health.worker))}</span><div class="ops-action">${nextAction}</div></div>
+      <a href="/queue"><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></a>
+      <a href="/queue"><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></a>
+      <a href="/queue"><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></a>
+      <a href="/queue"><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></a>
+      <a href="/queue"><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></a>
     </div>
   </section>`;
 }
@@ -11171,7 +11180,10 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
   ] as const;
   return `<nav class="side-nav" aria-label="Dashboard navigation">
     <strong>Agent Workflow</strong>
-    ${groups.map((group) => `<div class="nav-section"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}</div>`).join("")}
+    ${groups.map((group) => {
+      const activeGroup = group.items.some(([id]) => id === active);
+      return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}</div>`;
+    }).join("")}
   </nav>`;
 }
 
@@ -11360,6 +11372,8 @@ function dashboardCss(): string {
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 2px; }
     .nav-section { display: grid; gap: 4px; }
     .nav-section span { color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; padding: 0 10px; }
+    .nav-section.active-group { border-left: 2px solid #60a5fa; padding-left: 6px; margin-left: -8px; }
+    .nav-section.active-group span { color: #bfdbfe; }
     .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
     .capture-page main { max-width: 1440px; padding: 24px; }
@@ -11405,13 +11419,18 @@ function dashboardCss(): string {
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
     .operations-panel { border-color: #cbd5e1; }
     .ops-strip { display: grid; grid-template-columns: minmax(260px, 1.7fr) repeat(5, minmax(104px, 1fr)); gap: 10px; }
-    .ops-strip > div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; }
+    .ops-strip > div, .ops-strip > a { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; color: #172033; }
+    .ops-strip > a:hover { border-color: #93c5fd; background: #eff6ff; }
     .ops-strip strong { color: #172033; font-size: 20px; line-height: 1.15; }
     .ops-strip span { color: #64748b; font-size: 12px; line-height: 1.35; }
     .ops-state.good { border-color: #86efac; background: #f0fdf4; }
     .ops-state.warn { border-color: #fde68a; background: #fffbeb; }
     .ops-state.bad { border-color: #fca5a5; background: #fef2f2; }
     .ops-state strong { font-size: 22px; }
+    .ops-action { margin-top: 4px; }
+    .ops-action .worker-form { display: flex; flex-wrap: wrap; gap: 6px; }
+    .ops-action .worker-form input { min-width: 64px; max-width: 84px; padding: 7px 8px; }
+    .ops-action .worker-form button { padding: 7px 9px; }
     .provider-hero { display: grid; grid-template-columns: minmax(240px, 1.15fr) minmax(0, 2fr); gap: 12px; align-items: stretch; }
     .provider-current { border: 1px solid #bfdbfe; background: #eff6ff; padding: 14px; display: grid; gap: 6px; align-content: center; }
     .provider-current strong { color: #1d4ed8; font-size: 28px; line-height: 1.1; }
@@ -11561,6 +11580,7 @@ function dashboardCss(): string {
       .side-nav strong { display: none; }
       .nav-section { grid-auto-flow: column; grid-auto-columns: max-content; align-items: center; }
       .nav-section span { display: none; }
+      .nav-section.active-group { border-left: 0; padding-left: 0; margin-left: 0; }
       .topbar, .section-heading { display: grid; }
       .attention-item { display: grid; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
