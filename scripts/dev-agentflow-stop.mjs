@@ -9,15 +9,17 @@ const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..")
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
+const workerHeartbeatDir = path.join(runtimeDir, "workers");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 
 async function main() {
   const supervisorPid = await heartbeatPid(supervisorHeartbeatPath);
   const workerPid = await heartbeatPid(workerHeartbeatPath);
+  const workerRegistryPids = await workerHeartbeatPids();
   const dashboardPid = await listenerPid(dashboardPort);
   const matchingPids = await matchingAgentflowPids();
 
-  const pids = uniqueNumbers([supervisorPid, workerPid, dashboardPid, ...matchingPids]);
+  const pids = uniqueNumbers([supervisorPid, workerPid, ...workerRegistryPids, dashboardPid, ...matchingPids]);
   if (pids.length === 0) {
     console.log("No Agent Workflow supervisor, dashboard, or worker process was found.");
     await writeStoppedHeartbeat("stopped", "No running process found.");
@@ -48,6 +50,18 @@ async function heartbeatPid(filePath) {
     return typeof heartbeat.pid === "number" ? heartbeat.pid : null;
   } catch {
     return null;
+  }
+}
+
+async function workerHeartbeatPids() {
+  try {
+    const entries = await fs.readdir(workerHeartbeatDir, { withFileTypes: true });
+    const pids = await Promise.all(entries
+      .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+      .map((entry) => heartbeatPid(path.join(workerHeartbeatDir, entry.name))));
+    return pids.filter((pid) => Number.isInteger(pid));
+  } catch {
+    return [];
   }
 }
 

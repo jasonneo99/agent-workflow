@@ -228,7 +228,8 @@ foundation is complete.
   - Done: define worker identity, lease ownership, and heartbeat visibility before adding multi-worker execution.
   - Done: add explicit expired-lease recovery so interrupted worker tasks can be safely requeued by policy.
   - Done: add project-scoped worker filters and bounded concurrency settings before enabling true multi-worker pools.
-  - Next: add a multi-worker heartbeat registry so the dashboard can show all active worker lanes, not just the most recent local daemon.
+  - Done: add a multi-worker heartbeat registry so the dashboard can show all active worker lanes, not just the most recent local daemon.
+  - Next: add worker-pool supervision profiles and per-project concurrency defaults.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

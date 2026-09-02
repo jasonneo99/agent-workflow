@@ -616,11 +616,19 @@ developer safety. A project-scoped worker only claims stages whose run belongs
 to that project root, which keeps queues isolated when the same local storage is
 serving multiple repositories.
 
+Multiple workers can run side by side when you want separate local lanes:
+
+```bash
+npm run worker -- --watch --worker-id frontend-lane --project /path/to/site --concurrency 2
+npm run worker -- --watch --worker-id review-lane --project /path/to/api --concurrency 1
+```
+
 When a worker claims a stage, enterprise storage records the worker id and a
 lease expiration timestamp. The Queue page shows the current running stage,
 owning worker, and lease deadline so interrupted work is easier to diagnose.
 The Settings page shows the active worker's project scope and concurrency from
-the heartbeat file.
+the heartbeat file. When multiple workers write heartbeats, it also lists the
+discovered worker lanes from `.agent-workflow/runtime/workers/`.
 
 Recover tasks owned by interrupted workers after their lease expires:
 

@@ -12,6 +12,8 @@ const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 const workerLimit = Number.parseInt(process.env.AGENTFLOW_WORKER_LIMIT ?? "6", 10);
+const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "1", 10);
+const workerId = process.env.AGENTFLOW_WORKER_ID ?? "supervised-local";
 const workerIntervalMs = Number.parseInt(process.env.AGENTFLOW_WORKER_INTERVAL_MS ?? "2000", 10);
 const monitorIntervalMs = Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_INTERVAL_MS ?? "5000", 10);
 const once = process.argv.includes("--once");
@@ -109,6 +111,10 @@ function startWorker() {
     String(workerLimit),
     "--interval-ms",
     String(workerIntervalMs),
+    "--worker-id",
+    workerId,
+    "--concurrency",
+    String(workerConcurrency),
     "--heartbeat-file",
     workerHeartbeatPath
   ]);
@@ -163,6 +169,7 @@ async function writeHeartbeat(status, message) {
     dashboardManaged,
     workerManaged,
     workerLimit,
+    workerConcurrency,
     workerIntervalMs,
     monitorIntervalMs,
     command: "npm run dev:agentflow"

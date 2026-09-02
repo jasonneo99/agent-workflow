@@ -88,6 +88,7 @@ const rootDir = findAgentWorkflowRoot(import.meta.url);
 const configuredEnvPath = agentWorkflowEnvPath(rootDir);
 dotenv.config({ path: configuredEnvPath, quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
+const defaultWorkerHeartbeatDir = path.join(rootDir, ".agent-workflow", "runtime", "workers");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
@@ -135,7 +136,10 @@ type DashboardWorkerStatus = {
   failed: number;
   processAlive: boolean;
   command: string;
+  lanes: DashboardWorkerLane[];
 };
+
+type DashboardWorkerLane = Omit<DashboardWorkerStatus, "lanes">;
 
 type SupervisorHeartbeat = {
   pid: number;
@@ -2859,6 +2863,7 @@ program
     let ticks = 0;
     const startedAt = new Date().toISOString();
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
+    const registryHeartbeatFile = path.join(defaultWorkerHeartbeatDir, `${safeWorkerHeartbeatFileSegment(workerId)}-${process.pid}.json`);
     const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>): Promise<void> => {
       if (tick) {
         ticks += 1;
@@ -2881,6 +2886,10 @@ program
       };
       await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
       await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
+      await fs.mkdir(path.dirname(registryHeartbeatFile), { recursive: true });
+      if (registryHeartbeatFile !== heartbeatFile) {
+        await fs.writeFile(registryHeartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
+      }
     };
     const stopWorker = () => {
       stop = true;
@@ -7429,6 +7438,67 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
 
 async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
   const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_WORKER_HEARTBEAT ?? defaultWorkerHeartbeatPath);
+  const lanes = await loadWorkerHeartbeatLanes(heartbeatPath);
+  const activeLane = lanes.find((lane) => lane.status === "running") ?? lanes[0];
+  if (activeLane) {
+    return {
+      ...activeLane,
+      lanes
+    };
+  }
+  return {
+    heartbeatPath,
+    configured: false,
+    workerId: null,
+    status: "missing",
+    pid: null,
+    startedAt: null,
+    lastHeartbeatAt: null,
+    ageMs: null,
+    limit: null,
+    projectRootUri: null,
+    concurrency: null,
+    intervalMs: null,
+    ticks: 0,
+    claimed: 0,
+    completed: 0,
+    failed: 0,
+    processAlive: false,
+    command: "npm run worker:daemon",
+    lanes: []
+  };
+}
+
+async function loadWorkerHeartbeatLanes(primaryHeartbeatPath: string): Promise<DashboardWorkerLane[]> {
+  const candidates = new Set<string>([primaryHeartbeatPath]);
+  try {
+    const entries = await fs.readdir(defaultWorkerHeartbeatDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isFile() && entry.name.endsWith(".json")) {
+        candidates.add(path.join(defaultWorkerHeartbeatDir, entry.name));
+      }
+    }
+  } catch {
+    // Older installs only have the single heartbeat file.
+  }
+
+  const loaded = await Promise.all([...candidates].map((candidate) => loadWorkerHeartbeatLane(candidate)));
+  const byWorkerProcess = new Map<string, DashboardWorkerLane>();
+  for (const lane of loaded.filter((item): item is DashboardWorkerLane => Boolean(item))) {
+    const key = `${lane.workerId ?? "unknown"}:${lane.pid ?? lane.heartbeatPath}`;
+    const existing = byWorkerProcess.get(key);
+    if (!existing || (lane.lastHeartbeatAt ?? "") > (existing.lastHeartbeatAt ?? "")) {
+      byWorkerProcess.set(key, lane);
+    }
+  }
+  return [...byWorkerProcess.values()].sort((left, right) => {
+    if (left.status === "running" && right.status !== "running") return -1;
+    if (right.status === "running" && left.status !== "running") return 1;
+    return (right.lastHeartbeatAt ?? "").localeCompare(left.lastHeartbeatAt ?? "");
+  });
+}
+
+async function loadWorkerHeartbeatLane(heartbeatPath: string): Promise<DashboardWorkerLane | null> {
   try {
     const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<WorkerHeartbeat>;
     const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
@@ -7460,26 +7530,7 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
       command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run worker:daemon"
     };
   } catch {
-    return {
-      heartbeatPath,
-      configured: false,
-      workerId: null,
-      status: "missing",
-      pid: null,
-      startedAt: null,
-      lastHeartbeatAt: null,
-      ageMs: null,
-      limit: null,
-      projectRootUri: null,
-      concurrency: null,
-      intervalMs: null,
-      ticks: 0,
-      claimed: 0,
-      completed: 0,
-      failed: 0,
-      processAlive: false,
-      command: "npm run worker:daemon"
-    };
+    return null;
   }
 }
 
@@ -7547,6 +7598,10 @@ function normalizeWorkerId(value?: string): string {
   }
   const host = os.hostname().replace(/[^a-zA-Z0-9_.-]/g, "-") || "local";
   return `${host}:${process.pid}`;
+}
+
+function safeWorkerHeartbeatFileSegment(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^-+|-+$/g, "") || "worker";
 }
 
 function dashboardUrlFromRequest(request: http.IncomingMessage): string {
@@ -9272,6 +9327,7 @@ function renderRunUsageEstimateHtml(estimate: RunUsageEstimate): string {
 
 function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
   const age = worker.ageMs === null ? "n/a" : formatDuration(Math.max(0, worker.ageMs));
+  const extraLanes = worker.lanes.filter((lane) => lane.heartbeatPath !== worker.heartbeatPath);
   return `
     <div class="meta-grid">
       <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
@@ -9291,6 +9347,8 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
       <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
     </div>
+    ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${worker.lanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry.</p>` : ""}
   `;
 }
 
