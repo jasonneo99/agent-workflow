@@ -242,7 +242,13 @@ foundation is complete.
   - Next: add role-focused dashboard filters and exportable audit snapshots after user testing.
 
 - [ ] Artifact lifecycle governance.
-  - Add configurable retention, archival, deletion receipts, and legal-hold-aware controls.
+  - Start with read-only artifact inventory across registered projects: counts, size estimates, age buckets, artifact kinds, and run associations.
+  - Add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
+  - Generate dry-run prune plans with exact artifact ids, paths, reasons, and estimated storage recovered.
+  - Record lifecycle receipts for archive, prune, restore, and skipped items before allowing destructive actions.
+  - Keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
+  - Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
+  - Next: add read-only artifact lifecycle report and dashboard panel before implementing prune-plan generation.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
