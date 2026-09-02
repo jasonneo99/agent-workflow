@@ -249,16 +249,16 @@ foundation is complete.
   - Next: add role-focused dashboard filters and exportable audit snapshots after user testing.
 
 - [ ] Artifact lifecycle governance.
-  - Done: add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
-  - Done: add dashboard, JSON API, and CLI visibility for conservative lifecycle hints without pruning or deleting artifacts.
-  - Done: add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
-  - Done: generate dry-run prune plans with exact artifact ids, URIs, reasons, and estimated storage recovered.
-  - Done: keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
-  - Done: add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
-  - Done: add approved lifecycle action queue plumbing that records approval receipts and still defaults to no deletion.
-  - Done: add no-op lifecycle execution receipts for approved prune actions without deleting or modifying artifacts.
-  - Record lifecycle execution receipts for archive, restore, and skipped items before allowing destructive actions.
-  - Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
+  - [x] Add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
+  - [x] Add dashboard, JSON API, and CLI visibility for conservative lifecycle hints without pruning or deleting artifacts.
+  - [x] Add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
+  - [x] Generate dry-run prune plans with exact artifact ids, URIs, reasons, and estimated storage recovered.
+  - [x] Keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
+  - [x] Add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
+  - [x] Add approved lifecycle action queue plumbing that records approval receipts and still defaults to no deletion.
+  - [x] Add no-op lifecycle execution receipts for approved prune actions without deleting or modifying artifacts.
+  - [ ] Record lifecycle execution receipts for archive, restore, and skipped items before allowing destructive actions.
+  - [ ] Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
   - Next: add guarded archive/restore previews and receipts before any prune/delete path.
 
 - [ ] Backup, restore, and disaster-recovery validation.
