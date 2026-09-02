@@ -101,7 +101,8 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
 - [x] Package/install story beyond cloning the repo.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
   - Keep repo-based development workflow available.
-  - Next: prepare the next signed npm/GitHub package release so recent dashboard and model-improvement improvements reach installed users.
+  - Done: verify release readiness after recent dashboard and model-improvement improvements with the read-only release checker and dry-run release prep.
+  - Next: run the real signed patch release prep once the maintainer signing key is available, then publish through GitHub Actions Trusted Publishing.
 
 - [x] Multi-project governance.
   - Inspect registered projects, storage health, provider settings, and policy drift.

@@ -63,6 +63,27 @@ Preview the plan without credentials or file changes:
 npm run release:prepare -- --dry-run
 ```
 
+When preparing a release from a checkout that already contains unrelated local
+project-template work, use the read-only checker first and keep the dirty-state
+override explicit:
+
+```bash
+npm run release:check -- --allow-current-version --allow-dirty
+npm run release:prepare -- --dry-run
+```
+
+Those commands should pass before a maintainer performs the real signed prep.
+The real prep still requires a private signing key and signer id:
+
+```bash
+AGENTFLOW_RELEASE_SIGNING_KEY=/secure/release-private.pem \
+AGENTFLOW_RELEASE_SIGNER=release@example.com \
+  npm run release:prepare -- patch --allow-dirty
+```
+
+Use `--allow-dirty` only when the dirty files are unrelated local project
+fixtures and have been inspected. Otherwise commit or stash them first.
+
 After release prep succeeds:
 
 ```bash
