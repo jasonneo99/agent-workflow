@@ -268,10 +268,10 @@ foundation is complete.
 
 - [ ] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
-  - [ ] Improve workflow graph labels, color semantics, and readability controls.
-  - [ ] Make queue status and worker health more prominent on the main dashboard.
+  - [x] Improve workflow graph labels, color semantics, and readability controls.
+  - [x] Make queue status and worker health more prominent on the main dashboard.
   - [ ] Improve provider/settings discoverability with stronger hierarchy and confirmation feedback.
-  - Next: ask `frontend-engineer` to implement the highest-impact dashboard UX findings, then rerun `ux-reviewer`.
+  - Next: improve provider/settings discoverability with stronger hierarchy and confirmation feedback, then rerun `ux-reviewer`.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.

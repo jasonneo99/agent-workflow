@@ -6243,6 +6243,7 @@ function renderDashboardHtml(
       <h2>System Health</h2>
       ${renderDashboardHealthHtml(health)}
     </section>
+    ${renderDashboardOperationsSnapshotHtml(health)}
     <section class="panel">
       <h2>Needs Attention</h2>
       ${renderDashboardAttentionHtml(health)}
@@ -6923,7 +6924,19 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
-    <section class="panel capture-hide"><div class="actions"><a class="button ${view === "graph" ? "" : "secondary"}" href="${escapeHtml(graphHref)}">Connection Graph</a><a class="button ${view === "mind-map" ? "" : "secondary"}" href="${escapeHtml(mindMapHref)}">Mind Map</a><a class="button ${view === "network" ? "" : "secondary"}" href="${escapeHtml(networkHref)}">Network Map</a></div></section>
+    <section class="panel capture-hide">
+      <div class="section-heading">
+        <div>
+          <h2>Graph View</h2>
+          <span class="muted">Switch between implementation flow, planning map, and run history network.</span>
+        </div>
+      </div>
+      <div class="segmented-actions" role="group" aria-label="Graph view">
+        <a class="segment ${view === "graph" ? "active" : ""}" href="${escapeHtml(graphHref)}"><strong>Flow</strong><span>Stages in order</span></a>
+        <a class="segment ${view === "mind-map" ? "active" : ""}" href="${escapeHtml(mindMapHref)}"><strong>Map</strong><span>Workflow branches</span></a>
+        <a class="segment ${view === "network" ? "active" : ""}" href="${escapeHtml(networkHref)}"><strong>Network</strong><span>Runs and agents</span></a>
+      </div>
+    </section>
     ${visual}
     ${renderRecentGraphExportsHtml(report.recentGraphExports, projectValue)}
     ${renderFocusedStageRunsHtml(report, projectValue, clearStageHref)}
@@ -7072,7 +7085,7 @@ function workflowGraphDashboardHref(
 }
 
 function renderNetworkOrientationActions(orientation: "horizontal" | "radial", horizontalHref: string, radialHref: string): string {
-  return `<div class="actions network-orientation-actions"><a class="button ${orientation === "horizontal" ? "" : "secondary"}" href="${escapeHtml(horizontalHref)}">Horizontal</a><a class="button ${orientation === "radial" ? "" : "secondary"}" href="${escapeHtml(radialHref)}">Radial Web</a></div>`;
+  return `<div class="network-toolbar"><div><strong>Network Orientation</strong><span>Horizontal is best for stage progression. Radial web is best for dependency shape.</span></div><div class="segmented-actions compact-segments" role="group" aria-label="Network orientation"><a class="segment ${orientation === "horizontal" ? "active" : ""}" href="${escapeHtml(horizontalHref)}"><strong>Horizontal</strong><span>Layered</span></a><a class="segment ${orientation === "radial" ? "active" : ""}" href="${escapeHtml(radialHref)}"><strong>Radial</strong><span>Web</span></a></div></div>`;
 }
 
 function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, project: string, clearStageHref: string): string {
@@ -10893,6 +10906,45 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
   `;
 }
 
+function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): string {
+  const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
+  const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
+  const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
+  const expiredLeases = health.queue.filter((item) => hasExpiredLease(item)).length;
+  const activeRuns = health.queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running").length;
+  const workerReady = health.worker.status === "running";
+  const statusClass = failedRuns || expiredLeases ? "bad" : queuedTasks + runningTasks > 0 ? "warn" : workerReady ? "good" : "warn";
+  const statusText = failedRuns
+    ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"}`
+    : expiredLeases
+      ? `${expiredLeases} expired lease${expiredLeases === 1 ? "" : "s"}`
+      : queuedTasks + runningTasks > 0
+        ? `${queuedTasks + runningTasks} active stage task${queuedTasks + runningTasks === 1 ? "" : "s"}`
+        : workerReady
+          ? "ready"
+          : "worker attention";
+  return `<section class="panel operations-panel">
+    <div class="section-heading">
+      <div>
+        <h2>Operations Snapshot</h2>
+        <span class="muted">Current queue and worker state for local agent execution.</span>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/queue">Open Queue</a>
+        <a class="button secondary" href="/settings">Worker Setup</a>
+      </div>
+    </div>
+    <div class="ops-strip">
+      <div class="ops-state ${statusClass}"><strong>${escapeHtml(statusText)}</strong><span>${escapeHtml(workerStatusDetail(health.worker))}</span></div>
+      <div><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></div>
+      <div><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></div>
+      <div><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></div>
+      <div><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></div>
+      <div><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></div>
+    </div>
+  </section>`;
+}
+
 function healthCard(input: { label: string; status: "good" | "warn" | "bad"; value: string; detail: string; href: string }): string {
   return `<a class="health-card ${input.status}" href="${escapeHtml(input.href)}"><strong>${escapeHtml(input.label)}</strong><span>${escapeHtml(input.value)}</span><small>${escapeHtml(input.detail)}</small></a>`;
 }
@@ -11254,6 +11306,15 @@ function dashboardCss(): string {
     .health-card.good { border-color: #bbf7d0; background: #f0fdf4; }
     .health-card.warn { border-color: #fde68a; background: #fffbeb; }
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
+    .operations-panel { border-color: #cbd5e1; }
+    .ops-strip { display: grid; grid-template-columns: minmax(260px, 1.7fr) repeat(5, minmax(104px, 1fr)); gap: 10px; }
+    .ops-strip > div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; }
+    .ops-strip strong { color: #172033; font-size: 20px; line-height: 1.15; }
+    .ops-strip span { color: #64748b; font-size: 12px; line-height: 1.35; }
+    .ops-state.good { border-color: #86efac; background: #f0fdf4; }
+    .ops-state.warn { border-color: #fde68a; background: #fffbeb; }
+    .ops-state.bad { border-color: #fca5a5; background: #fef2f2; }
+    .ops-state strong { font-size: 22px; }
     .stage-delta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 12px 0 16px; }
     .stage-delta-card { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; }
     .stage-delta-card strong { color: #4b5870; font-size: 12px; text-transform: uppercase; }
@@ -11299,8 +11360,19 @@ function dashboardCss(): string {
     .mind-node.bad { border-color: #fecaca; background: #fef2f2; }
     .mind-node-meta { display: flex; flex-wrap: wrap; gap: 6px; }
     .mind-node-meta span { border: 1px solid #cbd5e1; background: rgba(255,255,255,0.72); padding: 3px 6px; font-size: 12px; color: #334155; }
+    .segmented-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+    .segment { border: 1px solid #cbd5e1; background: #fff; color: #172033; padding: 10px 12px; display: grid; gap: 4px; min-height: 56px; align-content: center; }
+    .segment strong { font-size: 14px; line-height: 1.2; }
+    .segment span { color: #64748b; font-size: 12px; line-height: 1.25; }
+    .segment.active { border-color: #1d4ed8; background: #eff6ff; box-shadow: inset 0 0 0 1px #1d4ed8; }
+    .segment.active strong { color: #1d4ed8; }
     .network-shell { display: grid; gap: 12px; }
-    .network-orientation-actions { margin-bottom: 12px; }
+    .network-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 12px; padding: 10px; border: 1px solid #dbe4f0; background: #f8fafc; }
+    .network-toolbar > div:first-child { display: grid; gap: 3px; }
+    .network-toolbar strong { color: #172033; font-size: 13px; }
+    .network-toolbar span { color: #64748b; font-size: 12px; line-height: 1.3; }
+    .compact-segments { grid-template-columns: repeat(2, minmax(112px, 1fr)); min-width: 250px; }
+    .compact-segments .segment { min-height: 44px; padding: 8px 10px; }
     .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
     .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
     .network-map .network-grid { fill: url(#neuralGrid); }
@@ -11378,10 +11450,14 @@ function dashboardCss(): string {
       .side-nav strong { display: none; }
       .topbar, .section-heading { display: grid; }
       .attention-item { display: grid; }
+      .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .ops-state { grid-column: 1 / -1; }
       .comparison-layout { grid-template-columns: 1fr; }
       .suite-list { position: static; }
       .mind-map { grid-template-columns: 1fr; }
       .mind-branches::before, .mind-node::before { display: none; }
+      .network-toolbar { display: grid; }
+      .compact-segments { min-width: 0; }
       .network-map { min-height: 360px; }
       table { display: block; overflow-x: auto; }
     }
