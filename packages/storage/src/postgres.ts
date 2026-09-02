@@ -1604,6 +1604,20 @@ export interface ArtifactStatus {
   createdAt: string;
 }
 
+export interface ArtifactLifecycleStatus {
+  id: string;
+  runId: string;
+  taskId: string | null;
+  kind: string;
+  uri: string;
+  contentBytes: number;
+  createdAt: string;
+  workflowId: string;
+  runStatus: string;
+  projectName: string;
+  projectRootUri: string;
+}
+
 export interface ActionApprovalStatus {
   id: string;
   runId: string;
@@ -2152,6 +2166,38 @@ export async function listArtifacts(input: {
          and ($2::text is null or kind = $2)
        order by created_at asc`,
       [input.runId, input.kind ?? null]
+    );
+    return result.rows;
+  });
+}
+
+export async function listArtifactLifecycle(input: {
+  projectRootUri?: string;
+  kind?: string;
+  limit?: number;
+} = {}): Promise<ArtifactLifecycleStatus[]> {
+  return withClient(async (client) => {
+    const result = await client.query<ArtifactLifecycleStatus>(
+      `select
+         a.id::text,
+         a.run_id::text as "runId",
+         a.task_id::text as "taskId",
+         a.kind,
+         a.uri,
+         octet_length(a.content::text)::int as "contentBytes",
+         a.created_at::text as "createdAt",
+         wr.workflow_id as "workflowId",
+         wr.status as "runStatus",
+         p.name as "projectName",
+         p.root_uri as "projectRootUri"
+       from artifacts a
+       join workflow_runs wr on wr.id = a.run_id
+       join projects p on p.id = wr.project_id
+       where ($1::text is null or p.root_uri = $1)
+         and ($2::text is null or a.kind = $2)
+       order by a.created_at desc
+       limit $3`,
+      [input.projectRootUri ?? null, input.kind ?? null, input.limit ?? 500]
     );
     return result.rows;
   });

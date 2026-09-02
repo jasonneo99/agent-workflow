@@ -49,6 +49,7 @@ import {
   getWorkflowRunDetails,
   findRunActionByIdempotencyKey,
   listActionApprovals,
+  listArtifactLifecycle,
   listArtifacts,
   listProjectFileSummaries,
   listProjectStorageSummaries,
@@ -1990,6 +1991,31 @@ program
   });
 
 program
+  .command("artifact-lifecycle")
+  .description("Inspect read-only artifact inventory, age buckets, and storage lifecycle hints")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("-k, --kind <kind>", "filter by artifact kind")
+  .option("-l, --limit <number>", "number of recent artifacts to inspect", "500")
+  .option("--json", "print machine-readable artifact lifecycle report")
+  .action(async (options: { project?: string; kind?: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const report = await loadArtifactLifecycleReport({
+      projectRootUri: options.project,
+      kind: options.kind,
+      limit: parsePositiveInteger(options.limit, 500)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatArtifactLifecycleReport(report));
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3161,6 +3187,7 @@ type DashboardProjectDetail = {
 };
 
 type DashboardActionApproval = Awaited<ReturnType<typeof listActionApprovals>>[number];
+type DashboardArtifactLifecycleRow = Awaited<ReturnType<typeof listArtifactLifecycle>>[number];
 
 type DashboardRoleProject = {
   id: string;
@@ -3199,6 +3226,25 @@ type DashboardRoleGovernanceReport = {
   actionCounts: Record<string, number>;
   decisionsByRole: DashboardRoleDecisionSummary[];
   recentApprovals: DashboardActionApproval[];
+};
+
+type ArtifactLifecycleReport = {
+  kind: "agentflow_artifact_lifecycle_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  artifactKind: string | null;
+  limit: number;
+  totalArtifacts: number;
+  estimatedBytes: number;
+  byProject: Record<string, number>;
+  byKind: Record<string, number>;
+  byAgeBucket: Record<string, number>;
+  byRunStatus: Record<string, number>;
+  reviewHints: string[];
+  recentArtifacts: Array<DashboardArtifactLifecycleRow & {
+    ageBucket: string;
+    lifecycleHint: string;
+  }>;
 };
 
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
@@ -3475,6 +3521,100 @@ function formatRoleGovernanceReport(report: DashboardRoleGovernanceReport): stri
     lines.push(`- ${role.role}: total=${role.total} pending=${role.pending} approved=${role.approved} rejected=${role.rejected} executed=${role.executed} failed=${role.failed}`);
   }
   return lines.join("\n");
+}
+
+async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kind?: string; limit?: number } = {}): Promise<ArtifactLifecycleReport> {
+  const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
+  const artifactKind = input.kind?.trim() || null;
+  const limit = input.limit ?? 500;
+  const artifacts = await listArtifactLifecycle({
+    projectRootUri: projectRootUri ?? undefined,
+    kind: artifactKind ?? undefined,
+    limit
+  });
+  const recentArtifacts = artifacts.map((artifact) => {
+    const ageBucket = artifactAgeBucket(artifact.createdAt);
+    return {
+      ...artifact,
+      ageBucket,
+      lifecycleHint: artifactLifecycleHint(artifact, ageBucket)
+    };
+  });
+  const estimatedBytes = recentArtifacts.reduce((sum, artifact) => sum + artifact.contentBytes + artifact.uri.length, 0);
+  const reviewHints = buildArtifactLifecycleHints(recentArtifacts, estimatedBytes, limit);
+  return {
+    kind: "agentflow_artifact_lifecycle_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri,
+    artifactKind,
+    limit,
+    totalArtifacts: recentArtifacts.length,
+    estimatedBytes,
+    byProject: countStrings(recentArtifacts.map((artifact) => artifact.projectName)),
+    byKind: countStrings(recentArtifacts.map((artifact) => artifact.kind)),
+    byAgeBucket: countStrings(recentArtifacts.map((artifact) => artifact.ageBucket)),
+    byRunStatus: countStrings(recentArtifacts.map((artifact) => artifact.runStatus)),
+    reviewHints,
+    recentArtifacts
+  };
+}
+
+function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string {
+  const lines = [
+    `Artifact lifecycle (${report.generatedAt})`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Kind: ${report.artifactKind ?? "all"}`,
+    `Artifacts inspected: ${report.totalArtifacts}`,
+    `Estimated JSON storage: ${formatBytes(report.estimatedBytes)}`,
+    "",
+    `By kind: ${formatInlineCounts(report.byKind) || "none"}`,
+    `By age: ${formatInlineCounts(report.byAgeBucket) || "none"}`,
+    `By run status: ${formatInlineCounts(report.byRunStatus) || "none"}`,
+    "",
+    "Review hints:",
+    ...(report.reviewHints.length ? report.reviewHints.map((hint) => `- ${hint}`) : ["- No lifecycle concerns found in the inspected artifact window."]),
+    "",
+    "Recent artifacts:",
+    ...report.recentArtifacts.slice(0, 20).map((artifact) => `- ${artifact.kind} ${artifact.uri} (${artifact.ageBucket}, ${formatBytes(artifact.contentBytes)}, ${artifact.lifecycleHint})`)
+  ];
+  return lines.join("\n");
+}
+
+function artifactAgeBucket(value: string): string {
+  const ageMs = Date.now() - Date.parse(value);
+  if (!Number.isFinite(ageMs) || ageMs < 0) return "unknown";
+  const days = ageMs / 86_400_000;
+  if (days <= 1) return "0-1d";
+  if (days <= 7) return "2-7d";
+  if (days <= 30) return "8-30d";
+  if (days <= 90) return "31-90d";
+  return "90d+";
+}
+
+function artifactLifecycleHint(artifact: DashboardArtifactLifecycleRow, ageBucket: string): string {
+  if (artifact.kind === "action_approval" || artifact.kind === "run_feedback" || artifact.kind === "command_output" || artifact.kind === "file_write") {
+    return "retain for audit";
+  }
+  if (artifact.runStatus === "failed" || artifact.runStatus === "running" || artifact.runStatus === "queued") {
+    return "retain until run reviewed";
+  }
+  if ((ageBucket === "31-90d" || ageBucket === "90d+") && artifact.contentBytes > 20_000) {
+    return "candidate for future prune plan";
+  }
+  return "retain by default";
+}
+
+function buildArtifactLifecycleHints(artifacts: ArtifactLifecycleReport["recentArtifacts"], estimatedBytes: number, limit: number): string[] {
+  const hints: string[] = [];
+  const futurePruneCandidates = artifacts.filter((artifact) => artifact.lifecycleHint === "candidate for future prune plan");
+  const failedRunArtifacts = artifacts.filter((artifact) => artifact.runStatus === "failed").length;
+  const auditArtifacts = artifacts.filter((artifact) => artifact.lifecycleHint === "retain for audit").length;
+  if (artifacts.length === limit) hints.push("Report hit the inspection limit; increase --limit before making lifecycle decisions.");
+  if (futurePruneCandidates.length) hints.push(`${futurePruneCandidates.length} older large artifact(s) look like candidates for a future dry-run prune plan.`);
+  if (failedRunArtifacts) hints.push(`${failedRunArtifacts} artifact(s) belong to failed runs; review failures before pruning any related evidence.`);
+  if (auditArtifacts) hints.push(`${auditArtifacts} artifact(s) are audit evidence and should be retained unless project retention policy says otherwise.`);
+  if (estimatedBytes === 0) hints.push("No artifact storage was found in the inspected window.");
+  return hints;
 }
 
 async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluationSuite[]> {
@@ -4958,6 +5098,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/artifact-lifecycle") {
+    const report = await loadArtifactLifecycleReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      kind: requestUrl.searchParams.get("kind") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/bundles") {
     const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -5247,6 +5398,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRolesHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/artifact-lifecycle") {
+    const report = await loadArtifactLifecycleReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      kind: requestUrl.searchParams.get("kind") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
+    });
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderArtifactLifecycleHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -7105,6 +7268,35 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Decision Role</th><th>Execution Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="6">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const kinds = [...new Set(report.recentArtifacts.map((artifact) => artifact.kind))].sort();
+  const kindOptions = kinds.map((kind) => `<option value="${escapeHtml(kind)}"${report.artifactKind === kind ? " selected" : ""}>${escapeHtml(kind)}</option>`).join("");
+  const hintRows = report.reviewHints.map((hint) => `<li>${escapeHtml(hint)}</li>`).join("");
+  const artifactRows = report.recentArtifacts.slice(0, 100).map((artifact) => `
+    <tr>
+      <td><strong>${escapeHtml(artifact.kind)}</strong><br><span class="muted">${escapeHtml(artifact.lifecycleHint)}</span></td>
+      <td>${escapeHtml(artifact.projectName)}<br><span class="muted">${escapeHtml(artifact.workflowId)} / ${escapeHtml(artifact.runStatus)}</span></td>
+      <td><a href="/run?id=${encodeURIComponent(artifact.runId)}">${escapeHtml(artifact.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(artifact.taskId?.slice(0, 8) ?? "run-level")}</span></td>
+      <td>${escapeHtml(artifact.ageBucket)}<br><span class="muted">${renderDashboardDateTime(artifact.createdAt)}</span></td>
+      <td>${escapeHtml(formatBytes(artifact.contentBytes))}</td>
+      <td><code>${escapeHtml(artifact.uri)}</code></td>
+    </tr>`).join("");
+  const filters = `<form method="get" class="form-grid">
+    <label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label>
+    <label>Kind<select name="kind"><option value="">all artifact kinds</option>${kindOptions}</select></label>
+    <label>Recent artifacts<input name="limit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
+    <div class="form-actions"><button type="submit">Filter</button></div>
+  </form>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Artifact Lifecycle</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("artifact-lifecycle")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
+  <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Lifecycle Hints</h2><span class="muted">Hints are conservative and non-destructive. Future prune plans should cite exact ids and require approval.</span></div></div><ul>${hintRows || "<li>No lifecycle concerns found in the inspected artifact window.</li>"}</ul></section>
+  <section class="panel"><div class="meta-grid"><div><strong>By Kind</strong>${escapeHtml(formatInlineCounts(report.byKind) || "none")}</div><div><strong>By Age</strong>${escapeHtml(formatInlineCounts(report.byAgeBucket) || "none")}</div><div><strong>By Run Status</strong>${escapeHtml(formatInlineCounts(report.byRunStatus) || "none")}</div></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Recent Artifacts</h2><span class="muted">Showing up to 100 newest rows from the inspected window.</span></div></div><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Project</th><th>Run</th><th>Age</th><th>Size</th><th>URI</th></tr></thead><tbody>${artifactRows || '<tr><td colspan="6">No artifacts found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
 
 type DashboardBundleReadiness = {
@@ -9862,7 +10054,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -9875,6 +10067,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["candidate-comparisons", "/candidate-comparisons", "Comparisons"],
     ["governance", "/governance", "Governance"],
     ["roles", "/roles", "Roles"],
+    ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"],
     ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
     ["info", "/settings", "Settings"]
@@ -9995,6 +10188,18 @@ function formatDashboardDateTimeText(value: string): string {
     minute: "2-digit",
     timeZoneName: "short"
   }).format(parsed);
+}
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return `${unitIndex === 0 ? value : Math.round(value * 10) / 10} ${units[unitIndex]}`;
 }
 
 function formatDuration(ms: number): string {

@@ -232,6 +232,13 @@ foundation is complete.
   - Done: add worker-pool defaults to project config so local workers can inherit project-specific limits, concurrency, lease timeouts, and scope.
   - Done: add named worker-pool supervision profiles for starting multiple lanes from one command.
 
+- [ ] Governed server mode.
+  - Keep local-only CLI, MCP stdio, dashboard, worker, and storage as the default developer workflow.
+  - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
+  - Define auth, project registration, role enforcement, audit receipts, and network binding defaults before exposing workflow execution remotely.
+  - Document LAN/shared deployment risks and provide secure defaults that do not expose dev Postgres, Redis, MinIO, or project files accidentally.
+  - Next: design the server-mode contract after artifact lifecycle and backup/restore governance are further along.
+
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
   - Done: add project-local role definitions and record actor roles on approval decisions and execution receipts.
@@ -242,13 +249,14 @@ foundation is complete.
   - Next: add role-focused dashboard filters and exportable audit snapshots after user testing.
 
 - [ ] Artifact lifecycle governance.
-  - Start with read-only artifact inventory across registered projects: counts, size estimates, age buckets, artifact kinds, and run associations.
+  - Done: add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
+  - Done: add dashboard, JSON API, and CLI visibility for conservative lifecycle hints without pruning or deleting artifacts.
   - Add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
   - Generate dry-run prune plans with exact artifact ids, paths, reasons, and estimated storage recovered.
   - Record lifecycle receipts for archive, prune, restore, and skipped items before allowing destructive actions.
   - Keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
   - Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
-  - Next: add read-only artifact lifecycle report and dashboard panel before implementing prune-plan generation.
+  - Next: add dry-run prune-plan generation from the read-only lifecycle report.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.

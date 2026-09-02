@@ -11,7 +11,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Adaptive routing** — send cheap stages to local/BYO models, promote stages from feedback, and use stronger providers where needed
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
-- **Multi-project governance** — read-only health, provider, policy-drift, queue, role, and remediation reporting
+- **Multi-project governance** — read-only health, provider, policy-drift, queue, role, artifact lifecycle, and remediation reporting
 - **Trusted workflow bundles** — detached Ed25519 signatures, public-key trust policy, and tamper detection
 
 ## Quick Start
@@ -151,7 +151,7 @@ npm run agentflow -- bundle-upgrade-preview -p . # Preview project bundle migrat
 npm run agentflow -- definition-migrations -p . # Show definition changes, upgrade steps, validation, and rollback
 npm run agentflow -- bundle-adopt -p . --force # Record current bundle as the reviewed project baseline
 npm run doctor                 # Check local services
-npm run dashboard              # Inspect runs, providers, usage, projects, roles, graph, and bundle readiness
+npm run dashboard              # Inspect runs, providers, usage, projects, roles, artifacts, graph, and bundle readiness
 
 # Project operations
 npm run init-project -- -p .   # Install agent workflow into a project
@@ -195,6 +195,7 @@ npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored ru
 npm run agentflow -- approvals # Review pending agent-requested actions
 npm run agentflow -- approvals --approve <id> --actor "Your Name" --actor-role approver # Record role-aware approval
 npm run agentflow -- roles -p . # Inspect team role config and recent approval decisions by role
+npm run agentflow -- artifact-lifecycle -p . # Inspect read-only artifact inventory and lifecycle hints
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics

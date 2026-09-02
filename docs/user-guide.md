@@ -722,7 +722,7 @@ Run detail pages:
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Governance, Roles, Artifacts, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
 ![Dashboard home](assets/screenshots/dashboard-home.png)
 
@@ -1267,3 +1267,24 @@ The report checks path and context availability, registered-versus-local configu
 Temporary provider-smoke projects are excluded by default. Add `--include-ephemeral` when auditing test registrations themselves.
 
 Open `/governance` in the dashboard for the same report with health, provider, and policy-profile filters. Open `/roles` for project team role configuration and recent approval decisions by role. `/api/governance` and `/api/roles` expose the stable JSON contracts. The MCP tool is `agentflow_governance`.
+
+## Artifact lifecycle visibility
+
+Inspect artifact storage without changing it:
+
+```bash
+agentflow artifact-lifecycle
+agentflow artifact-lifecycle --project /path/to/project
+agentflow artifact-lifecycle --kind stage_output --limit 100 --json
+```
+
+The report groups recent artifacts by project, artifact kind, age bucket, and
+run status. It also estimates JSON payload size and emits conservative lifecycle
+hints such as `retain for audit`, `retain until run reviewed`, or `candidate
+for future prune plan`.
+
+Open `/artifact-lifecycle` in the dashboard for the same read-only inventory.
+`/api/artifact-lifecycle` exposes the JSON report for local automation. This
+version does not delete, archive, or prune artifacts. Future prune-plan tooling
+should cite exact artifact ids, explain each reason, record receipts, and require
+explicit approval before any destructive action.
