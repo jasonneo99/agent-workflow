@@ -167,7 +167,7 @@ trust gaps.
   - Done: add contract tests for custom agents, workflows, and provider adapters.
   - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
 
-- [ ] Dashboard graph and mind-map visualization.
+- [x] Dashboard graph and mind-map visualization.
   - Done: add `/workflow-graph` and `/api/workflow-graph` for browser and machine-readable workflow connection inspection.
   - Done: show stages, primary agents, subagents, context budgets, approvals, policy status, and Mermaid output.
   - Done: add an optional visual mind-map layout for agent connections, suitable for screenshots, docs, and non-technical workflow review.
@@ -194,7 +194,7 @@ trust gaps.
   - Done: add a small recent graph exports panel so developers can reopen or share prior graph handoffs from the dashboard.
   - Done: add an optional dashboard-safe graph export viewer route so developers can inspect saved handoff Markdown without leaving the browser.
   - Done: add lightweight export lifecycle actions such as copyable CLI commands and project-local prune guidance without deleting files implicitly.
-  - Next: polish graph handoff ergonomics after user testing, then close this visualization milestone.
+  - Done: polish graph handoff ergonomics after user testing, then close this visualization milestone.
 
 - [x] Optional model-improvement workflow pack.
   - Done: add reusable agents and a `model-improvement` workflow to diagnose whether a quality issue is best handled by context, prompts, routing, eval coverage, retrieval, or model fine-tuning.
@@ -253,13 +253,15 @@ foundation is complete.
   - Done: add dashboard, JSON API, and CLI visibility for conservative lifecycle hints without pruning or deleting artifacts.
   - Done: add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
   - Done: generate dry-run prune plans with exact artifact ids, URIs, reasons, and estimated storage recovered.
+  - Done: keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
+  - Done: add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
   - Record lifecycle receipts for archive, prune, restore, and skipped items before allowing destructive actions.
-  - Keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
   - Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
-  - Next: add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
+  - Next: add approved lifecycle action queue plumbing that records receipts and still defaults to no deletion.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
+  - Next best after lifecycle action queue: add a read-only backup inventory and restore drill report for local enterprise storage.
 
 ## Contribution Boundary
 

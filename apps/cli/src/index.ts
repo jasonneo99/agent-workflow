@@ -1997,11 +1997,11 @@ program
   .option("-k, --kind <kind>", "filter by artifact kind")
   .option("-l, --limit <number>", "number of recent artifacts to inspect", "500")
   .option("--prune-plan", "include a dry-run prune plan; does not delete anything")
-  .option("--min-age-days <number>", "minimum artifact age for prune candidates", "30")
-  .option("--min-bytes <number>", "minimum artifact JSON size for prune candidates", "20000")
+  .option("--min-age-days <number>", "override minimum artifact age for prune candidates")
+  .option("--min-bytes <number>", "override minimum artifact JSON size for prune candidates")
   .option("--include-audit", "allow audit artifacts in the dry-run prune plan")
   .option("--json", "print machine-readable artifact lifecycle report")
-  .action(async (options: { project?: string; kind?: string; limit: string; prunePlan?: boolean; minAgeDays: string; minBytes: string; includeAudit?: boolean; json?: boolean }) => {
+  .action(async (options: { project?: string; kind?: string; limit: string; prunePlan?: boolean; minAgeDays?: string; minBytes?: string; includeAudit?: boolean; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2016,9 +2016,9 @@ program
       kind: options.kind,
       limit: parsePositiveInteger(options.limit, 500),
       prunePlan: Boolean(options.prunePlan),
-      minAgeDays: parsePositiveInteger(options.minAgeDays, 30),
-      minBytes: parsePositiveInteger(options.minBytes, 20_000),
-      includeAudit: Boolean(options.includeAudit)
+      minAgeDays: options.minAgeDays ? parsePositiveInteger(options.minAgeDays, 30) : undefined,
+      minBytes: options.minBytes ? parsePositiveInteger(options.minBytes, 20_000) : undefined,
+      includeAudit: options.includeAudit === true ? true : undefined
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatArtifactLifecycleReport(report));
   });
@@ -3242,6 +3242,7 @@ type ArtifactLifecycleReport = {
   projectRootUri: string | null;
   artifactKind: string | null;
   limit: number;
+  retentionPolicy: ArtifactLifecyclePolicy;
   prunePlan: ArtifactPrunePlan | null;
   totalArtifacts: number;
   estimatedBytes: number;
@@ -3256,17 +3257,29 @@ type ArtifactLifecycleReport = {
   }>;
 };
 
+type ArtifactLifecyclePolicy = {
+  source: "project" | "default";
+  retentionDays: number;
+  minPruneBytes: number;
+  retainAuditArtifacts: boolean;
+  legalHold: boolean;
+  requireApprovalForPrune: boolean;
+};
+
 type ArtifactPrunePlan = {
   mode: "dry-run";
   generatedAt: string;
   criteria: {
+    policySource: "project" | "default" | "override";
     minAgeDays: number;
     minBytes: number;
     includeAudit: boolean;
+    legalHold: boolean;
+    requireApproval: boolean;
   };
   totalCandidates: number;
   estimatedBytesRecoverable: number;
-  approvalRequired: true;
+  approvalRequired: boolean;
   notes: string[];
   candidates: Array<{
     artifactId: string;
@@ -3282,6 +3295,20 @@ type ArtifactPrunePlan = {
     createdAt: string;
     ageDays: number | null;
     reason: string;
+    receiptPreview: {
+      actionType: "artifact_prune_requested";
+      target: string;
+      summary: string;
+      metadata: {
+        mode: "dry-run";
+        artifactId: string;
+        runId: string;
+        taskId: string | null;
+        kind: string;
+        contentBytes: number;
+        reason: string;
+      };
+    };
   }>;
 };
 
@@ -3565,6 +3592,7 @@ async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kin
   const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
   const artifactKind = input.kind?.trim() || null;
   const limit = input.limit ?? 500;
+  const retentionPolicy = await resolveArtifactLifecyclePolicy(projectRootUri);
   const artifacts = await listArtifactLifecycle({
     projectRootUri: projectRootUri ?? undefined,
     kind: artifactKind ?? undefined,
@@ -3580,11 +3608,15 @@ async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kin
   });
   const estimatedBytes = recentArtifacts.reduce((sum, artifact) => sum + artifact.contentBytes + artifact.uri.length, 0);
   const reviewHints = buildArtifactLifecycleHints(recentArtifacts, estimatedBytes, limit);
+  const policySource = input.minAgeDays !== undefined || input.minBytes !== undefined || input.includeAudit !== undefined ? "override" : retentionPolicy.source;
   const prunePlan = input.prunePlan
     ? buildArtifactPrunePlan(recentArtifacts, {
-      minAgeDays: input.minAgeDays ?? 30,
-      minBytes: input.minBytes ?? 20_000,
-      includeAudit: Boolean(input.includeAudit)
+      policySource,
+      minAgeDays: input.minAgeDays ?? retentionPolicy.retentionDays,
+      minBytes: input.minBytes ?? retentionPolicy.minPruneBytes,
+      includeAudit: input.includeAudit ?? !retentionPolicy.retainAuditArtifacts,
+      legalHold: retentionPolicy.legalHold,
+      requireApproval: retentionPolicy.requireApprovalForPrune
     })
     : null;
   return {
@@ -3593,6 +3625,7 @@ async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kin
     projectRootUri,
     artifactKind,
     limit,
+    retentionPolicy,
     prunePlan,
     totalArtifacts: recentArtifacts.length,
     estimatedBytes,
@@ -3605,6 +3638,33 @@ async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kin
   };
 }
 
+async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Promise<ArtifactLifecyclePolicy> {
+  const fallback: ArtifactLifecyclePolicy = {
+    source: "default",
+    retentionDays: 30,
+    minPruneBytes: 20_000,
+    retainAuditArtifacts: true,
+    legalHold: false,
+    requireApprovalForPrune: true
+  };
+  if (!projectRootUri || !await pathExists(path.join(projectRootUri, ".agent-workflow", "project.yaml"))) {
+    return fallback;
+  }
+  try {
+    const project = await loadProjectConfig(projectRootUri);
+    return {
+      source: "project",
+      retentionDays: project.storage.artifact_lifecycle.retention_days,
+      minPruneBytes: project.storage.artifact_lifecycle.min_prune_bytes,
+      retainAuditArtifacts: project.storage.artifact_lifecycle.retain_audit_artifacts,
+      legalHold: project.storage.artifact_lifecycle.legal_hold,
+      requireApprovalForPrune: project.storage.artifact_lifecycle.require_approval_for_prune
+    };
+  } catch {
+    return fallback;
+  }
+}
+
 function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string {
   const lines = [
     `Artifact lifecycle (${report.generatedAt})`,
@@ -3612,6 +3672,14 @@ function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string 
     `Kind: ${report.artifactKind ?? "all"}`,
     `Artifacts inspected: ${report.totalArtifacts}`,
     `Estimated JSON storage: ${formatBytes(report.estimatedBytes)}`,
+    "",
+    "Retention policy:",
+    `- Source: ${report.retentionPolicy.source}`,
+    `- Retention days: ${report.retentionPolicy.retentionDays}`,
+    `- Minimum prune bytes: ${report.retentionPolicy.minPruneBytes}`,
+    `- Retain audit artifacts: ${report.retentionPolicy.retainAuditArtifacts}`,
+    `- Legal hold: ${report.retentionPolicy.legalHold}`,
+    `- Approval required: ${report.retentionPolicy.requireApprovalForPrune}`,
     "",
     `By kind: ${formatInlineCounts(report.byKind) || "none"}`,
     `By age: ${formatInlineCounts(report.byAgeBucket) || "none"}`,
@@ -3624,9 +3692,9 @@ function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string 
       "Dry-run prune plan:",
       `- Candidates: ${report.prunePlan.totalCandidates}`,
       `- Estimated recoverable: ${formatBytes(report.prunePlan.estimatedBytesRecoverable)}`,
-      `- Criteria: minAgeDays=${report.prunePlan.criteria.minAgeDays} minBytes=${report.prunePlan.criteria.minBytes} includeAudit=${report.prunePlan.criteria.includeAudit}`,
+      `- Criteria: source=${report.prunePlan.criteria.policySource} minAgeDays=${report.prunePlan.criteria.minAgeDays} minBytes=${report.prunePlan.criteria.minBytes} includeAudit=${report.prunePlan.criteria.includeAudit} legalHold=${report.prunePlan.criteria.legalHold} requireApproval=${report.prunePlan.criteria.requireApproval}`,
       ...report.prunePlan.notes.map((note) => `- ${note}`),
-      ...report.prunePlan.candidates.slice(0, 20).map((candidate) => `- ${candidate.artifactId} ${candidate.uri} (${formatBytes(candidate.contentBytes)}): ${candidate.reason}`)
+      ...report.prunePlan.candidates.slice(0, 20).map((candidate) => `- ${candidate.artifactId} ${candidate.uri} (${formatBytes(candidate.contentBytes)}): ${candidate.reason} [receipt=${candidate.receiptPreview.actionType}]`)
     ] : []),
     "",
     "Recent artifacts:",
@@ -3673,6 +3741,21 @@ function buildArtifactLifecycleHints(artifacts: ArtifactLifecycleReport["recentA
 }
 
 function buildArtifactPrunePlan(artifacts: ArtifactLifecycleReport["recentArtifacts"], criteria: ArtifactPrunePlan["criteria"]): ArtifactPrunePlan {
+  if (criteria.legalHold) {
+    return {
+      mode: "dry-run",
+      generatedAt: new Date().toISOString(),
+      criteria,
+      totalCandidates: 0,
+      estimatedBytesRecoverable: 0,
+      approvalRequired: criteria.requireApproval,
+      notes: [
+        "Dry run only. This plan does not delete, archive, or mutate artifacts.",
+        "Project legal hold is enabled; prune candidates are suppressed."
+      ],
+      candidates: []
+    };
+  }
   const candidates = artifacts.flatMap((artifact) => {
     const ageDays = artifactAgeDays(artifact.createdAt);
     const reason = artifactPruneReason(artifact, ageDays, criteria);
@@ -3690,7 +3773,21 @@ function buildArtifactPrunePlan(artifacts: ArtifactLifecycleReport["recentArtifa
       contentBytes: artifact.contentBytes,
       createdAt: artifact.createdAt,
       ageDays,
-      reason
+      reason,
+      receiptPreview: {
+        actionType: "artifact_prune_requested" as const,
+        target: artifact.uri,
+        summary: `Would request pruning ${artifact.kind} artifact ${artifact.id}`,
+        metadata: {
+          mode: "dry-run" as const,
+          artifactId: artifact.id,
+          runId: artifact.runId,
+          taskId: artifact.taskId,
+          kind: artifact.kind,
+          contentBytes: artifact.contentBytes,
+          reason
+        }
+      }
     }];
   });
   const estimatedBytesRecoverable = candidates.reduce((sum, candidate) => sum + candidate.contentBytes + candidate.uri.length, 0);
@@ -3709,7 +3806,7 @@ function buildArtifactPrunePlan(artifacts: ArtifactLifecycleReport["recentArtifa
     criteria,
     totalCandidates: candidates.length,
     estimatedBytesRecoverable,
-    approvalRequired: true,
+    approvalRequired: criteria.requireApproval,
     notes,
     candidates
   };
@@ -5220,9 +5317,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       kind: requestUrl.searchParams.get("kind") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
       prunePlan: requestUrl.searchParams.get("prunePlan") === "true",
-      minAgeDays: parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "30", 30),
-      minBytes: parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "20000", 20_000),
-      includeAudit: requestUrl.searchParams.get("includeAudit") === "true"
+      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
+      minBytes: requestUrl.searchParams.has("minBytes") ? parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
+      includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
@@ -5527,9 +5624,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       kind: requestUrl.searchParams.get("kind") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
       prunePlan: requestUrl.searchParams.get("prunePlan") === "true",
-      minAgeDays: parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "30", 30),
-      minBytes: parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "20000", 20_000),
-      includeAudit: requestUrl.searchParams.get("includeAudit") === "true"
+      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
+      minBytes: requestUrl.searchParams.has("minBytes") ? parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
+      includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
     });
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -7406,6 +7503,7 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
       <td><a href="/run?id=${encodeURIComponent(candidate.runId)}">${escapeHtml(candidate.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(candidate.taskId?.slice(0, 8) ?? "run-level")}</span></td>
       <td>${candidate.ageDays === null ? "unknown" : `${candidate.ageDays}d`}<br><span class="muted">${escapeHtml(formatBytes(candidate.contentBytes))}</span></td>
       <td>${escapeHtml(candidate.reason)}</td>
+      <td><code>${escapeHtml(candidate.receiptPreview.actionType)}</code><br><span class="muted">${escapeHtml(candidate.receiptPreview.summary)}</span></td>
       <td><code>${escapeHtml(candidate.uri)}</code></td>
     </tr>`).join("") ?? "";
   const pruneNotes = report.prunePlan?.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("") ?? "";
@@ -7422,8 +7520,8 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
     <label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label>
     <label>Kind<select name="kind"><option value="">all artifact kinds</option>${kindOptions}</select></label>
     <label>Recent artifacts<input name="limit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
-    <label>Min age days<input name="minAgeDays" inputmode="numeric" value="${escapeHtml(String(report.prunePlan?.criteria.minAgeDays ?? params.get("minAgeDays") ?? "30"))}"></label>
-    <label>Min bytes<input name="minBytes" inputmode="numeric" value="${escapeHtml(String(report.prunePlan?.criteria.minBytes ?? params.get("minBytes") ?? "20000"))}"></label>
+    <label>Min age days<input name="minAgeDays" inputmode="numeric" placeholder="${escapeHtml(String(report.retentionPolicy.retentionDays))}" value="${escapeHtml(params.get("minAgeDays") ?? "")}"></label>
+    <label>Min bytes<input name="minBytes" inputmode="numeric" placeholder="${escapeHtml(String(report.retentionPolicy.minPruneBytes))}" value="${escapeHtml(params.get("minBytes") ?? "")}"></label>
     <label class="check-row"><input type="checkbox" name="prunePlan" value="true"${report.prunePlan ? " checked" : ""}> Show dry-run prune plan</label>
     <label class="check-row"><input type="checkbox" name="includeAudit" value="true"${report.prunePlan?.criteria.includeAudit ? " checked" : ""}> Include audit artifacts</label>
     <div class="form-actions"><button type="submit">Filter</button></div>
@@ -7432,8 +7530,9 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
   ${dashboardNav("artifact-lifecycle")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Retention Policy</h2><span class="muted">Project-local defaults from .agent-workflow/project.yaml. Empty filter fields use this policy; filled fields become preview-only overrides.</span></div></div><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(report.retentionPolicy.source)}</div><div><strong>Retention</strong>${report.retentionPolicy.retentionDays} days</div><div><strong>Minimum size</strong>${escapeHtml(formatBytes(report.retentionPolicy.minPruneBytes))}</div><div><strong>Audit artifacts</strong>${report.retentionPolicy.retainAuditArtifacts ? "retained by default" : "eligible by policy"}</div><div><strong>Legal hold</strong>${report.retentionPolicy.legalHold ? "enabled" : "off"}</div><div><strong>Approval</strong>${report.retentionPolicy.requireApprovalForPrune ? "required" : "project policy allows approval-free preview"}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Lifecycle Hints</h2><span class="muted">Hints are conservative and non-destructive. Future prune plans should cite exact ids and require approval.</span></div></div><ul>${hintRows || "<li>No lifecycle concerns found in the inspected artifact window.</li>"}</ul></section>
-  ${report.prunePlan ? `<section class="panel"><div class="section-heading"><div><h2>Dry-run Prune Plan</h2><span class="muted">Preview only. No artifacts are deleted, archived, or modified.</span></div><div class="meta-grid"><div><strong>Candidates</strong>${report.prunePlan.totalCandidates}</div><div><strong>Recoverable</strong>${escapeHtml(formatBytes(report.prunePlan.estimatedBytesRecoverable))}</div><div><strong>Approval</strong>required</div></div></div><ul>${pruneNotes}</ul><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Run</th><th>Age/Size</th><th>Reason</th><th>URI</th></tr></thead><tbody>${pruneRows || '<tr><td colspan="6">No artifacts matched the current prune criteria.</td></tr>'}</tbody></table></div></section>` : ""}
+  ${report.prunePlan ? `<section class="panel"><div class="section-heading"><div><h2>Dry-run Prune Plan</h2><span class="muted">Preview only. No artifacts are deleted, archived, or modified.</span></div><div class="meta-grid"><div><strong>Candidates</strong>${report.prunePlan.totalCandidates}</div><div><strong>Recoverable</strong>${escapeHtml(formatBytes(report.prunePlan.estimatedBytesRecoverable))}</div><div><strong>Criteria</strong>${escapeHtml(report.prunePlan.criteria.policySource)}</div><div><strong>Approval</strong>${report.prunePlan.approvalRequired ? "required" : "not required by policy"}</div></div></div><ul>${pruneNotes}</ul><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Run</th><th>Age/Size</th><th>Reason</th><th>Receipt Preview</th><th>URI</th></tr></thead><tbody>${pruneRows || '<tr><td colspan="7">No artifacts matched the current prune criteria.</td></tr>'}</tbody></table></div></section>` : ""}
   <section class="panel"><div class="meta-grid"><div><strong>By Kind</strong>${escapeHtml(formatInlineCounts(report.byKind) || "none")}</div><div><strong>By Age</strong>${escapeHtml(formatInlineCounts(report.byAgeBucket) || "none")}</div><div><strong>By Run Status</strong>${escapeHtml(formatInlineCounts(report.byRunStatus) || "none")}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Artifacts</h2><span class="muted">Showing up to 100 newest rows from the inspected window.</span></div></div><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Project</th><th>Run</th><th>Age</th><th>Size</th><th>URI</th></tr></thead><tbody>${artifactRows || '<tr><td colspan="6">No artifacts found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
@@ -12851,7 +12950,14 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
     },
     storage: {
       cache_summaries: profile === "enterprise",
-      semantic_index: profile === "enterprise"
+      semantic_index: profile === "enterprise",
+      artifact_lifecycle: {
+        retention_days: 30,
+        min_prune_bytes: 20_000,
+        retain_audit_artifacts: true,
+        legal_hold: false,
+        require_approval_for_prune: true
+      }
     },
     execution: {
       policy_profile: "local",

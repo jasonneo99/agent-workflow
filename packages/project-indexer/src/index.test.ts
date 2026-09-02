@@ -24,7 +24,14 @@ const project: ProjectConfig = {
   },
   storage: {
     cache_summaries: true,
-    semantic_index: true
+    semantic_index: true,
+    artifact_lifecycle: {
+      retention_days: 30,
+      min_prune_bytes: 20_000,
+      retain_audit_artifacts: true,
+      legal_hold: false,
+      require_approval_for_prune: true
+    }
   },
   execution: {
     policy_profile: "local",

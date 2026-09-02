@@ -144,6 +144,20 @@ const separationOfDutiesSchema = z.object({
   prevent_same_actor_approval_execution: true
 });
 
+const artifactLifecycleSchema = z.object({
+  retention_days: z.number().int().positive().default(30),
+  min_prune_bytes: z.number().int().positive().default(20_000),
+  retain_audit_artifacts: z.boolean().default(true),
+  legal_hold: z.boolean().default(false),
+  require_approval_for_prune: z.boolean().default(true)
+}).default({
+  retention_days: 30,
+  min_prune_bytes: 20_000,
+  retain_audit_artifacts: true,
+  legal_hold: false,
+  require_approval_for_prune: true
+});
+
 export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
@@ -158,8 +172,19 @@ export const projectConfigSchema = z.object({
   }).default({ include: [], exclude: ["node_modules/**", ".git/**", "dist/**"], max_project_tokens: 12000 }),
   storage: z.object({
     cache_summaries: z.boolean().default(true),
-    semantic_index: z.boolean().default(true)
-  }).default({ cache_summaries: true, semantic_index: true }),
+    semantic_index: z.boolean().default(true),
+    artifact_lifecycle: artifactLifecycleSchema
+  }).default({
+    cache_summaries: true,
+    semantic_index: true,
+    artifact_lifecycle: {
+      retention_days: 30,
+      min_prune_bytes: 20_000,
+      retain_audit_artifacts: true,
+      legal_hold: false,
+      require_approval_for_prune: true
+    }
+  }),
   execution: z.object({
     policy_profile: z.string().min(1).default("local"),
     policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({}),

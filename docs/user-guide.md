@@ -1297,3 +1297,23 @@ recoverable JSON storage. The plan is always `mode: dry-run`; it does not mutate
 Postgres, object storage, or project files. By default, audit artifacts such as
 action approvals, run feedback, command output, and file-write receipts are
 excluded. Use `--include-audit` only for review planning, not automatic cleanup.
+
+Each project can set its own lifecycle defaults in `.agent-workflow/project.yaml`:
+
+```yaml
+storage:
+  artifact_lifecycle:
+    retention_days: 30
+    min_prune_bytes: 20000
+    retain_audit_artifacts: true
+    legal_hold: false
+    require_approval_for_prune: true
+```
+
+The CLI and dashboard use these project-local settings when a project is
+selected. `--min-age-days`, `--min-bytes`, and the dashboard filter fields are
+preview-only overrides; they do not edit project policy. When `legal_hold` is
+true, prune-plan candidates are suppressed. Dry-run candidate rows include a
+receipt preview so reviewers can see the action type, target URI, and metadata
+that a future approved lifecycle action would need to record before any
+destructive operation exists.

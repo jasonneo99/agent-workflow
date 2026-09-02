@@ -31,7 +31,25 @@
       "additionalProperties": false,
       "properties": {
         "cache_summaries": { "type": "boolean", "default": true },
-        "semantic_index": { "type": "boolean", "default": true }
+        "semantic_index": { "type": "boolean", "default": true },
+        "artifact_lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "retention_days": { "type": "integer", "minimum": 1, "default": 30 },
+            "min_prune_bytes": { "type": "integer", "minimum": 1, "default": 20000 },
+            "retain_audit_artifacts": { "type": "boolean", "default": true },
+            "legal_hold": { "type": "boolean", "default": false },
+            "require_approval_for_prune": { "type": "boolean", "default": true }
+          },
+          "default": {
+            "retention_days": 30,
+            "min_prune_bytes": 20000,
+            "retain_audit_artifacts": true,
+            "legal_hold": false,
+            "require_approval_for_prune": true
+          }
+        }
       }
     },
     "execution": {
