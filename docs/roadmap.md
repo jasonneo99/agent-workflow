@@ -273,8 +273,9 @@ foundation is complete.
   - [x] Make queue status and worker health more prominent on the main dashboard.
   - [x] Improve provider/settings discoverability with stronger hierarchy and confirmation feedback.
   - [x] Group dashboard navigation into clearer operating areas.
-  - [ ] Rerun `ux-reviewer` after dashboard hierarchy changes.
-  - Next: rerun `ux-reviewer` after dashboard hierarchy changes and use the findings to choose the next UI polish slice.
+  - [x] Rerun `ux-reviewer` after dashboard hierarchy changes.
+  - [ ] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
+  - Next: tighten grouped navigation consistency and make operations snapshot metrics more actionable.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
