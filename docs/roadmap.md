@@ -282,9 +282,9 @@ foundation is complete.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
-  - [ ] Add dashboard visibility for backup inventory and restore-drill status.
+  - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [ ] Provide documented recovery procedures and automated restore verification.
-  - Next: add dashboard visibility for backup inventory and restore-drill status.
+  - Next: provide documented recovery procedures and automated restore verification.
 
 ## Contribution Boundary
 

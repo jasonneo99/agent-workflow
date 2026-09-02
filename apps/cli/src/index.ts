@@ -6082,6 +6082,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/backup-report") {
+    const report = await loadBackupRestoreReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/bundles") {
     const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -6389,6 +6399,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderArtifactLifecycleHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/backup-report") {
+    const report = await loadBackupRestoreReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
+    });
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderBackupRestoreHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -8264,6 +8285,45 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Decision Role</th><th>Execution Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="6">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderBackupRestoreHtml(report: BackupRestoreReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const statusClass = report.restoreDrill.status === "ready" ? "completed" : "queued";
+  const serviceRows = report.services.map((service) => `
+    <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
+  `).join("");
+  const checkRows = report.restoreDrill.checks.map((check) => `
+    <tr><td>${escapeHtml(check.label)}</td><td><span class="status ${check.status === "pass" ? "completed" : "queued"}">${escapeHtml(check.status)}</span></td><td>${escapeHtml(check.detail)}</td></tr>
+  `).join("");
+  const kindRows = Object.entries(report.inventory.byKind)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, value]) => `<tr><td>${escapeHtml(kind)}</td><td>${formatNumber(value.count)}</td><td>${escapeHtml(formatBytes(value.bytes))}</td></tr>`)
+    .join("");
+  const commandRows = report.recommendedCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const noteRows = report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
+  const jsonParams = new URLSearchParams();
+  if (report.projectRootUri) jsonParams.set("project", report.projectRootUri);
+  jsonParams.set("limit", String(report.limit));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Backup Readiness</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("backup-report")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Backup Readiness</h1><p class="muted">Read-only local enterprise storage inventory and restore-drill posture. This page does not create backups, restore data, or mutate storage.</p></div><a class="button secondary" href="/api/backup-report?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><div class="metric-grid">
+    ${metricCard("Status", report.restoreDrill.status, "restore-drill readiness")}
+    ${metricCard("Projects", report.inventory.projects, "registered in local storage")}
+    ${metricCard("Runs", report.inventory.runs, `${report.inventory.completedRuns} completed / ${report.inventory.failedRuns} failed`)}
+    ${metricCard("Artifacts", report.inventory.artifacts, formatBytes(report.inventory.estimatedArtifactBytes))}
+    ${metricCard("Archives", report.inventory.archivedArtifacts, "archived_artifact snapshots")}
+    ${metricCard("Restores", report.inventory.restoredArtifacts, "restored_artifact snapshots")}
+    ${metricCard("Lifecycle Approvals", report.restoreDrill.pendingLifecycleApprovals, "pending / approved / failed")}
+    ${metricCard("Queue Items", report.restoreDrill.activeQueueItems, "queued / running / failed")}
+  </div><p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.restoreDrill.status)}</span>.</p></section>
+  <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Restore Drill Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows || '<tr><td colspan="3">No restore-drill checks were recorded.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Artifact Kinds</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th><th>Bytes</th></tr></thead><tbody>${kindRows || '<tr><td colspan="3">No artifacts found in the inspected window.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
+  <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
 }
 
 function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
@@ -11502,7 +11562,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "bundles" | "providers" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -11534,6 +11594,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
       items: [
         ["governance", "/governance", "Governance"],
         ["roles", "/roles", "Roles"],
+        ["backup-report", "/backup-report", "Backup"],
         ["bundles", "/bundles", "Bundles"]
       ]
     },
