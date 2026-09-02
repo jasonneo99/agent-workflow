@@ -1690,14 +1690,35 @@ export async function requestActionApproval(input: {
     await client.query("begin");
     try {
       const approval = await client.query<{ id: string; status: string }>(
-        `insert into action_approvals (
-           run_id, task_id, stage_id, agent_id, action_type, target,
-           rationale, policy_decision, payload, idempotency_key
-         )
-         values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)
-         on conflict (run_id, task_id, action_type, idempotency_key) do update
-         set updated_at = now()
-         returning id::text, status`,
+        input.taskId === null || input.taskId === undefined
+          ? `with existing as (
+               update action_approvals
+               set updated_at = now()
+               where run_id = $1::uuid
+                 and task_id is null
+                 and action_type = $5
+                 and idempotency_key = $10
+               returning id::text, status
+             ), inserted as (
+               insert into action_approvals (
+                 run_id, task_id, stage_id, agent_id, action_type, target,
+                 rationale, policy_decision, payload, idempotency_key
+               )
+               select $1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10
+               where not exists (select 1 from existing)
+               returning id::text, status
+             )
+             select * from existing
+             union all
+             select * from inserted`
+          : `insert into action_approvals (
+               run_id, task_id, stage_id, agent_id, action_type, target,
+               rationale, policy_decision, payload, idempotency_key
+             )
+             values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)
+             on conflict (run_id, task_id, action_type, idempotency_key) do update
+             set updated_at = now()
+             returning id::text, status`,
         [
           input.runId,
           input.taskId ?? null,

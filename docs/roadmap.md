@@ -255,9 +255,11 @@ foundation is complete.
   - Done: generate dry-run prune plans with exact artifact ids, URIs, reasons, and estimated storage recovered.
   - Done: keep legal-hold and retention settings project-local in `.agent-workflow/project.yaml`; default to no automatic deletion.
   - Done: add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
-  - Record lifecycle receipts for archive, prune, restore, and skipped items before allowing destructive actions.
+  - Done: add approved lifecycle action queue plumbing that records approval receipts and still defaults to no deletion.
+  - Done: add no-op lifecycle execution receipts for approved prune actions without deleting or modifying artifacts.
+  - Record lifecycle execution receipts for archive, restore, and skipped items before allowing destructive actions.
   - Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
-  - Next: add approved lifecycle action queue plumbing that records receipts and still defaults to no deletion.
+  - Next: add guarded archive/restore previews and receipts before any prune/delete path.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.

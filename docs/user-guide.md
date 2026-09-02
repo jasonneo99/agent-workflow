@@ -1278,6 +1278,7 @@ agentflow artifact-lifecycle --project /path/to/project
 agentflow artifact-lifecycle --kind stage_output --limit 100 --json
 agentflow artifact-lifecycle --project /path/to/project --prune-plan
 agentflow artifact-lifecycle --project /path/to/project --prune-plan --min-age-days 60 --min-bytes 50000 --json
+agentflow artifact-lifecycle --project /path/to/project --prune-plan --queue-approvals
 ```
 
 The report groups recent artifacts by project, artifact kind, age bucket, and
@@ -1317,3 +1318,10 @@ true, prune-plan candidates are suppressed. Dry-run candidate rows include a
 receipt preview so reviewers can see the action type, target URI, and metadata
 that a future approved lifecycle action would need to record before any
 destructive operation exists.
+
+Use `--queue-approvals` after reviewing a dry-run prune plan to create pending
+approval records for each candidate. The dashboard exposes the same action from
+the Artifact Lifecycle page. These approvals record lifecycle intent and normal
+audit receipts. Executing an approved `artifact_prune` approval records a
+`lifecycle_action` no-op receipt and marks the approval executed, but no artifact
+is deleted, archived, restored, or modified.

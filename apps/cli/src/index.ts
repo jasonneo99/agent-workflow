@@ -2000,8 +2000,11 @@ program
   .option("--min-age-days <number>", "override minimum artifact age for prune candidates")
   .option("--min-bytes <number>", "override minimum artifact JSON size for prune candidates")
   .option("--include-audit", "allow audit artifacts in the dry-run prune plan")
+  .option("--queue-approvals", "queue approval requests for dry-run prune candidates; does not execute pruning")
+  .option("--actor <name>", "person or tool requesting lifecycle approvals", "cli")
+  .option("--actor-role <role>", "project role for approval request audit", "operator")
   .option("--json", "print machine-readable artifact lifecycle report")
-  .action(async (options: { project?: string; kind?: string; limit: string; prunePlan?: boolean; minAgeDays?: string; minBytes?: string; includeAudit?: boolean; json?: boolean }) => {
+  .action(async (options: { project?: string; kind?: string; limit: string; prunePlan?: boolean; minAgeDays?: string; minBytes?: string; includeAudit?: boolean; queueApprovals?: boolean; actor: string; actorRole: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2011,15 +2014,27 @@ program
       process.exitCode = 1;
       return;
     }
+    if (options.queueApprovals && !options.project) {
+      console.error("--queue-approvals requires --project so project-local lifecycle policy and roles can be checked.");
+      process.exitCode = 1;
+      return;
+    }
     const report = await loadArtifactLifecycleReport({
       projectRootUri: options.project,
       kind: options.kind,
       limit: parsePositiveInteger(options.limit, 500),
-      prunePlan: Boolean(options.prunePlan),
+      prunePlan: Boolean(options.prunePlan || options.queueApprovals),
       minAgeDays: options.minAgeDays ? parsePositiveInteger(options.minAgeDays, 30) : undefined,
       minBytes: options.minBytes ? parsePositiveInteger(options.minBytes, 20_000) : undefined,
       includeAudit: options.includeAudit === true ? true : undefined
     });
+    if (options.queueApprovals) {
+      report.approvalQueue = await queueArtifactLifecycleApprovals({
+        report,
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "operator")
+      });
+    }
     console.log(options.json ? JSON.stringify(report, null, 2) : formatArtifactLifecycleReport(report));
   });
 
@@ -3244,6 +3259,7 @@ type ArtifactLifecycleReport = {
   limit: number;
   retentionPolicy: ArtifactLifecyclePolicy;
   prunePlan: ArtifactPrunePlan | null;
+  approvalQueue?: ArtifactLifecycleApprovalQueue;
   totalArtifacts: number;
   estimatedBytes: number;
   byProject: Record<string, number>;
@@ -3254,6 +3270,24 @@ type ArtifactLifecycleReport = {
   recentArtifacts: Array<DashboardArtifactLifecycleRow & {
     ageBucket: string;
     lifecycleHint: string;
+  }>;
+};
+
+type ArtifactLifecycleApprovalQueue = {
+  mode: "approval-request";
+  generatedAt: string;
+  requestedBy: string;
+  requestedByRole: string;
+  totalRequested: number;
+  skipped: string[];
+  approvals: Array<{
+    approvalId: string;
+    status: string;
+    artifactUri: string;
+    runId: string;
+    target: string;
+    artifactId: string;
+    idempotencyKey: string;
   }>;
 };
 
@@ -3665,6 +3699,123 @@ async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Pr
   }
 }
 
+async function queueArtifactLifecycleApprovals(input: {
+  report: ArtifactLifecycleReport;
+  actor: string;
+  actorRole: string;
+}): Promise<ArtifactLifecycleApprovalQueue> {
+  const projectRootUri = input.report.projectRootUri;
+  if (!projectRootUri) {
+    return {
+      mode: "approval-request",
+      generatedAt: new Date().toISOString(),
+      requestedBy: input.actor,
+      requestedByRole: input.actorRole,
+      totalRequested: 0,
+      skipped: ["A project is required before lifecycle approvals can be queued."],
+      approvals: []
+    };
+  }
+  if (!input.report.prunePlan) {
+    return {
+      mode: "approval-request",
+      generatedAt: new Date().toISOString(),
+      requestedBy: input.actor,
+      requestedByRole: input.actorRole,
+      totalRequested: 0,
+      skipped: ["A dry-run prune plan is required before lifecycle approvals can be queued."],
+      approvals: []
+    };
+  }
+  if (input.report.retentionPolicy.legalHold) {
+    return {
+      mode: "approval-request",
+      generatedAt: new Date().toISOString(),
+      requestedBy: input.actor,
+      requestedByRole: input.actorRole,
+      totalRequested: 0,
+      skipped: ["Project legal hold is enabled; lifecycle approval requests were not queued."],
+      approvals: []
+    };
+  }
+
+  const project = await loadProjectConfig(projectRootUri);
+  const requestRoleGate = evaluateRoleGate(project, input.actorRole, "can_request_approvals");
+  if (!requestRoleGate.allowed) {
+    return {
+      mode: "approval-request",
+      generatedAt: new Date().toISOString(),
+      requestedBy: input.actor,
+      requestedByRole: input.actorRole,
+      totalRequested: 0,
+      skipped: [requestRoleGate.message],
+      approvals: []
+    };
+  }
+
+  const agents = await loadAgentRecords(rootDir);
+  const workflows = await loadWorkflowRecords(rootDir);
+  await seedRegistry(agents, workflows);
+
+  const approvals: ArtifactLifecycleApprovalQueue["approvals"] = [];
+  for (const candidate of input.report.prunePlan.candidates) {
+    const idempotencyKey = stableHash({
+      actionType: candidate.receiptPreview.actionType,
+      artifactId: candidate.artifactId,
+      uri: candidate.uri,
+      runId: candidate.runId,
+      projectRootUri,
+      criteria: input.report.prunePlan.criteria
+    });
+    const approval = await requestActionApproval({
+      runId: candidate.runId,
+      taskId: candidate.taskId,
+      stageId: "artifact-lifecycle",
+      agentId: "workflow-orchestrator",
+      actionType: "artifact_prune",
+      target: candidate.uri,
+      rationale: `Artifact lifecycle prune approval requested for ${candidate.artifactId}: ${candidate.reason}`,
+      policyDecision: {
+        approvalRequired: input.report.prunePlan.approvalRequired,
+        policySource: input.report.prunePlan.criteria.policySource,
+        retentionPolicy: input.report.retentionPolicy,
+        criteria: input.report.prunePlan.criteria,
+        roleGate: requestRoleGate.message,
+        destructiveExecutionAvailable: false
+      },
+      payload: {
+        ...candidate.receiptPreview.metadata,
+        target: candidate.receiptPreview.target,
+        summary: candidate.receiptPreview.summary,
+        projectRootUri,
+        requestedBy: input.actor,
+        requestedByRole: input.actorRole,
+        queuedAt: new Date().toISOString()
+      },
+      idempotencyKey
+    });
+    approvals.push({
+      approvalId: approval.approvalId,
+      status: approval.status,
+      artifactUri: approval.artifactUri,
+      runId: candidate.runId,
+      target: candidate.uri,
+      artifactId: candidate.artifactId,
+      idempotencyKey
+    });
+  }
+
+  return {
+    mode: "approval-request",
+    generatedAt: new Date().toISOString(),
+    requestedBy: input.actor,
+    requestedByRole: input.actorRole,
+    totalRequested: approvals.length,
+    skipped: approvals.length ? [] : ["No prune candidates were available to queue."],
+    approvals
+  };
+}
+
 function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string {
   const lines = [
     `Artifact lifecycle (${report.generatedAt})`,
@@ -3695,6 +3846,14 @@ function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string 
       `- Criteria: source=${report.prunePlan.criteria.policySource} minAgeDays=${report.prunePlan.criteria.minAgeDays} minBytes=${report.prunePlan.criteria.minBytes} includeAudit=${report.prunePlan.criteria.includeAudit} legalHold=${report.prunePlan.criteria.legalHold} requireApproval=${report.prunePlan.criteria.requireApproval}`,
       ...report.prunePlan.notes.map((note) => `- ${note}`),
       ...report.prunePlan.candidates.slice(0, 20).map((candidate) => `- ${candidate.artifactId} ${candidate.uri} (${formatBytes(candidate.contentBytes)}): ${candidate.reason} [receipt=${candidate.receiptPreview.actionType}]`)
+    ] : []),
+    ...(report.approvalQueue ? [
+      "",
+      "Lifecycle approval queue:",
+      `- Requested: ${report.approvalQueue.totalRequested}`,
+      `- Requested by: ${report.approvalQueue.requestedBy} (${report.approvalQueue.requestedByRole})`,
+      ...report.approvalQueue.skipped.map((item) => `- Skipped: ${item}`),
+      ...report.approvalQueue.approvals.slice(0, 20).map((approval) => `- ${approval.approvalId} ${approval.status} ${approval.target}`)
     ] : []),
     "",
     "Recent artifacts:",
@@ -5139,6 +5298,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       decision: form.get("decision") ?? "",
       actorRole: form.get("actorRole") ?? "",
       note: form.get("note") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/artifact-lifecycle-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardArtifactLifecycleAction({
+      action: form.get("action") ?? "",
+      project: form.get("project") ?? "",
+      kind: form.get("kind") ?? "",
+      limit: form.get("limit") ?? "",
+      minAgeDays: form.get("minAgeDays") ?? "",
+      minBytes: form.get("minBytes") ?? "",
+      includeAudit: form.get("includeAudit") === "true",
+      actorRole: form.get("actorRole") ?? ""
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -7507,6 +7683,17 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
       <td><code>${escapeHtml(candidate.uri)}</code></td>
     </tr>`).join("") ?? "";
   const pruneNotes = report.prunePlan?.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("") ?? "";
+  const queueApprovalForm = report.prunePlan && report.projectRootUri ? `<form class="inline-form" method="post" action="/api/artifact-lifecycle-action">
+    <input type="hidden" name="action" value="queue-prune-approvals">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+    <input type="hidden" name="kind" value="${escapeHtml(report.artifactKind ?? "")}">
+    <input type="hidden" name="limit" value="${escapeHtml(String(report.limit))}">
+    <input type="hidden" name="minAgeDays" value="${escapeHtml(params.get("minAgeDays") ?? "")}">
+    <input type="hidden" name="minBytes" value="${escapeHtml(params.get("minBytes") ?? "")}">
+    <input type="hidden" name="includeAudit" value="${report.prunePlan.criteria.includeAudit ? "true" : "false"}">
+    <label>Requester role<input name="actorRole" value="operator"></label>
+    <button type="submit">Queue Prune Approvals</button>
+  </form>` : "";
   const artifactRows = report.recentArtifacts.slice(0, 100).map((artifact) => `
     <tr>
       <td><strong>${escapeHtml(artifact.kind)}</strong><br><span class="muted">${escapeHtml(artifact.lifecycleHint)}</span></td>
@@ -7532,7 +7719,7 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Retention Policy</h2><span class="muted">Project-local defaults from .agent-workflow/project.yaml. Empty filter fields use this policy; filled fields become preview-only overrides.</span></div></div><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(report.retentionPolicy.source)}</div><div><strong>Retention</strong>${report.retentionPolicy.retentionDays} days</div><div><strong>Minimum size</strong>${escapeHtml(formatBytes(report.retentionPolicy.minPruneBytes))}</div><div><strong>Audit artifacts</strong>${report.retentionPolicy.retainAuditArtifacts ? "retained by default" : "eligible by policy"}</div><div><strong>Legal hold</strong>${report.retentionPolicy.legalHold ? "enabled" : "off"}</div><div><strong>Approval</strong>${report.retentionPolicy.requireApprovalForPrune ? "required" : "project policy allows approval-free preview"}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Lifecycle Hints</h2><span class="muted">Hints are conservative and non-destructive. Future prune plans should cite exact ids and require approval.</span></div></div><ul>${hintRows || "<li>No lifecycle concerns found in the inspected artifact window.</li>"}</ul></section>
-  ${report.prunePlan ? `<section class="panel"><div class="section-heading"><div><h2>Dry-run Prune Plan</h2><span class="muted">Preview only. No artifacts are deleted, archived, or modified.</span></div><div class="meta-grid"><div><strong>Candidates</strong>${report.prunePlan.totalCandidates}</div><div><strong>Recoverable</strong>${escapeHtml(formatBytes(report.prunePlan.estimatedBytesRecoverable))}</div><div><strong>Criteria</strong>${escapeHtml(report.prunePlan.criteria.policySource)}</div><div><strong>Approval</strong>${report.prunePlan.approvalRequired ? "required" : "not required by policy"}</div></div></div><ul>${pruneNotes}</ul><div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Run</th><th>Age/Size</th><th>Reason</th><th>Receipt Preview</th><th>URI</th></tr></thead><tbody>${pruneRows || '<tr><td colspan="7">No artifacts matched the current prune criteria.</td></tr>'}</tbody></table></div></section>` : ""}
+  ${report.prunePlan ? `<section class="panel"><div class="section-heading"><div><h2>Dry-run Prune Plan</h2><span class="muted">Preview only. No artifacts are deleted, archived, or modified.</span></div><div class="meta-grid"><div><strong>Candidates</strong>${report.prunePlan.totalCandidates}</div><div><strong>Recoverable</strong>${escapeHtml(formatBytes(report.prunePlan.estimatedBytesRecoverable))}</div><div><strong>Criteria</strong>${escapeHtml(report.prunePlan.criteria.policySource)}</div><div><strong>Approval</strong>${report.prunePlan.approvalRequired ? "required" : "not required by policy"}</div></div></div><ul>${pruneNotes}</ul>${queueApprovalForm || '<p class="muted">Select a project to queue lifecycle approvals for this prune plan.</p>'}<div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Run</th><th>Age/Size</th><th>Reason</th><th>Receipt Preview</th><th>URI</th></tr></thead><tbody>${pruneRows || '<tr><td colspan="7">No artifacts matched the current prune criteria.</td></tr>'}</tbody></table></div></section>` : ""}
   <section class="panel"><div class="meta-grid"><div><strong>By Kind</strong>${escapeHtml(formatInlineCounts(report.byKind) || "none")}</div><div><strong>By Age</strong>${escapeHtml(formatInlineCounts(report.byAgeBucket) || "none")}</div><div><strong>By Run Status</strong>${escapeHtml(formatInlineCounts(report.byRunStatus) || "none")}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Artifacts</h2><span class="muted">Showing up to 100 newest rows from the inspected window.</span></div></div><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Project</th><th>Run</th><th>Age</th><th>Size</th><th>URI</th></tr></thead><tbody>${artifactRows || '<tr><td colspan="6">No artifacts found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
@@ -9317,6 +9504,54 @@ async function processDashboardApprovalAction(input: {
   };
 }
 
+async function processDashboardArtifactLifecycleAction(input: {
+  action: string;
+  project: string;
+  kind: string;
+  limit: string;
+  minAgeDays: string;
+  minBytes: string;
+  includeAudit: boolean;
+  actorRole: string;
+}): Promise<DashboardFollowUpResult> {
+  if (input.action !== "queue-prune-approvals") {
+    return { ok: false, error: `Unsupported artifact lifecycle action: ${input.action || "none"}` };
+  }
+  const project = input.project.trim();
+  if (!project) {
+    return { ok: false, error: "Select a project before queueing lifecycle approvals." };
+  }
+  const report = await loadArtifactLifecycleReport({
+    projectRootUri: project,
+    kind: input.kind.trim() || undefined,
+    limit: parsePositiveInteger(input.limit || "500", 500),
+    prunePlan: true,
+    minAgeDays: input.minAgeDays.trim() ? parsePositiveInteger(input.minAgeDays, 30) : undefined,
+    minBytes: input.minBytes.trim() ? parsePositiveInteger(input.minBytes, 20_000) : undefined,
+    includeAudit: input.includeAudit ? true : undefined
+  });
+  const queue = await queueArtifactLifecycleApprovals({
+    report,
+    actor: "dashboard",
+    actorRole: normalizeActorRole(input.actorRole, "operator")
+  });
+  return {
+    ok: true,
+    title: "Lifecycle approvals queued",
+    output: [
+      `Project: ${report.projectRootUri}`,
+      `Policy source: ${report.retentionPolicy.source}`,
+      `Criteria source: ${report.prunePlan?.criteria.policySource ?? "none"}`,
+      `Candidates: ${report.prunePlan?.totalCandidates ?? 0}`,
+      `Approval requests: ${queue.totalRequested}`,
+      ...queue.skipped.map((item) => `Skipped: ${item}`),
+      ...queue.approvals.slice(0, 10).map((approval) => `Approval ${approval.approvalId}: ${approval.status} ${approval.target}`),
+      "No artifacts were deleted, archived, or modified.",
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
 async function requestRunLevelApproval(input: {
   projectPath: string;
   type: string;
@@ -9513,6 +9748,53 @@ async function executeApprovedAction(input: {
         `Separation of duties: ${separationGate.message}`,
         "This approval records a human decision; it does not execute a local command.",
         "Run any deployment or autonomy-changing command separately under project policy."
+      ].join("\n")
+    };
+  }
+
+  if (approval.actionType === "artifact_prune") {
+    const summary = "Lifecycle prune execution is not implemented; recorded no-op execution receipt without modifying artifacts.";
+    const artifactUri = await recordRunAction({
+      runId: approval.runId,
+      taskId: approval.taskId,
+      agentId: approval.agentId,
+      actionType: "artifact_prune_noop",
+      target: approval.target,
+      summary,
+      artifactKind: "lifecycle_action",
+      artifactContent: {
+        approvalId: approval.id,
+        originalActionType: approval.actionType,
+        target: approval.target,
+        policyDecision: approval.policyDecision,
+        payload: approval.payload,
+        destructiveExecutionAvailable: false,
+        executedBy: input.actor,
+        executedByRole: input.actorRole ?? null
+      },
+      idempotencyKey: approval.idempotencyKey
+    });
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "executed",
+      actor: input.actor,
+      actorRole: input.actorRole,
+      summary,
+      artifactUri
+    });
+    return {
+      ok: true,
+      title: "Lifecycle no-op receipt recorded",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        `Action: ${approval.actionType}`,
+        `Target: ${approval.target}`,
+        `Artifact: ${artifactUri}`,
+        `Role gate: ${executionRoleGate.message}`,
+        `Separation of duties: ${separationGate.message}`,
+        "This execution recorded a no-op lifecycle receipt only.",
+        "Artifact prune execution is not implemented yet, so no artifact was deleted, archived, or modified."
       ].join("\n")
     };
   }
