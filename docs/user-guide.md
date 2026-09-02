@@ -774,6 +774,7 @@ Project-local team roles live in `.agent-workflow/project.yaml`:
 
 ```yaml
 team:
+  enforcement: preview
   default_actor_role: operator
   roles:
     operator:
@@ -798,6 +799,17 @@ visibility. The CLI and dashboard also show read-only role previews, such as
 role-based blocking exists. Role recording is intentionally lightweight in this
 release; policy enforcement remains controlled by action policy, approval
 requirements, and human review.
+
+Projects that want role checks to block mismatched approval actions can opt in:
+
+```yaml
+team:
+  enforcement: enforce
+```
+
+In `enforce` mode, request, approve, reject, and execute approval actions must
+use a configured role with the matching capability. Action policy still applies
+after role checks; roles do not bypass command or file-write guardrails.
 
 CLI equivalents:
 

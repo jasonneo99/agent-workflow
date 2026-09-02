@@ -236,7 +236,8 @@ foundation is complete.
   - Distinguish operators, approvers, workflow authors, and auditors.
   - Done: add project-local role definitions and record actor roles on approval decisions and execution receipts.
   - Done: add read-only role enforcement previews before blocking actions by role.
-  - Next: add opt-in role enforcement gates for approval and execution actions.
+  - Done: add opt-in role enforcement gates for approval and execution actions.
+  - Next: add dashboard role visibility and governance reporting for recent decisions by role.
 
 - [ ] Artifact lifecycle governance.
   - Add configurable retention, archival, deletion receipts, and legal-hold-aware controls.

@@ -36,6 +36,7 @@ const project: ProjectConfig = {
     require_receipts: true
   },
   team: {
+    enforcement: "preview",
     default_actor_role: "operator",
     roles: {}
   },

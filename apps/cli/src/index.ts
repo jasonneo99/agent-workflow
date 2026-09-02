@@ -1731,11 +1731,26 @@ program
     }
 
     if (options.approve || options.reject) {
+      const approvalId = options.approve ?? options.reject ?? "";
+      const approvalForGate = await getActionApproval(approvalId);
+      if (!approvalForGate) {
+        console.error("Approval was not found or is no longer pending.");
+        process.exitCode = 1;
+        return;
+      }
+      const project = await loadProjectConfig(approvalForGate.projectRootUri);
+      const actorRole = normalizeActorRole(options.actorRole, "approver");
+      const gate = evaluateRoleGate(project, actorRole, options.approve ? "can_approve_actions" : "can_reject_actions");
+      if (!gate.allowed) {
+        console.error(gate.message);
+        process.exitCode = 1;
+        return;
+      }
       const approval = await decideActionApproval({
-        approvalId: options.approve ?? options.reject ?? "",
+        approvalId,
         decision: options.approve ? "approved" : "rejected",
         actor: options.actor,
-        actorRole: normalizeActorRole(options.actorRole, "approver"),
+        actorRole,
         note: options.note
       });
       if (!approval) {
@@ -8585,11 +8600,21 @@ async function processDashboardApprovalAction(input: {
   if (decision !== "approved" && decision !== "rejected") {
     return { ok: false, error: "Decision must be approved or rejected." };
   }
+  const approvalForGate = await getActionApproval(approvalId);
+  if (!approvalForGate) {
+    return { ok: false, error: "Approval was not found or is no longer pending." };
+  }
+  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const actorRole = normalizeActorRole(input.actorRole, "approver");
+  const gate = evaluateRoleGate(project, actorRole, decision === "approved" ? "can_approve_actions" : "can_reject_actions");
+  if (!gate.allowed) {
+    return { ok: false, error: gate.message };
+  }
   const approval = await decideActionApproval({
     approvalId,
     decision,
     actor: "dashboard",
-    actorRole: normalizeActorRole(input.actorRole, "approver"),
+    actorRole,
     note: input.note.trim() || undefined
   });
   if (!approval) {
@@ -8638,6 +8663,10 @@ async function requestRunLevelApproval(input: {
 
   const projectDir = path.resolve(process.cwd(), input.projectPath);
   const configuredProject = await loadProjectConfig(projectDir);
+  const requestRoleGate = evaluateRoleGate(configuredProject, input.actorRole ?? configuredProject.team.default_actor_role, "can_request_approvals");
+  if (!requestRoleGate.allowed) {
+    return { ok: false, error: requestRoleGate.message };
+  }
   let resolvedPolicy: ReturnType<typeof resolveExecutionPolicy>;
   try {
     resolvedPolicy = resolveExecutionPolicy(configuredProject, input.policyProfile);
@@ -8747,6 +8776,7 @@ async function requestRunLevelApproval(input: {
       `Type: ${actionType}`,
       `Target: ${target}`,
       `Requester role: ${input.actorRole ?? "operator"}`,
+      `Role gate: ${requestRoleGate.message}`,
       "Role preview: request expects operator; decision expects approver.",
       `Run: ${run.runId}`,
       `Workflow context: ${workflow.id}`,
@@ -8781,6 +8811,11 @@ async function executeApprovedAction(input: {
   if (approval.status !== "approved" && approval.status !== "failed") {
     return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
   }
+  const project = await loadProjectConfig(approval.projectRootUri);
+  const executionRoleGate = evaluateRoleGate(project, input.actorRole ?? project.team.default_actor_role, "can_execute_approved_actions");
+  if (!executionRoleGate.allowed) {
+    return { ok: false, error: executionRoleGate.message };
+  }
 
   if (approval.actionType === "deployment" || approval.actionType === "autonomy") {
     return {
@@ -8791,13 +8826,13 @@ async function executeApprovedAction(input: {
         `Approval: ${approval.id}`,
         `Action: ${approval.actionType}`,
         `Target: ${approval.target}`,
+        `Role gate: ${executionRoleGate.message}`,
         "This approval records a human decision; it does not execute a local command.",
         "Run any deployment or autonomy-changing command separately under project policy."
       ].join("\n")
     };
   }
 
-  const project = await loadProjectConfig(approval.projectRootUri);
   const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : "";
   if (!artifactKind) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
@@ -11943,6 +11978,30 @@ function normalizeActorRole(value: string | undefined, fallback: string): string
   return value?.trim() || fallback;
 }
 
+type TeamRoleCapability =
+  | "can_request_approvals"
+  | "can_approve_actions"
+  | "can_reject_actions"
+  | "can_execute_approved_actions"
+  | "can_author_workflows";
+
+function evaluateRoleGate(project: ProjectConfig, actorRole: string, capability: TeamRoleCapability): { allowed: boolean; message: string } {
+  const mode = project.team.enforcement ?? "preview";
+  const role = project.team.roles[actorRole];
+  const hasCapability = Boolean(role?.[capability]);
+  const capabilityLabel = capability.replace(/^can_/, "").replaceAll("_", " ");
+  if (mode === "enforce" && !hasCapability) {
+    return {
+      allowed: false,
+      message: `Role gate blocked: ${actorRole} is not configured to ${capabilityLabel}. Set team.enforcement: preview or grant ${capability} in .agent-workflow/project.yaml.`
+    };
+  }
+  return {
+    allowed: true,
+    message: `${mode === "enforce" ? "Role gate passed" : "Role gate preview"}: ${actorRole} ${hasCapability ? "can" : "is not configured to"} ${capabilityLabel}.`
+  };
+}
+
 function cliOptionValue<T extends string | number | undefined>(value: T, flags: string[], fallback: T): T {
   const wasProvided = process.argv.some((arg) => flags.includes(arg) || flags.some((flag) => arg.startsWith(`${flag}=`)));
   return wasProvided ? value : fallback;
@@ -12207,6 +12266,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       require_receipts: true
     },
     team: {
+      enforcement: "preview",
       default_actor_role: "operator",
       roles: {
         operator: {

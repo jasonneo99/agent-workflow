@@ -58,6 +58,7 @@ policies:
   require_approval_for_external_actions: false
   require_receipts: true
 team:
+  enforcement: preview
   default_actor_role: operator
   roles:
     operator:

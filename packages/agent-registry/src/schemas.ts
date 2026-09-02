@@ -167,9 +167,11 @@ export const projectConfigSchema = z.object({
     require_receipts: true
   }),
   team: z.object({
+    enforcement: z.enum(["preview", "enforce"]).default("preview"),
     default_actor_role: z.string().min(1).default("operator"),
     roles: z.record(z.string(), teamRoleSchema).default({})
   }).default({
+    enforcement: "preview",
     default_actor_role: "operator",
     roles: {}
   }),
