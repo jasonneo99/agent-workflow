@@ -1277,8 +1277,12 @@ agentflow artifact-lifecycle
 agentflow artifact-lifecycle --project /path/to/project
 agentflow artifact-lifecycle --kind stage_output --limit 100 --json
 agentflow artifact-lifecycle --project /path/to/project --prune-plan
+agentflow artifact-lifecycle --project /path/to/project --archive-plan
+agentflow artifact-lifecycle --project /path/to/project --restore-plan
 agentflow artifact-lifecycle --project /path/to/project --prune-plan --min-age-days 60 --min-bytes 50000 --json
 agentflow artifact-lifecycle --project /path/to/project --prune-plan --queue-approvals
+agentflow artifact-lifecycle --project /path/to/project --archive-plan --queue-archive-approvals
+agentflow artifact-lifecycle --project /path/to/project --restore-plan --queue-restore-approvals
 ```
 
 The report groups recent artifacts by project, artifact kind, age bucket, and
@@ -1325,3 +1329,10 @@ the Artifact Lifecycle page. These approvals record lifecycle intent and normal
 audit receipts. Executing an approved `artifact_prune` approval records a
 `lifecycle_action` no-op receipt and marks the approval executed, but no artifact
 is deleted, archived, restored, or modified.
+
+Use `--archive-plan` and `--restore-plan` to preview the recovery side of the
+lifecycle process before any delete path exists. Archive plans use the same
+conservative retention criteria as prune plans, but their approvals are
+`artifact_archive` actions. Restore plans only use prior lifecycle archive
+receipts as candidates. Executing approved archive or restore approvals records
+no-op `lifecycle_action` receipts and keeps storage unchanged.

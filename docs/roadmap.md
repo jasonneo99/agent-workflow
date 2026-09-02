@@ -257,9 +257,10 @@ foundation is complete.
   - [x] Add project-local retention policy settings and lifecycle receipt previews before any destructive prune execution.
   - [x] Add approved lifecycle action queue plumbing that records approval receipts and still defaults to no deletion.
   - [x] Add no-op lifecycle execution receipts for approved prune actions without deleting or modifying artifacts.
-  - [ ] Record lifecycle execution receipts for archive, restore, and skipped items before allowing destructive actions.
+  - [x] Add guarded archive/restore previews and no-op receipts before any prune/delete path.
+  - [ ] Record lifecycle execution receipts for skipped items before allowing destructive actions.
   - [ ] Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
-  - Next: add guarded archive/restore previews and receipts before any prune/delete path.
+  - Next: add skipped-item lifecycle receipts and policy recheck summaries before any destructive archive/prune/delete path.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
