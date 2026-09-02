@@ -248,7 +248,7 @@ foundation is complete.
   - Done: add optional separation-of-duties checks for projects that want to flag or block the same actor approving and executing the same action.
   - Next: add role-focused dashboard filters and exportable audit snapshots after user testing.
 
-- [ ] Artifact lifecycle governance.
+- [x] Artifact lifecycle governance.
   - [x] Add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
   - [x] Add dashboard, JSON API, and CLI visibility for conservative lifecycle hints without pruning or deleting artifacts.
   - [x] Add dashboard and CLI visibility for artifacts that are safe to prune, should be retained for audit, or need human review.
@@ -264,7 +264,7 @@ foundation is complete.
   - [x] Add real archive execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
-  - Next: add read-only backup inventory and restore-drill reporting for local enterprise storage.
+  - Next: continue backup, restore, and disaster-recovery validation.
 
 - [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
@@ -281,8 +281,10 @@ foundation is complete.
   - Next: continue artifact lifecycle governance with real restore execution behind disabled-by-default capability flags and approval rechecks.
 
 - [ ] Backup, restore, and disaster-recovery validation.
-  - Provide documented recovery procedures and automated restore verification.
-  - Next best after lifecycle action queue: add a read-only backup inventory and restore drill report for local enterprise storage.
+  - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
+  - [ ] Add dashboard visibility for backup inventory and restore-drill status.
+  - [ ] Provide documented recovery procedures and automated restore verification.
+  - Next: add dashboard visibility for backup inventory and restore-drill status.
 
 ## Contribution Boundary
 

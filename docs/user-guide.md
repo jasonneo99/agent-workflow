@@ -1361,3 +1361,22 @@ delete implementations are intentionally not present yet; the current gate
 requires an approval record, rechecks `require_approval_for_prune`, rechecks the
 current lifecycle policy, and still records a skipped receipt instead of
 deleting data.
+
+## Backup and restore readiness
+
+Inspect read-only backup inventory and restore-drill posture:
+
+```bash
+agentflow backup-report
+agentflow backup-report --project /path/to/project
+agentflow backup-report --project /path/to/project --json
+npm run backup-report -- --project templates/project
+```
+
+The report does not create backup files or mutate storage. It checks enterprise
+service reachability, registered projects, run counts, indexed context, memory
+items, recent artifact counts and bytes, `archived_artifact` snapshots,
+`restored_artifact` snapshots, pending lifecycle approvals, and active queue
+items. Use it before handoff, release prep, or cleanup planning to confirm that
+there is enough local evidence to run an archive/restore drill without exposing
+project files or deleting data.

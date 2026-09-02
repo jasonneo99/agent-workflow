@@ -57,6 +57,7 @@
     "screenshots:dashboard": "node scripts/capture-dashboard-screenshots.mjs",
     "agentflow": "tsx apps/cli/src/index.ts",
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
+    "backup-report": "tsx apps/cli/src/index.ts backup-report",
     "compile": "tsx apps/cli/src/index.ts compile",
     "dashboard": "tsx apps/cli/src/index.ts dashboard",
     "dev:agentflow": "node scripts/dev-agentflow.mjs",

@@ -2063,6 +2063,21 @@ program
   });
 
 program
+  .command("backup-report")
+  .description("Inspect read-only backup inventory and restore-drill readiness for local enterprise storage")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("-l, --limit <number>", "number of recent artifacts, approvals, and queue rows to inspect", "500")
+  .option("--json", "print machine-readable backup readiness report")
+  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const report = await loadBackupRestoreReport({
+      projectRootUri,
+      limit: parsePositiveInteger(options.limit, 500)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatBackupRestoreReport(report));
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3410,6 +3425,44 @@ type ArtifactLifecycleReceiptPreview = {
       };
 };
 
+type BackupRestoreReport = {
+  kind: "agentflow_backup_restore_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  services: Awaited<ReturnType<typeof checkServices>>;
+  inventory: {
+    projects: number;
+    runs: number;
+    completedRuns: number;
+    failedRuns: number;
+    queuedRuns: number;
+    runningRuns: number;
+    indexedFiles: number;
+    indexedTokens: number;
+    memoryItems: number;
+    artifacts: number;
+    estimatedArtifactBytes: number;
+    archivedArtifacts: number;
+    restoredArtifacts: number;
+    byKind: Record<string, { count: number; bytes: number }>;
+    byProject: Record<string, { artifacts: number; bytes: number }>;
+  };
+  restoreDrill: {
+    status: "ready" | "attention";
+    servicesReachable: boolean;
+    projectRegistered: boolean;
+    archivedSnapshotsAvailable: boolean;
+    restoredSnapshotsAvailable: boolean;
+    pendingLifecycleApprovals: number;
+    activeQueueItems: number;
+    latestArtifactAt: string | null;
+    checks: Array<{ label: string; status: "pass" | "warn"; detail: string }>;
+  };
+  recommendedCommands: string[];
+  notes: string[];
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -3969,6 +4022,242 @@ function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string 
     ...report.recentArtifacts.slice(0, 20).map((artifact) => `- ${artifact.kind} ${artifact.uri} (${artifact.ageBucket}, ${formatBytes(artifact.contentBytes)}, ${artifact.lifecycleHint})`)
   ];
   return lines.join("\n");
+}
+
+async function loadBackupRestoreReport(input: {
+  projectRootUri?: string;
+  limit: number;
+}): Promise<BackupRestoreReport> {
+  const projectRootUri = input.projectRootUri?.trim() || undefined;
+  const services = await checkServices();
+  const servicesReachable = services.every((service) => service.reachable);
+  if (!servicesReachable) {
+    return emptyBackupRestoreReport({
+      projectRootUri,
+      limit: input.limit,
+      services,
+      note: "Enterprise services are not all reachable. Start local services before collecting a complete backup inventory."
+    });
+  }
+
+  const [allProjects, artifacts, approvals, queue] = await Promise.all([
+    listProjectStorageSummaries(500),
+    listArtifactLifecycle({ projectRootUri, limit: input.limit }),
+    listActionApprovals({ projectRootUri, limit: input.limit }),
+    listWorkflowQueue(Math.min(input.limit, 500), { projectRootUri })
+  ]);
+  const projects = projectRootUri ? allProjects.filter((project) => project.rootUri === projectRootUri) : allProjects;
+  const byKind: BackupRestoreReport["inventory"]["byKind"] = {};
+  const byProject: BackupRestoreReport["inventory"]["byProject"] = {};
+  for (const artifact of artifacts) {
+    const kind = byKind[artifact.kind] ?? { count: 0, bytes: 0 };
+    kind.count += 1;
+    kind.bytes += artifact.contentBytes;
+    byKind[artifact.kind] = kind;
+
+    const project = byProject[artifact.projectName] ?? { artifacts: 0, bytes: 0 };
+    project.artifacts += 1;
+    project.bytes += artifact.contentBytes;
+    byProject[artifact.projectName] = project;
+  }
+
+  const lifecycleApprovals = approvals.filter((approval) => approval.actionType.startsWith("artifact_"));
+  const pendingLifecycleApprovals = lifecycleApprovals.filter((approval) => approval.status === "pending" || approval.status === "approved" || approval.status === "failed").length;
+  const activeQueueItems = queue.filter((item) => item.queuedTasks > 0 || item.runningTasks > 0 || item.failedTasks > 0).length;
+  const archivedArtifacts = artifacts.filter((artifact) => artifact.kind === "archived_artifact").length;
+  const restoredArtifacts = artifacts.filter((artifact) => artifact.kind === "restored_artifact").length;
+  const projectRegistered = projectRootUri ? projects.some((project) => project.rootUri === projectRootUri) : projects.length > 0;
+  const checks = [
+    {
+      label: "Enterprise services",
+      status: servicesReachable ? "pass" as const : "warn" as const,
+      detail: servicesReachable ? "Postgres, Redis, and object storage endpoints are reachable." : "One or more enterprise services are unreachable."
+    },
+    {
+      label: "Project registration",
+      status: projectRegistered ? "pass" as const : "warn" as const,
+      detail: projectRootUri ? (projectRegistered ? "Selected project is registered in local storage." : "Selected project is not registered yet.") : `${projects.length} project(s) are registered.`
+    },
+    {
+      label: "Backup inventory",
+      status: artifacts.length ? "pass" as const : "warn" as const,
+      detail: artifacts.length ? `${artifacts.length} recent artifact(s) are visible for backup planning.` : "No artifacts were found in the inspected window."
+    },
+    {
+      label: "Restore drill source",
+      status: archivedArtifacts ? "pass" as const : "warn" as const,
+      detail: archivedArtifacts ? `${archivedArtifacts} archived artifact snapshot(s) can be used for restore drills.` : "No archived artifact snapshots are available yet."
+    },
+    {
+      label: "Operational blockers",
+      status: pendingLifecycleApprovals || activeQueueItems ? "warn" as const : "pass" as const,
+      detail: `${pendingLifecycleApprovals} pending/approved lifecycle approval(s); ${activeQueueItems} active queue item(s).`
+    }
+  ];
+  const status = checks.every((check) => check.status === "pass") ? "ready" : "attention";
+  return {
+    kind: "agentflow_backup_restore_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRootUri ?? null,
+    limit: input.limit,
+    services,
+    inventory: {
+      projects: projects.length,
+      runs: projects.reduce((sum, project) => sum + project.runCount, 0),
+      completedRuns: projects.reduce((sum, project) => sum + project.completedRuns, 0),
+      failedRuns: projects.reduce((sum, project) => sum + project.failedRuns, 0),
+      queuedRuns: projects.reduce((sum, project) => sum + project.queuedRuns, 0),
+      runningRuns: projects.reduce((sum, project) => sum + project.runningRuns, 0),
+      indexedFiles: projects.reduce((sum, project) => sum + project.indexedFiles, 0),
+      indexedTokens: projects.reduce((sum, project) => sum + project.indexedTokens, 0),
+      memoryItems: projects.reduce((sum, project) => sum + project.memoryItems, 0),
+      artifacts: artifacts.length,
+      estimatedArtifactBytes: artifacts.reduce((sum, artifact) => sum + artifact.contentBytes + artifact.uri.length, 0),
+      archivedArtifacts,
+      restoredArtifacts,
+      byKind,
+      byProject
+    },
+    restoreDrill: {
+      status,
+      servicesReachable,
+      projectRegistered,
+      archivedSnapshotsAvailable: archivedArtifacts > 0,
+      restoredSnapshotsAvailable: restoredArtifacts > 0,
+      pendingLifecycleApprovals,
+      activeQueueItems,
+      latestArtifactAt: artifacts[0]?.createdAt ?? null,
+      checks
+    },
+    recommendedCommands: backupRestoreCommands(projectRootUri),
+    notes: backupRestoreNotes({ status, projectRootUri, projectRegistered, archivedArtifacts, restoredArtifacts, pendingLifecycleApprovals, activeQueueItems })
+  };
+}
+
+function emptyBackupRestoreReport(input: {
+  projectRootUri?: string;
+  limit: number;
+  services: Awaited<ReturnType<typeof checkServices>>;
+  note: string;
+}): BackupRestoreReport {
+  return {
+    kind: "agentflow_backup_restore_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: input.projectRootUri ?? null,
+    limit: input.limit,
+    services: input.services,
+    inventory: {
+      projects: 0,
+      runs: 0,
+      completedRuns: 0,
+      failedRuns: 0,
+      queuedRuns: 0,
+      runningRuns: 0,
+      indexedFiles: 0,
+      indexedTokens: 0,
+      memoryItems: 0,
+      artifacts: 0,
+      estimatedArtifactBytes: 0,
+      archivedArtifacts: 0,
+      restoredArtifacts: 0,
+      byKind: {},
+      byProject: {}
+    },
+    restoreDrill: {
+      status: "attention",
+      servicesReachable: false,
+      projectRegistered: false,
+      archivedSnapshotsAvailable: false,
+      restoredSnapshotsAvailable: false,
+      pendingLifecycleApprovals: 0,
+      activeQueueItems: 0,
+      latestArtifactAt: null,
+      checks: input.services.map((service) => ({
+        label: service.endpoint.name,
+        status: service.reachable ? "pass" as const : "warn" as const,
+        detail: service.message
+      }))
+    },
+    recommendedCommands: backupRestoreCommands(input.projectRootUri),
+    notes: [input.note]
+  };
+}
+
+function formatBackupRestoreReport(report: BackupRestoreReport): string {
+  return [
+    `Backup and restore readiness (${report.generatedAt})`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Status: ${report.restoreDrill.status}`,
+    "",
+    "Services:",
+    ...report.services.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`),
+    "",
+    "Inventory:",
+    `- Projects: ${report.inventory.projects}`,
+    `- Runs: ${report.inventory.runs} (${report.inventory.completedRuns} completed, ${report.inventory.failedRuns} failed, ${report.inventory.queuedRuns + report.inventory.runningRuns} active)`,
+    `- Context: ${report.inventory.indexedFiles} indexed files, ${report.inventory.indexedTokens} estimated tokens, ${report.inventory.memoryItems} memory items`,
+    `- Artifacts: ${report.inventory.artifacts} inspected, ${formatBytes(report.inventory.estimatedArtifactBytes)} estimated JSON payload`,
+    `- Archive snapshots: ${report.inventory.archivedArtifacts}`,
+    `- Restore snapshots: ${report.inventory.restoredArtifacts}`,
+    `- Artifact kinds: ${formatBackupKindCounts(report.inventory.byKind) || "none"}`,
+    "",
+    "Restore drill checks:",
+    ...report.restoreDrill.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Recommended commands:",
+    ...report.recommendedCommands.map((command) => `- ${command}`),
+    "",
+    "Notes:",
+    ...(report.notes.length ? report.notes.map((note) => `- ${note}`) : ["- No backup or restore drill concerns found in the inspected window."])
+  ].join("\n");
+}
+
+function backupRestoreCommands(projectRootUri?: string): string[] {
+  const projectArg = projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : "";
+  return [
+    `agentflow backup-report${projectArg} --json`,
+    `agentflow artifact-lifecycle${projectArg} --archive-plan`,
+    `agentflow artifact-lifecycle${projectArg} --restore-plan`,
+    `agentflow approvals${projectArg} --status all`
+  ];
+}
+
+function backupRestoreNotes(input: {
+  status: "ready" | "attention";
+  projectRootUri?: string;
+  projectRegistered: boolean;
+  archivedArtifacts: number;
+  restoredArtifacts: number;
+  pendingLifecycleApprovals: number;
+  activeQueueItems: number;
+}): string[] {
+  const notes: string[] = [];
+  if (input.projectRootUri && !input.projectRegistered) {
+    notes.push("Run project onboarding or index the project before relying on project-scoped backup inventory.");
+  }
+  if (!input.archivedArtifacts) {
+    notes.push("Run an archive-plan and approved archive execution to create a copied snapshot before restore-drill validation.");
+  }
+  if (!input.restoredArtifacts) {
+    notes.push("Run a restore-plan from an archived snapshot to prove restore lineage without overwriting existing artifacts.");
+  }
+  if (input.pendingLifecycleApprovals) {
+    notes.push("Resolve pending, approved, or failed lifecycle approvals before treating backup posture as clean.");
+  }
+  if (input.activeQueueItems) {
+    notes.push("Clear queued, running, or failed workflow stages before taking a backup intended for handoff.");
+  }
+  if (!notes.length && input.status === "ready") {
+    notes.push("Read-only backup inventory and restore-drill evidence are present for the inspected scope.");
+  }
+  return notes;
+}
+
+function formatBackupKindCounts(counts: BackupRestoreReport["inventory"]["byKind"]): string {
+  return Object.entries(counts)
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([kind, value]) => `${kind}=${value.count}/${formatBytes(value.bytes)}`)
+    .join(", ");
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
