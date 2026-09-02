@@ -1327,12 +1327,17 @@ Use `--queue-approvals` after reviewing a dry-run prune plan to create pending
 approval records for each candidate. The dashboard exposes the same action from
 the Artifact Lifecycle page. These approvals record lifecycle intent and normal
 audit receipts. Executing an approved `artifact_prune` approval records a
-`lifecycle_action` no-op receipt and marks the approval executed, but no artifact
-is deleted, archived, restored, or modified.
+`lifecycle_action` no-op receipt, or a `lifecycle_skipped` receipt when the
+target artifact is missing or legal hold is enabled. The approval is marked
+executed after the receipt is recorded, but no artifact is deleted, archived,
+restored, or modified.
 
 Use `--archive-plan` and `--restore-plan` to preview the recovery side of the
 lifecycle process before any delete path exists. Archive plans use the same
 conservative retention criteria as prune plans, but their approvals are
 `artifact_archive` actions. Restore plans only use prior lifecycle archive
 receipts as candidates. Executing approved archive or restore approvals records
-no-op `lifecycle_action` receipts and keeps storage unchanged.
+no-op `lifecycle_action` receipts, or `lifecycle_skipped` receipts when the
+policy recheck blocks the action or the target artifact is gone. Each receipt
+includes the current retention policy, target-artifact presence, original
+approval payload, and a clear `destructiveExecutionAvailable: false` marker.

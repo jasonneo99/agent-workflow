@@ -3769,14 +3769,7 @@ async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Pr
   }
   try {
     const project = await loadProjectConfig(projectRootUri);
-    return {
-      source: "project",
-      retentionDays: project.storage.artifact_lifecycle.retention_days,
-      minPruneBytes: project.storage.artifact_lifecycle.min_prune_bytes,
-      retainAuditArtifacts: project.storage.artifact_lifecycle.retain_audit_artifacts,
-      legalHold: project.storage.artifact_lifecycle.legal_hold,
-      requireApprovalForPrune: project.storage.artifact_lifecycle.require_approval_for_prune
-    };
+    return lifecyclePolicyFromProject(project, "project");
   } catch {
     return fallback;
   }
@@ -10063,52 +10056,14 @@ async function executeApprovedAction(input: {
   }
 
   if (approval.actionType === "artifact_prune" || approval.actionType === "artifact_archive" || approval.actionType === "artifact_restore") {
-    const lifecycleAction = approval.actionType.replace(/^artifact_/, "") as ArtifactLifecycleAction;
-    const summary = `Lifecycle ${lifecycleAction} execution is not implemented; recorded no-op execution receipt without modifying artifacts.`;
-    const artifactUri = await recordRunAction({
-      runId: approval.runId,
-      taskId: approval.taskId,
-      agentId: approval.agentId,
-      actionType: `artifact_${lifecycleAction}_noop`,
-      target: approval.target,
-      summary,
-      artifactKind: "lifecycle_action",
-      artifactContent: {
-        approvalId: approval.id,
-        originalActionType: approval.actionType,
-        lifecycleAction,
-        target: approval.target,
-        policyDecision: approval.policyDecision,
-        payload: approval.payload,
-        destructiveExecutionAvailable: false,
-        executedBy: input.actor,
-        executedByRole: input.actorRole ?? null
-      },
-      idempotencyKey: approval.idempotencyKey
-    });
-    await markActionApprovalExecution({
-      approvalId: approval.id,
-      status: "executed",
+    return executeLifecycleApproval({
+      approval,
+      project,
       actor: input.actor,
       actorRole: input.actorRole,
-      summary,
-      artifactUri
+      executionRoleGate: executionRoleGate.message,
+      separationGate: separationGate.message
     });
-    return {
-      ok: true,
-      title: "Lifecycle no-op receipt recorded",
-      runId: approval.runId,
-      output: [
-        `Approval: ${approval.id}`,
-        `Action: ${approval.actionType}`,
-        `Target: ${approval.target}`,
-        `Artifact: ${artifactUri}`,
-        `Role gate: ${executionRoleGate.message}`,
-        `Separation of duties: ${separationGate.message}`,
-        "This execution recorded a no-op lifecycle receipt only.",
-        `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
-      ].join("\n")
-    };
   }
 
   const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : "";
@@ -10259,6 +10214,97 @@ async function executeApprovedAction(input: {
     });
     return { ok: false, error: message };
   }
+}
+
+async function executeLifecycleApproval(input: {
+  approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>;
+  project: ProjectConfig;
+  actor: string;
+  actorRole?: string;
+  executionRoleGate: string;
+  separationGate: string;
+}): Promise<DashboardFollowUpResult> {
+  const lifecycleAction = input.approval.actionType.replace(/^artifact_/, "") as ArtifactLifecycleAction;
+  const currentPolicy = lifecyclePolicyFromProject(input.project, "project");
+  const targetArtifact = await getArtifactByUri(input.approval.target);
+  const policyRecheck = {
+    checkedAt: new Date().toISOString(),
+    projectRootUri: input.approval.projectRootUri,
+    lifecycleAction,
+    currentPolicy,
+    requestedPolicyDecision: input.approval.policyDecision,
+    targetArtifactFound: Boolean(targetArtifact),
+    targetArtifactKind: targetArtifact?.kind ?? null,
+    targetArtifactCreatedAt: targetArtifact?.createdAt ?? null,
+    destructiveExecutionAvailable: false
+  };
+  const skipReasons = [
+    currentPolicy.legalHold ? "Project legal hold is enabled." : "",
+    targetArtifact ? "" : "Target artifact is no longer present in storage.",
+    "Destructive lifecycle execution is not implemented in this version."
+  ].filter(Boolean);
+  const skipped = currentPolicy.legalHold || !targetArtifact;
+  const summary = skipped
+    ? `Lifecycle ${lifecycleAction} skipped after policy recheck: ${skipReasons.join(" ")}`
+    : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because destructive execution is not implemented.`;
+  const artifactUri = await recordRunAction({
+    runId: input.approval.runId,
+    taskId: input.approval.taskId,
+    agentId: input.approval.agentId,
+    actionType: skipped ? `artifact_${lifecycleAction}_skipped` : `artifact_${lifecycleAction}_noop`,
+    target: input.approval.target,
+    summary,
+    artifactKind: skipped ? "lifecycle_skipped" : "lifecycle_action",
+    artifactContent: {
+      approvalId: input.approval.id,
+      originalActionType: input.approval.actionType,
+      lifecycleAction,
+      target: input.approval.target,
+      policyDecision: input.approval.policyDecision,
+      payload: input.approval.payload,
+      policyRecheck,
+      skipReasons,
+      skipped,
+      executedBy: input.actor,
+      executedByRole: input.actorRole ?? null
+    },
+    idempotencyKey: input.approval.idempotencyKey
+  });
+  await markActionApprovalExecution({
+    approvalId: input.approval.id,
+    status: "executed",
+    actor: input.actor,
+    actorRole: input.actorRole,
+    summary,
+    artifactUri
+  });
+  return {
+    ok: true,
+    title: skipped ? "Lifecycle skip receipt recorded" : "Lifecycle no-op receipt recorded",
+    runId: input.approval.runId,
+    output: [
+      `Approval: ${input.approval.id}`,
+      `Action: ${input.approval.actionType}`,
+      `Target: ${input.approval.target}`,
+      `Artifact: ${artifactUri}`,
+      `Role gate: ${input.executionRoleGate}`,
+      `Separation of duties: ${input.separationGate}`,
+      `Policy recheck: legalHold=${currentPolicy.legalHold} targetFound=${Boolean(targetArtifact)} destructiveExecutionAvailable=false`,
+      skipped ? `Skipped: ${skipReasons.join(" ")}` : "This execution recorded a no-op lifecycle receipt only.",
+      `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
+    ].join("\n")
+  };
+}
+
+function lifecyclePolicyFromProject(project: ProjectConfig, source: ArtifactLifecyclePolicy["source"]): ArtifactLifecyclePolicy {
+  return {
+    source,
+    retentionDays: project.storage.artifact_lifecycle.retention_days,
+    minPruneBytes: project.storage.artifact_lifecycle.min_prune_bytes,
+    retainAuditArtifacts: project.storage.artifact_lifecycle.retain_audit_artifacts,
+    legalHold: project.storage.artifact_lifecycle.legal_hold,
+    requireApprovalForPrune: project.storage.artifact_lifecycle.require_approval_for_prune
+  };
 }
 
 async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>): Promise<{ path: string; content: string }> {
