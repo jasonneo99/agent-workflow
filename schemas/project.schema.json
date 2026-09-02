@@ -43,7 +43,8 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/executionPolicyProfile" },
           "default": {}
-        }
+        },
+        "worker_pool": { "$ref": "#/$defs/workerPool" }
       }
     },
     "policies": {
@@ -79,6 +80,18 @@
         "autonomy": { "$ref": "#/$defs/autonomy" },
         "policies": { "$ref": "#/$defs/policyOverrides" },
         "actions": { "$ref": "#/$defs/actionOverrides" }
+      }
+    },
+    "workerPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "worker_id": { "type": "string", "minLength": 1 },
+        "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 6 },
+        "concurrency": { "type": "integer", "minimum": 1, "maximum": 16, "default": 1 },
+        "lease_seconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 900 },
+        "interval_ms": { "type": "integer", "minimum": 250, "default": 2000 },
+        "project_scoped": { "type": "boolean", "default": true }
       }
     },
     "policyOverrides": {

@@ -94,6 +94,15 @@ export const executionPolicyProfileSchema = z.object({
 
 export type ExecutionPolicyProfile = z.infer<typeof executionPolicyProfileSchema>;
 
+const workerPoolSchema = z.object({
+  worker_id: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(100).default(6),
+  concurrency: z.number().int().positive().max(16).default(1),
+  lease_seconds: z.number().int().min(30).max(3600).default(900),
+  interval_ms: z.number().int().min(250).default(2000),
+  project_scoped: z.boolean().default(true)
+}).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true });
+
 export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
@@ -112,7 +121,8 @@ export const projectConfigSchema = z.object({
   }).default({ cache_summaries: true, semantic_index: true }),
   execution: z.object({
     policy_profile: z.string().min(1).default("local"),
-    policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({})
+    policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({}),
+    worker_pool: workerPoolSchema.optional()
   }).default({ policy_profile: "local", policy_profiles: {} }),
   policies: z.object({
     allow_wide_open: z.boolean().default(false),

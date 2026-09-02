@@ -2813,9 +2813,10 @@ program
   .option("--worker-id <id>", "stable worker identity for leases and dashboard visibility")
   .option("--lease-seconds <number>", "running task lease duration in seconds", "900")
   .option("-p, --project <dir>", "only claim queued tasks for one project root")
+  .option("--all-projects", "use project worker-pool defaults without restricting queue claims to that project")
   .option("--concurrency <number>", "maximum tasks this worker may execute at the same time", "1")
   .option("--heartbeat-file <path>", "worker heartbeat file path", defaultWorkerHeartbeatPath)
-  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; project?: string; concurrency: string; heartbeatFile: string }) => {
+  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; project?: string; allProjects?: boolean; concurrency: string; heartbeatFile: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2828,21 +2829,24 @@ program
       return;
     }
 
-    const limit = Number.parseInt(options.limit, 10);
+    const configuredProjectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const workerDefaults = configuredProjectRootUri ? await loadProjectWorkerPoolDefaults(configuredProjectRootUri) : {};
+    const limit = Number.parseInt(cliOptionValue(options.limit, ["--limit", "-l"], String(workerDefaults.limit ?? 1)), 10);
     if (!Number.isFinite(limit) || limit < 1) {
       console.error("--limit must be a positive integer");
       process.exitCode = 1;
       return;
     }
-    const workerId = normalizeWorkerId(options.workerId);
-    const leaseSeconds = Number.parseInt(options.leaseSeconds, 10);
+    const workerId = normalizeWorkerId(cliOptionValue(options.workerId, ["--worker-id"], workerDefaults.workerId));
+    const leaseSeconds = Number.parseInt(cliOptionValue(options.leaseSeconds, ["--lease-seconds"], String(workerDefaults.leaseSeconds ?? 900)), 10);
     if (!Number.isFinite(leaseSeconds) || leaseSeconds < 30) {
       console.error("--lease-seconds must be an integer >= 30");
       process.exitCode = 1;
       return;
     }
-    const concurrency = parseBoundedPositiveInteger(options.concurrency, 1, 16);
-    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const concurrency = parseBoundedPositiveInteger(cliOptionValue(options.concurrency, ["--concurrency"], String(workerDefaults.concurrency ?? 1)), 1, 16);
+    const projectScoped = workerDefaults.projectScoped !== false && !options.allProjects;
+    const projectRootUri = configuredProjectRootUri && projectScoped ? configuredProjectRootUri : undefined;
 
     if (!options.watch) {
       const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency });
@@ -2852,7 +2856,7 @@ program
       return;
     }
 
-    const intervalMs = Number.parseInt(options.intervalMs, 10);
+    const intervalMs = Number.parseInt(cliOptionValue(options.intervalMs, ["--interval-ms"], String(workerDefaults.intervalMs ?? 2000)), 10);
     if (!Number.isFinite(intervalMs) || intervalMs < 250) {
       console.error("--interval-ms must be an integer >= 250");
       process.exitCode = 1;
@@ -11894,6 +11898,35 @@ function parseBoundedPositiveInteger(value: string, fallback: number, max: numbe
   return Math.min(parsePositiveInteger(value, fallback), max);
 }
 
+function cliOptionValue<T extends string | number | undefined>(value: T, flags: string[], fallback: T): T {
+  const wasProvided = process.argv.some((arg) => flags.includes(arg) || flags.some((flag) => arg.startsWith(`${flag}=`)));
+  return wasProvided ? value : fallback;
+}
+
+async function loadProjectWorkerPoolDefaults(projectDir: string): Promise<{
+  workerId?: string;
+  limit?: number;
+  concurrency?: number;
+  leaseSeconds?: number;
+  intervalMs?: number;
+  projectScoped?: boolean;
+}> {
+  try {
+    const project = await loadProjectConfig(projectDir);
+    const workerPool = project.execution.worker_pool;
+    return {
+      workerId: workerPool?.worker_id,
+      limit: workerPool?.limit,
+      concurrency: workerPool?.concurrency,
+      leaseSeconds: workerPool?.lease_seconds,
+      intervalMs: workerPool?.interval_ms,
+      projectScoped: workerPool?.project_scoped
+    };
+  } catch {
+    return {};
+  }
+}
+
 function parseDashboardRunLimit(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   if (!Number.isFinite(parsed)) return fallback;
@@ -12099,7 +12132,15 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
     },
     execution: {
       policy_profile: "local",
-      policy_profiles: {}
+      policy_profiles: {},
+      worker_pool: {
+        worker_id: "local-dev",
+        limit: 6,
+        concurrency: 1,
+        lease_seconds: 900,
+        interval_ms: 2000,
+        project_scoped: true
+      }
     },
     policies: {
       allow_wide_open: false,

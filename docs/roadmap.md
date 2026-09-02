@@ -229,7 +229,8 @@ foundation is complete.
   - Done: add explicit expired-lease recovery so interrupted worker tasks can be safely requeued by policy.
   - Done: add project-scoped worker filters and bounded concurrency settings before enabling true multi-worker pools.
   - Done: add a multi-worker heartbeat registry so the dashboard can show all active worker lanes, not just the most recent local daemon.
-  - Next: add worker-pool supervision profiles and per-project concurrency defaults.
+  - Done: add worker-pool defaults to project config so local workers can inherit project-specific limits, concurrency, lease timeouts, and scope.
+  - Next: add named worker-pool supervision profiles for starting multiple lanes from one command.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

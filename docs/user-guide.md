@@ -610,6 +610,30 @@ npm run worker -- --watch \
   --worker-id local-dev
 ```
 
+Projects can store their preferred local worker defaults in
+`.agent-workflow/project.yaml`:
+
+```yaml
+execution:
+  worker_pool:
+    worker_id: local-dev
+    limit: 6
+    concurrency: 1
+    lease_seconds: 900
+    interval_ms: 2000
+    project_scoped: true
+```
+
+Then a worker can use those defaults with:
+
+```bash
+npm run worker -- --watch --project /path/to/project
+```
+
+Explicit flags override project defaults. Use `--all-projects` only when you
+want to load a project's worker defaults but allow the worker to claim from the
+global queue.
+
 `--limit` is the maximum number of stages a worker tick may process. `--concurrency`
 is how many of those stages may run at the same time, capped at `16` for local
 developer safety. A project-scoped worker only claims stages whose run belongs

@@ -29,6 +29,13 @@ storage:
 execution:
   policy_profile: local
   policy_profiles: {}
+  worker_pool:
+    worker_id: local-dev
+    limit: 6
+    concurrency: 1
+    lease_seconds: 900
+    interval_ms: 2000
+    project_scoped: true
 policies:
   allow_wide_open: true
   require_approval_for_external_actions: false
