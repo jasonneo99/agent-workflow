@@ -20,6 +20,7 @@ Start the default enterprise services:
 ```bash
 docker compose -f infra/docker-compose.yml up -d
 npm run doctor
+npm run migrate-storage
 npm run bootstrap-storage
 npm run validate
 npm run bundle-manifest
@@ -800,6 +801,11 @@ role-based blocking exists. Role recording is intentionally lightweight in this
 release; policy enforcement remains controlled by action policy, approval
 requirements, and human review.
 
+Open `/roles` in the dashboard to inspect project-local team configuration,
+enforcement mode, role capabilities, recent approval decisions grouped by role,
+and the latest approval activity. `/api/roles` exposes the same data for local
+automation or IDE integrations.
+
 Projects that want role checks to block mismatched approval actions can opt in:
 
 ```yaml
@@ -819,6 +825,8 @@ npm run agentflow -- approvals --status all
 npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --actor-role approver --note "Not needed"
+npm run agentflow -- roles --project /path/to/project --limit 50
+npm run agentflow -- roles --project /path/to/project --json
 ```
 
 Deployment and autonomy approvals use the same inbox. They record a human
@@ -994,6 +1002,7 @@ Remove Docker volumes too:
 ```bash
 npm run services:reset
 docker compose -f infra/docker-compose.yml up -d
+npm run migrate-storage
 npm run bootstrap-storage
 ```
 
@@ -1242,4 +1251,4 @@ The report checks path and context availability, registered-versus-local configu
 
 Temporary provider-smoke projects are excluded by default. Add `--include-ephemeral` when auditing test registrations themselves.
 
-Open `/governance` in the dashboard for the same report with health, provider, and policy-profile filters. `/api/governance` exposes the stable JSON contract. The MCP tool is `agentflow_governance`.
+Open `/governance` in the dashboard for the same report with health, provider, and policy-profile filters. Open `/roles` for project team role configuration and recent approval decisions by role. `/api/governance` and `/api/roles` expose the stable JSON contracts. The MCP tool is `agentflow_governance`.

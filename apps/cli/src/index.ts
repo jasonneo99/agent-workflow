@@ -940,6 +940,29 @@ program
   });
 
 program
+  .command("roles")
+  .description("Inspect project team roles and recent approval decisions by role")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("-l, --limit <number>", "number of recent approvals to inspect", "50")
+  .option("--json", "print machine-readable role governance report")
+  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const report = await loadRoleGovernanceReport({
+      projectRootUri: options.project,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatRoleGovernanceReport(report));
+  });
+
+program
   .command("bootstrap-storage")
   .description("Seed enterprise storage with agent and workflow registry definitions")
   .action(async () => {
@@ -3137,6 +3160,46 @@ type DashboardProjectDetail = {
   allowWrites: boolean;
 };
 
+type DashboardActionApproval = Awaited<ReturnType<typeof listActionApprovals>>[number];
+
+type DashboardRoleProject = {
+  id: string;
+  name: string;
+  rootUri: string;
+  configStatus: "valid" | "missing" | "invalid";
+  enforcement: "preview" | "enforce";
+  defaultActorRole: string;
+  roles: Array<{
+    id: string;
+    description: string;
+    readOnly: boolean;
+    capabilities: string[];
+  }>;
+};
+
+type DashboardRoleDecisionSummary = {
+  role: string;
+  total: number;
+  pending: number;
+  approved: number;
+  rejected: number;
+  executed: number;
+  failed: number;
+  other: number;
+};
+
+type DashboardRoleGovernanceReport = {
+  kind: "agentflow_role_governance_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  projects: DashboardRoleProject[];
+  statusCounts: Record<string, number>;
+  actionCounts: Record<string, number>;
+  decisionsByRole: DashboardRoleDecisionSummary[];
+  recentApprovals: DashboardActionApproval[];
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -3289,6 +3352,127 @@ async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false)
   return buildGovernanceReport(packageInfo.version ?? "unknown", services.every((service) => service.reachable), projects.sort((a, b) =>
     ({ critical: 0, warning: 1, healthy: 2 })[a.health] - ({ critical: 0, warning: 1, healthy: 2 })[b.health] || a.name.localeCompare(b.name)
   ), process.env.DEFAULT_MODEL_PROVIDER ?? "mock", agents.length > 0 && workflows.length > 0);
+}
+
+async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?: number } = {}): Promise<DashboardRoleGovernanceReport> {
+  const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
+  const limit = input.limit ?? 50;
+  const [summaries, approvals] = await Promise.all([
+    listProjectStorageSummaries(500),
+    listActionApprovals({
+      projectRootUri: projectRootUri ?? undefined,
+      limit
+    })
+  ]);
+  const selectedSummaries = projectRootUri
+    ? summaries.filter((summary) => summary.rootUri === projectRootUri)
+    : summaries;
+  const projects = await Promise.all(selectedSummaries.map(loadDashboardRoleProject));
+  return {
+    kind: "agentflow_role_governance_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri,
+    limit,
+    projects: projects.sort((a, b) => a.name.localeCompare(b.name)),
+    statusCounts: countStrings(approvals.map((approval) => approval.status)),
+    actionCounts: countStrings(approvals.map((approval) => approval.actionType)),
+    decisionsByRole: summarizeApprovalDecisionsByRole(approvals),
+    recentApprovals: approvals
+  };
+}
+
+async function loadDashboardRoleProject(summary: DashboardProjectSummary): Promise<DashboardRoleProject> {
+  let configStatus: DashboardRoleProject["configStatus"] = "missing";
+  let config: ProjectConfig | null = null;
+  if (await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+    try {
+      config = await loadProjectConfig(summary.rootUri);
+      configStatus = "valid";
+    } catch {
+      configStatus = "invalid";
+    }
+  } else {
+    try {
+      config = projectConfigSchema.parse(summary.config);
+      configStatus = "valid";
+    } catch {
+      config = null;
+    }
+  }
+  return {
+    id: summary.id,
+    name: summary.name,
+    rootUri: summary.rootUri,
+    configStatus,
+    enforcement: config?.team.enforcement ?? "preview",
+    defaultActorRole: config?.team.default_actor_role ?? "operator",
+    roles: Object.entries(config?.team.roles ?? {}).map(([id, role]) => ({
+      id,
+      description: role.description ?? "",
+      readOnly: Boolean(role.read_only),
+      capabilities: roleCapabilities(role)
+    })).sort((a, b) => a.id.localeCompare(b.id))
+  };
+}
+
+function roleCapabilities(role: ProjectConfig["team"]["roles"][string]): string[] {
+  return [
+    ["request approvals", role.can_request_approvals],
+    ["approve actions", role.can_approve_actions],
+    ["reject actions", role.can_reject_actions],
+    ["execute approved actions", role.can_execute_approved_actions],
+    ["author workflows", role.can_author_workflows],
+    ["read only", role.read_only]
+  ].filter((entry): entry is [string, true] => entry[1] === true).map(([label]) => label);
+}
+
+function summarizeApprovalDecisionsByRole(approvals: DashboardActionApproval[]): DashboardRoleDecisionSummary[] {
+  const byRole = new Map<string, DashboardRoleDecisionSummary>();
+  for (const approval of approvals) {
+    const role = approval.decidedRole ?? (approval.status === "pending" ? "pending" : "unrecorded");
+    const summary = byRole.get(role) ?? {
+      role,
+      total: 0,
+      pending: 0,
+      approved: 0,
+      rejected: 0,
+      executed: 0,
+      failed: 0,
+      other: 0
+    };
+    summary.total += 1;
+    if (approval.status === "pending") summary.pending += 1;
+    else if (approval.status === "approved") summary.approved += 1;
+    else if (approval.status === "rejected") summary.rejected += 1;
+    else if (approval.status === "executed") summary.executed += 1;
+    else if (approval.status === "failed") summary.failed += 1;
+    else summary.other += 1;
+    byRole.set(role, summary);
+  }
+  return [...byRole.values()].sort((a, b) => b.total - a.total || a.role.localeCompare(b.role));
+}
+
+function formatRoleGovernanceReport(report: DashboardRoleGovernanceReport): string {
+  const lines = [
+    `Role governance (${report.generatedAt})`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Recent approvals: ${report.recentApprovals.length}`,
+    "",
+    "Configured roles:"
+  ];
+  for (const project of report.projects) {
+    lines.push(`- ${project.name} [${project.configStatus}]`);
+    lines.push(`  ${project.rootUri}`);
+    lines.push(`  enforcement=${project.enforcement} default=${project.defaultActorRole}`);
+    for (const role of project.roles) {
+      lines.push(`  - ${role.id}: ${role.capabilities.join(", ") || "no capabilities"}${role.description ? ` - ${role.description}` : ""}`);
+    }
+  }
+  lines.push("", "Recent decisions by role:");
+  for (const role of report.decisionsByRole) {
+    lines.push(`- ${role.role}: total=${role.total} pending=${role.pending} approved=${role.approved} rejected=${role.rejected} executed=${role.executed} failed=${role.failed}`);
+  }
+  return lines.join("\n");
 }
 
 async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluationSuite[]> {
@@ -4762,6 +4946,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/roles") {
+    const report = await loadRoleGovernanceReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/bundles") {
     const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -5040,6 +5234,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderGovernanceHtml(filterGovernanceReport(report, requestUrl.searchParams), requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/roles") {
+    const report = await loadRoleGovernanceReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderRolesHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -6856,6 +7061,47 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
   <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
   <form method="get" class="form-grid"><label>Health<select name="health"><option value="all">all</option>${["healthy", "warning", "critical"].map((value) => `<option${params.get("health") === value ? " selected" : ""}>${value}</option>`).join("")}</select></label><label>Provider<select name="provider"><option value="">all</option>${providers.map((value) => `<option${params.get("provider") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>Policy profile<select name="policyProfile"><option value="">all</option>${profiles.map((value) => `<option${params.get("policyProfile") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Filter</button></div></form></section>
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const roleRows = report.projects.flatMap((project) => project.roles.map((role) => `
+    <tr>
+      <td><strong>${escapeHtml(role.id)}</strong>${project.defaultActorRole === role.id ? ' <span class="flag good">default</span>' : ""}<br><span class="muted">${escapeHtml(role.description || "No description")}</span></td>
+      <td>${escapeHtml(project.name)}<br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
+      <td><span class="flag ${project.enforcement === "enforce" ? "warn" : "good"}">${project.enforcement}</span><br><span class="muted">config: ${project.configStatus}</span></td>
+      <td><div class="chip-row">${role.capabilities.map((capability) => `<span class="chip">${escapeHtml(capability)}</span>`).join("") || '<span class="muted">No capabilities configured.</span>'}</div></td>
+    </tr>`)).join("");
+  const decisionRows = report.decisionsByRole.map((role) => `
+    <tr>
+      <td><strong>${escapeHtml(role.role)}</strong></td>
+      <td>${role.total}</td>
+      <td>${role.pending}</td>
+      <td>${role.approved}</td>
+      <td>${role.rejected}</td>
+      <td>${role.executed}</td>
+      <td>${role.failed}</td>
+    </tr>`).join("");
+  const approvalRows = report.recentApprovals.map((approval) => `
+    <tr>
+      <td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td>
+      <td><strong>${escapeHtml(approval.actionType)}</strong><br><span class="muted">${escapeHtml(approval.target)}</span></td>
+      <td>${escapeHtml(approval.decidedRole ?? (approval.status === "pending" ? "pending" : "unrecorded"))}<br><span class="muted">${escapeHtml(approval.decidedBy ?? "not decided")}</span></td>
+      <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.workflowId)} / ${escapeHtml(approval.stageId)}</span></td>
+      <td>${renderDashboardDateTime(approval.updatedAt)}</td>
+    </tr>`).join("");
+  const filters = `<form method="get" class="form-grid">
+    <label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label>
+    <label>Recent approvals<input name="limit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
+    <div class="form-actions"><button type="submit">Filter</button></div>
+  </form>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Roles</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("roles")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a></div>
+  <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="5">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
 
 type DashboardBundleReadiness = {
@@ -9608,7 +9854,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "bundles" | "providers" | "info"): string {
   const items = [
     ["dashboard", "/", "Dashboard"],
     ["queue", "/queue", "Queue"],
@@ -9620,6 +9866,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
     ["model-improvement", "/model-improvement", "Model Improve"],
     ["candidate-comparisons", "/candidate-comparisons", "Comparisons"],
     ["governance", "/governance", "Governance"],
+    ["roles", "/roles", "Roles"],
     ["bundles", "/bundles", "Bundles"],
     ["providers", "/providers", "Providers"],
     ["info", "/settings", "Settings"]

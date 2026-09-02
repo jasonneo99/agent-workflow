@@ -41,6 +41,7 @@ npm run setup
 npm run provider-check
 docker compose -f infra/docker-compose.yml up -d
 npm run doctor
+npm run migrate-storage
 npm run bootstrap-storage
 npm run check
 npm run bundle-manifest
@@ -80,7 +81,7 @@ The root `agent-workflow.bundle.json` records reusable agent/workflow bundle ver
 
 ## Dashboard Preview
 
-The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, workflow graphs, model-improvement evidence, candidate comparisons, and run evidence.
+The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, workflow graphs, role governance, model-improvement evidence, candidate comparisons, and run evidence.
 
 ![Agent Workflow dashboard](assets/screenshots/dashboard-home.png)
 
