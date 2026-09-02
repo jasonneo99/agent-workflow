@@ -6142,7 +6142,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/providers") {
-    const info = await loadDashboardInfoFast(dashboardUrlFromRequest(request));
+    const info = await withTimeout(
+      loadDashboardInfo(dashboardUrlFromRequest(request)),
+      3000,
+      () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
+    );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProvidersHtml(info));
     return;
@@ -9308,7 +9312,9 @@ async function updateDashboardModel(input: { provider: string; model: string }):
     title: "Model updated",
     output: [
       `${modelEnv}=${model}`,
-      "New workflow tasks will use this model. Restart any already-running workers if you need them to pick up the change immediately."
+      `Provider: ${selectedProvider}`,
+      "New workflow tasks will use this model. Restart any already-running workers if you need them to pick up the change immediately.",
+      "Open: /providers"
     ].join("\n")
   };
 }
@@ -9372,7 +9378,8 @@ async function updateDashboardRouting(input: {
       `AGENTFLOW_PROVIDER_REASONING=${updates.AGENTFLOW_PROVIDER_REASONING}`,
       `AGENTFLOW_FALLBACK_PROVIDER=${updates.AGENTFLOW_FALLBACK_PROVIDER || "none"}`,
       `AGENTFLOW_QUALITY_THRESHOLD=${updates.AGENTFLOW_QUALITY_THRESHOLD}`,
-      "New workflow tasks will use this routing. Already-running workers should be restarted if they need the updated environment."
+      "New workflow tasks will use this routing. Already-running workers should be restarted if they need the updated environment.",
+      "Open: /providers"
     ].join("\n")
   };
 }
@@ -10576,6 +10583,35 @@ function renderProvidersHtml(info: DashboardInfo): string {
       <td>${escapeHtml(provider.details.join(" "))}</td>
     </tr>
   `).join("") ?? "";
+  const providerStatuses = info.provider.providerStatuses ?? [];
+  const providerStatusChecked = providerStatuses.length > 0;
+  const readyProviders = providerStatuses.filter((provider) => provider.status === "ready");
+  const configuredProviders = providerStatuses.filter((provider) => provider.configured);
+  const missingProviders = providerStatuses.filter((provider) => provider.status === "missing");
+  const awsStatus = providerStatuses.find((provider) => provider.providerId === "bedrock");
+  const selectedStatus = providerStatuses.find((provider) => provider.providerId === info.provider.selected);
+  const setupCards = [
+    {
+      title: "OpenAI",
+      detail: "Best default for high-quality hosted development runs.",
+      command: "OPENAI_API_KEY + OPENAI_MODEL"
+    },
+    {
+      title: "BYO Gateway",
+      detail: "Best cost-control path for Ollama, vLLM, LM Studio, or an internal OpenAI-compatible endpoint.",
+      command: "BYO_MODEL_BASE_URL + BYO_MODEL_NAME"
+    },
+    {
+      title: "AWS Bedrock",
+      detail: "Best enterprise cloud option when AWS credentials are already available locally.",
+      command: "AWS_PROFILE + AWS_REGION + BEDROCK_MODEL"
+    },
+    {
+      title: "Auto",
+      detail: "Routes by tier across ready providers, with fallback and quality threshold controls.",
+      command: "DEFAULT_MODEL_PROVIDER=auto"
+    }
+  ].map((card) => `<div class="provider-setup-card"><strong>${escapeHtml(card.title)}</strong><span>${escapeHtml(card.detail)}</span><code>${escapeHtml(card.command)}</code></div>`).join("");
 
   return `<!doctype html>
 <html>
@@ -10592,16 +10628,50 @@ function renderProvidersHtml(info: DashboardInfo): string {
       <div>
         <a href="/">Dashboard</a>
         <h1>Providers & Models</h1>
+        <p class="muted">Choose how Agent Workflow spends tokens: hosted models, local/BYO gateways, AWS Bedrock, or automatic routing by task tier.</p>
       </div>
       <a class="button secondary" href="/api/settings">Settings JSON</a>
     </div>
+    <section class="panel provider-hero">
+      <div class="provider-current">
+        <strong>${escapeHtml(info.provider.selected)}</strong>
+        <span>${escapeHtml(info.provider.adapter)}${info.provider.model ? ` / ${escapeHtml(info.provider.model)}` : ""}</span>
+        <small>${selectedStatus ? escapeHtml(selectedStatus.details.join(" ")) : "Selected provider is routed dynamically or not listed in the status table."}</small>
+      </div>
+      <div class="provider-readiness">
+        <div><strong>${providerStatusChecked ? formatNumber(readyProviders.length) : "unchecked"}</strong><span>ready providers</span></div>
+        <div><strong>${providerStatusChecked ? formatNumber(configuredProviders.length) : "unchecked"}</strong><span>configured</span></div>
+        <div><strong>${providerStatusChecked ? formatNumber(missingProviders.length) : "unchecked"}</strong><span>need attention</span></div>
+        <div><strong>${escapeHtml(awsStatus?.status ?? "unknown")}</strong><span>AWS Bedrock</span></div>
+      </div>
+    </section>
     <section class="panel">
-      <h2>Selected Provider</h2>
+      <div class="section-heading">
+        <div>
+          <h2>Selected Provider</h2>
+          <span class="muted">Secrets are never displayed. New tasks use saved provider values; already-running workers may need a restart.</span>
+        </div>
+        <a class="button secondary" href="/settings">Runtime Settings</a>
+      </div>
       <div class="meta-grid">${providerRows}</div>
       ${modelSelector}
     </section>
     <section class="panel">
-      <h2>Routing Controls</h2>
+      <div class="section-heading">
+        <div>
+          <h2>Setup Paths</h2>
+          <span class="muted">Pick one path, then use Routing Controls to make it active or include it in auto mode.</span>
+        </div>
+      </div>
+      <div class="provider-setup-grid">${setupCards}</div>
+    </section>
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Routing Controls</h2>
+          <span class="muted">Auto mode prioritizes the providers below, then uses tier-specific choices and fallback when quality drops.</span>
+        </div>
+      </div>
       <form class="routing-form" method="post" action="/api/routing">
         <label>Provider mode
           <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
@@ -10628,7 +10698,7 @@ function renderProvidersHtml(info: DashboardInfo): string {
       </form>
     </section>
     ${autoRouteRows ? `<section class="panel"><h2>Auto Routing Preview</h2><table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table></section>` : ""}
-    ${providerStatusRows ? `<section class="panel"><h2>Available Provider Status</h2><table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table><p class="muted">Secrets are never displayed.</p></section>` : ""}
+    ${providerStatusRows ? `<section class="panel"><div class="section-heading"><div><h2>Available Provider Status</h2><span class="muted">Use this table to see which model paths have keys, local endpoints, CLI login, or AWS credentials available.</span></div></div><table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table><p class="muted">Secrets are never displayed.</p></section>` : ""}
   </main>
 </body>
 </html>`;
@@ -11315,6 +11385,20 @@ function dashboardCss(): string {
     .ops-state.warn { border-color: #fde68a; background: #fffbeb; }
     .ops-state.bad { border-color: #fca5a5; background: #fef2f2; }
     .ops-state strong { font-size: 22px; }
+    .provider-hero { display: grid; grid-template-columns: minmax(240px, 1.15fr) minmax(0, 2fr); gap: 12px; align-items: stretch; }
+    .provider-current { border: 1px solid #bfdbfe; background: #eff6ff; padding: 14px; display: grid; gap: 6px; align-content: center; }
+    .provider-current strong { color: #1d4ed8; font-size: 28px; line-height: 1.1; }
+    .provider-current span { color: #172033; font-weight: 700; }
+    .provider-current small { color: #475569; line-height: 1.35; }
+    .provider-readiness { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; }
+    .provider-readiness div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; align-content: center; }
+    .provider-readiness strong { color: #172033; font-size: 20px; line-height: 1.15; }
+    .provider-readiness span { color: #64748b; font-size: 12px; line-height: 1.3; }
+    .provider-setup-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+    .provider-setup-card { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 7px; }
+    .provider-setup-card strong { color: #172033; font-size: 14px; }
+    .provider-setup-card span { color: #64748b; line-height: 1.35; font-size: 13px; }
+    .provider-setup-card code { white-space: normal; word-break: break-word; background: #eef2ff; color: #3730a3; padding: 5px 6px; }
     .stage-delta { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; margin: 12px 0 16px; }
     .stage-delta-card { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; }
     .stage-delta-card strong { color: #4b5870; font-size: 12px; text-transform: uppercase; }
@@ -11452,6 +11536,8 @@ function dashboardCss(): string {
       .attention-item { display: grid; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .ops-state { grid-column: 1 / -1; }
+      .provider-hero { grid-template-columns: 1fr; }
+      .provider-readiness { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .comparison-layout { grid-template-columns: 1fr; }
       .suite-list { position: static; }
       .mind-map { grid-template-columns: 1fr; }
