@@ -10262,10 +10262,15 @@ async function executeLifecycleApproval(input: {
   const targetArtifact = await loadLifecycleExecutionArtifact(input.approval, lifecycleAction);
   const restoreReady = lifecycleAction === "restore" && isRestorableArchivedArtifact(targetArtifact);
   const lifecycleExecutionAvailable = lifecycleAction === "archive" || lifecycleAction === "restore";
+  const destructiveLifecycleAction = lifecycleAction === "prune";
+  const destructiveApprovalRequired = destructiveLifecycleAction ? currentPolicy.requireApprovalForPrune : false;
   const policyRecheck = {
     checkedAt: new Date().toISOString(),
     projectRootUri: input.approval.projectRootUri,
     lifecycleAction,
+    approvalId: input.approval.id,
+    approvalStatus: input.approval.status,
+    explicitApprovalPresent: input.approval.status === "approved" || input.approval.status === "failed",
     currentPolicy,
     requestedPolicyDecision: input.approval.policyDecision,
     targetArtifactFound: Boolean(targetArtifact),
@@ -10273,16 +10278,19 @@ async function executeLifecycleApproval(input: {
     targetArtifactCreatedAt: targetArtifact?.createdAt ?? null,
     capabilityEnabled,
     lifecycleExecutionAvailable,
+    destructiveLifecycleAction,
+    destructiveApprovalRequired,
     destructiveExecutionAvailable: false
   };
   const skipReasons = [
     currentPolicy.legalHold ? "Project legal hold is enabled." : "",
     capabilityEnabled ? "" : `Project policy has allow_${lifecycleAction}_execution disabled.`,
+    destructiveLifecycleAction && !currentPolicy.requireApprovalForPrune ? "Project policy must require explicit prune approval before destructive prune execution can be considered." : "",
     targetArtifact ? "" : lifecycleAction === "restore" ? "Archived source snapshot is no longer present in storage." : "Target artifact is no longer present in storage.",
-    lifecycleExecutionAvailable ? "" : "This lifecycle action is not implemented in this version.",
+    lifecycleExecutionAvailable ? "" : "Destructive prune/delete execution is not implemented in this version.",
     lifecycleAction === "restore" && targetArtifact && !restoreReady ? "Archived source snapshot is missing restorable content metadata." : ""
   ].filter(Boolean);
-  const skipped = currentPolicy.legalHold || !capabilityEnabled || !targetArtifact || (lifecycleAction === "restore" && !restoreReady);
+  const skipped = currentPolicy.legalHold || !capabilityEnabled || !targetArtifact || !lifecycleExecutionAvailable || (destructiveLifecycleAction && !currentPolicy.requireApprovalForPrune) || (lifecycleAction === "restore" && !restoreReady);
   const archived = !skipped && lifecycleAction === "archive" && targetArtifact;
   const restored = !skipped && lifecycleAction === "restore" && targetArtifact;
   const summary = skipped
@@ -10291,7 +10299,7 @@ async function executeLifecycleApproval(input: {
       ? `Lifecycle archive recorded for ${input.approval.target}; original artifact retained and archived snapshot created.`
       : restored
         ? `Lifecycle restore recorded for ${input.approval.target}; restored copy created from archived snapshot.`
-    : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because destructive execution is not implemented.`;
+    : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because execution is not implemented.`;
   const artifactUri = await recordRunAction({
     runId: input.approval.runId,
     taskId: input.approval.taskId,
@@ -10352,6 +10360,8 @@ async function executeLifecycleApproval(input: {
         ? "No artifact was deleted or modified. Restore metadata was recorded with the archived snapshot."
         : restored
           ? "No artifact was deleted or overwritten. Restore lineage was recorded with the restored snapshot."
+        : destructiveLifecycleAction
+          ? "Destructive prune/delete execution is not implemented yet, so no artifact was deleted, archived, restored, or modified."
         : `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
     ].join("\n")
   };

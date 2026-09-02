@@ -1330,10 +1330,11 @@ Use `--queue-approvals` after reviewing a dry-run prune plan to create pending
 approval records for each candidate. The dashboard exposes the same action from
 the Artifact Lifecycle page. These approvals record lifecycle intent and normal
 audit receipts. Executing an approved `artifact_prune` approval records a
-`lifecycle_action` no-op receipt, or a `lifecycle_skipped` receipt when the
-target artifact is missing or legal hold is enabled. The approval is marked
-executed after the receipt is recorded, but no artifact is deleted, archived,
-restored, or modified.
+`lifecycle_skipped` receipt with the current policy recheck. The approval is
+marked executed after the receipt is recorded, but no artifact is deleted,
+archived, restored, or modified. Even if `allow_prune_execution` is enabled in
+project policy, destructive prune/delete execution remains unavailable in this
+version and fails closed behind the recorded skip receipt.
 
 Use `--archive-plan` and `--restore-plan` to preview the recovery side of the
 lifecycle process before any delete path exists. Archive plans use the same
@@ -1346,9 +1347,9 @@ plans only use archived artifact snapshots as candidates. When
 `allow_restore_execution` is enabled, executing an approved restore approval
 creates a copied `restored_artifact` snapshot from archived content, records
 lineage back to the archive snapshot and original artifact URI, and never
-overwrites an existing artifact row. Prune execution still records no-op
-`lifecycle_action` receipts, or `lifecycle_skipped` receipts when the policy
-recheck blocks the action or the target artifact is gone.
+overwrites an existing artifact row. Prune execution still records
+`lifecycle_skipped` receipts because destructive prune/delete execution is not
+implemented in this version.
 
 The `allow_*_execution` flags are explicit capability switches. They default to
 `false`. When a flag is disabled, executing an approved lifecycle action records
@@ -1356,4 +1357,7 @@ a `lifecycle_skipped` receipt with the policy recheck summary. When
 `allow_archive_execution` is enabled, archive execution creates copied
 `archived_artifact` snapshots only. When `allow_restore_execution` is enabled,
 restore execution creates copied `restored_artifact` snapshots only. Prune and
-delete implementations are intentionally not present yet.
+delete implementations are intentionally not present yet; the current gate
+requires an approval record, rechecks `require_approval_for_prune`, rechecks the
+current lifecycle policy, and still records a skipped receipt instead of
+deleting data.

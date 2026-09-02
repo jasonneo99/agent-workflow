@@ -263,8 +263,8 @@ foundation is complete.
   - [x] Add explicit destructive-action capability flags and policy recheck gates before any write/delete operation against local files or object storage.
   - [x] Add real archive execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
-  - [ ] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
-  - Next: require explicit approval and policy recheck for any prune/delete operation against local files or object storage before implementing destructive prune/delete execution.
+  - [x] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
+  - Next: add read-only backup inventory and restore-drill reporting for local enterprise storage.
 
 - [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
