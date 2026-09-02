@@ -21,14 +21,30 @@ export interface WorkerResult {
   failed: number;
 }
 
-export async function runWorkerOnce(limit: number, options?: { workerId?: string; leaseSeconds?: number }): Promise<WorkerResult> {
+export type WorkerRunOptions = {
+  workerId?: string;
+  leaseSeconds?: number;
+  projectRootUri?: string;
+  concurrency?: number;
+};
+
+export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
+  const safeLimit = Math.max(0, Math.floor(limit));
+  const requestedConcurrency = Math.floor(options?.concurrency ?? 1);
+  const concurrency = Number.isFinite(requestedConcurrency)
+    ? Math.max(1, Math.min(safeLimit || 1, requestedConcurrency, 16))
+    : 1;
+  if (safeLimit > 1 && concurrency > 1) {
+    return runWorkerOnceConcurrently(safeLimit, { ...options, concurrency: 1 }, concurrency);
+  }
+
   const result: WorkerResult = {
     claimed: 0,
     completed: 0,
     failed: 0
   };
 
-  for (let i = 0; i < limit; i += 1) {
+  for (let i = 0; i < safeLimit; i += 1) {
     const task = await claimNextWorkflowTask(options);
     if (!task) {
       break;
@@ -457,6 +473,25 @@ export async function runWorkerOnce(limit: number, options?: { workerId?: string
   return result;
 }
 
+async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOptions, concurrency: number): Promise<WorkerResult> {
+  const result: WorkerResult = { claimed: 0, completed: 0, failed: 0 };
+  let remaining = limit;
+  const runLane = async (): Promise<void> => {
+    while (remaining > 0) {
+      remaining -= 1;
+      const tick = await runWorkerOnce(1, options);
+      result.claimed += tick.claimed;
+      result.completed += tick.completed;
+      result.failed += tick.failed;
+      if (tick.claimed === 0) {
+        return;
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, runLane));
+  return result;
+}
+
 export function actionIdempotencyKey(input: {
   taskId: string;
   stageId: string;
@@ -492,13 +527,17 @@ export async function runWorkerWatch(input: {
   intervalMs: number;
   workerId?: string;
   leaseSeconds?: number;
+  projectRootUri?: string;
+  concurrency?: number;
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
   while (!input.shouldStop()) {
     const result = await runWorkerOnce(input.limitPerTick, {
       workerId: input.workerId,
-      leaseSeconds: input.leaseSeconds
+      leaseSeconds: input.leaseSeconds,
+      projectRootUri: input.projectRootUri,
+      concurrency: input.concurrency
     });
     await input.onTick(result);
     await sleep(input.intervalMs);

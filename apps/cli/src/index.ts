@@ -102,6 +102,8 @@ program.hook("preAction", async (_command, actionCommand) => {
 type WorkerHeartbeat = {
   pid: number;
   workerId: string;
+  projectRootUri: string | null;
+  concurrency: number;
   startedAt: string;
   lastHeartbeatAt: string;
   limit: number;
@@ -118,6 +120,8 @@ type DashboardWorkerStatus = {
   heartbeatPath: string;
   configured: boolean;
   workerId: string | null;
+  projectRootUri: string | null;
+  concurrency: number | null;
   status: "running" | "stale" | "stopped" | "missing";
   pid: number | null;
   startedAt: string | null;
@@ -1266,6 +1270,7 @@ program
   .option("--refine-index", "refine indexed summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
   .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
+  .option("--worker-concurrency <number>", "maximum tasks to execute at the same time per worker tick", "1")
   .option("--interval-ms <number>", "polling interval while waiting for run status", "1000")
   .option("--timeout-ms <number>", "maximum time to wait for completion", "900000")
   .option("-o, --out <dir>", "export directory; defaults to <project>/.agent-workflow/exports")
@@ -1281,6 +1286,7 @@ program
     refineIndex?: boolean;
     forceRefine?: boolean;
     workerLimit: string;
+    workerConcurrency: string;
     intervalMs: string;
     timeoutMs: string;
     out?: string;
@@ -1302,6 +1308,7 @@ program
     const projectDir = path.resolve(process.cwd(), options.project);
     const indexMaxFiles = parsePositiveInteger(options.indexMaxFiles, 100);
     const workerLimit = parsePositiveInteger(options.workerLimit, 6);
+    const workerConcurrency = parseBoundedPositiveInteger(options.workerConcurrency, 1, 16);
     const intervalMs = parsePositiveInteger(options.intervalMs, 1000);
     const timeoutMs = parsePositiveInteger(options.timeoutMs, 900000);
 
@@ -1339,6 +1346,8 @@ program
     const watchResult = await watchWorkflowRun({
       runId: queued.run.runId,
       workerLimit,
+      workerConcurrency,
+      projectRootUri: queued.projectDir,
       intervalMs,
       timeoutMs,
       onTick: (tick) => {
@@ -1553,6 +1562,7 @@ program
   .option("--refine-index", "refine indexed summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
   .option("--worker-limit <number>", "maximum workflow tasks to process per worker tick", "6")
+  .option("--worker-concurrency <number>", "maximum workflow tasks to execute at the same time per worker tick", "1")
   .option("--timeout-ms <number>", "maximum time to wait for each step", "900000")
   .option("-o, --out <dir>", "export directory; defaults to <project>/.agent-workflow/exports")
   .action(async (options: {
@@ -1563,6 +1573,7 @@ program
     refineIndex?: boolean;
     forceRefine?: boolean;
     workerLimit: string;
+    workerConcurrency: string;
     timeoutMs: string;
     out?: string;
   }) => {
@@ -1590,6 +1601,7 @@ program
       refineIndex: Boolean(options.refineIndex),
       forceRefine: Boolean(options.forceRefine),
       workerLimit: parsePositiveInteger(options.workerLimit, 6),
+      workerConcurrency: parseBoundedPositiveInteger(options.workerConcurrency, 1, 16),
       timeoutMs: parsePositiveInteger(options.timeoutMs, 900000),
       outDir: options.out ? path.resolve(process.cwd(), options.out) : undefined
     });
@@ -2002,6 +2014,7 @@ program
   .option("--index-max-files <number>", "maximum project files to index first", "100")
   .option("--full-index", "force a full project index instead of the default incremental refresh")
   .option("--worker-limit <number>", "maximum tasks to process per worker tick", "6")
+  .option("--worker-concurrency <number>", "maximum tasks to execute at the same time per worker tick", "1")
   .option("--timeout-ms <number>", "maximum time to wait for each run", "900000")
   .option("-o, --out <dir>", "report directory; defaults to <project>/.agent-workflow/evaluations")
   .option("--scoring-profile <file>", "private scoring YAML under <project>/.agent-workflow/evaluations")
@@ -2013,6 +2026,7 @@ program
     indexMaxFiles: string;
     fullIndex?: boolean;
     workerLimit: string;
+    workerConcurrency: string;
     timeoutMs: string;
     out?: string;
     scoringProfile?: string;
@@ -2080,6 +2094,8 @@ program
       await watchWorkflowRun({
         runId: queued.run.runId,
         workerLimit: parsePositiveInteger(options.workerLimit, 6),
+        workerConcurrency: parseBoundedPositiveInteger(options.workerConcurrency, 1, 16),
+        projectRootUri: projectDir,
         intervalMs: 1000,
         timeoutMs: parsePositiveInteger(options.timeoutMs, 900000)
       });
@@ -2792,8 +2808,10 @@ program
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "2000")
   .option("--worker-id <id>", "stable worker identity for leases and dashboard visibility")
   .option("--lease-seconds <number>", "running task lease duration in seconds", "900")
+  .option("-p, --project <dir>", "only claim queued tasks for one project root")
+  .option("--concurrency <number>", "maximum tasks this worker may execute at the same time", "1")
   .option("--heartbeat-file <path>", "worker heartbeat file path", defaultWorkerHeartbeatPath)
-  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; heartbeatFile: string }) => {
+  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; project?: string; concurrency: string; heartbeatFile: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2819,10 +2837,14 @@ program
       process.exitCode = 1;
       return;
     }
+    const concurrency = parseBoundedPositiveInteger(options.concurrency, 1, 16);
+    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
 
     if (!options.watch) {
-      const result = await runWorkerOnce(limit, { workerId, leaseSeconds });
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency });
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
+      if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
+      console.log(`Concurrency: ${concurrency}`);
       return;
     }
 
@@ -2844,6 +2866,8 @@ program
       const heartbeat: WorkerHeartbeat = {
         pid: process.pid,
         workerId,
+        projectRootUri: projectRootUri ?? null,
+        concurrency,
         startedAt,
         lastHeartbeatAt: new Date().toISOString(),
         limit,
@@ -2853,7 +2877,7 @@ program
         completed: tick?.completed ?? 0,
         failed: tick?.failed ?? 0,
         status,
-        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}`
+        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency}`
       };
       await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
       await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
@@ -2866,12 +2890,14 @@ program
     process.once("SIGTERM", stopWorker);
 
     await writeHeartbeat("starting");
-    console.log(`Worker watching. id=${workerId} limit=${limit} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
+    console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
     await runWorkerWatch({
       limitPerTick: limit,
       intervalMs,
       workerId,
       leaseSeconds,
+      projectRootUri,
+      concurrency,
       shouldStop: () => stop,
       onTick: async (result) => {
         await writeHeartbeat(stop ? "stopping" : "running", result);
@@ -4509,6 +4535,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       runId: form.get("runId") ?? "",
       mode: form.get("mode") ?? "batch",
       workerLimit: form.get("workerLimit") ?? "",
+      workerConcurrency: form.get("workerConcurrency") ?? "",
       timeoutMs: form.get("timeoutMs") ?? ""
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
@@ -4522,6 +4549,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       action: form.get("action") ?? "",
       runId: form.get("runId") ?? "",
       workerLimit: form.get("workerLimit") ?? "",
+      workerConcurrency: form.get("workerConcurrency") ?? "",
       project: form.get("project") ?? "",
       reason: form.get("reason") ?? "",
       confirmed: form.get("confirmed") === "on"
@@ -4553,6 +4581,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       sourceMaxFiles: form.get("sourceMaxFiles") ?? "",
       watch: form.get("watch") === "on",
       workerLimit: form.get("workerLimit") ?? "",
+      workerConcurrency: form.get("workerConcurrency") ?? "",
       timeoutMs: form.get("timeoutMs") ?? ""
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
@@ -4663,7 +4692,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/queue") {
-    const queue = await listWorkflowQueue(100);
+    const queue = await listWorkflowQueue(100, {
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined
+    });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(queue, null, 2));
     return;
@@ -4907,9 +4938,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/queue") {
-    const queue = await listWorkflowQueue(100);
+    const queue = await listWorkflowQueue(100, {
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined
+    });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderQueueHtml(queue));
+    response.end(renderQueueHtml(queue, requestUrl.searchParams));
     return;
   }
 
@@ -5157,6 +5190,9 @@ function renderDashboardHtml(
         <label>Worker limit
           <input name="workerLimit" inputmode="numeric" value="6">
         </label>
+        <label>Worker concurrency
+          <input name="workerConcurrency" inputmode="numeric" value="1">
+        </label>
         <label>Watch timeout ms
           <input name="timeoutMs" inputmode="numeric" value="60000">
         </label>
@@ -5181,7 +5217,8 @@ function renderDashboardHtml(
 </html>`;
 }
 
-function renderQueueHtml(queue: DashboardQueueItem[]): string {
+function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): string {
+  const projectFilter = params.get("project")?.trim() || "";
   const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
   const failed = queue.filter((item) => item.runStatus === "failed");
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
@@ -5237,9 +5274,13 @@ function renderQueueHtml(queue: DashboardQueueItem[]): string {
         <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
       </div>
       <div class="actions">
-        ${queueProcessForm()}
+        ${queueProcessForm(projectFilter)}
         ${expiredLeaseRows.length ? queueRecoverExpiredLeasesForm() : ""}
       </div>
+      <form class="workflow-form" method="get" action="/queue">
+        <label class="wide">Project filter<input name="project" value="${escapeHtml(projectFilter)}" placeholder="/path/to/project or blank for all"></label>
+        <div class="form-actions"><button type="submit">Filter Queue</button></div>
+      </form>
     </section>
     ${failed.length ? `<section class="panel warn-panel">
       <h2>Clear Failed Queue Items</h2>
@@ -7408,6 +7449,8 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
       lastHeartbeatAt,
       ageMs,
       limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
+      projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : null,
+      concurrency: typeof heartbeat.concurrency === "number" ? heartbeat.concurrency : null,
       intervalMs,
       ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
       claimed: typeof heartbeat.claimed === "number" ? heartbeat.claimed : 0,
@@ -7427,6 +7470,8 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
       lastHeartbeatAt: null,
       ageMs: null,
       limit: null,
+      projectRootUri: null,
+      concurrency: null,
       intervalMs: null,
       ticks: 0,
       claimed: 0,
@@ -8130,6 +8175,7 @@ async function queueDashboardWorkflowRun(input: {
   sourceMaxFiles?: string;
   watch?: boolean;
   workerLimit?: string;
+  workerConcurrency?: string;
   timeoutMs?: string;
 }): Promise<DashboardFollowUpResult> {
   const workflowId = input.workflowId.trim();
@@ -8168,11 +8214,14 @@ async function queueDashboardWorkflowRun(input: {
 
   if (input.watch) {
     const workerLimit = parsePositiveInteger(input.workerLimit ?? "6", 6);
+    const workerConcurrency = parseBoundedPositiveInteger(input.workerConcurrency ?? "1", 1, 16);
     const timeoutMs = parsePositiveInteger(input.timeoutMs ?? "60000", 60000);
     const ticks: string[] = [];
     const watchResult = await watchWorkflowRun({
       runId: queued.run.runId,
       workerLimit,
+      workerConcurrency,
+      projectRootUri: queued.projectDir,
       intervalMs: 1000,
       timeoutMs,
       onTick: (tick) => {
@@ -8208,6 +8257,7 @@ async function processDashboardRun(input: {
   runId: string;
   mode: string;
   workerLimit: string;
+  workerConcurrency: string;
   timeoutMs: string;
 }): Promise<DashboardFollowUpResult> {
   const runId = input.runId.trim();
@@ -8221,12 +8271,15 @@ async function processDashboardRun(input: {
   }
 
   const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
+  const workerConcurrency = parseBoundedPositiveInteger(input.workerConcurrency || "1", 1, 16);
   const timeoutMs = parsePositiveInteger(input.timeoutMs || "60000", 60000);
   if (input.mode === "watch") {
     const ticks: string[] = [];
     const watchResult = await watchWorkflowRun({
       runId,
       workerLimit,
+      workerConcurrency,
+      projectRootUri: details.run.projectRootUri,
       intervalMs: 1000,
       timeoutMs,
       onTick: (tick) => {
@@ -8250,7 +8303,7 @@ async function processDashboardRun(input: {
     };
   }
 
-  const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard") });
+  const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard"), projectRootUri: details.run.projectRootUri, concurrency: workerConcurrency });
   const updated = await getWorkflowRunDetails(runId);
   const completedTasks = updated.tasks.filter((task) => task.status === "completed").length;
   const failedTasks = updated.tasks.filter((task) => task.status === "failed").length;
@@ -8273,6 +8326,7 @@ async function processDashboardQueueAction(input: {
   action: string;
   runId: string;
   workerLimit: string;
+  workerConcurrency: string;
   project: string;
   reason: string;
   confirmed: boolean;
@@ -8282,12 +8336,16 @@ async function processDashboardQueueAction(input: {
 
   if (action === "process") {
     const workerLimit = parsePositiveInteger(input.workerLimit || "6", 6);
-    const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard") });
+    const workerConcurrency = parseBoundedPositiveInteger(input.workerConcurrency || "1", 1, 16);
+    const projectRootUri = input.project.trim() ? path.resolve(process.cwd(), input.project.trim()) : undefined;
+    const workerResult = await runWorkerOnce(workerLimit, { workerId: normalizeWorkerId("dashboard"), projectRootUri, concurrency: workerConcurrency });
     return {
       ok: true,
       title: "Worker batch processed",
       output: [
         `Worker claimed ${workerResult.claimed}, completed ${workerResult.completed}, failed ${workerResult.failed}.`,
+        `Project scope: ${projectRootUri ?? "all projects"}`,
+        `Concurrency: ${workerConcurrency}`,
         "Open: /queue"
       ].join("\n")
     };
@@ -9224,6 +9282,8 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
       <div><strong>Heartbeat Age</strong>${escapeHtml(age)}</div>
       <div><strong>Tick Count</strong>${formatNumber(worker.ticks)}</div>
       <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
+      <div><strong>Project Scope</strong>${escapeHtml(worker.projectRootUri ?? "all projects")}</div>
+      <div><strong>Concurrency</strong>${worker.concurrency ?? "n/a"}</div>
       <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
     </div>
     <div class="meta-grid compact">
@@ -9781,11 +9841,11 @@ function runActionForm(runId: string, action: string, label: string): string {
 }
 
 function workerActionForm(runId: string, mode: "batch" | "watch", label: string): string {
-  return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${escapeHtml(label)}</button></form>`;
 }
 
-function queueProcessForm(): string {
-  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><button type="submit">Process Worker Batch</button></form>`;
+function queueProcessForm(project: string): string {
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><input name="workerConcurrency" inputmode="numeric" value="1" aria-label="Worker concurrency"><button type="submit">Process Worker Batch</button></form>`;
 }
 
 function queueRecoverExpiredLeasesForm(): string {
@@ -10523,6 +10583,7 @@ async function runWorkflowPreset(input: {
   refineIndex?: boolean;
   forceRefine?: boolean;
   workerLimit?: number;
+  workerConcurrency?: number;
   timeoutMs?: number;
   outDir?: string;
 }): Promise<DashboardFollowUpResult> {
@@ -10558,6 +10619,7 @@ async function runWorkflowPreset(input: {
     refineIndex: input.refineIndex,
     forceRefine: input.forceRefine,
     workerLimit: input.workerLimit,
+    workerConcurrency: input.workerConcurrency,
     timeoutMs: input.timeoutMs,
     outDir: input.outDir
   });
@@ -10746,6 +10808,7 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
   refineIndex: boolean;
   forceRefine: boolean;
   workerLimit: number;
+  workerConcurrency?: number;
   timeoutMs: number;
   outDir?: string;
 }): Promise<DashboardFollowUpResult> {
@@ -10781,6 +10844,7 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
           refineIndex: options.refineIndex,
           forceRefine: options.forceRefine,
           workerLimit: options.workerLimit,
+          workerConcurrency: options.workerConcurrency,
           timeoutMs: options.timeoutMs,
           outDir: options.outDir
         })
@@ -10793,6 +10857,7 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
           refineIndex: options.refineIndex,
           forceRefine: options.forceRefine,
           workerLimit: options.workerLimit,
+          workerConcurrency: options.workerConcurrency,
           timeoutMs: options.timeoutMs,
           outDir: options.outDir
         });
@@ -10847,6 +10912,7 @@ async function runDashboardWorkflow(input: {
   refineIndex?: boolean;
   forceRefine?: boolean;
   workerLimit?: number;
+  workerConcurrency?: number;
   timeoutMs?: number;
   outDir?: string;
 }): Promise<DashboardFollowUpResult> {
@@ -10867,6 +10933,8 @@ async function runDashboardWorkflow(input: {
   const watchResult = await watchWorkflowRun({
     runId: queued.run.runId,
     workerLimit: input.workerLimit ?? 6,
+    workerConcurrency: input.workerConcurrency,
+    projectRootUri: queued.projectDir,
     intervalMs: 1000,
     timeoutMs: input.timeoutMs ?? 900000
   });
@@ -11610,6 +11678,8 @@ function formatIndexResult(result: {
 async function watchWorkflowRun(input: {
   runId: string;
   workerLimit: number;
+  workerConcurrency?: number;
+  projectRootUri?: string;
   intervalMs: number;
   timeoutMs: number;
   onTick?: (result: Awaited<ReturnType<typeof runWorkerOnce>>) => void;
@@ -11622,7 +11692,11 @@ async function watchWorkflowRun(input: {
 }> {
   const startedAt = Date.now();
   while (Date.now() - startedAt <= input.timeoutMs) {
-    const workerResult = await runWorkerOnce(input.workerLimit, { workerId: normalizeWorkerId("dashboard") });
+    const workerResult = await runWorkerOnce(input.workerLimit, {
+      workerId: normalizeWorkerId("dashboard"),
+      projectRootUri: input.projectRootUri,
+      concurrency: input.workerConcurrency
+    });
     input.onTick?.(workerResult);
 
     const details = await getWorkflowRunDetails(input.runId);
@@ -11756,6 +11830,10 @@ function templateNameForProfile(profile: string): string {
 function parsePositiveInteger(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function parseBoundedPositiveInteger(value: string, fallback: number, max: number): number {
+  return Math.min(parsePositiveInteger(value, fallback), max);
 }
 
 function parseDashboardRunLimit(value: string, fallback: number): number {

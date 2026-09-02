@@ -227,7 +227,8 @@ foundation is complete.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
   - Done: define worker identity, lease ownership, and heartbeat visibility before adding multi-worker execution.
   - Done: add explicit expired-lease recovery so interrupted worker tasks can be safely requeued by policy.
-  - Next: add project-scoped worker filters and bounded concurrency settings before enabling true multi-worker pools.
+  - Done: add project-scoped worker filters and bounded concurrency settings before enabling true multi-worker pools.
+  - Next: add a multi-worker heartbeat registry so the dashboard can show all active worker lanes, not just the most recent local daemon.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

@@ -599,11 +599,28 @@ Workers can be named for lease ownership visibility:
 npm run worker -- --watch --limit 6 --worker-id local-dev
 ```
 
+Workers can also be scoped to one project and allowed to claim a bounded number
+of stages concurrently:
+
+```bash
+npm run worker -- --watch \
+  --project /path/to/project \
+  --limit 12 \
+  --concurrency 3 \
+  --worker-id local-dev
+```
+
+`--limit` is the maximum number of stages a worker tick may process. `--concurrency`
+is how many of those stages may run at the same time, capped at `16` for local
+developer safety. A project-scoped worker only claims stages whose run belongs
+to that project root, which keeps queues isolated when the same local storage is
+serving multiple repositories.
+
 When a worker claims a stage, enterprise storage records the worker id and a
 lease expiration timestamp. The Queue page shows the current running stage,
 owning worker, and lease deadline so interrupted work is easier to diagnose.
-This is a visibility foundation for worker pools; it does not yet reassign
-expired leases automatically.
+The Settings page shows the active worker's project scope and concurrency from
+the heartbeat file.
 
 Recover tasks owned by interrupted workers after their lease expires:
 
@@ -747,7 +764,7 @@ Keep approval rules exact and boring. A rule can reduce repeated approvals, but 
 
 While the Queue page is open, a browser Web Worker watches `/api/queue` and refreshes the view only when task progress changes. It polls active queues every two seconds and backs off to ten seconds when idle. This watcher is read-only; the managed server-side worker remains responsible for claiming and executing tasks.
 
-The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit and timeout fields for short local runs.
+The dashboard home page includes a Run Workflow panel. Select a workflow, project path, and task, then queue the run from the browser. The run detail link is returned immediately; process queued stages with `npm run worker -- --limit 6`. Enable Run and watch to process a bounded worker pass in the browser request; tune the worker limit, worker concurrency, and timeout fields for short local runs.
 
 Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, Run Until Complete for a bounded watch pass, Resume Checkpoint to continue from the last completed stage, or Replay Run to create a fresh queued run from the source run's stored task, policy, provider overrides, workflow snapshot, and compiled context. Resume and replay actions run a stale-input check first. The check warns when project config, execution policy, bundle checksum, workflow definition, or selected source files differ from the evidence captured when the run was queued. Legacy runs created before input snapshots show a limited-check warning instead of pretending the inputs are known.
 

@@ -366,8 +366,9 @@ export interface WorkflowQueueItem {
   oldestRunningAt: string | null;
 }
 
-export async function listWorkflowQueue(limit = 50): Promise<WorkflowQueueItem[]> {
+export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string }): Promise<WorkflowQueueItem[]> {
   return withClient(async (client) => {
+    const projectRootUri = options?.projectRootUri?.trim() || null;
     const result = await client.query<WorkflowQueueItem>(
       `select
          wr.id::text as "runId",
@@ -395,18 +396,19 @@ export async function listWorkflowQueue(limit = 50): Promise<WorkflowQueueItem[]
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
-       where wr.status in ('queued', 'running', 'failed')
+       where ($2::text is null or p.root_uri = $2)
+         and (wr.status in ('queued', 'running', 'failed')
           or exists (
             select 1 from workflow_tasks active
             where active.run_id = wr.id
               and active.status in ('queued', 'running', 'failed')
-          )
+          ))
        group by wr.id, p.id
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'failed' then 2 else 3 end,
          coalesce(min(wt.started_at) filter (where wt.status = 'running'), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
        limit $1`,
-      [limit]
+      [limit, projectRootUri]
     );
     return result.rows;
   });
@@ -1211,23 +1213,26 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
       const workerId = input?.workerId?.trim() || null;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
+      const projectRootUri = input?.projectRootUri?.trim() || null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">>(
         `with next_task as (
            select wt.id
            from workflow_tasks wt
            join workflow_runs wr on wr.id = wt.run_id
+           join projects p on p.id = wr.project_id
            join workflows wf on wf.id = wr.workflow_id
            join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality stage(definition, stage_order)
              on stage.definition->>'id' = wt.stage_id
            where wt.status = 'queued'
              and wr.status in ('queued', 'running')
              and wt.available_at <= now()
+             and ($3::text is null or p.root_uri = $3)
              and not exists (
                select 1
                from workflow_tasks prior
@@ -1275,7 +1280,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            wt.lease_expires_at::text as "leaseExpiresAt",
            coalesce(wr.model_tier_override, a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds]
+        [workerId, leaseSeconds, projectRootUri]
       );
 
       if (!result.rows[0]) {

@@ -172,9 +172,11 @@ npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
 npm run dev:agentflow       # Start services, dashboard, and supervised worker
 npm run dev:agentflow:stop  # Stop the local dashboard and worker
 npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
+npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run agentflow -- recover-leases # Requeue expired worker-owned tasks
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run-and-watch build-feature -p . -t "task" # Incrementally index, run, export, summarize
+npm run agentflow -- run-and-watch build-feature -p . -t "task" --worker-concurrency 3 # Process stages concurrently within policy
 npm run agentflow -- run-and-watch build-feature -p . -t "task" --full-index # Force a clean full context refresh
 npm run agentflow -- run build-feature -p . -t "task"  # Run specific workflow
 npm run agentflow -- run build-feature -p . -t "task" --policy-profile staging # Apply target guardrails
