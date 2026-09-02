@@ -10994,14 +10994,14 @@ function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): str
           ? "ready"
           : "worker attention";
   const nextAction = failedRuns
-    ? `<a class="button secondary" href="/queue">Review Failed Runs</a>`
+    ? `<a class="button secondary" href="/queue" title="Open the queue filtered by recent run state so failed runs can be inspected or dismissed.">Review Failed Runs</a>`
     : expiredLeases
       ? queueRecoverExpiredLeasesForm()
       : queuedTasks > 0 && workerReady
         ? queueProcessForm("")
-        : queuedTasks > 0
-          ? `<a class="button secondary" href="/settings">Start Worker</a>`
-          : `<a class="button secondary" href="/queue">Open Queue</a>`;
+      : queuedTasks > 0
+          ? `<a class="button secondary" href="/settings" title="Open worker setup commands for starting the local Agent Workflow worker.">Start Worker</a>`
+          : `<a class="button secondary" href="/queue" title="Open queue details, recovery actions, and worker controls.">Open Queue</a>`;
   return `<section class="panel operations-panel">
     <div class="section-heading">
       <div>
@@ -11009,17 +11009,17 @@ function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): str
         <span class="muted">Current queue and worker state for local agent execution.</span>
       </div>
       <div class="actions">
-        <a class="button secondary" href="/queue">Open Queue</a>
-        <a class="button secondary" href="/settings">Worker Setup</a>
+        <a class="button secondary" href="/queue" title="Inspect queued, running, failed, and expired workflow stage tasks.">Open Queue</a>
+        <a class="button secondary" href="/settings" title="View local dashboard, worker, MCP, and provider startup commands.">Worker Setup</a>
       </div>
     </div>
     <div class="ops-strip">
       <div class="ops-state ${statusClass}"><strong>${escapeHtml(statusText)}</strong><span>${escapeHtml(workerStatusDetail(health.worker))}</span><div class="ops-action">${nextAction}</div></div>
-      <a href="/queue"><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></a>
-      <a href="/queue"><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></a>
-      <a href="/queue"><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></a>
-      <a href="/queue"><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></a>
-      <a href="/queue"><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></a>
+      <a href="/queue" aria-label="${formatNumber(activeRuns)} active workflow runs" title="Open active queued or running workflow runs."><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></a>
+      <a href="/queue" aria-label="${formatNumber(queuedTasks)} queued stage tasks" title="Open stage tasks waiting for a worker."><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></a>
+      <a href="/queue" aria-label="${formatNumber(runningTasks)} running stage tasks" title="Open stage tasks currently leased by a worker."><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></a>
+      <a href="/queue" aria-label="${formatNumber(failedRuns)} failed workflow runs" title="Open failed runs that may need review, retry, or dismissal."><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></a>
+      <a href="/queue" aria-label="${formatNumber(expiredLeases)} expired worker leases" title="Open expired leases that can be requeued after worker interruption."><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></a>
     </div>
   </section>`;
 }
@@ -11383,7 +11383,9 @@ function dashboardCss(): string {
     .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .quick-actions { margin-top: 12px; }
-    .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; }
+    .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease, transform .15s ease; }
+    .button:hover, button:hover { background: #1e40af; border-color: #1e40af; box-shadow: 0 1px 3px rgba(29, 78, 216, .22); }
+    .button:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
     input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
     .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
     .worker-form { display: inline-flex; }
@@ -11405,6 +11407,7 @@ function dashboardCss(): string {
     .wide { grid-column: 1 / -1; }
     .form-actions { display: flex; align-items: end; }
     .secondary { background: white; color: #1d4ed8; }
+    .secondary:hover { background: #eff6ff; border-color: #93c5fd; color: #1e40af; }
     .danger { border-color: #b91c1c; background: #b91c1c; color: white; }
     .warn-panel { border-color: #fcd34d; background: #fffbeb; }
     .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
@@ -11419,8 +11422,8 @@ function dashboardCss(): string {
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
     .operations-panel { border-color: #cbd5e1; }
     .ops-strip { display: grid; grid-template-columns: minmax(260px, 1.7fr) repeat(5, minmax(104px, 1fr)); gap: 10px; }
-    .ops-strip > div, .ops-strip > a { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; color: #172033; }
-    .ops-strip > a:hover { border-color: #93c5fd; background: #eff6ff; }
+    .ops-strip > div, .ops-strip > a { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; color: #172033; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
+    .ops-strip > a:hover { border-color: #93c5fd; background: #eff6ff; box-shadow: 0 6px 18px rgba(37, 99, 235, .12); transform: translateY(-1px); }
     .ops-strip strong { color: #172033; font-size: 20px; line-height: 1.15; }
     .ops-strip span { color: #64748b; font-size: 12px; line-height: 1.35; }
     .ops-state.good { border-color: #86efac; background: #f0fdf4; }

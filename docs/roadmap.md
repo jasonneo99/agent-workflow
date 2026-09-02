@@ -275,8 +275,9 @@ foundation is complete.
   - [x] Group dashboard navigation into clearer operating areas.
   - [x] Rerun `ux-reviewer` after dashboard hierarchy changes.
   - [x] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
-  - [ ] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
-  - Next: run a final dashboard UX review after the grouped navigation and operations snapshot updates.
+  - [x] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
+  - [x] Add clearer hover, focus, tooltip, and accessibility affordances to operations snapshot actions.
+  - Next: run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
