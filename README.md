@@ -196,6 +196,7 @@ npm run agentflow -- approvals # Review pending agent-requested actions
 npm run agentflow -- approvals --approve <id> --actor "Your Name" --actor-role approver # Record role-aware approval
 npm run agentflow -- roles -p . # Inspect team role config and recent approval decisions by role
 npm run agentflow -- artifact-lifecycle -p . # Inspect read-only artifact inventory and lifecycle hints
+npm run agentflow -- artifact-lifecycle -p . --prune-plan # Preview exact artifact prune candidates without deleting anything
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics

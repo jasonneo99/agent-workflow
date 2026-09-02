@@ -1276,6 +1276,8 @@ Inspect artifact storage without changing it:
 agentflow artifact-lifecycle
 agentflow artifact-lifecycle --project /path/to/project
 agentflow artifact-lifecycle --kind stage_output --limit 100 --json
+agentflow artifact-lifecycle --project /path/to/project --prune-plan
+agentflow artifact-lifecycle --project /path/to/project --prune-plan --min-age-days 60 --min-bytes 50000 --json
 ```
 
 The report groups recent artifacts by project, artifact kind, age bucket, and
@@ -1288,3 +1290,10 @@ Open `/artifact-lifecycle` in the dashboard for the same read-only inventory.
 version does not delete, archive, or prune artifacts. Future prune-plan tooling
 should cite exact artifact ids, explain each reason, record receipts, and require
 explicit approval before any destructive action.
+
+Add `--prune-plan` or enable **Show dry-run prune plan** in the dashboard to
+preview exact candidate artifact ids, URIs, run links, reasons, and estimated
+recoverable JSON storage. The plan is always `mode: dry-run`; it does not mutate
+Postgres, object storage, or project files. By default, audit artifacts such as
+action approvals, run feedback, command output, and file-write receipts are
+excluded. Use `--include-audit` only for review planning, not automatic cleanup.
