@@ -1313,6 +1313,9 @@ storage:
     retain_audit_artifacts: true
     legal_hold: false
     require_approval_for_prune: true
+    allow_archive_execution: false
+    allow_restore_execution: false
+    allow_prune_execution: false
 ```
 
 The CLI and dashboard use these project-local settings when a project is
@@ -1341,3 +1344,10 @@ no-op `lifecycle_action` receipts, or `lifecycle_skipped` receipts when the
 policy recheck blocks the action or the target artifact is gone. Each receipt
 includes the current retention policy, target-artifact presence, original
 approval payload, and a clear `destructiveExecutionAvailable: false` marker.
+
+The `allow_*_execution` flags are explicit capability switches for future
+destructive lifecycle behavior. They default to `false`. When a flag is disabled,
+executing an approved lifecycle action records a `lifecycle_skipped` receipt
+with the policy recheck summary. When a flag is enabled today, execution still
+records only a no-op `lifecycle_action` receipt because destructive archive,
+restore, prune, and delete implementations are intentionally not present yet.

@@ -30,7 +30,10 @@ const project: ProjectConfig = {
       min_prune_bytes: 20_000,
       retain_audit_artifacts: true,
       legal_hold: false,
-      require_approval_for_prune: true
+      require_approval_for_prune: true,
+      allow_archive_execution: false,
+      allow_restore_execution: false,
+      allow_prune_execution: false
     }
   },
   execution: {

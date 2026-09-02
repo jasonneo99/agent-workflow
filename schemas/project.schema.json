@@ -40,14 +40,20 @@
             "min_prune_bytes": { "type": "integer", "minimum": 1, "default": 20000 },
             "retain_audit_artifacts": { "type": "boolean", "default": true },
             "legal_hold": { "type": "boolean", "default": false },
-            "require_approval_for_prune": { "type": "boolean", "default": true }
+            "require_approval_for_prune": { "type": "boolean", "default": true },
+            "allow_archive_execution": { "type": "boolean", "default": false },
+            "allow_restore_execution": { "type": "boolean", "default": false },
+            "allow_prune_execution": { "type": "boolean", "default": false }
           },
           "default": {
             "retention_days": 30,
             "min_prune_bytes": 20000,
             "retain_audit_artifacts": true,
             "legal_hold": false,
-            "require_approval_for_prune": true
+            "require_approval_for_prune": true,
+            "allow_archive_execution": false,
+            "allow_restore_execution": false,
+            "allow_prune_execution": false
           }
         }
       }

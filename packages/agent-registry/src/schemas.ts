@@ -149,13 +149,19 @@ const artifactLifecycleSchema = z.object({
   min_prune_bytes: z.number().int().positive().default(20_000),
   retain_audit_artifacts: z.boolean().default(true),
   legal_hold: z.boolean().default(false),
-  require_approval_for_prune: z.boolean().default(true)
+  require_approval_for_prune: z.boolean().default(true),
+  allow_archive_execution: z.boolean().default(false),
+  allow_restore_execution: z.boolean().default(false),
+  allow_prune_execution: z.boolean().default(false)
 }).default({
   retention_days: 30,
   min_prune_bytes: 20_000,
   retain_audit_artifacts: true,
   legal_hold: false,
-  require_approval_for_prune: true
+  require_approval_for_prune: true,
+  allow_archive_execution: false,
+  allow_restore_execution: false,
+  allow_prune_execution: false
 });
 
 export const projectConfigSchema = z.object({
@@ -182,7 +188,10 @@ export const projectConfigSchema = z.object({
       min_prune_bytes: 20_000,
       retain_audit_artifacts: true,
       legal_hold: false,
-      require_approval_for_prune: true
+      require_approval_for_prune: true,
+      allow_archive_execution: false,
+      allow_restore_execution: false,
+      allow_prune_execution: false
     }
   }),
   execution: z.object({

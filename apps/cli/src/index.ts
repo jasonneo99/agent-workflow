@@ -2030,8 +2030,8 @@ program
       prunePlan: Boolean(options.prunePlan || options.queueApprovals),
       archivePlan: Boolean(options.archivePlan || options.queueArchiveApprovals),
       restorePlan: Boolean(options.restorePlan || options.queueRestoreApprovals),
-      minAgeDays: options.minAgeDays ? parsePositiveInteger(options.minAgeDays, 30) : undefined,
-      minBytes: options.minBytes ? parsePositiveInteger(options.minBytes, 20_000) : undefined,
+      minAgeDays: options.minAgeDays ? parseNonNegativeInteger(options.minAgeDays, 30) : undefined,
+      minBytes: options.minBytes ? parseNonNegativeInteger(options.minBytes, 20_000) : undefined,
       includeAudit: options.includeAudit === true ? true : undefined
     });
     if (options.queueApprovals) {
@@ -3328,6 +3328,9 @@ type ArtifactLifecyclePolicy = {
   retainAuditArtifacts: boolean;
   legalHold: boolean;
   requireApprovalForPrune: boolean;
+  allowArchiveExecution: boolean;
+  allowRestoreExecution: boolean;
+  allowPruneExecution: boolean;
 };
 
 type ArtifactPrunePlan = {
@@ -3762,7 +3765,10 @@ async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Pr
     minPruneBytes: 20_000,
     retainAuditArtifacts: true,
     legalHold: false,
-    requireApprovalForPrune: true
+    requireApprovalForPrune: true,
+    allowArchiveExecution: false,
+    allowRestoreExecution: false,
+    allowPruneExecution: false
   };
   if (!projectRootUri || !await pathExists(path.join(projectRootUri, ".agent-workflow", "project.yaml"))) {
     return fallback;
@@ -3864,6 +3870,7 @@ async function queueArtifactLifecycleApprovals(input: {
         retentionPolicy: input.report.retentionPolicy,
         criteria: plan.criteria,
         roleGate: requestRoleGate.message,
+        destructiveCapabilityEnabled: lifecycleExecutionCapabilityEnabled(input.report.retentionPolicy, input.action),
         destructiveExecutionAvailable: false
       },
       payload: {
@@ -3927,6 +3934,9 @@ function formatArtifactLifecycleReport(report: ArtifactLifecycleReport): string 
     `- Retain audit artifacts: ${report.retentionPolicy.retainAuditArtifacts}`,
     `- Legal hold: ${report.retentionPolicy.legalHold}`,
     `- Approval required: ${report.retentionPolicy.requireApprovalForPrune}`,
+    `- Archive execution enabled: ${report.retentionPolicy.allowArchiveExecution}`,
+    `- Restore execution enabled: ${report.retentionPolicy.allowRestoreExecution}`,
+    `- Prune execution enabled: ${report.retentionPolicy.allowPruneExecution}`,
     "",
     `By kind: ${formatInlineCounts(report.byKind) || "none"}`,
     `By age: ${formatInlineCounts(report.byAgeBucket) || "none"}`,
@@ -5772,8 +5782,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       prunePlan: requestUrl.searchParams.get("prunePlan") === "true",
       archivePlan: requestUrl.searchParams.get("archivePlan") === "true",
       restorePlan: requestUrl.searchParams.get("restorePlan") === "true",
-      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
-      minBytes: requestUrl.searchParams.has("minBytes") ? parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
+      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parseNonNegativeInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
+      minBytes: requestUrl.searchParams.has("minBytes") ? parseNonNegativeInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
       includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -6081,8 +6091,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       prunePlan: requestUrl.searchParams.get("prunePlan") === "true",
       archivePlan: requestUrl.searchParams.get("archivePlan") === "true",
       restorePlan: requestUrl.searchParams.get("restorePlan") === "true",
-      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parsePositiveInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
-      minBytes: requestUrl.searchParams.has("minBytes") ? parsePositiveInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
+      minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parseNonNegativeInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
+      minBytes: requestUrl.searchParams.has("minBytes") ? parseNonNegativeInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
       includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
     });
     const projects = await listProjectStorageSummaries(100);
@@ -8013,7 +8023,7 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
   ${dashboardNav("artifact-lifecycle")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
-  <section class="panel"><div class="section-heading"><div><h2>Retention Policy</h2><span class="muted">Project-local defaults from .agent-workflow/project.yaml. Empty filter fields use this policy; filled fields become preview-only overrides.</span></div></div><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(report.retentionPolicy.source)}</div><div><strong>Retention</strong>${report.retentionPolicy.retentionDays} days</div><div><strong>Minimum size</strong>${escapeHtml(formatBytes(report.retentionPolicy.minPruneBytes))}</div><div><strong>Audit artifacts</strong>${report.retentionPolicy.retainAuditArtifacts ? "retained by default" : "eligible by policy"}</div><div><strong>Legal hold</strong>${report.retentionPolicy.legalHold ? "enabled" : "off"}</div><div><strong>Approval</strong>${report.retentionPolicy.requireApprovalForPrune ? "required" : "project policy allows approval-free preview"}</div></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Retention Policy</h2><span class="muted">Project-local defaults from .agent-workflow/project.yaml. Empty filter fields use this policy; filled fields become preview-only overrides.</span></div></div><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(report.retentionPolicy.source)}</div><div><strong>Retention</strong>${report.retentionPolicy.retentionDays} days</div><div><strong>Minimum size</strong>${escapeHtml(formatBytes(report.retentionPolicy.minPruneBytes))}</div><div><strong>Audit artifacts</strong>${report.retentionPolicy.retainAuditArtifacts ? "retained by default" : "eligible by policy"}</div><div><strong>Legal hold</strong>${report.retentionPolicy.legalHold ? "enabled" : "off"}</div><div><strong>Approval</strong>${report.retentionPolicy.requireApprovalForPrune ? "required" : "project policy allows approval-free preview"}</div><div><strong>Archive execution</strong>${report.retentionPolicy.allowArchiveExecution ? "enabled" : "disabled"}</div><div><strong>Restore execution</strong>${report.retentionPolicy.allowRestoreExecution ? "enabled" : "disabled"}</div><div><strong>Prune execution</strong>${report.retentionPolicy.allowPruneExecution ? "enabled" : "disabled"}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Lifecycle Hints</h2><span class="muted">Hints are conservative and non-destructive. Future prune plans should cite exact ids and require approval.</span></div></div><ul>${hintRows || "<li>No lifecycle concerns found in the inspected artifact window.</li>"}</ul></section>
   ${report.prunePlan ? `<section class="panel"><div class="section-heading"><div><h2>Dry-run Prune Plan</h2><span class="muted">Preview only. No artifacts are deleted, archived, or modified.</span></div><div class="meta-grid"><div><strong>Candidates</strong>${report.prunePlan.totalCandidates}</div><div><strong>Recoverable</strong>${escapeHtml(formatBytes(report.prunePlan.estimatedBytesRecoverable))}</div><div><strong>Criteria</strong>${escapeHtml(report.prunePlan.criteria.policySource)}</div><div><strong>Approval</strong>${report.prunePlan.approvalRequired ? "required" : "not required by policy"}</div></div></div><ul>${pruneNotes}</ul>${queueApprovalForm || '<p class="muted">Select a project to queue lifecycle approvals for this prune plan.</p>'}<div class="table-wrap"><table><thead><tr><th>Artifact</th><th>Project</th><th>Run</th><th>Age/Size</th><th>Reason</th><th>Receipt Preview</th><th>URI</th></tr></thead><tbody>${pruneRows || '<tr><td colspan="7">No artifacts matched the current prune criteria.</td></tr>'}</tbody></table></div></section>` : ""}
   ${renderLifecyclePlanPanel(report.archivePlan)}
@@ -9827,8 +9837,8 @@ async function processDashboardArtifactLifecycleAction(input: {
     prunePlan: action === "prune",
     archivePlan: action === "archive",
     restorePlan: action === "restore",
-    minAgeDays: input.minAgeDays.trim() ? parsePositiveInteger(input.minAgeDays, 30) : undefined,
-    minBytes: input.minBytes.trim() ? parsePositiveInteger(input.minBytes, 20_000) : undefined,
+    minAgeDays: input.minAgeDays.trim() ? parseNonNegativeInteger(input.minAgeDays, 30) : undefined,
+    minBytes: input.minBytes.trim() ? parseNonNegativeInteger(input.minBytes, 20_000) : undefined,
     includeAudit: input.includeAudit ? true : undefined
   });
   const queue = await queueArtifactLifecycleApprovals({
@@ -10226,6 +10236,7 @@ async function executeLifecycleApproval(input: {
 }): Promise<DashboardFollowUpResult> {
   const lifecycleAction = input.approval.actionType.replace(/^artifact_/, "") as ArtifactLifecycleAction;
   const currentPolicy = lifecyclePolicyFromProject(input.project, "project");
+  const capabilityEnabled = lifecycleExecutionCapabilityEnabled(currentPolicy, lifecycleAction);
   const targetArtifact = await getArtifactByUri(input.approval.target);
   const policyRecheck = {
     checkedAt: new Date().toISOString(),
@@ -10236,14 +10247,16 @@ async function executeLifecycleApproval(input: {
     targetArtifactFound: Boolean(targetArtifact),
     targetArtifactKind: targetArtifact?.kind ?? null,
     targetArtifactCreatedAt: targetArtifact?.createdAt ?? null,
+    capabilityEnabled,
     destructiveExecutionAvailable: false
   };
   const skipReasons = [
     currentPolicy.legalHold ? "Project legal hold is enabled." : "",
+    capabilityEnabled ? "" : `Project policy has allow_${lifecycleAction}_execution disabled.`,
     targetArtifact ? "" : "Target artifact is no longer present in storage.",
     "Destructive lifecycle execution is not implemented in this version."
   ].filter(Boolean);
-  const skipped = currentPolicy.legalHold || !targetArtifact;
+  const skipped = currentPolicy.legalHold || !capabilityEnabled || !targetArtifact;
   const summary = skipped
     ? `Lifecycle ${lifecycleAction} skipped after policy recheck: ${skipReasons.join(" ")}`
     : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because destructive execution is not implemented.`;
@@ -10289,7 +10302,7 @@ async function executeLifecycleApproval(input: {
       `Artifact: ${artifactUri}`,
       `Role gate: ${input.executionRoleGate}`,
       `Separation of duties: ${input.separationGate}`,
-      `Policy recheck: legalHold=${currentPolicy.legalHold} targetFound=${Boolean(targetArtifact)} destructiveExecutionAvailable=false`,
+      `Policy recheck: legalHold=${currentPolicy.legalHold} capabilityEnabled=${capabilityEnabled} targetFound=${Boolean(targetArtifact)} destructiveExecutionAvailable=false`,
       skipped ? `Skipped: ${skipReasons.join(" ")}` : "This execution recorded a no-op lifecycle receipt only.",
       `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
     ].join("\n")
@@ -10303,8 +10316,17 @@ function lifecyclePolicyFromProject(project: ProjectConfig, source: ArtifactLife
     minPruneBytes: project.storage.artifact_lifecycle.min_prune_bytes,
     retainAuditArtifacts: project.storage.artifact_lifecycle.retain_audit_artifacts,
     legalHold: project.storage.artifact_lifecycle.legal_hold,
-    requireApprovalForPrune: project.storage.artifact_lifecycle.require_approval_for_prune
+    requireApprovalForPrune: project.storage.artifact_lifecycle.require_approval_for_prune,
+    allowArchiveExecution: project.storage.artifact_lifecycle.allow_archive_execution,
+    allowRestoreExecution: project.storage.artifact_lifecycle.allow_restore_execution,
+    allowPruneExecution: project.storage.artifact_lifecycle.allow_prune_execution
   };
+}
+
+function lifecycleExecutionCapabilityEnabled(policy: ArtifactLifecyclePolicy, action: ArtifactLifecycleAction): boolean {
+  if (action === "archive") return policy.allowArchiveExecution;
+  if (action === "restore") return policy.allowRestoreExecution;
+  return policy.allowPruneExecution;
 }
 
 async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>): Promise<{ path: string; content: string }> {
@@ -13312,6 +13334,11 @@ function parsePositiveInteger(value: string, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
+function parseNonNegativeInteger(value: string, fallback: number): number {
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
 function parseBoundedPositiveInteger(value: string, fallback: number, max: number): number {
   return Math.min(parsePositiveInteger(value, fallback), max);
 }
@@ -13600,7 +13627,10 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         min_prune_bytes: 20_000,
         retain_audit_artifacts: true,
         legal_hold: false,
-        require_approval_for_prune: true
+        require_approval_for_prune: true,
+        allow_archive_execution: false,
+        allow_restore_execution: false,
+        allow_prune_execution: false
       }
     },
     execution: {

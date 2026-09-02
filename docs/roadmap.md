@@ -260,8 +260,10 @@ foundation is complete.
   - [x] Add guarded archive/restore previews and no-op receipts before any prune/delete path.
   - [x] Record lifecycle execution receipts for skipped items before allowing destructive actions.
   - [x] Add policy recheck summaries to lifecycle no-op and skipped receipts.
-  - [ ] Require explicit approval and policy recheck for any write/delete operation against local files or object storage.
-  - Next: add explicit destructive-action capability flags and policy recheck gates before any write/delete operation against local files or object storage.
+  - [x] Add explicit destructive-action capability flags and policy recheck gates before any write/delete operation against local files or object storage.
+  - [ ] Add real archive/restore execution behind disabled-by-default capability flags and approval rechecks.
+  - [ ] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
+  - Next: add real archive execution behind disabled-by-default capability flags before any prune/delete path.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
