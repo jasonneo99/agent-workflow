@@ -777,6 +777,9 @@ Project-local team roles live in `.agent-workflow/project.yaml`:
 team:
   enforcement: preview
   default_actor_role: operator
+  separation_of_duties:
+    mode: off
+    prevent_same_actor_approval_execution: true
   roles:
     operator:
       description: Runs local workflows and executes approved local actions.
@@ -816,6 +819,18 @@ team:
 In `enforce` mode, request, approve, reject, and execute approval actions must
 use a configured role with the matching capability. Action policy still applies
 after role checks; roles do not bypass command or file-write guardrails.
+
+Projects can also opt into separation-of-duties checks. `preview` records a
+warning when the same actor approves and executes an action. `enforce` blocks
+that execution and asks for a different executor. The default is `off` so
+existing local workflows keep running after upgrades.
+
+```yaml
+team:
+  separation_of_duties:
+    mode: preview
+    prevent_same_actor_approval_execution: true
+```
 
 CLI equivalents:
 

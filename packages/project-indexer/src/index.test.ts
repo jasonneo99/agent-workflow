@@ -38,6 +38,10 @@ const project: ProjectConfig = {
   team: {
     enforcement: "preview",
     default_actor_role: "operator",
+    separation_of_duties: {
+      mode: "off",
+      prevent_same_actor_approval_execution: true
+    },
     roles: {}
   },
   actions: {

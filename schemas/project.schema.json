@@ -66,6 +66,18 @@
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/teamRole" },
           "default": {}
+        },
+        "separation_of_duties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": { "enum": ["off", "preview", "enforce"], "default": "off" },
+            "prevent_same_actor_approval_execution": { "type": "boolean", "default": true }
+          },
+          "default": {
+            "mode": "off",
+            "prevent_same_actor_approval_execution": true
+          }
         }
       }
     },

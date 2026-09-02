@@ -136,6 +136,14 @@ const teamRoleSchema = z.object({
   read_only: z.boolean().default(false)
 });
 
+const separationOfDutiesSchema = z.object({
+  mode: z.enum(["off", "preview", "enforce"]).default("off"),
+  prevent_same_actor_approval_execution: z.boolean().default(true)
+}).default({
+  mode: "off",
+  prevent_same_actor_approval_execution: true
+});
+
 export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
@@ -169,11 +177,16 @@ export const projectConfigSchema = z.object({
   team: z.object({
     enforcement: z.enum(["preview", "enforce"]).default("preview"),
     default_actor_role: z.string().min(1).default("operator"),
-    roles: z.record(z.string(), teamRoleSchema).default({})
+    roles: z.record(z.string(), teamRoleSchema).default({}),
+    separation_of_duties: separationOfDutiesSchema
   }).default({
     enforcement: "preview",
     default_actor_role: "operator",
-    roles: {}
+    roles: {},
+    separation_of_duties: {
+      mode: "off",
+      prevent_same_actor_approval_execution: true
+    }
   }),
   actions: z.object({
     allowed_commands: z.array(z.string()).default([

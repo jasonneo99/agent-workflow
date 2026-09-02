@@ -118,6 +118,9 @@ export async function migrateStorage(): Promise<void> {
         decided_by text,
         decided_role text,
         decided_at timestamptz,
+        executed_by text,
+        executed_role text,
+        executed_at timestamptz,
         decision_note text,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now(),
@@ -127,6 +130,18 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`
       ALTER TABLE action_approvals
       ADD COLUMN IF NOT EXISTS decided_role text
+    `);
+    await client.query(`
+      ALTER TABLE action_approvals
+      ADD COLUMN IF NOT EXISTS executed_by text
+    `);
+    await client.query(`
+      ALTER TABLE action_approvals
+      ADD COLUMN IF NOT EXISTS executed_role text
+    `);
+    await client.query(`
+      ALTER TABLE action_approvals
+      ADD COLUMN IF NOT EXISTS executed_at timestamptz
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
@@ -1605,6 +1620,9 @@ export interface ActionApprovalStatus {
   decidedBy: string | null;
   decidedRole: string | null;
   decidedAt: string | null;
+  executedBy: string | null;
+  executedRole: string | null;
+  executedAt: string | null;
   decisionNote: string | null;
   createdAt: string;
   updatedAt: string;
@@ -1630,6 +1648,9 @@ const actionApprovalSelect = `
   aa.decided_by as "decidedBy",
   aa.decided_role as "decidedRole",
   aa.decided_at::text as "decidedAt",
+  aa.executed_by as "executedBy",
+  aa.executed_role as "executedRole",
+  aa.executed_at::text as "executedAt",
   aa.decision_note as "decisionNote",
   aa.created_at::text as "createdAt",
   aa.updated_at::text as "updatedAt",
@@ -1884,6 +1905,9 @@ export async function markActionApprovalExecution(input: {
              decided_by = coalesce(aa.decided_by, $3),
              decided_role = coalesce(aa.decided_role, $5),
              decided_at = coalesce(aa.decided_at, now()),
+             executed_by = $3,
+             executed_role = $5,
+             executed_at = now(),
              decision_note = concat_ws(E'\n', nullif(aa.decision_note, ''), $4::text),
              updated_at = now()
          from workflow_runs wr, projects p

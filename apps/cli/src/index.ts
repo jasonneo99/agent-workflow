@@ -3168,6 +3168,7 @@ type DashboardRoleProject = {
   rootUri: string;
   configStatus: "valid" | "missing" | "invalid";
   enforcement: "preview" | "enforce";
+  separationOfDuties: "off" | "preview" | "enforce";
   defaultActorRole: string;
   roles: Array<{
     id: string;
@@ -3405,6 +3406,7 @@ async function loadDashboardRoleProject(summary: DashboardProjectSummary): Promi
     rootUri: summary.rootUri,
     configStatus,
     enforcement: config?.team.enforcement ?? "preview",
+    separationOfDuties: config?.team.separation_of_duties.mode ?? "off",
     defaultActorRole: config?.team.default_actor_role ?? "operator",
     roles: Object.entries(config?.team.roles ?? {}).map(([id, role]) => ({
       id,
@@ -3463,7 +3465,7 @@ function formatRoleGovernanceReport(report: DashboardRoleGovernanceReport): stri
   for (const project of report.projects) {
     lines.push(`- ${project.name} [${project.configStatus}]`);
     lines.push(`  ${project.rootUri}`);
-    lines.push(`  enforcement=${project.enforcement} default=${project.defaultActorRole}`);
+    lines.push(`  enforcement=${project.enforcement} separationOfDuties=${project.separationOfDuties} default=${project.defaultActorRole}`);
     for (const role of project.roles) {
       lines.push(`  - ${role.id}: ${role.capabilities.join(", ") || "no capabilities"}${role.description ? ` - ${role.description}` : ""}`);
     }
@@ -7069,7 +7071,7 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
     <tr>
       <td><strong>${escapeHtml(role.id)}</strong>${project.defaultActorRole === role.id ? ' <span class="flag good">default</span>' : ""}<br><span class="muted">${escapeHtml(role.description || "No description")}</span></td>
       <td>${escapeHtml(project.name)}<br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
-      <td><span class="flag ${project.enforcement === "enforce" ? "warn" : "good"}">${project.enforcement}</span><br><span class="muted">config: ${project.configStatus}</span></td>
+      <td><span class="flag ${project.enforcement === "enforce" ? "warn" : "good"}">${project.enforcement}</span><br><span class="muted">separation: ${project.separationOfDuties}<br>config: ${project.configStatus}</span></td>
       <td><div class="chip-row">${role.capabilities.map((capability) => `<span class="chip">${escapeHtml(capability)}</span>`).join("") || '<span class="muted">No capabilities configured.</span>'}</div></td>
     </tr>`)).join("");
   const decisionRows = report.decisionsByRole.map((role) => `
@@ -7087,6 +7089,7 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
       <td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td>
       <td><strong>${escapeHtml(approval.actionType)}</strong><br><span class="muted">${escapeHtml(approval.target)}</span></td>
       <td>${escapeHtml(approval.decidedRole ?? (approval.status === "pending" ? "pending" : "unrecorded"))}<br><span class="muted">${escapeHtml(approval.decidedBy ?? "not decided")}</span></td>
+      <td>${escapeHtml(approval.executedRole ?? "not executed")}<br><span class="muted">${escapeHtml(approval.executedBy ?? "not executed")}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.workflowId)} / ${escapeHtml(approval.stageId)}</span></td>
       <td>${renderDashboardDateTime(approval.updatedAt)}</td>
     </tr>`).join("");
@@ -7101,7 +7104,7 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
-  <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="5">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+  <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Decision Role</th><th>Execution Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="6">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
 }
 
 type DashboardBundleReadiness = {
@@ -9062,6 +9065,10 @@ async function executeApprovedAction(input: {
   if (!executionRoleGate.allowed) {
     return { ok: false, error: executionRoleGate.message };
   }
+  const separationGate = evaluateSeparationOfDuties(project, approval, input.actor);
+  if (!separationGate.allowed) {
+    return { ok: false, error: separationGate.message };
+  }
 
   if (approval.actionType === "deployment" || approval.actionType === "autonomy") {
     return {
@@ -9073,6 +9080,7 @@ async function executeApprovedAction(input: {
         `Action: ${approval.actionType}`,
         `Target: ${approval.target}`,
         `Role gate: ${executionRoleGate.message}`,
+        `Separation of duties: ${separationGate.message}`,
         "This approval records a human decision; it does not execute a local command.",
         "Run any deployment or autonomy-changing command separately under project policy."
       ].join("\n")
@@ -12249,6 +12257,26 @@ function evaluateRoleGate(project: ProjectConfig, actorRole: string, capability:
   };
 }
 
+function evaluateSeparationOfDuties(project: ProjectConfig, approval: DashboardActionApproval, actor: string): { allowed: boolean; message: string } {
+  const config = project.team.separation_of_duties;
+  if (config.mode === "off" || !config.prevent_same_actor_approval_execution) {
+    return { allowed: true, message: "off" };
+  }
+  if (!approval.decidedBy || approval.decidedBy !== actor) {
+    return {
+      allowed: true,
+      message: `${config.mode}: approver and executor are distinct or the approver is unrecorded.`
+    };
+  }
+  const message = `Separation of duties ${config.mode}: ${actor} approved this action and is now executing it.`;
+  return {
+    allowed: config.mode !== "enforce",
+    message: config.mode === "enforce"
+      ? `${message} Use a different executor or set team.separation_of_duties.mode to preview/off.`
+      : message
+  };
+}
+
 function cliOptionValue<T extends string | number | undefined>(value: T, flags: string[], fallback: T): T {
   const wasProvided = process.argv.some((arg) => flags.includes(arg) || flags.some((flag) => arg.startsWith(`${flag}=`)));
   return wasProvided ? value : fallback;
@@ -12515,6 +12543,10 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
     team: {
       enforcement: "preview",
       default_actor_role: "operator",
+      separation_of_duties: {
+        mode: "off",
+        prevent_same_actor_approval_execution: true
+      },
       roles: {
         operator: {
           description: "Runs local workflows and executes approved local actions.",
