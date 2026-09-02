@@ -1774,6 +1774,7 @@ program
       console.log(`  Stage: ${approval.stageId} (${approval.agentId})`);
       console.log(`  Project: ${approval.projectRootUri}`);
       console.log(`  Rationale: ${approval.rationale}`);
+      console.log(`  Role preview: ${rolePreviewForApproval(approval)}`);
       if (approval.decidedBy) {
         console.log(`  Decided: ${approval.decidedBy}${approval.decidedRole ? ` (${approval.decidedRole})` : ""} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
       }
@@ -5352,7 +5353,7 @@ function renderApprovalsHtml(
       <td><code>${escapeHtml(approval.target)}</code><br><span class="muted">${escapeHtml(formatApprovalPayload(approval.payload))}</span></td>
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
-      <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
+      <td>${escapeHtml(approval.rationale)}<br><span class="muted">${escapeHtml(rolePreviewForApproval(approval))}</span>${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
       <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
@@ -8605,6 +8606,7 @@ async function processDashboardApprovalAction(input: {
       `Run: ${approval.runId}`,
       `Project: ${approval.projectRootUri}`,
       `Actor role: ${approval.decidedRole ?? normalizeActorRole(input.actorRole, "approver")}`,
+      `Role preview: ${rolePreviewForApproval(approval)}`,
       "Decision receipt was recorded.",
       "Open: /approvals"
     ].join("\n")
@@ -8744,6 +8746,8 @@ async function requestRunLevelApproval(input: {
       `Approval: ${approval.approvalId}`,
       `Type: ${actionType}`,
       `Target: ${target}`,
+      `Requester role: ${input.actorRole ?? "operator"}`,
+      "Role preview: request expects operator; decision expects approver.",
       `Run: ${run.runId}`,
       `Workflow context: ${workflow.id}`,
       `Project: ${projectDir}`,
@@ -9635,6 +9639,21 @@ function approvalDecisionForms(approvalId: string): string {
       <button class="danger" type="submit">Reject</button>
     </form>
   </div>`;
+}
+
+function rolePreviewForApproval(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  if (approval.status === "pending") {
+    return "Role preview: approval decision expects approver.";
+  }
+  if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType)) {
+    return "Role preview: execution expects operator.";
+  }
+  if (approval.actionType === "deployment" || approval.actionType === "autonomy") {
+    return "Role preview: request expects operator; decision expects approver.";
+  }
+  return approval.decidedRole
+    ? `Role preview: recorded as ${approval.decidedRole}.`
+    : "Role preview: no decision role recorded yet.";
 }
 
 function approvalExecuteForm(approvalId: string): string {

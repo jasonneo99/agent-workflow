@@ -793,9 +793,11 @@ team:
 ```
 
 Approval decisions and execution receipts record the actor role for audit
-visibility. Role recording is intentionally lightweight in this release; policy
-enforcement remains controlled by action policy, approval requirements, and
-human review.
+visibility. The CLI and dashboard also show read-only role previews, such as
+`approval decision expects approver` or `execution expects operator`, before any
+role-based blocking exists. Role recording is intentionally lightweight in this
+release; policy enforcement remains controlled by action policy, approval
+requirements, and human review.
 
 CLI equivalents:
 

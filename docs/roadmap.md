@@ -235,7 +235,8 @@ foundation is complete.
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
   - Done: add project-local role definitions and record actor roles on approval decisions and execution receipts.
-  - Next: add read-only role enforcement previews before blocking actions by role.
+  - Done: add read-only role enforcement previews before blocking actions by role.
+  - Next: add opt-in role enforcement gates for approval and execution actions.
 
 - [ ] Artifact lifecycle governance.
   - Add configurable retention, archival, deletion receipts, and legal-hold-aware controls.
