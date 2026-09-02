@@ -103,7 +103,8 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Keep repo-based development workflow available.
   - Done: verify release readiness after recent dashboard and model-improvement improvements with the read-only release checker and dry-run release prep.
   - Done: run the real signed patch release prep for the next package version.
-  - Next: publish the prepared package through GitHub Actions Trusted Publishing.
+  - Done: publish `0.2.4` through GitHub Actions Trusted Publishing.
+  - Next: continue the distributed worker-pool controls now that installed users can get the latest dashboard and model-improvement work.
 
 - [x] Multi-project governance.
   - Inspect registered projects, storage health, provider settings, and policy drift.
