@@ -1338,16 +1338,18 @@ restored, or modified.
 Use `--archive-plan` and `--restore-plan` to preview the recovery side of the
 lifecycle process before any delete path exists. Archive plans use the same
 conservative retention criteria as prune plans, but their approvals are
-`artifact_archive` actions. Restore plans only use prior lifecycle archive
-receipts as candidates. Executing approved archive or restore approvals records
-no-op `lifecycle_action` receipts, or `lifecycle_skipped` receipts when the
-policy recheck blocks the action or the target artifact is gone. Each receipt
-includes the current retention policy, target-artifact presence, original
-approval payload, and a clear `destructiveExecutionAvailable: false` marker.
+`artifact_archive` actions. When `allow_archive_execution` is enabled, executing
+an approved archive approval copies the target artifact into an
+`archived_artifact` snapshot, keeps the original artifact in place, records
+restore metadata, and marks `destructiveExecutionAvailable: false`. Restore
+plans only use archived artifact snapshots as candidates. Restore and prune
+execution still record no-op `lifecycle_action` receipts, or
+`lifecycle_skipped` receipts when the policy recheck blocks the action or the
+target artifact is gone.
 
-The `allow_*_execution` flags are explicit capability switches for future
-destructive lifecycle behavior. They default to `false`. When a flag is disabled,
-executing an approved lifecycle action records a `lifecycle_skipped` receipt
-with the policy recheck summary. When a flag is enabled today, execution still
-records only a no-op `lifecycle_action` receipt because destructive archive,
-restore, prune, and delete implementations are intentionally not present yet.
+The `allow_*_execution` flags are explicit capability switches. They default to
+`false`. When a flag is disabled, executing an approved lifecycle action records
+a `lifecycle_skipped` receipt with the policy recheck summary. When
+`allow_archive_execution` is enabled, archive execution creates copied
+`archived_artifact` snapshots only. Restore, prune, and delete implementations
+are intentionally not present yet.

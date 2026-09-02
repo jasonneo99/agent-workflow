@@ -1998,7 +1998,7 @@ program
   .option("-l, --limit <number>", "number of recent artifacts to inspect", "500")
   .option("--prune-plan", "include a dry-run prune plan; does not delete anything")
   .option("--archive-plan", "include a dry-run archive plan; does not archive anything")
-  .option("--restore-plan", "include a dry-run restore plan from lifecycle action receipts; does not restore anything")
+  .option("--restore-plan", "include a dry-run restore plan from archived artifact snapshots; does not restore anything")
   .option("--min-age-days <number>", "override minimum artifact age for prune candidates")
   .option("--min-bytes <number>", "override minimum artifact JSON size for prune candidates")
   .option("--include-audit", "allow audit artifacts in the dry-run prune plan")
@@ -4112,7 +4112,7 @@ function buildArtifactArchivePlan(artifacts: ArtifactLifecycleReport["recentArti
     approvalRequired: criteria.requireApproval,
     notes: [
       "Dry run only. This plan does not archive, move, delete, or mutate artifacts.",
-      "Any future archive execution must copy or mark artifacts first, record lifecycle receipts, and preserve restore metadata.",
+      "Approved archive execution copies artifacts into archived snapshots, records lifecycle receipts, and preserves restore metadata.",
       criteria.includeAudit ? "Audit artifacts were allowed into archive candidate selection by request." : `${artifacts.filter(isAuditArtifact).length} audit artifact(s) were excluded from archive candidate selection.`,
       ...(candidates.length ? [] : ["No artifacts matched the current archive criteria."])
     ],
@@ -4124,15 +4124,16 @@ async function buildArtifactRestorePlan(artifacts: ArtifactLifecycleReport["rece
   if (criteria.legalHold) {
     return emptyArtifactLifecycleActionPlan("restore", criteria, "Project legal hold is enabled; restore candidates are suppressed.");
   }
-  const lifecycleActions = artifacts.filter((artifact) => artifact.kind === "lifecycle_action");
+  const archivedArtifacts = artifacts.filter((artifact) => artifact.kind === "archived_artifact");
   const candidates: ArtifactLifecycleActionPlan["candidates"] = [];
-  for (const artifact of lifecycleActions) {
+  for (const artifact of archivedArtifacts) {
     const fullArtifact = await getArtifactByUri(artifact.uri);
     if (!fullArtifact || fullArtifact.content.originalActionType !== "artifact_archive") continue;
-    const target = stringFromRecord(fullArtifact.content, "target");
+    const restoreMetadata = objectFromRecord(fullArtifact.content, "restoreMetadata");
+    const target = stringFromRecord(restoreMetadata, "originalUri") || stringFromRecord(fullArtifact.content, "target");
     if (!target) continue;
     const ageDays = artifactAgeDays(artifact.createdAt);
-    const reason = `Lifecycle archive receipt can be reviewed for restore target ${target}.`;
+    const reason = `Archived artifact snapshot can be reviewed for restore target ${target}.`;
     candidates.push({
       artifactId: artifact.id,
       uri: target,
@@ -4142,7 +4143,7 @@ async function buildArtifactRestorePlan(artifacts: ArtifactLifecycleReport["rece
       projectRootUri: artifact.projectRootUri,
       workflowId: artifact.workflowId,
       runStatus: artifact.runStatus,
-      kind: "lifecycle_action",
+      kind: "archived_artifact",
       contentBytes: artifact.contentBytes,
       createdAt: artifact.createdAt,
       ageDays,
@@ -4153,7 +4154,7 @@ async function buildArtifactRestorePlan(artifacts: ArtifactLifecycleReport["rece
         uri: target,
         runId: artifact.runId,
         taskId: artifact.taskId,
-        kind: "lifecycle_action",
+        kind: "archived_artifact",
         contentBytes: artifact.contentBytes,
         reason
       })
@@ -4169,8 +4170,8 @@ async function buildArtifactRestorePlan(artifacts: ArtifactLifecycleReport["rece
     approvalRequired: criteria.requireApproval,
     notes: [
       "Dry run only. This plan does not restore, move, delete, or mutate artifacts.",
-      "Restore candidates come only from recorded lifecycle archive receipts.",
-      ...(candidates.length ? [] : ["No lifecycle archive receipts were found in the inspected artifact window."])
+      "Restore candidates come only from archived artifact snapshots.",
+      ...(candidates.length ? [] : ["No archived artifact snapshots were found in the inspected artifact window."])
     ],
     candidates
   };
@@ -9859,7 +9860,7 @@ async function processDashboardArtifactLifecycleAction(input: {
       `Approval requests: ${queue.totalRequested}`,
       ...queue.skipped.map((item) => `Skipped: ${item}`),
       ...queue.approvals.slice(0, 10).map((approval) => `Approval ${approval.approvalId}: ${approval.status} ${approval.target}`),
-      "No artifacts were deleted, archived, or modified.",
+      "No artifacts were deleted or modified. Archive execution creates copied snapshots only after approval.",
       "Open: /approvals"
     ].join("\n")
   };
@@ -10238,6 +10239,7 @@ async function executeLifecycleApproval(input: {
   const currentPolicy = lifecyclePolicyFromProject(input.project, "project");
   const capabilityEnabled = lifecycleExecutionCapabilityEnabled(currentPolicy, lifecycleAction);
   const targetArtifact = await getArtifactByUri(input.approval.target);
+  const archiveExecutionAvailable = lifecycleAction === "archive";
   const policyRecheck = {
     checkedAt: new Date().toISOString(),
     projectRootUri: input.approval.projectRootUri,
@@ -10248,27 +10250,37 @@ async function executeLifecycleApproval(input: {
     targetArtifactKind: targetArtifact?.kind ?? null,
     targetArtifactCreatedAt: targetArtifact?.createdAt ?? null,
     capabilityEnabled,
+    lifecycleExecutionAvailable: archiveExecutionAvailable,
     destructiveExecutionAvailable: false
   };
   const skipReasons = [
     currentPolicy.legalHold ? "Project legal hold is enabled." : "",
     capabilityEnabled ? "" : `Project policy has allow_${lifecycleAction}_execution disabled.`,
     targetArtifact ? "" : "Target artifact is no longer present in storage.",
-    "Destructive lifecycle execution is not implemented in this version."
+    lifecycleAction === "archive" ? "" : "This lifecycle action is not implemented in this version."
   ].filter(Boolean);
   const skipped = currentPolicy.legalHold || !capabilityEnabled || !targetArtifact;
+  const archived = !skipped && lifecycleAction === "archive" && targetArtifact;
   const summary = skipped
     ? `Lifecycle ${lifecycleAction} skipped after policy recheck: ${skipReasons.join(" ")}`
+    : archived
+      ? `Lifecycle archive recorded for ${input.approval.target}; original artifact retained and archived snapshot created.`
     : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because destructive execution is not implemented.`;
   const artifactUri = await recordRunAction({
     runId: input.approval.runId,
     taskId: input.approval.taskId,
     agentId: input.approval.agentId,
-    actionType: skipped ? `artifact_${lifecycleAction}_skipped` : `artifact_${lifecycleAction}_noop`,
+    actionType: skipped ? `artifact_${lifecycleAction}_skipped` : archived ? "artifact_archive_executed" : `artifact_${lifecycleAction}_noop`,
     target: input.approval.target,
     summary,
-    artifactKind: skipped ? "lifecycle_skipped" : "lifecycle_action",
-    artifactContent: {
+    artifactKind: skipped ? "lifecycle_skipped" : archived ? "archived_artifact" : "lifecycle_action",
+    artifactContent: archived ? buildArchivedArtifactContent({
+      approval: input.approval,
+      targetArtifact,
+      policyRecheck,
+      actor: input.actor,
+      actorRole: input.actorRole
+    }) : {
       approvalId: input.approval.id,
       originalActionType: input.approval.actionType,
       lifecycleAction,
@@ -10293,7 +10305,7 @@ async function executeLifecycleApproval(input: {
   });
   return {
     ok: true,
-    title: skipped ? "Lifecycle skip receipt recorded" : "Lifecycle no-op receipt recorded",
+    title: skipped ? "Lifecycle skip receipt recorded" : archived ? "Lifecycle archive snapshot recorded" : "Lifecycle no-op receipt recorded",
     runId: input.approval.runId,
     output: [
       `Approval: ${input.approval.id}`,
@@ -10302,10 +10314,43 @@ async function executeLifecycleApproval(input: {
       `Artifact: ${artifactUri}`,
       `Role gate: ${input.executionRoleGate}`,
       `Separation of duties: ${input.separationGate}`,
-      `Policy recheck: legalHold=${currentPolicy.legalHold} capabilityEnabled=${capabilityEnabled} targetFound=${Boolean(targetArtifact)} destructiveExecutionAvailable=false`,
-      skipped ? `Skipped: ${skipReasons.join(" ")}` : "This execution recorded a no-op lifecycle receipt only.",
-      `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
+      `Policy recheck: legalHold=${currentPolicy.legalHold} capabilityEnabled=${capabilityEnabled} targetFound=${Boolean(targetArtifact)} lifecycleExecutionAvailable=${archiveExecutionAvailable} destructiveExecutionAvailable=false`,
+      skipped ? `Skipped: ${skipReasons.join(" ")}` : archived ? "Archived snapshot created; the original artifact remains present." : "This execution recorded a no-op lifecycle receipt only.",
+      archived
+        ? "No artifact was deleted or modified. Restore metadata was recorded with the archived snapshot."
+        : `Artifact ${lifecycleAction} execution is not implemented yet, so no artifact was deleted, archived, restored, or modified.`
     ].join("\n")
+  };
+}
+
+function buildArchivedArtifactContent(input: {
+  approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>;
+  targetArtifact: NonNullable<Awaited<ReturnType<typeof getArtifactByUri>>>;
+  policyRecheck: Record<string, unknown>;
+  actor: string;
+  actorRole?: string;
+}): Record<string, unknown> {
+  return {
+    approvalId: input.approval.id,
+    originalActionType: input.approval.actionType,
+    lifecycleAction: "archive",
+    target: input.approval.target,
+    policyDecision: input.approval.policyDecision,
+    payload: input.approval.payload,
+    policyRecheck: input.policyRecheck,
+    skipped: false,
+    archivedAt: new Date().toISOString(),
+    archivedBy: input.actor,
+    archivedByRole: input.actorRole ?? null,
+    restoreMetadata: {
+      originalArtifactId: input.targetArtifact.id,
+      originalRunId: input.targetArtifact.runId,
+      originalTaskId: input.targetArtifact.taskId,
+      originalKind: input.targetArtifact.kind,
+      originalUri: input.targetArtifact.uri,
+      originalCreatedAt: input.targetArtifact.createdAt
+    },
+    archivedContent: input.targetArtifact.content
   };
 }
 
@@ -10353,6 +10398,11 @@ async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<ty
 function stringFromRecord(record: Record<string, unknown>, key: string): string | undefined {
   const value = record[key];
   return typeof value === "string" ? value : undefined;
+}
+
+function objectFromRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = record[key];
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 function safeDisplayUrl(value?: string): string | undefined {
