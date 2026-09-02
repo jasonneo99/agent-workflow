@@ -266,7 +266,7 @@ foundation is complete.
   - [ ] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
   - Next: add real restore execution from archived artifact snapshots before any prune/delete path.
 
-- [ ] Dashboard UX pass.
+- [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
   - [x] Run `frontend-engineer` design pass against the dashboard visual system.
   - [x] Improve workflow graph labels, color semantics, and readability controls.
@@ -277,7 +277,8 @@ foundation is complete.
   - [x] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
   - [x] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
   - [x] Add clearer hover, focus, tooltip, and accessibility affordances to operations snapshot actions.
-  - Next: run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
+  - [x] Run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
+  - Next: continue artifact lifecycle governance with real restore execution behind disabled-by-default capability flags and approval rechecks.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.
