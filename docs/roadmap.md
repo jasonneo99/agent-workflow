@@ -216,12 +216,12 @@ trust gaps.
 Goal: support controlled sharing and operation across teams after the reliability
 foundation is complete.
 
-- [ ] Trusted bundle registry.
-  - Done: add a local trusted bundle registry file for discovery, install guidance, version visibility, and signer fingerprints.
-  - Done: add CLI and dashboard visibility for registry entries and local installed-bundle status.
-  - Done: add dry-run-by-default project-local bundle version pinning.
-  - Done: add reviewed upgrade/rollback command plans without automatic code installation.
-  - Done: add a dashboard action to generate lifecycle plans from the Bundles page.
+- [x] Trusted bundle registry.
+  - [x] Add a local trusted bundle registry file for discovery, install guidance, version visibility, and signer fingerprints.
+  - [x] Add CLI and dashboard visibility for registry entries and local installed-bundle status.
+  - [x] Add dry-run-by-default project-local bundle version pinning.
+  - [x] Add reviewed upgrade/rollback command plans without automatic code installation.
+  - [x] Add a dashboard action to generate lifecycle plans from the Bundles page.
 
 - [x] Distributed worker pools.
   - Support bounded concurrency, project isolation, worker health, and safe task leasing.
