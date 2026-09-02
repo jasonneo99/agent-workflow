@@ -272,8 +272,9 @@ foundation is complete.
   - [x] Improve workflow graph labels, color semantics, and readability controls.
   - [x] Make queue status and worker health more prominent on the main dashboard.
   - [x] Improve provider/settings discoverability with stronger hierarchy and confirmation feedback.
-  - [ ] Group dashboard navigation into clearer operating areas.
-  - Next: group dashboard navigation into clearer operating areas, then rerun `ux-reviewer`.
+  - [x] Group dashboard navigation into clearer operating areas.
+  - [ ] Rerun `ux-reviewer` after dashboard hierarchy changes.
+  - Next: rerun `ux-reviewer` after dashboard hierarchy changes and use the findings to choose the next UI polish slice.
 
 - [ ] Backup, restore, and disaster-recovery validation.
   - Provide documented recovery procedures and automated restore verification.

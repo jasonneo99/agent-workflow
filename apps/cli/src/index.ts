@@ -11127,26 +11127,51 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
 }
 
 function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "bundles" | "providers" | "info"): string {
-  const items = [
-    ["dashboard", "/", "Dashboard"],
-    ["queue", "/queue", "Queue"],
-    ["approvals", "/approvals", "Approvals"],
-    ["projects", "/projects", "Projects"],
-    ["runs", "/runs", "Runs"],
-    ["evaluations", "/evaluations", "Evaluations"],
-    ["workflow-graph", "/workflow-graph", "Graph"],
-    ["model-improvement", "/model-improvement", "Model Improve"],
-    ["candidate-comparisons", "/candidate-comparisons", "Comparisons"],
-    ["governance", "/governance", "Governance"],
-    ["roles", "/roles", "Roles"],
-    ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"],
-    ["bundles", "/bundles", "Bundles"],
-    ["providers", "/providers", "Providers"],
-    ["info", "/settings", "Settings"]
+  const groups = [
+    {
+      label: "Operate",
+      items: [
+        ["dashboard", "/", "Dashboard"],
+        ["queue", "/queue", "Queue"],
+        ["approvals", "/approvals", "Approvals"],
+        ["runs", "/runs", "Runs"]
+      ]
+    },
+    {
+      label: "Projects",
+      items: [
+        ["projects", "/projects", "Projects"],
+        ["workflow-graph", "/workflow-graph", "Graph"],
+        ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"]
+      ]
+    },
+    {
+      label: "Optimize",
+      items: [
+        ["evaluations", "/evaluations", "Evaluations"],
+        ["model-improvement", "/model-improvement", "Model Improve"],
+        ["candidate-comparisons", "/candidate-comparisons", "Comparisons"]
+      ]
+    },
+    {
+      label: "Govern",
+      items: [
+        ["governance", "/governance", "Governance"],
+        ["roles", "/roles", "Roles"],
+        ["bundles", "/bundles", "Bundles"]
+      ]
+    },
+    {
+      label: "Setup",
+      items: [
+        ["providers", "/providers", "Providers"],
+        ["info", "/settings", "Settings"]
+      ]
+    }
   ] as const;
   return `<nav class="side-nav" aria-label="Dashboard navigation">
     <strong>Agent Workflow</strong>
-    ${items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}
+    ${groups.map((group) => `<div class="nav-section"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}</div>`).join("")}
   </nav>`;
 }
 
@@ -11331,8 +11356,10 @@ function dashboardCss(): string {
     .lifecycle-help { margin-top: 14px; border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
     .lifecycle-help summary { cursor: pointer; font-weight: 700; color: #172033; }
     .lifecycle-help pre { margin-bottom: 0; }
-    .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 6px; z-index: 10; }
-    .side-nav strong { color: white; font-size: 14px; margin: 0 0 12px; }
+    .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 12px; z-index: 10; overflow-y: auto; }
+    .side-nav strong { color: white; font-size: 14px; margin: 0 0 2px; }
+    .nav-section { display: grid; gap: 4px; }
+    .nav-section span { color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; padding: 0 10px; }
     .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
     .capture-page main { max-width: 1440px; padding: 24px; }
@@ -11530,8 +11557,10 @@ function dashboardCss(): string {
     }
     @media (max-width: 820px) {
       main { padding: 94px 12px 24px; }
-      .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; padding: 10px 12px; }
+      .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; overflow-y: hidden; padding: 10px 12px; gap: 8px; }
       .side-nav strong { display: none; }
+      .nav-section { grid-auto-flow: column; grid-auto-columns: max-content; align-items: center; }
+      .nav-section span { display: none; }
       .topbar, .section-heading { display: grid; }
       .attention-item { display: grid; }
       .ops-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
