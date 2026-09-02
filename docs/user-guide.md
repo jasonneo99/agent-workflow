@@ -622,6 +622,23 @@ execution:
     lease_seconds: 900
     interval_ms: 2000
     project_scoped: true
+    default_profile: local
+    profiles:
+      local:
+        description: Default single-lane local developer worker pool.
+        lanes:
+          - id: default
+      split-review:
+        description: Separate implementation and review lanes for local development.
+        lanes:
+          - id: implementation
+            worker_id: implementation-lane
+            limit: 6
+            concurrency: 2
+          - id: review
+            worker_id: review-lane
+            limit: 3
+            concurrency: 1
 ```
 
 Then a worker can use those defaults with:
@@ -633,6 +650,19 @@ npm run worker -- --watch --project /path/to/project
 Explicit flags override project defaults. Use `--all-projects` only when you
 want to load a project's worker defaults but allow the worker to claim from the
 global queue.
+
+Start the dashboard and every lane from a named profile with one supervisor
+command:
+
+```bash
+AGENTFLOW_PROJECT=/path/to/project \
+AGENTFLOW_WORKER_POOL_PROFILE=split-review \
+npm run dev:agentflow
+```
+
+The supervisor starts one worker process per lane, writes lane heartbeats, and
+restarts lanes if a managed worker process exits while the supervisor is still
+running.
 
 `--limit` is the maximum number of stages a worker tick may process. `--concurrency`
 is how many of those stages may run at the same time, capped at `16` for local

@@ -175,6 +175,7 @@ npm run worker -- --watch --worker-id local-dev # Start a named worker for queue
 npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run worker -- --watch --project /path/to/project # Use project worker_pool defaults from .agent-workflow/project.yaml
 npm run worker -- --watch --worker-id frontend-lane --project /path/to/project --concurrency 2 # Add another visible worker lane
+AGENTFLOW_PROJECT=/path/to/project AGENTFLOW_WORKER_POOL_PROFILE=split-review npm run dev:agentflow # Start the dashboard plus named project worker lanes
 npm run agentflow -- recover-leases # Requeue expired worker-owned tasks
 npm run agentflow -- orchestrate -p . -t "task"     # Auto-plan and run
 npm run agentflow -- run-and-watch build-feature -p . -t "task" # Incrementally index, run, export, summarize

@@ -12139,7 +12139,21 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         concurrency: 1,
         lease_seconds: 900,
         interval_ms: 2000,
-        project_scoped: true
+        project_scoped: true,
+        default_profile: "local",
+        profiles: {
+          local: {
+            description: "Default single-lane local developer worker pool.",
+            lanes: [{ id: "default" }]
+          },
+          "split-review": {
+            description: "Separate implementation and review lanes for local development.",
+            lanes: [
+              { id: "implementation", worker_id: "implementation-lane", limit: 6, concurrency: 2 },
+              { id: "review", worker_id: "review-lane", limit: 3, concurrency: 1 }
+            ]
+          }
+        }
       }
     },
     policies: {

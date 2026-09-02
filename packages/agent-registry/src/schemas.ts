@@ -94,14 +94,37 @@ export const executionPolicyProfileSchema = z.object({
 
 export type ExecutionPolicyProfile = z.infer<typeof executionPolicyProfileSchema>;
 
+const workerPoolLaneSchema = z.object({
+  id: z.string().min(1),
+  worker_id: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+  concurrency: z.number().int().positive().max(16).optional(),
+  lease_seconds: z.number().int().min(30).max(3600).optional(),
+  interval_ms: z.number().int().min(250).optional(),
+  project_scoped: z.boolean().optional()
+});
+
+const workerPoolProfileSchema = z.object({
+  description: z.string().default(""),
+  worker_id: z.string().min(1).optional(),
+  limit: z.number().int().positive().max(100).optional(),
+  concurrency: z.number().int().positive().max(16).optional(),
+  lease_seconds: z.number().int().min(30).max(3600).optional(),
+  interval_ms: z.number().int().min(250).optional(),
+  project_scoped: z.boolean().optional(),
+  lanes: z.array(workerPoolLaneSchema).min(1).default([{ id: "default" }])
+});
+
 const workerPoolSchema = z.object({
   worker_id: z.string().min(1).optional(),
   limit: z.number().int().positive().max(100).default(6),
   concurrency: z.number().int().positive().max(16).default(1),
   lease_seconds: z.number().int().min(30).max(3600).default(900),
   interval_ms: z.number().int().min(250).default(2000),
-  project_scoped: z.boolean().default(true)
-}).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true });
+  project_scoped: z.boolean().default(true),
+  default_profile: z.string().min(1).default("local"),
+  profiles: z.record(z.string(), workerPoolProfileSchema).default({})
+}).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
 
 export const projectConfigSchema = z.object({
   project: z.object({
