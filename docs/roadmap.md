@@ -262,9 +262,9 @@ foundation is complete.
   - [x] Add policy recheck summaries to lifecycle no-op and skipped receipts.
   - [x] Add explicit destructive-action capability flags and policy recheck gates before any write/delete operation against local files or object storage.
   - [x] Add real archive execution behind disabled-by-default capability flags and approval rechecks.
-  - [ ] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
+  - [x] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
   - [ ] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
-  - Next: add real restore execution from archived artifact snapshots before any prune/delete path.
+  - Next: require explicit approval and policy recheck for any prune/delete operation against local files or object storage before implementing destructive prune/delete execution.
 
 - [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.

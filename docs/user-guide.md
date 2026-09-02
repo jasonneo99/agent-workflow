@@ -1342,14 +1342,18 @@ conservative retention criteria as prune plans, but their approvals are
 an approved archive approval copies the target artifact into an
 `archived_artifact` snapshot, keeps the original artifact in place, records
 restore metadata, and marks `destructiveExecutionAvailable: false`. Restore
-plans only use archived artifact snapshots as candidates. Restore and prune
-execution still record no-op `lifecycle_action` receipts, or
-`lifecycle_skipped` receipts when the policy recheck blocks the action or the
-target artifact is gone.
+plans only use archived artifact snapshots as candidates. When
+`allow_restore_execution` is enabled, executing an approved restore approval
+creates a copied `restored_artifact` snapshot from archived content, records
+lineage back to the archive snapshot and original artifact URI, and never
+overwrites an existing artifact row. Prune execution still records no-op
+`lifecycle_action` receipts, or `lifecycle_skipped` receipts when the policy
+recheck blocks the action or the target artifact is gone.
 
 The `allow_*_execution` flags are explicit capability switches. They default to
 `false`. When a flag is disabled, executing an approved lifecycle action records
 a `lifecycle_skipped` receipt with the policy recheck summary. When
 `allow_archive_execution` is enabled, archive execution creates copied
-`archived_artifact` snapshots only. Restore, prune, and delete implementations
-are intentionally not present yet.
+`archived_artifact` snapshots only. When `allow_restore_execution` is enabled,
+restore execution creates copied `restored_artifact` snapshots only. Prune and
+delete implementations are intentionally not present yet.

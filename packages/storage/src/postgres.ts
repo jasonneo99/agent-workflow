@@ -2243,6 +2243,25 @@ export async function getArtifactByUri(uri: string): Promise<ArtifactStatus | nu
   });
 }
 
+export async function getArtifactById(id: string): Promise<ArtifactStatus | null> {
+  return withClient(async (client) => {
+    const result = await client.query<ArtifactStatus>(
+      `select
+         id::text,
+         run_id::text as "runId",
+         task_id::text as "taskId",
+         kind,
+         uri,
+         content,
+         created_at::text as "createdAt"
+       from artifacts
+       where id = $1::uuid`,
+      [id]
+    );
+    return result.rows[0] ?? null;
+  });
+}
+
 async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">> {
   const briefResult = await client.query<{ text: string }>(
     `select content->>'text' as text
