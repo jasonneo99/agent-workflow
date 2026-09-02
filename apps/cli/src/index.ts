@@ -1689,10 +1689,11 @@ program
   .option("--reject <id>", "approval id to reject")
   .option("--execute <id>", "execute an approved action")
   .option("--actor <name>", "person or tool making the decision", "cli")
+  .option("--actor-role <role>", "project role for audit receipts, such as operator, approver, workflow_author, or auditor")
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; actor: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1712,7 +1713,8 @@ program
     if (options.execute) {
       const result = await executeApprovedAction({
         approvalId: options.execute,
-        actor: options.actor
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "operator")
       });
       if (!result.ok) {
         console.error(result.error);
@@ -1733,6 +1735,7 @@ program
         approvalId: options.approve ?? options.reject ?? "",
         decision: options.approve ? "approved" : "rejected",
         actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "approver"),
         note: options.note
       });
       if (!approval) {
@@ -1772,7 +1775,7 @@ program
       console.log(`  Project: ${approval.projectRootUri}`);
       console.log(`  Rationale: ${approval.rationale}`);
       if (approval.decidedBy) {
-        console.log(`  Decided: ${approval.decidedBy} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
+        console.log(`  Decided: ${approval.decidedBy}${approval.decidedRole ? ` (${approval.decidedRole})` : ""} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
       }
     }
   });
@@ -1787,8 +1790,9 @@ program
   .option("-w, --workflow <id>", "workflow context for the approval request")
   .option("--policy-profile <name>", "execution policy profile snapshot to attach")
   .option("--actor <name>", "person or tool requesting approval", "cli")
+  .option("--actor-role <role>", "project role for audit receipts", "operator")
   .option("--json", "print JSON")
-  .action(async (options: { project: string; type: string; target: string; rationale: string; workflow?: string; policyProfile?: string; actor: string; json?: boolean }) => {
+  .action(async (options: { project: string; type: string; target: string; rationale: string; workflow?: string; policyProfile?: string; actor: string; actorRole: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1806,7 +1810,8 @@ program
       rationale: options.rationale,
       workflowId: options.workflow,
       policyProfile: options.policyProfile,
-      actor: options.actor
+      actor: options.actor,
+      actorRole: normalizeActorRole(options.actorRole, "operator")
     });
     if (!result.ok) {
       console.error(result.error);
@@ -4577,6 +4582,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await processDashboardApprovalAction({
       approvalId: form.get("approvalId") ?? "",
       decision: form.get("decision") ?? "",
+      actorRole: form.get("actorRole") ?? "",
       note: form.get("note") ?? ""
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
@@ -5346,7 +5352,7 @@ function renderApprovalsHtml(
       <td><code>${escapeHtml(approval.target)}</code><br><span class="muted">${escapeHtml(formatApprovalPayload(approval.payload))}</span></td>
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
-      <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
+      <td>${escapeHtml(approval.rationale)}${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
       <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
@@ -8564,6 +8570,7 @@ async function processDashboardQueueAction(input: {
 async function processDashboardApprovalAction(input: {
   approvalId: string;
   decision: string;
+  actorRole: string;
   note: string;
 }): Promise<DashboardFollowUpResult> {
   const approvalId = input.approvalId.trim();
@@ -8572,7 +8579,7 @@ async function processDashboardApprovalAction(input: {
     return { ok: false, error: "Missing approval id." };
   }
   if (decision === "execute") {
-    return executeApprovedAction({ approvalId, actor: "dashboard" });
+    return executeApprovedAction({ approvalId, actor: "dashboard", actorRole: normalizeActorRole(input.actorRole, "operator") });
   }
   if (decision !== "approved" && decision !== "rejected") {
     return { ok: false, error: "Decision must be approved or rejected." };
@@ -8581,6 +8588,7 @@ async function processDashboardApprovalAction(input: {
     approvalId,
     decision,
     actor: "dashboard",
+    actorRole: normalizeActorRole(input.actorRole, "approver"),
     note: input.note.trim() || undefined
   });
   if (!approval) {
@@ -8596,6 +8604,7 @@ async function processDashboardApprovalAction(input: {
       `Target: ${approval.target}`,
       `Run: ${approval.runId}`,
       `Project: ${approval.projectRootUri}`,
+      `Actor role: ${approval.decidedRole ?? normalizeActorRole(input.actorRole, "approver")}`,
       "Decision receipt was recorded.",
       "Open: /approvals"
     ].join("\n")
@@ -8610,6 +8619,7 @@ async function requestRunLevelApproval(input: {
   workflowId?: string;
   policyProfile?: string;
   actor: string;
+  actorRole?: string;
 }): Promise<DashboardFollowUpResult & { approvalId?: string }> {
   const approvalType = input.type.trim().toLowerCase();
   if (approvalType !== "deployment" && approvalType !== "autonomy") {
@@ -8652,6 +8662,7 @@ async function requestRunLevelApproval(input: {
     requestType: approvalType,
     target,
     requestedBy: input.actor,
+    requestedByRole: input.actorRole ?? null,
     policyProfile: resolvedPolicy.profile,
     projectAutonomy: String(resolvedPolicy.project.project.autonomy),
     workflowId: workflow.id,
@@ -8705,6 +8716,7 @@ async function requestRunLevelApproval(input: {
     policyDecision: {
       approvalRequired: true,
       requestType: approvalType,
+      actorRole: input.actorRole ?? null,
       policyProfile: resolvedPolicy.profile,
       policySnapshotHash: resolvedPolicy.snapshotHash
     },
@@ -8718,6 +8730,7 @@ async function requestRunLevelApproval(input: {
     metadata: {
       ...payload,
       target,
+      actorRole: input.actorRole ?? null,
       approvalId: approval.approvalId
     }
   });
@@ -8742,6 +8755,7 @@ async function requestRunLevelApproval(input: {
 async function executeApprovedAction(input: {
   approvalId: string;
   actor: string;
+  actorRole?: string;
 }): Promise<DashboardFollowUpResult> {
   const approval = await getActionApproval(input.approvalId);
   if (!approval) {
@@ -8795,6 +8809,7 @@ async function executeApprovedAction(input: {
       approvalId: approval.id,
       status: "executed",
       actor: input.actor,
+      actorRole: input.actorRole,
       summary: `Approved action already had an execution artifact: ${previous.uri}`,
       artifactUri: previous.uri
     });
@@ -8844,6 +8859,7 @@ async function executeApprovedAction(input: {
           approvalId: approval.id,
           status: "failed",
           actor: input.actor,
+          actorRole: input.actorRole,
           summary: `Approved command failed: ${summary}`,
           artifactUri
         });
@@ -8853,6 +8869,7 @@ async function executeApprovedAction(input: {
         approvalId: approval.id,
         status: "executed",
         actor: input.actor,
+        actorRole: input.actorRole,
         summary: `Approved command executed. ${summary}`,
         artifactUri
       });
@@ -8899,6 +8916,7 @@ async function executeApprovedAction(input: {
       approvalId: approval.id,
       status: "executed",
       actor: input.actor,
+      actorRole: input.actorRole,
       summary: `Approved file write executed. ${summary}`,
       artifactUri
     });
@@ -8918,6 +8936,7 @@ async function executeApprovedAction(input: {
       approvalId: approval.id,
       status: "failed",
       actor: input.actor,
+      actorRole: input.actorRole,
       summary: `Approved action execution failed: ${message}`,
       error: message
     });
@@ -9604,12 +9623,14 @@ function approvalDecisionForms(approvalId: string): string {
     <form class="approval-form" method="post" action="/api/approval-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
       <input type="hidden" name="decision" value="approved">
+      <input type="hidden" name="actorRole" value="approver">
       <input name="note" aria-label="Approval note" placeholder="Optional note">
       <button type="submit">Approve</button>
     </form>
     <form class="approval-form" method="post" action="/api/approval-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
       <input type="hidden" name="decision" value="rejected">
+      <input type="hidden" name="actorRole" value="approver">
       <input name="note" aria-label="Rejection note" placeholder="Optional note">
       <button class="danger" type="submit">Reject</button>
     </form>
@@ -9620,6 +9641,7 @@ function approvalExecuteForm(approvalId: string): string {
   return `<form class="approval-form" method="post" action="/api/approval-action">
     <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
     <input type="hidden" name="decision" value="execute">
+    <input type="hidden" name="actorRole" value="operator">
     <button type="submit">Execute</button>
   </form>`;
 }
@@ -11898,6 +11920,10 @@ function parseBoundedPositiveInteger(value: string, fallback: number, max: numbe
   return Math.min(parsePositiveInteger(value, fallback), max);
 }
 
+function normalizeActorRole(value: string | undefined, fallback: string): string {
+  return value?.trim() || fallback;
+}
+
 function cliOptionValue<T extends string | number | undefined>(value: T, flags: string[], fallback: T): T {
   const wasProvided = process.argv.some((arg) => flags.includes(arg) || flags.some((flag) => arg.startsWith(`${flag}=`)));
   return wasProvided ? value : fallback;
@@ -12160,6 +12186,47 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       allow_wide_open: false,
       require_approval_for_external_actions: true,
       require_receipts: true
+    },
+    team: {
+      default_actor_role: "operator",
+      roles: {
+        operator: {
+          description: "Runs local workflows and executes approved local actions.",
+          can_request_approvals: true,
+          can_approve_actions: false,
+          can_reject_actions: false,
+          can_execute_approved_actions: true,
+          can_author_workflows: false,
+          read_only: false
+        },
+        approver: {
+          description: "Reviews and decides pending action, deployment, and autonomy approvals.",
+          can_request_approvals: false,
+          can_approve_actions: true,
+          can_reject_actions: true,
+          can_execute_approved_actions: false,
+          can_author_workflows: false,
+          read_only: false
+        },
+        workflow_author: {
+          description: "Reviews or edits reusable/project-local workflow definitions.",
+          can_request_approvals: false,
+          can_approve_actions: false,
+          can_reject_actions: false,
+          can_execute_approved_actions: false,
+          can_author_workflows: true,
+          read_only: false
+        },
+        auditor: {
+          description: "Reviews run evidence, receipts, exports, and governance reports.",
+          can_request_approvals: false,
+          can_approve_actions: false,
+          can_reject_actions: false,
+          can_execute_approved_actions: false,
+          can_author_workflows: false,
+          read_only: true
+        }
+      }
     },
     actions: {
       allowed_commands: allowedCommands,

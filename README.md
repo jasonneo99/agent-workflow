@@ -192,6 +192,7 @@ npm run status                 # List recent runs
 npm run agentflow -- resume-run --run <id> # Resume unfinished stages from the last completed checkpoint
 npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored run metadata
 npm run agentflow -- approvals # Review pending agent-requested actions
+npm run agentflow -- approvals --approve <id> --actor "Your Name" --actor-role approver # Record role-aware approval
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics

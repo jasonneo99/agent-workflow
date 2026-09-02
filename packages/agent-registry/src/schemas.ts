@@ -126,6 +126,16 @@ const workerPoolSchema = z.object({
   profiles: z.record(z.string(), workerPoolProfileSchema).default({})
 }).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
 
+const teamRoleSchema = z.object({
+  description: z.string().default(""),
+  can_request_approvals: z.boolean().default(false),
+  can_approve_actions: z.boolean().default(false),
+  can_reject_actions: z.boolean().default(false),
+  can_execute_approved_actions: z.boolean().default(false),
+  can_author_workflows: z.boolean().default(false),
+  read_only: z.boolean().default(false)
+});
+
 export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
@@ -155,6 +165,13 @@ export const projectConfigSchema = z.object({
     allow_wide_open: false,
     require_approval_for_external_actions: true,
     require_receipts: true
+  }),
+  team: z.object({
+    default_actor_role: z.string().min(1).default("operator"),
+    roles: z.record(z.string(), teamRoleSchema).default({})
+  }).default({
+    default_actor_role: "operator",
+    roles: {}
   }),
   actions: z.object({
     allowed_commands: z.array(z.string()).default([

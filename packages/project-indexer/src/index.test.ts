@@ -35,6 +35,10 @@ const project: ProjectConfig = {
     require_approval_for_external_actions: true,
     require_receipts: true
   },
+  team: {
+    default_actor_role: "operator",
+    roles: {}
+  },
   actions: {
     allowed_commands: [],
     blocked_commands: ["rm *", "git reset *", "git clean *", "sudo *"],

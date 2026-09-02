@@ -116,12 +116,17 @@ export async function migrateStorage(): Promise<void> {
         payload jsonb NOT NULL DEFAULT '{}',
         idempotency_key text NOT NULL,
         decided_by text,
+        decided_role text,
         decided_at timestamptz,
         decision_note text,
         created_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE(run_id, task_id, action_type, idempotency_key)
       )
+    `);
+    await client.query(`
+      ALTER TABLE action_approvals
+      ADD COLUMN IF NOT EXISTS decided_role text
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
@@ -1598,6 +1603,7 @@ export interface ActionApprovalStatus {
   payload: Record<string, unknown>;
   idempotencyKey: string;
   decidedBy: string | null;
+  decidedRole: string | null;
   decidedAt: string | null;
   decisionNote: string | null;
   createdAt: string;
@@ -1622,6 +1628,7 @@ const actionApprovalSelect = `
   aa.payload,
   aa.idempotency_key as "idempotencyKey",
   aa.decided_by as "decidedBy",
+  aa.decided_role as "decidedRole",
   aa.decided_at::text as "decidedAt",
   aa.decision_note as "decisionNote",
   aa.created_at::text as "createdAt",
@@ -1802,6 +1809,7 @@ export async function decideActionApproval(input: {
   approvalId: string;
   decision: "approved" | "rejected";
   actor: string;
+  actorRole?: string;
   note?: string;
 }): Promise<ActionApprovalStatus | null> {
   return withClient(async (client) => {
@@ -1813,6 +1821,7 @@ export async function decideActionApproval(input: {
              decided_by = $3,
              decided_at = now(),
              decision_note = $4,
+             decided_role = $5,
              updated_at = now()
          from workflow_runs wr, projects p
          where aa.id = $1::uuid
@@ -1820,7 +1829,7 @@ export async function decideActionApproval(input: {
            and wr.id = aa.run_id
            and p.id = wr.project_id
          returning ${actionApprovalSelect}`,
-        [input.approvalId, input.decision, input.actor, input.note ?? null]
+        [input.approvalId, input.decision, input.actor, input.note ?? null, input.actorRole ?? null]
       );
       const approval = result.rows[0];
       if (!approval) {
@@ -1840,6 +1849,7 @@ export async function decideActionApproval(input: {
             approvalId: approval.id,
             decision: input.decision,
             actor: input.actor,
+            actorRole: input.actorRole ?? null,
             note: input.note ?? "",
             actionType: approval.actionType,
             target: approval.target,
@@ -1860,6 +1870,7 @@ export async function markActionApprovalExecution(input: {
   approvalId: string;
   status: "executed" | "failed";
   actor: string;
+  actorRole?: string;
   summary: string;
   artifactUri?: string;
   error?: string;
@@ -1871,6 +1882,7 @@ export async function markActionApprovalExecution(input: {
         `update action_approvals aa
          set status = $2,
              decided_by = coalesce(aa.decided_by, $3),
+             decided_role = coalesce(aa.decided_role, $5),
              decided_at = coalesce(aa.decided_at, now()),
              decision_note = concat_ws(E'\n', nullif(aa.decision_note, ''), $4::text),
              updated_at = now()
@@ -1880,7 +1892,7 @@ export async function markActionApprovalExecution(input: {
            and wr.id = aa.run_id
            and p.id = wr.project_id
          returning ${actionApprovalSelect}`,
-        [input.approvalId, input.status, input.actor, input.summary]
+        [input.approvalId, input.status, input.actor, input.summary, input.actorRole ?? null]
       );
       const approval = result.rows[0];
       if (!approval) {
@@ -1900,6 +1912,7 @@ export async function markActionApprovalExecution(input: {
             approvalId: approval.id,
             status: input.status,
             actor: input.actor,
+            actorRole: input.actorRole ?? null,
             actionType: approval.actionType,
             target: approval.target,
             idempotencyKey: approval.idempotencyKey,

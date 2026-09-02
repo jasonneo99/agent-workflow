@@ -56,6 +56,18 @@
         "require_receipts": { "type": "boolean", "default": true }
       }
     },
+    "team": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "default_actor_role": { "type": "string", "minLength": 1, "default": "operator" },
+        "roles": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/$defs/teamRole" },
+          "default": {}
+        }
+      }
+    },
     "actions": {
       "type": "object",
       "additionalProperties": false,
@@ -154,6 +166,19 @@
         "blocked_write_paths": { "type": "array", "items": { "type": "string" } },
         "max_write_bytes": { "type": "integer", "minimum": 1 },
         "approval_rules": { "type": "array", "items": { "$ref": "#/$defs/approvalRule" } }
+      }
+    },
+    "teamRole": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "description": { "type": "string", "default": "" },
+        "can_request_approvals": { "type": "boolean", "default": false },
+        "can_approve_actions": { "type": "boolean", "default": false },
+        "can_reject_actions": { "type": "boolean", "default": false },
+        "can_execute_approved_actions": { "type": "boolean", "default": false },
+        "can_author_workflows": { "type": "boolean", "default": false },
+        "read_only": { "type": "boolean", "default": false }
       }
     },
     "approvalRule": {

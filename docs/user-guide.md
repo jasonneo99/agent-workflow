@@ -770,14 +770,41 @@ The Queue page shows queued, running, and failed workflow runs that need attenti
 
 The Approvals page shows pending, approved, and rejected agent-requested actions. When `require_approval_for_external_actions` is true, allowed command and file-write requests are written to the inbox instead of executed immediately. Approval decisions record receipts, but they do not bypass project policy.
 
+Project-local team roles live in `.agent-workflow/project.yaml`:
+
+```yaml
+team:
+  default_actor_role: operator
+  roles:
+    operator:
+      description: Runs local workflows and executes approved local actions.
+      can_request_approvals: true
+      can_execute_approved_actions: true
+    approver:
+      description: Reviews and decides pending approvals.
+      can_approve_actions: true
+      can_reject_actions: true
+    workflow_author:
+      description: Reviews or edits reusable/project-local workflow definitions.
+      can_author_workflows: true
+    auditor:
+      description: Reviews evidence, receipts, exports, and governance reports.
+      read_only: true
+```
+
+Approval decisions and execution receipts record the actor role for audit
+visibility. Role recording is intentionally lightweight in this release; policy
+enforcement remains controlled by action policy, approval requirements, and
+human review.
+
 CLI equivalents:
 
 ```bash
 npm run agentflow -- approvals
 npm run agentflow -- approvals --status all
-npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --note "Looks safe"
-npm run agentflow -- approvals --execute <approval-id> --actor "Your Name"
-npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --note "Not needed"
+npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
+npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
+npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --actor-role approver --note "Not needed"
 ```
 
 Deployment and autonomy approvals use the same inbox. They record a human
@@ -790,12 +817,14 @@ npm run agentflow -- request-approval \
   --project /path/to/project \
   --type deployment \
   --target production \
+  --actor-role operator \
   --rationale "Release candidate passed checks and needs owner approval."
 
 npm run agentflow -- request-approval \
   --project /path/to/project \
   --type autonomy \
   --target "wide-open for local maintenance only" \
+  --actor-role operator \
   --rationale "Owner-approved maintenance window for trusted local automation."
 ```
 

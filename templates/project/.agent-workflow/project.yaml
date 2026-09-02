@@ -57,6 +57,23 @@ policies:
   allow_wide_open: true
   require_approval_for_external_actions: false
   require_receipts: true
+team:
+  default_actor_role: operator
+  roles:
+    operator:
+      description: Runs local workflows and executes approved local actions.
+      can_request_approvals: true
+      can_execute_approved_actions: true
+    approver:
+      description: Reviews and decides pending action, deployment, and autonomy approvals.
+      can_approve_actions: true
+      can_reject_actions: true
+    workflow_author:
+      description: Reviews or edits reusable/project-local workflow definitions.
+      can_author_workflows: true
+    auditor:
+      description: Reviews run evidence, receipts, exports, and governance reports.
+      read_only: true
 actions:
   allowed_commands:
     - npm install
