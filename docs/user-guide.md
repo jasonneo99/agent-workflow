@@ -661,10 +661,12 @@ return to terminal-only supervision.
 
 The Learning page is project-scoped. A selected project can show historical
 learning evidence while its daemon status says `missing` if the durable
-supervisor is watching a different project. Use **Watch This Project** on the
-Learning page to write `AGENTFLOW_LEARNING_PROJECT` into the Agent Workflow
-`.env` and refresh the LaunchAgent so the selected project becomes the durable
-learning target.
+supervisor is pinned to a different project. By default the durable supervisor
+uses `AGENTFLOW_LEARNING_SCOPE=all-projects`, so one daemon iterates every
+registered local project and writes each project's own
+`.agent-workflow/learning/` heartbeat and reports. Use **Watch All Projects** to
+restore that mode, or **Watch This Project** to pin the daemon to only the
+selected project.
 
 Set `AGENTFLOW_LEARNING_DAEMON=0` before installing or launching if you want the
 dashboard and worker without the local learning loop.
@@ -1362,6 +1364,8 @@ npm run agentflow -- learning-proposals --project /path/to/project --write
 npm run agentflow -- learning-approvals --project /path/to/project
 npm run agentflow -- learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name" --note "Looks useful"
 npm run agentflow -- learning-daemon-status --project /path/to/project
+npm run agentflow -- learning-daemon --all-projects --mode apply-approved --once
+npm run agentflow -- learning-daemon --all-projects --mode apply-approved
 npm run agentflow -- learning-daemon --project /path/to/project --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode observe --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode propose --once

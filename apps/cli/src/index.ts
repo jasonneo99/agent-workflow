@@ -158,6 +158,7 @@ type SupervisorHeartbeat = {
   workerManaged: boolean;
   learningManaged?: boolean;
   learningEnabled?: boolean;
+  learningScope?: "project" | "all-projects";
   learningProject?: string;
   learningMode?: LearningDaemonMode;
   learningHeartbeatPath?: string;
@@ -183,6 +184,7 @@ type DashboardSupervisorStatus = {
   workerManaged: boolean;
   learningManaged: boolean;
   learningEnabled: boolean;
+  learningScope: "project" | "all-projects" | null;
   learningProject: string | null;
   learningMode: LearningDaemonMode | null;
   learningHeartbeatPath: string | null;
@@ -2891,7 +2893,8 @@ program
 program
   .command("learning-daemon")
   .description("Run the local learning daemon in autonomous apply-approved mode, or observe/propose modes")
-  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-p, --project <dir>", "project directory")
+  .option("--all-projects", "iterate all registered local projects and write each project-local learning heartbeat")
   .option("--mode <mode>", "daemon mode: apply-approved, propose, or observe", "apply-approved")
   .option("--once", "run a single daemon tick and exit")
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
@@ -2899,7 +2902,7 @@ program
   .option("--daemon-id <id>", "stable daemon identity for dashboard visibility")
   .option("--heartbeat-file <path>", "learning daemon heartbeat file path")
   .option("--json", "print final daemon status JSON")
-  .action(async (options: { project: string; mode: string; once?: boolean; limit: string; intervalMs: string; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
+  .action(async (options: { project?: string; allProjects?: boolean; mode: string; once?: boolean; limit: string; intervalMs: string; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2910,7 +2913,13 @@ program
       return;
     }
 
-    const projectDir = path.resolve(process.cwd(), options.project);
+    const projectDir = path.resolve(process.cwd(), options.project ?? rootDir);
+    const allProjects = options.allProjects === true;
+    if (!allProjects && !options.project) {
+      console.error("Provide --project <dir> or use --all-projects.");
+      process.exitCode = 1;
+      return;
+    }
     const mode = parseLearningDaemonMode(options.mode);
     const limit = parsePositiveInteger(options.limit, 50);
     const intervalMs = parsePositiveInteger(options.intervalMs, 60000);
@@ -2925,12 +2934,13 @@ program
     let stop = false;
     let ticks = 0;
     let lastStatus: LearningDaemonHeartbeat | null = null;
-    const writeStatus = async (status: LearningDaemonHeartbeat["status"], update?: Awaited<ReturnType<typeof runLearningDaemonTick>>, lastError?: string): Promise<LearningDaemonHeartbeat> => {
+    const writeStatus = async (status: LearningDaemonHeartbeat["status"], update?: Awaited<ReturnType<typeof runLearningDaemonTick>>, lastError?: string, statusProjectDir = projectDir): Promise<LearningDaemonHeartbeat> => {
       const heartbeat: LearningDaemonHeartbeat = {
         kind: "agentflow_learning_daemon_status",
         pid: process.pid,
         daemonId,
-        projectRootUri: projectDir,
+        projectRootUri: statusProjectDir,
+        scope: allProjects ? "all-projects" : "project",
         mode,
         status,
         startedAt,
@@ -2943,11 +2953,16 @@ program
         inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
         applicationActions: update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
         workflowShapeRecommendations: update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
-        workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(projectDir),
+        workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(statusProjectDir),
         lastError,
-        command: `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
+        command: allProjects
+          ? `agentflow learning-daemon --all-projects --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
+          : `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
       };
-      await writeLearningDaemonStatus(projectDir, heartbeat, heartbeatFile);
+      const targetHeartbeatFile = allProjects && statusProjectDir !== projectDir
+        ? path.join(statusProjectDir, ".agent-workflow", "learning", "daemon-status.json")
+        : heartbeatFile;
+      await writeLearningDaemonStatus(statusProjectDir, heartbeat, targetHeartbeatFile);
       lastStatus = heartbeat;
       return heartbeat;
     };
@@ -2955,10 +2970,33 @@ program
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
-        const update = await runLearningDaemonTick({ projectDir, mode, limit });
-        await writeStatus(stop ? "stopping" : "running", update);
+        const targets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
+        let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
+        let analyzedRuns = 0;
+        let proposalCount = 0;
+        let inboxCount = 0;
+        let applicationActions = 0;
+        let workflowShapeRecommendations = 0;
+        const projectErrors: string[] = [];
+        for (const targetProjectDir of targets) {
+          try {
+            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit });
+            await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
+            lastUpdate = update;
+            analyzedRuns += update.report.runsAnalyzed;
+            proposalCount += update.proposalSet.proposals.length;
+            inboxCount += update.approvalQueue.items.length;
+            applicationActions += update.applicationPlan?.actions.length ?? 0;
+            workflowShapeRecommendations += update.workflowShape?.recommendations.length ?? 0;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            projectErrors.push(`${targetProjectDir}: ${message}`);
+            await writeStatus("failed", undefined, message, targetProjectDir);
+          }
+        }
+        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir);
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}, applicationActions=${update.applicationPlan?.actions.length ?? 0}, workflowShape=${update.workflowShape?.recommendations.length ?? 0}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, workflowShape=${workflowShapeRecommendations}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2982,7 +3020,7 @@ program
     process.once("SIGINT", stopDaemon);
     process.once("SIGTERM", stopDaemon);
     if (!options.json) {
-      console.log(`Learning daemon watching. id=${daemonId} mode=${mode} project=${projectDir} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
+      console.log(`Learning daemon watching. id=${daemonId} mode=${mode} scope=${allProjects ? "all-projects" : "project"} project=${projectDir} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
     }
     while (!stop) {
       await sleep(intervalMs);
@@ -4053,6 +4091,7 @@ type LearningDaemonHeartbeat = {
   pid: number;
   daemonId: string;
   projectRootUri: string;
+  scope?: "project" | "all-projects";
   mode: LearningDaemonMode;
   status: "starting" | "running" | "stopping" | "stopped" | "failed";
   startedAt: string;
@@ -8578,6 +8617,21 @@ async function runLearningDaemonTick(input: {
   return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate };
 }
 
+async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
+  const summaries = await listProjectStorageSummaries(500);
+  const candidates = orderedUnique([
+    ...summaries.map((summary) => summary.rootUri),
+    fallbackProjectDir
+  ].map((item) => path.resolve(process.cwd(), item)));
+  const available: string[] = [];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) {
+      available.push(candidate);
+    }
+  }
+  return available.length ? available : [fallbackProjectDir];
+}
+
 async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promise<boolean> {
   const override = process.env.AGENTFLOW_LEARNING_WORKFLOW_SHAPE_AUTO_UPDATE;
   if (override === "0" || override === "false" || override === "off") {
@@ -9459,7 +9513,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const form = await readFormBody(request);
     const result = await processDashboardLearningDaemonTarget({
       project: form.get("project") ?? "",
-      mode: form.get("mode") ?? "apply-approved"
+      mode: form.get("mode") ?? "apply-approved",
+      scope: form.get("scope") ?? "project"
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -12319,9 +12374,10 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
 }
 
 function renderLearningSupervisorTargetHtml(projectDir: string, supervisor: DashboardSupervisorStatus): string {
-  const targetMatches = supervisor.learningProject === projectDir;
+  const allProjects = supervisor.learningScope === "all-projects";
+  const targetMatches = allProjects || supervisor.learningProject === projectDir;
   const statusText = supervisor.learningEnabled
-    ? targetMatches ? "watching this project" : supervisor.learningProject ? "watching another project" : "enabled without target"
+    ? allProjects ? "watching all registered projects" : targetMatches ? "watching this project" : supervisor.learningProject ? "watching another project" : "enabled without target"
     : "disabled";
   return `
     <section class="panel compact-panel">
@@ -12333,12 +12389,20 @@ function renderLearningSupervisorTargetHtml(projectDir: string, supervisor: Dash
         <form method="post" action="/api/learning-daemon-target" class="inline-form compact-form">
           <input type="hidden" name="project" value="${escapeHtml(projectDir)}">
           <input type="hidden" name="mode" value="apply-approved">
+          <input type="hidden" name="scope" value="all-projects">
+          <button type="submit" class="secondary">${allProjects ? "Refresh All Projects" : "Watch All Projects"}</button>
+        </form>
+        <form method="post" action="/api/learning-daemon-target" class="inline-form compact-form">
+          <input type="hidden" name="project" value="${escapeHtml(projectDir)}">
+          <input type="hidden" name="mode" value="apply-approved">
+          <input type="hidden" name="scope" value="project">
           <button type="submit" class="secondary">${targetMatches ? "Refresh Durable Target" : "Watch This Project"}</button>
         </form>
       </div>
       <div class="meta-grid compact">
         <div><strong>Status</strong>${escapeHtml(statusText)}</div>
         <div><strong>Supervisor</strong>${escapeHtml(supervisor.status)}</div>
+        <div><strong>Scope</strong>${escapeHtml(supervisor.learningScope ?? "n/a")}</div>
         <div><strong>Current Target</strong>${escapeHtml(supervisor.learningProject ?? "none")}</div>
         <div><strong>Selected Project</strong>${escapeHtml(projectDir)}</div>
         <div><strong>Mode</strong>${escapeHtml(supervisor.learningMode ?? "n/a")}</div>
@@ -12350,7 +12414,7 @@ function renderLearningSupervisorTargetHtml(projectDir: string, supervisor: Dash
 
 function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, supervisor: DashboardSupervisorStatus): string {
   const age = status.ageMs === null ? "n/a" : formatDuration(Math.max(0, status.ageMs));
-  const statusDetail = status.status === "missing" && supervisor.learningProject && supervisor.learningProject !== status.projectRootUri
+  const statusDetail = status.status === "missing" && supervisor.learningScope !== "all-projects" && supervisor.learningProject && supervisor.learningProject !== status.projectRootUri
     ? `No heartbeat for this project because the durable supervisor is watching ${supervisor.learningProject}.`
     : "";
   return `
@@ -13697,6 +13761,7 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
       workerManaged: heartbeat.workerManaged === true,
       learningManaged: heartbeat.learningManaged === true,
       learningEnabled: heartbeat.learningEnabled !== false,
+      learningScope: heartbeat.learningScope === "project" || heartbeat.learningScope === "all-projects" ? heartbeat.learningScope : null,
       learningProject: typeof heartbeat.learningProject === "string" ? heartbeat.learningProject : null,
       learningMode: heartbeat.learningMode === "observe" || heartbeat.learningMode === "propose" || heartbeat.learningMode === "apply-approved" ? heartbeat.learningMode : null,
       learningHeartbeatPath: typeof heartbeat.learningHeartbeatPath === "string" ? heartbeat.learningHeartbeatPath : null,
@@ -13719,6 +13784,7 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
       workerManaged: false,
       learningManaged: false,
       learningEnabled: false,
+      learningScope: null,
       learningProject: null,
       learningMode: null,
       learningHeartbeatPath: null,
@@ -13831,7 +13897,7 @@ async function processDashboardLaunchAgentAction(action: string): Promise<Dashbo
   };
 }
 
-async function processDashboardLearningDaemonTarget(input: { project: string; mode: string }): Promise<DashboardFollowUpResult> {
+async function processDashboardLearningDaemonTarget(input: { project: string; mode: string; scope: string }): Promise<DashboardFollowUpResult> {
   const projectDir = path.resolve(process.cwd(), input.project.trim());
   if (!input.project.trim()) {
     return { ok: false, error: "Missing project path." };
@@ -13840,11 +13906,14 @@ async function processDashboardLearningDaemonTarget(input: { project: string; mo
     return { ok: false, error: `Project path does not exist: ${projectDir}` };
   }
   const mode = input.mode === "observe" || input.mode === "propose" || input.mode === "apply-approved" ? input.mode : "apply-approved";
+  const scope = input.scope === "project" ? "project" : "all-projects";
   await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_PROJECT", projectDir);
   await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_MODE", mode);
+  await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_SCOPE", scope);
   await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_DAEMON", "1");
   process.env.AGENTFLOW_LEARNING_PROJECT = projectDir;
   process.env.AGENTFLOW_LEARNING_MODE = mode;
+  process.env.AGENTFLOW_LEARNING_SCOPE = scope;
   process.env.AGENTFLOW_LEARNING_DAEMON = "1";
   const launchAgent = await loadDashboardLaunchAgentStatus();
   const refreshLine = launchAgent.supported && launchAgent.installed
@@ -13859,6 +13928,7 @@ async function processDashboardLearningDaemonTarget(input: { project: string; mo
     output: [
       `AGENTFLOW_LEARNING_PROJECT=${projectDir}`,
       `AGENTFLOW_LEARNING_MODE=${mode}`,
+      `AGENTFLOW_LEARNING_SCOPE=${scope}`,
       "AGENTFLOW_LEARNING_DAEMON=1",
       refreshLine,
       `Open: /learning?project=${encodeURIComponent(projectDir)}`
@@ -16452,6 +16522,7 @@ function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): stri
       <div><strong>Worker</strong>${supervisor.workerManaged ? "managed" : "external or stopped"}</div>
       <div><strong>Learning</strong>${supervisor.learningEnabled ? (supervisor.learningManaged ? "managed" : "enabled, external or stopped") : "disabled"}</div>
       <div><strong>Learning Mode</strong>${escapeHtml(supervisor.learningMode ?? "n/a")}</div>
+      <div><strong>Learning Scope</strong>${escapeHtml(supervisor.learningScope ?? "n/a")}</div>
     </div>
     <div class="meta-grid compact">
       <div><strong>Message</strong>${escapeHtml(supervisor.message || "n/a")}</div>

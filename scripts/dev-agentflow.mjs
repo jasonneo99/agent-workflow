@@ -12,6 +12,7 @@ const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
+const learningScope = normalizeLearningScope(process.env.AGENTFLOW_LEARNING_SCOPE ?? (process.env.AGENTFLOW_LEARNING_ALL_PROJECTS === "0" ? "project" : "all-projects"));
 const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
   ? path.resolve(process.cwd(), process.env.AGENTFLOW_LEARNING_PROJECT)
   : process.env.AGENTFLOW_PROJECT
@@ -176,13 +177,11 @@ function startWorker(lane) {
 }
 
 function startLearningDaemon() {
-  startChild("learning-daemon", [
+  const args = [
     "run",
     "agentflow",
     "--",
     "learning-daemon",
-    "--project",
-    learningProject,
     "--mode",
     learningMode,
     "--limit",
@@ -193,7 +192,13 @@ function startLearningDaemon() {
     learningDaemonId,
     "--heartbeat-file",
     learningHeartbeatPath
-  ]);
+  ];
+  if (learningScope === "all-projects") {
+    args.push("--all-projects", "--project", learningProject);
+  } else {
+    args.push("--project", learningProject);
+  }
+  startChild("learning-daemon", args);
 }
 
 function startChild(name, npmArgs) {
@@ -261,6 +266,7 @@ async function writeHeartbeat(status, message) {
     workerManaged,
     learningManaged,
     learningEnabled,
+    learningScope,
     learningProject,
     learningMode,
     learningIntervalMs: positiveNumber(learningIntervalMs, 60000),
@@ -372,6 +378,10 @@ function boundedPositiveNumber(value, fallback, max) {
 
 function normalizeLearningMode(value) {
   return value === "observe" || value === "propose" || value === "apply-approved" ? value : "apply-approved";
+}
+
+function normalizeLearningScope(value) {
+  return value === "project" ? "project" : "all-projects";
 }
 
 function safeFileSegment(value) {

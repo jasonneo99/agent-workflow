@@ -113,12 +113,18 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 - [x] Local learning apply-approved mode.
   - Let the daemon prepare application plans on a schedule for approved proposals.
   - Default `learning-daemon` to `apply-approved` so it autonomously refreshes Agent Workflow-owned learning reports, proposal state, workflow-shape recommendation files, and application plan files.
+  - Default durable supervision to `AGENTFLOW_LEARNING_SCOPE=all-projects`, so one local daemon iterates every registered project and writes each project's own learning state.
   - Keep `apply-approved` owned-state-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Done: add durable local restart support by supervising the learning daemon inside `npm run dev:agentflow` and offering a macOS LaunchAgent install path.
   - Done: add Settings-page LaunchAgent status, install/refresh/uninstall actions, and stdout/stderr log links for local macOS durability.
   - Done: explain project-scoped learning daemon status in the dashboard and add a Learning-page action to make the selected project the durable daemon target.
   - Start local-only; make server mode an explicit future deployment posture.
+
+- [ ] Governed local filesystem discovery.
+  - Add an explicit local discovery/index plan for roots outside registered projects, with opt-in include roots, default secret/cache/system excludes, dry-run preview, and project registration before content indexing.
+  - On macOS, use Spotlight metadata as an optional discovery accelerator for likely code/document roots before falling back to filesystem traversal.
+  - Keep whole-drive discovery local-first and auditable; never export private file contents, secrets, model artifacts, photos, mail stores, backups, or ignored directories by default.
 
 - [x] Local learning workflow shape optimizer.
   - Analyze run history, failures, feedback, routing/cost data, eval evidence, and indexed project context.

@@ -246,6 +246,8 @@ agentflow learning-proposals --project /path/to/project --write
 agentflow learning-approvals --project /path/to/project
 agentflow learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name"
 agentflow learning-daemon-status --project /path/to/project
+agentflow learning-daemon --all-projects --mode apply-approved --once
+agentflow learning-daemon --all-projects --mode apply-approved
 agentflow learning-daemon --project /path/to/project --once
 agentflow learning-daemon --project /path/to/project --mode observe --once
 agentflow learning-daemon --project /path/to/project --mode observe
@@ -258,6 +260,11 @@ agentflow learning-action-receipts --project /path/to/project --reject learn-act
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
+
+`--all-projects` iterates the local project registry and writes each project's
+own `.agent-workflow/learning/` report, inbox, application plan, shape
+recommendations, and daemon heartbeat. A failed or unavailable project records a
+failed heartbeat for that project without stopping the daemon for the rest.
 
 Future approved-application and research commands:
 
