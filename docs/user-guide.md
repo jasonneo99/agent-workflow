@@ -121,6 +121,7 @@ npm run server-readiness -- --json
 npm run server-readiness -- --project /path/to/project
 npm run server-projects
 npm run server-projects -- --json
+npm run server-resolve-project -- --project-id <project-id>
 ```
 
 The command is read-only. It reports server-mode opt-in state, bind/port, auth
@@ -129,7 +130,8 @@ reachability, registered projects, role enforcement, endpoint classes, and
 recommended next commands. It does not enable server mode or expose remote
 workflow execution. `server-projects` previews the project IDs future
 server-mode clients should send instead of raw filesystem paths; local roots are
-hidden unless `--include-roots` is explicitly provided.
+hidden unless `--include-roots` is explicitly provided. `server-resolve-project`
+resolves a single registered project id and rejects path-shaped input.
 
 ## 3b. Optional Codex Plugin
 
@@ -740,6 +742,7 @@ JSON endpoints:
 /api/bundle-lifecycle-plan
 /api/server-readiness
 /api/server-projects
+/api/server-project?projectId=<project-id>
 /api/queue
 /api/projects
 /api/run?id=<run-id>

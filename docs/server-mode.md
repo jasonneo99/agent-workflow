@@ -52,6 +52,7 @@ npm run server-readiness
 npm run server-readiness -- --json
 npm run server-projects
 npm run server-projects -- --json
+npm run server-resolve-project -- --project-id <project-id>
 ```
 
 Recommended default binding stays loopback:
@@ -232,6 +233,8 @@ Before adding remote execution endpoints:
       and exposed endpoint classes.
 - [x] Add registered-project previews that expose project ids without arbitrary
       path execution.
+- [x] Add project id resolution that rejects path-shaped input and resolves
+      only registered project ids.
 - [ ] Add project id based routing for future remote execution requests.
 - [ ] Require auth for all mutation endpoints.
 - [ ] Require role capability checks for all mutation endpoints.

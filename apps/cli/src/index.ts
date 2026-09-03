@@ -95,7 +95,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -2125,6 +2125,21 @@ program
   });
 
 program
+  .command("server-resolve-project")
+  .description("Resolve one registered project id for governed server-mode routing without accepting filesystem paths")
+  .requiredOption("--project-id <id>", "registered project id from server-projects")
+  .option("--include-root", "include the local filesystem root for operator diagnostics")
+  .option("--json", "print machine-readable project resolution")
+  .action(async (options: { projectId: string; includeRoot?: boolean; json?: boolean }) => {
+    const result = await resolveServerProjectReference({
+      projectId: options.projectId,
+      includeRoot: Boolean(options.includeRoot)
+    });
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatServerProjectResolution(result));
+    if (!result.resolved) process.exitCode = 2;
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3611,6 +3626,29 @@ type ServerProjectRegistryReport = {
   notes: string[];
 };
 
+type ServerProjectResolution = {
+  kind: "agentflow_server_project_resolution";
+  generatedAt: string;
+  projectId: string;
+  resolved: boolean;
+  reason: string | null;
+  project: null | {
+    projectId: string;
+    name: string;
+    rootUri: string | null;
+    rootHash: string;
+    configStatus: "valid" | "missing" | "invalid";
+    defaultWorkflows: string[];
+    policyProfile: string;
+    roleEnforcement: "preview" | "enforce";
+  };
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -4883,6 +4921,141 @@ function formatServerProjectRegistryReport(report: ServerProjectRegistryReport):
     "",
     "Notes:",
     ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+async function resolveServerProjectReference(input: {
+  projectId: string;
+  includeRoot: boolean;
+}): Promise<ServerProjectResolution> {
+  const projectId = input.projectId.trim();
+  const rejectedReason = rejectProjectIdReason(projectId);
+  if (rejectedReason) {
+    return {
+      kind: "agentflow_server_project_resolution",
+      generatedAt: new Date().toISOString(),
+      projectId,
+      resolved: false,
+      reason: rejectedReason,
+      project: null,
+      checks: [
+        {
+          label: "Project id shape",
+          status: "fail",
+          detail: rejectedReason
+        }
+      ]
+    };
+  }
+
+  const services = await checkServices();
+  const servicesReachable = services.every((service) => service.reachable);
+  if (!servicesReachable) {
+    return {
+      kind: "agentflow_server_project_resolution",
+      generatedAt: new Date().toISOString(),
+      projectId,
+      resolved: false,
+      reason: "enterprise services unreachable",
+      project: null,
+      checks: services.map((service) => ({
+        label: service.endpoint.name,
+        status: service.reachable ? "pass" : "fail",
+        detail: service.message
+      }))
+    };
+  }
+
+  const summaries = await listProjectStorageSummaries(500);
+  const summary = summaries.find((project) => project.id === projectId);
+  if (!summary) {
+    return {
+      kind: "agentflow_server_project_resolution",
+      generatedAt: new Date().toISOString(),
+      projectId,
+      resolved: false,
+      reason: "project id is not registered",
+      project: null,
+      checks: [
+        {
+          label: "Registered project",
+          status: "fail",
+          detail: "No registered project matched this id."
+        }
+      ]
+    };
+  }
+
+  const registryEntry = await loadServerProjectRegistryEntry(summary, input.includeRoot);
+  return {
+    kind: "agentflow_server_project_resolution",
+    generatedAt: new Date().toISOString(),
+    projectId,
+    resolved: true,
+    reason: null,
+    project: {
+      projectId: registryEntry.projectId,
+      name: registryEntry.name,
+      rootUri: registryEntry.rootUri,
+      rootHash: registryEntry.rootHash,
+      configStatus: registryEntry.configStatus,
+      defaultWorkflows: registryEntry.defaultWorkflows,
+      policyProfile: registryEntry.policyProfile,
+      roleEnforcement: registryEntry.roleEnforcement
+    },
+    checks: [
+      {
+        label: "Project id shape",
+        status: "pass",
+        detail: "Project reference is an id, not a filesystem path."
+      },
+      {
+        label: "Registered project",
+        status: "pass",
+        detail: "Project id resolved to one registered local project."
+      },
+      {
+        label: "Filesystem root",
+        status: input.includeRoot ? "warn" : "pass",
+        detail: input.includeRoot ? "Local root is included for operator diagnostics." : "Local root is redacted from the response."
+      }
+    ]
+  };
+}
+
+function rejectProjectIdReason(projectId: string): string | null {
+  if (!projectId) return "project id is required";
+  if (projectId.includes("/") || projectId.includes("\\") || projectId.includes("~")) return "project id must not be a filesystem path";
+  if (projectId === "." || projectId === ".." || projectId.includes("..")) return "project id must not contain path traversal markers";
+  if (!/^[a-zA-Z0-9._:-]+$/.test(projectId)) return "project id contains unsupported characters";
+  return null;
+}
+
+function formatServerProjectResolution(result: ServerProjectResolution): string {
+  if (!result.resolved || !result.project) {
+    return [
+      `Server project resolution (${result.generatedAt})`,
+      `Project id: ${result.projectId}`,
+      "Resolved: no",
+      `Reason: ${result.reason ?? "unknown"}`,
+      "",
+      "Checks:",
+      ...result.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`)
+    ].join("\n");
+  }
+  return [
+    `Server project resolution (${result.generatedAt})`,
+    `Project id: ${result.projectId}`,
+    "Resolved: yes",
+    `Name: ${result.project.name}`,
+    `Root: ${result.project.rootUri ?? `redacted; hash=${result.project.rootHash.slice(0, 12)}`}`,
+    `Config: ${result.project.configStatus}`,
+    `Policy profile: ${result.project.policyProfile}`,
+    `Role enforcement: ${result.project.roleEnforcement}`,
+    `Default workflows: ${result.project.defaultWorkflows.join(", ") || "none configured"}`,
+    "",
+    "Checks:",
+    ...result.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`)
   ].join("\n");
 }
 
@@ -6736,6 +6909,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-project") {
+    const projectId = requestUrl.searchParams.get("projectId") ?? "";
+    const result = await resolveServerProjectReference({
+      projectId,
+      includeRoot: requestUrl.searchParams.get("includeRoot") === "true"
+    });
+    response.writeHead(result.resolved ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(result, null, 2));
     return;
   }
 
@@ -9002,7 +9186,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
     <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.id)}</code></td><td><code>${escapeHtml(project.rootUri)}</code></td><td><span class="status ${project.configStatus === "valid" ? "completed" : project.configStatus === "invalid" ? "failed" : "queued"}">${escapeHtml(project.configStatus)}</span></td><td>${escapeHtml(project.roleEnforcement)}</td><td>${project.roles.map((role) => `<code>${escapeHtml(role)}</code>`).join(" ") || "none"}</td></tr>
   `).join("");
   const registryRows = registry.projects.map((project) => `
-    <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.projectId)}</code></td><td>${project.rootUri ? `<code>${escapeHtml(project.rootUri)}</code>` : `<span class="muted">hidden</span><br><code>${escapeHtml(project.rootHash.slice(0, 12))}</code>`}</td><td>${project.defaultWorkflows.map((workflow) => `<code>${escapeHtml(workflow)}</code>`).join(" ") || "none"}</td><td><code>${escapeHtml(JSON.stringify(project.requestExample))}</code></td></tr>
+    <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.projectId)}</code><br><a href="/api/server-project?projectId=${encodeURIComponent(project.projectId)}">Resolve JSON</a></td><td>${project.rootUri ? `<code>${escapeHtml(project.rootUri)}</code>` : `<span class="muted">hidden</span><br><code>${escapeHtml(project.rootHash.slice(0, 12))}</code>`}</td><td>${project.defaultWorkflows.map((workflow) => `<code>${escapeHtml(workflow)}</code>`).join(" ") || "none"}</td><td><code>${escapeHtml(JSON.stringify(project.requestExample))}</code></td></tr>
   `).join("");
   const serviceRows = report.services.map((service) => `
     <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>

@@ -47,6 +47,7 @@ npm run migrate-storage
 npm run bootstrap-storage
 npm run server-readiness
 npm run server-projects
+npm run server-resolve-project -- --project-id <project-id>
 npm run check
 npm run bundle-manifest
 ```

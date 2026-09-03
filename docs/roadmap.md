@@ -240,7 +240,8 @@ foundation is complete.
   - Done: document the governed server-mode contract with secure local-first defaults, opt-in controls, auth requirements, project registration, endpoint classes, role checks, and audit receipt requirements.
   - Done: add a read-only server-mode readiness command, JSON API, and dashboard page before any remote execution endpoints.
   - Done: add registered-project previews for future server-mode clients that use project ids and hide local roots by default.
-  - Next: add project id based routing for future remote execution requests without accepting arbitrary filesystem paths.
+  - Done: add project id resolution for future server-mode routing that rejects path-shaped input and resolves only registered project ids.
+  - Next: add an authenticated request envelope preview for future remote execution requests before implementing mutation endpoints.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
