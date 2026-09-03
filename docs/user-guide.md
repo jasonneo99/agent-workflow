@@ -1291,6 +1291,8 @@ npm run learning:daemon -- --project /path/to/project --mode propose
 npm run learning:daemon -- --project /path/to/project --mode apply-approved
 npm run agentflow -- learning-application-plan --project /path/to/project
 npm run agentflow -- learning-application-plan --project /path/to/project --write
+npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature
+npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
 
 In the dashboard, open:
@@ -1301,6 +1303,7 @@ http://127.0.0.1:17888/api/learning-report?project=/path/to/project
 http://127.0.0.1:17888/api/learning-proposals?project=/path/to/project
 http://127.0.0.1:17888/api/learning-daemon-status?project=/path/to/project
 http://127.0.0.1:17888/api/learning-application-plan?project=/path/to/project
+http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&workflow=build-feature
 ```
 
 `learning-proposals --write` creates local review files only under
@@ -1312,13 +1315,26 @@ http://127.0.0.1:17888/api/learning-application-plan?project=/path/to/project
 - `approval-inbox.md`
 - `application-plan.json`
 - `application-plan.md`
+- `workflow-shape-proposals.json`
+- `stage-recommendations.md`
+- `settings.json`
+
+The workflow shape optimizer looks for repeated failures, expensive or slow
+routes, missing feedback, missing eval evidence, and indexed-context pressure.
+It recommends project-local workflow overlays first, including adding,
+removing, splitting, collapsing, or gating stages and prototyping new local
+agent types. The dashboard Learning page includes an Autonomous optimizer
+switch. It defaults on, so each daemon tick may refresh only its own
+learning-owned shape recommendation files. Turn it off for approval-first
+review of those recommendations.
 
 The MCP tools `agentflow_learning_report`, `agentflow_learning_proposals`, and
 `agentflow_learning_approvals` expose the same flow for Codex, VS Code, Cursor,
 or any MCP-capable client. `agentflow_learning_daemon_status` shows the current
 heartbeat, and `agentflow_learning_daemon_tick` runs one bounded observe/propose
 tick. `agentflow_learning_application_plan` prepares the approved follow-up plan
-without applying changes.
+without applying changes. `agentflow_learning_workflow_shape` exposes the
+workflow shape optimizer through MCP.
 
 The learning flow may mutate local learning state that Agent Workflow created
 and owns: its own files under `.agent-workflow/learning/` today and future

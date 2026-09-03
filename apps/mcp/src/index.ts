@@ -999,6 +999,37 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_learning_workflow_shape",
+  {
+    title: "AgentFlow learning workflow shape",
+    description: "Recommend stage and agent-type workflow shape changes from local run history, failures, feedback, routing/cost data, eval evidence, and project context.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      workflow: z.string().optional().describe("Workflow id or alias; defaults to the latest project run workflow."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write workflow-shape proposal files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return workflow shape optimization JSON.")
+    }
+  },
+  async ({ project, workflow, limit, write, json }) => {
+    const args = ["learning-workflow-shape", "--project", project];
+    if (workflow) {
+      args.push("--workflow", workflow);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_apply_tuning_proposals",
   {
     title: "AgentFlow apply tuning proposals",

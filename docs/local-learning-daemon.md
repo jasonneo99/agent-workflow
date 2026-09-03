@@ -224,6 +224,9 @@ Add a **Learning** dashboard area with:
 - Repeated failure patterns.
 - Cost and latency savings opportunities.
 - Routing recommendations.
+- Workflow-shape recommendations for adding, removing, splitting, collapsing,
+  or gating stages.
+- Suggested new local agent types when repeated evidence shows a missing role.
 - Eval coverage gaps.
 - Proposal inbox with approve/reject/defer actions.
 - Applied learning timeline.
@@ -247,6 +250,8 @@ agentflow learning-daemon --project /path/to/project --mode propose
 agentflow learning-daemon --project /path/to/project --mode apply-approved
 agentflow learning-application-plan --project /path/to/project
 agentflow learning-application-plan --project /path/to/project --write
+agentflow learning-workflow-shape --project /path/to/project --workflow build-feature
+agentflow learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
 
 Future approved-application and research commands:
@@ -269,6 +274,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 - `agentflow_learning_proposals`
 - `agentflow_learning_approvals`
 - `agentflow_learning_application_plan`
+- `agentflow_learning_workflow_shape`
 - `agentflow_learning_apply`
 - `agentflow_learning_research_notes`
 
@@ -319,6 +325,20 @@ policy and approval state allow writes.
 - Support `observe`, `propose`, and `apply-approved` modes.
 - Add danger gates and approval requirements for risky changes.
 - Add dashboard mode controls and privacy status.
+- Add workflow shape optimization that uses local run history, failures,
+  feedback, routing/cost data, eval evidence, and project context to recommend
+  adding, removing, splitting, collapsing, or gating workflow stages and
+  prototyping new agent types.
+- Default every daemon tick to autonomous refresh of
+  Agent Workflow-owned learning artifacts:
+  `.agent-workflow/learning/workflow-shape-proposals.json`,
+  `.agent-workflow/learning/stage-recommendations.md`, and future
+  `learning_stage_recommendations` rows.
+- Provide a dashboard switch to turn autonomous recommendation-file refresh off
+  for approval-first review.
+- Keep shared `workflows/*.yaml`, reusable agents, provider settings, project
+  source, tuning application, commands, network calls, and private-data export
+  approval-gated.
 
 ### Phase 5: Research And Shared Learning
 

@@ -116,6 +116,13 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Start local-only; make server mode an explicit future deployment posture.
 
+- [x] Local learning workflow shape optimizer.
+  - Analyze run history, failures, feedback, routing/cost data, eval evidence, and indexed project context.
+  - Recommend adding, removing, splitting, collapsing, or gating workflow stages and proposing new agent types.
+  - Default to autonomous refresh of Agent Workflow-owned learning artifacts under `.agent-workflow/learning/`, with a dashboard switch for approval-first review.
+  - Prefer project-local workflow overlays before shared workflow or reusable agent changes.
+  - Keep shared `workflows/*.yaml`, reusable agents, provider settings, project source, and tuning application approval-gated.
+
 - [ ] Local learning proposal-to-action receipts.
   - Record an append-only local history when proposals become application plans, when planned actions are superseded, and when users reject a planned action.
 
@@ -278,6 +285,15 @@ foundation is complete.
   - Done: document reverse-proxy/TLS guidance without bundling public-network deployment defaults.
   - Done: document MCP stdio as the recommended IDE path for Codex, VS Code, Cursor, and local clients.
   - Next: require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+
+- [ ] High priority: shared storage migration utility.
+  - Add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
+  - Support merge mode by mapping projects through `root_uri`, preserving existing destination runs, and rewriting dependent project ids safely.
+  - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
+  - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
+  - Mirror object-storage artifacts from local MinIO to destination MinIO when artifacts reference object-backed payloads.
+  - Verify migrated counts, sample historical runs, artifacts, approvals, receipts, memory items, and project index state before recommending clients switch to shared storage.
+  - Keep destructive or overwrite behavior unavailable unless a future explicit capability flag and backup confirmation are added.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

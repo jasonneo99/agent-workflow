@@ -101,6 +101,90 @@ export interface PreferenceScoreGroup {
   recommendation: string;
 }
 
+export type WorkflowShapeRecommendationKind = "add_stage" | "remove_stage" | "split_stage" | "collapse_stages" | "gate_stage" | "add_agent_type";
+
+export interface WorkflowShapeStageInput {
+  id: string;
+  agentId: string;
+  order: number;
+  contextMaxTokens: number;
+  contextLoads: string[];
+  approvalRequired: boolean;
+  subagentCount: number;
+}
+
+export interface WorkflowShapeStageHealthInput {
+  stageId: string;
+  totalTasks: number;
+  completedTasks?: number;
+  failedTasks: number;
+  queuedTasks?: number;
+  runningTasks?: number;
+  cancelledTasks?: number;
+}
+
+export interface WorkflowShapeProjectContextInput {
+  indexedFiles: number;
+  indexedTokenEstimate: number;
+  sourceKinds: Record<string, number>;
+}
+
+export interface WorkflowShapeOptimizationInput {
+  projectRootUri: string;
+  workflowId: string;
+  workflowName: string;
+  generatedAt?: string;
+  runsAnalyzed: number;
+  evaluationRuns: number;
+  feedbackCounts: Record<string, number>;
+  stages: WorkflowShapeStageInput[];
+  stageHealth: WorkflowShapeStageHealthInput[];
+  scoreGroups: PreferenceScoreGroup[];
+  projectContext: WorkflowShapeProjectContextInput;
+}
+
+export interface WorkflowShapeRecommendation {
+  id: string;
+  kind: WorkflowShapeRecommendationKind;
+  priority: "high" | "medium" | "low";
+  title: string;
+  target: string;
+  stageIds: string[];
+  agentTypeId?: string;
+  preferredScope: "project_overlay" | "shared_workflow_review";
+  approvalRequired: true;
+  rationale: string[];
+  recommendation: string;
+  overlayHint: string;
+  evidence: {
+    runsAnalyzed: number;
+    failureRate?: number;
+    failedTasks?: number;
+    totalTasks?: number;
+    fallbackRate?: number;
+    averageLatencyMs?: number | null;
+    averageQuality?: number | null;
+    feedbackCounts?: Record<string, number>;
+    indexedFiles?: number;
+  };
+}
+
+export interface WorkflowShapeOptimizationReport {
+  kind: "agentflow_workflow_shape_optimization";
+  projectRootUri: string;
+  workflowId: string;
+  workflowName: string;
+  generatedAt: string;
+  runsAnalyzed: number;
+  evaluationRuns: number;
+  feedbackCounts: Record<string, number>;
+  projectContext: WorkflowShapeProjectContextInput;
+  summary: string[];
+  recommendations: WorkflowShapeRecommendation[];
+  guardrails: string[];
+  ownedLearningFiles: string[];
+}
+
 export interface TuningProposalSet {
   projectRootUri: string;
   generatedAt: string;
@@ -636,6 +720,343 @@ export function formatPreferenceScorecard(scorecard: PreferenceScorecard): strin
         `  - Recommendation: ${group.recommendation}`
       ].join("\n")).join("\n")
       : "- No routed stages found."
+  ].join("\n");
+}
+
+export function buildWorkflowShapeOptimizationReport(input: WorkflowShapeOptimizationInput): WorkflowShapeOptimizationReport {
+  const healthByStage = new Map(input.stageHealth.map((stage) => [stage.stageId, stage]));
+  const groupsByStage = new Map<string, PreferenceScoreGroup[]>();
+  for (const group of input.scoreGroups.filter((group) => group.workflowId === input.workflowId)) {
+    groupsByStage.set(group.stageId, [...(groupsByStage.get(group.stageId) ?? []), group]);
+  }
+
+  const recommendations: WorkflowShapeRecommendation[] = [];
+  const addRecommendation = (recommendation: Omit<WorkflowShapeRecommendation, "id">): void => {
+    recommendations.push({
+      ...recommendation,
+      id: `shape-${String(recommendations.length + 1).padStart(3, "0")}`
+    });
+  };
+
+  for (const stage of input.stages) {
+    const health = healthByStage.get(stage.id);
+    const groups = groupsByStage.get(stage.id) ?? [];
+    const totalTasks = health?.totalTasks ?? 0;
+    const failedTasks = health?.failedTasks ?? 0;
+    const failureRate = totalTasks ? round(failedTasks / totalTasks) : 0;
+    const fallbackRate = maxNumber(groups.map((group) => group.fallbackRate));
+    const averageLatencyMs = averageNullable(groups.map((group) => group.averageLatencyMs));
+    const averageQuality = averageNullable(groups.map((group) => group.averageQuality));
+    const feedbackCounts = {
+      accepted: groups.reduce((sum, group) => sum + group.accepted, 0),
+      revised: groups.reduce((sum, group) => sum + group.revised, 0),
+      rejected: groups.reduce((sum, group) => sum + group.rejected, 0)
+    };
+
+    if (failureRate >= 0.3 || (averageQuality !== null && averageQuality < 0.65) || (averageLatencyMs !== null && averageLatencyMs > 45_000 && stage.contextMaxTokens >= 6000)) {
+      addRecommendation({
+        kind: "split_stage",
+        priority: failureRate >= 0.5 || feedbackCounts.rejected > 0 ? "high" : "medium",
+        title: `Split ${stage.id} into narrower work and verification steps`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [
+          totalTasks ? `${failedTasks}/${totalTasks} recent task(s) failed for this stage.` : "This stage has limited direct health evidence.",
+          averageQuality !== null ? `Average quality is ${averageQuality}.` : "No quality score is available for this stage yet.",
+          averageLatencyMs !== null ? `Average latency is ${averageLatencyMs}ms.` : "No latency signal is available yet."
+        ],
+        recommendation: "Prefer a project-local workflow overlay that separates planning, execution, and evidence collection before changing the shared workflow.",
+        overlayHint: `Draft .agent-workflow/workflows/${input.workflowId}.overlay.yaml with a narrower ${stage.id} stage pair, then review before applying.`,
+        evidence: {
+          runsAnalyzed: input.runsAnalyzed,
+          failureRate,
+          failedTasks,
+          totalTasks,
+          fallbackRate,
+          averageLatencyMs,
+          averageQuality,
+          feedbackCounts
+        }
+      });
+    }
+
+    if (!stage.approvalRequired && (failureRate >= 0.25 || fallbackRate >= 0.5 || feedbackCounts.rejected > 0)) {
+      addRecommendation({
+        kind: "gate_stage",
+        priority: failureRate >= 0.5 || fallbackRate >= 0.75 || feedbackCounts.rejected > 0 ? "high" : "medium",
+        title: `Add an evidence gate before or after ${stage.id}`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [
+          `Failure rate is ${failureRate}.`,
+          `Fallback rate is ${fallbackRate}.`,
+          `Rejected feedback count is ${feedbackCounts.rejected}.`
+        ],
+        recommendation: "Gate risky stage output with a small local verification or human-review step until repeated evidence improves.",
+        overlayHint: `Add a project-local gate around ${stage.id}; do not edit shared ${input.workflowId} until the overlay has run cleanly.`,
+        evidence: {
+          runsAnalyzed: input.runsAnalyzed,
+          failureRate,
+          failedTasks,
+          totalTasks,
+          fallbackRate,
+          averageLatencyMs,
+          averageQuality,
+          feedbackCounts
+        }
+      });
+    }
+
+    if (input.runsAnalyzed >= 3 && totalTasks === 0 && stage.order > 0 && stage.order < input.stages.length - 1) {
+      addRecommendation({
+        kind: "remove_stage",
+        priority: "low",
+        title: `Review whether ${stage.id} is still useful`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [
+          `No recent task records were found for ${stage.id} across ${input.runsAnalyzed} inspected run(s).`,
+          "A project-local overlay can test removal without shrinking the shared portable workflow."
+        ],
+        recommendation: "Try removing this stage in a project-local overlay only if users confirm the output is redundant.",
+        overlayHint: `Create a project-local overlay that skips ${stage.id}, then compare output quality and receipts before proposing a shared workflow change.`,
+        evidence: {
+          runsAnalyzed: input.runsAnalyzed,
+          failedTasks,
+          totalTasks,
+          indexedFiles: input.projectContext.indexedFiles
+        }
+      });
+    }
+  }
+
+  for (let index = 0; index < input.stages.length - 1; index += 1) {
+    const left = input.stages[index];
+    const right = input.stages[index + 1];
+    const leftHealth = healthByStage.get(left.id);
+    const rightHealth = healthByStage.get(right.id);
+    const leftFailures = leftHealth?.failedTasks ?? 0;
+    const rightFailures = rightHealth?.failedTasks ?? 0;
+    const leftGroups = groupsByStage.get(left.id) ?? [];
+    const rightGroups = groupsByStage.get(right.id) ?? [];
+    const leftQuality = averageNullable(leftGroups.map((group) => group.averageQuality));
+    const rightQuality = averageNullable(rightGroups.map((group) => group.averageQuality));
+    const lowRiskPair = leftFailures === 0
+      && rightFailures === 0
+      && !left.approvalRequired
+      && !right.approvalRequired
+      && left.subagentCount === 0
+      && right.subagentCount === 0
+      && left.contextMaxTokens <= 4000
+      && right.contextMaxTokens <= 4000
+      && (leftQuality === null || leftQuality >= 0.85)
+      && (rightQuality === null || rightQuality >= 0.85);
+    if (lowRiskPair && (left.agentId === right.agentId || input.runsAnalyzed >= 5)) {
+      addRecommendation({
+        kind: "collapse_stages",
+        priority: "low",
+        title: `Consider collapsing ${left.id} and ${right.id}`,
+        target: `${input.workflowId}/${left.id}+${right.id}`,
+        stageIds: [left.id, right.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [
+          "Adjacent stages have no recent failures in the inspected window.",
+          "Both stages are low-context, low-autonomy-risk, and have no subagent fanout."
+        ],
+        recommendation: "Test a project-local overlay that combines these stages to reduce overhead, then compare quality and runtime.",
+        overlayHint: `Draft .agent-workflow/workflows/${input.workflowId}.overlay.yaml combining ${left.id} and ${right.id} for local evaluation.`,
+        evidence: {
+          runsAnalyzed: input.runsAnalyzed,
+          averageQuality: averageNullable([leftQuality, rightQuality]),
+          failedTasks: leftFailures + rightFailures,
+          totalTasks: (leftHealth?.totalTasks ?? 0) + (rightHealth?.totalTasks ?? 0)
+        }
+      });
+    }
+  }
+
+  const hasContextStage = input.stages.some((stage) => stage.agentId === "context-curator" || stage.contextLoads.includes("relevant_source_files"));
+  if (input.projectContext.indexedFiles >= 80 && !hasContextStage) {
+    addRecommendation({
+      kind: "add_stage",
+      priority: "medium",
+      title: "Add a project-local context curation preflight",
+      target: input.workflowId,
+      stageIds: [],
+      agentTypeId: "context-curator",
+      preferredScope: "project_overlay",
+      approvalRequired: true,
+      rationale: [
+        `${input.projectContext.indexedFiles} indexed file(s) are available for this project.`,
+        "Large projects benefit from a cheap relevance pass before specialist stages consume context."
+      ],
+      recommendation: "Add a local context-curation stage to select compact evidence before broader planning or implementation.",
+      overlayHint: `Draft .agent-workflow/workflows/${input.workflowId}.overlay.yaml adding a context-curator preflight with a small token budget.`,
+      evidence: {
+        runsAnalyzed: input.runsAnalyzed,
+        indexedFiles: input.projectContext.indexedFiles
+      }
+    });
+  }
+
+  const hasEvalOrTestStage = input.stages.some((stage) => /eval|test|verify|quality/i.test(`${stage.id} ${stage.agentId}`));
+  if (input.runsAnalyzed >= 3 && input.evaluationRuns === 0 && !hasEvalOrTestStage) {
+    addRecommendation({
+      kind: "add_stage",
+      priority: "medium",
+      title: "Add an evaluation evidence stage",
+      target: input.workflowId,
+      stageIds: [],
+      agentTypeId: "eval-curator",
+      preferredScope: "project_overlay",
+      approvalRequired: true,
+      rationale: [
+        `${input.runsAnalyzed} recent run(s) exist, but none include evaluation metadata.`,
+        "Workflow shape changes should be compared against evidence before they become defaults."
+      ],
+      recommendation: "Add a project-local eval-curator or test-engineer evidence stage before final review.",
+      overlayHint: `Draft .agent-workflow/workflows/${input.workflowId}.overlay.yaml adding an eval-curator stage that writes local eval cases or gate commands.`,
+      evidence: {
+        runsAnalyzed: input.runsAnalyzed,
+        feedbackCounts: input.feedbackCounts
+      }
+    });
+  }
+
+  const repeatedFeedbackGaps = input.scoreGroups.filter((group) => group.workflowId === input.workflowId && group.runs >= 3 && group.accepted + group.revised + group.rejected === 0);
+  if (repeatedFeedbackGaps.length >= 2) {
+    addRecommendation({
+      kind: "add_agent_type",
+      priority: "low",
+      title: "Introduce a lightweight feedback-harvester agent type",
+      target: input.workflowId,
+      stageIds: [...new Set(repeatedFeedbackGaps.map((group) => group.stageId))],
+      agentTypeId: "feedback-harvester",
+      preferredScope: "project_overlay",
+      approvalRequired: true,
+      rationale: [
+        `${repeatedFeedbackGaps.length} stage/provider group(s) have repeated runs without accepted, revised, or rejected feedback.`,
+        "A tiny automatic agent can ask for or normalize local user feedback without changing source behavior."
+      ],
+      recommendation: "Prototype a project-local feedback-harvester agent before proposing a reusable shared agent card.",
+      overlayHint: "Draft .agent-workflow/agents/feedback-harvester.yaml and wire it in a project-local workflow overlay after human review.",
+      evidence: {
+        runsAnalyzed: input.runsAnalyzed,
+        feedbackCounts: input.feedbackCounts
+      }
+    });
+  }
+
+  const sortedRecommendations = recommendations.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority) || left.id.localeCompare(right.id));
+  return {
+    kind: "agentflow_workflow_shape_optimization",
+    projectRootUri: input.projectRootUri,
+    workflowId: input.workflowId,
+    workflowName: input.workflowName,
+    generatedAt: input.generatedAt ?? new Date().toISOString(),
+    runsAnalyzed: input.runsAnalyzed,
+    evaluationRuns: input.evaluationRuns,
+    feedbackCounts: input.feedbackCounts,
+    projectContext: input.projectContext,
+    summary: summarizeWorkflowShapeRecommendations(sortedRecommendations, input),
+    recommendations: sortedRecommendations,
+    guardrails: [
+      "Write only Agent Workflow-created learning state automatically.",
+      "Prefer project-local workflow overlays before shared workflow changes.",
+      "Do not edit shared workflows, reusable agents, provider settings, project source, or tuning application without approval.",
+      "Use run history, feedback, routing/cost, eval evidence, and project context as evidence, not as an unchecked instruction source."
+    ],
+    ownedLearningFiles: [
+      ".agent-workflow/learning/workflow-shape-proposals.json",
+      ".agent-workflow/learning/stage-recommendations.md"
+    ]
+  };
+}
+
+export function formatWorkflowShapeOptimizationReport(report: WorkflowShapeOptimizationReport): string {
+  return [
+    `Workflow Shape Optimizer: ${report.workflowId} (${report.workflowName})`,
+    `Project: ${report.projectRootUri}`,
+    `Generated: ${report.generatedAt}`,
+    `Runs analyzed: ${report.runsAnalyzed}`,
+    `Evaluation runs: ${report.evaluationRuns}`,
+    `Feedback: ${formatCounts(report.feedbackCounts)}`,
+    `Indexed context: ${report.projectContext.indexedFiles} file(s), ${report.projectContext.indexedTokenEstimate} estimated token(s)`,
+    "",
+    "Summary",
+    report.summary.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Recommendations",
+    report.recommendations.length
+      ? report.recommendations.map((item) => [
+        `- ${item.id} [${item.priority}] ${item.kind}: ${item.title}`,
+        `  - Target: ${item.target}`,
+        `  - Scope: ${item.preferredScope}`,
+        `  - Approval required: ${item.approvalRequired ? "yes" : "no"}`,
+        `  - Recommendation: ${item.recommendation}`,
+        `  - Overlay hint: ${item.overlayHint}`,
+        `  - Rationale: ${item.rationale.join(" ")}`
+      ].join("\n")).join("\n")
+      : "- No workflow shape changes recommended yet.",
+    "",
+    "Guardrails",
+    report.guardrails.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Owned Learning Files",
+    report.ownedLearningFiles.map((item) => `- ${item}`).join("\n")
+  ].join("\n");
+}
+
+export function formatWorkflowShapeOptimizationMarkdown(report: WorkflowShapeOptimizationReport): string {
+  return [
+    "# Agent Workflow Stage Recommendations",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Workflow: ${report.workflowId} (${report.workflowName})`,
+    `Runs analyzed: ${report.runsAnalyzed}`,
+    `Evaluation runs: ${report.evaluationRuns}`,
+    "",
+    "This file is Agent Workflow-owned learning state. It is allowed to be updated automatically by the local learning daemon, but it is not itself an approved change to shared workflows, reusable agents, provider settings, project source, or tuning application.",
+    "",
+    "## Summary",
+    "",
+    report.summary.map((item) => `- ${item}`).join("\n"),
+    "",
+    "## Recommendations",
+    "",
+    report.recommendations.length
+      ? report.recommendations.map((item) => [
+        `### ${item.id}: ${item.title}`,
+        "",
+        `- Kind: ${item.kind}`,
+        `- Priority: ${item.priority}`,
+        `- Target: ${item.target}`,
+        `- Preferred scope: ${item.preferredScope}`,
+        item.agentTypeId ? `- Agent type: ${item.agentTypeId}` : "",
+        `- Approval required: ${item.approvalRequired ? "yes" : "no"}`,
+        "",
+        "Rationale:",
+        item.rationale.map((reason) => `- ${reason}`).join("\n"),
+        "",
+        `Recommendation: ${item.recommendation}`,
+        "",
+        `Overlay hint: ${item.overlayHint}`,
+        ""
+      ].filter(Boolean).join("\n")).join("\n")
+      : "_No workflow shape changes recommended yet._",
+    "",
+    "## Guardrails",
+    "",
+    report.guardrails.map((item) => `- ${item}`).join("\n"),
+    ""
   ].join("\n");
 }
 
@@ -1950,6 +2371,44 @@ function groupBy<T>(items: T[], selectKey: (item: T) => string): Map<string, T[]
 
 function safeId(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
+}
+
+function maxNumber(values: number[]): number {
+  return values.length ? Math.max(...values) : 0;
+}
+
+function averageNullable(values: Array<number | null | undefined>): number | null {
+  const numbers = values.filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+  if (!numbers.length) {
+    return null;
+  }
+  return round(numbers.reduce((sum, value) => sum + value, 0) / numbers.length);
+}
+
+function priorityRank(priority: "high" | "medium" | "low"): number {
+  if (priority === "high") return 0;
+  if (priority === "medium") return 1;
+  return 2;
+}
+
+function summarizeWorkflowShapeRecommendations(recommendations: WorkflowShapeRecommendation[], input: WorkflowShapeOptimizationInput): string[] {
+  const summary: string[] = [];
+  const counts = countBy(recommendations, (recommendation) => recommendation.kind);
+  if (!recommendations.length) {
+    summary.push("No workflow shape changes are recommended yet. Continue collecting runs, feedback, failures, and evaluation evidence.");
+  } else {
+    summary.push(`${recommendations.length} workflow shape recommendation(s): ${formatCounts(counts)}.`);
+    summary.push(`${recommendations.filter((recommendation) => recommendation.preferredScope === "project_overlay").length} recommendation(s) prefer project-local workflow overlays before shared workflow changes.`);
+  }
+  const highPriority = recommendations.filter((recommendation) => recommendation.priority === "high").length;
+  if (highPriority) {
+    summary.push(`${highPriority} high-priority recommendation(s) should be reviewed before the workflow is promoted more broadly.`);
+  }
+  if (input.projectContext.indexedFiles === 0) {
+    summary.push("Project context has not been indexed yet; run indexing before trusting shape optimization.");
+  }
+  summary.push("Learning-owned recommendation artifacts may refresh automatically; applying changes to shared workflows, reusable agents, provider settings, project source, or tuning application still requires approval.");
+  return summary;
 }
 
 function yamlScalar(value: string): string {

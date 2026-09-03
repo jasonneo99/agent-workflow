@@ -78,7 +78,7 @@ import {
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
-import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet } from "../../../packages/run-reporter/src/index.js";
+import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
@@ -2755,6 +2755,8 @@ program
         proposals: update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
         inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
         applicationActions: update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
+        workflowShapeRecommendations: update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
+        workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(projectDir),
         lastError,
         command: `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
       };
@@ -2769,7 +2771,7 @@ program
         const update = await runLearningDaemonTick({ projectDir, mode, limit });
         await writeStatus(stop ? "stopping" : "running", update);
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}, applicationActions=${update.applicationPlan?.actions.length ?? 0}`);
+          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}, applicationActions=${update.applicationPlan?.actions.length ?? 0}, workflowShape=${update.workflowShape?.recommendations.length ?? 0}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -2846,6 +2848,51 @@ program
     } else {
       console.log("");
       console.log("Dry run only. Re-run with --write to save the Agent Workflow-owned learning application plan.");
+    }
+  });
+
+program
+  .command("learning-workflow-shape")
+  .description("Recommend workflow stage and agent-type shape changes from local learning evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-w, --workflow <id>", "workflow id or alias; defaults to the latest project run workflow")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--write", "write workflow-shape learning artifacts under .agent-workflow/learning")
+  .option("--json", "print workflow shape optimization JSON")
+  .action(async (options: { project: string; workflow?: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadWorkflowShapeOptimization({
+      projectDir,
+      workflowId: options.workflow,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    if (options.write) {
+      await writeWorkflowShapeOptimization(projectDir, report);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatWorkflowShapeOptimizationReport(report));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/workflow-shape-proposals.json");
+      console.log("Wrote .agent-workflow/learning/stage-recommendations.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned workflow-shape learning files.");
     }
   });
 
@@ -3765,7 +3812,16 @@ type LearningDaemonHeartbeat = {
   proposals: number;
   inboxItems: number;
   applicationActions: number;
+  workflowShapeRecommendations?: number;
+  workflowShapeAutoUpdate?: boolean;
   command: string;
+};
+
+type LearningSettings = {
+  kind: "agentflow_learning_settings";
+  projectRootUri: string;
+  updatedAt: string;
+  workflowShapeAutoUpdate: boolean;
 };
 
 type DashboardLearningDaemonStatus = {
@@ -3787,6 +3843,8 @@ type DashboardLearningDaemonStatus = {
   proposals: number;
   inboxItems: number;
   applicationActions: number;
+  workflowShapeRecommendations?: number;
+  workflowShapeAutoUpdate?: boolean;
   lastError: string;
   command: string;
 };
@@ -7090,10 +7148,12 @@ async function loadLearningReport(input: {
       "Detect repeated failures, high-cost routes, stale context, and eval gaps.",
       "Generate compact local learning reports and dry-run proposal previews.",
       "Update learning files and future learning database rows that Agent Workflow created and owns when propose mode or an explicit learning command requests it.",
+      "Refresh workflow-shape and agent-type recommendation files automatically when the autonomous optimizer is enabled.",
       "Queue approval requests for behavior-changing improvements."
     ],
     approvalRequiredActions: [
       "Apply project-local tuning notes.",
+      "Promote workflow-shape recommendations into shared workflows or reusable agent cards.",
       "Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source.",
       "Run commands, tests, web/model research, network calls, or external tools.",
       "Change production policy, deployment, storage lifecycle, server mode, or any private-data export."
@@ -7121,6 +7181,73 @@ function inferStageWorkflowId(runs: DashboardRunStatus[], reports: CostQualityRe
 function inferStageAgentId(reports: CostQualityReport[], stageId: string): string {
   const stage = reports.flatMap((report) => report.stages).find((item) => item.stageId === stageId);
   return stage?.agentId ?? "unknown";
+}
+
+async function loadWorkflowShapeOptimization(input: {
+  projectDir: string;
+  workflowId?: string;
+  limit: number;
+}): Promise<WorkflowShapeOptimizationReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const limit = Math.max(1, input.limit);
+  const workflows = await loadWorkflows(rootDir);
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit });
+  const requestedWorkflow = input.workflowId ? resolveWorkflow(workflows, input.workflowId) : null;
+  const workflow = requestedWorkflow
+    ?? workflows.find((item) => item.id === runs[0]?.workflowId)
+    ?? workflows.find((item) => item.id === "build-feature")
+    ?? workflows[0];
+  if (!workflow) {
+    throw new Error("No reusable workflows are available.");
+  }
+  if (input.workflowId && !requestedWorkflow) {
+    throw new Error(`Unknown workflow: ${input.workflowId}`);
+  }
+  const workflowRuns = runs.filter((run) => run.workflowId === workflow.id);
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit });
+  const stageHealth = workflowRuns.length ? await listWorkflowStageHealthForRuns({ runIds: workflowRuns.map((run) => run.id) }) : [];
+  const files = await listProjectFileSummaries({ projectRootUri: projectDir, limit: 500 });
+  const evaluationRuns = workflowRuns.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
+  return buildWorkflowShapeOptimizationReport({
+    projectRootUri: projectDir,
+    workflowId: workflow.id,
+    workflowName: workflow.name,
+    runsAnalyzed: workflowRuns.length,
+    evaluationRuns: evaluationRuns.length,
+    feedbackCounts: scorecard.feedbackCounts,
+    stages: workflow.stages.map((stage, index) => ({
+      id: stage.id,
+      agentId: stage.agent,
+      order: index,
+      contextMaxTokens: stage.context.max_tokens,
+      contextLoads: stage.context.load,
+      approvalRequired: stage.approval_required,
+      subagentCount: stage.subagents.length
+    })),
+    stageHealth,
+    scoreGroups: scorecard.groups,
+    projectContext: {
+      indexedFiles: files.length,
+      indexedTokenEstimate: files.reduce((sum, file) => sum + file.tokenEstimate, 0),
+      sourceKinds: summarizeProjectSourceKinds(files)
+    }
+  });
+}
+
+function summarizeProjectSourceKinds(files: Awaited<ReturnType<typeof listProjectFileSummaries>>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const file of files) {
+    const extension = path.extname(file.sourceUri).replace(/^\./, "") || "none";
+    counts[extension] = (counts[extension] ?? 0) + 1;
+  }
+  return counts;
+}
+
+async function writeWorkflowShapeOptimization(projectDir: string, report: WorkflowShapeOptimizationReport): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "workflow-shape-proposals.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "stage-recommendations.md"), formatWorkflowShapeOptimizationMarkdown(report), "utf8");
 }
 
 function formatLearningReport(report: LearningReport): string {
@@ -8010,13 +8137,20 @@ async function runLearningDaemonTick(input: {
   projectDir: string;
   mode: LearningDaemonMode;
   limit: number;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan }> {
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; workflowShapeAutoUpdate: boolean }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
   const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue);
   const applicationPlan = buildLearningApplicationPlan(approvalQueue, "all");
+  const workflowShapeAutoUpdate = await learningWorkflowShapeAutoUpdateEnabled(input.projectDir);
+  const workflowShape = workflowShapeAutoUpdate
+    ? await loadWorkflowShapeOptimization({ projectDir: input.projectDir, limit: input.limit })
+    : null;
   await writeLearningReport(input.projectDir, report);
+  if (workflowShape) {
+    await writeWorkflowShapeOptimization(input.projectDir, workflowShape);
+  }
   if (input.mode === "propose" || input.mode === "apply-approved") {
     await writeLearningProposals(input.projectDir, proposalSet);
     await writeLearningApprovalQueue(input.projectDir, approvalQueue);
@@ -8024,7 +8158,35 @@ async function runLearningDaemonTick(input: {
   if (input.mode === "apply-approved") {
     await writeLearningApplicationPlan(input.projectDir, applicationPlan);
   }
-  return { report, proposalSet, approvalQueue, applicationPlan };
+  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate };
+}
+
+async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promise<boolean> {
+  const override = process.env.AGENTFLOW_LEARNING_WORKFLOW_SHAPE_AUTO_UPDATE;
+  if (override === "0" || override === "false" || override === "off") {
+    return false;
+  }
+  if (override === "1" || override === "true" || override === "on") {
+    return true;
+  }
+  const settings = await readLearningSettings(projectDir).catch(() => null);
+  return settings?.workflowShapeAutoUpdate ?? true;
+}
+
+async function readLearningSettings(projectDir: string): Promise<LearningSettings> {
+  const settingsPath = path.join(projectDir, ".agent-workflow", "learning", "settings.json");
+  const raw = await fs.readFile(settingsPath, "utf8");
+  const parsed = JSON.parse(raw) as LearningSettings;
+  if (parsed.kind !== "agentflow_learning_settings" || typeof parsed.workflowShapeAutoUpdate !== "boolean") {
+    throw new Error(`Invalid learning settings: ${settingsPath}`);
+  }
+  return parsed;
+}
+
+async function writeLearningSettings(projectDir: string, settings: LearningSettings): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
 }
 
 async function writeLearningReport(projectDir: string, report: LearningReport): Promise<void> {
@@ -8632,6 +8794,31 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-settings") {
+    const form = await readFormBody(request);
+    const project = form.get("project") ?? "";
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+      response.end(renderDashboardActionResult({ ok: false, error: "Missing project." }));
+      return;
+    }
+    const projectDir = path.resolve(process.cwd(), project);
+    await writeLearningSettings(projectDir, {
+      kind: "agentflow_learning_settings",
+      projectRootUri: projectDir,
+      updatedAt: new Date().toISOString(),
+      workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on"
+    });
+    const query = new URLSearchParams({
+      project: projectDir,
+      limit: form.get("limit") ?? "50",
+      workflow: form.get("workflow") ?? ""
+    });
+    response.writeHead(303, { location: `/learning?${query.toString()}` });
+    response.end();
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
@@ -9078,6 +9265,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-workflow-shape") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadWorkflowShapeOptimization({
+      projectDir: project,
+      workflowId: requestUrl.searchParams.get("workflow") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/candidate-comparisons") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -9227,8 +9431,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const learningQueue = project ? await readLearningApprovalQueue(project).catch(() => null) : null;
     const learningDaemon = project ? await loadLearningDaemonStatus(project) : null;
     const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
+    const learningSettings = project ? await readLearningSettings(project).catch(() => null) : null;
+    const workflowShape = project
+      ? await loadWorkflowShapeOptimization({
+        projectDir: project,
+        workflowId: requestUrl.searchParams.get("workflow") ?? undefined,
+        limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+      }).catch(() => null)
+      : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, workflowShape, learningSettings, projects, requestUrl.searchParams));
     return;
   }
 
@@ -10913,12 +11125,14 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
+  const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
+  const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, workflowShape, shapeAutoUpdate)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -10948,16 +11162,20 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
         <label>Run limit
           <input name="limit" value="${escapeHtml(params.get("limit") ?? "50")}" inputmode="numeric">
         </label>
+        <label>Workflow
+          <input name="workflow" value="${escapeHtml(params.get("workflow") ?? workflowShape?.workflowId ?? "")}" placeholder="latest run workflow">
+        </label>
         <div class="form-actions"><button type="submit">Inspect</button></div>
       </form>
     </section>
+    ${shapeJsonHref ? `<section class="panel compact-panel"><a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a></section>` : ""}
     ${body}
   </main>
 </body>
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -10978,6 +11196,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
   const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(report.projectDir)} --write`;
   const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode apply-approved`;
+  const shapeCommand = `npm run agentflow -- learning-workflow-shape --project ${shellQuote(report.projectDir)}${workflowShape ? ` --workflow ${shellQuote(workflowShape.workflowId)}` : ""} --write`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
     <section class="panel">
@@ -10996,6 +11215,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start apply-approved mode with <code>${escapeHtml(daemonCommand)}</code>. It may update Agent Workflow-created learning files and application plans, but it does not apply source, provider, tuning, command, network, or export changes.</p>
     </section>
+    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate) : ""}
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
       <div class="split-grid">
@@ -11039,10 +11259,61 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus): 
       <div><strong>Proposals</strong>${formatNumber(status.proposals)}</div>
       <div><strong>Inbox Items</strong>${formatNumber(status.inboxItems)}</div>
       <div><strong>Application Actions</strong>${formatNumber(status.applicationActions)}</div>
+      <div><strong>Shape Auto Update</strong>${status.workflowShapeAutoUpdate === false ? "off" : "on"}</div>
+      <div><strong>Shape Recommendations</strong>${formatNumber(status.workflowShapeRecommendations ?? 0)}</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(status.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(status.command)}</code></div>
       ${status.lastError ? `<div><strong>Last Error</strong>${escapeHtml(status.lastError)}</div>` : ""}
     </div>
+  `;
+}
+
+function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean): string {
+  const recommendationRows = report.recommendations.map((item) => `
+    <tr>
+      <td>${escapeHtml(item.id)}<br><span class="muted">${escapeHtml(item.kind)}</span></td>
+      <td><span class="flag ${item.priority === "high" ? "warn" : item.priority === "medium" ? "queued" : "good"}">${escapeHtml(item.priority)}</span></td>
+      <td>${escapeHtml(item.title)}<br><span class="muted">${escapeHtml(item.target)}</span></td>
+      <td>${escapeHtml(item.preferredScope.replace(/_/g, " "))}</td>
+      <td>${item.agentTypeId ? escapeHtml(item.agentTypeId) : "n/a"}</td>
+      <td>${escapeHtml(item.recommendation)}</td>
+    </tr>
+  `).join("");
+  const summaryItems = report.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const fileItems = report.ownedLearningFiles.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join("");
+  const settingsButton = "Save optimizer setting";
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Workflow Shape Optimizer</h2>
+          <span class="muted">${escapeHtml(report.workflowId)} · ${report.runsAnalyzed} run(s) · ${autoUpdate ? "autonomous learning-file updates" : "approval-first recommendations"}</span>
+        </div>
+        <a class="button secondary" href="/workflow-graph?workflow=${encodeURIComponent(report.workflowId)}&project=${encodeURIComponent(report.projectRootUri)}&view=network">Graph</a>
+      </div>
+      <form method="post" action="/api/learning-settings" class="inline-action-form">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="workflow" value="${escapeHtml(report.workflowId)}">
+        <input type="hidden" name="limit" value="${escapeHtml(String(report.runsAnalyzed || 50))}">
+        <label class="checkbox-label">
+          <input type="checkbox" name="workflowShapeAutoUpdate" value="on" ${autoUpdate ? "checked" : ""}>
+          Autonomous optimizer writes learning-owned recommendation files
+        </label>
+        <button type="submit" class="secondary">${escapeHtml(settingsButton)}</button>
+      </form>
+      <div class="metric-grid">
+        ${metricCard("Shape Ideas", report.recommendations.length, "stage and agent-type proposals")}
+        ${metricCard("High Priority", report.recommendations.filter((item) => item.priority === "high").length, "review first")}
+        ${metricCard("Indexed Files", report.projectContext.indexedFiles, "project context")}
+        ${metricCard("Eval Runs", report.evaluationRuns, "shape evidence")}
+      </div>
+      <p class="muted">Refresh owned learning artifacts with <code>${escapeHtml(command)}</code>. With Autonomous optimizer on, each daemon tick refreshes these learning-owned recommendation files by default. Turn it off for approval-first recommendation review.</p>
+      <div class="split-grid">
+        <div><h3>Summary</h3><ul>${summaryItems}</ul></div>
+        <div><h3>Owned Files</h3><ul>${fileItems}</ul></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>ID</th><th>Priority</th><th>Recommendation</th><th>Scope</th><th>Agent Type</th><th>Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"6\">No shape changes recommended yet.</td></tr>"}</tbody></table></div>
+    </section>
   `;
 }
 
@@ -15064,6 +15335,9 @@ function dashboardCss(): string {
     .bulk-dismiss-form .check-row { display: flex; align-items: center; gap: 8px; min-height: 36px; text-transform: none; font-weight: 500; }
     .bulk-dismiss-form .check-row input { width: auto; }
     .inline-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0; }
+    .inline-action-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 16px; padding: 10px; border: 1px solid #e2e7f0; background: #f8fafc; }
+    .checkbox-label { display: inline-flex; align-items: center; gap: 8px; color: #172033; font-size: 13px; font-weight: 700; }
+    .checkbox-label input { min-width: 0; width: auto; }
     .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
     .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .routing-form input, .routing-form select, .workflow-form input, .workflow-form select, .workflow-form textarea { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
