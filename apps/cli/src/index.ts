@@ -41,7 +41,11 @@ import {
   storageMigrationScript,
   type StorageMigrationPlan
 } from "../../../packages/storage/src/migration-plan.js";
-import { buildStorageVerificationReport, formatStorageVerificationReport } from "../../../packages/storage/src/verification.js";
+import {
+  buildStorageVerificationReport,
+  formatStorageVerificationReport,
+  type StorageVerificationReport
+} from "../../../packages/storage/src/verification.js";
 import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
@@ -10626,6 +10630,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/storage-verify") {
+    const report = await buildStorageVerificationReport({
+      targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined,
+      sourceDatabaseUrl: requestUrl.searchParams.get("sourceDatabaseUrl") ?? undefined,
+      sourceRedisUrl: requestUrl.searchParams.get("sourceRedisUrl") ?? undefined,
+      sourceObjectStorageEndpoint: requestUrl.searchParams.get("sourceObjectStorageEndpoint") ?? undefined,
+      sourceObjectStorageBucket: requestUrl.searchParams.get("sourceObjectStorageBucket") ?? undefined,
+      targetDatabaseUrl: requestUrl.searchParams.get("targetDatabaseUrl") ?? undefined,
+      targetRedisUrl: requestUrl.searchParams.get("targetRedisUrl") ?? undefined,
+      targetObjectStorageEndpoint: requestUrl.searchParams.get("targetObjectStorageEndpoint") ?? undefined,
+      targetObjectStorageBucket: requestUrl.searchParams.get("targetObjectStorageBucket") ?? undefined
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/server-projects") {
     const report = await loadServerProjectRegistryReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
@@ -11166,9 +11187,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100),
       includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
     });
+    const storageVerification = await buildStorageVerificationReport({
+      targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
+    });
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, projects, requestUrl.searchParams));
     return;
   }
 
@@ -13824,7 +13848,7 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -13842,17 +13866,28 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   const serviceRows = report.services.map((service) => `
     <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
   `).join("");
+  const storageStatusClass = storageVerification.status === "match" ? "completed" : storageVerification.status === "blocked" || storageVerification.status === "mismatch" ? "failed" : "queued";
+  const storageMatches = storageVerification.diffs.filter((diff) => diff.status === "match").length;
+  const storageMismatches = storageVerification.diffs.filter((diff) => diff.status === "mismatch").length;
+  const storageMissing = storageVerification.diffs.filter((diff) => diff.status === "missing").length;
+  const storageDiffRows = storageVerification.diffs.map((diff) => `
+    <tr><td>${escapeHtml(diff.table)}</td><td><span class="status ${diff.status === "match" ? "completed" : "failed"}">${escapeHtml(diff.status)}</span></td><td>${escapeHtml(String(diff.sourceCount ?? "missing"))}</td><td>${escapeHtml(String(diff.targetCount ?? "missing"))}</td></tr>
+  `).join("");
+  const storageWarningRows = storageVerification.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const storageHost = params.get("storageHost") ?? process.env.AGENTFLOW_SHARED_STORAGE_HOST ?? "";
   const commandRows = report.recommendedCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const noteRows = report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
   const jsonParams = new URLSearchParams();
   if (report.projectRootUri) jsonParams.set("project", report.projectRootUri);
   jsonParams.set("limit", String(report.limit));
+  const storageParams = new URLSearchParams();
+  if (storageHost) storageParams.set("storageHost", storageHost);
   const registryParams = new URLSearchParams(jsonParams);
   if (registry.includeRoots) registryParams.set("includeRoots", "true");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("server-readiness")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
-  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="100.78.183.30"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
   <section class="panel"><div class="metric-grid">
     ${metricCard("Status", report.status, "server-mode readiness")}
     ${metricCard("Mode", report.mode.enabled ? "enabled" : "local-only", report.mode.networkExposed ? "network-exposed bind" : "loopback bind")}
@@ -13866,6 +13901,17 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Shared Storage Verification</h2><span class="muted">Read-only migration proof. This does not copy, restore, delete, or mutate storage.</span></div><a class="button secondary" href="/api/storage-verify?${escapeHtml(storageParams.toString())}">JSON</a></div>
+  <div class="metric-grid">
+    ${metricCard("Storage", storageVerification.status, "durable state comparison")}
+    ${metricCard("Matched", storageMatches, `${storageVerification.diffs.length} durable tables`)}
+    ${metricCard("Mismatched", storageMismatches, "count or fingerprint differs")}
+    ${metricCard("Missing", storageMissing, "table absent on one side")}
+  </div>
+  <div class="meta-grid compact"><div><strong>Source DB</strong>${escapeHtml(storageVerification.source.endpoint.databaseUrl)}</div><div><strong>Target DB</strong>${escapeHtml(storageVerification.target.endpoint.databaseUrl)}</div><div><strong>Source Objects</strong>${escapeHtml(storageVerification.source.endpoint.objectStorageEndpoint)}</div><div><strong>Target Objects</strong>${escapeHtml(storageVerification.target.endpoint.objectStorageEndpoint)}</div></div>
+  <p class="muted">Generated ${renderDashboardDateTime(storageVerification.generatedAt)}. Current status: <span class="status ${storageStatusClass}">${escapeHtml(storageVerification.status)}</span>.</p>
+  ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
+  <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
   <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No server-mode notes found.</li>'}</ul></section></main></body></html>`;
 }

@@ -219,6 +219,13 @@ items. It is read-only. If source and target are the same shared storage plane,
 the report returns `attention` instead of pretending it verified a migration
 copy.
 
+The same verification summary appears on the dashboard Server page:
+
+```bash
+npm run dashboard
+open http://127.0.0.1:17888/server-readiness
+```
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:

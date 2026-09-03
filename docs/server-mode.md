@@ -345,6 +345,8 @@ npm run storage-verify -- --target-host 100.78.183.30
 The verifier compares service reachability plus durable table counts and compact
 fingerprints for registry definitions, projects, indexed files, index state,
 runs, tasks, receipts, approvals, artifacts, and memory items.
+The dashboard also shows this report on `/server-readiness` under Shared
+Storage Verification.
 
 ## Readiness Checklist
 
