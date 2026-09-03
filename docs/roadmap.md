@@ -292,6 +292,8 @@ foundation is complete.
 - [ ] Governed server mode.
   - Keep local-only CLI, MCP stdio, dashboard, worker, and storage as the default developer workflow.
   - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
+  - Treat shared storage as the state plane for server mode: a trusted LAN/Tailscale host such as Hulk can run Postgres, Redis, and MinIO while client machines keep using CLI, MCP, and IDE integrations.
+  - Keep the Agent Workflow control plane separate from backing services: clients talk to MCP/CLI or authenticated Agent Workflow HTTP endpoints, not directly to Postgres, Redis, MinIO, or project files.
   - Define auth, project registration, role enforcement, audit receipts, and network binding defaults before exposing workflow execution remotely.
   - Document LAN/shared deployment risks and provide secure defaults that do not expose dev Postgres, Redis, MinIO, or project files accidentally.
   - Done: document the governed server-mode contract with secure local-first defaults, opt-in controls, auth requirements, project registration, endpoint classes, role checks, and audit receipt requirements.
@@ -304,9 +306,10 @@ foundation is complete.
   - Done: record remote actor, role, auth method, project id, workflow id, and idempotency details in queue receipts.
   - Done: document reverse-proxy/TLS guidance without bundling public-network deployment defaults.
   - Done: document MCP stdio as the recommended IDE path for Codex, VS Code, Cursor, and local clients.
-  - Next: require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Next: add the shared-storage host profile and migration/smoke workflow, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
+  - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
   - Add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
   - Support merge mode by mapping projects through `root_uri`, preserving existing destination runs, and rewriting dependent project ids safely.
   - Back up both source and destination Postgres databases before any write, with clear rollback instructions.

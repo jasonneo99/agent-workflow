@@ -8,6 +8,19 @@ Governed server mode is the future opt-in path for teams that want a shared
 Agent Workflow runtime on a trusted network. This contract defines the boundary
 before any remote workflow execution endpoint is added.
 
+The recommended shared setup has two separate planes:
+
+- Control plane: Agent Workflow CLI, MCP, dashboard, worker, and future
+  authenticated HTTP endpoints.
+- State plane: shared Postgres, Redis, and MinIO running on a trusted
+  LAN/Tailscale host, such as a local machine named Hulk.
+
+Client machines should not talk directly to the backing services unless they are
+trusted developer machines with explicit environment configuration. Normal IDE
+clients should continue to use MCP stdio or authenticated Agent Workflow
+endpoints so project registration, policy, roles, idempotency, and receipts stay
+in the loop.
+
 ## Goals
 
 - Keep local developer setup simple and private by default.
@@ -270,9 +283,27 @@ Team shared runtime:
 - Explicit server-mode opt-in.
 - Reverse proxy with TLS and identity recommended.
 - Registered project roots on the server host.
+- Shared storage host for durable state, for example Postgres, Redis, and MinIO
+  on a LAN/Tailscale machine such as Hulk.
+- Client machines use connection strings only when intentionally configured as
+  trusted operators; otherwise they call MCP stdio or authenticated Agent
+  Workflow server endpoints.
 - Role enforcement enabled for approval and execution actions.
 - Worker pools scoped by project.
 - Backup readiness and restore drills run before adoption.
+
+Shared storage host:
+
+- Run Postgres, Redis, and MinIO on a trusted LAN/Tailscale host.
+- Keep service ports private to trusted machines or a private network.
+- Use stable DNS or hostnames, for example `hulk.local` or a Tailscale MagicDNS
+  name, instead of hard-coded local IPs.
+- Store local developer `.env` files with shared service URLs only on trusted
+  clients.
+- Run a storage migration dry-run before moving local history into shared
+  storage.
+- Verify migrated projects, runs, artifacts, approvals, receipts, memory, and
+  index state before switching daily workflows to the shared host.
 
 ## Readiness Checklist
 
@@ -291,6 +322,8 @@ Before adding remote execution endpoints:
       still dry-run-by-default.
 - [x] Add an authenticated queueing endpoint after route previews are reviewed,
       with dry-run as the default and real queueing behind an explicit env gate.
+- [ ] Add a shared-storage host profile for LAN/Tailscale state-plane services.
+- [ ] Add a dry-run shared-storage migration and verification workflow.
 - [ ] Require auth for all remaining mutation endpoints.
 - [ ] Require role capability checks for all remaining mutation endpoints.
 - [ ] Require idempotency keys for all remaining mutation endpoints.
