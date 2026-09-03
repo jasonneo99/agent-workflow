@@ -4722,6 +4722,27 @@ type RestoreDrillCheck = {
   detail: string;
 };
 
+type StorageMigrationPlanListing = {
+  kind: "agentflow_storage_migration_plan_listing";
+  generatedAt: string;
+  directory: string;
+  plans: Array<{
+    jsonPath: string;
+    markdownPath: string | null;
+    scriptPath: string | null;
+    generatedAt: string;
+    status: string;
+    mode: string;
+    sourceDatabaseUrl: string;
+    targetDatabaseUrl: string;
+    targetObjectStorageEndpoint: string;
+    targetObjectStorageBucket: string;
+    warningCount: number;
+    stepCount: number;
+  }>;
+  warnings: string[];
+};
+
 type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
 type ServerReadinessCheckStatus = "pass" | "warn" | "fail";
 
@@ -6018,6 +6039,67 @@ async function writeStorageMigrationPlanFiles(plan: StorageMigrationPlan, outDir
   await fs.writeFile(scriptPath, storageMigrationScript(), { encoding: "utf8", mode: 0o755 });
   await fs.chmod(scriptPath, 0o755);
   return { markdownPath, jsonPath, scriptPath };
+}
+
+async function loadStorageMigrationPlanListing(inputDir?: string): Promise<StorageMigrationPlanListing> {
+  const directory = path.resolve(process.cwd(), inputDir?.trim() || ".agent-workflow/migrations");
+  const warnings: string[] = [];
+  const generatedAt = new Date().toISOString();
+  let entries: string[];
+  try {
+    entries = await fs.readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        kind: "agentflow_storage_migration_plan_listing",
+        generatedAt,
+        directory,
+        plans: [],
+        warnings: [`No migration plan directory found at ${directory}. Run agentflow storage-migrate --write-plan to create one.`]
+      };
+    }
+    throw error;
+  }
+  const plans: StorageMigrationPlanListing["plans"] = [];
+  const jsonFiles = entries
+    .filter((entry) => entry.startsWith("storage-migration-") && entry.endsWith(".json"))
+    .sort()
+    .reverse();
+  for (const entry of jsonFiles.slice(0, 25)) {
+    const jsonPath = path.join(directory, entry);
+    const plan = await readJsonFile<StorageMigrationPlan>(jsonPath);
+    if (!plan || plan.kind !== "agentflow_storage_migration_plan") {
+      warnings.push(`Skipped unrecognized migration plan JSON: ${jsonPath}`);
+      continue;
+    }
+    const basePath = jsonPath.slice(0, -".json".length);
+    const markdownPath = await pathIsFile(`${basePath}.md`) ? `${basePath}.md` : null;
+    const scriptPath = await pathIsFile(`${basePath}.sh`) ? `${basePath}.sh` : null;
+    plans.push({
+      jsonPath,
+      markdownPath,
+      scriptPath,
+      generatedAt: plan.generatedAt,
+      status: plan.status,
+      mode: plan.mode,
+      sourceDatabaseUrl: plan.source.databaseUrl,
+      targetDatabaseUrl: plan.target.databaseUrl,
+      targetObjectStorageEndpoint: plan.target.objectStorageEndpoint,
+      targetObjectStorageBucket: plan.target.objectStorageBucket,
+      warningCount: plan.warnings.length,
+      stepCount: plan.steps.length
+    });
+  }
+  if (!plans.length && !warnings.length) {
+    warnings.push(`No storage migration plan JSON files found in ${directory}.`);
+  }
+  return {
+    kind: "agentflow_storage_migration_plan_listing",
+    generatedAt,
+    directory,
+    plans,
+    warnings
+  };
 }
 
 async function loadServerReadinessReport(input: {
@@ -10647,6 +10729,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/storage-migrations") {
+    const listing = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("dir") ?? undefined);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(listing, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/server-projects") {
     const report = await loadServerProjectRegistryReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
@@ -11190,9 +11279,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const storageVerification = await buildStorageVerificationReport({
       targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
     });
+    const migrationPlans = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, projects, requestUrl.searchParams));
     return;
   }
 
@@ -13848,7 +13938,7 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -13874,7 +13964,22 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
     <tr><td>${escapeHtml(diff.table)}</td><td><span class="status ${diff.status === "match" ? "completed" : "failed"}">${escapeHtml(diff.status)}</span></td><td>${escapeHtml(String(diff.sourceCount ?? "missing"))}</td><td>${escapeHtml(String(diff.targetCount ?? "missing"))}</td></tr>
   `).join("");
   const storageWarningRows = storageVerification.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const migrationPlanRows = migrationPlans.plans.map((plan) => {
+    const planStatusClass = plan.status === "ready" ? "completed" : plan.status === "blocked" ? "failed" : "queued";
+    return `
+    <tr>
+      <td>${renderDashboardDateTime(plan.generatedAt)}<br><code>${escapeHtml(path.basename(plan.jsonPath))}</code></td>
+      <td><span class="status ${planStatusClass}">${escapeHtml(plan.status)}</span><br><span class="muted">${escapeHtml(plan.mode)}</span></td>
+      <td><code>${escapeHtml(plan.sourceDatabaseUrl)}</code></td>
+      <td><code>${escapeHtml(plan.targetDatabaseUrl)}</code><br><span class="muted">${escapeHtml(plan.targetObjectStorageEndpoint)} / ${escapeHtml(plan.targetObjectStorageBucket)}</span></td>
+      <td>${formatNumber(plan.warningCount)}<br><span class="muted">${formatNumber(plan.stepCount)} steps</span></td>
+      <td>${plan.markdownPath ? `<code>${escapeHtml(plan.markdownPath)}</code>` : '<span class="muted">none</span>'}</td>
+      <td>${plan.scriptPath ? `<code>${escapeHtml(plan.scriptPath)}</code>` : '<span class="muted">none</span>'}</td>
+    </tr>`;
+  }).join("");
+  const migrationWarningRows = migrationPlans.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
   const storageHost = params.get("storageHost") ?? process.env.AGENTFLOW_SHARED_STORAGE_HOST ?? "";
+  const migrationDir = params.get("migrationDir") ?? ".agent-workflow/migrations";
   const commandRows = report.recommendedCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const noteRows = report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
   const jsonParams = new URLSearchParams();
@@ -13882,12 +13987,14 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   jsonParams.set("limit", String(report.limit));
   const storageParams = new URLSearchParams();
   if (storageHost) storageParams.set("storageHost", storageHost);
+  const migrationParams = new URLSearchParams();
+  migrationParams.set("dir", migrationPlans.directory);
   const registryParams = new URLSearchParams(jsonParams);
   if (registry.includeRoots) registryParams.set("includeRoots", "true");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("server-readiness")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
-  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="100.78.183.30"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="100.78.183.30"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
   <section class="panel"><div class="metric-grid">
     ${metricCard("Status", report.status, "server-mode readiness")}
     ${metricCard("Mode", report.mode.enabled ? "enabled" : "local-only", report.mode.networkExposed ? "network-exposed bind" : "loopback bind")}
@@ -13912,6 +14019,16 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <p class="muted">Generated ${renderDashboardDateTime(storageVerification.generatedAt)}. Current status: <span class="status ${storageStatusClass}">${escapeHtml(storageVerification.status)}</span>.</p>
   ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
   <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
+  <div class="metric-grid">
+    ${metricCard("Plans", migrationPlans.plans.length, "generated migration packages")}
+    ${metricCard("Ready", migrationPlans.plans.filter((plan) => plan.status === "ready").length, "safe to review for execution")}
+    ${metricCard("Blocked", migrationPlans.plans.filter((plan) => plan.status === "blocked").length, "requires config changes first")}
+    ${metricCard("Warnings", migrationPlans.plans.reduce((total, plan) => total + plan.warningCount, 0), "across listed plans")}
+  </div>
+  <div class="meta-grid compact"><div><strong>Directory</strong><code>${escapeHtml(migrationPlans.directory)}</code></div><div><strong>Generated</strong>${renderDashboardDateTime(migrationPlans.generatedAt)}</div></div>
+  ${migrationPlans.warnings.length ? `<details class="governance-details" open><summary>Migration Plan Warnings</summary><ul>${migrationWarningRows}</ul></details>` : ""}
+  <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Status</th><th>Source DB</th><th>Target Storage</th><th>Warnings / Steps</th><th>Markdown Report</th><th>Guarded Script</th></tr></thead><tbody>${migrationPlanRows || '<tr><td colspan="7">No generated storage migration plans found. Run <code>npm run storage-migrate -- --write-plan</code> to create a reviewed dry-run package.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No server-mode notes found.</li>'}</ul></section></main></body></html>`;
 }
@@ -20956,6 +21073,15 @@ async function exists(filePath: string): Promise<boolean> {
   try {
     await fs.access(filePath);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function pathIsFile(filePath: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(filePath);
+    return stat.isFile();
   } catch {
     return false;
   }

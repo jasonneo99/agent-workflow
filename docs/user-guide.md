@@ -226,6 +226,11 @@ npm run dashboard
 open http://127.0.0.1:17888/server-readiness
 ```
 
+The Server page also lists generated operator packages from
+`.agent-workflow/migrations/` under Storage Migration Plans, including generated
+time, blocked/ready status, warning count, markdown report path, and guarded
+script path. Use `/api/storage-migrations` for the same metadata as JSON.
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:

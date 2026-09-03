@@ -309,7 +309,8 @@ foundation is complete.
   - Done: add shared-storage host detection and a dry-run migration operator package for LAN/Tailscale state-plane services.
   - Done: add target count/fingerprint verification for shared-storage migration proof.
   - Done: add dashboard visibility for shared-storage verification reports on the Server Readiness page.
-  - Next: add dashboard visibility for generated migration plans, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add dashboard visibility for generated shared-storage migration plan artifacts on the Server Readiness page.
+  - Next: add object-bucket enumeration and richer migration-proof checks, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.

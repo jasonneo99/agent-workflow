@@ -348,6 +348,12 @@ runs, tasks, receipts, approvals, artifacts, and memory items.
 The dashboard also shows this report on `/server-readiness` under Shared
 Storage Verification.
 
+Generated operator packages from `storage-migrate --write-plan` also appear on
+the Server Readiness page under Storage Migration Plans. The dashboard reads
+`.agent-workflow/migrations/` by default, shows each plan's generated time,
+blocked/ready status, warning count, markdown report, and guarded script path,
+and exposes the same metadata at `/api/storage-migrations`.
+
 ## Readiness Checklist
 
 Before adding remote execution endpoints:
