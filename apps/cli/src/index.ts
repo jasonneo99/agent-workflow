@@ -3812,6 +3812,8 @@ type ServerQueueReport = {
     workflowId: string;
     tasks: number;
     runUrl: string;
+    actorReceiptUri: string | null;
+    reused: boolean;
   };
   controls: Omit<ServerRequestPreviewReport["controls"], "wouldQueue"> & {
     authAccepted: boolean;
@@ -5681,40 +5683,86 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
     && queueExecutionEnabled
     && clientProvidedIdempotency;
   if (canQueue && routePreview.route) {
-    const queued = await queueWorkflow({
+    const existingRun = await findServerQueueRunByIdempotency({
+      projectId: routePreview.route.projectId,
+      projectRootUri: routePreview.route.projectRootUri,
       workflowId: routePreview.route.workflowId,
-      projectPath: routePreview.route.projectRootUri,
-      task: routePreview.route.task,
-      policyProfile: routePreview.route.policyProfile,
-      evaluationMetadata: {
-        source: "server-queue",
-        requestId: routePreview.envelope.requestId,
-        idempotencyKey: routePreview.envelope.idempotencyKey,
-        actor: routePreview.envelope.actor,
-        actorRole: routePreview.envelope.actorRole,
-        authMethod: auth.method
-      }
+      idempotencyKey: routePreview.envelope.idempotencyKey
     });
-    if (queued.ok) {
+    if (existingRun) {
       queuedRun = {
-        runId: queued.run.runId,
-        projectId: queued.run.projectId,
-        projectRootUri: queued.projectDir,
-        workflowId: queued.workflow.id,
-        tasks: queued.run.tasks,
-        runUrl: `/run?id=${encodeURIComponent(queued.run.runId)}`
+        runId: existingRun.runId,
+        projectId: existingRun.projectId,
+        projectRootUri: routePreview.route.projectRootUri,
+        workflowId: existingRun.workflowId,
+        tasks: existingRun.tasks,
+        runUrl: `/run?id=${encodeURIComponent(existingRun.runId)}`,
+        actorReceiptUri: null,
+        reused: true
       };
       checks.push({
         label: "Workflow queue",
         status: "pass",
-        detail: `Queued workflow run ${queued.run.runId}.`
+        detail: `Reused existing workflow run ${existingRun.runId} for this idempotency key.`
       });
     } else {
-      checks.push({
-        label: "Workflow queue",
-        status: "fail",
-        detail: queued.error
+      const queued = await queueWorkflow({
+        workflowId: routePreview.route.workflowId,
+        projectPath: routePreview.route.projectRootUri,
+        task: routePreview.route.task,
+        policyProfile: routePreview.route.policyProfile,
+        evaluationMetadata: {
+          source: "server-queue",
+          requestId: routePreview.envelope.requestId,
+          idempotencyKey: routePreview.envelope.idempotencyKey,
+          actor: routePreview.envelope.actor,
+          actorRole: routePreview.envelope.actorRole,
+          authMethod: auth.method
+        }
       });
+      if (queued.ok) {
+        const actorReceiptUri = await recordRunAction({
+          runId: queued.run.runId,
+          agentId: "workflow-orchestrator",
+          actionType: "server_queue_request",
+          target: routePreview.route.projectId,
+          summary: `Server queue request from ${routePreview.envelope.actor} as ${routePreview.envelope.actorRole}`,
+          artifactKind: "server_queue_request",
+          artifactContent: {
+            requestId: routePreview.envelope.requestId,
+            idempotencyKey: routePreview.envelope.idempotencyKey,
+            actor: routePreview.envelope.actor,
+            actorRole: routePreview.envelope.actorRole,
+            authMethod: auth.method,
+            projectId: routePreview.route.projectId,
+            workflowId: routePreview.route.workflowId,
+            policyProfile: routePreview.route.policyProfile,
+            receivedAt: new Date().toISOString()
+          },
+          idempotencyKey: `server-queue-${stableHash(routePreview.envelope.idempotencyKey).slice(0, 24)}`
+        });
+        queuedRun = {
+          runId: queued.run.runId,
+          projectId: queued.run.projectId,
+          projectRootUri: queued.projectDir,
+          workflowId: queued.workflow.id,
+          tasks: queued.run.tasks,
+          runUrl: `/run?id=${encodeURIComponent(queued.run.runId)}`,
+          actorReceiptUri,
+          reused: false
+        };
+        checks.push({
+          label: "Workflow queue",
+          status: "pass",
+          detail: `Queued workflow run ${queued.run.runId}.`
+        });
+      } else {
+        checks.push({
+          label: "Workflow queue",
+          status: "fail",
+          detail: queued.error
+        });
+      }
     }
   }
   const failures = checks.filter((check) => check.status === "fail").length;
@@ -5748,6 +5796,28 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       "This endpoint accepts registered project ids only; it does not accept project filesystem paths.",
       "Queue execution remains disabled unless server mode, token/OIDC auth, explicit execution, and the queue gate are all enabled."
     ]
+  };
+}
+
+async function findServerQueueRunByIdempotency(input: {
+  projectId: string;
+  projectRootUri: string;
+  workflowId: string;
+  idempotencyKey: string;
+}): Promise<null | { runId: string; projectId: string; workflowId: string; tasks: number }> {
+  const runs = await listWorkflowRunsForProject({ projectRootUri: input.projectRootUri, limit: 500 });
+  const existing = runs.find((run) =>
+    run.workflowId === input.workflowId &&
+    stringValue(run.evaluationMetadata?.source) === "server-queue" &&
+    stringValue(run.evaluationMetadata?.idempotencyKey) === input.idempotencyKey
+  );
+  if (!existing) return null;
+  const details = await getWorkflowRunDetails(existing.id);
+  return {
+    runId: existing.id,
+    projectId: input.projectId,
+    workflowId: existing.workflowId,
+    tasks: details.tasks.length
   };
 }
 

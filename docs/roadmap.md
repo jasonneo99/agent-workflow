@@ -244,7 +244,8 @@ foundation is complete.
   - Done: add an authenticated request-envelope preview for future remote execution requests before implementing mutation endpoints.
   - Done: add a guarded project-id routing adapter behind the same preview checks, still dry-run-by-default.
   - Done: add an authenticated queueing endpoint with dry-run as the default and real queueing gated by explicit server-mode environment flags.
-  - Next: record remote actor details in queue receipts before adding additional mutation endpoints.
+  - Done: record remote actor, role, auth method, project id, workflow id, and idempotency details in queue receipts.
+  - Next: require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

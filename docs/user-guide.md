@@ -141,7 +141,9 @@ an internal dry-run route and command preview while still refusing blocked
 requests. `POST /api/server-queue` accepts the same registered-project request
 shape with bearer-token or OIDC-proxy auth. It previews by default and only
 queues when `execute=true`, `AGENTFLOW_SERVER_MODE=1`, and
-`AGENTFLOW_SERVER_ENABLE_QUEUE=1`.
+`AGENTFLOW_SERVER_ENABLE_QUEUE=1`. Executed queue requests record actor, role,
+auth method, project id, workflow id, and idempotency details as run receipts;
+repeat requests with the same idempotency key reuse the existing run.
 
 See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
 copyable end-to-end local smoke test.

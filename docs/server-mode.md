@@ -247,7 +247,7 @@ Before adding remote execution endpoints:
 - [ ] Require auth for all remaining mutation endpoints.
 - [ ] Require role capability checks for all remaining mutation endpoints.
 - [ ] Require idempotency keys for all remaining mutation endpoints.
-- [ ] Record remote actor details in action receipts.
+- [x] Record remote actor details in queue action receipts.
 - [ ] Keep MCP stdio as the recommended IDE path for local use.
 - [ ] Document reverse-proxy/TLS guidance without bundling internet-facing
       defaults.
@@ -332,7 +332,9 @@ curl -fsS -X POST http://127.0.0.1:17888/api/server-queue \
 Real queueing requires all of these to be true: `AGENTFLOW_SERVER_MODE=1`,
 `AGENTFLOW_SERVER_ENABLE_QUEUE=1`, valid mutation auth, a registered project
 id, a known workflow, a role with request capability, and a client-provided
-idempotency key.
+idempotency key. Executed queue requests record actor, role, auth method,
+project id, workflow id, and idempotency details as run receipts. Repeat
+requests with the same idempotency key reuse the existing run.
 
 Verify that path-shaped input is rejected:
 
