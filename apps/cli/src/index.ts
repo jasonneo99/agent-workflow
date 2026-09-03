@@ -13505,7 +13505,7 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
       <td>${escapeHtml(project.provider)}<br><span class="muted">${escapeHtml(project.modelTier ?? "default tier")}</span></td>
       <td>${project.activeRuns} active / ${project.staleActiveRuns} stale<br><span class="muted">${project.failedRuns} failed · ${project.runCount} total</span></td>
       <td>${project.indexedFiles}<br><span class="muted">config: ${project.projectConfig}</span></td>
-      <td>${project.recommendations.length ? `<ul>${project.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : '<span class="flag good">No action</span>'}</td>
+      <td>${renderGovernanceProjectActionHtml(project)}</td>
     </tr>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Governance</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("governance")}
@@ -13513,6 +13513,29 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
   <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
   <form method="get" class="form-grid"><label>Health<select name="health"><option value="all">all</option>${["healthy", "warning", "critical"].map((value) => `<option${params.get("health") === value ? " selected" : ""}>${value}</option>`).join("")}</select></label><label>Provider<select name="provider"><option value="">all</option>${providers.map((value) => `<option${params.get("provider") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>Policy profile<select name="policyProfile"><option value="">all</option>${profiles.map((value) => `<option${params.get("policyProfile") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Filter</button></div></form></section>
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderGovernanceProjectActionHtml(project: GovernanceReport["projects"][number]): string {
+  const failingChecks = project.healthChecks.filter((check) => check.status === "warning" || check.status === "critical");
+  const summary = failingChecks.length
+    ? `${failingChecks.length} health check${failingChecks.length === 1 ? "" : "s"} need attention`
+    : "All governance checks are clean";
+  const checks = (failingChecks.length ? failingChecks : project.healthChecks).map((check) => `
+    <li>
+      <span class="flag ${check.status === "pass" ? "good" : check.status === "warning" ? "warn" : check.status === "critical" ? "bad" : ""}">${escapeHtml(check.status)}</span>
+      <strong>${escapeHtml(check.label)}</strong>
+      <span>${escapeHtml(check.evidence)}</span>
+      ${check.recommendation ? `<small>${escapeHtml(check.recommendation)}</small>` : ""}
+      ${check.command ? `<code>${escapeHtml(check.command)}</code>` : ""}
+    </li>
+  `).join("");
+  return `
+    ${project.recommendations.length ? `<ul>${project.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>` : '<span class="flag good">No action</span>'}
+    <details class="governance-details">
+      <summary>${escapeHtml(summary)}</summary>
+      <ul>${checks}</ul>
+    </details>
+  `;
 }
 
 function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
@@ -18362,6 +18385,13 @@ function dashboardCss(): string {
     .network-explainer div { display: grid; gap: 3px; }
     .network-explainer strong { color: #334155; font-size: 12px; text-transform: uppercase; }
     .network-explainer span { color: #64748b; font-size: 12px; line-height: 1.35; }
+    .governance-details { margin-top: 8px; border: 1px solid #e2e7f0; background: #f8fafc; padding: 8px; }
+    .governance-details summary { cursor: pointer; font-weight: 700; color: #334155; font-size: 12px; }
+    .governance-details ul { display: grid; gap: 8px; margin-top: 8px; padding-left: 0; list-style: none; }
+    .governance-details li { display: grid; gap: 4px; border-top: 1px solid #e2e7f0; padding-top: 8px; }
+    .governance-details li:first-child { border-top: 0; padding-top: 0; }
+    .governance-details span:not(.flag), .governance-details small { color: #64748b; line-height: 1.35; }
+    .governance-details code { white-space: normal; word-break: break-word; background: #eef2ff; color: #3730a3; padding: 5px 6px; }
     .focused-stage-panel { border-color: #93c5fd; box-shadow: inset 3px 0 0 #2563eb; }
     .comparison-layout { display: grid; grid-template-columns: minmax(210px, 260px) minmax(0, 1fr); gap: 16px; align-items: start; }
     .suite-list { background: white; border: 1px solid #e2e7f0; padding: 14px; display: grid; gap: 8px; position: sticky; top: 20px; }
