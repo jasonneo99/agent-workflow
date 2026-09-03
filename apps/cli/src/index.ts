@@ -946,8 +946,11 @@ program
   .description("Inspect project team roles and recent approval decisions by role")
   .option("-p, --project <dir>", "filter by project directory")
   .option("-l, --limit <number>", "number of recent approvals to inspect", "50")
+  .option("--role <role>", "filter approvals by decided or executed role")
+  .option("--status <status>", "filter approvals by status, or all", "all")
+  .option("--action <action>", "filter approvals by action type")
   .option("--json", "print machine-readable role governance report")
-  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { project?: string; limit: string; role?: string; status: string; action?: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -959,7 +962,10 @@ program
     }
     const report = await loadRoleGovernanceReport({
       projectRootUri: options.project,
-      limit: parsePositiveInteger(options.limit, 50)
+      limit: parsePositiveInteger(options.limit, 50),
+      role: options.role,
+      status: options.status,
+      actionType: options.action
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatRoleGovernanceReport(report));
   });
@@ -3391,6 +3397,11 @@ type DashboardRoleGovernanceReport = {
   generatedAt: string;
   projectRootUri: string | null;
   limit: number;
+  filters: {
+    role: string | null;
+    status: string;
+    actionType: string | null;
+  };
   projects: DashboardRoleProject[];
   statusCounts: Record<string, number>;
   actionCounts: Record<string, number>;
@@ -3904,9 +3915,12 @@ async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false)
   ), process.env.DEFAULT_MODEL_PROVIDER ?? "mock", agents.length > 0 && workflows.length > 0);
 }
 
-async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?: number } = {}): Promise<DashboardRoleGovernanceReport> {
+async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?: number; role?: string | null; status?: string | null; actionType?: string | null } = {}): Promise<DashboardRoleGovernanceReport> {
   const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
   const limit = input.limit ?? 50;
+  const roleFilter = input.role?.trim() || null;
+  const statusFilter = input.status?.trim() || "all";
+  const actionFilter = input.actionType?.trim() || null;
   const [summaries, approvals] = await Promise.all([
     listProjectStorageSummaries(500),
     listActionApprovals({
@@ -3918,17 +3932,37 @@ async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?
     ? summaries.filter((summary) => summary.rootUri === projectRootUri)
     : summaries;
   const projects = await Promise.all(selectedSummaries.map(loadDashboardRoleProject));
+  const filteredApprovals = approvals.filter((approval) =>
+    (statusFilter === "all" || approval.status === statusFilter) &&
+    (!actionFilter || approval.actionType === actionFilter) &&
+    (!roleFilter || approvalMatchesRoleFilter(approval, roleFilter))
+  );
   return {
     kind: "agentflow_role_governance_report",
     generatedAt: new Date().toISOString(),
     projectRootUri,
     limit,
+    filters: {
+      role: roleFilter,
+      status: statusFilter,
+      actionType: actionFilter
+    },
     projects: projects.sort((a, b) => a.name.localeCompare(b.name)),
-    statusCounts: countStrings(approvals.map((approval) => approval.status)),
-    actionCounts: countStrings(approvals.map((approval) => approval.actionType)),
-    decisionsByRole: summarizeApprovalDecisionsByRole(approvals),
-    recentApprovals: approvals
+    statusCounts: countStrings(filteredApprovals.map((approval) => approval.status)),
+    actionCounts: countStrings(filteredApprovals.map((approval) => approval.actionType)),
+    decisionsByRole: summarizeApprovalDecisionsByRole(filteredApprovals),
+    recentApprovals: filteredApprovals
   };
+}
+
+function approvalMatchesRoleFilter(approval: DashboardActionApproval, role: string): boolean {
+  const roles = [
+    approval.decidedRole,
+    approval.executedRole,
+    approval.status === "pending" ? "pending" : null,
+    !approval.decidedRole && approval.status !== "pending" ? "unrecorded" : null
+  ].filter(Boolean);
+  return roles.some((candidate) => candidate === role);
 }
 
 async function loadDashboardRoleProject(summary: DashboardProjectSummary): Promise<DashboardRoleProject> {
@@ -4008,6 +4042,7 @@ function formatRoleGovernanceReport(report: DashboardRoleGovernanceReport): stri
     `Role governance (${report.generatedAt})`,
     `Project: ${report.projectRootUri ?? "all registered projects"}`,
     `Recent approvals: ${report.recentApprovals.length}`,
+    `Filters: role=${report.filters.role ?? "all"} status=${report.filters.status} action=${report.filters.actionType ?? "all"}`,
     "",
     "Configured roles:"
   ];
@@ -7179,7 +7214,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/api/roles") {
     const report = await loadRoleGovernanceReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
+      role: requestUrl.searchParams.get("role") ?? undefined,
+      status: requestUrl.searchParams.get("status") ?? undefined,
+      actionType: requestUrl.searchParams.get("action") ?? undefined
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
@@ -7557,7 +7595,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/roles") {
     const report = await loadRoleGovernanceReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
+      role: requestUrl.searchParams.get("role") ?? undefined,
+      status: requestUrl.searchParams.get("status") ?? undefined,
+      actionType: requestUrl.searchParams.get("action") ?? undefined
     });
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -9444,6 +9485,26 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
 
 function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const roleOptions = uniqueSorted([
+    ...report.projects.flatMap((project) => project.roles.map((role) => role.id)),
+    "pending",
+    "unrecorded"
+  ]).map((role) => `<option value="${escapeHtml(role)}"${report.filters.role === role ? " selected" : ""}>${escapeHtml(role)}</option>`).join("");
+  const statusOptions = uniqueSorted(["all", "pending", "approved", "rejected", "executed", "failed", ...Object.keys(report.statusCounts)])
+    .map((status) => `<option value="${escapeHtml(status)}"${report.filters.status === status ? " selected" : ""}>${escapeHtml(status)}</option>`)
+    .join("");
+  const actionOptions = uniqueSorted([
+    "local_command",
+    "file_write",
+    "artifact_archive",
+    "artifact_restore",
+    "artifact_prune",
+    "deployment",
+    "autonomy",
+    ...Object.keys(report.actionCounts)
+  ])
+    .map((action) => `<option value="${escapeHtml(action)}"${report.filters.actionType === action ? " selected" : ""}>${escapeHtml(action)}</option>`)
+    .join("");
   const roleRows = report.projects.flatMap((project) => project.roles.map((role) => `
     <tr>
       <td><strong>${escapeHtml(role.id)}</strong>${project.defaultActorRole === role.id ? ' <span class="flag good">default</span>' : ""}<br><span class="muted">${escapeHtml(role.description || "No description")}</span></td>
@@ -9472,6 +9533,9 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
     </tr>`).join("");
   const filters = `<form method="get" class="form-grid">
     <label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label>
+    <label>Role<select name="role"><option value="">all roles</option>${roleOptions}</select></label>
+    <label>Status<select name="status">${statusOptions}</select></label>
+    <label>Action<select name="action"><option value="">all actions</option>${actionOptions}</select></label>
     <label>Recent approvals<input name="limit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
     <div class="form-actions"><button type="submit">Filter</button></div>
   </form>`;

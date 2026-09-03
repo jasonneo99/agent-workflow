@@ -865,8 +865,9 @@ requirements, and human review.
 
 Open `/roles` in the dashboard to inspect project-local team configuration,
 enforcement mode, role capabilities, recent approval decisions grouped by role,
-and the latest approval activity. `/api/roles` exposes the same data for local
-automation or IDE integrations.
+and the latest approval activity. Filter by project, role, approval status, or
+action type when you need a focused local audit view. `/api/roles` exposes the
+same filtered data for local automation or IDE integrations.
 
 Projects that want role checks to block mismatched approval actions can opt in:
 
@@ -900,6 +901,8 @@ npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --act
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --actor-role approver --note "Not needed"
 npm run agentflow -- roles --project /path/to/project --limit 50
+npm run agentflow -- roles --project /path/to/project --role approver --status approved
+npm run agentflow -- roles --project /path/to/project --action local_command
 npm run agentflow -- roles --project /path/to/project --json
 ```
 

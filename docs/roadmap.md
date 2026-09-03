@@ -252,7 +252,8 @@ foundation is complete.
   - Done: add opt-in role enforcement gates for approval and execution actions.
   - Done: add dashboard and CLI role visibility with recent approval decisions grouped by recorded actor role.
   - Done: add optional separation-of-duties checks for projects that want to flag or block the same actor approving and executing the same action.
-  - Next: add role-focused dashboard filters and exportable audit snapshots after user testing.
+  - Done: add role-focused CLI, JSON API, and dashboard filters for project, role, status, and action type.
+  - Next: add exportable role audit snapshots after user testing.
 
 - [x] Artifact lifecycle governance.
   - [x] Add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
