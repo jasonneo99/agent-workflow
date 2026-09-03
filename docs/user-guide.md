@@ -1268,7 +1268,31 @@ Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approv
 
 The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
-## 23. Model Improvement Workflow
+## 23. Local Learning Report
+
+Use `learning-report` to inspect what the future local learning daemon can
+learn without allowing it to change anything. It reads local run history,
+feedback, failures, routing outcomes, and evaluation evidence, then reports
+safe automatic actions, approval boundaries, evaluation gaps, repeated failure
+patterns, and cost/routing opportunities.
+
+```bash
+npm run agentflow -- learning-report --project /path/to/project
+npm run agentflow -- learning-report --project /path/to/project --json
+```
+
+In the dashboard, open:
+
+```text
+http://127.0.0.1:17888/learning?project=/path/to/project
+http://127.0.0.1:17888/api/learning-report?project=/path/to/project
+```
+
+Phase 1 is read-only. It does not write proposals, tune agents, change provider
+settings, export private data, run commands, or apply patches. Those actions
+remain approval-gated by design. See [Local Learning Daemon](local-learning-daemon.md).
+
+## 24. Model Improvement Workflow
 
 Use `model-improvement` when a workflow is too expensive, too slow,
 inconsistent, or producing answers that need too much manual correction. It
@@ -1312,12 +1336,12 @@ the same page shows the review file status and markdown preview.
 
 ![Promotion note files](assets/screenshots/dashboard-candidate-promotion-notes.png)
 
-## 24. Recommended Next Improvement
+## 25. Recommended Next Improvement
 
-The next improvement is release preparation for the next npm/GitHub package
-version so the newer dashboard screenshots, model-improvement walkthrough, and
-promotion-note flow reach installed users. See the [Roadmap](roadmap.md) for
-the shared-platform implementation sequence.
+The next improvement is local learning proposal storage and an approval inbox:
+turn the read-only learning report into reviewable proposal records before
+adding daemon mode. See the [Roadmap](roadmap.md) for the shared-platform
+implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

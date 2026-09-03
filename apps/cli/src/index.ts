@@ -2576,6 +2576,36 @@ program
   });
 
 program
+  .command("learning-report")
+  .description("Read-only local learning report from run history, feedback, failures, routing, and eval evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--json", "print learning report JSON")
+  .action(async (options: { project: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = await loadLearningReport({
+      projectDir: path.resolve(process.cwd(), options.project),
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    console.log(formatLearningReport(report));
+  });
+
+program
   .command("tuning-proposals")
   .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3344,6 +3374,54 @@ type DashboardEvaluationSuite = {
   variants: DashboardEvaluationVariant[];
   leader: string | null;
   latestAt: string;
+};
+
+type LearningReport = {
+  kind: "agentflow_learning_report";
+  generatedAt: string;
+  projectDir: string;
+  limit: number;
+  autonomyMode: "observe";
+  runsAnalyzed: number;
+  runStatusCounts: Record<string, number>;
+  feedbackCounts: Record<string, number>;
+  evaluationRuns: number;
+  latestEvaluationAt: string | null;
+  failedRuns: Array<{
+    runId: string;
+    workflowId: string;
+    task: string;
+    startedAt: string;
+  }>;
+  repeatedFailurePatterns: Array<{
+    workflowId: string;
+    stageId: string;
+    agentId: string;
+    failedTasks: number;
+    totalTasks: number;
+    failureRate: number;
+  }>;
+  costOpportunities: Array<{
+    workflowId: string;
+    stageId: string;
+    agentId: string;
+    providerId: string;
+    modelTier: string;
+    runs: number;
+    fallbackRate: number;
+    averageLatencyMs: number | null;
+    recommendation: string;
+  }>;
+  proposalPreview: {
+    total: number;
+    highPriority: number;
+    byKind: Record<string, number>;
+  };
+  evalGaps: string[];
+  safeAutomaticActions: string[];
+  approvalRequiredActions: string[];
+  privacyBoundaries: string[];
+  nextCommands: string[];
 };
 
 type DashboardHomeHealth = {
@@ -6564,6 +6642,152 @@ async function loadTuningProposals(input: {
   return buildTuningProposals(scorecard);
 }
 
+async function loadLearningReport(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<LearningReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const limit = Math.max(1, input.limit);
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit });
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit });
+  const proposals = buildTuningProposals(scorecard);
+  const stageHealth = runs.length ? await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) }) : [];
+  const evaluationRuns = runs.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
+  const reports = (await Promise.all(runs.slice(0, Math.min(runs.length, 20)).map((run) => loadCostQualityReport(run.id)))).filter((report): report is CostQualityReport => report !== null);
+  const failedRuns = runs
+    .filter((run) => run.status === "failed")
+    .slice(0, 10)
+    .map((run) => ({
+      runId: run.id,
+      workflowId: run.workflowId,
+      task: run.task,
+      startedAt: run.startedAt
+    }));
+  const repeatedFailurePatterns = stageHealth
+    .filter((stage) => stage.failedTasks > 0)
+    .map((stage) => ({
+      workflowId: inferStageWorkflowId(runs, reports, stage.stageId),
+      stageId: stage.stageId,
+      agentId: inferStageAgentId(reports, stage.stageId),
+      failedTasks: stage.failedTasks,
+      totalTasks: stage.totalTasks,
+      failureRate: stage.totalTasks > 0 ? Number((stage.failedTasks / stage.totalTasks).toFixed(3)) : 0
+    }))
+    .sort((left, right) => right.failedTasks - left.failedTasks || right.failureRate - left.failureRate)
+    .slice(0, 10);
+  const costOpportunities = scorecard.groups
+    .filter((group) => group.recommendation !== "Keep current routing." || group.fallbackRate > 0 || (group.averageLatencyMs ?? 0) > 30_000)
+    .sort((left, right) => right.feedbackScore - left.feedbackScore || right.fallbackRate - left.fallbackRate)
+    .slice(0, 10)
+    .map((group) => ({
+      workflowId: group.workflowId,
+      stageId: group.stageId,
+      agentId: group.agentId,
+      providerId: group.providerId,
+      modelTier: group.modelTier,
+      runs: group.runs,
+      fallbackRate: group.fallbackRate,
+      averageLatencyMs: group.averageLatencyMs,
+      recommendation: group.recommendation
+    }));
+  const proposalKinds = countStrings(proposals.proposals.map((proposal) => proposal.kind));
+  const evalGaps: string[] = [];
+  if (runs.length === 0) evalGaps.push("Run at least one workflow before learning can identify patterns.");
+  if (Object.values(scorecard.feedbackCounts).reduce((sum, value) => sum + value, 0) === 0) evalGaps.push("Record accepted, revised, or rejected feedback so learning can personalize recommendations.");
+  if (evaluationRuns.length === 0) evalGaps.push("Run or create an evaluation suite before promoting routing, prompt, or context-budget changes.");
+  if (failedRuns.length > 0 && repeatedFailurePatterns.length === 0) evalGaps.push("Failed runs exist, but stage-level health did not isolate a repeated failing stage yet.");
+  if (proposals.proposals.some((proposal) => proposal.kind === "feedback_needed")) evalGaps.push("Some routes need human feedback before the daemon can rank them confidently.");
+  if (!evalGaps.length) evalGaps.push("Learning evidence is ready for proposal generation, but application should still require approval.");
+  return {
+    kind: "agentflow_learning_report",
+    generatedAt: new Date().toISOString(),
+    projectDir,
+    limit,
+    autonomyMode: "observe",
+    runsAnalyzed: runs.length,
+    runStatusCounts: countStrings(runs.map((run) => run.status)),
+    feedbackCounts: scorecard.feedbackCounts,
+    evaluationRuns: evaluationRuns.length,
+    latestEvaluationAt: evaluationRuns.map((run) => run.startedAt).sort().at(-1) ?? null,
+    failedRuns,
+    repeatedFailurePatterns,
+    costOpportunities,
+    proposalPreview: {
+      total: proposals.proposals.length,
+      highPriority: proposals.proposals.filter((proposal) => proposal.priority === "high").length,
+      byKind: proposalKinds
+    },
+    evalGaps,
+    safeAutomaticActions: [
+      "Read local run history, receipts, feedback, eval summaries, and queue status.",
+      "Detect repeated failures, high-cost routes, stale context, and eval gaps.",
+      "Generate compact local learning reports and dry-run proposal previews.",
+      "Queue approval requests for behavior-changing improvements."
+    ],
+    approvalRequiredActions: [
+      "Apply project-local tuning notes.",
+      "Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source.",
+      "Run commands, tests, web/model research, network calls, or external tools.",
+      "Change production policy, deployment, storage lifecycle, server mode, or any private-data export."
+    ],
+    privacyBoundaries: [
+      "Local evidence stays on this machine by default.",
+      "Web/model research is opt-in and must not include private source, feedback, logs, prompts, eval cases, or artifacts without explicit approval.",
+      "Open-source learning should generalize developer workflow patterns and avoid product-specific behavior."
+    ],
+    nextCommands: [
+      `npm run agentflow -- learning-report --project ${shellQuote(projectDir)} --json`,
+      `npm run agentflow -- preference-scorecard --project ${shellQuote(projectDir)}`,
+      `npm run agentflow -- tuning-proposals --project ${shellQuote(projectDir)}`,
+      `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve local developer workflow quality and cost"`
+    ]
+  };
+}
+
+function inferStageWorkflowId(runs: DashboardRunStatus[], reports: CostQualityReport[], stageId: string): string {
+  const report = reports.find((item) => item.stages.some((stage) => stage.stageId === stageId));
+  return report?.workflowId ?? runs[0]?.workflowId ?? "unknown";
+}
+
+function inferStageAgentId(reports: CostQualityReport[], stageId: string): string {
+  const stage = reports.flatMap((report) => report.stages).find((item) => item.stageId === stageId);
+  return stage?.agentId ?? "unknown";
+}
+
+function formatLearningReport(report: LearningReport): string {
+  return [
+    `Learning report (${report.generatedAt})`,
+    `Project: ${report.projectDir}`,
+    `Mode: ${report.autonomyMode}`,
+    `Runs analyzed: ${report.runsAnalyzed}`,
+    `Run statuses: ${formatInlineCounts(report.runStatusCounts) || "none"}`,
+    `Feedback: ${formatInlineCounts(report.feedbackCounts) || "none"}`,
+    `Evaluation runs: ${report.evaluationRuns}${report.latestEvaluationAt ? ` latest=${report.latestEvaluationAt}` : ""}`,
+    `Proposal preview: total=${report.proposalPreview.total} high=${report.proposalPreview.highPriority} ${formatInlineCounts(report.proposalPreview.byKind)}`,
+    "",
+    "Repeated failure patterns:",
+    ...(report.repeatedFailurePatterns.length ? report.repeatedFailurePatterns.map((pattern) => `- ${pattern.workflowId}/${pattern.stageId}/${pattern.agentId}: ${pattern.failedTasks}/${pattern.totalTasks} failed (${pattern.failureRate})`) : ["- none"]),
+    "",
+    "Cost and routing opportunities:",
+    ...(report.costOpportunities.length ? report.costOpportunities.map((item) => `- ${item.workflowId}/${item.stageId}/${item.agentId}: ${item.providerId}/${item.modelTier}, fallback=${item.fallbackRate}, latency=${item.averageLatencyMs ?? "n/a"}ms - ${item.recommendation}`) : ["- none"]),
+    "",
+    "Evaluation gaps:",
+    ...report.evalGaps.map((item) => `- ${item}`),
+    "",
+    "Safe automatic actions:",
+    ...report.safeAutomaticActions.map((item) => `- ${item}`),
+    "",
+    "Approval required:",
+    ...report.approvalRequiredActions.map((item) => `- ${item}`),
+    "",
+    "Privacy boundaries:",
+    ...report.privacyBoundaries.map((item) => `- ${item}`),
+    "",
+    "Next commands:",
+    ...report.nextCommands.map((command) => `- ${command}`)
+  ].join("\n");
+}
+
 async function loadDashboardModelImprovementReport(input: {
   projectDir: string;
   limit: number;
@@ -7899,6 +8123,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-report") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadLearningReport({
+      projectDir: project,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/candidate-comparisons") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -8033,6 +8273,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelImprovementHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/learning") {
+    const projects = await listProjectStorageSummaries(100);
+    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+    const report = project
+      ? await loadLearningReport({
+        projectDir: project,
+        limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+      })
+      : null;
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderLearningDashboardHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -9715,6 +9969,91 @@ function renderModelImprovementHtml(
   </main>
 </body>
 </html>`;
+}
+
+function renderLearningDashboardHtml(report: LearningReport | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
+  const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
+  const body = report
+    ? renderLearningReportHtml(report)
+    : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Learning</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("learning")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Learning</h1>
+        <p class="muted">Read-only local learning from approved feedback, run history, failures, routing, and evaluation evidence.</p>
+      </div>
+      ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
+    </div>
+    <section class="panel">
+      <form method="get" class="workflow-form">
+        <label class="wide">Project path
+          <input name="project" value="${escapeHtml(selectedProject)}" list="learning-projects" placeholder="/path/to/project">
+          <datalist id="learning-projects">${projectOptions}</datalist>
+        </label>
+        <label>Run limit
+          <input name="limit" value="${escapeHtml(params.get("limit") ?? "50")}" inputmode="numeric">
+        </label>
+        <div class="form-actions"><button type="submit">Inspect</button></div>
+      </form>
+    </section>
+    ${body}
+  </main>
+</body>
+</html>`;
+}
+
+function renderLearningReportHtml(report: LearningReport): string {
+  const failureRows = report.repeatedFailurePatterns.map((pattern) => `
+    <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
+  `).join("");
+  const costRows = report.costOpportunities.map((item) => `
+    <tr><td>${escapeHtml(item.workflowId)}<br><span class="muted">${escapeHtml(item.stageId)}</span></td><td>${escapeHtml(item.agentId)}</td><td>${escapeHtml(item.providerId)} / ${escapeHtml(item.modelTier)}</td><td>${item.runs}</td><td>${item.fallbackRate}</td><td>${item.averageLatencyMs ?? "n/a"}</td><td>${escapeHtml(item.recommendation)}</td></tr>
+  `).join("");
+  const failedRunRows = report.failedRuns.map((run) => `
+    <tr><td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td><td>${escapeHtml(run.workflowId)}</td><td>${escapeHtml(run.task)}</td><td>${renderDashboardDateTime(run.startedAt)}</td></tr>
+  `).join("");
+  const proposalRows = Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>`).join("");
+  const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
+  return `
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Mode", report.autonomyMode, "read-only Phase 1")}
+        ${metricCard("Runs", report.runsAnalyzed, formatInlineCounts(report.runStatusCounts) || "none")}
+        ${metricCard("Feedback", formatInlineCounts(report.feedbackCounts) || "none", "approved user signal")}
+        ${metricCard("Eval Runs", report.evaluationRuns, report.latestEvaluationAt ? `latest ${new Date(report.latestEvaluationAt).toLocaleDateString()}` : "none found")}
+        ${metricCard("Failures", report.failedRuns.length, "recent failed runs")}
+        ${metricCard("Proposal Preview", report.proposalPreview.total, `${report.proposalPreview.highPriority} high priority`)}
+      </div>
+      <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
+      <div class="split-grid">
+        <div><h3>Automatic</h3>${list(report.safeAutomaticActions)}</div>
+        <div><h3>Requires Approval</h3>${list(report.approvalRequiredActions)}</div>
+      </div>
+    </section>
+    <section class="panel"><h2>Evaluation Gaps</h2>${list(report.evalGaps)}</section>
+    <section class="panel"><h2>Repeated Failure Patterns</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Stage</th><th>Agent</th><th>Failures</th><th>Rate</th></tr></thead><tbody>${failureRows || "<tr><td colspan=\"5\">No repeated failure patterns found.</td></tr>"}</tbody></table></div></section>
+    <section class="panel"><h2>Cost And Routing Opportunities</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Agent</th><th>Provider/Tier</th><th>Runs</th><th>Fallback</th><th>Latency</th><th>Recommendation</th></tr></thead><tbody>${costRows || "<tr><td colspan=\"7\">No cost or routing opportunities found.</td></tr>"}</tbody></table></div></section>
+    <section class="panel"><h2>Recent Failed Runs</h2><div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${failedRunRows || "<tr><td colspan=\"4\">No failed runs in the inspected window.</td></tr>"}</tbody></table></div></section>
+    <section class="panel"><h2>Proposal Preview</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposal candidates yet.</td></tr>"}</tbody></table></div></section>
+    <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
+    <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
+  `;
 }
 
 function renderModelImprovementReportHtml(report: DashboardModelImprovementReport): string {
@@ -13384,7 +13723,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -13407,6 +13746,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
       label: "Optimize",
       items: [
         ["evaluations", "/evaluations", "Evaluations"],
+        ["learning", "/learning", "Learning"],
         ["model-improvement", "/model-improvement", "Model Improve"],
         ["candidate-comparisons", "/candidate-comparisons", "Comparisons"]
       ]
@@ -13715,6 +14055,9 @@ function dashboardCss(): string {
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
     .metric span { font-size: 22px; font-weight: 700; }
     .metric small, .muted { color: #64748b; }
+    .split-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+    .split-grid > div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
+    .split-grid h3 { margin-top: 0; }
     .meta-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
     .meta-grid div { display: grid; gap: 5px; font-size: 14px; }
     .graph-flow { display: grid; gap: 12px; }

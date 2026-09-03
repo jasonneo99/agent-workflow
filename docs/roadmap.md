@@ -89,6 +89,17 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Keep generic quality and routing mechanics public.
   - Keep product-specific ranking, customer-derived feedback, and domain heuristics private.
 
+- [x] Local learning report.
+  - Goal: continually improve local developer workflows from approved feedback, run history, failures, routing outcomes, evaluation evidence, and optional user-approved research notes.
+  - Principle: maximize safe autonomy for observation, reports, scoring, and proposal generation; require approval for dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, or private-data actions.
+  - Done: document the local-first architecture in [Local Learning Daemon](local-learning-daemon.md), then add the read-only `learning-report` CLI, `/learning` dashboard page, and `/api/learning-report` JSON endpoint.
+  - Next: add local learning proposal storage and an approval inbox before daemon mode.
+
+- [ ] Local learning daemon.
+  - Build on the read-only learning report with scheduled observe/propose/apply-approved modes.
+  - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
+  - Start local-only; make server mode an explicit future deployment posture.
+
 ## Phase 3: Distribution And Enterprise Adoption
 
 Goal: make Agent Workflow easy to install, operate, and govern across projects.
