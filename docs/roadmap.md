@@ -315,7 +315,8 @@ foundation is complete.
   - Done: add post-merge evidence on Server Readiness with latest merge manifest, backup folder, persisted import result when available, remaining source-only rows, and shared-primary readiness.
   - Done: add offline fallback health on Server Readiness and CLI guidance for shared-online, local-fallback-ready, local-fallback-stopped, and offline-blocked postures.
   - Done: add a local offline sync queue with CLI/dashboard actions to record fallback start, offline runs, sync-back intent, and synced queue items.
-  - Next: add object-bucket enumeration, richer post-merge proof checks, and an automated background sync reconciler that drains queued fallback work when shared storage returns, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add an explicit offline sync reconciler command/dashboard action that detects localhost and shared storage health, writes merge/import evidence, and marks queued fallback items synced after an insert-only execution.
+  - Next: add object-bucket enumeration, richer post-merge proof checks, and a daemon-triggered background scheduler for the reconciler, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.

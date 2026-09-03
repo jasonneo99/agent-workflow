@@ -120,7 +120,7 @@ const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime"
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "offline-fallback", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "offline-fallback", "offline-sync", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -1256,6 +1256,22 @@ program
     console.log(options.json ? JSON.stringify(report, null, 2) : formatOfflineFallbackReport(report));
     if (report.mode === "offline-blocked") process.exitCode = 2;
     if (report.mode === "local-fallback-stopped") process.exitCode = 1;
+  });
+
+program
+  .command("offline-sync")
+  .description("Prepare or execute a local fallback sync back into configured shared storage")
+  .option("--out <dir>", "migration evidence output directory", ".agent-workflow/migrations")
+  .option("--execute", "execute the insert-only merge and mark pending fallback items synced")
+  .option("--json", "print machine-readable offline sync result")
+  .action(async (options: { out: string; execute?: boolean; json?: boolean }) => {
+    const result = await runOfflineFallbackSync({
+      outDir: options.out,
+      execute: Boolean(options.execute),
+      actor: "cli"
+    });
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatOfflineFallbackSyncResult(result));
+    if (result.status === "blocked") process.exitCode = 2;
   });
 
 program
@@ -5051,6 +5067,39 @@ type OfflineFallbackQueue = {
   items: OfflineFallbackQueueItem[];
 };
 
+type OfflineFallbackSyncResult = {
+  kind: "agentflow_offline_sync_result";
+  generatedAt: string;
+  mode: "dry-run" | "execute";
+  status: "ready" | "completed" | "blocked";
+  sourceDatabaseUrl: string;
+  targetDatabaseUrl: string;
+  pendingQueueItems: number;
+  syncedQueueItems: number;
+  manifest: {
+    path: string | null;
+    status: string | null;
+    sourceOnlyRows: number;
+    conflictRows: number;
+    projectIdRewriteRows: number;
+  };
+  importResult: {
+    path: string | null;
+    status: string | null;
+    affectedRows: number;
+    staleManifest: boolean | null;
+  };
+  written: {
+    manifestMarkdownPath?: string;
+    manifestJsonPath?: string;
+    importMarkdownPath?: string;
+    importJsonPath?: string;
+    receiptPath?: string;
+  };
+  notes: string[];
+  warnings: string[];
+};
+
 type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
 type ServerReadinessCheckStatus = "pass" | "warn" | "fail";
 
@@ -6698,6 +6747,220 @@ function offlineFallbackDefaultNote(action: OfflineFallbackQueueAction): string 
   if (action === "offline-run") return "Workflow run was created while using local fallback storage.";
   if (action === "sync-back") return "Local fallback work should be merged back into shared storage.";
   return "Operator intends to return to shared storage as the primary state plane.";
+}
+
+async function runOfflineFallbackSync(input: { outDir: string; execute: boolean; actor: string }): Promise<OfflineFallbackSyncResult> {
+  const generatedAt = new Date().toISOString();
+  const sourceDatabaseUrl = "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow";
+  const targetDatabaseUrl = process.env.DATABASE_URL ?? "";
+  const written: OfflineFallbackSyncResult["written"] = {};
+  const warnings: string[] = [];
+  const notes: string[] = [];
+  const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
+  const pendingItems = queue.items.filter((item) => item.status === "pending" && (item.action === "offline-run" || item.action === "sync-back"));
+  const localServices = await checkServices(defaultServiceEndpoints({
+    DATABASE_URL: sourceDatabaseUrl,
+    REDIS_URL: "redis://127.0.0.1:16379",
+    OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000"
+  }));
+  const sharedServices = await checkServices();
+  if (!targetDatabaseUrl) warnings.push("DATABASE_URL is required for the shared storage target.");
+  if (!localServices.every((service) => service.reachable)) warnings.push("Local fallback services are not all reachable; start localhost storage before syncing.");
+  if (!sharedServices.every((service) => service.reachable)) warnings.push("Configured shared storage is not all reachable; wait for Hulk/shared storage to return.");
+  if (targetDatabaseUrl && canonicalizeDashboardDatabaseUrl(sourceDatabaseUrl) === canonicalizeDashboardDatabaseUrl(targetDatabaseUrl)) {
+    warnings.push("Source and target database URLs point at the same database.");
+  }
+  if (!pendingItems.length) {
+    notes.push("No pending offline-run or sync-back queue items were found; a dry-run manifest can still prove there are no source-only rows.");
+  }
+  if (warnings.length) {
+    const result = offlineFallbackSyncBaseResult({
+      generatedAt,
+      execute: input.execute,
+      sourceDatabaseUrl,
+      targetDatabaseUrl,
+      pendingItems,
+      syncedQueueItems: 0,
+      status: "blocked",
+      written,
+      notes,
+      warnings
+    });
+    written.receiptPath = await writeOfflineFallbackSyncReceipt(result);
+    return { ...result, written };
+  }
+
+  const manifest = await buildStorageMergeManifest({ sourceDatabaseUrl, targetDatabaseUrl });
+  const manifestRows = summarizeMergeManifestRows(manifest);
+  const manifestWritten = await writeStorageMergeManifestFiles(manifest, input.outDir);
+  written.manifestMarkdownPath = manifestWritten.markdownPath;
+  written.manifestJsonPath = manifestWritten.jsonPath;
+  if (manifest.status === "blocked") {
+    warnings.push(...manifest.warnings);
+    const result = offlineFallbackSyncBaseResult({
+      generatedAt,
+      execute: input.execute,
+      sourceDatabaseUrl,
+      targetDatabaseUrl,
+      pendingItems,
+      syncedQueueItems: 0,
+      status: "blocked",
+      written,
+      notes,
+      warnings,
+      manifest: {
+        path: manifestWritten.jsonPath,
+        status: manifest.status,
+        ...manifestRows
+      }
+    });
+    written.receiptPath = await writeOfflineFallbackSyncReceipt(result);
+    return { ...result, written };
+  }
+
+  const importResult = await runStorageMergeImport({
+    manifestPath: manifestWritten.jsonPath,
+    sourceDatabaseUrl,
+    targetDatabaseUrl,
+    execute: input.execute
+  });
+  const importWritten = await writeStorageMergeImportResultFiles(importResult, input.outDir);
+  written.importMarkdownPath = importWritten.markdownPath;
+  written.importJsonPath = importWritten.jsonPath;
+  let syncedQueueItems = 0;
+  if (input.execute && importResult.status === "completed") {
+    const itemIds = new Set(pendingItems.map((item) => item.id));
+    const now = new Date().toISOString();
+    queue.items = queue.items.map((item) => {
+      if (!itemIds.has(item.id)) return item;
+      syncedQueueItems += 1;
+      return {
+        ...item,
+        status: "synced",
+        updatedAt: now,
+        note: item.note ? `${item.note} Synced by ${input.actor}.` : `Synced by ${input.actor}.`
+      };
+    });
+    queue.updatedAt = now;
+    await writeOfflineFallbackQueue(queue);
+  }
+  const status = importResult.status === "blocked" ? "blocked" : input.execute ? "completed" : "ready";
+  if (importResult.status === "blocked") warnings.push(...importResult.warnings);
+  const result = offlineFallbackSyncBaseResult({
+    generatedAt,
+    execute: input.execute,
+    sourceDatabaseUrl,
+    targetDatabaseUrl,
+    pendingItems,
+    syncedQueueItems,
+    status,
+    written,
+    notes,
+    warnings,
+    manifest: {
+      path: manifestWritten.jsonPath,
+      status: manifest.status,
+      ...manifestRows
+    },
+    importResult: {
+      path: importWritten.jsonPath,
+      status: importResult.status,
+      affectedRows: importResult.operations.reduce((sum, operation) => sum + operation.affectedRows, 0),
+      staleManifest: importResult.staleManifest
+    }
+  });
+  written.receiptPath = await writeOfflineFallbackSyncReceipt(result);
+  return { ...result, written };
+}
+
+function offlineFallbackSyncBaseResult(input: {
+  generatedAt: string;
+  execute: boolean;
+  sourceDatabaseUrl: string;
+  targetDatabaseUrl: string;
+  pendingItems: OfflineFallbackQueueItem[];
+  syncedQueueItems: number;
+  status: OfflineFallbackSyncResult["status"];
+  written: OfflineFallbackSyncResult["written"];
+  notes: string[];
+  warnings: string[];
+  manifest?: OfflineFallbackSyncResult["manifest"];
+  importResult?: OfflineFallbackSyncResult["importResult"];
+}): OfflineFallbackSyncResult {
+  return {
+    kind: "agentflow_offline_sync_result",
+    generatedAt: input.generatedAt,
+    mode: input.execute ? "execute" : "dry-run",
+    status: input.status,
+    sourceDatabaseUrl: redactDashboardUrl(input.sourceDatabaseUrl),
+    targetDatabaseUrl: input.targetDatabaseUrl ? redactDashboardUrl(input.targetDatabaseUrl) : "missing",
+    pendingQueueItems: input.pendingItems.length,
+    syncedQueueItems: input.syncedQueueItems,
+    manifest: input.manifest ?? {
+      path: null,
+      status: null,
+      sourceOnlyRows: 0,
+      conflictRows: 0,
+      projectIdRewriteRows: 0
+    },
+    importResult: input.importResult ?? {
+      path: null,
+      status: null,
+      affectedRows: 0,
+      staleManifest: null
+    },
+    written: input.written,
+    notes: input.notes,
+    warnings: input.warnings
+  };
+}
+
+function summarizeMergeManifestRows(manifest: StorageMergeManifest): {
+  sourceOnlyRows: number;
+  conflictRows: number;
+  projectIdRewriteRows: number;
+} {
+  return {
+    sourceOnlyRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.insertRows, 0),
+    conflictRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.conflictRows, 0),
+    projectIdRewriteRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.projectIdRewriteRows, 0)
+  };
+}
+
+async function writeOfflineFallbackSyncReceipt(result: OfflineFallbackSyncResult): Promise<string> {
+  const receiptDir = path.join(rootDir, ".agent-workflow", "offline", "receipts");
+  await fs.mkdir(receiptDir, { recursive: true });
+  const receiptPath = path.join(receiptDir, `offline-sync-${result.generatedAt.replace(/[:.]/g, "-")}.json`);
+  await fs.writeFile(receiptPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  return receiptPath;
+}
+
+function formatOfflineFallbackSyncResult(result: OfflineFallbackSyncResult): string {
+  return [
+    `Offline sync ${result.mode} (${result.generatedAt})`,
+    `Status: ${result.status}`,
+    `Source: ${result.sourceDatabaseUrl}`,
+    `Target: ${result.targetDatabaseUrl}`,
+    `Pending queue items: ${result.pendingQueueItems}`,
+    `Synced queue items: ${result.syncedQueueItems}`,
+    "",
+    "Manifest:",
+    `- status=${result.manifest.status ?? "none"}, source-only=${result.manifest.sourceOnlyRows}, conflicts=${result.manifest.conflictRows}, rewrites=${result.manifest.projectIdRewriteRows}`,
+    result.manifest.path ? `- ${result.manifest.path}` : "- none",
+    "",
+    "Import:",
+    `- status=${result.importResult.status ?? "none"}, affected=${result.importResult.affectedRows}, stale=${result.importResult.staleManifest ?? "n/a"}`,
+    result.importResult.path ? `- ${result.importResult.path}` : "- none",
+    "",
+    "Receipt:",
+    result.written.receiptPath ? `- ${result.written.receiptPath}` : "- none",
+    "",
+    "Warnings:",
+    ...(result.warnings.length ? result.warnings.map((warning) => `- ${warning}`) : ["- none"]),
+    "",
+    "Notes:",
+    ...(result.notes.length ? result.notes.map((note) => `- ${note}`) : ["- none"])
+  ].join("\n");
 }
 
 function offlineFallbackCommands(): OfflineFallbackReport["commands"] {
@@ -11194,6 +11457,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/offline-sync-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardOfflineSyncAction(form);
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
@@ -14760,6 +15031,17 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
       </form>
     </div>
     <div class="split-grid">
+      <form class="inline-form" method="post" action="/api/offline-sync-action">
+        <input type="hidden" name="out" value=".agent-workflow/migrations">
+        <button type="submit">Prepare Sync Dry Run</button>
+      </form>
+      <form class="inline-form" method="post" action="/api/offline-sync-action">
+        <input type="hidden" name="out" value=".agent-workflow/migrations">
+        <label class="check-row"><input type="checkbox" name="execute" required> Execute insert-only sync into shared storage</label>
+        <button type="submit">Execute Sync</button>
+      </form>
+    </div>
+    <div class="split-grid">
       <div><h3>Configured Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${currentRows}</tbody></table></div></div>
       <div><h3>Local Fallback</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${localRows}</tbody></table></div></div>
     </div>
@@ -16048,6 +16330,22 @@ async function processDashboardOfflineFallbackAction(form: URLSearchParams): Pro
       formatOfflineFallbackQueue(result.queue)
     ].join("\n")
   };
+}
+
+async function processDashboardOfflineSyncAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const execute = form.get("execute") === "on";
+  const result = await runOfflineFallbackSync({
+    outDir: form.get("out")?.trim() || ".agent-workflow/migrations",
+    execute,
+    actor: "dashboard"
+  });
+  return result.status === "blocked"
+    ? { ok: false, error: formatOfflineFallbackSyncResult(result) }
+    : {
+      ok: true,
+      title: execute ? "Offline sync executed" : "Offline sync dry run completed",
+      output: formatOfflineFallbackSyncResult(result)
+    };
 }
 
 async function processDashboardLearningDaemonTarget(input: { project: string; mode: string; scope: string }): Promise<DashboardFollowUpResult> {
@@ -21956,6 +22254,29 @@ function parseStorageMigrationMode(value: string): "copy-empty-target" | "merge-
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function canonicalizeDashboardDatabaseUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    url.password = "";
+    url.username = "";
+    url.hostname = url.hostname === "localhost" ? "127.0.0.1" : url.hostname;
+    return url.toString();
+  } catch {
+    return value;
+  }
+}
+
+function redactDashboardUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    if (url.username) url.username = "user";
+    if (url.password) url.password = "redacted";
+    return url.toString();
+  } catch {
+    return value.replace(/:\/\/[^:@\s]+:[^@\s]+@/g, "://user:redacted@");
+  }
 }
 
 function sleep(ms: number): Promise<void> {

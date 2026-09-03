@@ -87,6 +87,7 @@
     "list": "tsx apps/cli/src/index.ts list",
     "mcp": "tsx apps/mcp/src/index.ts",
     "offline-fallback": "tsx apps/cli/src/index.ts offline-fallback",
+    "offline-sync": "tsx apps/cli/src/index.ts offline-sync",
     "provider-check": "tsx apps/cli/src/index.ts provider-check",
     "provider-smoke": "bash scripts/provider-smoke.sh",
     "project-files": "tsx apps/cli/src/index.ts project-files",

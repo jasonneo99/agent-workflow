@@ -429,6 +429,20 @@ The Server page exposes the same queue with buttons to record local fallback,
 record sync needed, and mark queue items synced after the merge manifest/import
 path has completed.
 
+When both localhost fallback storage and shared storage are reachable, prepare a
+merge dry run:
+
+```bash
+npm run offline-sync
+```
+
+After reviewing the generated manifest/import result, execute the insert-only
+sync and mark pending fallback queue items synced:
+
+```bash
+npm run offline-sync -- --execute
+```
+
 After a reviewed copy, verify durable state without mutating either side:
 
 ```bash

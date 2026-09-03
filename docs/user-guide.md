@@ -282,6 +282,8 @@ queue:
 npm run offline-fallback -- --record start-local --note "Shared storage unavailable"
 npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
 npm run offline-fallback -- --record sync-back --note "Ready to merge back into shared storage"
+npm run offline-sync
+npm run offline-sync -- --execute
 ```
 
 After a migration copy, compare durable source and target state:
