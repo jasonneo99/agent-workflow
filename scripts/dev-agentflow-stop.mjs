@@ -10,16 +10,23 @@ const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
+const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
+  ? path.resolve(process.cwd(), process.env.AGENTFLOW_LEARNING_PROJECT)
+  : process.env.AGENTFLOW_PROJECT
+    ? path.resolve(process.cwd(), process.env.AGENTFLOW_PROJECT)
+    : rootDir;
+const learningHeartbeatPath = path.join(learningProject, ".agent-workflow", "learning", "daemon-status.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 
 async function main() {
   const supervisorPid = await heartbeatPid(supervisorHeartbeatPath);
   const workerPid = await heartbeatPid(workerHeartbeatPath);
   const workerRegistryPids = await workerHeartbeatPids();
+  const learningPid = await heartbeatPid(learningHeartbeatPath);
   const dashboardPid = await listenerPid(dashboardPort);
   const matchingPids = await matchingAgentflowPids();
 
-  const pids = uniqueNumbers([supervisorPid, workerPid, ...workerRegistryPids, dashboardPid, ...matchingPids]);
+  const pids = uniqueNumbers([supervisorPid, workerPid, ...workerRegistryPids, learningPid, dashboardPid, ...matchingPids]);
   if (pids.length === 0) {
     console.log("No Agent Workflow supervisor, dashboard, or worker process was found.");
     await writeStoppedHeartbeat("stopped", "No running process found.");
@@ -41,7 +48,7 @@ async function main() {
     console.log(`Force-stopped remaining processes: ${survivors.join(", ")}`);
   }
   await writeStoppedHeartbeat("stopped", "Stopped by npm run dev:agentflow:stop.");
-  console.log("Agent Workflow dashboard and worker stopped. Docker services were left running.");
+  console.log("Agent Workflow dashboard, worker, and learning daemon stopped. Docker services were left running.");
 }
 
 async function heartbeatPid(filePath) {
@@ -92,7 +99,8 @@ async function matchingAgentflowPids() {
       .filter((entry) => {
         return entry.command.includes("scripts/dev-agentflow.mjs")
           || entry.command.includes("apps/cli/src/index.ts dashboard")
-          || entry.command.includes("apps/cli/src/index.ts worker --watch");
+          || entry.command.includes("apps/cli/src/index.ts worker --watch")
+          || entry.command.includes("apps/cli/src/index.ts learning-daemon");
       })
       .map((entry) => entry.pid);
   } catch {

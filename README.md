@@ -170,8 +170,10 @@ npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
 npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
 
 # Workflow execution (requires enterprise storage)
-npm run dev:agentflow       # Start services, dashboard, and supervised worker
-npm run dev:agentflow:stop  # Stop the local dashboard and worker
+npm run dev:agentflow       # Start services, dashboard, worker, and learning daemon
+npm run dev:agentflow:stop  # Stop the local dashboard, worker, and learning daemon
+npm run dev:agentflow:launchd:install   # macOS: start at login and restart after crashes
+npm run dev:agentflow:launchd:uninstall # macOS: remove the LaunchAgent
 npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
 npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run worker -- --watch --project /path/to/project # Use project worker_pool defaults from .agent-workflow/project.yaml
@@ -357,7 +359,8 @@ stages:
 - **Approval inbox** — review, approve, or reject agent-requested commands and file writes when project policy requires approval
 - **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary
 - **OpenTelemetry-style observability** — export run spans and metrics without prompt or artifact payload bodies
-- **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, and heartbeat monitoring together
+- **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, learning daemon, and heartbeat monitoring together
+- **macOS LaunchAgent** — install `dev:agentflow` as a per-user launchd service for login startup and crash restart
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas

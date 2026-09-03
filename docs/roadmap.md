@@ -115,6 +115,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Default `learning-daemon` to `apply-approved` so it autonomously refreshes Agent Workflow-owned learning reports, proposal state, workflow-shape recommendation files, and application plan files.
   - Keep `apply-approved` owned-state-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
+  - Done: add durable local restart support by supervising the learning daemon inside `npm run dev:agentflow` and offering a macOS LaunchAgent install path.
   - Start local-only; make server mode an explicit future deployment posture.
 
 - [x] Local learning workflow shape optimizer.

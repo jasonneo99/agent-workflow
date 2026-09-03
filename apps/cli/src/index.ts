@@ -153,6 +153,11 @@ type SupervisorHeartbeat = {
   dashboardPort: number;
   dashboardManaged: boolean;
   workerManaged: boolean;
+  learningManaged?: boolean;
+  learningEnabled?: boolean;
+  learningProject?: string;
+  learningMode?: LearningDaemonMode;
+  learningHeartbeatPath?: string;
   workerLimit: number;
   workerIntervalMs: number;
   monitorIntervalMs: number;
@@ -173,6 +178,11 @@ type DashboardSupervisorStatus = {
   dashboardPort: number | null;
   dashboardManaged: boolean;
   workerManaged: boolean;
+  learningManaged: boolean;
+  learningEnabled: boolean;
+  learningProject: string | null;
+  learningMode: LearningDaemonMode | null;
+  learningHeartbeatPath: string | null;
   command: string;
 };
 
@@ -13596,6 +13606,11 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
       dashboardPort: typeof heartbeat.dashboardPort === "number" ? heartbeat.dashboardPort : null,
       dashboardManaged: heartbeat.dashboardManaged === true,
       workerManaged: heartbeat.workerManaged === true,
+      learningManaged: heartbeat.learningManaged === true,
+      learningEnabled: heartbeat.learningEnabled !== false,
+      learningProject: typeof heartbeat.learningProject === "string" ? heartbeat.learningProject : null,
+      learningMode: heartbeat.learningMode === "observe" || heartbeat.learningMode === "propose" || heartbeat.learningMode === "apply-approved" ? heartbeat.learningMode : null,
+      learningHeartbeatPath: typeof heartbeat.learningHeartbeatPath === "string" ? heartbeat.learningHeartbeatPath : null,
       command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run dev:agentflow"
     };
   } catch {
@@ -13613,6 +13628,11 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
       dashboardPort: null,
       dashboardManaged: false,
       workerManaged: false,
+      learningManaged: false,
+      learningEnabled: false,
+      learningProject: null,
+      learningMode: null,
+      learningHeartbeatPath: null,
       command: "npm run dev:agentflow"
     };
   }
@@ -16160,10 +16180,14 @@ function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): stri
       <div><strong>Tick Count</strong>${formatNumber(supervisor.ticks)}</div>
       <div><strong>Dashboard</strong>${supervisor.dashboardManaged ? "managed" : "external or stopped"}</div>
       <div><strong>Worker</strong>${supervisor.workerManaged ? "managed" : "external or stopped"}</div>
+      <div><strong>Learning</strong>${supervisor.learningEnabled ? (supervisor.learningManaged ? "managed" : "enabled, external or stopped") : "disabled"}</div>
+      <div><strong>Learning Mode</strong>${escapeHtml(supervisor.learningMode ?? "n/a")}</div>
     </div>
     <div class="meta-grid compact">
       <div><strong>Message</strong>${escapeHtml(supervisor.message || "n/a")}</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(supervisor.heartbeatPath)}</div>
+      <div><strong>Learning Project</strong>${escapeHtml(supervisor.learningProject ?? "n/a")}</div>
+      <div><strong>Learning Heartbeat</strong>${escapeHtml(supervisor.learningHeartbeatPath ?? "n/a")}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(supervisor.command || "npm run dev:agentflow")}</code></div>
     </div>
   `;

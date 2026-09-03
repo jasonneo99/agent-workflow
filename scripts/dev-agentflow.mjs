@@ -12,11 +12,22 @@ const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
+const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
+  ? path.resolve(process.cwd(), process.env.AGENTFLOW_LEARNING_PROJECT)
+  : process.env.AGENTFLOW_PROJECT
+    ? path.resolve(process.cwd(), process.env.AGENTFLOW_PROJECT)
+    : rootDir;
+const learningHeartbeatPath = path.join(learningProject, ".agent-workflow", "learning", "daemon-status.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 const workerLimit = Number.parseInt(process.env.AGENTFLOW_WORKER_LIMIT ?? "6", 10);
 const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "1", 10);
 const workerId = process.env.AGENTFLOW_WORKER_ID ?? "supervised-local";
 const workerIntervalMs = Number.parseInt(process.env.AGENTFLOW_WORKER_INTERVAL_MS ?? "2000", 10);
+const learningEnabled = process.env.AGENTFLOW_LEARNING_DAEMON !== "0";
+const learningMode = normalizeLearningMode(process.env.AGENTFLOW_LEARNING_MODE ?? "apply-approved");
+const learningLimit = Number.parseInt(process.env.AGENTFLOW_LEARNING_LIMIT ?? "50", 10);
+const learningIntervalMs = Number.parseInt(process.env.AGENTFLOW_LEARNING_INTERVAL_MS ?? "60000", 10);
+const learningDaemonId = process.env.AGENTFLOW_LEARNING_DAEMON_ID ?? "supervised-learning";
 const monitorIntervalMs = Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_INTERVAL_MS ?? "5000", 10);
 const configuredProject = process.env.AGENTFLOW_PROJECT ? path.resolve(process.cwd(), process.env.AGENTFLOW_PROJECT) : null;
 const configuredWorkerPoolProfile = process.env.AGENTFLOW_WORKER_POOL_PROFILE;
@@ -43,9 +54,9 @@ async function main() {
   await startManagedProcesses();
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  await writeHeartbeat("running", "supervising dashboard and worker");
+  await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
   console.log(`Agent Workflow supervisor: http://127.0.0.1:${dashboardPort}`);
-  console.log("Press Ctrl-C to stop dashboard and worker processes started by this supervisor.");
+  console.log(`Press Ctrl-C to stop dashboard, worker${learningEnabled ? ", and learning daemon" : ""} processes started by this supervisor.`);
 
   while (!stopping) {
     await sleep(monitorIntervalMs);
@@ -87,6 +98,13 @@ async function startManagedProcesses() {
       startWorker(lane);
     }
   }
+  if (learningEnabled) {
+    if (await isLearningHeartbeatFresh()) {
+      console.log(`Learning daemon heartbeat is fresh for ${learningProject}; leaving existing daemon process alone.`);
+    } else {
+      startLearningDaemon();
+    }
+  }
 }
 
 async function monitor() {
@@ -105,6 +123,9 @@ async function monitor() {
             startWorker(lane);
           }
         }
+        if (name === "learning-daemon" && learningEnabled) {
+          startLearningDaemon();
+        }
       }
     }
   }
@@ -118,7 +139,11 @@ async function monitor() {
       startWorker(lane);
     }
   }
-  await writeHeartbeat("running", "supervising dashboard and worker");
+  if (learningEnabled && !children.has("learning-daemon") && !(await isLearningHeartbeatFresh())) {
+    console.log("Learning daemon heartbeat is stale or missing; starting learning daemon.");
+    startLearningDaemon();
+  }
+  await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
 }
 
 function startWorker(lane) {
@@ -150,6 +175,27 @@ function startWorker(lane) {
   startChild(`worker:${lane.id}`, args);
 }
 
+function startLearningDaemon() {
+  startChild("learning-daemon", [
+    "run",
+    "agentflow",
+    "--",
+    "learning-daemon",
+    "--project",
+    learningProject,
+    "--mode",
+    learningMode,
+    "--limit",
+    String(positiveNumber(learningLimit, 50)),
+    "--interval-ms",
+    String(positiveNumber(learningIntervalMs, 60000)),
+    "--daemon-id",
+    learningDaemonId,
+    "--heartbeat-file",
+    learningHeartbeatPath
+  ]);
+}
+
 function startChild(name, npmArgs) {
   const child = spawn("npm", npmArgs, {
     cwd: rootDir,
@@ -172,6 +218,20 @@ async function isWorkerHeartbeatFresh(filePath = workerHeartbeatPath, fallbackIn
   }
 }
 
+async function isLearningHeartbeatFresh() {
+  try {
+    const heartbeat = JSON.parse(await fs.readFile(learningHeartbeatPath, "utf8"));
+    const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? Date.parse(heartbeat.lastHeartbeatAt) : 0;
+    const intervalMs = typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : learningIntervalMs;
+    const staleAfterMs = Math.max(intervalMs * 3, 30_000);
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const status = typeof heartbeat.status === "string" ? heartbeat.status : "";
+    return Boolean(pid && Date.now() - lastHeartbeatAt <= staleAfterMs && isProcessAlive(pid) && status !== "stopped" && status !== "stopping" && status !== "failed");
+  } catch {
+    return false;
+  }
+}
+
 async function stop() {
   if (stopping) {
     return;
@@ -188,6 +248,7 @@ async function stop() {
 async function writeHeartbeat(status, message) {
   const dashboardManaged = children.has("dashboard");
   const workerManaged = [...children.keys()].some((name) => name.startsWith("worker:"));
+  const learningManaged = children.has("learning-daemon");
   await fs.writeFile(supervisorHeartbeatPath, `${JSON.stringify({
     pid: process.pid,
     status,
@@ -198,6 +259,13 @@ async function writeHeartbeat(status, message) {
     dashboardPort,
     dashboardManaged,
     workerManaged,
+    learningManaged,
+    learningEnabled,
+    learningProject,
+    learningMode,
+    learningIntervalMs: positiveNumber(learningIntervalMs, 60000),
+    learningLimit: positiveNumber(learningLimit, 50),
+    learningHeartbeatPath,
     workerLimit,
     workerConcurrency,
     workerPoolProfile: configuredWorkerPoolProfile ?? null,
@@ -300,6 +368,10 @@ function positiveNumber(value, fallback) {
 
 function boundedPositiveNumber(value, fallback, max) {
   return Math.min(positiveNumber(value, fallback), max);
+}
+
+function normalizeLearningMode(value) {
+  return value === "observe" || value === "propose" || value === "apply-approved" ? value : "apply-approved";
 }
 
 function safeFileSegment(value) {

@@ -627,15 +627,35 @@ Start the recommended local developer supervisor:
 npm run dev:agentflow
 ```
 
-This starts Docker services, starts the dashboard when port `17888` is free, starts the background worker, and writes a supervisor heartbeat to `.agent-workflow/runtime/supervisor-heartbeat.json`.
+This starts Docker services, starts the dashboard when port `17888` is free,
+starts the background worker, starts the local learning daemon, and writes a
+supervisor heartbeat to `.agent-workflow/runtime/supervisor-heartbeat.json`.
 
-Stop the supervised dashboard and worker:
+Stop the supervised dashboard, worker, and learning daemon:
 
 ```bash
 npm run dev:agentflow:stop
 ```
 
 This leaves Docker services running so future local workflow runs start quickly.
+
+On macOS, install Agent Workflow as a durable per-user LaunchAgent when you want
+it to start at login and restart after crashes or terminal closes:
+
+```bash
+npm run dev:agentflow:launchd:install
+```
+
+The LaunchAgent runs the same `dev:agentflow` supervisor, so it manages Docker
+services, the dashboard, worker lanes, and the learning daemon. Logs are written
+under `.agent-workflow/runtime/launchd/`. Uninstall it with:
+
+```bash
+npm run dev:agentflow:launchd:uninstall
+```
+
+Set `AGENTFLOW_LEARNING_DAEMON=0` before installing or launching if you want the
+dashboard and worker without the local learning loop.
 
 Open:
 
