@@ -138,7 +138,10 @@ resolves a single registered project id and rejects path-shaped input.
 project id, workflow id, actor role, auth posture, and idempotency, but never
 queues a workflow. `server-route-preview` turns a valid preview envelope into
 an internal dry-run route and command preview while still refusing blocked
-requests.
+requests. `POST /api/server-queue` accepts the same registered-project request
+shape with bearer-token or OIDC-proxy auth. It previews by default and only
+queues when `execute=true`, `AGENTFLOW_SERVER_MODE=1`, and
+`AGENTFLOW_SERVER_ENABLE_QUEUE=1`.
 
 See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
 copyable end-to-end local smoke test.
@@ -755,6 +758,7 @@ Dashboard and JSON endpoints:
 /api/server-project?projectId=<project-id>
 /api/server-request-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
 /api/server-route-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
+/api/server-queue
 /api/role-audit-export
 /role-audit?file=<snapshot.md>
 /api/queue

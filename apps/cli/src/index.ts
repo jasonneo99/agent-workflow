@@ -3781,6 +3781,7 @@ type ServerRoutePreviewReport = {
   status: "ready" | "attention" | "blocked";
   dryRun: true;
   envelope: ServerRequestPreviewReport["envelope"];
+  controls: ServerRequestPreviewReport["controls"];
   route: null | {
     projectId: string;
     projectName: string;
@@ -3792,6 +3793,32 @@ type ServerRoutePreviewReport = {
     actorRole: string;
     idempotencyKey: string;
     commandPreview: string;
+  };
+  checks: ServerRequestPreviewReport["checks"];
+  notes: string[];
+};
+
+type ServerQueueReport = {
+  kind: "agentflow_server_queue_report";
+  generatedAt: string;
+  status: "queued" | "ready" | "attention" | "blocked";
+  dryRun: boolean;
+  envelope: ServerRequestPreviewReport["envelope"];
+  route: ServerRoutePreviewReport["route"];
+  queuedRun: null | {
+    runId: string;
+    projectId: string;
+    projectRootUri: string;
+    workflowId: string;
+    tasks: number;
+    runUrl: string;
+  };
+  controls: Omit<ServerRequestPreviewReport["controls"], "wouldQueue"> & {
+    authAccepted: boolean;
+    executeRequested: boolean;
+    queueExecutionEnabled: boolean;
+    clientProvidedIdempotency: boolean;
+    wouldQueue: boolean;
   };
   checks: ServerRequestPreviewReport["checks"];
   notes: string[];
@@ -5561,6 +5588,7 @@ async function loadServerRoutePreview(input: {
     status: requestPreview.status,
     dryRun: true,
     envelope: requestPreview.envelope,
+    controls: requestPreview.controls,
     route,
     checks: [
       ...requestPreview.checks,
@@ -5605,6 +5633,147 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
     "Notes:",
     ...report.notes.map((note) => `- ${note}`)
   ].join("\n");
+}
+
+async function processServerQueueRequest(request: http.IncomingMessage, body: unknown): Promise<ServerQueueReport> {
+  const payload = objectValue(body);
+  const executeRequested = payload.execute === true;
+  const routePreview = await loadServerRoutePreview({
+    projectId: stringValue(payload.projectId) ?? "",
+    workflowId: stringValue(payload.workflow) ?? stringValue(payload.workflowId) ?? "",
+    task: stringValue(payload.task) ?? "",
+    actor: stringValue(payload.actor) ?? "server-client",
+    actorRole: stringValue(payload.actorRole) ?? "operator",
+    idempotencyKey: stringValue(payload.idempotencyKey) ?? undefined
+  });
+  const auth = validateServerMutationAuth(request);
+  const queueExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_QUEUE");
+  const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const clientProvidedIdempotency = Boolean(stringValue(payload.idempotencyKey)?.trim());
+  const checks: ServerQueueReport["checks"] = [
+    ...routePreview.checks,
+    {
+      label: "Authenticated mutation",
+      status: auth.ok ? "pass" : "fail",
+      detail: auth.ok ? `Authenticated with ${auth.method}.` : auth.error
+    },
+    {
+      label: "Queue execution gate",
+      status: !executeRequested ? "warn" : serverModeEnabled && queueExecutionEnabled ? "pass" : "fail",
+      detail: !executeRequested
+        ? "Dry-run preview only. Set execute=true to request queueing."
+        : serverModeEnabled && queueExecutionEnabled
+          ? "Server mode and queue execution are explicitly enabled."
+          : "Queueing requires AGENTFLOW_SERVER_MODE=1 and AGENTFLOW_SERVER_ENABLE_QUEUE=1."
+    },
+    {
+      label: "Client idempotency",
+      status: clientProvidedIdempotency ? "pass" : "fail",
+      detail: clientProvidedIdempotency ? "Client idempotency key is present." : "Queue requests require a client-provided idempotency key."
+    }
+  ];
+  let queuedRun: ServerQueueReport["queuedRun"] = null;
+  const canQueue = executeRequested
+    && routePreview.status !== "blocked"
+    && routePreview.route
+    && auth.ok
+    && serverModeEnabled
+    && queueExecutionEnabled
+    && clientProvidedIdempotency;
+  if (canQueue && routePreview.route) {
+    const queued = await queueWorkflow({
+      workflowId: routePreview.route.workflowId,
+      projectPath: routePreview.route.projectRootUri,
+      task: routePreview.route.task,
+      policyProfile: routePreview.route.policyProfile,
+      evaluationMetadata: {
+        source: "server-queue",
+        requestId: routePreview.envelope.requestId,
+        idempotencyKey: routePreview.envelope.idempotencyKey,
+        actor: routePreview.envelope.actor,
+        actorRole: routePreview.envelope.actorRole,
+        authMethod: auth.method
+      }
+    });
+    if (queued.ok) {
+      queuedRun = {
+        runId: queued.run.runId,
+        projectId: queued.run.projectId,
+        projectRootUri: queued.projectDir,
+        workflowId: queued.workflow.id,
+        tasks: queued.run.tasks,
+        runUrl: `/run?id=${encodeURIComponent(queued.run.runId)}`
+      };
+      checks.push({
+        label: "Workflow queue",
+        status: "pass",
+        detail: `Queued workflow run ${queued.run.runId}.`
+      });
+    } else {
+      checks.push({
+        label: "Workflow queue",
+        status: "fail",
+        detail: queued.error
+      });
+    }
+  }
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const status: ServerQueueReport["status"] = queuedRun
+    ? "queued"
+    : failures > 0
+      ? "blocked"
+      : warnings > 0
+        ? "attention"
+        : "ready";
+  return {
+    kind: "agentflow_server_queue_report",
+    generatedAt: new Date().toISOString(),
+    status,
+    dryRun: !queuedRun,
+    envelope: routePreview.envelope,
+    route: routePreview.route,
+    queuedRun,
+    controls: {
+      ...routePreview.controls,
+      authAccepted: auth.ok,
+      executeRequested,
+      queueExecutionEnabled,
+      clientProvidedIdempotency,
+      wouldQueue: Boolean(queuedRun)
+    },
+    checks,
+    notes: [
+      queuedRun ? "Workflow was queued. Process stages with a scoped worker or worker pool." : "No workflow was queued by this request.",
+      "This endpoint accepts registered project ids only; it does not accept project filesystem paths.",
+      "Queue execution remains disabled unless server mode, token/OIDC auth, explicit execution, and the queue gate are all enabled."
+    ]
+  };
+}
+
+function validateServerMutationAuth(request: http.IncomingMessage): { ok: true; method: string } | { ok: false; method: string; error: string } {
+  const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "token";
+  if (authMode === "oidc-proxy") {
+    const actor = firstHeader(request.headers["x-agentflow-actor"] ?? request.headers["x-forwarded-email"]);
+    return actor
+      ? { ok: true, method: "oidc-proxy" }
+      : { ok: false, method: "oidc-proxy", error: "OIDC proxy auth requires x-agentflow-actor or x-forwarded-email." };
+  }
+  const expectedToken = process.env.AGENTFLOW_SERVER_TOKEN?.trim();
+  if (!expectedToken) {
+    return { ok: false, method: "bearer-token", error: "AGENTFLOW_SERVER_TOKEN is required for server mutation endpoints." };
+  }
+  const authorization = firstHeader(request.headers.authorization);
+  const token = authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : "";
+  if (!token || token !== expectedToken) {
+    return { ok: false, method: "bearer-token", error: "Bearer token is missing or invalid." };
+  }
+  return { ok: true, method: "bearer-token" };
+}
+
+function firstHeader(value: string | string[] | undefined): string | null {
+  if (Array.isArray(value)) return value[0] ?? null;
+  return value ?? null;
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -7520,6 +7689,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       idempotencyKey: requestUrl.searchParams.get("idempotencyKey") ?? undefined
     });
     response.writeHead(report.status === "blocked" ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/server-queue") {
+    const body = await readJsonBody(request);
+    const report = await processServerQueueRequest(request, body);
+    response.writeHead(report.status === "blocked" ? 400 : report.status === "queued" ? 201 : 200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
   }
@@ -13792,6 +13969,22 @@ async function readFormBody(request: http.IncomingMessage): Promise<URLSearchPar
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
   return new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function readJsonBody(request: http.IncomingMessage, maxBytes = 64_000): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let bytes = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    bytes += buffer.length;
+    if (bytes > maxBytes) {
+      throw new Error(`JSON request body exceeds ${maxBytes} bytes.`);
+    }
+    chunks.push(buffer);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8").trim();
+  if (!raw) return {};
+  return JSON.parse(raw) as unknown;
 }
 
 async function processDashboardBundleLifecyclePlan(input: {

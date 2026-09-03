@@ -243,7 +243,8 @@ foundation is complete.
   - Done: add project id resolution for future server-mode routing that rejects path-shaped input and resolves only registered project ids.
   - Done: add an authenticated request-envelope preview for future remote execution requests before implementing mutation endpoints.
   - Done: add a guarded project-id routing adapter behind the same preview checks, still dry-run-by-default.
-  - Next: add authenticated queueing endpoints after route previews are reviewed.
+  - Done: add an authenticated queueing endpoint with dry-run as the default and real queueing gated by explicit server-mode environment flags.
+  - Next: record remote actor details in queue receipts before adding additional mutation endpoints.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

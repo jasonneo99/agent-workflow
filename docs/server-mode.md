@@ -42,6 +42,7 @@ AGENTFLOW_SERVER_MODE=1
 AGENTFLOW_SERVER_BIND=127.0.0.1
 AGENTFLOW_SERVER_AUTH=token
 AGENTFLOW_SERVER_TOKEN=...
+AGENTFLOW_SERVER_ENABLE_QUEUE=0
 AGENTFLOW_SERVER_ALLOWED_ORIGINS=http://127.0.0.1:17888
 ```
 
@@ -241,10 +242,11 @@ Before adding remote execution endpoints:
       requests before implementing mutation endpoints.
 - [x] Add a guarded project-id routing adapter behind the same preview checks,
       still dry-run-by-default.
-- [ ] Add authenticated queueing endpoints after route previews are reviewed.
-- [ ] Require auth for all mutation endpoints.
-- [ ] Require role capability checks for all mutation endpoints.
-- [ ] Require idempotency keys for all mutation endpoints.
+- [x] Add an authenticated queueing endpoint after route previews are reviewed,
+      with dry-run as the default and real queueing behind an explicit env gate.
+- [ ] Require auth for all remaining mutation endpoints.
+- [ ] Require role capability checks for all remaining mutation endpoints.
+- [ ] Require idempotency keys for all remaining mutation endpoints.
 - [ ] Record remote actor details in action receipts.
 - [ ] Keep MCP stdio as the recommended IDE path for local use.
 - [ ] Document reverse-proxy/TLS guidance without bundling internet-facing
@@ -310,6 +312,27 @@ npm run server-route-preview -- \
   --task "Review the current changes" \
   --idempotency-key local-smoke-001
 ```
+
+Preview the authenticated queue endpoint without queueing work:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:17888/api/server-queue \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer $AGENTFLOW_SERVER_TOKEN" \
+  --data '{
+    "projectId": "'$PROJECT_ID'",
+    "workflow": "review-pr",
+    "task": "Review the current changes",
+    "actor": "local-smoke",
+    "actorRole": "operator",
+    "idempotencyKey": "local-smoke-queue-001"
+  }'
+```
+
+Real queueing requires all of these to be true: `AGENTFLOW_SERVER_MODE=1`,
+`AGENTFLOW_SERVER_ENABLE_QUEUE=1`, valid mutation auth, a registered project
+id, a known workflow, a role with request capability, and a client-provided
+idempotency key.
 
 Verify that path-shaped input is rejected:
 
