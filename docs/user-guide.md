@@ -755,6 +755,7 @@ JSON endpoints:
 /api/server-project?projectId=<project-id>
 /api/server-request-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
 /api/server-route-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
+/api/role-audit-export
 /api/queue
 /api/projects
 /api/run?id=<run-id>

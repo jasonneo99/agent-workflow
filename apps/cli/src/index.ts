@@ -7217,6 +7217,21 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/role-audit-export") {
+    const form = await readFormBody(request);
+    const result = await processDashboardRoleAuditExport({
+      project: form.get("project") ?? "",
+      limit: form.get("limit") ?? "",
+      role: form.get("role") ?? "",
+      status: form.get("status") ?? "",
+      actionType: form.get("action") ?? "",
+      out: form.get("out") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/follow-up") {
     const form = await readFormBody(request);
     const result = await runDashboardFollowUp({
@@ -9614,9 +9629,17 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
     <label>Recent approvals<input name="limit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
     <div class="form-actions"><button type="submit">Filter</button></div>
   </form>`;
+  const exportForm = `<form method="post" action="/api/role-audit-export" class="inline-form">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? "")}">
+    <input type="hidden" name="role" value="${escapeHtml(report.filters.role ?? "")}">
+    <input type="hidden" name="status" value="${escapeHtml(report.filters.status)}">
+    <input type="hidden" name="action" value="${escapeHtml(report.filters.actionType ?? "")}">
+    <input type="hidden" name="limit" value="${escapeHtml(String(report.limit))}">
+    <button type="submit">Export Snapshot</button>
+  </form>`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Roles</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("roles")}
-  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a></div>
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><div class="actions"><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a>${exportForm}</div></div>
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
@@ -13647,6 +13670,45 @@ async function processDashboardBundleLifecyclePlan(input: {
   return plan.status === "ready"
     ? { ok: true, title: input.write ? "Bundle Lifecycle Plan Written" : "Bundle Lifecycle Plan Dry Run", output }
     : { ok: false, error: output };
+}
+
+async function processDashboardRoleAuditExport(input: {
+  project: string;
+  limit: string;
+  role: string;
+  status: string;
+  actionType: string;
+  out: string;
+}): Promise<DashboardFollowUpResult> {
+  try {
+    const report = await loadRoleGovernanceReport({
+      projectRootUri: input.project.trim() || undefined,
+      limit: parsePositiveInteger(input.limit || "50", 50),
+      role: input.role.trim() || undefined,
+      status: input.status.trim() || "all",
+      actionType: input.actionType.trim() || undefined
+    });
+    const exported = await writeRoleAuditSnapshot(report, input.out.trim() || undefined);
+    return {
+      ok: true,
+      title: "Role Audit Snapshot Exported",
+      output: [
+        `Project: ${report.projectRootUri ?? "all registered projects"}`,
+        `Filters: role=${report.filters.role ?? "all"} status=${report.filters.status} action=${report.filters.actionType ?? "all"}`,
+        `Approvals: ${report.recentApprovals.length}`,
+        "",
+        `Markdown: ${exported.markdownPath}`,
+        `JSON: ${exported.jsonPath}`,
+        "",
+        "Open: /roles"
+      ].join("\n")
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
 }
 
 async function exportDashboardWorkflowGraphHandoff(form: URLSearchParams): Promise<DashboardFollowUpResult> {

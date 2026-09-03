@@ -254,7 +254,8 @@ foundation is complete.
   - Done: add optional separation-of-duties checks for projects that want to flag or block the same actor approving and executing the same action.
   - Done: add role-focused CLI, JSON API, and dashboard filters for project, role, status, and action type.
   - Done: add exportable local Markdown and JSON role audit snapshots from the filtered CLI report.
-  - Next: add dashboard-triggered role audit snapshot exports after user testing.
+  - Done: add dashboard-triggered role audit snapshot exports that preserve the active role filters.
+  - Next: review user testing feedback for role audit ergonomics before closing this milestone.
 
 - [x] Artifact lifecycle governance.
   - [x] Add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
