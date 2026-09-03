@@ -140,6 +140,9 @@ queues a workflow. `server-route-preview` turns a valid preview envelope into
 an internal dry-run route and command preview while still refusing blocked
 requests.
 
+See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
+copyable end-to-end local smoke test.
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:

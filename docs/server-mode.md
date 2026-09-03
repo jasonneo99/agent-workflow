@@ -249,3 +249,81 @@ Before adding remote execution endpoints:
 - [ ] Keep MCP stdio as the recommended IDE path for local use.
 - [ ] Document reverse-proxy/TLS guidance without bundling internet-facing
       defaults.
+
+## Local Verification Walkthrough
+
+Start from the Agent Workflow repo with enterprise services running:
+
+```bash
+docker compose -f infra/docker-compose.yml up -d
+npm run doctor
+npm run bootstrap-storage
+```
+
+Inspect server-mode posture:
+
+```bash
+npm run server-readiness
+```
+
+Expected local-first result:
+
+```text
+Status: local-only
+```
+
+List registered project IDs without exposing local roots:
+
+```bash
+npm run server-projects
+```
+
+Grab one project ID for local testing:
+
+```bash
+PROJECT_ID=$(npm run -s server-projects -- --json | node -e "let s='';process.stdin.on('data',d=>s+=d);process.stdin.on('end',()=>{const r=JSON.parse(s); process.stdout.write(r.projects[0]?.projectId || '');})")
+echo "$PROJECT_ID"
+```
+
+Resolve that project ID without returning the root:
+
+```bash
+npm run server-resolve-project -- --project-id "$PROJECT_ID"
+```
+
+Preview a future request envelope:
+
+```bash
+npm run server-request-preview -- \
+  --project-id "$PROJECT_ID" \
+  --workflow review-pr \
+  --task "Review the current changes" \
+  --idempotency-key local-smoke-001
+```
+
+Preview the internal route without queueing work:
+
+```bash
+npm run server-route-preview -- \
+  --project-id "$PROJECT_ID" \
+  --workflow review-pr \
+  --task "Review the current changes" \
+  --idempotency-key local-smoke-001
+```
+
+Verify that path-shaped input is rejected:
+
+```bash
+npm run server-resolve-project -- --project-id ../templates/project
+```
+
+Expected result:
+
+```text
+Resolved: no
+Reason: project id must not be a filesystem path
+```
+
+The preview commands may report `attention` while `AGENTFLOW_SERVER_MODE=0`.
+That is correct: local-first mode is safe, but remote mutation endpoints would
+require explicit server-mode opt-in and authentication.
