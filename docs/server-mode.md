@@ -248,6 +248,16 @@ Local-only:
 - CLI, MCP stdio, dashboard, worker, and storage run on one machine.
 - No server-mode env vars required.
 
+IDE clients:
+
+- Use MCP over stdio for Codex, VS Code, Cursor, and other local editors.
+- Keep model/provider selection in the Agent Workflow `.env`, not in each
+  editor prompt.
+- Prefer `agentflow_run_and_watch`, `agentflow_agent_task`, and
+  `agentflow_orchestrate` for local developer workflows.
+- Use HTTP server mode only when a team intentionally wants a shared runtime
+  with registered projects, auth, role checks, and audit receipts.
+
 Single-developer LAN preview:
 
 - Explicit server-mode opt-in.
@@ -285,7 +295,7 @@ Before adding remote execution endpoints:
 - [ ] Require role capability checks for all remaining mutation endpoints.
 - [ ] Require idempotency keys for all remaining mutation endpoints.
 - [x] Record remote actor details in queue action receipts.
-- [ ] Keep MCP stdio as the recommended IDE path for local use.
+- [x] Keep MCP stdio as the recommended IDE path for local use.
 - [x] Document reverse-proxy/TLS guidance without bundling internet-facing
       defaults.
 
