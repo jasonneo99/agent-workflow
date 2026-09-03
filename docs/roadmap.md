@@ -221,12 +221,12 @@ trust gaps.
   - Done: make network-map nodes inspectable by linking stages to the Stage Matrix and runs to run details.
   - Done: improve network-map label placement near graph edges for dense workflows.
   - Done: add focused graph run-status filters for active runs, failed runs, exact statuses, and definition-only snapshots.
+  - Done: add an all-stored-runs graph scope that includes matching workflow history across registered projects.
   - Done: reshape the network map into a layered neural-style developer view with workflow input, stage layer, agent layer, and run outputs.
   - Done: add high-contrast cinematic neural styling to make the network map feel like a developer command surface while staying inspectable.
   - Done: size network-map nodes by incoming request count so frequently invoked agents, stages, and run outputs stand out.
   - Done: reshape the network map into a radial web with transparent nodes and color carried by stroke/glow.
   - Done: add network-map orientation controls so developers can switch between horizontal and radial web layouts.
-  - Done: add an all-in-one graph view that stacks Flow, Mind Map, and Network Map for complete developer review.
   - Done: overlay per-stage run health so the graph can show which workflow step tends to fail, stall, or complete.
   - Done: add stage-click run filtering so clicking a stage can focus recent runs and failures for that workflow step.
   - Done: add a stage-level "suggest fix" action that prepares a targeted debug workflow from the focused failure history.

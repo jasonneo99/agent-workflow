@@ -302,13 +302,11 @@ The local dashboard exposes the same inspection surface at
 you want a browser-readable graph of workflow stages, primary agents, subagents,
 context budgets, approval points, and policy fit before spending live model
 tokens. Add `&view=mind-map` to switch the dashboard visualization to a
-presentation-friendly agent connection map, `&view=network` for a high-
-contrast neural-web SVG map, or `&view=all` to stack Flow, Mind Map, and Network
-Map together for a complete developer review surface. Network Map defaults to a
-horizontal developer layout, and its orientation buttons can switch to
-`orientation=radial` for a circular web with workflow core, stage ring, agent
-ring, and recent run-history orbit. In the network map, luminous signal paths
-show stage-to-agent and
+presentation-friendly agent connection map, or `&view=network` for a high-
+contrast neural-web SVG map. Network Map defaults to a horizontal developer
+layout, and its orientation buttons can switch to `orientation=radial` for a
+circular web with workflow core, stage ring, agent ring, and recent run-history
+orbit. In the network map, luminous signal paths show stage-to-agent and
 agent-to-run relationships, transparent nodes glow by type or status, stage
 nodes are labeled by stage name, and node size grows with incoming request count
 so heavily used agents, stages, and runs stand out. A compact explainer below
@@ -319,7 +317,12 @@ failed, queued/running, and cancelled task outcomes. Click a stage node to focus
 recent run/task history for that workflow step, use **Suggest Fix** to queue a
 targeted `debug-failure` run from that stage history, or click a run node to
 open the run detail page, so the visual becomes a lightweight inspection
-surface. Suggested fix runs are tagged with their source workflow and stage, so
+surface. Use `runScope=all-projects`, or the **All Stored Runs** quick action,
+to include matching workflow runs from every registered project instead of only
+the selected project. The selected project still provides the workflow policy
+and graph definition, while run history expands across projects for portfolio-
+level debugging and usage review. Suggested fix runs are tagged with their
+source workflow and stage, so
 the focused panel can show the stage health signal beside any related debug-run
 outcomes on later visits. After a suggested fix completes, use **Rerun Source**
 to queue the original workflow as a tagged verification run for before/after
@@ -336,9 +339,11 @@ commands to inspect export storage, list recent files, preview stale prune
 candidates, and package the graph handoff folder without deleting anything
 implicitly. Use `runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
-the run-status quick links for developer triage: Active Runs shows
-queued/running work, Failed Runs turns the map into a debugging surface, and
-Definition Only hides run history for clean architecture snapshots. The page
+the run-status quick links for developer triage: All Stored Runs shows matching
+workflow history across every registered project, Active Runs shows
+queued/running work for the selected project, Failed Runs turns the map into a
+debugging surface, and Definition Only hides run history for clean architecture
+snapshots. The page
 also includes filters for agent category, approval requirement, and policy
 status so larger workflows stay scannable. Add `&capture=1` for a clean
 screenshot/print view that hides the dashboard navigation and form controls
