@@ -4916,7 +4916,7 @@ async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false)
       }
       try {
         const stored = projectConfigSchema.parse(summary.config);
-        configDrift = createHash("sha256").update(JSON.stringify(stored)).digest("hex") !== createHash("sha256").update(JSON.stringify(localConfig)).digest("hex");
+        configDrift = stableHash(stored) !== stableHash(localConfig);
       } catch {
         configDrift = true;
       }
