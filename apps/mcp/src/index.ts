@@ -929,6 +929,49 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_learning_daemon_status",
+  {
+    title: "AgentFlow learning daemon status",
+    description: "Show local learning daemon heartbeat and owned learning-state status for a project.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      json: z.boolean().optional().describe("Return daemon status JSON.")
+    }
+  },
+  async ({ project, json }) => {
+    const args = ["learning-daemon-status", "--project", project];
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_learning_daemon_tick",
+  {
+    title: "AgentFlow learning daemon tick",
+    description: "Run one bounded local learning daemon tick in observe or propose mode.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      mode: z.enum(["observe", "propose"]).optional().describe("observe writes latest report/status; propose also refreshes proposal inbox."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      json: z.boolean().optional().describe("Return final daemon status JSON.")
+    }
+  },
+  async ({ project, mode, limit, json }) => {
+    const args = ["learning-daemon", "--project", project, "--once", "--mode", mode ?? "observe"];
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_apply_tuning_proposals",
   {
     title: "AgentFlow apply tuning proposals",

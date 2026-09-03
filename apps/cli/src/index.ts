@@ -2702,6 +2702,122 @@ program
   });
 
 program
+  .command("learning-daemon")
+  .description("Run the local learning daemon in observe or propose mode")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--mode <mode>", "daemon mode: observe or propose", "observe")
+  .option("--once", "run a single daemon tick and exit")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
+  .option("--daemon-id <id>", "stable daemon identity for dashboard visibility")
+  .option("--heartbeat-file <path>", "learning daemon heartbeat file path")
+  .option("--json", "print final daemon status JSON")
+  .action(async (options: { project: string; mode: string; once?: boolean; limit: string; intervalMs: string; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const mode = parseLearningDaemonMode(options.mode);
+    const limit = parsePositiveInteger(options.limit, 50);
+    const intervalMs = parsePositiveInteger(options.intervalMs, 60000);
+    if (intervalMs < 1000) {
+      console.error("--interval-ms must be >= 1000");
+      process.exitCode = 1;
+      return;
+    }
+    const daemonId = normalizeWorkerId(options.daemonId) ?? "learning-daemon";
+    const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile ?? path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json"));
+    const startedAt = new Date().toISOString();
+    let stop = false;
+    let ticks = 0;
+    let lastStatus: LearningDaemonHeartbeat | null = null;
+    const writeStatus = async (status: LearningDaemonHeartbeat["status"], update?: Awaited<ReturnType<typeof runLearningDaemonTick>>, lastError?: string): Promise<LearningDaemonHeartbeat> => {
+      const heartbeat: LearningDaemonHeartbeat = {
+        kind: "agentflow_learning_daemon_status",
+        pid: process.pid,
+        daemonId,
+        projectRootUri: projectDir,
+        mode,
+        status,
+        startedAt,
+        lastHeartbeatAt: new Date().toISOString(),
+        lastReportAt: update?.report.generatedAt ?? lastStatus?.lastReportAt ?? null,
+        intervalMs,
+        limit,
+        ticks,
+        proposals: update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
+        inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
+        lastError,
+        command: `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
+      };
+      await writeLearningDaemonStatus(projectDir, heartbeat, heartbeatFile);
+      lastStatus = heartbeat;
+      return heartbeat;
+    };
+
+    const runTick = async (): Promise<void> => {
+      ticks += 1;
+      try {
+        const update = await runLearningDaemonTick({ projectDir, mode, limit });
+        await writeStatus(stop ? "stopping" : "running", update);
+        if (!options.json) {
+          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}`);
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await writeStatus("failed", undefined, message);
+        throw error;
+      }
+    };
+
+    await writeStatus("starting");
+    await runTick();
+    if (options.once) {
+      const stopped = await writeStatus("stopped");
+      if (options.json) console.log(JSON.stringify(stopped, null, 2));
+      return;
+    }
+
+    const stopDaemon = () => {
+      stop = true;
+      console.log("Stopping learning daemon after current tick...");
+    };
+    process.once("SIGINT", stopDaemon);
+    process.once("SIGTERM", stopDaemon);
+    if (!options.json) {
+      console.log(`Learning daemon watching. id=${daemonId} mode=${mode} project=${projectDir} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
+    }
+    while (!stop) {
+      await sleep(intervalMs);
+      if (!stop) await runTick();
+    }
+    const stopped = await writeStatus("stopped");
+    if (options.json) console.log(JSON.stringify(stopped, null, 2));
+  });
+
+program
+  .command("learning-daemon-status")
+  .description("Show local learning daemon status for a project")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--json", "print daemon status JSON")
+  .action(async (options: { project: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const status = await loadLearningDaemonStatus(projectDir);
+    if (options.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
+    console.log(formatLearningDaemonStatus(status));
+  });
+
+program
   .command("tuning-proposals")
   .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3573,6 +3689,49 @@ type LearningApprovalDecisionResult = {
   queue: LearningApprovalQueue;
   selectedIds: string[];
   skippedIds: string[];
+};
+
+type LearningDaemonMode = "observe" | "propose";
+
+type LearningDaemonHeartbeat = {
+  kind: "agentflow_learning_daemon_status";
+  pid: number;
+  daemonId: string;
+  projectRootUri: string;
+  mode: LearningDaemonMode;
+  status: "starting" | "running" | "stopping" | "stopped" | "failed";
+  startedAt: string;
+  lastHeartbeatAt: string;
+  lastReportAt: string | null;
+  lastError?: string;
+  intervalMs: number;
+  limit: number;
+  ticks: number;
+  proposals: number;
+  inboxItems: number;
+  command: string;
+};
+
+type DashboardLearningDaemonStatus = {
+  heartbeatPath: string;
+  configured: boolean;
+  projectRootUri: string;
+  daemonId: string | null;
+  mode: LearningDaemonMode | null;
+  status: "running" | "stale" | "stopped" | "missing" | "failed";
+  pid: number | null;
+  processAlive: boolean;
+  startedAt: string | null;
+  lastHeartbeatAt: string | null;
+  lastReportAt: string | null;
+  ageMs: number | null;
+  intervalMs: number | null;
+  limit: number | null;
+  ticks: number;
+  proposals: number;
+  inboxItems: number;
+  lastError: string;
+  command: string;
 };
 
 type DashboardHomeHealth = {
@@ -7627,6 +7786,42 @@ async function writeLearningApprovalQueue(projectDir: string, queue: LearningApp
   await fs.writeFile(path.join(learningDir, "approval-inbox.md"), formatLearningApprovalQueueMarkdown(queue), "utf8");
 }
 
+async function runLearningDaemonTick(input: {
+  projectDir: string;
+  mode: LearningDaemonMode;
+  limit: number;
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue }> {
+  const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
+  const proposalSet = buildLearningProposalSet(report);
+  const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
+  const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue);
+  await writeLearningReport(input.projectDir, report);
+  if (input.mode === "propose") {
+    await writeLearningProposals(input.projectDir, proposalSet);
+    await writeLearningApprovalQueue(input.projectDir, approvalQueue);
+  }
+  return { report, proposalSet, approvalQueue };
+}
+
+async function writeLearningReport(projectDir: string, report: LearningReport): Promise<void> {
+  const reportsDir = path.join(projectDir, ".agent-workflow", "learning", "reports");
+  await ensureProjectSubdir(projectDir, reportsDir, ".agent-workflow/learning/reports");
+  await fs.writeFile(path.join(reportsDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(reportsDir, "latest.md"), `${formatLearningReport(report)}\n`, "utf8");
+}
+
+async function writeLearningDaemonStatus(projectDir: string, status: LearningDaemonHeartbeat, heartbeatFile: string): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  const resolvedHeartbeat = path.resolve(heartbeatFile);
+  const projectRoot = path.resolve(projectDir);
+  if (!resolvedHeartbeat.startsWith(`${projectRoot}${path.sep}`)) {
+    throw new Error(`Refusing to write learning daemon status outside project: ${heartbeatFile}`);
+  }
+  await fs.mkdir(path.dirname(resolvedHeartbeat), { recursive: true });
+  await fs.writeFile(resolvedHeartbeat, `${JSON.stringify(status, null, 2)}\n`, "utf8");
+}
+
 async function ensureProjectSubdir(projectDir: string, targetDir: string, label: string): Promise<void> {
   const projectRoot = path.resolve(projectDir);
   const resolved = path.resolve(targetDir);
@@ -8625,6 +8820,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-daemon-status") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const status = await loadLearningDaemonStatus(project);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/candidate-comparisons") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -8772,8 +8980,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       })
       : null;
     const learningQueue = project ? await readLearningApprovalQueue(project).catch(() => null) : null;
+    const learningDaemon = project ? await loadLearningDaemonStatus(project) : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, projects, requestUrl.searchParams));
     return;
   }
 
@@ -10458,12 +10667,12 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const body = report
-    ? renderLearningReportHtml(report, learningQueue)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -10502,7 +10711,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -10518,6 +10727,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   `).join("");
   const learningCounts = learningQueue ? countStrings(learningQueue.items.map((item) => item.status)) : {};
   const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
+  const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode propose`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
     <section class="panel">
@@ -10530,6 +10740,11 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
         ${metricCard("Proposal Preview", report.proposalPreview.total, `${report.proposalPreview.highPriority} high priority`)}
       </div>
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local observe/propose loop over Agent Workflow-owned learning state.</span></div></div>
+      ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon) : `<p class="muted">No project selected.</p>`}
+      <p class="muted">Start propose mode with <code>${escapeHtml(daemonCommand)}</code>. It may update Agent Workflow-created learning files, but it does not apply source, provider, tuning, command, network, or export changes.</p>
     </section>
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
@@ -10550,6 +10765,28 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     </section>
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
+  `;
+}
+
+function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus): string {
+  const age = status.ageMs === null ? "n/a" : formatDuration(Math.max(0, status.ageMs));
+  return `
+    <div class="meta-grid">
+      <div><strong>Status</strong><span class="status ${status.status === "running" ? "completed" : status.status === "missing" ? "queued" : "failed"}">${escapeHtml(status.status)}</span></div>
+      <div><strong>Mode</strong>${escapeHtml(status.mode ?? "n/a")}</div>
+      <div><strong>Daemon</strong>${escapeHtml(status.daemonId ?? "n/a")}</div>
+      <div><strong>PID</strong>${status.pid ?? "none"}</div>
+      <div><strong>Process</strong>${status.processAlive ? "alive" : "not running"}</div>
+      <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(status.lastHeartbeatAt, "none")}</div>
+      <div><strong>Age</strong>${escapeHtml(age)}</div>
+      <div><strong>Last Report</strong>${renderDashboardDateTime(status.lastReportAt, "none")}</div>
+      <div><strong>Ticks</strong>${formatNumber(status.ticks)}</div>
+      <div><strong>Proposals</strong>${formatNumber(status.proposals)}</div>
+      <div><strong>Inbox Items</strong>${formatNumber(status.inboxItems)}</div>
+      <div><strong>Heartbeat File</strong>${escapeHtml(status.heartbeatPath)}</div>
+      <div><strong>Start Command</strong><code>${escapeHtml(status.command)}</code></div>
+      ${status.lastError ? `<div><strong>Last Error</strong>${escapeHtml(status.lastError)}</div>` : ""}
+    </div>
   `;
 }
 
@@ -11808,6 +12045,82 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
   }
 }
 
+async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLearningDaemonStatus> {
+  const heartbeatPath = path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json");
+  try {
+    const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<LearningDaemonHeartbeat>;
+    const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
+    const ageMs = lastHeartbeatAt ? Date.now() - Date.parse(lastHeartbeatAt) : null;
+    const intervalMs = typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : null;
+    const staleAfterMs = Math.max((intervalMs ?? 60000) * 3, 120_000);
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const processAlive = pid ? isProcessAlive(pid) : false;
+    const heartbeatStatus = heartbeat.status ?? "stopped";
+    const running = processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping" && heartbeatStatus !== "failed";
+    return {
+      heartbeatPath,
+      configured: true,
+      projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : projectDir,
+      daemonId: typeof heartbeat.daemonId === "string" ? heartbeat.daemonId : null,
+      mode: heartbeat.mode === "observe" || heartbeat.mode === "propose" ? heartbeat.mode : null,
+      status: running ? "running" : heartbeatStatus === "failed" ? "failed" : heartbeatStatus === "stopped" ? "stopped" : "stale",
+      pid,
+      processAlive,
+      startedAt: typeof heartbeat.startedAt === "string" ? heartbeat.startedAt : null,
+      lastHeartbeatAt,
+      lastReportAt: typeof heartbeat.lastReportAt === "string" ? heartbeat.lastReportAt : null,
+      ageMs,
+      intervalMs,
+      limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
+      ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
+      proposals: typeof heartbeat.proposals === "number" ? heartbeat.proposals : 0,
+      inboxItems: typeof heartbeat.inboxItems === "number" ? heartbeat.inboxItems : 0,
+      lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
+      command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
+    };
+  } catch {
+    return {
+      heartbeatPath,
+      configured: false,
+      projectRootUri: projectDir,
+      daemonId: null,
+      mode: null,
+      status: "missing",
+      pid: null,
+      processAlive: false,
+      startedAt: null,
+      lastHeartbeatAt: null,
+      lastReportAt: null,
+      ageMs: null,
+      intervalMs: null,
+      limit: null,
+      ticks: 0,
+      proposals: 0,
+      inboxItems: 0,
+      lastError: "",
+      command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
+    };
+  }
+}
+
+function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): string {
+  return [
+    `Learning daemon: ${status.status}`,
+    `Project: ${status.projectRootUri}`,
+    `Mode: ${status.mode ?? "n/a"}`,
+    `Daemon: ${status.daemonId ?? "n/a"}`,
+    `PID: ${status.pid ?? "none"} (${status.processAlive ? "alive" : "not running"})`,
+    `Last heartbeat: ${status.lastHeartbeatAt ?? "none"}`,
+    `Last report: ${status.lastReportAt ?? "none"}`,
+    `Ticks: ${status.ticks}`,
+    `Proposals: ${status.proposals}`,
+    `Inbox items: ${status.inboxItems}`,
+    status.lastError ? `Last error: ${status.lastError}` : "",
+    `Heartbeat file: ${status.heartbeatPath}`,
+    `Start command: ${status.command}`
+  ].filter(Boolean).join("\n");
+}
+
 function isProcessAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
@@ -11824,6 +12137,11 @@ function normalizeWorkerId(value?: string): string {
   }
   const host = os.hostname().replace(/[^a-zA-Z0-9_.-]/g, "-") || "local";
   return `${host}:${process.pid}`;
+}
+
+function parseLearningDaemonMode(value: string): LearningDaemonMode {
+  if (value === "observe" || value === "propose") return value;
+  throw new Error(`Learning daemon mode must be observe or propose. Received: ${value}`);
 }
 
 function safeWorkerHeartbeatFileSegment(value: string): string {

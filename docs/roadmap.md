@@ -100,8 +100,13 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Write reviewable proposal and approval inbox files that Agent Workflow created and owns under `.agent-workflow/learning/`.
   - Expose the inbox in the dashboard, CLI, and MCP without applying changes.
 
-- [ ] Local learning daemon.
-  - Build on the read-only learning report with scheduled observe/propose/apply-approved modes.
+- [x] Local learning daemon observe/propose mode.
+  - Build on the read-only learning report with bounded one-shot and long-running observe/propose modes.
+  - Write Agent Workflow-created latest report, proposal inbox, and daemon heartbeat/status files only under `.agent-workflow/learning/`.
+  - Expose daemon status in the dashboard, CLI, and MCP.
+
+- [ ] Local learning approved-application planning.
+  - Prepare apply-ready plans from already approved learning proposals without applying source, provider, reusable bundle, command, network, or export changes.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Start local-only; make server mode an explicit future deployment posture.
 

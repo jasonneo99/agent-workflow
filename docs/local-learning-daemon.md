@@ -240,8 +240,15 @@ agentflow learning-proposals --project /path/to/project
 agentflow learning-proposals --project /path/to/project --write
 agentflow learning-approvals --project /path/to/project
 agentflow learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name"
+agentflow learning-daemon-status --project /path/to/project
+agentflow learning-daemon --project /path/to/project --mode observe --once
 agentflow learning-daemon --project /path/to/project --mode observe
 agentflow learning-daemon --project /path/to/project --mode propose
+```
+
+Future approved-application and research commands:
+
+```bash
 agentflow learning-approve --project /path/to/project --ids learn-001
 agentflow learning-reject --project /path/to/project --ids learn-002
 agentflow learning-apply --project /path/to/project --approved --dry-run
@@ -255,6 +262,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 
 - `agentflow_learning_report`
 - `agentflow_learning_daemon_status`
+- `agentflow_learning_daemon_tick`
 - `agentflow_learning_proposals`
 - `agentflow_learning_approvals`
 - `agentflow_learning_apply`
@@ -296,6 +304,8 @@ policy and approval state allow writes.
 
 ### Phase 4: Daemon Mode
 
+- Status: started with local `observe` / `propose` daemon modes, one-shot
+  ticks, status heartbeat, dashboard status, and MCP status/tick wrappers.
 - Add heartbeat, scheduling, stale detection, and bounded polling.
 - Support `observe`, `propose`, and `apply-approved` modes.
 - Add danger gates and approval requirements for risky changes.
