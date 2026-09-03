@@ -1721,19 +1721,22 @@ program
 
 program
   .command("approvals")
-  .description("List, approve, or reject pending agent-requested actions")
+  .description("List, approve, reject, execute, or add always rules for pending agent-requested actions")
   .option("--status <status>", "pending, approved, executed, failed, rejected, or all", "pending")
   .option("-r, --run <id>", "filter by workflow run id")
   .option("-p, --project <dir>", "filter by project directory")
   .option("--approve <id>", "approval id to approve")
   .option("--reject <id>", "approval id to reject")
   .option("--execute <id>", "execute an approved action")
+  .option("--always <id>", "approval id to approve current request and add a future auto-execute rule")
+  .option("--always-scope <scope>", "rule scope for --always: exact, broad, or target", "exact")
+  .option("--always-target <pattern>", "explicit stored target pattern when --always-scope target is used")
   .option("--actor <name>", "person or tool making the decision", "cli")
   .option("--actor-role <role>", "project role for audit receipts, such as operator, approver, workflow_author, or auditor")
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1744,8 +1747,8 @@ program
       return;
     }
 
-    if ([options.approve, options.reject, options.execute].filter(Boolean).length > 1) {
-      console.error("Choose only one of --approve, --reject, or --execute.");
+    if ([options.approve, options.reject, options.execute, options.always].filter(Boolean).length > 1) {
+      console.error("Choose only one of --approve, --reject, --execute, or --always.");
       process.exitCode = 1;
       return;
     }
@@ -1755,6 +1758,53 @@ program
         approvalId: options.execute,
         actor: options.actor,
         actorRole: normalizeActorRole(options.actorRole, "operator")
+      });
+      if (!result.ok) {
+        console.error(result.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(result.title);
+      console.log(result.output);
+      return;
+    }
+
+    if (options.always) {
+      const approvalForRule = await getActionApproval(options.always);
+      if (!approvalForRule) {
+        console.error("Approval was not found or is no longer pending.");
+        process.exitCode = 1;
+        return;
+      }
+      if (approvalForRule.actionType !== "local_command" && approvalForRule.actionType !== "file_write") {
+        console.error("Always approve rules are only supported for shell and fswrite approvals.");
+        process.exitCode = 1;
+        return;
+      }
+      const scope = normalizeLookup(options.alwaysScope || "exact");
+      const target = scope === "exact"
+        ? approvalRuleExactTarget(approvalForRule)
+        : scope === "broad"
+          ? approvalRuleBroadTarget(approvalForRule)
+          : scope === "target" && options.alwaysTarget
+            ? options.alwaysTarget.trim()
+            : "";
+      if (!target) {
+        console.error("--always-scope must be exact, broad, or target with --always-target.");
+        process.exitCode = 1;
+        return;
+      }
+      const result = await processDashboardApprovalRuleAction({
+        approvalId: options.always,
+        target,
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "approver"),
+        note: options.note ?? "",
+        approveCurrent: true
       });
       if (!result.ok) {
         console.error(result.error);
@@ -1832,6 +1882,10 @@ program
       console.log(`  Role preview: ${rolePreviewForApproval(approval)}`);
       if (approval.status === "pending") {
         console.log(`  Approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`);
+        if (approval.actionType === "local_command" || approval.actionType === "file_write") {
+          console.log(`  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver`);
+          console.log(`  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver`);
+        }
       }
       if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType)) {
         console.log(`  Execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator`);
@@ -8795,8 +8849,10 @@ function formatRunSummary(summary: RunSummary): string {
         `  id: ${approval.id}`,
         `  requested by: ${approval.stageId} (${approval.agentId})`,
         `  CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
         approval.executable ? `  Execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
-        `  MCP/Codex: call agentflow_approvals with approve="${approval.id}"${approval.executable ? `, then execute="${approval.id}"` : ""}`
+        `  MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id.`
       ].filter(Boolean).join("\n"))
       : ["- None"]),
     "",
@@ -14224,6 +14280,7 @@ async function processDashboardBulkApprovalAction(input: {
 async function processDashboardApprovalRuleAction(input: {
   approvalId: string;
   target: string;
+  actor?: string;
   actorRole: string;
   note: string;
   approveCurrent: boolean;
@@ -14261,7 +14318,7 @@ async function processDashboardApprovalRuleAction(input: {
     approval = await decideActionApproval({
       approvalId,
       decision: "approved",
-      actor: "dashboard",
+      actor: input.actor ?? "dashboard",
       actorRole,
       note: input.note.trim() || `Approved current request and added approval rule ${rule.id}.`
     });
@@ -15844,9 +15901,11 @@ async function formatPendingApprovalNotice(runId: string, projectRootUri?: strin
       `  id: ${approval.id}`,
       `  requested by: ${approval.stageId} (${approval.agentId})`,
       `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
       executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
       `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
-      `  approve in MCP/Codex: call agentflow_approvals with approve="${approval.id}"${executable ? `, then execute="${approval.id}"` : ""}`
+      "  approve in MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id."
     );
   }
   return lines.filter(Boolean).join("\n");
@@ -15873,8 +15932,10 @@ async function formatPendingApprovalInboxNotice(projectRootUri?: string): Promis
       `  run: ${approval.runId}`,
       `  id: ${approval.id}`,
       `  approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
       executable ? `  execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
-      `  MCP/Codex: call agentflow_approvals with approve="${approval.id}"${executable ? `, then execute="${approval.id}"` : ""}`
+      "  MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id."
     );
   }
   return lines.filter(Boolean).join("\n");

@@ -50,7 +50,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
-- `agentflow_approvals`: list, approve, reject, or execute approved agent-requested actions.
+- `agentflow_approvals`: list, approve, reject, execute, or add always-approve rules for agent-requested actions.
 - `agentflow_request_approval`: create deployment or autonomy approval requests in the shared inbox.
 - `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
 - `agentflow_gate`: evaluate a run against project-local quality, latency, fallback, and cost gates.
@@ -71,9 +71,11 @@ Restart the Codex app after changing MCP configuration.
 
 When a tool response says `Approval required`, the requested side effect is
 waiting for a human decision in the current client. Surface the one-line summary
-and approval id to the user, then call `agentflow_approvals` with `approve`,
-`reject`, or `execute` after the user decides. The workflow may still complete
-other stages while that side effect stays skipped.
+and approval id to the user, then ask whether to approve, reject, always approve
+the exact function call, always approve the broad function family, or execute an
+already approved action. Call `agentflow_approvals` with `approve`, `reject`,
+`always` plus `alwaysScope`, or `execute` after the user decides. The workflow
+may still complete other stages while that side effect stays skipped.
 
 ## Examples
 
