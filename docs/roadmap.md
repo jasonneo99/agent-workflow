@@ -176,6 +176,7 @@ trust gaps.
   - Done: extend the same inbox shape to deployment and autonomy approvals.
   - Done: return approval-required notices with approval ids and CLI/MCP/dashboard next steps in workflow, worker, dashboard, and run summary contexts.
   - Done: expose approve, reject, execute, and function-style always-approve decisions through the MCP approval tool so clients can ask in the current chat and then act.
+  - Done: add CLI, MCP, API, and dashboard management for listing and removing project-local always-approved rules.
 
 - [x] Evaluation gates and regression budgets.
   - Done: define project-local quality, latency, fallback, and cost thresholds.

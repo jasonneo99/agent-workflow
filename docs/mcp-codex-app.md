@@ -51,6 +51,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
 - `agentflow_approvals`: list, approve, reject, execute, or add always-approve rules for agent-requested actions.
+- `agentflow_approval_rules`: list or remove project-local always-approved shell/fswrite rules.
 - `agentflow_request_approval`: create deployment or autonomy approval requests in the shared inbox.
 - `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
 - `agentflow_gate`: evaluate a run against project-local quality, latency, fallback, and cost gates.

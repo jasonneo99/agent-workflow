@@ -107,7 +107,7 @@ server.registerTool(
   "agentflow_approvals",
   {
     title: "AgentFlow action approvals",
-    description: "List, approve, reject, or execute agent-requested actions that require human approval.",
+    description: "List, approve, reject, execute, or add always-approve rules for agent-requested actions that require human approval.",
     inputSchema: {
       status: z.enum(["pending", "approved", "executed", "failed", "rejected", "all"]).optional(),
       run: z.string().optional().describe("Filter by workflow run id."),
@@ -137,6 +137,27 @@ server.registerTool(
     if (actor) args.push("--actor", actor);
     if (note) args.push("--note", note);
     if (limit) args.push("--limit", String(limit));
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_approval_rules",
+  {
+    title: "AgentFlow always-approved rules",
+    description: "List or remove project-local always-approved shell/fswrite action rules.",
+    inputSchema: {
+      project: z.string().describe("Project directory."),
+      remove: z.string().optional().describe("Approval rule id to remove."),
+      actor: z.string().optional().describe("Person or tool making the change."),
+      json: z.boolean().optional().describe("Return rule JSON.")
+    }
+  },
+  async ({ project, remove, actor, json }) => {
+    const args = ["approval-rules", "--project", project];
+    if (remove) args.push("--remove", remove);
+    if (actor) args.push("--actor", actor);
     if (json) args.push("--json");
     return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
   }

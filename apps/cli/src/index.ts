@@ -1897,6 +1897,53 @@ program
   });
 
 program
+  .command("approval-rules")
+  .description("List or remove project-local always-approved action rules")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--remove <id>", "approval rule id to remove")
+  .option("--actor <name>", "person or tool making the change", "cli")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; remove?: string; actor: string; json?: boolean }) => {
+    const projectRootUri = path.resolve(process.cwd(), options.project);
+    if (options.remove) {
+      const result = await removeProjectApprovalRule({
+        projectRootUri,
+        ruleId: options.remove,
+        actor: options.actor
+      });
+      if (!result.ok) {
+        console.error(result.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(result.title);
+      console.log(result.output);
+      return;
+    }
+
+    const rules = await loadProjectApprovalRules(projectRootUri);
+    if (options.json) {
+      console.log(JSON.stringify(rules, null, 2));
+      return;
+    }
+    if (!rules.length) {
+      console.log("No always-approved action rules found.");
+      return;
+    }
+    for (const rule of rules) {
+      console.log(`${rule.id} ${rule.functionLabel}`);
+      console.log(`  Project: ${rule.projectRootUri}`);
+      console.log(`  Description: ${rule.description || "none"}`);
+      console.log(`  Effect: ${rule.effect}${rule.maxBytes ? `, max_bytes=${rule.maxBytes}` : ""}`);
+      console.log(`  Remove: npm run agentflow -- approval-rules --project ${shellQuote(rule.projectRootUri)} --remove ${rule.id}`);
+    }
+  });
+
+program
   .command("request-approval")
   .description("Create a run-level approval request for deployment or autonomy decisions")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -4001,6 +4048,18 @@ type DashboardProjectDetail = {
 };
 
 type DashboardActionApproval = Awaited<ReturnType<typeof listActionApprovals>>[number];
+type DashboardApprovalRuleSummary = {
+  projectName: string;
+  projectRootUri: string;
+  configPath: string;
+  id: string;
+  description: string;
+  actionType: "local_command" | "file_write";
+  target: string;
+  functionLabel: string;
+  effect: "auto_execute";
+  maxBytes?: number;
+};
 type DashboardArtifactLifecycleRow = Awaited<ReturnType<typeof listArtifactLifecycle>>[number];
 
 type DashboardRoleProject = {
@@ -8544,6 +8603,84 @@ async function appendProjectApprovalRule(input: {
   return { id, configPath, created: true };
 }
 
+async function loadProjectApprovalRules(projectRootUri: string): Promise<DashboardApprovalRuleSummary[]> {
+  const projectRoot = path.resolve(projectRootUri);
+  const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+  const project = await loadProjectConfig(projectRoot);
+  return project.actions.approval_rules.map((rule) => ({
+    projectName: project.project.name,
+    projectRootUri: projectRoot,
+    configPath,
+    id: rule.id,
+    description: rule.description,
+    actionType: rule.action_type,
+    target: rule.target,
+    functionLabel: approvalRuleDisplayFromParts(rule.action_type, rule.target),
+    effect: rule.effect,
+    maxBytes: rule.max_bytes
+  }));
+}
+
+async function loadDashboardApprovalRules(projectRootUri?: string): Promise<DashboardApprovalRuleSummary[]> {
+  if (projectRootUri) {
+    return loadProjectApprovalRules(projectRootUri);
+  }
+  const projects = await listProjectStorageSummaries(100);
+  const rules: DashboardApprovalRuleSummary[] = [];
+  for (const project of projects) {
+    try {
+      rules.push(...await loadProjectApprovalRules(project.rootUri));
+    } catch {
+      // Ignore projects whose local config is no longer available from this machine.
+    }
+  }
+  return rules;
+}
+
+async function removeProjectApprovalRule(input: {
+  projectRootUri: string;
+  ruleId: string;
+  actor: string;
+}): Promise<DashboardFollowUpResult> {
+  const projectRoot = path.resolve(input.projectRootUri);
+  const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+  const expectedDir = path.join(projectRoot, ".agent-workflow");
+  await ensureProjectSubdir(projectRoot, expectedDir, ".agent-workflow");
+  const raw = await fs.readFile(configPath, "utf8");
+  const current = YAML.parse(raw) as Record<string, unknown>;
+  const actions = isRecord(current.actions) ? current.actions : {};
+  const approvalRules = Array.isArray(actions.approval_rules) ? actions.approval_rules : [];
+  const rule = approvalRules.find((item) => isRecord(item) && item.id === input.ruleId);
+  if (!isRecord(rule)) {
+    return { ok: false, error: `Unknown approval rule: ${input.ruleId}` };
+  }
+  const nextRules = approvalRules.filter((item) => !(isRecord(item) && item.id === input.ruleId));
+  const next = {
+    ...current,
+    actions: {
+      ...actions,
+      approval_rules: nextRules
+    }
+  };
+  projectConfigSchema.parse(next);
+  await fs.writeFile(configPath, YAML.stringify(next), "utf8");
+  const actionType = rule.action_type === "local_command" || rule.action_type === "file_write" ? rule.action_type : "local_command";
+  const target = typeof rule.target === "string" ? rule.target : "";
+  return {
+    ok: true,
+    title: "Approval rule removed",
+    output: [
+      `Rule: ${input.ruleId}`,
+      `Function: ${approvalRuleDisplayFromParts(actionType, target)}`,
+      `Project: ${projectRoot}`,
+      `Config: ${configPath}`,
+      `Actor: ${input.actor}`,
+      "Future matching actions will require approval again unless another rule matches.",
+      "Open: /approval-rules"
+    ].join("\n")
+  };
+}
+
 async function ensureProjectSubdir(projectDir: string, targetDir: string, label: string): Promise<void> {
   const projectRoot = path.resolve(projectDir);
   const resolved = path.resolve(targetDir);
@@ -9116,6 +9253,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-rule-remove") {
+    const form = await readFormBody(request);
+    const result = await removeProjectApprovalRule({
+      projectRootUri: form.get("project") ?? "",
+      ruleId: form.get("ruleId") ?? "",
+      actor: "dashboard"
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/artifact-lifecycle-action") {
     const form = await readFormBody(request);
     const result = await processDashboardArtifactLifecycleAction({
@@ -9351,6 +9500,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(approvals, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/approval-rules") {
+    const rules = await loadDashboardApprovalRules(requestUrl.searchParams.get("project") ?? undefined);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(rules, null, 2));
     return;
   }
 
@@ -9809,6 +9965,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderBulkApprovalsHtml(approvals));
+    return;
+  }
+
+  if (requestUrl.pathname === "/approval-rules") {
+    const projects = await listProjectStorageSummaries(100);
+    const project = requestUrl.searchParams.get("project") ?? undefined;
+    const rules = await loadDashboardApprovalRules(project);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderApprovalRulesHtml(rules, projects, requestUrl.searchParams));
     return;
   }
 
@@ -10317,6 +10482,7 @@ function renderApprovalsHtml(
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
         ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
+        <a class="button secondary" href="/approval-rules">Always Approved</a>
       </div>
     </section>
     <section class="panel approval-explainer">
@@ -10383,6 +10549,72 @@ function renderBulkApprovalsHtml(
           <a class="button secondary" href="/approvals">Cancel</a>
         </div>
       </form>` : `<p class="muted">No pending approvals are available.</p><a class="button secondary" href="/approvals">Back to Approvals</a>`}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderApprovalRulesHtml(
+  rules: DashboardApprovalRuleSummary[],
+  projects: DashboardProjectSummary[],
+  params: URLSearchParams
+): string {
+  const selectedProject = params.get("project") ?? "";
+  const rows = rules.map((rule) => `
+    <tr>
+      <td><strong>${escapeHtml(rule.id)}</strong><br><span class="muted">${escapeHtml(rule.description || "No description")}</span></td>
+      <td><code>${escapeHtml(rule.functionLabel)}</code><br><span class="muted">${escapeHtml(rule.effect)}${rule.maxBytes ? ` · max ${escapeHtml(formatBytes(rule.maxBytes))}` : ""}</span></td>
+      <td>${escapeHtml(rule.projectName)}<br><span class="muted">${escapeHtml(rule.projectRootUri)}</span></td>
+      <td><code>${escapeHtml(rule.configPath)}</code></td>
+      <td>
+        <form class="approval-form" method="post" action="/api/approval-rule-remove">
+          <input type="hidden" name="project" value="${escapeHtml(rule.projectRootUri)}">
+          <input type="hidden" name="ruleId" value="${escapeHtml(rule.id)}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+  `).join("");
+  const projectOptions = [
+    `<option value=""${selectedProject ? "" : " selected"}>All registered projects</option>`,
+    ...projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${selectedProject === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`)
+  ].join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Always Approved</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("approval-rules")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/approvals">Approvals</a>
+        <h1>Always Approved</h1>
+        <p class="muted">Project-local auto-execute rules for recurring shell and fswrite side effects.</p>
+      </div>
+      <a class="button secondary" href="/api/approval-rules${selectedProject ? `?project=${encodeURIComponent(selectedProject)}` : ""}">JSON</a>
+    </div>
+    <section class="panel">
+      <form class="workflow-form" method="get" action="/approval-rules">
+        <label class="wide">Project<select name="project">${projectOptions}</select></label>
+        <div class="form-actions"><button type="submit">Filter Rules</button><a class="button secondary" href="/approvals">Pending Approvals</a></div>
+      </form>
+    </section>
+    <section class="panel approval-explainer">
+      <h2>What These Rules Do</h2>
+      <p>Always-approved rules are project-local shortcuts for side effects that already passed human review. They do not bypass allowed command/path policy, size limits, blocklists, or future run policy snapshots.</p>
+    </section>
+    <section class="panel">
+      <h2>Rules</h2>
+      <table>
+        <thead><tr><th>Rule</th><th>Function</th><th>Project</th><th>Config</th><th>Action</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"5\">No always-approved rules found.</td></tr>"}</tbody>
+      </table>
     </section>
   </main>
 </body>
@@ -15723,7 +15955,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -15755,6 +15987,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
       label: "Govern",
       items: [
         ["governance", "/governance", "Governance"],
+        ["approval-rules", "/approval-rules", "Always Approved"],
         ["roles", "/roles", "Roles"],
         ["backup-report", "/backup-report", "Backup"],
         ["server-readiness", "/server-readiness", "Server"],
@@ -15975,13 +16208,17 @@ function approvalRuleDisplayTarget(
   approval: Awaited<ReturnType<typeof listActionApprovals>>[number],
   target: string
 ): string {
-  if (approval.actionType === "local_command") {
+  return approvalRuleDisplayFromParts(approval.actionType, target);
+}
+
+function approvalRuleDisplayFromParts(actionType: string, target: string): string {
+  if (actionType === "local_command") {
     return `shell ${target}`;
   }
-  if (approval.actionType === "file_write") {
+  if (actionType === "file_write") {
     return target === "**" ? "fswrite*" : `fswrite ${target}`;
   }
-  return `${approval.actionType} ${target}`;
+  return `${actionType} ${target}`;
 }
 
 function normalizeApprovalRuleCommand(value: string): string {

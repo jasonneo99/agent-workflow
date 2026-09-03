@@ -194,6 +194,8 @@ npm run agentflow -- resume-run --run <id> # Resume unfinished stages from the l
 npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored run metadata
 npm run agentflow -- approvals # Review pending agent-requested actions
 npm run agentflow -- approvals --approve <id> --actor "Your Name" --actor-role approver # Record role-aware approval
+npm run agentflow -- approval-rules -p . # List always-approved shell/fswrite rules
+npm run agentflow -- approval-rules -p . --remove <rule-id> # Remove an always-approved rule
 npm run agentflow -- roles -p . # Inspect team role config and recent approval decisions by role
 npm run agentflow -- artifact-lifecycle -p . # Inspect read-only artifact inventory and lifecycle hints
 npm run agentflow -- artifact-lifecycle -p . --prune-plan # Preview exact artifact prune candidates without deleting anything

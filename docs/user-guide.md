@@ -916,6 +916,8 @@ npm run agentflow -- approvals --always <approval-id> --always-scope exact --act
 npm run agentflow -- approvals --always <approval-id> --always-scope broad --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --actor-role approver --note "Not needed"
+npm run agentflow -- approval-rules --project /path/to/project
+npm run agentflow -- approval-rules --project /path/to/project --remove <rule-id> --actor "Your Name"
 npm run agentflow -- roles --project /path/to/project --limit 50
 npm run agentflow -- roles --project /path/to/project --role approver --status approved
 npm run agentflow -- roles --project /path/to/project --action local_command
@@ -966,6 +968,11 @@ for the same file write, and **Always fswrite\*** for future file-write requests
 `max_file_write_bytes`, and blocklists. Adding a rule can approve the current
 request, but already queued workflow runs keep their original policy snapshot;
 future runs pick up the new project config.
+
+Use the dashboard **Always Approved** page or `approval-rules` command to audit
+and remove rules later. Removing a rule edits only that project's
+`.agent-workflow/project.yaml`, validates the updated config, and makes future
+matching actions ask for approval again unless another rule still matches.
 
 ```yaml
 actions:
