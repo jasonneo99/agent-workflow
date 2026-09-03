@@ -112,7 +112,8 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 
 - [x] Local learning apply-approved mode.
   - Let the daemon prepare application plans on a schedule for approved proposals.
-  - Keep `apply-approved` planning-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
+  - Default `learning-daemon` to `apply-approved` so it autonomously refreshes Agent Workflow-owned learning reports, proposal state, workflow-shape recommendation files, and application plan files.
+  - Keep `apply-approved` owned-state-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Start local-only; make server mode an explicit future deployment posture.
 

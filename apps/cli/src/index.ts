@@ -2859,9 +2859,9 @@ program
 
 program
   .command("learning-daemon")
-  .description("Run the local learning daemon in observe, propose, or apply-approved planning mode")
+  .description("Run the local learning daemon in autonomous apply-approved mode, or observe/propose modes")
   .requiredOption("-p, --project <dir>", "project directory")
-  .option("--mode <mode>", "daemon mode: observe, propose, or apply-approved", "observe")
+  .option("--mode <mode>", "daemon mode: apply-approved, propose, or observe", "apply-approved")
   .option("--once", "run a single daemon tick and exit")
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
@@ -3870,7 +3870,7 @@ type LearningReport = {
   generatedAt: string;
   projectDir: string;
   limit: number;
-  autonomyMode: "observe";
+  autonomyMode: "autonomous-local";
   runsAnalyzed: number;
   runStatusCounts: Record<string, number>;
   feedbackCounts: Record<string, number>;
@@ -7370,7 +7370,7 @@ async function loadLearningReport(input: {
     generatedAt: new Date().toISOString(),
     projectDir,
     limit,
-    autonomyMode: "observe",
+    autonomyMode: "autonomous-local",
     runsAnalyzed: runs.length,
     runStatusCounts: countStrings(runs.map((run) => run.status)),
     feedbackCounts: scorecard.feedbackCounts,
@@ -7388,13 +7388,13 @@ async function loadLearningReport(input: {
     safeAutomaticActions: [
       "Read local run history, receipts, feedback, eval summaries, and queue status.",
       "Detect repeated failures, high-cost routes, stale context, and eval gaps.",
-      "Generate compact local learning reports and dry-run proposal previews.",
-      "Update learning files and future learning database rows that Agent Workflow created and owns when propose mode or an explicit learning command requests it.",
+      "Generate compact local learning reports and proposal previews.",
+      "Update learning files and future learning database rows that Agent Workflow created and owns by default.",
       "Refresh workflow-shape and agent-type recommendation files automatically when the autonomous optimizer is enabled.",
-      "Queue approval requests for behavior-changing improvements."
+      "Prepare approved application plans for owned learning-state changes."
     ],
     approvalRequiredActions: [
-      "Apply project-local tuning notes.",
+      "Apply project-local tuning notes outside Agent Workflow-owned learning state.",
       "Promote workflow-shape recommendations into shared workflows or reusable agent cards.",
       "Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source.",
       "Run commands, tests, web/model research, network calls, or external tools.",
@@ -11989,7 +11989,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   return `
     <section class="panel">
       <div class="metric-grid">
-        ${metricCard("Mode", report.autonomyMode, "read-only Phase 1")}
+        ${metricCard("Mode", report.autonomyMode, "owned learning writes")}
         ${metricCard("Runs", report.runsAnalyzed, formatInlineCounts(report.runStatusCounts) || "none")}
         ${metricCard("Feedback", formatInlineCounts(report.feedbackCounts) || "none", "approved user signal")}
         ${metricCard("Eval Runs", report.evaluationRuns, report.latestEvaluationAt ? `latest ${new Date(report.latestEvaluationAt).toLocaleDateString()}` : "none found")}
@@ -11999,9 +11999,9 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
     <section class="panel">
-      <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local observe/propose loop over Agent Workflow-owned learning state.</span></div></div>
+      <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local autonomous loop over Agent Workflow-owned learning state.</span></div></div>
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon) : `<p class="muted">No project selected.</p>`}
-      <p class="muted">Start apply-approved mode with <code>${escapeHtml(daemonCommand)}</code>. It may update Agent Workflow-created learning files and application plans, but it does not apply source, provider, tuning, command, network, or export changes.</p>
+      <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It updates Agent Workflow-created learning files and application plans by default, but does not apply source, provider, tuning, command, network, or export changes.</p>
     </section>
     ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate) : ""}
     <section class="panel">
@@ -13424,7 +13424,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       inboxItems: typeof heartbeat.inboxItems === "number" ? heartbeat.inboxItems : 0,
       applicationActions: typeof heartbeat.applicationActions === "number" ? heartbeat.applicationActions : 0,
       lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
-      command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
+      command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
   } catch {
     return {
@@ -13447,7 +13447,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       inboxItems: 0,
       applicationActions: 0,
       lastError: "",
-      command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
+      command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
   }
 }

@@ -96,10 +96,12 @@ the action changes behavior outside an ephemeral report.
 
 Recommended daemon modes:
 
+- `apply-approved`: default autonomous local mode. Refresh Agent
+  Workflow-owned reports, proposal state, workflow-shape recommendation files,
+  and approved application-plan files without changing project source, reusable
+  workflows, reusable agents, providers, commands, networks, or exports.
 - `observe`: read evidence and write reports only.
 - `propose`: write local learning proposals and queue approvals.
-- `apply-approved`: apply only approved project-local tuning notes or patch
-  plans.
 - `wide-open-local`: maximum local automation for trusted owners, still bounded
   by project policy, blocked paths, receipt requirements, and danger gates.
 
@@ -244,6 +246,7 @@ agentflow learning-proposals --project /path/to/project --write
 agentflow learning-approvals --project /path/to/project
 agentflow learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name"
 agentflow learning-daemon-status --project /path/to/project
+agentflow learning-daemon --project /path/to/project --once
 agentflow learning-daemon --project /path/to/project --mode observe --once
 agentflow learning-daemon --project /path/to/project --mode observe
 agentflow learning-daemon --project /path/to/project --mode propose
@@ -324,11 +327,12 @@ policy and approval state allow writes.
 
 ### Phase 4: Daemon Mode
 
-- Status: started with local `observe` / `propose` daemon modes, one-shot
-  ticks, planning-only `apply-approved`, status heartbeat, dashboard status,
-  and MCP status/tick wrappers.
+- Status: started with default autonomous local `apply-approved` mode, optional
+  `observe` / `propose` modes, one-shot ticks, status heartbeat, dashboard
+  status, and MCP status/tick wrappers.
 - Add heartbeat, scheduling, stale detection, and bounded polling.
-- Support `observe`, `propose`, and `apply-approved` modes.
+- Default to `apply-approved` autonomous local mode while still supporting
+  `observe` and `propose`.
 - Add danger gates and approval requirements for risky changes.
 - Add dashboard mode controls and privacy status.
 - Add workflow shape optimization that uses local run history, failures,

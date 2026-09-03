@@ -1319,6 +1319,7 @@ npm run agentflow -- learning-proposals --project /path/to/project --write
 npm run agentflow -- learning-approvals --project /path/to/project
 npm run agentflow -- learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name" --note "Looks useful"
 npm run agentflow -- learning-daemon-status --project /path/to/project
+npm run agentflow -- learning-daemon --project /path/to/project --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode observe --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode propose --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode apply-approved --once
@@ -1331,6 +1332,12 @@ npm run agentflow -- learning-action-receipts --project /path/to/project --rejec
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
+
+The daemon defaults to `apply-approved`, which autonomously refreshes
+Agent Workflow-owned learning reports, proposal state, workflow-shape
+recommendation files, and approved application-plan files. Use `--mode observe`
+for read-mostly behavior or `--mode propose` for proposal/inbox generation
+without application plans.
 
 In the dashboard, open:
 
@@ -1378,9 +1385,10 @@ also appends a receipt and does not execute or apply anything.
 The MCP tools `agentflow_learning_report`, `agentflow_learning_proposals`, and
 `agentflow_learning_approvals` expose the same flow for Codex, VS Code, Cursor,
 or any MCP-capable client. `agentflow_learning_daemon_status` shows the current
-heartbeat, and `agentflow_learning_daemon_tick` runs one bounded observe/propose
-tick. `agentflow_learning_application_plan` prepares the approved follow-up plan
-without applying changes. `agentflow_learning_workflow_shape` exposes the
+heartbeat, and `agentflow_learning_daemon_tick` runs one bounded daemon tick.
+`agentflow_learning_application_plan` prepares the approved follow-up plan
+without applying source, provider, command, network, or export changes.
+`agentflow_learning_workflow_shape` exposes the
 workflow shape optimizer through MCP. `agentflow_learning_action_receipts`
 lists or rejects planned learning actions.
 
