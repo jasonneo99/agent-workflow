@@ -654,6 +654,11 @@ under `.agent-workflow/runtime/launchd/`. Uninstall it with:
 npm run dev:agentflow:launchd:uninstall
 ```
 
+The Settings page shows the LaunchAgent label, plist path, PID, launch run
+count, and log links. Use **Install / Refresh** after changing `.env`,
+upgrading Agent Workflow, or changing the durable project. Use **Uninstall** to
+return to terminal-only supervision.
+
 Set `AGENTFLOW_LEARNING_DAEMON=0` before installing or launching if you want the
 dashboard and worker without the local learning loop.
 
@@ -830,7 +835,7 @@ calls out loopback versus network binding, auth posture, registered projects,
 role enforcement, endpoint classes, storage reachability, and safe next
 commands.
 
-The dashboard home page and Settings page include Local Supervisor and Background Worker status. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
+The dashboard home page and Settings page include Local Supervisor and Background Worker status. Settings also includes macOS LaunchAgent status when running on macOS. If the LaunchAgent is missing, use **Install / Refresh** or run `npm run dev:agentflow:launchd:install`. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 
 When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 

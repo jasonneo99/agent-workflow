@@ -116,6 +116,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Keep `apply-approved` owned-state-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Done: add durable local restart support by supervising the learning daemon inside `npm run dev:agentflow` and offering a macOS LaunchAgent install path.
+  - Done: add Settings-page LaunchAgent status, install/refresh/uninstall actions, and stdout/stderr log links for local macOS durability.
   - Start local-only; make server mode an explicit future deployment posture.
 
 - [x] Local learning workflow shape optimizer.

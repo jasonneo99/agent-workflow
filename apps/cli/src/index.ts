@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
@@ -92,6 +93,8 @@ dotenv.config({ path: configuredEnvPath, quiet: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultWorkerHeartbeatDir = path.join(rootDir, ".agent-workflow", "runtime", "workers");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
+const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
+const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
@@ -184,6 +187,24 @@ type DashboardSupervisorStatus = {
   learningMode: LearningDaemonMode | null;
   learningHeartbeatPath: string | null;
   command: string;
+};
+
+type DashboardLaunchAgentStatus = {
+  platform: string;
+  supported: boolean;
+  label: string;
+  plistPath: string;
+  installed: boolean;
+  status: "running" | "installed" | "missing" | "unavailable" | "error";
+  pid: number | null;
+  runs: number | null;
+  stdoutPath: string;
+  stderrPath: string;
+  stdoutExists: boolean;
+  stderrExists: boolean;
+  lastError: string;
+  installCommand: string;
+  uninstallCommand: string;
 };
 
 type WorkflowPreset = {
@@ -9434,6 +9455,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/launchagent-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardLaunchAgentAction(form.get("action") ?? "");
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
@@ -9738,6 +9767,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(info, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/launchagent-log") {
+    const kind = requestUrl.searchParams.get("kind") === "stderr" ? "stderr" : "stdout";
+    const view = await loadDashboardLaunchAgentLog(kind);
+    response.writeHead(view.ok ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderLaunchAgentLogHtml(view));
     return;
   }
 
@@ -13350,6 +13387,7 @@ type DashboardInfo = {
   };
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
+  launchAgent: DashboardLaunchAgentStatus;
   commands: string[];
 };
 
@@ -13366,13 +13404,14 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker, supervisor] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
     loadDashboardWorkerStatus(),
-    loadDashboardSupervisorStatus()
+    loadDashboardSupervisorStatus(),
+    loadDashboardLaunchAgentStatus()
   ]);
 
   return {
@@ -13406,6 +13445,7 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
     },
     worker,
     supervisor,
+    launchAgent,
     commands: [
       "npm run doctor",
       "npm run validate",
@@ -13431,13 +13471,14 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker, supervisor] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
     loadDashboardWorkerStatus(),
-    loadDashboardSupervisorStatus()
+    loadDashboardSupervisorStatus(),
+    loadDashboardLaunchAgentStatus()
   ]);
   return {
     app: {
@@ -13470,6 +13511,7 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
     },
     worker,
     supervisor,
+    launchAgent,
     commands: [
       "npm run doctor",
       "npm run validate",
@@ -13636,6 +13678,139 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
       command: "npm run dev:agentflow"
     };
   }
+}
+
+async function loadDashboardLaunchAgentStatus(): Promise<DashboardLaunchAgentStatus> {
+  const label = defaultLaunchAgentLabel;
+  const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
+  const stdoutPath = path.join(defaultLaunchAgentLogDir, "stdout.log");
+  const stderrPath = path.join(defaultLaunchAgentLogDir, "stderr.log");
+  const [installed, stdoutExists, stderrExists] = await Promise.all([
+    pathExists(plistPath),
+    pathExists(stdoutPath),
+    pathExists(stderrPath)
+  ]);
+  const base = {
+    platform: process.platform,
+    supported: process.platform === "darwin",
+    label,
+    plistPath,
+    installed,
+    pid: null,
+    runs: null,
+    stdoutPath,
+    stderrPath,
+    stdoutExists,
+    stderrExists,
+    lastError: "",
+    installCommand: "npm run dev:agentflow:launchd:install",
+    uninstallCommand: "npm run dev:agentflow:launchd:uninstall"
+  };
+  if (process.platform !== "darwin") {
+    return { ...base, status: "unavailable" };
+  }
+  if (!installed) {
+    return { ...base, status: "missing" };
+  }
+  const userId = typeof process.getuid === "function" ? process.getuid() : 0;
+  const serviceTarget = `gui/${userId}/${label}`;
+  const printResult = await execFileText("launchctl", ["print", serviceTarget], { allowFailure: true });
+  const pid = parseLaunchctlNumber(printResult.stdout, "pid");
+  const runs = parseLaunchctlNumber(printResult.stdout, "runs");
+  if (printResult.exitCode !== 0) {
+    return {
+      ...base,
+      status: "installed",
+      pid,
+      runs,
+      lastError: compactDashboardText(printResult.stderr || printResult.stdout || `launchctl print ${serviceTarget} failed.`, 500)
+    };
+  }
+  return {
+    ...base,
+    status: /\bstate\s*=\s*running\b/.test(printResult.stdout) ? "running" : "installed",
+    pid,
+    runs,
+    lastError: compactDashboardText(printResult.stderr, 500)
+  };
+}
+
+function parseLaunchctlNumber(output: string, key: string): number | null {
+  const pattern = new RegExp(`\\b${key}\\s*=\\s*(\\d+)\\b`);
+  const match = output.match(pattern);
+  return match ? Number.parseInt(match[1] ?? "", 10) : null;
+}
+
+async function execFileText(command: string, args: string[], options: { allowFailure?: boolean } = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { cwd: rootDir, env: process.env, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+      const rawCode = (error as NodeJS.ErrnoException | null)?.code;
+      const exitCode = typeof rawCode === "number" ? rawCode : error ? 1 : 0;
+      if (error && !options.allowFailure) {
+        reject(error);
+        return;
+      }
+      resolve({ exitCode, stdout: String(stdout ?? ""), stderr: String(stderr ?? "") });
+    });
+  });
+}
+
+async function processDashboardLaunchAgentAction(action: string): Promise<DashboardFollowUpResult> {
+  if (process.platform !== "darwin") {
+    return { ok: false, error: `macOS LaunchAgent controls are unavailable on ${process.platform}. Use npm run dev:agentflow directly.` };
+  }
+  const normalized = normalizeLookup(action);
+  const scriptName = normalized === "install" || normalized === "refresh"
+    ? "install-launchagent.mjs"
+    : normalized === "uninstall" ? "uninstall-launchagent.mjs" : "";
+  if (!scriptName) {
+    return { ok: false, error: "LaunchAgent action must be install, refresh, or uninstall." };
+  }
+  await fs.mkdir(defaultLaunchAgentLogDir, { recursive: true });
+  const actionLogPath = path.join(defaultLaunchAgentLogDir, "actions.log");
+  const scriptPath = path.join(rootDir, "scripts", scriptName);
+  if (!await pathExists(scriptPath)) {
+    return { ok: false, error: `Missing LaunchAgent script: ${scriptPath}` };
+  }
+  const command = `${shellQuote(process.execPath)} ${shellQuote(scriptPath)} >> ${shellQuote(actionLogPath)} 2>&1`;
+  const child = spawn("sh", ["-lc", `sleep 1; ${command}`], {
+    cwd: rootDir,
+    env: process.env,
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  const verb = normalized === "uninstall" ? "uninstall" : "install/refresh";
+  return {
+    ok: true,
+    title: `LaunchAgent ${verb} scheduled`,
+    output: [
+      `Scheduled: ${process.execPath} ${scriptPath}`,
+      `Action log: ${actionLogPath}`,
+      `Plist: ${path.join(os.homedir(), "Library", "LaunchAgents", `${defaultLaunchAgentLabel}.plist`)}`,
+      "Refresh Settings in a few seconds to see the new launchd status."
+    ].join("\n")
+  };
+}
+
+async function loadDashboardLaunchAgentLog(kind: "stdout" | "stderr"): Promise<{ ok: boolean; kind: "stdout" | "stderr"; filePath: string; content: string; error?: string }> {
+  const status = await loadDashboardLaunchAgentStatus();
+  const filePath = kind === "stderr" ? status.stderrPath : status.stdoutPath;
+  const relative = path.relative(defaultLaunchAgentLogDir, filePath);
+  if (relative.startsWith("..") || path.isAbsolute(relative)) {
+    return { ok: false, kind, filePath, content: "", error: "Log path is outside the Agent Workflow launchd log directory." };
+  }
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return { ok: true, kind, filePath, content: tailText(raw, 80_000) || "(log file is empty)" };
+  } catch (error) {
+    return { ok: false, kind, filePath, content: "", error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+function tailText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `...truncated to latest ${maxChars} characters...\n${value.slice(-maxChars)}`;
 }
 
 async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLearningDaemonStatus> {
@@ -15779,6 +15954,10 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       ${renderSupervisorStatusHtml(info.supervisor)}
     </section>
     <section class="panel">
+      <h2>macOS LaunchAgent</h2>
+      ${renderLaunchAgentStatusHtml(info.launchAgent)}
+    </section>
+    <section class="panel">
       <h2>Background Worker</h2>
       ${renderWorkerStatusHtml(info.worker)}
     </section>
@@ -16191,6 +16370,58 @@ function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): stri
       <div><strong>Start Command</strong><code>${escapeHtml(supervisor.command || "npm run dev:agentflow")}</code></div>
     </div>
   `;
+}
+
+function renderLaunchAgentStatusHtml(launchAgent: DashboardLaunchAgentStatus): string {
+  const statusClass = launchAgent.status === "running" ? "completed" : launchAgent.status === "missing" || launchAgent.status === "unavailable" ? "queued" : launchAgent.status === "error" ? "failed" : "queued";
+  const installDisabled = !launchAgent.supported ? " disabled" : "";
+  const uninstallDisabled = !launchAgent.supported || !launchAgent.installed ? " disabled" : "";
+  return `
+    <div class="meta-grid">
+      <div><strong>Status</strong><span class="status ${statusClass}">${escapeHtml(launchAgent.status)}</span></div>
+      <div><strong>Installed</strong>${launchAgent.installed ? "yes" : "no"}</div>
+      <div><strong>PID</strong>${launchAgent.pid ?? "none"}</div>
+      <div><strong>Runs</strong>${launchAgent.runs ?? "n/a"}</div>
+      <div><strong>Label</strong>${escapeHtml(launchAgent.label)}</div>
+      <div><strong>Platform</strong>${escapeHtml(launchAgent.platform)}</div>
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Plist</strong>${escapeHtml(launchAgent.plistPath)}</div>
+      <div><strong>Stdout</strong>${escapeHtml(launchAgent.stdoutPath)} ${launchAgent.stdoutExists ? `<a href="/launchagent-log?kind=stdout">open</a>` : ""}</div>
+      <div><strong>Stderr</strong>${escapeHtml(launchAgent.stderrPath)} ${launchAgent.stderrExists ? `<a href="/launchagent-log?kind=stderr">open</a>` : ""}</div>
+      <div><strong>Install Command</strong><code>${escapeHtml(launchAgent.installCommand)}</code></div>
+      <div><strong>Uninstall Command</strong><code>${escapeHtml(launchAgent.uninstallCommand)}</code></div>
+      ${launchAgent.lastError ? `<div><strong>Last launchctl note</strong>${escapeHtml(launchAgent.lastError)}</div>` : ""}
+    </div>
+    <div class="form-actions">
+      <form method="post" action="/api/launchagent-action">
+        <input type="hidden" name="action" value="install">
+        <button type="submit"${installDisabled}>Install / Refresh</button>
+      </form>
+      <form method="post" action="/api/launchagent-action">
+        <input type="hidden" name="action" value="uninstall">
+        <button class="secondary" type="submit"${uninstallDisabled}>Uninstall</button>
+      </form>
+      <a class="button secondary" href="/api/settings">Refresh JSON</a>
+    </div>
+    <p class="muted">LaunchAgent is optional macOS durability: it starts the local supervisor at login and restarts it after crashes. The supervisor then manages the dashboard, worker lanes, and learning daemon.</p>
+  `;
+}
+
+function renderLaunchAgentLogHtml(view: { ok: boolean; kind: "stdout" | "stderr"; filePath: string; content: string; error?: string }): string {
+  const body = view.ok
+    ? `<h1>LaunchAgent ${escapeHtml(view.kind)} Log</h1><p class="muted">${escapeHtml(view.filePath)}</p><pre>${escapeHtml(view.content)}</pre>`
+    : `<h1>LaunchAgent Log Missing</h1><p class="muted">${escapeHtml(view.filePath)}</p><pre>${escapeHtml(view.error ?? "Log file could not be read.")}</pre>`;
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LaunchAgent Log</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>${dashboardNav("info")}<main><p><a href="/settings">Settings</a></p>${body}</main></body>
+</html>`;
 }
 
 function renderDashboardHealthHtml(health: DashboardHomeHealth): string {

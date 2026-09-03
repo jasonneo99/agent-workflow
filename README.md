@@ -360,7 +360,7 @@ stages:
 - **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary
 - **OpenTelemetry-style observability** — export run spans and metrics without prompt or artifact payload bodies
 - **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, learning daemon, and heartbeat monitoring together
-- **macOS LaunchAgent** — install `dev:agentflow` as a per-user launchd service for login startup and crash restart
+- **macOS LaunchAgent** — install `dev:agentflow` as a per-user launchd service for login startup and crash restart; Settings shows plist status, install/refresh/uninstall controls, and launchd stdout/stderr links
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing
 - **Persistent memory** — stores findings so future runs skip re-discovering known-good areas
