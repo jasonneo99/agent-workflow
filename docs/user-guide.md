@@ -113,6 +113,20 @@ boundaries.
 Read [Governed Server Mode](server-mode.md) before exposing Agent Workflow
 outside one local machine.
 
+Inspect the current local readiness posture:
+
+```bash
+npm run server-readiness
+npm run server-readiness -- --json
+npm run server-readiness -- --project /path/to/project
+```
+
+The command is read-only. It reports server-mode opt-in state, bind/port, auth
+mode, whether a token is configured, allowed origins, enterprise service
+reachability, registered projects, role enforcement, endpoint classes, and
+recommended next commands. It does not enable server mode or expose remote
+workflow execution.
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:
@@ -720,6 +734,7 @@ JSON endpoints:
 /api/settings
 /api/workflow-graph
 /api/bundle-lifecycle-plan
+/api/server-readiness
 /api/queue
 /api/projects
 /api/run?id=<run-id>
@@ -733,19 +748,26 @@ Run detail pages:
 /workflow-graph
 /queue
 /providers
+/server-readiness
 /projects
 /project?root=<project-root>
 /runs
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Governance, Roles, Backup, Artifacts, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Governance, Roles, Backup, Server, Artifacts, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions.
 
 ![Dashboard home](assets/screenshots/dashboard-home.png)
 
 The Settings page shows safe local runtime details: selected provider summary, enterprise service reachability, supervisor heartbeat, worker heartbeat, bundle manifest checksum, storage configuration presence, and useful local commands. It does not print secret values.
 
 ![Dashboard settings](assets/screenshots/dashboard-settings.png)
+
+The Server page shows the same read-only server-mode readiness report as the
+CLI. It is useful before experimenting with shared team operation because it
+calls out loopback versus network binding, auth posture, registered projects,
+role enforcement, endpoint classes, storage reachability, and safe next
+commands.
 
 The dashboard home page and Settings page include Local Supervisor and Background Worker status. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 

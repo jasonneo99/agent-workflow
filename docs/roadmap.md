@@ -238,7 +238,8 @@ foundation is complete.
   - Define auth, project registration, role enforcement, audit receipts, and network binding defaults before exposing workflow execution remotely.
   - Document LAN/shared deployment risks and provide secure defaults that do not expose dev Postgres, Redis, MinIO, or project files accidentally.
   - Done: document the governed server-mode contract with secure local-first defaults, opt-in controls, auth requirements, project registration, endpoint classes, role checks, and audit receipt requirements.
-  - Next: add a read-only server-mode readiness command before any remote execution endpoints.
+  - Done: add a read-only server-mode readiness command, JSON API, and dashboard page before any remote execution endpoints.
+  - Next: add project id based routing and registered-project previews without accepting arbitrary remote filesystem paths.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
@@ -285,7 +286,7 @@ foundation is complete.
   - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [x] Provide documented recovery procedures and automated restore verification.
-  - Next: add a read-only server-mode readiness command before any remote execution endpoints.
+  - Next: see Governed server mode for registered-project routing and shared-runtime readiness.
 
 ## Contribution Boundary
 

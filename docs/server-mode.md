@@ -45,6 +45,13 @@ AGENTFLOW_SERVER_TOKEN=...
 AGENTFLOW_SERVER_ALLOWED_ORIGINS=http://127.0.0.1:17888
 ```
 
+Inspect the current posture without enabling server mode:
+
+```bash
+npm run server-readiness
+npm run server-readiness -- --json
+```
+
 Recommended default binding stays loopback:
 
 ```env
@@ -218,8 +225,8 @@ Team shared runtime:
 
 Before adding remote execution endpoints:
 
-- [ ] Add a read-only server-mode readiness command.
-- [ ] Add dashboard visibility for server bind, auth mode, project registration,
+- [x] Add a read-only server-mode readiness command.
+- [x] Add dashboard visibility for server bind, auth mode, project registration,
       and exposed endpoint classes.
 - [ ] Add project id based routing with no arbitrary path execution.
 - [ ] Require auth for all mutation endpoints.
@@ -229,4 +236,3 @@ Before adding remote execution endpoints:
 - [ ] Keep MCP stdio as the recommended IDE path for local use.
 - [ ] Document reverse-proxy/TLS guidance without bundling internet-facing
       defaults.
-

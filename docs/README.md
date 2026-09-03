@@ -45,6 +45,7 @@ docker compose -f infra/docker-compose.yml up -d
 npm run doctor
 npm run migrate-storage
 npm run bootstrap-storage
+npm run server-readiness
 npm run check
 npm run bundle-manifest
 ```

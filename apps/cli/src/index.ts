@@ -95,7 +95,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -2093,6 +2093,21 @@ program
   });
 
 program
+  .command("server-readiness")
+  .description("Inspect read-only governed server-mode readiness without enabling remote execution")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("-l, --limit <number>", "number of registered projects to inspect", "100")
+  .option("--json", "print machine-readable server readiness report")
+  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const report = await loadServerReadinessReport({
+      projectRootUri,
+      limit: parsePositiveInteger(options.limit, 100)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerReadinessReport(report));
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3505,6 +3520,50 @@ type RestoreDrillCheck = {
   detail: string;
 };
 
+type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
+type ServerReadinessCheckStatus = "pass" | "warn" | "fail";
+
+type ServerReadinessReport = {
+  kind: "agentflow_server_readiness_report";
+  generatedAt: string;
+  status: ServerReadinessStatus;
+  projectRootUri: string | null;
+  limit: number;
+  mode: {
+    enabled: boolean;
+    bind: string;
+    port: string;
+    networkExposed: boolean;
+    authMode: string;
+    tokenConfigured: boolean;
+    allowedOrigins: string[];
+  };
+  services: Awaited<ReturnType<typeof checkServices>>;
+  projects: Array<{
+    id: string;
+    name: string;
+    rootUri: string;
+    configStatus: "valid" | "missing" | "invalid";
+    roleEnforcement: "preview" | "enforce";
+    separationOfDuties: "off" | "preview" | "enforce";
+    roles: string[];
+  }>;
+  endpointClasses: Array<{
+    name: string;
+    exposure: "read-only" | "mutation";
+    requiredControls: string[];
+    implemented: boolean;
+    ready: boolean;
+  }>;
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  recommendedCommands: string[];
+  notes: string[];
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -4418,6 +4477,256 @@ function restoreDrillCommands(projectRootUri?: string): string[] {
     `agentflow backup-report${projectArg}`,
     `agentflow artifact-lifecycle${projectArg} --restore-plan`
   ];
+}
+
+async function loadServerReadinessReport(input: {
+  projectRootUri?: string;
+  limit: number;
+}): Promise<ServerReadinessReport> {
+  const projectRootUri = input.projectRootUri?.trim() ? path.resolve(process.cwd(), input.projectRootUri) : undefined;
+  const enabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const bind = process.env.AGENTFLOW_SERVER_BIND?.trim() || "127.0.0.1";
+  const port = process.env.AGENTFLOW_SERVER_PORT?.trim() || "17888";
+  const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "none";
+  const tokenConfigured = Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
+  const allowedOrigins = parseEnvList(process.env.AGENTFLOW_SERVER_ALLOWED_ORIGINS);
+  const networkExposed = !isLoopbackBind(bind);
+  const services = await checkServices();
+  const servicesReachable = services.every((service) => service.reachable);
+  const summaries = servicesReachable
+    ? (await listProjectStorageSummaries(input.limit)).filter((summary) => !projectRootUri || summary.rootUri === projectRootUri)
+    : [];
+  const projects = await Promise.all(summaries.map(loadServerReadinessProject));
+  const roleEnforcementReady = projects.length > 0 && projects.every((project) => project.configStatus === "valid" && project.roleEnforcement === "enforce");
+  const projectRegistered = projectRootUri ? projects.some((project) => project.rootUri === projectRootUri) : projects.length > 0;
+  const endpointClasses = serverEndpointClasses({
+    enabled,
+    authMode,
+    tokenConfigured,
+    projectRegistered,
+    roleEnforcementReady
+  });
+  const checks: ServerReadinessReport["checks"] = [
+    {
+      label: "Server mode opt-in",
+      status: enabled ? "pass" : "warn",
+      detail: enabled ? "AGENTFLOW_SERVER_MODE is enabled." : "Server mode is not enabled. Local CLI, MCP stdio, dashboard, and worker remain the recommended default."
+    },
+    {
+      label: "Network binding",
+      status: !networkExposed || enabled ? "pass" : "fail",
+      detail: networkExposed
+        ? `${bind} can expose the runtime beyond this machine. Use only with explicit server mode, authentication, and registered projects.`
+        : `${bind} is loopback/local-only.`
+    },
+    {
+      label: "Authentication",
+      status: !enabled ? "warn" : authMode === "token" && tokenConfigured || authMode === "oidc-proxy" ? "pass" : "fail",
+      detail: !enabled
+        ? "Auth is not required for local-only diagnostics, but it is required before server mode exposes mutation endpoints."
+        : authMode === "token"
+          ? (tokenConfigured ? "Bearer-token auth is configured." : "AGENTFLOW_SERVER_TOKEN is required when AGENTFLOW_SERVER_AUTH=token.")
+          : authMode === "oidc-proxy"
+            ? "OIDC reverse-proxy auth mode is selected; configure TLS and identity outside Agent Workflow."
+            : "Set AGENTFLOW_SERVER_AUTH=token or AGENTFLOW_SERVER_AUTH=oidc-proxy before shared use."
+    },
+    {
+      label: "Allowed origins",
+      status: !enabled || allowedOrigins.length > 0 ? "pass" : "fail",
+      detail: allowedOrigins.length
+        ? allowedOrigins.join(", ")
+        : enabled
+          ? "Set AGENTFLOW_SERVER_ALLOWED_ORIGINS before exposing browser-facing server endpoints."
+          : "Allowed origins are not required while server mode is disabled."
+    },
+    {
+      label: "Enterprise services",
+      status: servicesReachable ? "pass" : "fail",
+      detail: servicesReachable ? "Postgres, Redis, and object storage are reachable for durable runs and receipts." : "One or more enterprise services are unreachable."
+    },
+    {
+      label: "Registered projects",
+      status: projectRegistered ? "pass" : "fail",
+      detail: projectRootUri
+        ? (projectRegistered ? "Selected project is registered in local storage." : "Selected project is not registered. Remote requests must use registered project ids, not arbitrary paths.")
+        : `${projects.length} project(s) are registered in local storage.`
+    },
+    {
+      label: "Role enforcement",
+      status: !enabled ? "warn" : roleEnforcementReady ? "pass" : "warn",
+      detail: roleEnforcementReady
+        ? "Inspected projects use enforce mode for role checks."
+        : "Use team.enforcement: enforce before shared server mutation endpoints are enabled."
+    },
+    {
+      label: "Mutation endpoints",
+      status: endpointClasses.some((endpoint) => endpoint.exposure === "mutation" && endpoint.implemented) ? "fail" : "pass",
+      detail: "Governed HTTP mutation endpoints are not implemented in this version; local dashboard POST actions remain intended for loopback developer use."
+    }
+  ];
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const status: ServerReadinessStatus = !enabled
+    ? "local-only"
+    : failures > 0
+      ? "blocked"
+      : warnings > 0
+        ? "attention"
+        : "ready";
+  return {
+    kind: "agentflow_server_readiness_report",
+    generatedAt: new Date().toISOString(),
+    status,
+    projectRootUri: projectRootUri ?? null,
+    limit: input.limit,
+    mode: {
+      enabled,
+      bind,
+      port,
+      networkExposed,
+      authMode,
+      tokenConfigured,
+      allowedOrigins
+    },
+    services,
+    projects,
+    endpointClasses,
+    checks,
+    recommendedCommands: serverReadinessCommands(projectRootUri),
+    notes: serverReadinessNotes({ status, enabled, networkExposed, projectRegistered, roleEnforcementReady })
+  };
+}
+
+async function loadServerReadinessProject(summary: DashboardProjectSummary): Promise<ServerReadinessReport["projects"][number]> {
+  const roleProject = await loadDashboardRoleProject(summary);
+  return {
+    id: roleProject.id,
+    name: roleProject.name,
+    rootUri: roleProject.rootUri,
+    configStatus: roleProject.configStatus,
+    roleEnforcement: roleProject.enforcement,
+    separationOfDuties: roleProject.separationOfDuties,
+    roles: roleProject.roles.map((role) => role.id)
+  };
+}
+
+function serverEndpointClasses(input: {
+  enabled: boolean;
+  authMode: string;
+  tokenConfigured: boolean;
+  projectRegistered: boolean;
+  roleEnforcementReady: boolean;
+}): ServerReadinessReport["endpointClasses"] {
+  const authReady = input.authMode === "oidc-proxy" || input.authMode === "token" && input.tokenConfigured;
+  return [
+    {
+      name: "Read-only status and reports",
+      exposure: "read-only",
+      requiredControls: ["registered projects", "safe redaction", "no secret values"],
+      implemented: false,
+      ready: input.enabled && input.projectRegistered
+    },
+    {
+      name: "Workflow queueing and worker controls",
+      exposure: "mutation",
+      requiredControls: ["auth", "project id", "operator role", "policy recheck", "idempotency key", "receipt"],
+      implemented: false,
+      ready: input.enabled && authReady && input.projectRegistered && input.roleEnforcementReady
+    },
+    {
+      name: "Approval decisions and execution",
+      exposure: "mutation",
+      requiredControls: ["auth", "approver/operator roles", "separation of duties", "policy recheck", "receipt"],
+      implemented: false,
+      ready: input.enabled && authReady && input.projectRegistered && input.roleEnforcementReady
+    },
+    {
+      name: "Lifecycle archive/restore/prune",
+      exposure: "mutation",
+      requiredControls: ["auth", "explicit approval", "destructive capability flags", "policy recheck", "receipt"],
+      implemented: false,
+      ready: false
+    }
+  ];
+}
+
+function formatServerReadinessReport(report: ServerReadinessReport): string {
+  return [
+    `Server mode readiness (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    "",
+    "Mode:",
+    `- Enabled: ${report.mode.enabled ? "yes" : "no"}`,
+    `- Bind: ${report.mode.bind}:${report.mode.port}${report.mode.networkExposed ? " (network-exposed)" : " (loopback/local)"}`,
+    `- Auth: ${report.mode.authMode}`,
+    `- Token configured: ${report.mode.tokenConfigured ? "yes" : "no"}`,
+    `- Allowed origins: ${report.mode.allowedOrigins.join(", ") || "none"}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Projects:",
+    ...(report.projects.length ? report.projects.map((project) => `- ${project.name} (${project.id}): ${project.configStatus}, roles=${project.roles.join(", ") || "none"}, enforcement=${project.roleEnforcement}, separation=${project.separationOfDuties}`) : ["- No registered projects inspected."]),
+    "",
+    "Endpoint classes:",
+    ...report.endpointClasses.map((endpoint) => `- ${endpoint.name}: ${endpoint.exposure}, implemented=${endpoint.implemented ? "yes" : "no"}, ready=${endpoint.ready ? "yes" : "no"} (${endpoint.requiredControls.join("; ")})`),
+    "",
+    "Recommended commands:",
+    ...report.recommendedCommands.map((command) => `- ${command}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+function serverReadinessCommands(projectRootUri?: string): string[] {
+  const projectArg = projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : "";
+  return [
+    `agentflow server-readiness${projectArg} --json`,
+    `agentflow roles${projectArg}`,
+    "agentflow governance",
+    `agentflow backup-report${projectArg}`
+  ];
+}
+
+function serverReadinessNotes(input: {
+  status: ServerReadinessStatus;
+  enabled: boolean;
+  networkExposed: boolean;
+  projectRegistered: boolean;
+  roleEnforcementReady: boolean;
+}): string[] {
+  const notes: string[] = [];
+  if (!input.enabled) {
+    notes.push("Local-first mode is active. Use CLI and MCP stdio for Codex, VS Code, Cursor, and local automation.");
+  }
+  if (input.networkExposed) {
+    notes.push("Network binding can expose local workflow controls. Keep Postgres, Redis, MinIO, provider keys, and project files private behind the Agent Workflow process.");
+  }
+  if (!input.projectRegistered) {
+    notes.push("Register and index projects before server mode accepts project ids from remote clients.");
+  }
+  if (!input.roleEnforcementReady) {
+    notes.push("Set team.enforcement: enforce for shared projects before enabling remote mutation endpoints.");
+  }
+  if (input.status === "ready") {
+    notes.push("Readiness checks pass for the documented contract. Remote execution endpoints are still not implemented in this version.");
+  }
+  return notes;
+}
+
+function envFlag(name: string): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  return value === "1" || value === "true" || value === "yes" || value === "on";
+}
+
+function parseEnvList(value: string | undefined): string[] {
+  return value?.split(",").map((item) => item.trim()).filter(Boolean) ?? [];
+}
+
+function isLoopbackBind(bind: string): boolean {
+  return bind === "127.0.0.1" || bind === "localhost" || bind === "::1";
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -6252,6 +6561,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/server-readiness") {
+    const report = await loadServerReadinessReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/bundles") {
     const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -6570,6 +6889,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderBackupRestoreHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/server-readiness") {
+    const report = await loadServerReadinessReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    });
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderServerReadinessHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
@@ -8484,6 +8814,46 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   <section class="panel"><h2>Artifact Kinds</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th><th>Bytes</th></tr></thead><tbody>${kindRows || '<tr><td colspan="3">No artifacts found in the inspected window.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
+}
+
+function renderServerReadinessHtml(report: ServerReadinessReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
+  const checkRows = report.checks.map((check) => `
+    <tr><td>${escapeHtml(check.label)}</td><td><span class="status ${check.status === "pass" ? "completed" : check.status === "fail" ? "failed" : "queued"}">${escapeHtml(check.status)}</span></td><td>${escapeHtml(check.detail)}</td></tr>
+  `).join("");
+  const endpointRows = report.endpointClasses.map((endpoint) => `
+    <tr><td>${escapeHtml(endpoint.name)}<br><span class="muted">${escapeHtml(endpoint.exposure)}</span></td><td><span class="status ${endpoint.implemented ? "completed" : "queued"}">${endpoint.implemented ? "implemented" : "not implemented"}</span></td><td><span class="status ${endpoint.ready ? "completed" : "queued"}">${endpoint.ready ? "ready" : "not ready"}</span></td><td>${endpoint.requiredControls.map((control) => `<code>${escapeHtml(control)}</code>`).join(" ")}</td></tr>
+  `).join("");
+  const projectRows = report.projects.map((project) => `
+    <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.id)}</code></td><td><code>${escapeHtml(project.rootUri)}</code></td><td><span class="status ${project.configStatus === "valid" ? "completed" : project.configStatus === "invalid" ? "failed" : "queued"}">${escapeHtml(project.configStatus)}</span></td><td>${escapeHtml(project.roleEnforcement)}</td><td>${project.roles.map((role) => `<code>${escapeHtml(role)}</code>`).join(" ") || "none"}</td></tr>
+  `).join("");
+  const serviceRows = report.services.map((service) => `
+    <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
+  `).join("");
+  const commandRows = report.recommendedCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const noteRows = report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
+  const jsonParams = new URLSearchParams();
+  if (report.projectRootUri) jsonParams.set("project", report.projectRootUri);
+  jsonParams.set("limit", String(report.limit));
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("server-readiness")}
+  <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><div class="metric-grid">
+    ${metricCard("Status", report.status, "server-mode readiness")}
+    ${metricCard("Mode", report.mode.enabled ? "enabled" : "local-only", report.mode.networkExposed ? "network-exposed bind" : "loopback bind")}
+    ${metricCard("Bind", `${report.mode.bind}:${report.mode.port}`, report.mode.networkExposed ? "shared network candidate" : "local developer default")}
+    ${metricCard("Auth", report.mode.authMode, report.mode.tokenConfigured ? "token configured" : "no token configured")}
+    ${metricCard("Projects", report.projects.length, "registered project ids inspected")}
+    ${metricCard("Origins", report.mode.allowedOrigins.length, "allowed browser origins")}
+  </div><p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p></section>
+  <section class="panel"><h2>Readiness Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div></section>
+  <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
+  <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
+  <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No server-mode notes found.</li>'}</ul></section></main></body></html>`;
 }
 
 function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
@@ -11722,7 +12092,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" | "runs" | "evaluations" | "workflow-graph" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -11755,6 +12125,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "projects" |
         ["governance", "/governance", "Governance"],
         ["roles", "/roles", "Roles"],
         ["backup-report", "/backup-report", "Backup"],
+        ["server-readiness", "/server-readiness", "Server"],
         ["bundles", "/bundles", "Bundles"]
       ]
     },
