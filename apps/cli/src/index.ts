@@ -3401,6 +3401,32 @@ type DashboardRoleDecisionSummary = {
   other: number;
 };
 
+type DashboardRoleAuditExportSummary = {
+  jsonPath: string;
+  markdownPath: string | null;
+  fileName: string;
+  generatedAt: string;
+  projectPath: string | null;
+  role: string | null;
+  status: string;
+  actionType: string | null;
+  approvalCount: number;
+  projectCount: number;
+  roleCount: number;
+};
+
+type DashboardRoleAuditViewResult =
+  | {
+    ok: true;
+    projectDir: string | null;
+    fileName: string;
+    markdownPath: string;
+    jsonPath: string | null;
+    markdown: string;
+    summary: DashboardRoleAuditExportSummary | null;
+  }
+  | { ok: false; error: string; projectDir?: string | null };
+
 type DashboardRoleGovernanceReport = {
   kind: "agentflow_role_governance_report";
   generatedAt: string;
@@ -3416,6 +3442,7 @@ type DashboardRoleGovernanceReport = {
   actionCounts: Record<string, number>;
   decisionsByRole: DashboardRoleDecisionSummary[];
   recentApprovals: DashboardActionApproval[];
+  recentRoleAuditExports: DashboardRoleAuditExportSummary[];
 };
 
 type ArtifactLifecycleReport = {
@@ -3946,6 +3973,7 @@ async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?
     (!actionFilter || approval.actionType === actionFilter) &&
     (!roleFilter || approvalMatchesRoleFilter(approval, roleFilter))
   );
+  const recentRoleAuditExports = await listDashboardRoleAuditExports(projectRootUri, 8);
   return {
     kind: "agentflow_role_governance_report",
     generatedAt: new Date().toISOString(),
@@ -3960,7 +3988,8 @@ async function loadRoleGovernanceReport(input: { projectRootUri?: string; limit?
     statusCounts: countStrings(filteredApprovals.map((approval) => approval.status)),
     actionCounts: countStrings(filteredApprovals.map((approval) => approval.actionType)),
     decisionsByRole: summarizeApprovalDecisionsByRole(filteredApprovals),
-    recentApprovals: filteredApprovals
+    recentApprovals: filteredApprovals,
+    recentRoleAuditExports
   };
 }
 
@@ -4086,6 +4115,93 @@ async function writeRoleAuditSnapshot(report: DashboardRoleGovernanceReport, out
   await fs.writeFile(markdownPath, `${formatRoleAuditSnapshotMarkdown(report)}\n`, "utf8");
   await fs.writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
   return { markdownPath, jsonPath };
+}
+
+async function listDashboardRoleAuditExports(projectDir: string | null, limit: number): Promise<DashboardRoleAuditExportSummary[]> {
+  const exportDir = path.join(projectDir ?? rootDir, ".agent-workflow", "exports", "roles");
+  let entries: Dirent[];
+  try {
+    entries = await fs.readdir(exportDir, { withFileTypes: true });
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+  const summaries = await Promise.all(entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map(async (entry) => {
+      const jsonPath = path.join(exportDir, entry.name);
+      try {
+        const payload = JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown;
+        return roleAuditSummaryFromPayload(jsonPath, payload);
+      } catch {
+        return null;
+      }
+    }));
+  return summaries
+    .filter((summary): summary is DashboardRoleAuditExportSummary => summary !== null)
+    .sort((left, right) => Date.parse(right.generatedAt) - Date.parse(left.generatedAt))
+    .slice(0, Math.max(0, limit));
+}
+
+function roleAuditSummaryFromPayload(jsonPath: string, payload: unknown): DashboardRoleAuditExportSummary | null {
+  const record = objectValue(payload);
+  if (record.kind !== "agentflow_role_governance_report") return null;
+  const filters = objectValue(record.filters);
+  const generatedAt = stringValue(record.generatedAt);
+  const status = stringValue(filters.status) ?? "all";
+  if (!generatedAt) return null;
+  const markdownPath = jsonPath.replace(/\.json$/u, ".md");
+  const recentApprovals = Array.isArray(record.recentApprovals) ? record.recentApprovals : [];
+  const projects = Array.isArray(record.projects) ? record.projects : [];
+  const decisionsByRole = Array.isArray(record.decisionsByRole) ? record.decisionsByRole : [];
+  return {
+    jsonPath,
+    markdownPath: fsSync.existsSync(markdownPath) ? markdownPath : null,
+    fileName: path.basename(markdownPath),
+    generatedAt,
+    projectPath: stringValue(record.projectRootUri) ?? null,
+    role: stringValue(filters.role) ?? null,
+    status,
+    actionType: stringValue(filters.actionType) ?? null,
+    approvalCount: recentApprovals.length,
+    projectCount: projects.length,
+    roleCount: decisionsByRole.length
+  };
+}
+
+async function loadDashboardRoleAuditView(params: URLSearchParams): Promise<DashboardRoleAuditViewResult> {
+  const projectInput = params.get("project")?.trim() || "";
+  const projectDir = projectInput ? path.resolve(process.cwd(), projectInput) : null;
+  const fileInput = params.get("file")?.trim() || "";
+  const fileName = path.basename(fileInput);
+  if (!fileName || fileName !== fileInput || !fileName.endsWith(".md")) {
+    return { ok: false, error: "Missing or invalid role audit file name.", projectDir };
+  }
+  const exportDir = path.resolve(projectDir ?? rootDir, ".agent-workflow", "exports", "roles");
+  const markdownPath = path.resolve(exportDir, fileName);
+  if (!isPathInside(markdownPath, exportDir)) {
+    return { ok: false, error: "Role audit file must be inside the local role export folder.", projectDir };
+  }
+  try {
+    const markdown = await fs.readFile(markdownPath, "utf8");
+    const jsonPath = markdownPath.replace(/\.md$/u, ".json");
+    let summary: DashboardRoleAuditExportSummary | null = null;
+    if (fsSync.existsSync(jsonPath)) {
+      try {
+        summary = roleAuditSummaryFromPayload(jsonPath, JSON.parse(await fs.readFile(jsonPath, "utf8")) as unknown);
+      } catch {
+        summary = null;
+      }
+    }
+    return { ok: true, projectDir, fileName, markdownPath, jsonPath: fsSync.existsSync(jsonPath) ? jsonPath : null, markdown, summary };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return { ok: false, error: "Role audit export was not found.", projectDir };
+    }
+    return { ok: false, error: error instanceof Error ? error.message : String(error), projectDir };
+  }
 }
 
 function formatRoleAuditSnapshotMarkdown(report: DashboardRoleGovernanceReport): string {
@@ -7175,6 +7291,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/role-audit") {
+    const result = await loadDashboardRoleAuditView(requestUrl.searchParams);
+    response.writeHead(result.ok ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardRoleAuditView(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/routing") {
     const form = await readFormBody(request);
     const result = await updateDashboardRouting({
@@ -9641,9 +9764,56 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
   ${dashboardNav("roles")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><div class="actions"><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a>${exportForm}</div></div>
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
+  ${renderRecentRoleAuditExportsHtml(report.recentRoleAuditExports, report.projectRootUri)}
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Decisions By Role</h2><span class="muted">Pending and older unrecorded decisions are separated so migration gaps stay visible.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Total</th><th>Pending</th><th>Approved</th><th>Rejected</th><th>Executed</th><th>Failed</th></tr></thead><tbody>${decisionRows || '<tr><td colspan="7">No recent approvals found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Recent Approval Activity</h2><span class="muted">Latest approval rows used by the role summary.</span></div></div><div class="table-wrap"><table><thead><tr><th>Status</th><th>Action</th><th>Decision Role</th><th>Execution Role</th><th>Project</th><th>Updated</th></tr></thead><tbody>${approvalRows || '<tr><td colspan="6">No recent approval activity found.</td></tr>'}</tbody></table></div></section></main></body></html>`;
+}
+
+function renderRecentRoleAuditExportsHtml(exports: DashboardRoleAuditExportSummary[], projectRootUri: string | null): string {
+  const rows = exports.map((item) => `
+    <tr>
+      <td>${renderDashboardDateTime(item.generatedAt)}</td>
+      <td>${escapeHtml(item.projectPath ?? projectRootUri ?? "all registered projects")}</td>
+      <td>${escapeHtml(item.role ?? "all")} / ${escapeHtml(item.status)} / ${escapeHtml(item.actionType ?? "all")}</td>
+      <td>${formatNumber(item.approvalCount)}</td>
+      <td>${formatNumber(item.projectCount)}</td>
+      <td>${item.markdownPath ? `<a href="${escapeHtml(roleAuditViewerHref(item.projectPath ?? projectRootUri, item.fileName))}">View</a><br><code>${escapeHtml(item.markdownPath)}</code>` : "<code>missing</code>"}</td>
+      <td><code>${escapeHtml(item.jsonPath)}</code></td>
+    </tr>
+  `).join("") || '<tr><td colspan="7">No role audit snapshots yet. Use Export Snapshot to save the current filters locally.</td></tr>';
+  return `<section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>Recent Role Audit Snapshots</h2>
+        <span class="muted">Local Markdown and JSON snapshots created from the active role filters.</span>
+      </div>
+    </div>
+    <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Project</th><th>Filters</th><th>Approvals</th><th>Projects</th><th>Markdown</th><th>JSON</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
+}
+
+function roleAuditViewerHref(project: string | null, fileName: string): string {
+  const query = new URLSearchParams({ file: fileName });
+  if (project) query.set("project", project);
+  return `/role-audit?${query.toString()}`;
+}
+
+function renderDashboardRoleAuditView(result: DashboardRoleAuditViewResult): string {
+  const backHref = result.projectDir ? `/roles?project=${encodeURIComponent(result.projectDir)}` : "/roles";
+  const body = result.ok
+    ? `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Roles</a><h1>Role Audit Snapshot</h1><p class="muted">${escapeHtml(result.fileName)}</p></div></div>
+      <section class="panel"><div class="meta-grid compact">
+        <div><strong>Project</strong>${escapeHtml(result.summary?.projectPath ?? result.projectDir ?? "all registered projects")}</div>
+        <div><strong>Markdown</strong>${escapeHtml(result.markdownPath)}</div>
+        <div><strong>JSON</strong>${escapeHtml(result.jsonPath ?? "missing")}</div>
+        <div><strong>Generated</strong>${result.summary ? renderDashboardDateTime(result.summary.generatedAt) : "unknown"}</div>
+        <div><strong>Filters</strong>${escapeHtml(`${result.summary?.role ?? "all"} / ${result.summary?.status ?? "all"} / ${result.summary?.actionType ?? "all"}`)}</div>
+        <div><strong>Approvals</strong>${formatNumber(result.summary?.approvalCount ?? 0)}</div>
+      </div></section>
+      <section class="panel"><h2>Snapshot Markdown</h2><pre class="markdown-view">${escapeHtml(result.markdown)}</pre></section>`
+    : `<div class="topbar"><div><a href="${escapeHtml(backHref)}">Roles</a><h1>Role Audit Snapshot</h1><p class="muted">Unable to open the requested export.</p></div></div><section class="panel warn-panel"><pre>${escapeHtml(result.error)}</pre></section>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Role Audit Snapshot</title><style>${dashboardCss()}</style></head><body>${dashboardNav("roles")}<main>${body}</main></body></html>`;
 }
 
 function renderBackupRestoreHtml(report: BackupRestoreReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {

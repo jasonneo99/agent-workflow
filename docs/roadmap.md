@@ -255,6 +255,7 @@ foundation is complete.
   - Done: add role-focused CLI, JSON API, and dashboard filters for project, role, status, and action type.
   - Done: add exportable local Markdown and JSON role audit snapshots from the filtered CLI report.
   - Done: add dashboard-triggered role audit snapshot exports that preserve the active role filters.
+  - Done: add a recent role audit snapshot panel and dashboard-safe Markdown viewer for local audit exports.
   - Next: review user testing feedback for role audit ergonomics before closing this milestone.
 
 - [x] Artifact lifecycle governance.
