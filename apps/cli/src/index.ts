@@ -10941,6 +10941,10 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
             evaluationMetadata: run.evaluationMetadata
           }));
       }
+      if (!runs.length) {
+        const statusLabel = runStatusFilter === "all" ? "any status" : runStatusFilter;
+        runWarnings.push(`No stored ${workflow.id} runs with ${statusLabel} matched project ${projectDir}. The graph is showing the workflow definition only for this project scope.`);
+      }
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -11106,9 +11110,9 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     stage: focusedStageId
   });
   const quickRunLinks = [
-    { label: "All Runs", runStatus: "all", runLimit: "50" },
-    { label: "Active Runs", runStatus: "active", runLimit: "50" },
-    { label: "Failed Runs", runStatus: "failed", runLimit: "50" },
+    { label: "All Project Runs", runStatus: "all", runLimit: "50" },
+    { label: "Active Project Runs", runStatus: "active", runLimit: "50" },
+    { label: "Failed Project Runs", runStatus: "failed", runLimit: "50" },
     { label: "Definition Only", runStatus: "all", runLimit: "0" }
   ].map((item) => {
     const active = runStatusFilter === item.runStatus && runLimit === item.runLimit;
@@ -11125,7 +11129,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
       ${metricCard("Workflow", report.workflow.id, report.workflow.name)}
       ${metricCard("Stages", report.totals.stages, `${report.totals.subagentLinks} subagent links`)}
       ${metricCard("Visible", filteredStages.length, "stages after filters")}
-      ${metricCard("Runs", report.runs.length, `${escapeHtml(runStatusFilter)} ${escapeHtml(report.workflow.id)} runs`)}
+      ${metricCard("Runs", report.runs.length, `${escapeHtml(runStatusFilter)} ${escapeHtml(report.workflow.id)} runs for selected project`)}
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
