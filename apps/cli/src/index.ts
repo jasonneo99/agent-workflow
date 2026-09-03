@@ -1184,6 +1184,61 @@ program
   });
 
 program
+  .command("adopt-discovered-projects")
+  .description("Initialize and/or index discovered project candidates after explicit opt-in")
+  .option("--roots <list>", "comma-separated roots to scan", path.join(os.homedir(), "Projects"))
+  .option("--paths <list>", "comma-separated candidate paths to adopt; omit with --all")
+  .option("--all", "select all discovered candidates")
+  .option("--initialize", "write Agent Workflow project files for selected candidates that are not initialized")
+  .option("--index", "register and index selected initialized candidates")
+  .option("--profile <profile>", "enterprise or simple", "enterprise")
+  .option("--max-depth <number>", "maximum directory depth below each root", "5")
+  .option("--max-candidates <number>", "maximum candidates to return", "200")
+  .option("--max-files <number>", "maximum files to index for each selected project", "100")
+  .option("--spotlight <mode>", "macOS Spotlight mode: auto, on, or off", "auto")
+  .option("--write", "perform the selected initialization and indexing actions")
+  .option("--json", "print JSON")
+  .action(async (options: {
+    roots: string;
+    paths?: string;
+    all?: boolean;
+    initialize?: boolean;
+    index?: boolean;
+    profile: string;
+    maxDepth: string;
+    maxCandidates: string;
+    maxFiles: string;
+    spotlight: string;
+    write?: boolean;
+    json?: boolean;
+  }) => {
+    if (!["enterprise", "simple"].includes(options.profile)) {
+      console.error(`Unknown profile: ${options.profile}. Use enterprise or simple.`);
+      process.exitCode = 1;
+      return;
+    }
+    const result = await adoptDiscoveredProjects({
+      roots: splitCommaList(options.roots).map((item) => path.resolve(process.cwd(), item)),
+      paths: splitCommaList(options.paths ?? ""),
+      all: Boolean(options.all),
+      initialize: Boolean(options.initialize),
+      index: Boolean(options.index),
+      profile: options.profile as "enterprise" | "simple",
+      maxDepth: parsePositiveInteger(options.maxDepth, 5),
+      maxCandidates: parsePositiveInteger(options.maxCandidates, 200),
+      maxFiles: parsePositiveInteger(options.maxFiles, 100),
+      spotlight: parseSpotlightMode(options.spotlight),
+      write: Boolean(options.write)
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(formatDiscoveryAdoptionResult(result));
+    if (!result.ok) process.exitCode = 1;
+  });
+
+program
   .command("project-files")
   .description("List indexed project file summaries")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -4170,6 +4225,30 @@ type ProjectDiscoveryReport = {
   candidates: ProjectDiscoveryCandidate[];
   warnings: string[];
   nextCommands: string[];
+};
+
+type ProjectDiscoveryAdoptionItem = {
+  rootUri: string;
+  name: string;
+  initializedBefore: boolean;
+  registeredBefore: boolean;
+  actions: string[];
+  status: "planned" | "completed" | "skipped" | "failed";
+  message: string;
+};
+
+type ProjectDiscoveryAdoptionResult = {
+  kind: "agentflow_project_discovery_adoption";
+  ok: boolean;
+  generatedAt: string;
+  dryRun: boolean;
+  selected: number;
+  initialized: number;
+  indexed: number;
+  skipped: number;
+  failed: number;
+  items: ProjectDiscoveryAdoptionItem[];
+  warnings: string[];
 };
 
 type DashboardLearningDaemonStatus = {
@@ -8937,6 +9016,195 @@ function formatDiscoveryReport(report: ProjectDiscoveryReport): string {
   return lines.join("\n");
 }
 
+async function adoptDiscoveredProjects(input: {
+  roots: string[];
+  paths: string[];
+  all: boolean;
+  initialize: boolean;
+  index: boolean;
+  profile: "enterprise" | "simple";
+  maxDepth: number;
+  maxCandidates: number;
+  maxFiles: number;
+  spotlight: SpotlightMode;
+  write: boolean;
+}): Promise<ProjectDiscoveryAdoptionResult> {
+  const warnings: string[] = [];
+  if (!input.initialize && !input.index) {
+    warnings.push("No action selected. Use --initialize, --index, or both.");
+  }
+  if (!input.all && !input.paths.length) {
+    warnings.push("No candidates selected. Use --paths <path[,path]> or --all.");
+  }
+  const discovered = await discoverLocalProjects({
+    roots: input.roots,
+    maxDepth: input.maxDepth,
+    maxCandidates: input.maxCandidates,
+    spotlight: input.spotlight
+  });
+  warnings.push(...discovered.warnings);
+  const selectedPaths = new Set(input.paths.map((item) => path.resolve(process.cwd(), item)));
+  const candidates = discovered.candidates.filter((candidate) => input.all || selectedPaths.has(candidate.rootUri));
+  const items: ProjectDiscoveryAdoptionItem[] = [];
+  let initialized = 0;
+  let indexed = 0;
+  let skipped = 0;
+  let failed = 0;
+  let servicesReady = !input.write || !input.index;
+
+  if (input.write && input.index) {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      return {
+        kind: "agentflow_project_discovery_adoption",
+        ok: false,
+        generatedAt: new Date().toISOString(),
+        dryRun: !input.write,
+        selected: candidates.length,
+        initialized: 0,
+        indexed: 0,
+        skipped: candidates.length,
+        failed: missing.length,
+        items: candidates.map((candidate) => ({
+          rootUri: candidate.rootUri,
+          name: candidate.name,
+          initializedBefore: candidate.initialized,
+          registeredBefore: candidate.registered,
+          actions: plannedDiscoveryActions(candidate, input),
+          status: "failed",
+          message: missing.map((check) => `${check.endpoint.name}: ${check.message}`).join("; ")
+        })),
+        warnings
+      };
+    }
+    servicesReady = true;
+  }
+
+  for (const candidate of candidates) {
+    const actions = plannedDiscoveryActions(candidate, input);
+    if (!actions.length) {
+      skipped += 1;
+      items.push({
+        rootUri: candidate.rootUri,
+        name: candidate.name,
+        initializedBefore: candidate.initialized,
+        registeredBefore: candidate.registered,
+        actions,
+        status: "skipped",
+        message: "No applicable action for this candidate."
+      });
+      continue;
+    }
+    if (!input.write) {
+      items.push({
+        rootUri: candidate.rootUri,
+        name: candidate.name,
+        initializedBefore: candidate.initialized,
+        registeredBefore: candidate.registered,
+        actions,
+        status: "planned",
+        message: "Dry run only. Re-run with --write to perform these actions."
+      });
+      continue;
+    }
+    try {
+      let initializedNow = candidate.initialized;
+      const messages: string[] = [];
+      if (input.initialize && !candidate.initialized) {
+        const onboarding = await analyzeProjectForOnboarding(candidate.rootUri, input.profile);
+        const writeResult = await writeOnboardingFiles(candidate.rootUri, onboarding, false);
+        initializedNow = true;
+        initialized += 1;
+        messages.push(`initialized: wrote ${writeResult.written.length}, skipped ${writeResult.skipped.length}`);
+      }
+      if (input.index && initializedNow && servicesReady) {
+        const indexResult = await indexProjectForRun({
+          projectDir: candidate.rootUri,
+          maxFiles: input.maxFiles,
+          refine: false,
+          forceRefine: false,
+          fullIndex: true
+        });
+        indexed += 1;
+        messages.push(`indexed ${indexResult.count} file summary row(s) for ${indexResult.projectName}`);
+      }
+      items.push({
+        rootUri: candidate.rootUri,
+        name: candidate.name,
+        initializedBefore: candidate.initialized,
+        registeredBefore: candidate.registered,
+        actions,
+        status: "completed",
+        message: messages.join("; ") || "No changes needed."
+      });
+    } catch (error) {
+      failed += 1;
+      items.push({
+        rootUri: candidate.rootUri,
+        name: candidate.name,
+        initializedBefore: candidate.initialized,
+        registeredBefore: candidate.registered,
+        actions,
+        status: "failed",
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+  }
+
+  return {
+    kind: "agentflow_project_discovery_adoption",
+    ok: warnings.length === 0 && failed === 0,
+    generatedAt: new Date().toISOString(),
+    dryRun: !input.write,
+    selected: candidates.length,
+    initialized,
+    indexed,
+    skipped,
+    failed,
+    items,
+    warnings
+  };
+}
+
+function plannedDiscoveryActions(candidate: ProjectDiscoveryCandidate, input: { initialize: boolean; index: boolean }): string[] {
+  const actions: string[] = [];
+  if (input.initialize && !candidate.initialized) {
+    actions.push("initialize");
+  }
+  if (input.index && (candidate.initialized || input.initialize)) {
+    actions.push(candidate.registered ? "refresh-index" : "register-and-index");
+  }
+  return actions;
+}
+
+function formatDiscoveryAdoptionResult(result: ProjectDiscoveryAdoptionResult): string {
+  const lines = [
+    "Agent Workflow Discovery Adoption",
+    `Generated: ${result.generatedAt}`,
+    `Mode: ${result.dryRun ? "dry-run" : "write"}`,
+    `Selected: ${result.selected}`,
+    `Initialized: ${result.initialized}`,
+    `Indexed: ${result.indexed}`,
+    `Skipped: ${result.skipped}`,
+    `Failed: ${result.failed}`,
+    ""
+  ];
+  if (result.warnings.length) {
+    lines.push("Warnings", ...result.warnings.map((warning) => `- ${warning}`), "");
+  }
+  lines.push("Items");
+  if (!result.items.length) {
+    lines.push("- No matching discovered candidates.");
+  }
+  for (const item of result.items) {
+    lines.push(`- ${item.status}: ${item.rootUri}`);
+    lines.push(`  actions=${item.actions.join(", ") || "none"}`);
+    lines.push(`  ${item.message}`);
+  }
+  return lines.join("\n");
+}
+
 async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promise<boolean> {
   const override = process.env.AGENTFLOW_LEARNING_WORKFLOW_SHAPE_AUTO_UPDATE;
   if (override === "0" || override === "false" || override === "off") {
@@ -9754,6 +10022,35 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/discovery-adopt") {
+    const form = await readFormBody(request);
+    const result = await adoptDiscoveredProjects({
+      roots: splitCommaList(form.get("roots") || path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
+      paths: splitCommaList(form.get("paths") ?? ""),
+      all: form.get("all") === "on",
+      initialize: form.get("initialize") === "on",
+      index: form.get("index") === "on",
+      profile: form.get("profile") === "simple" ? "simple" : "enterprise",
+      maxDepth: parsePositiveInteger(form.get("maxDepth") || "5", 5),
+      maxCandidates: parsePositiveInteger(form.get("maxCandidates") || "200", 200),
+      maxFiles: parsePositiveInteger(form.get("maxFiles") || "100", 100),
+      spotlight: parseSpotlightMode(form.get("spotlight") || "auto"),
+      write: true
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result.ok
+      ? {
+        ok: true,
+        title: "Discovery action completed",
+        output: formatDiscoveryAdoptionResult(result)
+      }
+      : {
+        ok: false,
+        error: formatDiscoveryAdoptionResult(result)
+      }));
     return;
   }
 
@@ -13541,6 +13838,12 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
 
 function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchParams): string {
   const spotlightOptions = ["auto", "on", "off"].map((mode) => `<option value="${mode}"${report.spotlight.requested === mode ? " selected" : ""}>${mode}</option>`).join("");
+  const hiddenDiscoveryFields = [
+    `<input type="hidden" name="roots" value="${escapeHtml(report.roots.join(","))}">`,
+    `<input type="hidden" name="maxDepth" value="${escapeHtml(String(report.maxDepth))}">`,
+    `<input type="hidden" name="maxCandidates" value="${escapeHtml(String(report.maxCandidates))}">`,
+    `<input type="hidden" name="spotlight" value="${escapeHtml(report.spotlight.requested)}">`
+  ].join("");
   const rows = report.candidates.map((candidate) => `
     <tr>
       <td>${escapeHtml(candidate.name)}<br><span class="muted">${escapeHtml(candidate.rootUri)}</span></td>
@@ -13550,6 +13853,25 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
       <td>${candidate.registered ? "yes" : "no"}</td>
       <td>${escapeHtml(candidate.markers.join(", "))}</td>
       <td>${candidate.suggestedCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join("<br>")}</td>
+      <td>
+        ${candidate.initialized ? `
+          <form method="post" action="/api/discovery-adopt" class="inline-form compact-form">
+            ${hiddenDiscoveryFields}
+            <input type="hidden" name="paths" value="${escapeHtml(candidate.rootUri)}">
+            <input type="hidden" name="index" value="on">
+            <input type="hidden" name="maxFiles" value="100">
+            <button type="submit">Index</button>
+          </form>
+        ` : `
+          <form method="post" action="/api/discovery-adopt" class="inline-form compact-form">
+            ${hiddenDiscoveryFields}
+            <input type="hidden" name="paths" value="${escapeHtml(candidate.rootUri)}">
+            <input type="hidden" name="initialize" value="on">
+            <input type="hidden" name="profile" value="enterprise">
+            <button type="submit">Initialize</button>
+          </form>
+        `}
+      </td>
     </tr>
   `).join("");
   const warningItems = report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
@@ -13604,10 +13926,31 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
         ${metricCard("Max Depth", report.maxDepth, "filesystem fallback")}
       </div>
     </section>
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Adopt Candidates</h2>
+          <span class="muted">Initialize writes project-local Agent Workflow files. Index registers initialized projects and stores compact source summaries.</span>
+        </div>
+      </div>
+      <form method="post" action="/api/discovery-adopt" class="workflow-form">
+        ${hiddenDiscoveryFields}
+        <input type="hidden" name="all" value="on">
+        <label>Max files per project
+          <input name="maxFiles" value="100" inputmode="numeric">
+        </label>
+        <label>Profile
+          <select name="profile"><option value="enterprise" selected>enterprise</option><option value="simple">simple</option></select>
+        </label>
+        <label class="checkbox-row"><input type="checkbox" name="initialize" value="on"> initialize missing project files</label>
+        <label class="checkbox-row"><input type="checkbox" name="index" value="on" checked> index initialized projects</label>
+        <div class="form-actions"><button type="submit">Adopt Selected Scope</button></div>
+      </form>
+    </section>
     ${warningItems ? `<section class="panel"><h2>Warnings</h2><ul>${warningItems}</ul></section>` : ""}
     <section class="panel">
       <h2>Candidate Projects</h2>
-      <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Markers</th><th>Next Commands</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">No candidate projects found.</td></tr>"}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Markers</th><th>Next Commands</th><th>Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"8\">No candidate projects found.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel"><h2>Next Commands</h2><ul>${nextItems}</ul></section>
   </main>

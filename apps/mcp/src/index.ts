@@ -104,6 +104,70 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_discover_projects",
+  {
+    title: "AgentFlow discover projects",
+    description: "Dry-run local project discovery across governed roots without indexing file contents.",
+    inputSchema: {
+      roots: z.string().optional().describe("Comma-separated roots to scan; defaults to ~/Projects."),
+      maxDepth: z.number().int().positive().optional().describe("Maximum directory depth below each root."),
+      maxCandidates: z.number().int().positive().max(1000).optional().describe("Maximum candidate projects to return."),
+      spotlight: z.enum(["auto", "on", "off"]).optional().describe("macOS Spotlight mode."),
+      write: z.boolean().optional().describe("Write the discovery report under .agent-workflow/discovery."),
+      json: z.boolean().optional().describe("Return machine-readable discovery JSON.")
+    }
+  },
+  async ({ roots, maxDepth, maxCandidates, spotlight, write, json }) => {
+    const args = ["discover-projects"];
+    if (roots) args.push("--roots", roots);
+    if (maxDepth) args.push("--max-depth", String(maxDepth));
+    if (maxCandidates) args.push("--max-candidates", String(maxCandidates));
+    if (spotlight) args.push("--spotlight", spotlight);
+    if (write) args.push("--write");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 180_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_adopt_discovered_projects",
+  {
+    title: "AgentFlow adopt discovered projects",
+    description: "Initialize and/or index discovered project candidates after explicit opt-in. Dry-run unless write is true.",
+    inputSchema: {
+      roots: z.string().optional().describe("Comma-separated roots to scan; defaults to ~/Projects."),
+      paths: z.string().optional().describe("Comma-separated exact candidate paths to adopt; omit with all."),
+      all: z.boolean().optional().describe("Select all discovered candidates."),
+      initialize: z.boolean().optional().describe("Write Agent Workflow project files for selected candidates that are not initialized."),
+      index: z.boolean().optional().describe("Register and index selected initialized candidates."),
+      profile: z.enum(["enterprise", "simple"]).optional().describe("Project profile for initialization."),
+      maxDepth: z.number().int().positive().optional().describe("Maximum directory depth below each root."),
+      maxCandidates: z.number().int().positive().max(1000).optional().describe("Maximum candidate projects to return."),
+      maxFiles: z.number().int().positive().optional().describe("Maximum files to index for each selected project."),
+      spotlight: z.enum(["auto", "on", "off"]).optional().describe("macOS Spotlight mode."),
+      write: z.boolean().optional().describe("Perform initialization/indexing. Omit for dry-run."),
+      json: z.boolean().optional().describe("Return machine-readable adoption JSON.")
+    }
+  },
+  async ({ roots, paths, all, initialize, index, profile, maxDepth, maxCandidates, maxFiles, spotlight, write, json }) => {
+    const args = ["adopt-discovered-projects"];
+    if (roots) args.push("--roots", roots);
+    if (paths) args.push("--paths", paths);
+    if (all) args.push("--all");
+    if (initialize) args.push("--initialize");
+    if (index) args.push("--index");
+    if (profile) args.push("--profile", profile);
+    if (maxDepth) args.push("--max-depth", String(maxDepth));
+    if (maxCandidates) args.push("--max-candidates", String(maxCandidates));
+    if (maxFiles) args.push("--max-files", String(maxFiles));
+    if (spotlight) args.push("--spotlight", spotlight);
+    if (write) args.push("--write");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: write ? 600_000 : 180_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_approvals",
   {
     title: "AgentFlow action approvals",

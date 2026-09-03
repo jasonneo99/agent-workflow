@@ -166,6 +166,7 @@ npm run agentflow -- schemas -p . --write-vscode # Add YAML validation to VS Cod
 npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
 npm run agentflow -- discover-projects --roots ~/Projects --spotlight auto # Dry-run local project discovery without indexing contents
+npm run agentflow -- adopt-discovered-projects --roots ~/Projects --all --index # Dry-run index/register plan for initialized candidates
 npm run bundle-registry      # Inspect trusted bundle registry entries and local install status
 npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
 npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan

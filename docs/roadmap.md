@@ -123,6 +123,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 
 - [x] Governed local filesystem discovery.
   - Done: add `discover-projects` CLI dry-run, `/discovery` dashboard page, and `/api/discovery` JSON endpoint for marker-based project discovery without content indexing.
+  - Done: add explicit adoption flow with `adopt-discovered-projects` and dashboard candidate actions for initialization, registration, and indexing.
   - Add an explicit local discovery/index plan for roots outside registered projects, with opt-in include roots, default secret/cache/system excludes, dry-run preview, and project registration before content indexing.
   - On macOS, use Spotlight metadata as an optional discovery accelerator for likely code/document roots before falling back to filesystem traversal.
   - Keep whole-drive discovery local-first and auditable; never export private file contents, secrets, model artifacts, photos, mail stores, backups, or ignored directories by default.

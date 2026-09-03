@@ -284,6 +284,23 @@ system, cache, dependency, backup, photo library, and private runtime
 directories. Written reports stay under `.agent-workflow/discovery/` in the
 Agent Workflow repo.
 
+After review, adopt candidates explicitly. Dry-run first:
+
+```bash
+npm run agentflow -- adopt-discovered-projects --roots ~/Projects --all --index
+npm run agentflow -- adopt-discovered-projects --roots ~/Projects --paths /path/to/project --initialize --index
+```
+
+Then add `--write` when you want Agent Workflow to act:
+
+```bash
+npm run agentflow -- adopt-discovered-projects --roots ~/Projects --paths /path/to/project --initialize --index --write
+```
+
+Initialization writes project-local Agent Workflow files. Indexing registers an
+initialized project in local storage and stores compact source summaries. A
+candidate must have `.agent-workflow/project.yaml` before content indexing runs.
+
 The dashboard exposes the same dry-run report at:
 
 ```text

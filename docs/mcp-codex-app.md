@@ -38,6 +38,8 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_list`: list available agents and workflows.
 - `agentflow_schemas`: list JSON Schemas or write VS Code/Cursor YAML validation settings.
 - `agentflow_onboard_project`: analyze a project and recommend or write tailored Agent Workflow config.
+- `agentflow_discover_projects`: dry-run local project discovery across governed roots without indexing file contents.
+- `agentflow_adopt_discovered_projects`: explicitly initialize and/or index discovered candidate projects; dry-run unless `write` is true.
 - `agentflow_index_project`: index a project into compact durable context; pass `incremental` to refresh only changed files after a baseline exists.
 - `agentflow_compile`: compile a workflow brief without queueing work.
 - `agentflow_workflow_graph`: inspect workflow stages, dependencies, agents, policy fit, approvals, and context budgets without queueing work.
