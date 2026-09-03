@@ -238,6 +238,7 @@ trust gaps.
   - Done: add a small recent graph exports panel so developers can reopen or share prior graph handoffs from the dashboard.
   - Done: add an optional dashboard-safe graph export viewer route so developers can inspect saved handoff Markdown without leaving the browser.
   - Done: add lightweight export lifecycle actions such as copyable CLI commands and project-local prune guidance without deleting files implicitly.
+  - Done: add project-local graph presets so developers can save, reopen, and delete useful graph/filter/run-scope combinations.
   - Done: polish graph handoff ergonomics after user testing, then close this visualization milestone.
 
 - [x] Optional model-improvement workflow pack.

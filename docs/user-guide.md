@@ -337,7 +337,11 @@ Markdown/JSON paths for reopening or sharing a graph state during review. Click
 dashboard. The Recent Graph Handoffs panel also includes copyable lifecycle
 commands to inspect export storage, list recent files, preview stale prune
 candidates, and package the graph handoff folder without deleting anything
-implicitly. Use `runLimit=0` for definition-only diagrams or
+implicitly. Use **Graph Presets** to save the current workflow, view,
+orientation, filters, run scope, and run limit to project-local
+`.agent-workflow/graph-presets.json`. Saved presets can be reopened or removed
+from the graph page without editing shared workflows or global settings. Use
+`runLimit=0` for definition-only diagrams or
 raise the limit up to `250` when you want more historical runs in the graph. Use
 the run-status quick links for developer triage: All Stored Runs shows matching
 workflow history across every registered project, Active Runs shows

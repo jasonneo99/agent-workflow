@@ -9432,6 +9432,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/graph-preset-save") {
+    const form = await readFormBody(request);
+    const result = await saveDashboardGraphPreset(form);
+    response.writeHead(result.ok ? 303 : 400, result.ok ? { location: result.href } : { "content-type": "text/html; charset=utf-8" });
+    response.end(result.ok ? "" : renderDashboardActionResult(result));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/graph-preset-delete") {
+    const form = await readFormBody(request);
+    const result = await deleteDashboardGraphPreset(form);
+    response.writeHead(result.ok ? 303 : 400, result.ok ? { location: result.href } : { "content-type": "text/html; charset=utf-8" });
+    response.end(result.ok ? "" : renderDashboardActionResult(result));
+    return;
+  }
+
   if (requestUrl.pathname === "/graph-handoff") {
     const result = await loadDashboardGraphHandoffView(requestUrl.searchParams);
     response.writeHead(result.ok ? 200 : 404, { "content-type": "text/html; charset=utf-8" });
@@ -10843,6 +10859,37 @@ type DashboardGraphExportSummary = {
   stageHealthCount: number;
 };
 
+type DashboardGraphPresetFilters = {
+  workflow: string;
+  project: string;
+  policyProfile: string;
+  view: "graph" | "mind-map" | "network";
+  orientation: "horizontal" | "radial";
+  category: string;
+  approval: string;
+  policyStatus: string;
+  runStatus: string;
+  runLimit: string;
+  runScope: "project" | "all-projects";
+  stage: string;
+};
+
+type DashboardGraphPreset = {
+  id: string;
+  name: string;
+  description: string;
+  createdAt: string;
+  updatedAt: string;
+  filters: DashboardGraphPresetFilters;
+};
+
+type DashboardGraphPresetFile = {
+  kind: "agentflow_graph_presets";
+  projectRootUri: string;
+  updatedAt: string;
+  presets: DashboardGraphPreset[];
+};
+
 type DashboardGraphHandoffViewResult =
   | {
     ok: true;
@@ -10866,6 +10913,7 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   focusedStageFixRuns: DashboardWorkflowGraphRun[];
   focusedStageVerificationRuns: DashboardWorkflowGraphRun[];
   recentGraphExports: DashboardGraphExportSummary[];
+  graphPresets: DashboardGraphPreset[];
 };
 
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
@@ -10896,6 +10944,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
   let focusedStageVerificationRuns: DashboardWorkflowGraphRun[] = [];
   let recentGraphExports: DashboardGraphExportSummary[] = [];
+  let graphPresets: DashboardGraphPreset[] = [];
   if (safeRunLimit > 0) {
     try {
       const historyFetchLimit = Math.min(Math.max(safeRunLimit * 4, safeRunLimit), 1000);
@@ -10933,7 +10982,12 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   } catch (error) {
     runWarnings.push(`Graph handoff exports unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { ...report, runs, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports };
+  try {
+    graphPresets = (await readDashboardGraphPresets(projectDir)).presets;
+  } catch (error) {
+    runWarnings.push(`Graph presets unavailable: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  return { ...report, runs, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
 }
 
 function dashboardWorkflowGraphRunFromStorage(run: Awaited<ReturnType<typeof listWorkflowRuns>>[number]): DashboardWorkflowGraphRun {
@@ -11021,6 +11075,79 @@ function graphHandoffSummaryFromPayload(projectDir: string, jsonPath: string, pa
     runCount: Array.isArray(record.runs) ? record.runs.length : 0,
     stageHealthCount: Array.isArray(record.stageHealth) ? record.stageHealth.length : 0
   };
+}
+
+function dashboardGraphPresetsPath(projectDir: string): string {
+  return path.join(projectDir, ".agent-workflow", "graph-presets.json");
+}
+
+async function readDashboardGraphPresets(projectDir: string): Promise<DashboardGraphPresetFile> {
+  const parsed = await readJsonFile<Partial<DashboardGraphPresetFile>>(dashboardGraphPresetsPath(projectDir));
+  if (!parsed) {
+    return {
+      kind: "agentflow_graph_presets",
+      projectRootUri: projectDir,
+      updatedAt: new Date(0).toISOString(),
+      presets: []
+    };
+  }
+  const presets = Array.isArray(parsed.presets)
+    ? parsed.presets.map((preset) => normalizeDashboardGraphPreset(preset)).filter((preset): preset is DashboardGraphPreset => Boolean(preset))
+    : [];
+  return {
+    kind: "agentflow_graph_presets",
+    projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectDir,
+    updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+    presets: presets.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  };
+}
+
+function normalizeDashboardGraphPreset(value: unknown): DashboardGraphPreset | null {
+  const record = objectValue(value);
+  const filters = objectValue(record.filters);
+  const name = stringValue(record.name)?.trim();
+  if (!name) return null;
+  const id = stringValue(record.id)?.trim() || safeFileSegment(name);
+  const now = new Date(0).toISOString();
+  return {
+    id: safeFileSegment(id),
+    name,
+    description: stringValue(record.description)?.trim() || "",
+    createdAt: stringValue(record.createdAt) ?? now,
+    updatedAt: stringValue(record.updatedAt) ?? now,
+    filters: normalizeDashboardGraphPresetFilters(filters)
+  };
+}
+
+function normalizeDashboardGraphPresetFilters(filters: Record<string, unknown>): DashboardGraphPresetFilters {
+  const view = stringValue(filters.view);
+  const orientation = stringValue(filters.orientation);
+  return {
+    workflow: stringValue(filters.workflow)?.trim() || "build-feature",
+    project: stringValue(filters.project)?.trim() || "templates/project",
+    policyProfile: stringValue(filters.policyProfile)?.trim() || "local",
+    view: view === "mind-map" || view === "network" ? view : "graph",
+    orientation: orientation === "radial" ? "radial" : "horizontal",
+    category: stringValue(filters.category)?.trim() || "",
+    approval: stringValue(filters.approval)?.trim() || "all",
+    policyStatus: stringValue(filters.policyStatus)?.trim() || "all",
+    runStatus: parseDashboardRunStatusFilter(stringValue(filters.runStatus) ?? "all"),
+    runLimit: String(parseDashboardRunLimit(stringValue(filters.runLimit) ?? "50", 50)),
+    runScope: parseDashboardRunScope(stringValue(filters.runScope) ?? "project"),
+    stage: stringValue(filters.stage)?.trim() || ""
+  };
+}
+
+async function writeDashboardGraphPresets(projectDir: string, presetFile: DashboardGraphPresetFile): Promise<void> {
+  const filePath = dashboardGraphPresetsPath(projectDir);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const payload: DashboardGraphPresetFile = {
+    kind: "agentflow_graph_presets",
+    projectRootUri: projectDir,
+    updatedAt: new Date().toISOString(),
+    presets: presetFile.presets.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  };
+  await fs.writeFile(filePath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
@@ -11136,6 +11263,20 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
       ${metricCard("Context Budget", formatNumber(report.totals.contextBudgetTokens), "compiled source-token ceiling")}
       ${metricCard("Approvals", report.totals.approvalStages, `${report.totals.blockedStages} blocked stages`)}
     </div></section>
+    ${renderGraphPresetsHtml(report.graphPresets, {
+      workflow: report.workflow.id,
+      project: projectValue,
+      policyProfile: policyValue,
+      view,
+      orientation,
+      category: categoryFilter,
+      approval: approvalFilter,
+      policyStatus: policyFilter,
+      runStatus: runStatusFilter,
+      runLimit,
+      runScope,
+      stage: focusedStageId
+    })}
     <section class="panel capture-hide">
       <div class="section-heading">
         <div>
@@ -11155,6 +11296,66 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
+}
+
+function renderGraphPresetsHtml(presets: DashboardGraphPreset[], current: DashboardGraphPresetFilters): string {
+  const hiddenFields = dashboardGraphPresetHiddenFields(current);
+  const rows = presets.map((preset) => {
+    const href = graphPresetHref(preset);
+    return `<tr>
+      <td><strong>${escapeHtml(preset.name)}</strong>${preset.description ? `<br><span class="muted">${escapeHtml(preset.description)}</span>` : ""}</td>
+      <td>${escapeHtml(preset.filters.workflow)}</td>
+      <td>${escapeHtml(preset.filters.view)} / ${escapeHtml(preset.filters.orientation)}</td>
+      <td>${escapeHtml(preset.filters.runScope === "all-projects" ? "all projects" : "selected project")}</td>
+      <td>${escapeHtml(preset.filters.runStatus)} / ${escapeHtml(preset.filters.runLimit)}</td>
+      <td>${renderDashboardDateTime(preset.updatedAt)}</td>
+      <td><a class="button secondary" href="${escapeHtml(href)}">Open</a></td>
+      <td><form method="post" action="/api/graph-preset-delete" class="inline-form compact-form">${hiddenFields}<input type="hidden" name="presetId" value="${escapeHtml(preset.id)}"><button class="secondary" type="submit">Delete</button></form></td>
+    </tr>`;
+  }).join("") || '<tr><td colspan="8">No saved graph presets yet.</td></tr>';
+  return `<section class="panel capture-hide">
+    <div class="section-heading">
+      <div>
+        <h2>Graph Presets</h2>
+        <span class="muted">Save the current workflow, filters, run scope, and graph layout as project-local Agent Workflow state.</span>
+      </div>
+    </div>
+    <form method="post" action="/api/graph-preset-save" class="workflow-form compact-form">
+      ${hiddenFields}
+      <label>Name<input name="name" value="${escapeHtml(defaultGraphPresetName(current))}" required></label>
+      <label class="wide">Description<input name="description" placeholder="Optional note for the team"></label>
+      <div class="form-actions"><button type="submit">Save Preset</button></div>
+    </form>
+    <div class="table-wrap"><table><thead><tr><th>Name</th><th>Workflow</th><th>View</th><th>Run Scope</th><th>Runs</th><th>Updated</th><th>Open</th><th>Remove</th></tr></thead><tbody>${rows}</tbody></table></div>
+  </section>`;
+}
+
+function dashboardGraphPresetHiddenFields(filters: DashboardGraphPresetFilters): string {
+  const fields: Record<string, string> = {
+    workflow: filters.workflow,
+    project: filters.project,
+    policyProfile: filters.policyProfile,
+    view: filters.view,
+    orientation: filters.orientation,
+    category: filters.category,
+    approval: filters.approval,
+    policyStatus: filters.policyStatus,
+    runStatus: filters.runStatus,
+    runLimit: filters.runLimit,
+    runScope: filters.runScope,
+    stage: filters.stage
+  };
+  return Object.entries(fields)
+    .map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`)
+    .join("");
+}
+
+function defaultGraphPresetName(filters: DashboardGraphPresetFilters): string {
+  const scope = filters.runScope === "all-projects" ? "All Stored" : "Project";
+  const view = filters.view === "mind-map" ? "Map" : filters.view === "network" ? "Network" : "Flow";
+  const orientation = filters.view === "network" ? ` ${filters.orientation === "radial" ? "Radial" : "Horizontal"}` : "";
+  const status = filters.runStatus === "all" ? "Runs" : `${titleCase(filters.runStatus)} Runs`;
+  return `${titleCase(filters.workflow.replace(/[-_]+/g, " "))} ${scope} ${status} ${view}${orientation}`;
 }
 
 function renderRecentGraphExportsHtml(exports: DashboardGraphExportSummary[], project: string): string {
@@ -16986,6 +17187,85 @@ function bundleLifecyclePlanForm(readiness: DashboardBundleReadiness, params: UR
 
 function projectIndexForm(project: string): string {
   return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
+}
+
+type DashboardGraphPresetActionResult =
+  | { ok: true; href: string }
+  | { ok: false; error: string };
+
+async function saveDashboardGraphPreset(form: URLSearchParams): Promise<DashboardGraphPresetActionResult> {
+  const projectInput = form.get("project")?.trim() || "";
+  const name = form.get("name")?.trim() || "";
+  if (!projectInput) return { ok: false, error: "Missing project path." };
+  if (!name) return { ok: false, error: "Preset name is required." };
+  const projectDir = path.resolve(process.cwd(), projectInput);
+  const presetFile = await readDashboardGraphPresets(projectDir);
+  const now = new Date().toISOString();
+  const id = safeFileSegment(name);
+  const existing = presetFile.presets.find((preset) => preset.id === id);
+  const filters = normalizeDashboardGraphPresetFilters({
+    workflow: form.get("workflow") ?? "",
+    project: projectInput,
+    policyProfile: form.get("policyProfile") ?? "",
+    view: form.get("view") ?? "",
+    orientation: form.get("orientation") ?? "",
+    category: form.get("category") ?? "",
+    approval: form.get("approval") ?? "",
+    policyStatus: form.get("policyStatus") ?? "",
+    runStatus: form.get("runStatus") ?? "",
+    runLimit: form.get("runLimit") ?? "",
+    runScope: form.get("runScope") ?? "",
+    stage: form.get("stage") ?? ""
+  });
+  const preset: DashboardGraphPreset = {
+    id,
+    name,
+    description: form.get("description")?.trim() || "",
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+    filters
+  };
+  presetFile.presets = [preset, ...presetFile.presets.filter((item) => item.id !== id)].slice(0, 30);
+  await writeDashboardGraphPresets(projectDir, presetFile);
+  return { ok: true, href: graphPresetHref(preset) };
+}
+
+async function deleteDashboardGraphPreset(form: URLSearchParams): Promise<DashboardGraphPresetActionResult> {
+  const projectInput = form.get("project")?.trim() || "";
+  const presetId = form.get("presetId")?.trim() || "";
+  if (!projectInput) return { ok: false, error: "Missing project path." };
+  if (!presetId) return { ok: false, error: "Missing preset id." };
+  const projectDir = path.resolve(process.cwd(), projectInput);
+  const presetFile = await readDashboardGraphPresets(projectDir);
+  presetFile.presets = presetFile.presets.filter((preset) => preset.id !== presetId);
+  await writeDashboardGraphPresets(projectDir, presetFile);
+  return { ok: true, href: workflowGraphDashboardHref(form.get("workflow")?.trim() || "build-feature", projectInput, form.get("policyProfile")?.trim() || "local", {
+    view: form.get("view")?.trim() || "graph",
+    orientation: form.get("orientation") === "radial" ? "radial" : "horizontal",
+    category: form.get("category")?.trim() || "",
+    approval: form.get("approval")?.trim() || "all",
+    policyStatus: form.get("policyStatus")?.trim() || "all",
+    runLimit: String(parseDashboardRunLimit(form.get("runLimit") ?? "50", 50)),
+    runStatus: parseDashboardRunStatusFilter(form.get("runStatus") ?? "all"),
+    runScope: parseDashboardRunScope(form.get("runScope") ?? "project"),
+    capture: false,
+    stage: form.get("stage")?.trim() || ""
+  }) };
+}
+
+function graphPresetHref(preset: DashboardGraphPreset): string {
+  return workflowGraphDashboardHref(preset.filters.workflow, preset.filters.project, preset.filters.policyProfile, {
+    view: preset.filters.view,
+    orientation: preset.filters.orientation,
+    category: preset.filters.category,
+    approval: preset.filters.approval,
+    policyStatus: preset.filters.policyStatus,
+    runLimit: preset.filters.runLimit,
+    runStatus: preset.filters.runStatus,
+    runScope: preset.filters.runScope,
+    capture: false,
+    stage: preset.filters.stage
+  });
 }
 
 function workflowGraphHandoffExportForm(input: {
