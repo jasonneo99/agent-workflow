@@ -312,7 +312,10 @@ foundation is complete.
   - Done: add dashboard visibility for generated shared-storage migration plan artifacts on the Server Readiness page.
   - Done: add a read-only row-level merge manifest that maps projects by `root_uri`, preserves target project ids, and classifies source-only, existing, conflicting, and project-id-rewrite rows before any shared-storage merge.
   - Done: add an insert-only merge importer that dry-runs by default and executes only from a reviewed row-level manifest with explicit `--execute`.
-  - Next: add object-bucket enumeration and richer post-merge proof checks, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add post-merge evidence on Server Readiness with latest merge manifest, backup folder, persisted import result when available, remaining source-only rows, and shared-primary readiness.
+  - Done: add offline fallback health on Server Readiness and CLI guidance for shared-online, local-fallback-ready, local-fallback-stopped, and offline-blocked postures.
+  - Done: add a local offline sync queue with CLI/dashboard actions to record fallback start, offline runs, sync-back intent, and synced queue items.
+  - Next: add object-bucket enumeration, richer post-merge proof checks, and an automated background sync reconciler that drains queued fallback work when shared storage returns, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
@@ -324,6 +327,7 @@ foundation is complete.
   - Done: add a merge-preview preflight summary with sampled project-root overlap, durable row counts, table diffs, and non-executing operator scripts.
   - Done: add a row-level merge manifest command for existing shared targets that maps projects through `root_uri`, preserves existing destination project ids, and identifies rows that need safe project-id rewriting.
   - Done: support executable insert-only merge mode by executing only a reviewed merge manifest, preserving existing destination rows, and rewriting dependent project ids safely.
+  - Done: add post-merge evidence and offline fallback diagnostics plus a local sync queue so operators know when local resources can stay stopped and what fallback work needs to be merged back.
   - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
   - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
   - Mirror object-storage artifacts from local MinIO to destination MinIO when artifacts reference object-backed payloads.

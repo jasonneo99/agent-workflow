@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import fsSync from "node:fs";
-import type { Dirent } from "node:fs";
+import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
@@ -34,6 +34,7 @@ import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages
 import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
+import { defaultServiceEndpoints } from "../../../packages/storage/src/config.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
   buildStorageMigrationPlan,
@@ -48,7 +49,8 @@ import {
 } from "../../../packages/storage/src/merge-manifest.js";
 import {
   formatStorageMergeImportResult,
-  runStorageMergeImport
+  runStorageMergeImport,
+  type StorageMergeImportResult
 } from "../../../packages/storage/src/merge-importer.js";
 import {
   buildStorageVerificationReport,
@@ -118,7 +120,7 @@ const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime"
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "offline-fallback", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -1176,6 +1178,8 @@ program
   .requiredOption("--manifest <path>", "reviewed storage-merge-manifest JSON path")
   .option("--source-database-url <url>", "source Postgres URL; defaults to SOURCE_DATABASE_URL or DATABASE_URL")
   .option("--target-database-url <url>", "target Postgres URL; defaults to TARGET_DATABASE_URL or DATABASE_URL")
+  .option("--out <dir>", "result output directory", ".agent-workflow/migrations")
+  .option("--write-result", "write JSON and Markdown import result files")
   .option("--execute", "perform the insert-only merge; omitted means dry-run")
   .option("--allow-stale-manifest", "allow execution when live source/target counts differ from the reviewed manifest")
   .option("--json", "print machine-readable import result")
@@ -1183,6 +1187,8 @@ program
     manifest: string;
     sourceDatabaseUrl?: string;
     targetDatabaseUrl?: string;
+    out: string;
+    writeResult?: boolean;
     execute?: boolean;
     allowStaleManifest?: boolean;
     json?: boolean;
@@ -1194,12 +1200,62 @@ program
       execute: options.execute,
       allowStaleManifest: options.allowStaleManifest
     });
+    const written = options.writeResult ? await writeStorageMergeImportResultFiles(result, options.out) : null;
     if (options.json) {
-      console.log(JSON.stringify(result, null, 2));
+      console.log(JSON.stringify({ ...result, written }, null, 2));
       return;
     }
     console.log(formatStorageMergeImportResult(result));
+    if (written) {
+      console.log("");
+      console.log("Written files:");
+      console.log(`- Markdown: ${written.markdownPath}`);
+      console.log(`- JSON: ${written.jsonPath}`);
+    }
     if (result.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("storage-merge-evidence")
+  .description("Inspect local post-merge evidence artifacts without contacting source or target storage")
+  .option("--dir <dir>", "migration evidence directory", ".agent-workflow/migrations")
+  .option("--json", "print machine-readable merge evidence")
+  .action(async (options: { dir: string; json?: boolean }) => {
+    const report = await loadStorageMergeEvidenceListing(options.dir);
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatStorageMergeEvidenceListing(report));
+    if (!report.safePrimaryStatePlane) process.exitCode = 1;
+  });
+
+program
+  .command("offline-fallback")
+  .description("Inspect shared storage health and localhost fallback readiness")
+  .option("--record <action>", "record a fallback queue item: start-local, offline-run, sync-back, use-shared")
+  .option("--project <path>", "project path for the recorded fallback item")
+  .option("--run-id <id>", "workflow run id for an offline-run queue item")
+  .option("--note <text>", "operator note for the recorded fallback item")
+  .option("--mark-synced <id>", "mark a fallback queue item synced")
+  .option("--json", "print machine-readable offline fallback report")
+  .action(async (options: { record?: string; project?: string; runId?: string; note?: string; markSynced?: string; json?: boolean }) => {
+    if (options.record) {
+      const result = await recordOfflineFallbackQueueItem({
+        action: parseOfflineFallbackQueueAction(options.record),
+        projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+        runId: options.runId,
+        note: options.note,
+        actor: "cli"
+      });
+      console.log(options.json ? JSON.stringify(result, null, 2) : formatOfflineFallbackQueue(result.queue));
+      return;
+    }
+    if (options.markSynced) {
+      const queue = await markOfflineFallbackQueueItemSynced(options.markSynced, "cli");
+      console.log(options.json ? JSON.stringify(queue, null, 2) : formatOfflineFallbackQueue(queue));
+      return;
+    }
+    const report = await loadOfflineFallbackReport();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatOfflineFallbackReport(report));
+    if (report.mode === "offline-blocked") process.exitCode = 2;
+    if (report.mode === "local-fallback-stopped") process.exitCode = 1;
   });
 
 program
@@ -4923,6 +4979,78 @@ type StorageMigrationPlanListing = {
   warnings: string[];
 };
 
+type StorageMergeEvidenceListing = {
+  kind: "agentflow_storage_merge_evidence_listing";
+  generatedAt: string;
+  directory: string;
+  latestManifest: {
+    jsonPath: string;
+    markdownPath: string | null;
+    generatedAt: string;
+    status: string;
+    sourceOnlyRows: number;
+    conflictRows: number;
+    projectIdRewriteRows: number;
+    tableCount: number;
+  } | null;
+  latestImport: {
+    jsonPath: string;
+    markdownPath: string | null;
+    generatedAt: string;
+    status: string;
+    mode: string;
+    affectedRows: number;
+    staleManifest: boolean;
+  } | null;
+  latestBackup: {
+    path: string;
+    generatedAt: string | null;
+    files: Array<{ name: string; sizeBytes: number }>;
+  } | null;
+  safePrimaryStatePlane: boolean;
+  warnings: string[];
+};
+
+type OfflineFallbackReport = {
+  kind: "agentflow_offline_fallback_report";
+  generatedAt: string;
+  currentServicesReachable: boolean;
+  currentServices: Awaited<ReturnType<typeof checkServices>>;
+  localServicesReachable: boolean;
+  localServices: Awaited<ReturnType<typeof checkServices>>;
+  mode: "shared-online" | "local-fallback-ready" | "local-fallback-stopped" | "offline-blocked";
+  queue: OfflineFallbackQueue;
+  commands: {
+    stopLocal: string;
+    startLocal: string;
+    useShared: string[];
+    useLocal: string[];
+    syncBack: string[];
+  };
+  notes: string[];
+};
+
+type OfflineFallbackQueueAction = "start-local" | "offline-run" | "sync-back" | "use-shared";
+
+type OfflineFallbackQueueItem = {
+  id: string;
+  action: OfflineFallbackQueueAction;
+  status: "pending" | "synced";
+  createdAt: string;
+  updatedAt: string;
+  actor: string;
+  projectRootUri: string | null;
+  runId: string | null;
+  note: string;
+};
+
+type OfflineFallbackQueue = {
+  kind: "agentflow_offline_fallback_queue";
+  version: 1;
+  updatedAt: string;
+  items: OfflineFallbackQueueItem[];
+};
+
 type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
 type ServerReadinessCheckStatus = "pass" | "warn" | "fail";
 
@@ -6233,6 +6361,18 @@ async function writeStorageMergeManifestFiles(manifest: StorageMergeManifest, ou
   return { markdownPath, jsonPath };
 }
 
+async function writeStorageMergeImportResultFiles(result: StorageMergeImportResult, outDir: string): Promise<{ markdownPath: string; jsonPath: string }> {
+  const resolvedOut = path.resolve(process.cwd(), outDir);
+  await fs.mkdir(resolvedOut, { recursive: true });
+  const stamp = result.generatedAt.replace(/[:.]/g, "-");
+  const base = `storage-merge-import-${stamp}`;
+  const markdownPath = path.join(resolvedOut, `${base}.md`);
+  const jsonPath = path.join(resolvedOut, `${base}.json`);
+  await fs.writeFile(markdownPath, `${formatStorageMergeImportResult(result)}\n`, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  return { markdownPath, jsonPath };
+}
+
 async function loadStorageMigrationPlanListing(inputDir?: string): Promise<StorageMigrationPlanListing> {
   const directory = path.resolve(process.cwd(), inputDir?.trim() || ".agent-workflow/migrations");
   const warnings: string[] = [];
@@ -6292,6 +6432,381 @@ async function loadStorageMigrationPlanListing(inputDir?: string): Promise<Stora
     plans,
     warnings
   };
+}
+
+async function loadStorageMergeEvidenceListing(inputDir?: string): Promise<StorageMergeEvidenceListing> {
+  const directory = path.resolve(process.cwd(), inputDir?.trim() || ".agent-workflow/migrations");
+  const generatedAt = new Date().toISOString();
+  const warnings: string[] = [];
+  let entries: string[];
+  try {
+    entries = await fs.readdir(directory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return {
+        kind: "agentflow_storage_merge_evidence_listing",
+        generatedAt,
+        directory,
+        latestManifest: null,
+        latestImport: null,
+        latestBackup: null,
+        safePrimaryStatePlane: false,
+        warnings: [`No migration evidence directory found at ${directory}.`]
+      };
+    }
+    throw error;
+  }
+
+  const manifest = await latestMergeManifest(directory, entries, warnings);
+  const importResult = await latestMergeImportResult(directory, entries, warnings);
+  const backup = await latestMergeBackup(directory, entries);
+  const safePrimaryStatePlane = Boolean(
+    manifest &&
+    manifest.sourceOnlyRows === 0 &&
+    importResult &&
+    importResult.status === "completed" &&
+    backup &&
+    backup.files.length >= 2
+  );
+  if (!safePrimaryStatePlane) {
+    warnings.push("Shared storage is not yet fully proven as primary by local evidence: need latest manifest with zero source-only rows, completed import result, and source/target backups.");
+  }
+  return {
+    kind: "agentflow_storage_merge_evidence_listing",
+    generatedAt,
+    directory,
+    latestManifest: manifest,
+    latestImport: importResult,
+    latestBackup: backup,
+    safePrimaryStatePlane,
+    warnings
+  };
+}
+
+async function latestMergeManifest(directory: string, entries: string[], warnings: string[]): Promise<StorageMergeEvidenceListing["latestManifest"]> {
+  const jsonFiles = entries
+    .filter((entry) => entry.startsWith("storage-merge-manifest-") && entry.endsWith(".json"))
+    .sort()
+    .reverse();
+  for (const entry of jsonFiles) {
+    const jsonPath = path.join(directory, entry);
+    const manifest = await readJsonFile<StorageMergeManifest>(jsonPath);
+    if (!manifest || manifest.kind !== "agentflow_storage_merge_manifest") {
+      warnings.push(`Skipped unrecognized merge manifest JSON: ${jsonPath}`);
+      continue;
+    }
+    const basePath = jsonPath.slice(0, -".json".length);
+    return {
+      jsonPath,
+      markdownPath: await pathIsFile(`${basePath}.md`) ? `${basePath}.md` : null,
+      generatedAt: manifest.generatedAt,
+      status: manifest.status,
+      sourceOnlyRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.insertRows, 0),
+      conflictRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.conflictRows, 0),
+      projectIdRewriteRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.projectIdRewriteRows, 0),
+      tableCount: manifest.tablePlans.length
+    };
+  }
+  return null;
+}
+
+async function latestMergeImportResult(directory: string, entries: string[], warnings: string[]): Promise<StorageMergeEvidenceListing["latestImport"]> {
+  const jsonFiles = entries
+    .filter((entry) => entry.startsWith("storage-merge-import-") && entry.endsWith(".json"))
+    .sort()
+    .reverse();
+  for (const entry of jsonFiles) {
+    const jsonPath = path.join(directory, entry);
+    const result = await readJsonFile<StorageMergeImportResult>(jsonPath);
+    if (!result || result.kind !== "agentflow_storage_merge_import_result") {
+      warnings.push(`Skipped unrecognized merge import JSON: ${jsonPath}`);
+      continue;
+    }
+    const basePath = jsonPath.slice(0, -".json".length);
+    return {
+      jsonPath,
+      markdownPath: await pathIsFile(`${basePath}.md`) ? `${basePath}.md` : null,
+      generatedAt: result.generatedAt,
+      status: result.status,
+      mode: result.mode,
+      affectedRows: result.operations.reduce((sum, operation) => sum + operation.affectedRows, 0),
+      staleManifest: result.staleManifest
+    };
+  }
+  return null;
+}
+
+async function latestMergeBackup(directory: string, entries: string[]): Promise<StorageMergeEvidenceListing["latestBackup"]> {
+  const backupDirs = entries
+    .filter((entry) => entry.startsWith("storage-merge-backup-"))
+    .sort()
+    .reverse();
+  for (const entry of backupDirs) {
+    const backupPath = path.join(directory, entry);
+    const stat = await safeStat(backupPath);
+    if (!stat?.isDirectory()) continue;
+    const files = await fs.readdir(backupPath);
+    const backupFiles = [];
+    for (const file of files) {
+      const filePath = path.join(backupPath, file);
+      const fileStat = await safeStat(filePath);
+      if (fileStat?.isFile()) backupFiles.push({ name: file, sizeBytes: fileStat.size });
+    }
+    return {
+      path: backupPath,
+      generatedAt: stat.mtime.toISOString(),
+      files: backupFiles.sort((a, b) => a.name.localeCompare(b.name))
+    };
+  }
+  return null;
+}
+
+async function loadOfflineFallbackReport(): Promise<OfflineFallbackReport> {
+  const currentServices = await checkServices();
+  const localEnv = {
+    DATABASE_URL: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
+    REDIS_URL: "redis://127.0.0.1:16379",
+    OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000"
+  };
+  const localServices = await checkServices(defaultServiceEndpoints(localEnv));
+  const currentServicesReachable = currentServices.every((service) => service.reachable);
+  const localServicesReachable = localServices.every((service) => service.reachable);
+  const mode = currentServicesReachable
+    ? "shared-online"
+    : localServicesReachable
+      ? "local-fallback-ready"
+      : localServices.some((service) => service.reachable)
+        ? "offline-blocked"
+        : "local-fallback-stopped";
+  const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
+  return {
+    kind: "agentflow_offline_fallback_report",
+    generatedAt: new Date().toISOString(),
+    currentServicesReachable,
+    currentServices,
+    localServicesReachable,
+    localServices,
+    mode,
+    queue,
+    commands: offlineFallbackCommands(),
+    notes: offlineFallbackNotes(mode)
+  };
+}
+
+function offlineFallbackQueuePath(): string {
+  return path.join(rootDir, ".agent-workflow", "offline", "sync-queue.json");
+}
+
+function emptyOfflineFallbackQueue(): OfflineFallbackQueue {
+  return {
+    kind: "agentflow_offline_fallback_queue",
+    version: 1,
+    updatedAt: new Date().toISOString(),
+    items: []
+  };
+}
+
+async function readOfflineFallbackQueue(): Promise<OfflineFallbackQueue> {
+  const queue = await readJsonFile<OfflineFallbackQueue>(offlineFallbackQueuePath());
+  if (!queue || queue.kind !== "agentflow_offline_fallback_queue" || !Array.isArray(queue.items)) {
+    return emptyOfflineFallbackQueue();
+  }
+  return {
+    kind: "agentflow_offline_fallback_queue",
+    version: 1,
+    updatedAt: queue.updatedAt || new Date().toISOString(),
+    items: queue.items.map((item): OfflineFallbackQueueItem => {
+      const status: OfflineFallbackQueueItem["status"] = item.status === "synced" ? "synced" : "pending";
+      return {
+        id: item.id,
+        action: parseOfflineFallbackQueueAction(item.action),
+        status,
+        createdAt: item.createdAt,
+        updatedAt: item.updatedAt,
+        actor: item.actor || "unknown",
+        projectRootUri: item.projectRootUri || null,
+        runId: item.runId || null,
+        note: item.note || ""
+      };
+    }).filter((item) => Boolean(item.id && item.createdAt && item.updatedAt))
+  };
+}
+
+async function writeOfflineFallbackQueue(queue: OfflineFallbackQueue): Promise<void> {
+  const filePath = offlineFallbackQueuePath();
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(queue, null, 2)}\n`, "utf8");
+}
+
+async function recordOfflineFallbackQueueItem(input: {
+  action: OfflineFallbackQueueAction;
+  projectRootUri?: string;
+  runId?: string;
+  note?: string;
+  actor: string;
+}): Promise<{ item: OfflineFallbackQueueItem; queue: OfflineFallbackQueue }> {
+  const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
+  const now = new Date().toISOString();
+  const item: OfflineFallbackQueueItem = {
+    id: randomUUID(),
+    action: input.action,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+    actor: input.actor,
+    projectRootUri: input.projectRootUri ?? null,
+    runId: input.runId ?? null,
+    note: input.note?.trim() || offlineFallbackDefaultNote(input.action)
+  };
+  queue.updatedAt = now;
+  queue.items = [item, ...queue.items].slice(0, 500);
+  await writeOfflineFallbackQueue(queue);
+  return { item, queue };
+}
+
+async function markOfflineFallbackQueueItemSynced(id: string, actor: string): Promise<OfflineFallbackQueue> {
+  const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
+  const now = new Date().toISOString();
+  let found = false;
+  queue.items = queue.items.map((item) => {
+    if (item.id !== id) return item;
+    found = true;
+    return {
+      ...item,
+      status: "synced",
+      updatedAt: now,
+      note: item.note ? `${item.note} Synced by ${actor}.` : `Synced by ${actor}.`
+    };
+  });
+  if (!found) throw new Error(`Offline fallback queue item not found: ${id}`);
+  queue.updatedAt = now;
+  await writeOfflineFallbackQueue(queue);
+  return queue;
+}
+
+function parseOfflineFallbackQueueAction(value: string): OfflineFallbackQueueAction {
+  const normalized = normalizeLookup(value);
+  if (normalized === "start-local" || normalized === "startlocal") return "start-local";
+  if (normalized === "offline-run" || normalized === "offlinerun" || normalized === "run") return "offline-run";
+  if (normalized === "sync-back" || normalized === "syncback" || normalized === "sync") return "sync-back";
+  if (normalized === "use-shared" || normalized === "useshared" || normalized === "shared") return "use-shared";
+  throw new Error(`Offline fallback action must be one of: start-local, offline-run, sync-back, use-shared. Received: ${value}`);
+}
+
+function offlineFallbackDefaultNote(action: OfflineFallbackQueueAction): string {
+  if (action === "start-local") return "Operator intends to start localhost fallback services.";
+  if (action === "offline-run") return "Workflow run was created while using local fallback storage.";
+  if (action === "sync-back") return "Local fallback work should be merged back into shared storage.";
+  return "Operator intends to return to shared storage as the primary state plane.";
+}
+
+function offlineFallbackCommands(): OfflineFallbackReport["commands"] {
+  return {
+    stopLocal: "docker compose -f infra/docker-compose.yml stop",
+    startLocal: "docker compose -f infra/docker-compose.yml up -d",
+    useShared: [
+      "DATABASE_URL=postgres://agentflow:agentflow@100.78.183.30:15432/agentflow",
+      "REDIS_URL=redis://100.78.183.30:16379",
+      "OBJECT_STORAGE_ENDPOINT=http://100.78.183.30:19000"
+    ],
+    useLocal: [
+      "DATABASE_URL=postgres://agentflow:agentflow@localhost:15432/agentflow",
+      "REDIS_URL=redis://localhost:16379",
+      "OBJECT_STORAGE_ENDPOINT=http://localhost:19000"
+    ],
+    syncBack: [
+      "npm run storage-merge-manifest -- --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow --target-database-url \"$DATABASE_URL\" --write",
+      "npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow --target-database-url \"$DATABASE_URL\"",
+      "npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow --target-database-url \"$DATABASE_URL\" --execute"
+    ]
+  };
+}
+
+function offlineFallbackNotes(mode: OfflineFallbackReport["mode"]): string[] {
+  if (mode === "shared-online") {
+    return [
+      "Primary shared storage is reachable. Local fallback services can stay stopped until needed.",
+      "Offline sync is currently operator-driven through the merge manifest/import commands."
+    ];
+  }
+  if (mode === "local-fallback-ready") {
+    return [
+      "Shared storage appears unavailable but local fallback services are reachable.",
+      "Point the local environment at localhost before running new offline work, then sync back when shared storage returns."
+    ];
+  }
+  if (mode === "local-fallback-stopped") {
+    return [
+      "Shared storage appears unavailable and local fallback services are stopped.",
+      "Start local fallback services before queueing offline workflow runs."
+    ];
+  }
+  return [
+    "Some fallback services are reachable but not all. Repair local Docker services before relying on offline workflow execution."
+  ];
+}
+
+function formatStorageMergeEvidenceListing(report: StorageMergeEvidenceListing): string {
+  return [
+    `Storage merge evidence (${report.generatedAt})`,
+    `Directory: ${report.directory}`,
+    `Primary shared state: ${report.safePrimaryStatePlane ? "proven" : "attention"}`,
+    "",
+    "Latest manifest:",
+    report.latestManifest
+      ? `- ${report.latestManifest.generatedAt}: source-only=${report.latestManifest.sourceOnlyRows}, conflicts=${report.latestManifest.conflictRows}, project-id rewrites=${report.latestManifest.projectIdRewriteRows}\n  ${report.latestManifest.jsonPath}`
+      : "- none",
+    "",
+    "Latest import:",
+    report.latestImport
+      ? `- ${report.latestImport.generatedAt}: ${report.latestImport.status} ${report.latestImport.mode}, affected=${report.latestImport.affectedRows}, stale=${report.latestImport.staleManifest ? "yes" : "no"}\n  ${report.latestImport.jsonPath}`
+      : "- none",
+    "",
+    "Latest backup:",
+    report.latestBackup
+      ? `- ${report.latestBackup.generatedAt ?? "unknown"}: ${report.latestBackup.path}\n${report.latestBackup.files.map((file) => `  - ${file.name}: ${formatBytes(file.sizeBytes)}`).join("\n")}`
+      : "- none",
+    "",
+    "Warnings:",
+    ...(report.warnings.length ? report.warnings.map((warning) => `- ${warning}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatOfflineFallbackReport(report: OfflineFallbackReport): string {
+  const pendingItems = report.queue.items.filter((item) => item.status === "pending");
+  return [
+    `Offline fallback (${report.generatedAt})`,
+    `Mode: ${report.mode}`,
+    `Configured storage reachable: ${report.currentServicesReachable ? "yes" : "no"}`,
+    `Local fallback reachable: ${report.localServicesReachable ? "yes" : "no"}`,
+    `Pending sync queue items: ${pendingItems.length}`,
+    "",
+    "Configured storage:",
+    ...report.currentServices.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`),
+    "",
+    "Local fallback:",
+    ...report.localServices.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`),
+    "",
+    "Commands:",
+    `- Stop local fallback: ${report.commands.stopLocal}`,
+    `- Start local fallback: ${report.commands.startLocal}`,
+    ...report.commands.syncBack.map((command) => `- Sync back: ${command}`),
+    "",
+    "Sync queue:",
+    ...(pendingItems.length ? pendingItems.map((item) => `- ${item.id}: ${item.action}${item.projectRootUri ? ` ${item.projectRootUri}` : ""}${item.runId ? ` run=${item.runId}` : ""}`) : ["- none"]),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+function formatOfflineFallbackQueue(queue: OfflineFallbackQueue): string {
+  const rows = queue.items.map((item) => `- ${item.id}: ${item.status} ${item.action}${item.projectRootUri ? ` project=${item.projectRootUri}` : ""}${item.runId ? ` run=${item.runId}` : ""}${item.note ? ` - ${item.note}` : ""}`);
+  return [
+    `Offline fallback sync queue (${queue.updatedAt})`,
+    `Items: ${queue.items.length}`,
+    ...(rows.length ? rows : ["- none"])
+  ].join("\n");
 }
 
 async function loadServerReadinessReport(input: {
@@ -10671,6 +11186,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/offline-fallback-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardOfflineFallbackAction(form);
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
@@ -10902,12 +11425,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/server-readiness") {
+    const migrationDir = requestUrl.searchParams.get("migrationDir") ?? undefined;
     const report = await loadServerReadinessReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
     });
+    const mergeEvidence = await loadStorageMergeEvidenceListing(migrationDir);
+    const offlineFallback = await loadOfflineFallbackReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(report, null, 2));
+    response.end(JSON.stringify({ ...report, mergeEvidence, offlineFallback }, null, 2));
     return;
   }
 
@@ -10932,6 +11458,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const listing = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("dir") ?? undefined);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(listing, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/storage-merge-evidence") {
+    const listing = await loadStorageMergeEvidenceListing(requestUrl.searchParams.get("dir") ?? undefined);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(listing, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/offline-fallback") {
+    const report = await loadOfflineFallbackReport();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
@@ -11479,9 +12019,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
     });
     const migrationPlans = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
+    const mergeEvidence = await loadStorageMergeEvidenceListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
+    const offlineFallback = await loadOfflineFallbackReport();
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, projects, requestUrl.searchParams));
     return;
   }
 
@@ -14146,7 +14688,89 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderPostMergeEvidencePanel(evidence: StorageMergeEvidenceListing): string {
+  const statusClass = evidence.safePrimaryStatePlane ? "completed" : "queued";
+  const manifest = evidence.latestManifest;
+  const importResult = evidence.latestImport;
+  const backup = evidence.latestBackup;
+  const backupFiles = backup?.files.map((file) => `<li><code>${escapeHtml(file.name)}</code> ${escapeHtml(formatBytes(file.sizeBytes))}</li>`).join("") ?? "";
+  const warningRows = evidence.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>Post-Merge Evidence</h2><span class="muted">Local operator proof for using shared storage as the primary state plane.</span></div>
+      <a class="button secondary" href="/api/storage-merge-evidence?dir=${encodeURIComponent(evidence.directory)}">JSON</a>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Primary State", evidence.safePrimaryStatePlane ? "proven" : "needs proof", evidence.safePrimaryStatePlane ? "shared storage is safe for normal use" : "review the missing evidence below")}
+      ${metricCard("Source-Only Rows", manifest ? manifest.sourceOnlyRows : "unknown", "remaining rows from last manifest")}
+      ${metricCard("Last Import", importResult ? importResult.status : "none", importResult ? `${importResult.mode}, ${formatNumber(importResult.affectedRows)} affected` : "no persisted import result")}
+      ${metricCard("Backup", backup ? "present" : "missing", backup ? `${backup.files.length} file(s)` : "source and target backups not found")}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Manifest</strong>${manifest ? `${renderDashboardDateTime(manifest.generatedAt)}<br><code>${escapeHtml(manifest.jsonPath)}</code>` : "none"}</div>
+      <div><strong>Conflicts</strong>${manifest ? `${formatNumber(manifest.conflictRows)}<br><span class="muted">${formatNumber(manifest.projectIdRewriteRows)} project-id rewrites tracked</span>` : "unknown"}</div>
+      <div><strong>Import Result</strong>${importResult ? `${renderDashboardDateTime(importResult.generatedAt)}<br><code>${escapeHtml(importResult.jsonPath)}</code>` : "none"}</div>
+      <div><strong>Backup Path</strong>${backup ? `${renderDashboardDateTime(backup.generatedAt)}<br><code>${escapeHtml(backup.path)}</code>` : "none"}</div>
+    </div>
+    ${backupFiles ? `<details class="governance-details"><summary>Backup Files</summary><ul>${backupFiles}</ul></details>` : ""}
+    ${warningRows ? `<details class="governance-details" open><summary>Evidence Notes</summary><ul>${warningRows}</ul></details>` : ""}
+    <p class="muted">Current state: <span class="status ${statusClass}">${evidence.safePrimaryStatePlane ? "ready" : "attention"}</span>.</p>
+  </section>`;
+}
+
+function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
+  const statusClass = report.mode === "shared-online" || report.mode === "local-fallback-ready" ? "completed" : report.mode === "offline-blocked" ? "failed" : "queued";
+  const currentRows = report.currentServices.map((service) => `<tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>`).join("");
+  const localRows = report.localServices.map((service) => `<tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>`).join("");
+  const commandList = [
+    `Stop local fallback: ${report.commands.stopLocal}`,
+    `Start local fallback: ${report.commands.startLocal}`,
+    ...report.commands.syncBack.map((command) => `Sync back: ${command}`)
+  ].map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const notes = report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
+  const pendingItems = report.queue.items.filter((item) => item.status === "pending");
+  const queueRows = pendingItems.map((item) => `<tr>
+    <td>${escapeHtml(item.action)}<br><span class="muted">${renderDashboardDateTime(item.createdAt)}</span></td>
+    <td>${item.projectRootUri ? `<code>${escapeHtml(item.projectRootUri)}</code>` : "all/local"}${item.runId ? `<br><span class="muted">run ${escapeHtml(item.runId)}</span>` : ""}</td>
+    <td>${escapeHtml(item.note || "")}</td>
+    <td><form method="post" action="/api/offline-fallback-action"><input type="hidden" name="action" value="mark-synced"><input type="hidden" name="itemId" value="${escapeHtml(item.id)}"><button type="submit">Mark Synced</button></form></td>
+  </tr>`).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>Offline Fallback</h2><span class="muted">Read-only health for shared storage and localhost fallback services.</span></div>
+      <a class="button secondary" href="/api/offline-fallback">JSON</a>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Mode", report.mode, "fallback posture")}
+      ${metricCard("Shared", report.currentServicesReachable ? "online" : "offline", "current configured storage")}
+      ${metricCard("Local Fallback", report.localServicesReachable ? "ready" : "stopped", "localhost Docker services")}
+      ${metricCard("Sync Queue", pendingItems.length, "pending local fallback items")}
+    </div>
+    <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current fallback status: <span class="status ${statusClass}">${escapeHtml(report.mode)}</span>.</p>
+    <div class="split-grid">
+      <form class="inline-form" method="post" action="/api/offline-fallback-action">
+        <input type="hidden" name="action" value="start-local">
+        <input name="note" value="Start localhost fallback services if Hulk/shared storage is down." aria-label="Fallback note">
+        <button type="submit">Record Local Fallback</button>
+      </form>
+      <form class="inline-form" method="post" action="/api/offline-fallback-action">
+        <input type="hidden" name="action" value="sync-back">
+        <input name="note" value="Merge local fallback rows back into shared storage when Hulk returns." aria-label="Sync note">
+        <button type="submit">Record Sync Needed</button>
+      </form>
+    </div>
+    <div class="split-grid">
+      <div><h3>Configured Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${currentRows}</tbody></table></div></div>
+      <div><h3>Local Fallback</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${localRows}</tbody></table></div></div>
+    </div>
+    <h3>Offline Sync Queue</h3>
+    <div class="table-wrap"><table><thead><tr><th>Action</th><th>Scope</th><th>Note</th><th></th></tr></thead><tbody>${queueRows || '<tr><td colspan="4">No pending offline fallback items.</td></tr>'}</tbody></table></div>
+    <details class="governance-details"><summary>Operator Commands</summary><ul>${commandList}</ul></details>
+    <ul>${notes}</ul>
+  </section>`;
+}
+
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -14227,6 +14851,8 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <p class="muted">Generated ${renderDashboardDateTime(storageVerification.generatedAt)}. Current status: <span class="status ${storageStatusClass}">${escapeHtml(storageVerification.status)}</span>.</p>
   ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
   <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
+  ${renderPostMergeEvidencePanel(mergeEvidence)}
+  ${renderOfflineFallbackPanel(offlineFallback)}
   <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
   <div class="metric-grid">
     ${metricCard("Plans", migrationPlans.plans.length, "generated migration packages")}
@@ -15387,6 +16013,39 @@ async function processDashboardLaunchAgentAction(action: string): Promise<Dashbo
       `Action log: ${actionLogPath}`,
       `Plist: ${path.join(os.homedir(), "Library", "LaunchAgents", `${defaultLaunchAgentLabel}.plist`)}`,
       "Refresh Settings in a few seconds to see the new launchd status."
+    ].join("\n")
+  };
+}
+
+async function processDashboardOfflineFallbackAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const action = form.get("action") ?? "";
+  if (action === "mark-synced") {
+    const itemId = form.get("itemId")?.trim() || "";
+    if (!itemId) return { ok: false, error: "Missing offline fallback queue item id." };
+    const queue = await markOfflineFallbackQueueItemSynced(itemId, "dashboard");
+    return {
+      ok: true,
+      title: "Offline fallback item marked synced",
+      output: formatOfflineFallbackQueue(queue)
+    };
+  }
+  const parsedAction = parseOfflineFallbackQueueAction(action);
+  const projectInput = form.get("project")?.trim() || "";
+  const result = await recordOfflineFallbackQueueItem({
+    action: parsedAction,
+    projectRootUri: projectInput ? path.resolve(process.cwd(), projectInput) : undefined,
+    runId: form.get("runId")?.trim() || undefined,
+    note: form.get("note")?.trim() || undefined,
+    actor: "dashboard"
+  });
+  return {
+    ok: true,
+    title: "Offline fallback queue updated",
+    output: [
+      `Queued: ${result.item.action}`,
+      `Item: ${result.item.id}`,
+      "",
+      formatOfflineFallbackQueue(result.queue)
     ].join("\n")
   };
 }
@@ -21376,6 +22035,14 @@ async function pathIsFile(filePath: string): Promise<boolean> {
     return stat.isFile();
   } catch {
     return false;
+  }
+}
+
+async function safeStat(filePath: string): Promise<Stats | null> {
+  try {
+    return await fs.stat(filePath);
+  } catch {
+    return null;
   }
 }
 

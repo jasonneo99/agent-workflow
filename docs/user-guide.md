@@ -256,6 +256,34 @@ rows are skipped, while source-only historical runs, tasks, receipts,
 approvals, artifacts, memory, and index rows are inserted with project ids
 rewritten through `root_uri` when needed.
 
+Inspect post-merge evidence:
+
+```bash
+npm run storage-merge-evidence
+```
+
+Inspect fallback posture:
+
+```bash
+npm run offline-fallback
+```
+
+When shared storage is healthy, local Docker storage can stay stopped. If shared
+storage is down, start local fallback services with
+`docker compose -f infra/docker-compose.yml up -d`, switch the environment to
+localhost storage URLs, run offline work, and sync back with the same merge
+manifest/import flow when shared storage returns. Background auto-sync is a
+future enhancement; today the sync path is explicit and auditable.
+
+You can also record the fallback lifecycle so the dashboard keeps an operator
+queue:
+
+```bash
+npm run offline-fallback -- --record start-local --note "Shared storage unavailable"
+npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
+npm run offline-fallback -- --record sync-back --note "Ready to merge back into shared storage"
+```
+
 After a migration copy, compare durable source and target state:
 
 ```bash

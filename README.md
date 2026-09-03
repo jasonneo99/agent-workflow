@@ -325,6 +325,21 @@ npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-me
 npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json --execute
 ```
 
+Afterward, inspect primary shared-storage proof and fallback posture:
+
+```bash
+npm run storage-merge-evidence
+npm run offline-fallback
+```
+
+If shared storage is unavailable, record local fallback work before switching:
+
+```bash
+npm run offline-fallback -- --record start-local --note "Hulk unavailable; start localhost fallback"
+npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
+npm run offline-fallback -- --record sync-back --note "Merge localhost fallback rows back to shared storage"
+```
+
 For file-based output only (no Docker required), use `--profile simple` during project init.
 
 ## Adding Your Own Agents

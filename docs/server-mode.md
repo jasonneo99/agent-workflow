@@ -389,6 +389,46 @@ overwriting shared definitions, inserts source-only projects and history, maps
 overlapping projects through `root_uri`, rewrites dependent project ids, and
 skips existing/conflicting target rows.
 
+After a merge, inspect local evidence:
+
+```bash
+npm run storage-merge-evidence
+```
+
+The dashboard Server page also shows Post-Merge Evidence with the latest merge
+manifest, latest persisted import result when available, latest backup folder,
+remaining source-only rows from the latest manifest, and whether the shared
+storage plane is proven enough for normal primary use.
+
+### Offline Fallback
+
+Shared storage can be the normal primary state plane while localhost Docker
+services stay stopped. If the shared host is unavailable, inspect fallback
+readiness:
+
+```bash
+npm run offline-fallback
+```
+
+The current fallback mode is operator-driven: start local services, point the
+environment at localhost, run offline work, then sync back through
+`storage-merge-manifest` and `storage-merge-import` when shared storage returns.
+The Server page shows both configured shared-storage health and localhost
+fallback health. Automatic background sync is planned separately so the default
+open-source behavior stays explicit and auditable.
+
+Record fallback intent and offline runs in the local sync queue:
+
+```bash
+npm run offline-fallback -- --record start-local --note "Hulk unavailable; use localhost storage"
+npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
+npm run offline-fallback -- --record sync-back --note "Merge localhost rows back to shared storage"
+```
+
+The Server page exposes the same queue with buttons to record local fallback,
+record sync needed, and mark queue items synced after the merge manifest/import
+path has completed.
+
 After a reviewed copy, verify durable state without mutating either side:
 
 ```bash
