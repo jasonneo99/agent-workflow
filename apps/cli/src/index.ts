@@ -1262,9 +1262,19 @@ program
   .command("offline-sync")
   .description("Prepare or execute a local fallback sync back into configured shared storage")
   .option("--out <dir>", "migration evidence output directory", ".agent-workflow/migrations")
+  .option("--scheduler-check", "run the daemon-style dry-run scheduler check once")
+  .option("--scheduler-interval-ms <number>", "minimum interval for scheduler checks", "900000")
   .option("--execute", "execute the insert-only merge and mark pending fallback items synced")
   .option("--json", "print machine-readable offline sync result")
-  .action(async (options: { out: string; execute?: boolean; json?: boolean }) => {
+  .action(async (options: { out: string; schedulerCheck?: boolean; schedulerIntervalMs: string; execute?: boolean; json?: boolean }) => {
+    if (options.schedulerCheck) {
+      const status = await runDaemonOfflineSyncScheduler({
+        actor: "cli",
+        minIntervalMs: parsePositiveInteger(options.schedulerIntervalMs, 900000)
+      });
+      console.log(options.json ? JSON.stringify(status, null, 2) : formatOfflineSyncSchedulerStatus(status));
+      return;
+    }
     const result = await runOfflineFallbackSync({
       outDir: options.out,
       execute: Boolean(options.execute),
@@ -3246,10 +3256,12 @@ program
   .option("--once", "run a single daemon tick and exit")
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
+  .option("--offline-sync-interval-ms <number>", "minimum interval between daemon-triggered offline sync dry runs", "900000")
+  .option("--disable-offline-sync", "disable daemon-triggered offline sync dry-run checks")
   .option("--daemon-id <id>", "stable daemon identity for dashboard visibility")
   .option("--heartbeat-file <path>", "learning daemon heartbeat file path")
   .option("--json", "print final daemon status JSON")
-  .action(async (options: { project?: string; allProjects?: boolean; mode: string; once?: boolean; limit: string; intervalMs: string; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
+  .action(async (options: { project?: string; allProjects?: boolean; mode: string; once?: boolean; limit: string; intervalMs: string; offlineSyncIntervalMs: string; disableOfflineSync?: boolean; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -3275,6 +3287,7 @@ program
       process.exitCode = 1;
       return;
     }
+    const offlineSyncIntervalMs = parsePositiveInteger(options.offlineSyncIntervalMs, 900000);
     const daemonId = normalizeWorkerId(options.daemonId) ?? "learning-daemon";
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile ?? path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json"));
     const startedAt = new Date().toISOString();
@@ -3303,6 +3316,7 @@ program
         autonomousApplyMaxRisk: update?.autonomousApplyMaxRisk ?? lastStatus?.autonomousApplyMaxRisk ?? await learningAutonomousApplyMaxRisk(statusProjectDir),
         workflowShapeRecommendations: update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
         workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(statusProjectDir),
+        offlineSyncStatus: lastStatus?.offlineSyncStatus ?? null,
         lastError,
         command: allProjects
           ? `agentflow learning-daemon --all-projects --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
@@ -3346,6 +3360,16 @@ program
           }
         }
         await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir);
+        if (!options.disableOfflineSync) {
+          const offlineSync = await runDaemonOfflineSyncScheduler({
+            actor: daemonId,
+            minIntervalMs: offlineSyncIntervalMs
+          });
+          if (lastStatus) {
+            lastStatus.offlineSyncStatus = offlineSync;
+            await writeLearningDaemonStatus(projectDir, lastStatus, heartbeatFile);
+          }
+        }
         if (!options.json) {
           console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}`);
         }
@@ -4571,6 +4595,7 @@ type LearningDaemonHeartbeat = {
   autonomousApplyMaxRisk?: LearningRiskLevel;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
+  offlineSyncStatus?: OfflineSyncSchedulerStatus | null;
   command: string;
 };
 
@@ -5036,6 +5061,7 @@ type OfflineFallbackReport = {
   localServices: Awaited<ReturnType<typeof checkServices>>;
   mode: "shared-online" | "local-fallback-ready" | "local-fallback-stopped" | "offline-blocked";
   queue: OfflineFallbackQueue;
+  scheduler: OfflineSyncSchedulerStatus;
   commands: {
     stopLocal: string;
     startLocal: string;
@@ -5098,6 +5124,17 @@ type OfflineFallbackSyncResult = {
   };
   notes: string[];
   warnings: string[];
+};
+
+type OfflineSyncSchedulerStatus = {
+  kind: "agentflow_offline_sync_scheduler_status";
+  updatedAt: string;
+  status: "idle" | "waiting" | "ready" | "blocked" | "synced" | "error";
+  pendingQueueItems: number;
+  lastRunAt: string | null;
+  nextRunAfter: string | null;
+  lastResultPath: string | null;
+  message: string;
 };
 
 type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
@@ -6637,6 +6674,7 @@ async function loadOfflineFallbackReport(): Promise<OfflineFallbackReport> {
     localServices,
     mode,
     queue,
+    scheduler: await readOfflineSyncSchedulerStatus().catch(() => emptyOfflineSyncSchedulerStatus()),
     commands: offlineFallbackCommands(),
     notes: offlineFallbackNotes(mode)
   };
@@ -6646,12 +6684,29 @@ function offlineFallbackQueuePath(): string {
   return path.join(rootDir, ".agent-workflow", "offline", "sync-queue.json");
 }
 
+function offlineSyncSchedulerStatusPath(): string {
+  return path.join(rootDir, ".agent-workflow", "offline", "scheduler-status.json");
+}
+
 function emptyOfflineFallbackQueue(): OfflineFallbackQueue {
   return {
     kind: "agentflow_offline_fallback_queue",
     version: 1,
     updatedAt: new Date().toISOString(),
     items: []
+  };
+}
+
+function emptyOfflineSyncSchedulerStatus(): OfflineSyncSchedulerStatus {
+  return {
+    kind: "agentflow_offline_sync_scheduler_status",
+    updatedAt: new Date().toISOString(),
+    status: "idle",
+    pendingQueueItems: 0,
+    lastRunAt: null,
+    nextRunAfter: null,
+    lastResultPath: null,
+    message: "Offline sync scheduler has not run yet."
   };
 }
 
@@ -6685,6 +6740,29 @@ async function writeOfflineFallbackQueue(queue: OfflineFallbackQueue): Promise<v
   const filePath = offlineFallbackQueuePath();
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, `${JSON.stringify(queue, null, 2)}\n`, "utf8");
+}
+
+async function readOfflineSyncSchedulerStatus(): Promise<OfflineSyncSchedulerStatus> {
+  const status = await readJsonFile<OfflineSyncSchedulerStatus>(offlineSyncSchedulerStatusPath());
+  if (!status || status.kind !== "agentflow_offline_sync_scheduler_status") {
+    return emptyOfflineSyncSchedulerStatus();
+  }
+  return {
+    kind: "agentflow_offline_sync_scheduler_status",
+    updatedAt: status.updatedAt || new Date().toISOString(),
+    status: ["idle", "waiting", "ready", "blocked", "synced", "error"].includes(status.status) ? status.status : "idle",
+    pendingQueueItems: Number.isFinite(status.pendingQueueItems) ? status.pendingQueueItems : 0,
+    lastRunAt: status.lastRunAt ?? null,
+    nextRunAfter: status.nextRunAfter ?? null,
+    lastResultPath: status.lastResultPath ?? null,
+    message: status.message || ""
+  };
+}
+
+async function writeOfflineSyncSchedulerStatus(status: OfflineSyncSchedulerStatus): Promise<void> {
+  const filePath = offlineSyncSchedulerStatusPath();
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, `${JSON.stringify(status, null, 2)}\n`, "utf8");
 }
 
 async function recordOfflineFallbackQueueItem(input: {
@@ -6873,6 +6951,99 @@ async function runOfflineFallbackSync(input: { outDir: string; execute: boolean;
   return { ...result, written };
 }
 
+async function runDaemonOfflineSyncScheduler(input: { actor: string; minIntervalMs: number }): Promise<OfflineSyncSchedulerStatus> {
+  const now = new Date();
+  const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
+  const pendingItems = queue.items.filter((item) => item.status === "pending" && (item.action === "offline-run" || item.action === "sync-back"));
+  const previous = await readOfflineSyncSchedulerStatus().catch(() => emptyOfflineSyncSchedulerStatus());
+  if (!pendingItems.length) {
+    const status: OfflineSyncSchedulerStatus = {
+      kind: "agentflow_offline_sync_scheduler_status",
+      updatedAt: now.toISOString(),
+      status: "idle",
+      pendingQueueItems: 0,
+      lastRunAt: previous.lastRunAt,
+      nextRunAfter: null,
+      lastResultPath: previous.lastResultPath,
+      message: "No pending offline-run or sync-back queue items."
+    };
+    await writeOfflineSyncSchedulerStatus(status);
+    return status;
+  }
+
+  const nextRunAfter = previous.lastRunAt ? new Date(Date.parse(previous.lastRunAt) + input.minIntervalMs) : null;
+  if (nextRunAfter && nextRunAfter.getTime() > now.getTime()) {
+    const status: OfflineSyncSchedulerStatus = {
+      kind: "agentflow_offline_sync_scheduler_status",
+      updatedAt: now.toISOString(),
+      status: "waiting",
+      pendingQueueItems: pendingItems.length,
+      lastRunAt: previous.lastRunAt,
+      nextRunAfter: nextRunAfter.toISOString(),
+      lastResultPath: previous.lastResultPath,
+      message: `Waiting until ${nextRunAfter.toISOString()} before the next offline sync dry run.`
+    };
+    await writeOfflineSyncSchedulerStatus(status);
+    return status;
+  }
+
+  const localServices = await checkServices(defaultServiceEndpoints({
+    DATABASE_URL: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
+    REDIS_URL: "redis://127.0.0.1:16379",
+    OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000"
+  }));
+  const sharedServices = await checkServices();
+  if (!localServices.every((service) => service.reachable) || !sharedServices.every((service) => service.reachable)) {
+    const status: OfflineSyncSchedulerStatus = {
+      kind: "agentflow_offline_sync_scheduler_status",
+      updatedAt: now.toISOString(),
+      status: "blocked",
+      pendingQueueItems: pendingItems.length,
+      lastRunAt: previous.lastRunAt,
+      nextRunAfter: new Date(now.getTime() + input.minIntervalMs).toISOString(),
+      lastResultPath: previous.lastResultPath,
+      message: "Pending fallback work exists, but localhost fallback storage and configured shared storage are not both reachable."
+    };
+    await writeOfflineSyncSchedulerStatus(status);
+    return status;
+  }
+
+  try {
+    const result = await runOfflineFallbackSync({
+      outDir: ".agent-workflow/migrations",
+      execute: false,
+      actor: input.actor
+    });
+    const status: OfflineSyncSchedulerStatus = {
+      kind: "agentflow_offline_sync_scheduler_status",
+      updatedAt: new Date().toISOString(),
+      status: result.status === "ready" ? "ready" : result.status === "completed" ? "synced" : "blocked",
+      pendingQueueItems: pendingItems.length,
+      lastRunAt: result.generatedAt,
+      nextRunAfter: new Date(Date.parse(result.generatedAt) + input.minIntervalMs).toISOString(),
+      lastResultPath: result.written.receiptPath ?? null,
+      message: result.status === "ready"
+        ? "Offline sync dry run is ready. Review the manifest/import evidence, then execute sync from Server Readiness when appropriate."
+        : `Offline sync dry run returned ${result.status}.`
+    };
+    await writeOfflineSyncSchedulerStatus(status);
+    return status;
+  } catch (error) {
+    const status: OfflineSyncSchedulerStatus = {
+      kind: "agentflow_offline_sync_scheduler_status",
+      updatedAt: new Date().toISOString(),
+      status: "error",
+      pendingQueueItems: pendingItems.length,
+      lastRunAt: previous.lastRunAt,
+      nextRunAfter: new Date(now.getTime() + input.minIntervalMs).toISOString(),
+      lastResultPath: previous.lastResultPath,
+      message: error instanceof Error ? error.message : String(error)
+    };
+    await writeOfflineSyncSchedulerStatus(status);
+    return status;
+  }
+}
+
 function offlineFallbackSyncBaseResult(input: {
   generatedAt: string;
   execute: boolean;
@@ -6963,6 +7134,18 @@ function formatOfflineFallbackSyncResult(result: OfflineFallbackSyncResult): str
   ].join("\n");
 }
 
+function formatOfflineSyncSchedulerStatus(status: OfflineSyncSchedulerStatus): string {
+  return [
+    `Offline sync scheduler (${status.updatedAt})`,
+    `Status: ${status.status}`,
+    `Pending queue items: ${status.pendingQueueItems}`,
+    `Last run: ${status.lastRunAt ?? "none"}`,
+    `Next run after: ${status.nextRunAfter ?? "n/a"}`,
+    `Last result: ${status.lastResultPath ?? "none"}`,
+    `Message: ${status.message}`
+  ].join("\n");
+}
+
 function offlineFallbackCommands(): OfflineFallbackReport["commands"] {
   return {
     stopLocal: "docker compose -f infra/docker-compose.yml stop",
@@ -7043,6 +7226,7 @@ function formatOfflineFallbackReport(report: OfflineFallbackReport): string {
     `Configured storage reachable: ${report.currentServicesReachable ? "yes" : "no"}`,
     `Local fallback reachable: ${report.localServicesReachable ? "yes" : "no"}`,
     `Pending sync queue items: ${pendingItems.length}`,
+    `Scheduler: ${report.scheduler.status} (${report.scheduler.message})`,
     "",
     "Configured storage:",
     ...report.currentServices.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`),
@@ -15016,8 +15200,15 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
       ${metricCard("Shared", report.currentServicesReachable ? "online" : "offline", "current configured storage")}
       ${metricCard("Local Fallback", report.localServicesReachable ? "ready" : "stopped", "localhost Docker services")}
       ${metricCard("Sync Queue", pendingItems.length, "pending local fallback items")}
+      ${metricCard("Scheduler", report.scheduler.status, report.scheduler.nextRunAfter ? `next ${renderDashboardDateTime(report.scheduler.nextRunAfter)}` : "daemon dry-run check")}
     </div>
     <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current fallback status: <span class="status ${statusClass}">${escapeHtml(report.mode)}</span>.</p>
+    <div class="meta-grid compact">
+      <div><strong>Scheduler Status</strong>${escapeHtml(report.scheduler.status)}<br><span class="muted">${escapeHtml(report.scheduler.message)}</span></div>
+      <div><strong>Last Scheduler Run</strong>${report.scheduler.lastRunAt ? renderDashboardDateTime(report.scheduler.lastRunAt) : "none"}</div>
+      <div><strong>Next Scheduler Run</strong>${report.scheduler.nextRunAfter ? renderDashboardDateTime(report.scheduler.nextRunAfter) : "n/a"}</div>
+      <div><strong>Last Receipt</strong>${report.scheduler.lastResultPath ? `<code>${escapeHtml(report.scheduler.lastResultPath)}</code>` : "none"}</div>
+    </div>
     <div class="split-grid">
       <form class="inline-form" method="post" action="/api/offline-fallback-action">
         <input type="hidden" name="action" value="start-local">

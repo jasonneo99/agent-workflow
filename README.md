@@ -339,6 +339,7 @@ npm run offline-fallback -- --record start-local --note "Hulk unavailable; start
 npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
 npm run offline-fallback -- --record sync-back --note "Merge localhost fallback rows back to shared storage"
 npm run offline-sync
+npm run offline-sync -- --scheduler-check
 npm run offline-sync -- --execute
 ```
 

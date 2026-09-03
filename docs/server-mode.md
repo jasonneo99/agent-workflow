@@ -434,6 +434,7 @@ merge dry run:
 
 ```bash
 npm run offline-sync
+npm run offline-sync -- --scheduler-check
 ```
 
 After reviewing the generated manifest/import result, execute the insert-only
@@ -442,6 +443,13 @@ sync and mark pending fallback queue items synced:
 ```bash
 npm run offline-sync -- --execute
 ```
+
+The learning daemon also runs the scheduler check by default. It only prepares a
+dry-run when pending offline queue items exist, localhost fallback storage is
+reachable, shared storage is reachable, and the last scheduler run is older than
+the configured interval. It never executes shared-storage writes; use
+`offline-sync -- --execute` or the Server page Execute Sync button for that.
+Disable daemon checks with `learning-daemon --disable-offline-sync`.
 
 After a reviewed copy, verify durable state without mutating either side:
 
