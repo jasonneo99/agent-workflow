@@ -549,6 +549,13 @@ Project-local agents live in `.agent-workflow/agents/*.yaml`. List built-in plus
 npm run list -- --project /path/to/project
 ```
 
+The dashboard Agents page shows the same effective roster:
+
+```bash
+npm run dashboard
+open "http://127.0.0.1:17888/agents?project=/path/to/project"
+```
+
 Run a project-local specialist exactly like a built-in agent:
 
 ```bash
@@ -943,6 +950,7 @@ Dashboard and JSON endpoints:
 /role-audit?file=<snapshot.md>
 /api/queue
 /api/projects
+/api/agents?project=<project-root>
 /api/run?id=<run-id>
 /api/quality?id=<run-id>
 ```
@@ -958,12 +966,13 @@ Run detail pages:
 /role-audit?file=<snapshot.md>
 /server-readiness
 /projects
+/agents
 /project?root=<project-root>
 /runs
 /run?id=<run-id>
 ```
 
-The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Runs, Evaluations, Graph, Governance, Roles, Backup, Server, Artifacts, Providers, and Settings. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions. The Roles page can export the active role filters as local Markdown and JSON audit snapshots, then reopen recent snapshots without leaving the dashboard.
+The dashboard uses a left navigation rail for the main control surfaces: Dashboard, Queue, Projects, Agents, Runs, Evaluations, Graph, Governance, Roles, Backup, Server, Artifacts, Providers, and Settings. The Agents page shows shared reusable agents, project-local agents from `.agent-workflow/agents`, and the effective roster for the selected project. The home page includes System Health cards for the supervisor, worker, queue, selected provider, enterprise storage, known projects, and the latest failed run. The Needs Attention panel turns those signals into direct next actions. The Roles page can export the active role filters as local Markdown and JSON audit snapshots, then reopen recent snapshots without leaving the dashboard.
 
 ![Dashboard home](assets/screenshots/dashboard-home.png)
 

@@ -363,6 +363,7 @@ foundation is complete.
   - [x] Make queue status and worker health more prominent on the main dashboard.
   - [x] Improve provider/settings discoverability with stronger hierarchy and confirmation feedback.
   - [x] Group dashboard navigation into clearer operating areas.
+  - [x] Add an Agents dashboard page that shows shared reusable agents, project-local agents, and the effective selected-project roster.
   - [x] Rerun `ux-reviewer` after dashboard hierarchy changes.
   - [x] Tighten grouped navigation consistency and make operations snapshot metrics more actionable.
   - [x] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
