@@ -57,6 +57,7 @@ export interface StorageMigrationToolCheck {
 export async function buildStorageMigrationPlan(input: StorageMigrationPlanInput): Promise<StorageMigrationPlan> {
   const sourceEnv = input.sourceEnv ?? process.env;
   const targetEnv = input.targetEnv ?? {};
+  const targetHost = input.targetHost ?? sourceEnv.AGENTFLOW_SHARED_STORAGE_HOST ?? targetEnv.AGENTFLOW_SHARED_STORAGE_HOST;
   const source = storageEndpointSummary({
     databaseUrl: input.sourceDatabaseUrl ?? sourceEnv.DATABASE_URL,
     redisUrl: input.sourceRedisUrl ?? sourceEnv.REDIS_URL,
@@ -68,7 +69,7 @@ export async function buildStorageMigrationPlan(input: StorageMigrationPlanInput
     redisUrl: input.targetRedisUrl ?? targetEnv.REDIS_URL,
     objectStorageEndpoint: input.targetObjectStorageEndpoint ?? targetEnv.OBJECT_STORAGE_ENDPOINT,
     objectStorageBucket: input.targetObjectStorageBucket ?? targetEnv.OBJECT_STORAGE_BUCKET
-  }, input.targetHost);
+  }, targetHost);
   const sourceChecks = await checkServices(defaultServiceEndpoints({
     DATABASE_URL: source.databaseUrl,
     REDIS_URL: source.redisUrl,
@@ -82,9 +83,13 @@ export async function buildStorageMigrationPlan(input: StorageMigrationPlanInput
   const warnings = [
     ...serviceWarnings("source", sourceChecks),
     ...serviceWarnings("target", targetChecks),
+    ...sameEndpointWarnings(source, target),
     ...(input.mode === "merge-preview" ? ["Merge mode is not executable yet. Use this plan to inspect endpoints and prepare a future merge-safe migration."] : [])
   ];
-  const status: StorageMigrationPlanStatus = targetChecks.some((check) => !check.reachable) || sourceChecks.some((check) => !check.reachable)
+  const blocked = targetChecks.some((check) => !check.reachable) ||
+    sourceChecks.some((check) => !check.reachable) ||
+    sameEndpointWarnings(source, target).length > 0;
+  const status: StorageMigrationPlanStatus = blocked
     ? "blocked"
     : warnings.length
       ? "attention"
@@ -174,6 +179,16 @@ fi
 : "\${TARGET_OBJECT_STORAGE_ACCESS_KEY:?Set TARGET_OBJECT_STORAGE_ACCESS_KEY}"
 : "\${TARGET_OBJECT_STORAGE_SECRET_KEY:?Set TARGET_OBJECT_STORAGE_SECRET_KEY}"
 
+if [[ "$SOURCE_DATABASE_URL" == "$TARGET_DATABASE_URL" ]]; then
+  echo "Refusing to migrate: SOURCE_DATABASE_URL and TARGET_DATABASE_URL are identical."
+  exit 2
+fi
+
+if [[ "$SOURCE_OBJECT_STORAGE_ENDPOINT/$SOURCE_OBJECT_STORAGE_BUCKET" == "$TARGET_OBJECT_STORAGE_ENDPOINT/$TARGET_OBJECT_STORAGE_BUCKET" ]]; then
+  echo "Refusing to migrate: source and target object storage endpoint/bucket are identical."
+  exit 2
+fi
+
 BACKUP_DIR="\${AGENTFLOW_STORAGE_MIGRATION_DIR:-.agent-workflow/migrations/run-\$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$BACKUP_DIR"
 
@@ -237,6 +252,31 @@ function serviceWarnings(prefix: string, checks: ServiceCheck[]): string[] {
   return checks
     .filter((check) => !check.reachable)
     .map((check) => `${prefix} ${check.endpoint.name} is not reachable: ${check.message}`);
+}
+
+function sameEndpointWarnings(source: StorageMigrationEndpointSummary, target: StorageMigrationEndpointSummary): string[] {
+  const warnings: string[] = [];
+  if (canonicalUrl(source.databaseUrl) === canonicalUrl(target.databaseUrl)) {
+    warnings.push("source and target database URLs point to the same endpoint");
+  }
+  if (canonicalUrl(source.redisUrl) === canonicalUrl(target.redisUrl)) {
+    warnings.push("source and target Redis URLs point to the same endpoint");
+  }
+  if (canonicalUrl(source.objectStorageEndpoint) === canonicalUrl(target.objectStorageEndpoint) && source.objectStorageBucket === target.objectStorageBucket) {
+    warnings.push("source and target object storage point to the same endpoint and bucket");
+  }
+  return warnings;
+}
+
+function canonicalUrl(value: string): string {
+  try {
+    const parsed = new URL(value);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.toString();
+  } catch {
+    return value;
+  }
 }
 
 function formatServiceCheck(check: ServiceCheck): string {

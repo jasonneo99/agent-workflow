@@ -51,3 +51,18 @@ test("defaultServiceEndpoints supports explicit host overrides without urls", ()
     ]
   );
 });
+
+test("defaultServiceEndpoints supports a shared storage host fallback", () => {
+  const endpoints = defaultServiceEndpoints({
+    AGENTFLOW_SHARED_STORAGE_HOST: "100.78.183.30"
+  });
+
+  assert.deepEqual(
+    endpoints.map((endpoint) => [endpoint.name, endpoint.host, endpoint.port]),
+    [
+      ["Postgres + pgvector", "100.78.183.30", 15432],
+      ["Redis", "100.78.183.30", 16379],
+      ["MinIO object storage", "100.78.183.30", 19000]
+    ]
+  );
+});

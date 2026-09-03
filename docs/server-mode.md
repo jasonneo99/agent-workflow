@@ -296,8 +296,10 @@ Shared storage host:
 
 - Run Postgres, Redis, and MinIO on a trusted LAN/Tailscale host.
 - Keep service ports private to trusted machines or a private network.
-- Use stable DNS or hostnames, for example `hulk.local` or a Tailscale MagicDNS
-  name, instead of hard-coded local IPs.
+- Use stable DNS or hostnames, for example a Tailscale MagicDNS name or IP,
+  instead of hard-coded local LAN IPs. Confirm the chosen name reaches the
+  storage ports; `.local` names may resolve to LAN addresses that are not
+  serving Agent Workflow storage.
 - Store local developer `.env` files with shared service URLs only on trusted
   clients.
 - Run a storage migration dry-run before moving local history into shared
@@ -308,13 +310,13 @@ Shared storage host:
 Plan the migration without copying data:
 
 ```bash
-npm run storage-migrate -- --target-host hulk.local
+npm run storage-migrate -- --target-host 100.78.183.30
 ```
 
 Write a reviewed operator package:
 
 ```bash
-npm run storage-migrate -- --target-host hulk.local --write-plan
+npm run storage-migrate -- --target-host 100.78.183.30 --write-plan
 ```
 
 That writes Markdown, JSON, and a guarded shell script under
@@ -322,6 +324,17 @@ That writes Markdown, JSON, and a guarded shell script under
 `AGENTFLOW_EXECUTE_STORAGE_MIGRATION=1` is set and still expects source/target
 connection details to be supplied as environment variables. This keeps the open
 source process dry-run-first and avoids committing secrets into migration files.
+
+For repeated use, set the shared state-plane host once:
+
+```bash
+AGENTFLOW_SHARED_STORAGE_HOST=100.78.183.30
+```
+
+Then `npm run storage-migrate -- --write-plan` infers the target URLs from that
+host unless explicit target URLs are supplied.
+If source and target resolve to the same storage endpoints, the plan is blocked;
+that usually means the current machine is already using the shared state plane.
 
 ## Readiness Checklist
 

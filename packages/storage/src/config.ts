@@ -6,11 +6,12 @@ export interface ServiceEndpoint {
 }
 
 export function defaultServiceEndpoints(env: NodeJS.ProcessEnv = process.env): ServiceEndpoint[] {
+  const sharedStorageHost = env.AGENTFLOW_SHARED_STORAGE_HOST;
   return [
     {
       name: "Postgres + pgvector",
       ...endpointFromUrl(env.DATABASE_URL, {
-        host: env.AGENTFLOW_POSTGRES_HOST ?? "127.0.0.1",
+        host: env.AGENTFLOW_POSTGRES_HOST ?? sharedStorageHost ?? "127.0.0.1",
         port: Number(env.AGENTFLOW_POSTGRES_PORT ?? 15432),
         defaultUrlPort: 5432
       }),
@@ -19,7 +20,7 @@ export function defaultServiceEndpoints(env: NodeJS.ProcessEnv = process.env): S
     {
       name: "Redis",
       ...endpointFromUrl(env.REDIS_URL, {
-        host: env.AGENTFLOW_REDIS_HOST ?? "127.0.0.1",
+        host: env.AGENTFLOW_REDIS_HOST ?? sharedStorageHost ?? "127.0.0.1",
         port: Number(env.AGENTFLOW_REDIS_PORT ?? 16379),
         defaultUrlPort: 6379
       }),
@@ -28,7 +29,7 @@ export function defaultServiceEndpoints(env: NodeJS.ProcessEnv = process.env): S
     {
       name: "MinIO object storage",
       ...endpointFromUrl(env.OBJECT_STORAGE_ENDPOINT, {
-        host: env.AGENTFLOW_MINIO_HOST ?? "127.0.0.1",
+        host: env.AGENTFLOW_MINIO_HOST ?? sharedStorageHost ?? "127.0.0.1",
         port: Number(env.AGENTFLOW_MINIO_PORT ?? 19000),
         defaultUrlPort: 443
       }),

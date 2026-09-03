@@ -1062,7 +1062,7 @@ program
 program
   .command("storage-migrate")
   .description("Plan a dry-run migration from local enterprise storage to a shared LAN/Tailscale storage host")
-  .option("--target-host <host>", "shared storage host used to infer target URLs, for example hulk.local")
+  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 100.78.183.30")
   .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
   .option("--source-redis-url <url>", "source Redis URL; defaults to REDIS_URL")
   .option("--source-object-storage-endpoint <url>", "source MinIO/S3 endpoint; defaults to OBJECT_STORAGE_ENDPOINT")

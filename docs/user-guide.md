@@ -157,13 +157,13 @@ Postgres, Redis, and MinIO.
 Preview the current machine to a shared host without copying data:
 
 ```bash
-npm run storage-migrate -- --target-host hulk.local
+npm run storage-migrate -- --target-host 100.78.183.30
 ```
 
 Write a reviewed operator package:
 
 ```bash
-npm run storage-migrate -- --target-host hulk.local --write-plan
+npm run storage-migrate -- --target-host 100.78.183.30 --write-plan
 ```
 
 That writes Markdown, JSON, and a guarded shell script under
@@ -171,14 +171,30 @@ That writes Markdown, JSON, and a guarded shell script under
 script still requires source and target environment variables and exits unless
 `AGENTFLOW_EXECUTE_STORAGE_MIGRATION=1` is set.
 
+You can also set a reusable shared state-plane host in `.env`:
+
+```bash
+AGENTFLOW_SHARED_STORAGE_HOST=100.78.183.30
+```
+
+Then run:
+
+```bash
+npm run storage-migrate -- --write-plan
+```
+
+Use the Tailscale MagicDNS name or IP that actually reaches the storage ports.
+On some networks a `.local` hostname resolves to a LAN address while the
+Agent Workflow services are exposed only over Tailscale.
+
 Use explicit target URLs when the shared host does not use the default local
 developer ports:
 
 ```bash
 npm run storage-migrate -- \
-  --target-database-url postgres://agentflow:agentflow@hulk.local:15432/agentflow \
-  --target-redis-url redis://hulk.local:16379 \
-  --target-object-storage-endpoint http://hulk.local:19000 \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-redis-url redis://100.78.183.30:16379 \
+  --target-object-storage-endpoint http://100.78.183.30:19000 \
   --target-object-storage-bucket agentflow-artifacts \
   --write-plan
 ```
@@ -186,6 +202,8 @@ npm run storage-migrate -- \
 The first supported execution shape is copy into an empty target. Merge-safe
 migration is intentionally preview-only until project/run id mapping, artifact
 verification, rollback, and destination-preservation checks are implemented.
+If source and target resolve to the same storage endpoints, the plan is blocked;
+that usually means the current machine is already using the shared state plane.
 
 ## 3b. Optional Codex Plugin
 
