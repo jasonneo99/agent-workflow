@@ -8589,6 +8589,7 @@ async function appendProjectApprovalRule(input: {
   const raw = await fs.readFile(configPath, "utf8");
   const current = YAML.parse(raw) as Record<string, unknown>;
   const actions = isRecord(current.actions) ? current.actions : {};
+  const currentProject = projectConfigSchema.parse(current);
   const approvalRules = Array.isArray(actions.approval_rules) ? actions.approval_rules : [];
   const existing = approvalRules.find((rule) =>
     isRecord(rule)
@@ -8612,7 +8613,11 @@ async function appendProjectApprovalRule(input: {
   };
   if (input.actionType === "file_write") {
     const bytes = typeof input.payload.bytes === "number" ? input.payload.bytes : undefined;
-    rule.max_bytes = bytes && bytes > 0 ? Math.max(4096, bytes) : 4096;
+    rule.max_bytes = input.target === "**"
+      ? currentProject.actions.max_write_bytes
+      : bytes && bytes > 0
+        ? Math.max(4096, bytes)
+        : 4096;
   }
   const next = {
     ...current,
