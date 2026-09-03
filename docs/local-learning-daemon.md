@@ -244,6 +244,8 @@ agentflow learning-daemon-status --project /path/to/project
 agentflow learning-daemon --project /path/to/project --mode observe --once
 agentflow learning-daemon --project /path/to/project --mode observe
 agentflow learning-daemon --project /path/to/project --mode propose
+agentflow learning-application-plan --project /path/to/project
+agentflow learning-application-plan --project /path/to/project --write
 ```
 
 Future approved-application and research commands:
@@ -265,6 +267,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 - `agentflow_learning_daemon_tick`
 - `agentflow_learning_proposals`
 - `agentflow_learning_approvals`
+- `agentflow_learning_application_plan`
 - `agentflow_learning_apply`
 - `agentflow_learning_research_notes`
 
@@ -297,10 +300,14 @@ policy and approval state allow writes.
 
 ### Phase 3: Approved Application
 
-- Apply approved project-local tuning notes.
-- Generate reusable bundle patch plans for human review.
-- Compare before/after outcomes in reports.
-- Write receipts for every application.
+- Status: started with dry-run/saved application plans for approved learning
+  proposals; application still routes through existing gates.
+- Prepare next-step plans from approved learning proposals.
+- Generate command suggestions for feedback, eval, debug, or tuning follow-up.
+- Keep source, provider, reusable bundle, command, network, and export changes
+  un-applied until explicit approval.
+- Write Agent Workflow-created application plan files only under
+  `.agent-workflow/learning/`.
 
 ### Phase 4: Daemon Mode
 

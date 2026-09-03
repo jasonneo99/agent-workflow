@@ -2818,6 +2818,37 @@ program
   });
 
 program
+  .command("learning-application-plan")
+  .description("Prepare a dry-run application plan from approved learning proposals without applying changes")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated approved proposal ids or approval ids to include, or all", "all")
+  .option("--write", "write application plan files under .agent-workflow/learning")
+  .option("--json", "print application plan JSON")
+  .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readLearningApprovalQueue(projectDir);
+    const plan = buildLearningApplicationPlan(queue, parseProposalIds(options.ids));
+    if (options.write) {
+      await writeLearningApplicationPlan(projectDir, plan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatLearningApplicationPlan(plan));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/application-plan.json");
+      console.log("Wrote .agent-workflow/learning/application-plan.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to save the Agent Workflow-owned learning application plan.");
+    }
+  });
+
+program
   .command("tuning-proposals")
   .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3689,6 +3720,29 @@ type LearningApprovalDecisionResult = {
   queue: LearningApprovalQueue;
   selectedIds: string[];
   skippedIds: string[];
+};
+
+type LearningApplicationPlan = {
+  kind: "agentflow_learning_application_plan";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceGeneratedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  actions: LearningApplicationAction[];
+  summary: string[];
+};
+
+type LearningApplicationAction = {
+  id: string;
+  proposalId: string;
+  title: string;
+  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "manual_review";
+  dangerGate: "none" | "approval_required";
+  rationale: string;
+  command: string | null;
+  writesOwnedLearningStateOnly: boolean;
+  blockedUntil: string[];
 };
 
 type LearningDaemonMode = "observe" | "propose";
@@ -7381,6 +7435,169 @@ function formatLearningApprovalQueueMarkdown(queue: LearningApprovalQueue): stri
   ].join("\n");
 }
 
+function buildLearningApplicationPlan(
+  queue: LearningApprovalQueue,
+  selectedIds: string[] | "all" = "all"
+): LearningApplicationPlan {
+  const requestedIds = selectedIds === "all"
+    ? queue.items.filter((item) => item.status === "approved").map((item) => item.proposalId)
+    : selectedIds;
+  const requestedSet = new Set(requestedIds);
+  const selected = queue.items.filter((item) =>
+    item.status === "approved" && (requestedSet.has(item.id) || requestedSet.has(item.proposalId))
+  );
+  const matched = new Set(selected.flatMap((item) => [item.id, item.proposalId]));
+  const actions = selected.map((item, index) => buildLearningApplicationAction(queue.projectRootUri, item, index + 1));
+  return {
+    kind: "agentflow_learning_application_plan",
+    projectRootUri: queue.projectRootUri,
+    generatedAt: new Date().toISOString(),
+    sourceGeneratedAt: queue.generatedAt,
+    selectedIds: selected.map((item) => item.proposalId),
+    skippedIds: requestedIds.filter((id) => !matched.has(id)),
+    actions,
+    summary: summarizeLearningApplicationPlan(actions, queue)
+  };
+}
+
+function buildLearningApplicationAction(projectRootUri: string, item: LearningApprovalItem, index: number): LearningApplicationAction {
+  const proposal = item.proposal;
+  const id = `learn-action-${String(index).padStart(3, "0")}`;
+  if (proposal.kind === "feedback_gap") {
+    return {
+      id,
+      proposalId: item.proposalId,
+      title: "Collect feedback before changing behavior",
+      actionType: "collect_feedback",
+      dangerGate: "none",
+      rationale: proposal.rationale,
+      command: `npm run agentflow -- status --limit 10`,
+      writesOwnedLearningStateOnly: true,
+      blockedUntil: ["A developer records accepted, revised, or rejected feedback for recent runs."]
+    };
+  }
+  if (proposal.kind === "eval_gap") {
+    return {
+      id,
+      proposalId: item.proposalId,
+      title: "Create a small local evaluation suite",
+      actionType: "create_eval",
+      dangerGate: "approval_required",
+      rationale: proposal.rationale,
+      command: `npm run agentflow -- candidate-comparison-plan --project ${shellQuote(projectRootUri)}`,
+      writesOwnedLearningStateOnly: false,
+      blockedUntil: ["A developer approves evaluation file generation and any follow-up model runs."]
+    };
+  }
+  if (proposal.kind === "repeated_failure") {
+    return {
+      id,
+      proposalId: item.proposalId,
+      title: "Queue a focused debug workflow",
+      actionType: "debug_failure",
+      dangerGate: "approval_required",
+      rationale: proposal.rationale,
+      command: `npm run agentflow -- run-and-watch debug-failure --project ${shellQuote(projectRootUri)} --task ${shellQuote(`Investigate learning proposal ${item.proposalId}: ${proposal.title}. Target: ${proposal.target}`)}`,
+      writesOwnedLearningStateOnly: false,
+      blockedUntil: ["A developer approves running workflow commands for this project."]
+    };
+  }
+  if (proposal.kind === "cost_routing" || proposal.kind === "proposal_followup") {
+    return {
+      id,
+      proposalId: item.proposalId,
+      title: "Review tuning proposal path",
+      actionType: "review_tuning",
+      dangerGate: "approval_required",
+      rationale: proposal.rationale,
+      command: `npm run agentflow -- queue-tuning-approvals --project ${shellQuote(projectRootUri)} --ids all --write`,
+      writesOwnedLearningStateOnly: false,
+      blockedUntil: ["A developer reviews tuning proposals and approves only safe project-local tuning changes."]
+    };
+  }
+  return {
+    id,
+    proposalId: item.proposalId,
+    title: "Manual learning review",
+    actionType: "manual_review",
+    dangerGate: "approval_required",
+    rationale: proposal.rationale,
+    command: null,
+    writesOwnedLearningStateOnly: false,
+    blockedUntil: ["A developer decides the correct next action."]
+  };
+}
+
+function summarizeLearningApplicationPlan(actions: LearningApplicationAction[], queue: LearningApprovalQueue): string[] {
+  const approvedCount = queue.items.filter((item) => item.status === "approved").length;
+  if (!actions.length) {
+    return [`No approved learning proposals selected. ${approvedCount} approved item(s) exist in the inbox.`];
+  }
+  return [
+    `${actions.length} action plan(s) prepared from approved learning proposals.`,
+    `${actions.filter((action) => action.dangerGate === "approval_required").length} action(s) still require approval before behavior changes.`,
+    `${actions.filter((action) => action.writesOwnedLearningStateOnly).length} action(s) are limited to Agent Workflow-owned learning state.`,
+    "This plan does not apply source, provider, reusable bundle, command, network, or export changes."
+  ];
+}
+
+function formatLearningApplicationPlan(plan: LearningApplicationPlan): string {
+  return [
+    `Learning Application Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected proposals: ${plan.selectedIds.join(", ") || "none"}`,
+    plan.skippedIds.length ? `Skipped unknown or unapproved ids: ${plan.skippedIds.join(", ")}` : "",
+    "",
+    "Summary",
+    plan.summary.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Actions",
+    plan.actions.length
+      ? plan.actions.map((action) => [
+        `- ${action.id} ${action.actionType}: ${action.title}`,
+        `  - Proposal: ${action.proposalId}`,
+        `  - Gate: ${action.dangerGate}`,
+        `  - Owned learning state only: ${action.writesOwnedLearningStateOnly ? "yes" : "no"}`,
+        `  - Rationale: ${action.rationale}`,
+        action.command ? `  - Command: ${action.command}` : "",
+        action.blockedUntil.length ? `  - Blocked until: ${action.blockedUntil.join("; ")}` : ""
+      ].filter(Boolean).join("\n")).join("\n")
+      : "- No actions."
+  ].filter(Boolean).join("\n");
+}
+
+function formatLearningApplicationPlanMarkdown(plan: LearningApplicationPlan): string {
+  const sections = plan.actions.map((action) => [
+    `## ${action.id} - ${action.title}`,
+    "",
+    `- Proposal: ${action.proposalId}`,
+    `- Type: ${action.actionType}`,
+    `- Gate: ${action.dangerGate}`,
+    `- Owned learning state only: ${action.writesOwnedLearningStateOnly ? "yes" : "no"}`,
+    `- Rationale: ${action.rationale}`,
+    action.command ? `- Command: \`${action.command.replaceAll("`", "\\`")}\`` : "",
+    "",
+    "Blocked until:",
+    ...action.blockedUntil.map((item) => `- ${item}`),
+    ""
+  ].filter(Boolean).join("\n"));
+  return [
+    "# Agent Workflow Learning Application Plan",
+    "",
+    `Project: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Source inbox: ${plan.sourceGeneratedAt}`,
+    `Selected proposals: ${plan.selectedIds.join(", ") || "none"}`,
+    plan.skippedIds.length ? `Skipped: ${plan.skippedIds.join(", ")}` : "",
+    "",
+    "## Summary",
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    ...sections
+  ].filter(Boolean).join("\n");
+}
+
 async function loadDashboardModelImprovementReport(input: {
   projectDir: string;
   limit: number;
@@ -7820,6 +8037,13 @@ async function writeLearningDaemonStatus(projectDir: string, status: LearningDae
   }
   await fs.mkdir(path.dirname(resolvedHeartbeat), { recursive: true });
   await fs.writeFile(resolvedHeartbeat, `${JSON.stringify(status, null, 2)}\n`, "utf8");
+}
+
+async function writeLearningApplicationPlan(projectDir: string, plan: LearningApplicationPlan): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "application-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "application-plan.md"), formatLearningApplicationPlanMarkdown(plan), "utf8");
 }
 
 async function ensureProjectSubdir(projectDir: string, targetDir: string, label: string): Promise<void> {
@@ -8833,6 +9057,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-application-plan") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const queue = await readLearningApprovalQueue(project).catch(() => null);
+    const plan = queue ? buildLearningApplicationPlan(queue, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all")) : null;
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(plan ?? { kind: "agentflow_learning_application_plan", projectRootUri: project, actions: [], summary: ["No learning approval inbox found."] }, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/candidate-comparisons") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -8981,8 +9219,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : null;
     const learningQueue = project ? await readLearningApprovalQueue(project).catch(() => null) : null;
     const learningDaemon = project ? await loadLearningDaemonStatus(project) : null;
+    const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, projects, requestUrl.searchParams));
     return;
   }
 
@@ -10667,12 +10906,12 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -10711,7 +10950,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -10726,7 +10965,11 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <tr><td>${escapeHtml(item.proposalId)}<br><span class="muted">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.proposal.priority)} / ${escapeHtml(item.proposal.riskLevel)}</td><td>${escapeHtml(item.proposal.title)}<br><span class="muted">${escapeHtml(item.proposal.target)}</span></td><td>${escapeHtml(item.proposal.recommendation)}</td></tr>
   `).join("");
   const learningCounts = learningQueue ? countStrings(learningQueue.items.map((item) => item.status)) : {};
+  const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
+    <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
+  `).join("");
   const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
+  const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(report.projectDir)} --write`;
   const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode propose`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
@@ -10762,6 +11005,11 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
       <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Approval records do not apply changes; they only capture review intent for the future daemon.</p>
       <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>Approved Application Plan</h2><span class="muted">${learningApplicationPlan ? `${learningApplicationPlan.actions.length} planned action(s)` : "No approved application plan yet."}</span></div></div>
+      <p class="muted">Generate a saved plan with <code>${escapeHtml(applicationPlanCommand)}</code>. This still does not apply behavior changes.</p>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Type</th><th>Gate</th><th>Owned State Only</th><th>Command</th></tr></thead><tbody>${applicationRows || "<tr><td colspan=\"5\">No approved learning proposals selected for application planning.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>

@@ -1287,6 +1287,8 @@ npm run agentflow -- learning-daemon-status --project /path/to/project
 npm run agentflow -- learning-daemon --project /path/to/project --mode observe --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode propose --once
 npm run learning:daemon -- --project /path/to/project --mode propose
+npm run agentflow -- learning-application-plan --project /path/to/project
+npm run agentflow -- learning-application-plan --project /path/to/project --write
 ```
 
 In the dashboard, open:
@@ -1296,6 +1298,7 @@ http://127.0.0.1:17888/learning?project=/path/to/project
 http://127.0.0.1:17888/api/learning-report?project=/path/to/project
 http://127.0.0.1:17888/api/learning-proposals?project=/path/to/project
 http://127.0.0.1:17888/api/learning-daemon-status?project=/path/to/project
+http://127.0.0.1:17888/api/learning-application-plan?project=/path/to/project
 ```
 
 `learning-proposals --write` creates local review files only under
@@ -1305,12 +1308,15 @@ http://127.0.0.1:17888/api/learning-daemon-status?project=/path/to/project
 - `proposals.md`
 - `approval-inbox.json`
 - `approval-inbox.md`
+- `application-plan.json`
+- `application-plan.md`
 
 The MCP tools `agentflow_learning_report`, `agentflow_learning_proposals`, and
 `agentflow_learning_approvals` expose the same flow for Codex, VS Code, Cursor,
 or any MCP-capable client. `agentflow_learning_daemon_status` shows the current
 heartbeat, and `agentflow_learning_daemon_tick` runs one bounded observe/propose
-tick.
+tick. `agentflow_learning_application_plan` prepares the approved follow-up plan
+without applying changes.
 
 The learning flow may mutate local learning state that Agent Workflow created
 and owns: its own files under `.agent-workflow/learning/` today and future
@@ -1365,10 +1371,10 @@ the same page shows the review file status and markdown preview.
 
 ## 25. Recommended Next Improvement
 
-The next improvement is approved application planning: let the daemon prepare
-apply-ready plans for already approved learning proposals while still requiring
-the existing tuning/action approval gates for actual behavior changes. See the
-[Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is `apply-approved` daemon mode: let the daemon refresh
+application plans on a schedule for already approved proposals while still
+requiring the existing tuning/action approval gates for actual behavior changes.
+See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

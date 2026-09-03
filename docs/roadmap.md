@@ -105,8 +105,13 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Write Agent Workflow-created latest report, proposal inbox, and daemon heartbeat/status files only under `.agent-workflow/learning/`.
   - Expose daemon status in the dashboard, CLI, and MCP.
 
-- [ ] Local learning approved-application planning.
+- [x] Local learning approved-application planning.
   - Prepare apply-ready plans from already approved learning proposals without applying source, provider, reusable bundle, command, network, or export changes.
+  - Expose `learning-application-plan` in CLI, dashboard, API, and MCP.
+  - Write only Agent Workflow-created application plan files under `.agent-workflow/learning/`.
+
+- [ ] Local learning apply-approved mode.
+  - Let the daemon prepare application plans on a schedule for approved proposals.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Start local-only; make server mode an explicit future deployment posture.
 
