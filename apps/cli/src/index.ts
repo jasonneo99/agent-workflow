@@ -2606,6 +2606,102 @@ program
   });
 
 program
+  .command("learning-proposals")
+  .description("Generate local learning proposals from the read-only learning report")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated proposal ids to queue for approval, or all", "all")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--write", "write proposal and approval inbox files under .agent-workflow/learning")
+  .option("--json", "print learning proposals JSON")
+  .action(async (options: { project: string; ids: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLearningReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    const proposalSet = buildLearningProposalSet(report);
+    const existingQueue = await readLearningApprovalQueue(projectDir).catch(() => undefined);
+    const queue = buildLearningApprovalQueue(proposalSet, parseProposalIds(options.ids), existingQueue);
+
+    if (options.write) {
+      await writeLearningProposals(projectDir, proposalSet);
+      await writeLearningApprovalQueue(projectDir, queue);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify({ ...proposalSet, approvalQueue: queue, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+
+    console.log(formatLearningProposalSet(proposalSet));
+    console.log("");
+    console.log(formatLearningApprovalQueue(queue));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/proposals.json");
+      console.log("Wrote .agent-workflow/learning/proposals.md");
+      console.log("Wrote .agent-workflow/learning/approval-inbox.json");
+      console.log("Wrote .agent-workflow/learning/approval-inbox.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create the project-local learning proposal inbox.");
+    }
+  });
+
+program
+  .command("learning-approvals")
+  .description("List, approve, or reject project-local learning proposal inbox items")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--approve <ids>", "comma-separated approval ids or proposal ids to approve, or all")
+  .option("--reject <ids>", "comma-separated approval ids or proposal ids to reject, or all")
+  .option("--reviewer <name>", "reviewer name")
+  .option("--note <text>", "decision note")
+  .option("--json", "print learning approval queue JSON")
+  .action(async (options: { project: string; approve?: string; reject?: string; reviewer?: string; note?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readLearningApprovalQueue(projectDir);
+    const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject));
+    if (decisionCount > 1) {
+      console.error("Use either --approve or --reject, not both.");
+      process.exitCode = 1;
+      return;
+    }
+
+    let nextQueue = queue;
+    if (options.approve || options.reject) {
+      const result = decideLearningApprovals({
+        queue,
+        ids: parseProposalIds(options.approve ?? options.reject),
+        status: options.approve ? "approved" : "rejected",
+        reviewer: options.reviewer,
+        note: options.note
+      });
+      nextQueue = result.queue;
+      await writeLearningApprovalQueue(projectDir, nextQueue);
+      if (result.skippedIds.length) {
+        console.error(`Skipped unknown ids: ${result.skippedIds.join(", ")}`);
+      }
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(nextQueue, null, 2));
+      return;
+    }
+
+    console.log(formatLearningApprovalQueue(nextQueue));
+  });
+
+program
   .command("tuning-proposals")
   .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3422,6 +3518,61 @@ type LearningReport = {
   approvalRequiredActions: string[];
   privacyBoundaries: string[];
   nextCommands: string[];
+};
+
+type LearningProposalPriority = "high" | "medium" | "low";
+type LearningProposalKind = "repeated_failure" | "cost_routing" | "eval_gap" | "feedback_gap" | "proposal_followup";
+type LearningRiskLevel = "low" | "medium" | "high";
+type LearningApprovalStatus = "pending" | "approved" | "rejected";
+
+type LearningProposalSet = {
+  kind: "agentflow_learning_proposals";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceReportGeneratedAt: string;
+  sourceRunsAnalyzed: number;
+  proposals: LearningProposal[];
+  summary: string[];
+};
+
+type LearningProposal = {
+  id: string;
+  priority: LearningProposalPriority;
+  kind: LearningProposalKind;
+  riskLevel: LearningRiskLevel;
+  title: string;
+  target: string;
+  rationale: string;
+  evidence: string[];
+  recommendation: string;
+  approvalRequired: boolean;
+};
+
+type LearningApprovalQueue = {
+  kind: "agentflow_learning_approval_queue";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceGeneratedAt: string;
+  sourceRunsAnalyzed: number;
+  skippedIds: string[];
+  items: LearningApprovalItem[];
+};
+
+type LearningApprovalItem = {
+  id: string;
+  proposalId: string;
+  status: LearningApprovalStatus;
+  createdAt: string;
+  decidedAt?: string;
+  reviewer?: string;
+  note?: string;
+  proposal: LearningProposal;
+};
+
+type LearningApprovalDecisionResult = {
+  queue: LearningApprovalQueue;
+  selectedIds: string[];
+  skippedIds: string[];
 };
 
 type DashboardHomeHealth = {
@@ -6722,6 +6873,7 @@ async function loadLearningReport(input: {
       "Read local run history, receipts, feedback, eval summaries, and queue status.",
       "Detect repeated failures, high-cost routes, stale context, and eval gaps.",
       "Generate compact local learning reports and dry-run proposal previews.",
+      "Update learning files and future learning database rows that Agent Workflow created and owns when propose mode or an explicit learning command requests it.",
       "Queue approval requests for behavior-changing improvements."
     ],
     approvalRequiredActions: [
@@ -6737,6 +6889,7 @@ async function loadLearningReport(input: {
     ],
     nextCommands: [
       `npm run agentflow -- learning-report --project ${shellQuote(projectDir)} --json`,
+      `npm run agentflow -- learning-proposals --project ${shellQuote(projectDir)} --write`,
       `npm run agentflow -- preference-scorecard --project ${shellQuote(projectDir)}`,
       `npm run agentflow -- tuning-proposals --project ${shellQuote(projectDir)}`,
       `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve local developer workflow quality and cost"`
@@ -6785,6 +6938,287 @@ function formatLearningReport(report: LearningReport): string {
     "",
     "Next commands:",
     ...report.nextCommands.map((command) => `- ${command}`)
+  ].join("\n");
+}
+
+function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
+  const proposals: LearningProposal[] = [];
+  const addProposal = (input: Omit<LearningProposal, "id">): void => {
+    proposals.push({
+      ...input,
+      id: `learn-${String(proposals.length + 1).padStart(3, "0")}`
+    });
+  };
+
+  for (const pattern of report.repeatedFailurePatterns.slice(0, 5)) {
+    addProposal({
+      priority: pattern.failureRate >= 0.5 ? "high" : "medium",
+      kind: "repeated_failure",
+      riskLevel: "medium",
+      title: `Investigate repeated failures in ${pattern.stageId}`,
+      target: `${pattern.workflowId}/${pattern.stageId}/${pattern.agentId}`,
+      rationale: `${pattern.failedTasks} of ${pattern.totalTasks} recent stage task(s) failed.`,
+      evidence: [
+        `workflow=${pattern.workflowId}`,
+        `stage=${pattern.stageId}`,
+        `agent=${pattern.agentId}`,
+        `failureRate=${pattern.failureRate}`
+      ],
+      recommendation: "Queue a debug-failure run or add targeted eval coverage before changing workflow behavior.",
+      approvalRequired: true
+    });
+  }
+
+  for (const item of report.costOpportunities.slice(0, 5)) {
+    addProposal({
+      priority: item.fallbackRate >= 0.5 ? "high" : "medium",
+      kind: "cost_routing",
+      riskLevel: "medium",
+      title: `Review routing for ${item.stageId}`,
+      target: `${item.workflowId}/${item.stageId}/${item.agentId}`,
+      rationale: `Route ${item.providerId}/${item.modelTier} has fallback=${item.fallbackRate}, latency=${item.averageLatencyMs ?? "n/a"}ms, runs=${item.runs}.`,
+      evidence: [
+        `provider=${item.providerId}`,
+        `modelTier=${item.modelTier}`,
+        `fallbackRate=${item.fallbackRate}`,
+        `averageLatencyMs=${item.averageLatencyMs ?? "n/a"}`
+      ],
+      recommendation: item.recommendation,
+      approvalRequired: true
+    });
+  }
+
+  for (const gap of report.evalGaps) {
+    const feedbackGap = gap.toLowerCase().includes("feedback");
+    addProposal({
+      priority: feedbackGap ? "medium" : "low",
+      kind: feedbackGap ? "feedback_gap" : "eval_gap",
+      riskLevel: "low",
+      title: feedbackGap ? "Collect developer feedback" : "Improve evaluation evidence",
+      target: report.projectDir,
+      rationale: gap,
+      evidence: [`runsAnalyzed=${report.runsAnalyzed}`, `evaluationRuns=${report.evaluationRuns}`],
+      recommendation: feedbackGap
+        ? "Record accepted, revised, or rejected feedback on recent workflow runs before promoting tuning changes."
+        : "Create or run a small local evaluation suite before applying prompt, routing, or context-budget changes.",
+      approvalRequired: false
+    });
+  }
+
+  if (report.proposalPreview.total > 0) {
+    addProposal({
+      priority: report.proposalPreview.highPriority > 0 ? "high" : "medium",
+      kind: "proposal_followup",
+      riskLevel: "medium",
+      title: "Review tuning proposal candidates",
+      target: report.projectDir,
+      rationale: `${report.proposalPreview.total} tuning proposal candidate(s), including ${report.proposalPreview.highPriority} high-priority item(s), are available.`,
+      evidence: Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `${kind}=${count}`),
+      recommendation: "Queue tuning approvals and inspect patch plans before applying project-local tuning notes.",
+      approvalRequired: true
+    });
+  }
+
+  return {
+    kind: "agentflow_learning_proposals",
+    projectRootUri: report.projectDir,
+    generatedAt: new Date().toISOString(),
+    sourceReportGeneratedAt: report.generatedAt,
+    sourceRunsAnalyzed: report.runsAnalyzed,
+    proposals,
+    summary: summarizeLearningProposals(proposals, report)
+  };
+}
+
+function summarizeLearningProposals(proposals: LearningProposal[], report: LearningReport): string[] {
+  if (!proposals.length) {
+    return ["No learning proposal candidates were found in the inspected run window."];
+  }
+  const counts = countStrings(proposals.map((proposal) => proposal.kind));
+  return [
+    `${proposals.length} proposal candidate(s) from ${report.runsAnalyzed} run(s).`,
+    `${proposals.filter((proposal) => proposal.priority === "high").length} high-priority proposal(s).`,
+    `${proposals.filter((proposal) => proposal.approvalRequired).length} proposal(s) require approval before any behavior-changing action.`,
+    `Kinds: ${formatInlineCounts(counts) || "none"}.`
+  ];
+}
+
+function buildLearningApprovalQueue(
+  proposalSet: LearningProposalSet,
+  selectedIds: string[] | "all" = "all",
+  existingQueue?: LearningApprovalQueue
+): LearningApprovalQueue {
+  const requestedIds = selectedIds === "all" ? proposalSet.proposals.map((proposal) => proposal.id) : selectedIds;
+  const requestedIdSet = new Set(requestedIds);
+  const selected = proposalSet.proposals.filter((proposal) => requestedIdSet.has(proposal.id));
+  const selectedIdSet = new Set(selected.map((proposal) => proposal.id));
+  const existingByProposal = new Map((existingQueue?.items ?? []).map((item) => [item.proposalId, item]));
+  const generatedAt = new Date().toISOString();
+  return {
+    kind: "agentflow_learning_approval_queue",
+    projectRootUri: proposalSet.projectRootUri,
+    generatedAt,
+    sourceGeneratedAt: proposalSet.generatedAt,
+    sourceRunsAnalyzed: proposalSet.sourceRunsAnalyzed,
+    skippedIds: requestedIds.filter((id) => !selectedIdSet.has(id)),
+    items: selected.map((proposal) => {
+      const existing = existingByProposal.get(proposal.id);
+      return {
+        id: existing?.id ?? `learn-approval-${proposal.id.replace(/^learn-/, "")}`,
+        proposalId: proposal.id,
+        status: existing?.status ?? "pending",
+        createdAt: existing?.createdAt ?? generatedAt,
+        decidedAt: existing?.decidedAt,
+        reviewer: existing?.reviewer,
+        note: existing?.note,
+        proposal
+      };
+    })
+  };
+}
+
+function decideLearningApprovals(input: {
+  queue: LearningApprovalQueue;
+  ids: string[] | "all";
+  status: Exclude<LearningApprovalStatus, "pending">;
+  reviewer?: string;
+  note?: string;
+}): LearningApprovalDecisionResult {
+  const idSet = input.ids === "all" ? null : new Set(input.ids);
+  const decidedAt = new Date().toISOString();
+  const selectedIds: string[] = [];
+  const matchedIds = new Set<string>();
+  const items = input.queue.items.map((item) => {
+    const selected = idSet === null || idSet.has(item.id) || idSet.has(item.proposalId);
+    if (!selected) return item;
+    selectedIds.push(item.proposalId);
+    matchedIds.add(item.id);
+    matchedIds.add(item.proposalId);
+    return {
+      ...item,
+      status: input.status,
+      decidedAt,
+      reviewer: input.reviewer,
+      note: input.note
+    };
+  });
+  return {
+    queue: {
+      ...input.queue,
+      generatedAt: decidedAt,
+      items
+    },
+    selectedIds,
+    skippedIds: input.ids === "all" ? [] : input.ids.filter((id) => !matchedIds.has(id))
+  };
+}
+
+function formatLearningProposalSet(proposalSet: LearningProposalSet): string {
+  return [
+    `Learning Proposals: ${proposalSet.projectRootUri}`,
+    `Generated: ${proposalSet.generatedAt}`,
+    `Runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
+    "",
+    "Summary",
+    proposalSet.summary.map((item) => `- ${item}`).join("\n"),
+    "",
+    "Proposals",
+    proposalSet.proposals.length
+      ? proposalSet.proposals.map((proposal) => [
+        `- ${proposal.id} [${proposal.priority}] ${proposal.kind}: ${proposal.title}`,
+        `  - Target: ${proposal.target}`,
+        `  - Risk: ${proposal.riskLevel}${proposal.approvalRequired ? " approval-required" : " report-only"}`,
+        `  - Rationale: ${proposal.rationale}`,
+        `  - Recommendation: ${proposal.recommendation}`
+      ].join("\n")).join("\n")
+      : "- No learning proposals yet."
+  ].join("\n");
+}
+
+function formatLearningProposalMarkdown(proposalSet: LearningProposalSet): string {
+  const sections = proposalSet.proposals.map((proposal) => [
+    `## ${proposal.id} - ${proposal.title}`,
+    "",
+    `- Priority: ${proposal.priority}`,
+    `- Kind: ${proposal.kind}`,
+    `- Risk: ${proposal.riskLevel}`,
+    `- Target: ${proposal.target}`,
+    `- Approval required: ${proposal.approvalRequired ? "yes" : "no"}`,
+    `- Rationale: ${proposal.rationale}`,
+    `- Recommendation: ${proposal.recommendation}`,
+    "",
+    "Evidence:",
+    ...proposal.evidence.map((item) => `- ${item}`),
+    ""
+  ].join("\n"));
+  return [
+    "# Agent Workflow Learning Proposals",
+    "",
+    `Project: ${proposalSet.projectRootUri}`,
+    `Generated: ${proposalSet.generatedAt}`,
+    `Source report: ${proposalSet.sourceReportGeneratedAt}`,
+    `Source runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
+    "",
+    "## Summary",
+    "",
+    ...proposalSet.summary.map((item) => `- ${item}`),
+    "",
+    ...sections
+  ].join("\n");
+}
+
+function formatLearningApprovalQueue(queue: LearningApprovalQueue): string {
+  const counts = countStrings(queue.items.map((item) => item.status));
+  return [
+    `Learning Approval Inbox: ${queue.projectRootUri}`,
+    `Generated: ${queue.generatedAt}`,
+    `Source runs analyzed: ${queue.sourceRunsAnalyzed}`,
+    `Counts: pending=${counts.pending ?? 0} approved=${counts.approved ?? 0} rejected=${counts.rejected ?? 0}`,
+    queue.skippedIds.length ? `Skipped unknown ids: ${queue.skippedIds.join(", ")}` : "",
+    "",
+    queue.items.length
+      ? queue.items.map((item) => [
+        `- ${item.proposalId} ${item.status}: ${item.proposal.title}`,
+        `  - Approval id: ${item.id}`,
+        `  - Risk: ${item.proposal.riskLevel}${item.proposal.approvalRequired ? " approval-required" : " report-only"}`,
+        `  - Recommendation: ${item.proposal.recommendation}`,
+        item.note ? `  - Note: ${item.note}` : ""
+      ].filter(Boolean).join("\n")).join("\n")
+      : "- No learning approval items."
+  ].filter(Boolean).join("\n");
+}
+
+function formatLearningApprovalQueueMarkdown(queue: LearningApprovalQueue): string {
+  const sections = queue.items.map((item) => [
+    `## ${item.proposalId} - ${item.status}`,
+    "",
+    `- Approval id: ${item.id}`,
+    `- Title: ${item.proposal.title}`,
+    `- Priority: ${item.proposal.priority}`,
+    `- Kind: ${item.proposal.kind}`,
+    `- Risk: ${item.proposal.riskLevel}`,
+    `- Target: ${item.proposal.target}`,
+    `- Approval required: ${item.proposal.approvalRequired ? "yes" : "no"}`,
+    `- Created: ${item.createdAt}`,
+    item.decidedAt ? `- Decided: ${item.decidedAt}` : "",
+    item.reviewer ? `- Reviewer: ${item.reviewer}` : "",
+    item.note ? `- Note: ${item.note}` : "",
+    `- Rationale: ${item.proposal.rationale}`,
+    `- Recommendation: ${item.proposal.recommendation}`,
+    "",
+    "Evidence:",
+    ...item.proposal.evidence.map((evidence) => `- ${evidence}`),
+    ""
+  ].filter(Boolean).join("\n"));
+  return [
+    "# Agent Workflow Learning Approval Inbox",
+    "",
+    `Project: ${queue.projectRootUri}`,
+    `Generated: ${queue.generatedAt}`,
+    `Source proposals: ${queue.sourceGeneratedAt}`,
+    `Source runs analyzed: ${queue.sourceRunsAnalyzed}`,
+    "",
+    ...sections
   ].join("\n");
 }
 
@@ -7167,6 +7601,39 @@ async function recordTuningHistory(projectDir: string, proposalIds: string[], st
   await fs.mkdir(tuningDir, { recursive: true });
   await fs.writeFile(path.join(tuningDir, "approval-history.json"), `${JSON.stringify(history, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(tuningDir, "approval-history.md"), formatTuningApprovalHistoryMarkdown(history), "utf8");
+}
+
+async function readLearningApprovalQueue(projectDir: string): Promise<LearningApprovalQueue> {
+  const queuePath = path.join(projectDir, ".agent-workflow", "learning", "approval-inbox.json");
+  const raw = await fs.readFile(queuePath, "utf8");
+  const parsed = JSON.parse(raw) as LearningApprovalQueue;
+  if (parsed.kind !== "agentflow_learning_approval_queue" || !Array.isArray(parsed.items)) {
+    throw new Error(`Invalid learning approval inbox: ${queuePath}`);
+  }
+  return parsed;
+}
+
+async function writeLearningProposals(projectDir: string, proposalSet: LearningProposalSet): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "proposals.json"), `${JSON.stringify(proposalSet, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "proposals.md"), formatLearningProposalMarkdown(proposalSet), "utf8");
+}
+
+async function writeLearningApprovalQueue(projectDir: string, queue: LearningApprovalQueue): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "approval-inbox.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "approval-inbox.md"), formatLearningApprovalQueueMarkdown(queue), "utf8");
+}
+
+async function ensureProjectSubdir(projectDir: string, targetDir: string, label: string): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  const resolved = path.resolve(targetDir);
+  if (!resolved.startsWith(`${projectRoot}${path.sep}`)) {
+    throw new Error(`Refusing to write outside project ${label}: ${targetDir}`);
+  }
+  await fs.mkdir(resolved, { recursive: true });
 }
 
 async function writeTuningPatchPlan(projectDir: string, plan: TuningPatchPlan): Promise<void> {
@@ -8139,6 +8606,25 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-proposals") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadLearningReport({
+      projectDir: project,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    const proposalSet = buildLearningProposalSet(report);
+    const existingQueue = await readLearningApprovalQueue(project).catch(() => undefined);
+    const queue = buildLearningApprovalQueue(proposalSet, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all"), existingQueue);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({ ...proposalSet, approvalQueue: queue, mode: "dry-run" }, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/candidate-comparisons") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -8285,8 +8771,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       })
       : null;
+    const learningQueue = project ? await readLearningApprovalQueue(project).catch(() => null) : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, projects, requestUrl.searchParams));
     return;
   }
 
@@ -9971,12 +10458,12 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const body = report
-    ? renderLearningReportHtml(report)
+    ? renderLearningReportHtml(report, learningQueue)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -10015,7 +10502,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, projects: Da
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -10026,6 +10513,11 @@ function renderLearningReportHtml(report: LearningReport): string {
     <tr><td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td><td>${escapeHtml(run.workflowId)}</td><td>${escapeHtml(run.task)}</td><td>${renderDashboardDateTime(run.startedAt)}</td></tr>
   `).join("");
   const proposalRows = Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>`).join("");
+  const learningRows = (learningQueue?.items ?? []).map((item) => `
+    <tr><td>${escapeHtml(item.proposalId)}<br><span class="muted">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.proposal.priority)} / ${escapeHtml(item.proposal.riskLevel)}</td><td>${escapeHtml(item.proposal.title)}<br><span class="muted">${escapeHtml(item.proposal.target)}</span></td><td>${escapeHtml(item.proposal.recommendation)}</td></tr>
+  `).join("");
+  const learningCounts = learningQueue ? countStrings(learningQueue.items.map((item) => item.status)) : {};
+  const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
     <section class="panel">
@@ -10051,6 +10543,11 @@ function renderLearningReportHtml(report: LearningReport): string {
     <section class="panel"><h2>Cost And Routing Opportunities</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Agent</th><th>Provider/Tier</th><th>Runs</th><th>Fallback</th><th>Latency</th><th>Recommendation</th></tr></thead><tbody>${costRows || "<tr><td colspan=\"7\">No cost or routing opportunities found.</td></tr>"}</tbody></table></div></section>
     <section class="panel"><h2>Recent Failed Runs</h2><div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${failedRunRows || "<tr><td colspan=\"4\">No failed runs in the inspected window.</td></tr>"}</tbody></table></div></section>
     <section class="panel"><h2>Proposal Preview</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposal candidates yet.</td></tr>"}</tbody></table></div></section>
+    <section class="panel">
+      <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
+      <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Approval records do not apply changes; they only capture review intent for the future daemon.</p>
+      <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
+    </section>
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
   `;

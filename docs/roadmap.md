@@ -91,9 +91,14 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 
 - [x] Local learning report.
   - Goal: continually improve local developer workflows from approved feedback, run history, failures, routing outcomes, evaluation evidence, and optional user-approved research notes.
-  - Principle: maximize safe autonomy for observation, reports, scoring, and proposal generation; require approval for dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, or private-data actions.
+  - Principle: maximize safe autonomy for observation, reports, scoring, proposal generation, and Agent Workflow-created learning state; require approval for dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, or private-data actions.
   - Done: document the local-first architecture in [Local Learning Daemon](local-learning-daemon.md), then add the read-only `learning-report` CLI, `/learning` dashboard page, and `/api/learning-report` JSON endpoint.
-  - Next: add local learning proposal storage and an approval inbox before daemon mode.
+  - Next: use local learning proposal outcomes to drive daemon-mode design.
+
+- [x] Local learning proposal inbox.
+  - Generate learning proposals from run, feedback, failure, routing, tuning, and eval evidence.
+  - Write reviewable proposal and approval inbox files that Agent Workflow created and owns under `.agent-workflow/learning/`.
+  - Expose the inbox in the dashboard, CLI, and MCP without applying changes.
 
 - [ ] Local learning daemon.
   - Build on the read-only learning report with scheduled observe/propose/apply-approved modes.

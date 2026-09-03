@@ -5,9 +5,12 @@ continually improves developer workflows from local evidence while keeping
 project data private and human control intact.
 
 Its default stance is maximum safe autonomy: observe, summarize, score, compare,
-and prepare improvements automatically; stop for approval when a change could
-modify project behavior, write reusable bundle definitions, execute commands, or
-expose private data.
+prepare improvements, and mutate local learning state that Agent Workflow
+created and owns. Owned local learning state means Agent Workflow-created files
+under `.agent-workflow/learning/` and future Agent Workflow-created
+`learning_*` database rows. It must stop for approval when a change could modify
+project behavior, write reusable bundle definitions, execute commands, change
+provider settings, or expose private data.
 
 ## Goals
 
@@ -80,7 +83,8 @@ the action changes behavior outside an ephemeral report.
 | Generate compact learning signals and scorecards | Automatic |
 | Export local Markdown/JSON learning reports | Automatic |
 | Create dry-run proposals for routing, context budgets, prompt notes, eval cases, or workflow improvements | Automatic |
-| Write project-local proposal files under `.agent-workflow/learning/` | Automatic when project policy allows writes |
+| Write or update Agent Workflow-created proposal files under `.agent-workflow/learning/` | Automatic when project policy allows writes |
+| Write or update future Agent Workflow-created `learning_signals`, `learning_proposals`, and learning status database rows | Automatic when using local Agent Workflow storage |
 | Queue approval requests for proposed changes | Automatic |
 | Write approved project-local tuning notes under `.agent-workflow/tuning/` | Approval required |
 | Generate reusable bundle patch plans for `agents/`, `workflows/`, docs, or schemas | Approval required |
@@ -232,9 +236,12 @@ Proposed commands:
 
 ```bash
 agentflow learning-report --project /path/to/project
+agentflow learning-proposals --project /path/to/project
+agentflow learning-proposals --project /path/to/project --write
+agentflow learning-approvals --project /path/to/project
+agentflow learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name"
 agentflow learning-daemon --project /path/to/project --mode observe
 agentflow learning-daemon --project /path/to/project --mode propose
-agentflow learning-proposals --project /path/to/project
 agentflow learning-approve --project /path/to/project --ids learn-001
 agentflow learning-reject --project /path/to/project --ids learn-002
 agentflow learning-apply --project /path/to/project --approved --dry-run
@@ -249,8 +256,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 - `agentflow_learning_report`
 - `agentflow_learning_daemon_status`
 - `agentflow_learning_proposals`
-- `agentflow_learning_approve`
-- `agentflow_learning_reject`
+- `agentflow_learning_approvals`
 - `agentflow_learning_apply`
 - `agentflow_learning_research_notes`
 
@@ -271,9 +277,14 @@ policy and approval state allow writes.
 
 ### Phase 2: Proposal Generation
 
-- Add `learning_signals` and `learning_proposals` storage.
-- Generate dry-run proposals automatically.
-- Add proposal inbox in dashboard and MCP.
+- Status: implemented for local proposal generation and approval inbox; proposal
+  application remains disabled.
+- Add owned local learning storage through `.agent-workflow/learning/` files
+  now and `learning_signals` / `learning_proposals` database rows later.
+- Generate dry-run proposals automatically from the read-only learning report.
+- Write `proposals.json`, `proposals.md`, `approval-inbox.json`, and
+  `approval-inbox.md` under `.agent-workflow/learning/` when requested.
+- Add proposal inbox visibility in the dashboard and MCP.
 - Keep applications disabled.
 
 ### Phase 3: Approved Application
@@ -311,6 +322,6 @@ Start with Phase 1:
 This slice creates immediate value and keeps the autonomy model safe: the daemon
 can learn and explain continuously before it is trusted to apply anything.
 
-Phase 1 is intentionally read-only. The next implementation slice should add
-local proposal storage and a dashboard approval inbox while keeping application
-disabled until explicit user approval exists.
+Phase 1 is intentionally read-only. Phase 2 adds proposal storage and a
+dashboard approval inbox, while still keeping application disabled until
+explicit user approval exists.

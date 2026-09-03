@@ -1279,6 +1279,10 @@ patterns, and cost/routing opportunities.
 ```bash
 npm run agentflow -- learning-report --project /path/to/project
 npm run agentflow -- learning-report --project /path/to/project --json
+npm run agentflow -- learning-proposals --project /path/to/project
+npm run agentflow -- learning-proposals --project /path/to/project --write
+npm run agentflow -- learning-approvals --project /path/to/project
+npm run agentflow -- learning-approvals --project /path/to/project --approve learn-001 --reviewer "Your Name" --note "Looks useful"
 ```
 
 In the dashboard, open:
@@ -1286,11 +1290,27 @@ In the dashboard, open:
 ```text
 http://127.0.0.1:17888/learning?project=/path/to/project
 http://127.0.0.1:17888/api/learning-report?project=/path/to/project
+http://127.0.0.1:17888/api/learning-proposals?project=/path/to/project
 ```
 
-Phase 1 is read-only. It does not write proposals, tune agents, change provider
-settings, export private data, run commands, or apply patches. Those actions
-remain approval-gated by design. See [Local Learning Daemon](local-learning-daemon.md).
+`learning-proposals --write` creates local review files only under
+`.agent-workflow/learning/`:
+
+- `proposals.json`
+- `proposals.md`
+- `approval-inbox.json`
+- `approval-inbox.md`
+
+The MCP tools `agentflow_learning_report`, `agentflow_learning_proposals`, and
+`agentflow_learning_approvals` expose the same flow for Codex, VS Code, Cursor,
+or any MCP-capable client.
+
+The learning flow may mutate local learning state that Agent Workflow created
+and owns: its own files under `.agent-workflow/learning/` today and future
+Agent Workflow-created `learning_*` database rows. It does not tune agents,
+change provider settings, export private data, run commands, apply patches, or
+edit source without approval. Those actions remain approval-gated by design. See
+[Local Learning Daemon](local-learning-daemon.md).
 
 ## 24. Model Improvement Workflow
 
@@ -1338,10 +1358,10 @@ the same page shows the review file status and markdown preview.
 
 ## 25. Recommended Next Improvement
 
-The next improvement is local learning proposal storage and an approval inbox:
-turn the read-only learning report into reviewable proposal records before
-adding daemon mode. See the [Roadmap](roadmap.md) for the shared-platform
-implementation sequence.
+The next improvement is daemon mode: run the learning observer on a schedule,
+generate proposals automatically, and apply only items that have already been
+approved. See the [Roadmap](roadmap.md) for the shared-platform implementation
+sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

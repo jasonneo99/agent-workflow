@@ -840,6 +840,95 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_learning_report",
+  {
+    title: "AgentFlow learning report",
+    description: "Read-only local learning report from run history, feedback, failures, routing, and evaluation evidence.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      json: z.boolean().optional().describe("Return report JSON.")
+    }
+  },
+  async ({ project, limit, json }) => {
+    const args = ["learning-report", "--project", project];
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_learning_proposals",
+  {
+    title: "AgentFlow learning proposals",
+    description: "Generate or write local learning proposals and a project-local approval inbox.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated proposal ids to queue, or all."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write proposal and approval inbox files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return proposal JSON.")
+    }
+  },
+  async ({ project, ids, limit, write, json }) => {
+    const args = ["learning-proposals", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_learning_approvals",
+  {
+    title: "AgentFlow learning approvals",
+    description: "List, approve, or reject project-local learning proposal inbox items without applying changes.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      approve: z.string().optional().describe("Comma-separated approval ids or proposal ids to approve, or all."),
+      reject: z.string().optional().describe("Comma-separated approval ids or proposal ids to reject, or all."),
+      reviewer: z.string().optional().describe("Reviewer name."),
+      note: z.string().optional().describe("Decision note."),
+      json: z.boolean().optional().describe("Return approval queue JSON.")
+    }
+  },
+  async ({ project, approve, reject, reviewer, note, json }) => {
+    const args = ["learning-approvals", "--project", project];
+    if (approve) {
+      args.push("--approve", approve);
+    }
+    if (reject) {
+      args.push("--reject", reject);
+    }
+    if (reviewer) {
+      args.push("--reviewer", reviewer);
+    }
+    if (note) {
+      args.push("--note", note);
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_apply_tuning_proposals",
   {
     title: "AgentFlow apply tuning proposals",
