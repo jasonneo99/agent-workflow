@@ -50,6 +50,8 @@ Inspect the current posture without enabling server mode:
 ```bash
 npm run server-readiness
 npm run server-readiness -- --json
+npm run server-projects
+npm run server-projects -- --json
 ```
 
 Recommended default binding stays loopback:
@@ -228,7 +230,9 @@ Before adding remote execution endpoints:
 - [x] Add a read-only server-mode readiness command.
 - [x] Add dashboard visibility for server bind, auth mode, project registration,
       and exposed endpoint classes.
-- [ ] Add project id based routing with no arbitrary path execution.
+- [x] Add registered-project previews that expose project ids without arbitrary
+      path execution.
+- [ ] Add project id based routing for future remote execution requests.
 - [ ] Require auth for all mutation endpoints.
 - [ ] Require role capability checks for all mutation endpoints.
 - [ ] Require idempotency keys for all mutation endpoints.

@@ -46,6 +46,7 @@ npm run doctor
 npm run migrate-storage
 npm run bootstrap-storage
 npm run server-readiness
+npm run server-projects
 npm run check
 npm run bundle-manifest
 ```

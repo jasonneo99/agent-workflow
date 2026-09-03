@@ -95,7 +95,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -2108,6 +2108,23 @@ program
   });
 
 program
+  .command("server-projects")
+  .description("Preview registered project ids for governed server-mode clients without accepting arbitrary paths")
+  .option("-p, --project <dir>", "filter by local project directory")
+  .option("-l, --limit <number>", "number of registered projects to inspect", "100")
+  .option("--include-roots", "include local filesystem roots for operator diagnostics")
+  .option("--json", "print machine-readable registered project report")
+  .action(async (options: { project?: string; limit: string; includeRoots?: boolean; json?: boolean }) => {
+    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const report = await loadServerProjectRegistryReport({
+      projectRootUri,
+      limit: parsePositiveInteger(options.limit, 100),
+      includeRoots: Boolean(options.includeRoots)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerProjectRegistryReport(report));
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3564,6 +3581,36 @@ type ServerReadinessReport = {
   notes: string[];
 };
 
+type ServerProjectRegistryReport = {
+  kind: "agentflow_server_project_registry_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  includeRoots: boolean;
+  services: Awaited<ReturnType<typeof checkServices>>;
+  projects: Array<{
+    projectId: string;
+    name: string;
+    rootUri: string | null;
+    rootHash: string;
+    configStatus: "valid" | "missing" | "invalid";
+    defaultWorkflows: string[];
+    policyProfile: string;
+    roleEnforcement: "preview" | "enforce";
+    requestExample: {
+      projectId: string;
+      workflow: string;
+      task: string;
+    };
+  }>;
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  notes: string[];
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -4727,6 +4774,116 @@ function parseEnvList(value: string | undefined): string[] {
 
 function isLoopbackBind(bind: string): boolean {
   return bind === "127.0.0.1" || bind === "localhost" || bind === "::1";
+}
+
+async function loadServerProjectRegistryReport(input: {
+  projectRootUri?: string;
+  limit: number;
+  includeRoots: boolean;
+}): Promise<ServerProjectRegistryReport> {
+  const projectRootUri = input.projectRootUri?.trim() ? path.resolve(process.cwd(), input.projectRootUri) : undefined;
+  const services = await checkServices();
+  const servicesReachable = services.every((service) => service.reachable);
+  const summaries = servicesReachable
+    ? (await listProjectStorageSummaries(input.limit)).filter((summary) => !projectRootUri || summary.rootUri === projectRootUri)
+    : [];
+  const projects = await Promise.all(summaries.map((summary) => loadServerProjectRegistryEntry(summary, input.includeRoots)));
+  const checks: ServerProjectRegistryReport["checks"] = [
+    {
+      label: "Enterprise services",
+      status: servicesReachable ? "pass" : "fail",
+      detail: servicesReachable ? "Project registry can be read from local enterprise storage." : "Start enterprise services before reading registered project ids."
+    },
+    {
+      label: "Project ids",
+      status: projects.length > 0 ? "pass" : "fail",
+      detail: projects.length > 0 ? `${projects.length} registered project id(s) are available for server-mode clients.` : "No registered projects were found."
+    },
+    {
+      label: "Filesystem roots",
+      status: input.includeRoots ? "warn" : "pass",
+      detail: input.includeRoots ? "Local roots are included for operator diagnostics. Do not expose this shape as a remote client contract." : "Local roots are redacted; clients should use projectId."
+    },
+    {
+      label: "Arbitrary paths",
+      status: "pass",
+      detail: "Preview payloads use projectId and do not accept project filesystem paths."
+    }
+  ];
+  const notes = [
+    "Use these projectId values for future server-mode requests instead of raw filesystem paths.",
+    input.includeRoots ? "Root paths are visible because --include-roots was requested." : "Root paths are hidden by default for safer client-facing previews.",
+    "This report does not register, remove, or mutate projects."
+  ];
+  return {
+    kind: "agentflow_server_project_registry_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRootUri ?? null,
+    limit: input.limit,
+    includeRoots: input.includeRoots,
+    services,
+    projects,
+    checks,
+    notes
+  };
+}
+
+async function loadServerProjectRegistryEntry(summary: DashboardProjectSummary, includeRoots: boolean): Promise<ServerProjectRegistryReport["projects"][number]> {
+  const config = await loadRegisteredProjectConfig(summary);
+  const defaultWorkflow = config?.project.default_workflows[0] ?? "review-pr";
+  return {
+    projectId: summary.id,
+    name: summary.name,
+    rootUri: includeRoots ? summary.rootUri : null,
+    rootHash: stableHash(summary.rootUri),
+    configStatus: config ? "valid" : await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml")) ? "invalid" : "missing",
+    defaultWorkflows: config?.project.default_workflows ?? [],
+    policyProfile: config?.execution.policy_profile ?? "local",
+    roleEnforcement: config?.team.enforcement ?? "preview",
+    requestExample: {
+      projectId: summary.id,
+      workflow: defaultWorkflow,
+      task: `Run ${defaultWorkflow} for ${summary.name}`
+    }
+  };
+}
+
+async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Promise<ProjectConfig | null> {
+  if (await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+    try {
+      return await loadProjectConfig(summary.rootUri);
+    } catch {
+      return null;
+    }
+  }
+  try {
+    return projectConfigSchema.parse(summary.config);
+  } catch {
+    return null;
+  }
+}
+
+function formatServerProjectRegistryReport(report: ServerProjectRegistryReport): string {
+  return [
+    `Server project registry (${report.generatedAt})`,
+    `Project filter: ${report.projectRootUri ?? "all registered projects"}`,
+    `Roots included: ${report.includeRoots ? "yes" : "no"}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Projects:",
+    ...(report.projects.length ? report.projects.map((project) => [
+      `- ${project.name} (${project.projectId})`,
+      `  root: ${project.rootUri ?? `redacted; hash=${project.rootHash.slice(0, 12)}`}`,
+      `  config: ${project.configStatus}, policy=${project.policyProfile}, roles=${project.roleEnforcement}`,
+      `  workflows: ${project.defaultWorkflows.join(", ") || "none configured"}`,
+      `  request: ${JSON.stringify(project.requestExample)}`
+    ].join("\n")) : ["- No registered projects found."]),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -6571,6 +6728,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/server-projects") {
+    const report = await loadServerProjectRegistryReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100),
+      includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/bundles") {
     const readiness = await loadDashboardBundleReadiness(requestUrl.searchParams);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -6897,9 +7065,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
     });
+    const registry = await loadServerProjectRegistryReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100),
+      includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
+    });
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, projects, requestUrl.searchParams));
     return;
   }
 
@@ -8816,7 +8989,7 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No backup or restore drill concerns found in the inspected window.</li>'}</ul></section></main></body></html>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -8828,6 +9001,9 @@ function renderServerReadinessHtml(report: ServerReadinessReport, projects: Dash
   const projectRows = report.projects.map((project) => `
     <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.id)}</code></td><td><code>${escapeHtml(project.rootUri)}</code></td><td><span class="status ${project.configStatus === "valid" ? "completed" : project.configStatus === "invalid" ? "failed" : "queued"}">${escapeHtml(project.configStatus)}</span></td><td>${escapeHtml(project.roleEnforcement)}</td><td>${project.roles.map((role) => `<code>${escapeHtml(role)}</code>`).join(" ") || "none"}</td></tr>
   `).join("");
+  const registryRows = registry.projects.map((project) => `
+    <tr><td>${escapeHtml(project.name)}<br><code>${escapeHtml(project.projectId)}</code></td><td>${project.rootUri ? `<code>${escapeHtml(project.rootUri)}</code>` : `<span class="muted">hidden</span><br><code>${escapeHtml(project.rootHash.slice(0, 12))}</code>`}</td><td>${project.defaultWorkflows.map((workflow) => `<code>${escapeHtml(workflow)}</code>`).join(" ") || "none"}</td><td><code>${escapeHtml(JSON.stringify(project.requestExample))}</code></td></tr>
+  `).join("");
   const serviceRows = report.services.map((service) => `
     <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
   `).join("");
@@ -8836,10 +9012,12 @@ function renderServerReadinessHtml(report: ServerReadinessReport, projects: Dash
   const jsonParams = new URLSearchParams();
   if (report.projectRootUri) jsonParams.set("project", report.projectRootUri);
   jsonParams.set("limit", String(report.limit));
+  const registryParams = new URLSearchParams(jsonParams);
+  if (registry.includeRoots) registryParams.set("includeRoots", "true");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("server-readiness")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
-  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
   <section class="panel"><div class="metric-grid">
     ${metricCard("Status", report.status, "server-mode readiness")}
     ${metricCard("Mode", report.mode.enabled ? "enabled" : "local-only", report.mode.networkExposed ? "network-exposed bind" : "loopback bind")}
@@ -8850,6 +9028,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, projects: Dash
   </div><p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p></section>
   <section class="panel"><h2>Readiness Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div></section>
   <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
+  <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>

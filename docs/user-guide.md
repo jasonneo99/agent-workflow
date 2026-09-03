@@ -119,13 +119,17 @@ Inspect the current local readiness posture:
 npm run server-readiness
 npm run server-readiness -- --json
 npm run server-readiness -- --project /path/to/project
+npm run server-projects
+npm run server-projects -- --json
 ```
 
 The command is read-only. It reports server-mode opt-in state, bind/port, auth
 mode, whether a token is configured, allowed origins, enterprise service
 reachability, registered projects, role enforcement, endpoint classes, and
 recommended next commands. It does not enable server mode or expose remote
-workflow execution.
+workflow execution. `server-projects` previews the project IDs future
+server-mode clients should send instead of raw filesystem paths; local roots are
+hidden unless `--include-roots` is explicitly provided.
 
 ## 3b. Optional Codex Plugin
 
@@ -735,6 +739,7 @@ JSON endpoints:
 /api/workflow-graph
 /api/bundle-lifecycle-plan
 /api/server-readiness
+/api/server-projects
 /api/queue
 /api/projects
 /api/run?id=<run-id>
