@@ -311,7 +311,8 @@ foundation is complete.
   - Done: add dashboard visibility for shared-storage verification reports on the Server Readiness page.
   - Done: add dashboard visibility for generated shared-storage migration plan artifacts on the Server Readiness page.
   - Done: add a read-only row-level merge manifest that maps projects by `root_uri`, preserves target project ids, and classifies source-only, existing, conflicting, and project-id-rewrite rows before any shared-storage merge.
-  - Next: add object-bucket enumeration, richer migration-proof checks, and a write-capable merge importer that can execute only a reviewed manifest, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add an insert-only merge importer that dry-runs by default and executes only from a reviewed row-level manifest with explicit `--execute`.
+  - Next: add object-bucket enumeration and richer post-merge proof checks, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
@@ -322,7 +323,7 @@ foundation is complete.
   - Done: block copy-empty-target plans when the destination already contains Agent Workflow rows, and direct users to merge preview instead.
   - Done: add a merge-preview preflight summary with sampled project-root overlap, durable row counts, table diffs, and non-executing operator scripts.
   - Done: add a row-level merge manifest command for existing shared targets that maps projects through `root_uri`, preserves existing destination project ids, and identifies rows that need safe project-id rewriting.
-  - Support executable merge mode by executing only a reviewed merge manifest, preserving existing destination runs, and rewriting dependent project ids safely.
+  - Done: support executable insert-only merge mode by executing only a reviewed merge manifest, preserving existing destination rows, and rewriting dependent project ids safely.
   - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
   - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
   - Mirror object-storage artifacts from local MinIO to destination MinIO when artifacts reference object-backed payloads.

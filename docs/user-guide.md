@@ -232,6 +232,30 @@ index state, workflow runs, workflow tasks, action receipts, approvals,
 artifacts, and memory items. Use this before any future write-capable merge
 importer.
 
+Dry-run the reviewed manifest before writing:
+
+```bash
+npm run agentflow -- storage-merge-import \
+  --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow
+```
+
+After backing up both databases, execute the insert-only merge:
+
+```bash
+npm run agentflow -- storage-merge-import \
+  --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --execute
+```
+
+The importer does not overwrite shared storage. Existing/conflicting target
+rows are skipped, while source-only historical runs, tasks, receipts,
+approvals, artifacts, memory, and index rows are inserted with project ids
+rewritten through `root_uri` when needed.
+
 After a migration copy, compare durable source and target state:
 
 ```bash

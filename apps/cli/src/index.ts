@@ -47,6 +47,10 @@ import {
   type StorageMergeManifest
 } from "../../../packages/storage/src/merge-manifest.js";
 import {
+  formatStorageMergeImportResult,
+  runStorageMergeImport
+} from "../../../packages/storage/src/merge-importer.js";
+import {
   buildStorageVerificationReport,
   formatStorageVerificationReport,
   type StorageVerificationReport
@@ -1164,6 +1168,38 @@ program
       console.log(`- JSON: ${written.jsonPath}`);
     }
     if (manifest.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("storage-merge-import")
+  .description("Dry-run or execute an insert-only shared-storage merge from a reviewed merge manifest")
+  .requiredOption("--manifest <path>", "reviewed storage-merge-manifest JSON path")
+  .option("--source-database-url <url>", "source Postgres URL; defaults to SOURCE_DATABASE_URL or DATABASE_URL")
+  .option("--target-database-url <url>", "target Postgres URL; defaults to TARGET_DATABASE_URL or DATABASE_URL")
+  .option("--execute", "perform the insert-only merge; omitted means dry-run")
+  .option("--allow-stale-manifest", "allow execution when live source/target counts differ from the reviewed manifest")
+  .option("--json", "print machine-readable import result")
+  .action(async (options: {
+    manifest: string;
+    sourceDatabaseUrl?: string;
+    targetDatabaseUrl?: string;
+    execute?: boolean;
+    allowStaleManifest?: boolean;
+    json?: boolean;
+  }) => {
+    const result = await runStorageMergeImport({
+      manifestPath: path.resolve(process.cwd(), options.manifest),
+      sourceDatabaseUrl: options.sourceDatabaseUrl,
+      targetDatabaseUrl: options.targetDatabaseUrl,
+      execute: options.execute,
+      allowStaleManifest: options.allowStaleManifest
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(formatStorageMergeImportResult(result));
+    if (result.status === "blocked") process.exitCode = 2;
   });
 
 program

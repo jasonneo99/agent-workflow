@@ -317,6 +317,14 @@ The merge manifest maps projects by `root_uri` and classifies source-only,
 existing, conflicting, and project-id-rewrite rows before any shared-storage
 merge is allowed.
 
+When the reviewed manifest and backups are ready, dry-run and then explicitly
+execute the insert-only merge:
+
+```bash
+npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json
+npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json --execute
+```
+
 For file-based output only (no Docker required), use `--profile simple` during project init.
 
 ## Adding Your Own Agents

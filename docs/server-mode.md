@@ -364,6 +364,31 @@ projects, indexed files, index state, runs, tasks, receipts, approvals,
 artifacts, and memory. Treat a clean manifest as the prerequisite evidence for
 future merge execution.
 
+Then prove the reviewed manifest can be imported without writing rows:
+
+```bash
+npm run agentflow -- storage-merge-import \
+  --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow
+```
+
+When the dry-run looks correct and both databases are backed up, the explicit
+operator command is:
+
+```bash
+npm run agentflow -- storage-merge-import \
+  --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --execute
+```
+
+The importer is insert-only. It imports missing source registry rows without
+overwriting shared definitions, inserts source-only projects and history, maps
+overlapping projects through `root_uri`, rewrites dependent project ids, and
+skips existing/conflicting target rows.
+
 After a reviewed copy, verify durable state without mutating either side:
 
 ```bash
