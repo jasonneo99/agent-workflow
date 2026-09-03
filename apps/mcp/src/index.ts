@@ -1030,6 +1030,37 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_learning_action_receipts",
+  {
+    title: "AgentFlow learning action receipts",
+    description: "List or reject append-only receipts for local learning proposal-to-action plans.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      reject: z.string().optional().describe("Comma-separated planned action ids, proposal ids, or receipt ids to reject, or all."),
+      actor: z.string().optional().describe("Actor name for rejection receipts."),
+      note: z.string().optional().describe("Receipt note."),
+      json: z.boolean().optional().describe("Return receipt log JSON.")
+    }
+  },
+  async ({ project, reject, actor, note, json }) => {
+    const args = ["learning-action-receipts", "--project", project];
+    if (reject) {
+      args.push("--reject", reject);
+    }
+    if (actor) {
+      args.push("--actor", actor);
+    }
+    if (note) {
+      args.push("--note", note);
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_apply_tuning_proposals",
   {
     title: "AgentFlow apply tuning proposals",

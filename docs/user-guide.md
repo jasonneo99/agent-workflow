@@ -1291,6 +1291,8 @@ npm run learning:daemon -- --project /path/to/project --mode propose
 npm run learning:daemon -- --project /path/to/project --mode apply-approved
 npm run agentflow -- learning-application-plan --project /path/to/project
 npm run agentflow -- learning-application-plan --project /path/to/project --write
+npm run agentflow -- learning-action-receipts --project /path/to/project
+npm run agentflow -- learning-action-receipts --project /path/to/project --reject learn-action-001 --actor "Your Name" --note "Not worth doing"
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
@@ -1303,6 +1305,7 @@ http://127.0.0.1:17888/api/learning-report?project=/path/to/project
 http://127.0.0.1:17888/api/learning-proposals?project=/path/to/project
 http://127.0.0.1:17888/api/learning-daemon-status?project=/path/to/project
 http://127.0.0.1:17888/api/learning-application-plan?project=/path/to/project
+http://127.0.0.1:17888/api/learning-action-receipts?project=/path/to/project
 http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&workflow=build-feature
 ```
 
@@ -1315,6 +1318,8 @@ http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&work
 - `approval-inbox.md`
 - `application-plan.json`
 - `application-plan.md`
+- `action-receipts.json`
+- `action-receipts.md`
 - `workflow-shape-proposals.json`
 - `stage-recommendations.md`
 - `settings.json`
@@ -1328,13 +1333,21 @@ switch. It defaults on, so each daemon tick may refresh only its own
 learning-owned shape recommendation files. Turn it off for approval-first
 review of those recommendations.
 
+When `learning-application-plan --write` or the daemon's `apply-approved` mode
+turns approved proposals into planned actions, Agent Workflow records
+append-only proposal-to-action receipts. If a newer plan makes a planned action
+obsolete, it appends a `superseded` receipt. If you decide a planned action
+should not be followed, reject it from the CLI, dashboard, or MCP; rejection
+also appends a receipt and does not execute or apply anything.
+
 The MCP tools `agentflow_learning_report`, `agentflow_learning_proposals`, and
 `agentflow_learning_approvals` expose the same flow for Codex, VS Code, Cursor,
 or any MCP-capable client. `agentflow_learning_daemon_status` shows the current
 heartbeat, and `agentflow_learning_daemon_tick` runs one bounded observe/propose
 tick. `agentflow_learning_application_plan` prepares the approved follow-up plan
 without applying changes. `agentflow_learning_workflow_shape` exposes the
-workflow shape optimizer through MCP.
+workflow shape optimizer through MCP. `agentflow_learning_action_receipts`
+lists or rejects planned learning actions.
 
 The learning flow may mutate local learning state that Agent Workflow created
 and owns: its own files under `.agent-workflow/learning/` today and future

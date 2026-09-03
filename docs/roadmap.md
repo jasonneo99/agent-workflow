@@ -123,8 +123,10 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Prefer project-local workflow overlays before shared workflow or reusable agent changes.
   - Keep shared `workflows/*.yaml`, reusable agents, provider settings, project source, and tuning application approval-gated.
 
-- [ ] Local learning proposal-to-action receipts.
+- [x] Local learning proposal-to-action receipts.
   - Record an append-only local history when proposals become application plans, when planned actions are superseded, and when users reject a planned action.
+  - Expose receipts in CLI, dashboard, API, and MCP.
+  - Write only Agent Workflow-owned receipt files under `.agent-workflow/learning/`.
 
 ## Phase 3: Distribution And Enterprise Adoption
 

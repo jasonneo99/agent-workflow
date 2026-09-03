@@ -2833,6 +2833,7 @@ program
     const plan = buildLearningApplicationPlan(queue, parseProposalIds(options.ids));
     if (options.write) {
       await writeLearningApplicationPlan(projectDir, plan);
+      await recordLearningApplicationPlanReceipts(projectDir, plan, "learning-application-plan", "application plan written");
     }
 
     if (options.json) {
@@ -2849,6 +2850,30 @@ program
       console.log("");
       console.log("Dry run only. Re-run with --write to save the Agent Workflow-owned learning application plan.");
     }
+  });
+
+program
+  .command("learning-action-receipts")
+  .description("List or update append-only receipts for local learning proposal-to-action plans")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--reject <ids>", "comma-separated planned action ids or proposal ids to reject, or all")
+  .option("--actor <name>", "actor name", "developer")
+  .option("--note <text>", "receipt note")
+  .option("--json", "print receipt log JSON")
+  .action(async (options: { project: string; reject?: string; actor: string; note?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    let receipts = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
+    if (options.reject) {
+      receipts = appendLearningActionRejectionReceipts(receipts, parseProposalIds(options.reject), options.actor, options.note ?? "Rejected planned learning action.");
+      await writeLearningActionReceipts(projectDir, receipts);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(receipts, null, 2));
+      return;
+    }
+
+    console.log(formatLearningActionReceipts(receipts));
   });
 
 program
@@ -3791,6 +3816,30 @@ type LearningApplicationAction = {
   command: string | null;
   writesOwnedLearningStateOnly: boolean;
   blockedUntil: string[];
+};
+
+type LearningActionReceiptStatus = "planned" | "superseded" | "rejected";
+
+type LearningActionReceiptLog = {
+  kind: "agentflow_learning_action_receipts";
+  projectRootUri: string;
+  updatedAt: string;
+  events: LearningActionReceipt[];
+};
+
+type LearningActionReceipt = {
+  id: string;
+  status: LearningActionReceiptStatus;
+  actionId: string;
+  proposalId: string;
+  planGeneratedAt: string;
+  createdAt: string;
+  actor: string;
+  note: string;
+  title: string;
+  actionType: LearningApplicationAction["actionType"];
+  dangerGate: LearningApplicationAction["dangerGate"];
+  writesOwnedLearningStateOnly: boolean;
 };
 
 type LearningDaemonMode = "observe" | "propose" | "apply-approved";
@@ -7728,6 +7777,125 @@ function formatLearningApplicationPlanMarkdown(plan: LearningApplicationPlan): s
   ].filter(Boolean).join("\n");
 }
 
+function emptyLearningActionReceipts(projectRootUri: string): LearningActionReceiptLog {
+  return {
+    kind: "agentflow_learning_action_receipts",
+    projectRootUri,
+    updatedAt: new Date().toISOString(),
+    events: []
+  };
+}
+
+function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, plan: LearningApplicationPlan, actor: string, note: string): LearningActionReceiptLog {
+  const createdAt = new Date().toISOString();
+  const alreadyClosed = new Set(log.events.filter((event) => event.status === "superseded" || event.status === "rejected").map((event) => `${event.actionId}|${event.proposalId}|${event.status}`));
+  const currentPlanKeys = new Set(plan.actions.map((action) => `${action.id}|${action.proposalId}`));
+  const activeKeys = new Set(log.events.filter((event) => event.status === "planned").map((event) => `${event.planGeneratedAt}|${event.actionId}|${event.proposalId}`));
+  const nextEvents = [...log.events];
+  for (const event of log.events) {
+    const key = `${event.actionId}|${event.proposalId}`;
+    const supersedeKey = `${event.actionId}|${event.proposalId}|superseded`;
+    if (event.status === "planned" && !currentPlanKeys.has(key) && !alreadyClosed.has(supersedeKey)) {
+      nextEvents.push({
+        ...event,
+        id: `receipt-${String(nextEvents.length + 1).padStart(4, "0")}`,
+        status: "superseded",
+        createdAt,
+        actor,
+        note: `Superseded by application plan ${plan.generatedAt}.`
+      });
+    }
+  }
+  for (const action of plan.actions) {
+    const key = `${plan.generatedAt}|${action.id}|${action.proposalId}`;
+    if (activeKeys.has(key)) {
+      continue;
+    }
+    nextEvents.push({
+      id: `receipt-${String(nextEvents.length + 1).padStart(4, "0")}`,
+      status: "planned",
+      actionId: action.id,
+      proposalId: action.proposalId,
+      planGeneratedAt: plan.generatedAt,
+      createdAt,
+      actor,
+      note,
+      title: action.title,
+      actionType: action.actionType,
+      dangerGate: action.dangerGate,
+      writesOwnedLearningStateOnly: action.writesOwnedLearningStateOnly
+    });
+  }
+  return {
+    ...log,
+    projectRootUri: plan.projectRootUri,
+    updatedAt: createdAt,
+    events: nextEvents
+  };
+}
+
+function appendLearningActionRejectionReceipts(log: LearningActionReceiptLog, ids: string[] | "all", actor: string, note: string): LearningActionReceiptLog {
+  const idSet = ids === "all" ? null : new Set(ids);
+  const createdAt = new Date().toISOString();
+  const rejectedKeys = new Set(log.events.filter((event) => event.status === "rejected").map((event) => `${event.actionId}|${event.proposalId}`));
+  const nextEvents = [...log.events];
+  for (const event of log.events) {
+    const selected = event.status === "planned" && (idSet === null || idSet.has(event.id) || idSet.has(event.actionId) || idSet.has(event.proposalId));
+    const key = `${event.actionId}|${event.proposalId}`;
+    if (selected && !rejectedKeys.has(key)) {
+      nextEvents.push({
+        ...event,
+        id: `receipt-${String(nextEvents.length + 1).padStart(4, "0")}`,
+        status: "rejected",
+        createdAt,
+        actor,
+        note
+      });
+    }
+  }
+  return {
+    ...log,
+    updatedAt: createdAt,
+    events: nextEvents
+  };
+}
+
+function formatLearningActionReceipts(log: LearningActionReceiptLog): string {
+  const counts = countStrings(log.events.map((event) => event.status));
+  return [
+    `Learning Action Receipts: ${log.projectRootUri}`,
+    `Updated: ${log.updatedAt}`,
+    `Counts: planned=${counts.planned ?? 0} superseded=${counts.superseded ?? 0} rejected=${counts.rejected ?? 0}`,
+    "",
+    log.events.length
+      ? log.events.map((event) => [
+        `- ${event.id} ${event.status}: ${event.title}`,
+        `  - Action: ${event.actionId}`,
+        `  - Proposal: ${event.proposalId}`,
+        `  - Type: ${event.actionType}`,
+        `  - Gate: ${event.dangerGate}`,
+        `  - Owned learning state only: ${event.writesOwnedLearningStateOnly ? "yes" : "no"}`,
+        `  - Actor: ${event.actor}`,
+        `  - Note: ${event.note}`
+      ].join("\n")).join("\n")
+      : "- No learning action receipts yet."
+  ].join("\n");
+}
+
+function formatLearningActionReceiptsMarkdown(log: LearningActionReceiptLog): string {
+  return [
+    "# Agent Workflow Learning Action Receipts",
+    "",
+    `Project: ${log.projectRootUri}`,
+    `Updated: ${log.updatedAt}`,
+    "",
+    "These receipts are append-only local learning state. They record proposal-to-action planning, superseded plans, and rejected planned actions. They do not execute commands or apply source, provider, reusable bundle, network, or private-data changes.",
+    "",
+    formatLearningActionReceipts(log),
+    ""
+  ].join("\n");
+}
+
 async function loadDashboardModelImprovementReport(input: {
   projectDir: string;
   limit: number;
@@ -8133,6 +8301,30 @@ async function writeLearningApprovalQueue(projectDir: string, queue: LearningApp
   await fs.writeFile(path.join(learningDir, "approval-inbox.md"), formatLearningApprovalQueueMarkdown(queue), "utf8");
 }
 
+async function readLearningActionReceipts(projectDir: string): Promise<LearningActionReceiptLog> {
+  const receiptsPath = path.join(projectDir, ".agent-workflow", "learning", "action-receipts.json");
+  const raw = await fs.readFile(receiptsPath, "utf8");
+  const parsed = JSON.parse(raw) as LearningActionReceiptLog;
+  if (parsed.kind !== "agentflow_learning_action_receipts" || !Array.isArray(parsed.events)) {
+    throw new Error(`Invalid learning action receipts: ${receiptsPath}`);
+  }
+  return parsed;
+}
+
+async function writeLearningActionReceipts(projectDir: string, receipts: LearningActionReceiptLog): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "action-receipts.json"), `${JSON.stringify(receipts, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "action-receipts.md"), formatLearningActionReceiptsMarkdown(receipts), "utf8");
+}
+
+async function recordLearningApplicationPlanReceipts(projectDir: string, plan: LearningApplicationPlan, actor: string, note: string): Promise<LearningActionReceiptLog> {
+  const existing = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
+  const receipts = appendLearningApplicationPlanReceipts(existing, plan, actor, note);
+  await writeLearningActionReceipts(projectDir, receipts);
+  return receipts;
+}
+
 async function runLearningDaemonTick(input: {
   projectDir: string;
   mode: LearningDaemonMode;
@@ -8157,6 +8349,7 @@ async function runLearningDaemonTick(input: {
   }
   if (input.mode === "apply-approved") {
     await writeLearningApplicationPlan(input.projectDir, applicationPlan);
+    await recordLearningApplicationPlanReceipts(input.projectDir, applicationPlan, "learning-daemon", "apply-approved planning tick");
   }
   return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate };
 }
@@ -8819,6 +9012,38 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-action-receipts") {
+    const form = await readFormBody(request);
+    const project = form.get("project") ?? "";
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+      response.end(renderDashboardActionResult({ ok: false, error: "Missing project." }));
+      return;
+    }
+    const rejectIds = form.get("reject") ?? "";
+    if (!rejectIds.trim()) {
+      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
+      response.end(renderDashboardActionResult({ ok: false, error: "Missing action id to reject." }));
+      return;
+    }
+    const projectDir = path.resolve(process.cwd(), project);
+    const receipts = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
+    const nextReceipts = appendLearningActionRejectionReceipts(
+      receipts,
+      parseProposalIds(rejectIds),
+      form.get("actor") ?? "dashboard",
+      form.get("note") ?? "Rejected planned learning action from dashboard."
+    );
+    await writeLearningActionReceipts(projectDir, nextReceipts);
+    const query = new URLSearchParams({
+      project: projectDir,
+      limit: form.get("limit") ?? "50"
+    });
+    response.writeHead(303, { location: `/learning?${query.toString()}` });
+    response.end();
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
@@ -9265,6 +9490,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/learning-action-receipts") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const receipts = await readLearningActionReceipts(project).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), project)));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(receipts, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/learning-workflow-shape") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -9432,6 +9670,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const learningDaemon = project ? await loadLearningDaemonStatus(project) : null;
     const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
     const learningSettings = project ? await readLearningSettings(project).catch(() => null) : null;
+    const learningActionReceipts = project ? await readLearningActionReceipts(project).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), project))) : null;
     const workflowShape = project
       ? await loadWorkflowShapeOptimization({
         projectDir: project,
@@ -9440,7 +9679,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       }).catch(() => null)
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, workflowShape, learningSettings, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, learningSettings, projects, requestUrl.searchParams));
     return;
   }
 
@@ -11125,14 +11364,14 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, workflowShape, shapeAutoUpdate)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -11175,7 +11414,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -11238,6 +11477,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       <p class="muted">Generate a saved plan with <code>${escapeHtml(applicationPlanCommand)}</code>. This still does not apply behavior changes.</p>
       <div class="table-wrap"><table><thead><tr><th>Action</th><th>Type</th><th>Gate</th><th>Owned State Only</th><th>Command</th></tr></thead><tbody>${applicationRows || "<tr><td colspan=\"5\">No approved learning proposals selected for application planning.</td></tr>"}</tbody></table></div>
     </section>
+    ${learningActionReceipts ? renderLearningActionReceiptsHtml(learningActionReceipts, report.limit) : ""}
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
   `;
@@ -11313,6 +11553,37 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <div><h3>Owned Files</h3><ul>${fileItems}</ul></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>ID</th><th>Priority</th><th>Recommendation</th><th>Scope</th><th>Agent Type</th><th>Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"6\">No shape changes recommended yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLearningActionReceiptsHtml(log: LearningActionReceiptLog, limit: number): string {
+  const counts = countStrings(log.events.map((event) => event.status));
+  const rows = log.events.slice(-20).reverse().map((event) => `
+    <tr>
+      <td>${escapeHtml(event.id)}<br><span class="muted">${renderDashboardDateTime(event.createdAt)}</span></td>
+      <td><span class="flag ${event.status === "planned" ? "good" : event.status === "rejected" ? "warn" : "queued"}">${escapeHtml(event.status)}</span></td>
+      <td>${escapeHtml(event.title)}<br><span class="muted">${escapeHtml(event.actionId)} · ${escapeHtml(event.proposalId)}</span></td>
+      <td>${escapeHtml(event.actionType)}<br><span class="muted">${escapeHtml(event.dangerGate)}</span></td>
+      <td>${escapeHtml(event.actor)}<br><span class="muted">${escapeHtml(event.note)}</span></td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div><h2>Proposal-To-Action Receipts</h2><span class="muted">planned=${counts.planned ?? 0} superseded=${counts.superseded ?? 0} rejected=${counts.rejected ?? 0}</span></div>
+        <a class="button secondary" href="/api/learning-action-receipts?project=${encodeURIComponent(log.projectRootUri)}">JSON</a>
+      </div>
+      <p class="muted">Receipts are append-only learning-owned state. They record when approved proposals become plans, when plans are superseded, and when you reject a planned action.</p>
+      <form method="post" action="/api/learning-action-receipts" class="inline-action-form">
+        <input type="hidden" name="project" value="${escapeHtml(log.projectRootUri)}">
+        <input type="hidden" name="limit" value="${escapeHtml(String(limit))}">
+        <input name="reject" placeholder="action, proposal, or receipt id">
+        <input name="actor" value="dashboard">
+        <input name="note" placeholder="why reject this planned action">
+        <button type="submit" class="secondary">Reject Planned Action</button>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Status</th><th>Action</th><th>Type/Gate</th><th>Actor/Note</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No learning action receipts yet.</td></tr>"}</tbody></table></div>
     </section>
   `;
 }

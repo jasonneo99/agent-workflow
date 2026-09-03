@@ -250,6 +250,8 @@ agentflow learning-daemon --project /path/to/project --mode propose
 agentflow learning-daemon --project /path/to/project --mode apply-approved
 agentflow learning-application-plan --project /path/to/project
 agentflow learning-application-plan --project /path/to/project --write
+agentflow learning-action-receipts --project /path/to/project
+agentflow learning-action-receipts --project /path/to/project --reject learn-action-001 --actor "Your Name"
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature --write
 ```
@@ -274,6 +276,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 - `agentflow_learning_proposals`
 - `agentflow_learning_approvals`
 - `agentflow_learning_application_plan`
+- `agentflow_learning_action_receipts`
 - `agentflow_learning_workflow_shape`
 - `agentflow_learning_apply`
 - `agentflow_learning_research_notes`
@@ -307,14 +310,17 @@ policy and approval state allow writes.
 
 ### Phase 3: Approved Application
 
-- Status: started with dry-run/saved application plans for approved learning
-  proposals; application still routes through existing gates.
+- Status: implemented with dry-run/saved application plans for approved
+  learning proposals and append-only proposal-to-action receipts; application
+  still routes through existing gates.
 - Prepare next-step plans from approved learning proposals.
 - Generate command suggestions for feedback, eval, debug, or tuning follow-up.
 - Keep source, provider, reusable bundle, command, network, and export changes
   un-applied until explicit approval.
 - Write Agent Workflow-created application plan files only under
   `.agent-workflow/learning/`.
+- Record append-only receipts when proposals become application plans, when
+  planned actions are superseded, and when a user rejects a planned action.
 
 ### Phase 4: Daemon Mode
 
