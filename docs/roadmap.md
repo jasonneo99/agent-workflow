@@ -245,6 +245,7 @@ foundation is complete.
   - Done: add a guarded project-id routing adapter behind the same preview checks, still dry-run-by-default.
   - Done: add an authenticated queueing endpoint with dry-run as the default and real queueing gated by explicit server-mode environment flags.
   - Done: record remote actor, role, auth method, project id, workflow id, and idempotency details in queue receipts.
+  - Done: document reverse-proxy/TLS guidance without bundling public-network deployment defaults.
   - Next: require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] Team roles and separation of duties.

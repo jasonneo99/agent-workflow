@@ -203,6 +203,43 @@ For team use, place the Agent Workflow server behind a trusted reverse proxy
 that handles TLS and identity. The project should document this as an operator
 responsibility rather than shipping a broad internet-facing default.
 
+## Reverse Proxy And TLS Guidance
+
+Agent Workflow does not bundle an internet-facing deployment default. If a team
+chooses to expose server mode beyond loopback, the recommended pattern is:
+
+- Keep Agent Workflow bound to `127.0.0.1` or a private container network.
+- Terminate TLS at a team-managed reverse proxy such as Cloudflare Access,
+  Tailscale Funnel/Serve, Caddy, nginx, Traefik, or an internal ingress.
+- Require identity at the proxy before traffic reaches Agent Workflow.
+- Forward a stable actor claim, such as `x-agentflow-actor` or
+  `x-forwarded-email`, only from the trusted proxy.
+- Strip incoming client-supplied actor headers before adding trusted headers.
+- Rate limit mutation endpoints and keep request body limits small.
+- Keep Postgres, Redis, MinIO, provider keys, and project files off the public
+  network.
+
+OIDC-aware proxy mode expects the proxy to authenticate the user and forward an
+actor header:
+
+```env
+AGENTFLOW_SERVER_AUTH=oidc-proxy
+```
+
+Bearer-token mode is appropriate only for small trusted local networks:
+
+```env
+AGENTFLOW_SERVER_AUTH=token
+AGENTFLOW_SERVER_TOKEN=<long-random-token>
+```
+
+In both modes, real queueing should stay disabled until the operator has
+reviewed registered projects, role policy, backups, and worker scope:
+
+```env
+AGENTFLOW_SERVER_ENABLE_QUEUE=0
+```
+
 ## Deployment Topologies
 
 Local-only:
@@ -249,7 +286,7 @@ Before adding remote execution endpoints:
 - [ ] Require idempotency keys for all remaining mutation endpoints.
 - [x] Record remote actor details in queue action receipts.
 - [ ] Keep MCP stdio as the recommended IDE path for local use.
-- [ ] Document reverse-proxy/TLS guidance without bundling internet-facing
+- [x] Document reverse-proxy/TLS guidance without bundling internet-facing
       defaults.
 
 ## Local Verification Walkthrough
