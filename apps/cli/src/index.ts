@@ -14253,7 +14253,7 @@ async function processDashboardApprovalRuleAction(input: {
     projectRootUri: approvalForGate.projectRootUri,
     actionType: approvalForGate.actionType,
     target,
-    description: input.note.trim() || `Always approve ${approvalForGate.actionType} ${target}.`,
+    description: input.note.trim() || `Always approve ${approvalRuleDisplayTarget(approvalForGate, target)}.`,
     payload: approvalForGate.payload
   });
   let approval: DashboardActionApproval | null = null;
@@ -14275,8 +14275,9 @@ async function processDashboardApprovalRuleAction(input: {
     runId: approvalForGate.runId,
     output: [
       `Rule: ${rule.id}`,
-      `Action: ${approvalForGate.actionType}`,
-      `Target pattern: ${target}`,
+      `Function: ${approvalRuleDisplayTarget(approvalForGate, target)}`,
+      `Stored action: ${approvalForGate.actionType}`,
+      `Stored target pattern: ${target}`,
       `Project: ${approvalForGate.projectRootUri}`,
       `Config: ${rule.configPath}`,
       `Current approval: ${approval ? `approved ${approval.id}` : "left pending"}`,
@@ -15778,24 +15779,26 @@ function approvalRuleForms(approval: Awaited<ReturnType<typeof listActionApprova
   }
   const exact = approvalRuleExactTarget(approval);
   const broad = approvalRuleBroadTarget(approval);
-  const exactLabel = approval.actionType === "local_command" ? "Always Exact" : "Always File";
-  const broadLabel = approval.actionType === "local_command" ? "Always Prefix *" : "Always Path";
+  const exactDisplay = approvalRuleDisplayTarget(approval, exact);
+  const broadDisplay = approvalRuleDisplayTarget(approval, broad);
+  const exactLabel = approval.actionType === "local_command" ? "Always shell" : "Always fswrite";
+  const broadLabel = approval.actionType === "local_command" ? "Always shell prefix *" : "Always fswrite*";
   return `
     <form class="approval-form approval-rule-form" method="post" action="/api/approval-rule-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
       <input type="hidden" name="actorRole" value="approver">
       <input type="hidden" name="target" value="${escapeHtml(exact)}">
       <input type="hidden" name="approveCurrent" value="on">
-      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(exact)}">
-      <button class="secondary" type="submit">${escapeHtml(exactLabel)}</button>
+      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(exactDisplay)}">
+      <button class="secondary" type="submit" title="${escapeHtml(exactDisplay)}">${escapeHtml(exactLabel)}</button>
     </form>
     ${broad && broad !== exact ? `<form class="approval-form approval-rule-form" method="post" action="/api/approval-rule-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
       <input type="hidden" name="actorRole" value="approver">
       <input type="hidden" name="target" value="${escapeHtml(broad)}">
       <input type="hidden" name="approveCurrent" value="on">
-      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(broad)}">
-      <button class="secondary" type="submit">${escapeHtml(broadLabel)}</button>
+      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(broadDisplay)}">
+      <button class="secondary" type="submit" title="${escapeHtml(broadDisplay)}">${escapeHtml(broadLabel)}</button>
     </form>` : ""}`;
 }
 
@@ -15902,10 +15905,22 @@ function approvalRuleBroadTarget(approval: Awaited<ReturnType<typeof listActionA
     return exact;
   }
   if (approval.actionType === "file_write") {
-    const dir = path.posix.dirname(exact.replaceAll(path.sep, "/"));
-    return dir && dir !== "." ? `${dir}/**` : exact;
+    return "**";
   }
   return exact;
+}
+
+function approvalRuleDisplayTarget(
+  approval: Awaited<ReturnType<typeof listActionApprovals>>[number],
+  target: string
+): string {
+  if (approval.actionType === "local_command") {
+    return `shell ${target}`;
+  }
+  if (approval.actionType === "file_write") {
+    return target === "**" ? "fswrite*" : `fswrite ${target}`;
+  }
+  return `${approval.actionType} ${target}`;
 }
 
 function normalizeApprovalRuleCommand(value: string): string {

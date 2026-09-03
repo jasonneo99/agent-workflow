@@ -130,6 +130,32 @@ test("approval rule command wildcards match command prefixes only", () => {
   assert.equal(unmatched?.id, "tests");
 });
 
+test("approval rule file wildcard can represent fswrite star", () => {
+  const wildcardProject = projectConfigSchema.parse({
+    ...project,
+    actions: {
+      ...project.actions,
+      approval_rules: [
+        ...project.actions.approval_rules,
+        {
+          id: "fswrite-star",
+          action_type: "file_write",
+          target: "**",
+          effect: "auto_execute",
+          max_bytes: 4096
+        }
+      ]
+    }
+  });
+  const matched = evaluateActionApprovalRule({
+    project: wildcardProject,
+    actionType: "file_write",
+    target: "src/generated/report.json",
+    bytes: 512
+  });
+  assert.equal(matched?.id, "fswrite-star");
+});
+
 test("approval rules do not match writes above their byte cap", () => {
   const fileRule = evaluateActionApprovalRule({
     project,
