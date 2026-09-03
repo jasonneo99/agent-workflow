@@ -8940,6 +8940,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-bulk-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardBulkApprovalAction({
+      approvalIds: form.getAll("approvalId"),
+      actorRole: form.get("actorRole") ?? "",
+      note: form.get("note") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/artifact-lifecycle-action") {
     const form = await readFormBody(request);
     const result = await processDashboardArtifactLifecycleAction({
@@ -9620,7 +9632,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
     });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderApprovalsHtml(approvals, status));
+    response.end(renderApprovalsHtml(approvals, status, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/approvals/bulk") {
+    const approvals = await listActionApprovals({
+      status: "pending",
+      runId: requestUrl.searchParams.get("run") ?? undefined,
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    });
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderBulkApprovalsHtml(approvals));
     return;
   }
 
@@ -10078,8 +10102,15 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
 
 function renderApprovalsHtml(
   approvals: Awaited<ReturnType<typeof listActionApprovals>>,
-  status: string
+  status: string,
+  params: URLSearchParams = new URLSearchParams()
 ): string {
+  const pendingCount = approvals.filter((approval) => approval.status === "pending").length;
+  const bulkParams = new URLSearchParams();
+  if (params.get("run")) bulkParams.set("run", params.get("run") ?? "");
+  if (params.get("project")) bulkParams.set("project", params.get("project") ?? "");
+  bulkParams.set("limit", params.get("limit") ?? "100");
+  const bulkHref = `/approvals/bulk?${bulkParams.toString()}`;
   const rows = approvals.map((approval) => `
     <tr>
       <td>${escapeHtml(approval.id.slice(0, 8))}<br><span class="muted">${escapeHtml(approval.id)}</span></td>
@@ -10121,6 +10152,7 @@ function renderApprovalsHtml(
         ${filterLink("failed", "Failed")}
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
+        ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
       </div>
     </section>
     <section class="panel">
@@ -10129,6 +10161,54 @@ function renderApprovalsHtml(
         <thead><tr><th>Approval</th><th>Status</th><th>Action</th><th>Target</th><th>Run</th><th>Project</th><th>Rationale</th><th>Decision</th></tr></thead>
         <tbody>${rows || "<tr><td colspan=\"8\">No approvals found.</td></tr>"}</tbody>
       </table>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function renderBulkApprovalsHtml(
+  approvals: Awaited<ReturnType<typeof listActionApprovals>>
+): string {
+  const rows = approvals.map((approval) => `
+    <label class="bulk-approval-row">
+      <input type="checkbox" name="approvalId" value="${escapeHtml(approval.id)}" checked>
+      <span>
+        <strong>${escapeHtml(approvalOneLineSummary(approval))}</strong>
+        <small>${escapeHtml(approval.id)} · ${escapeHtml(approval.projectName)} · ${escapeHtml(approval.workflowId)}</small>
+      </span>
+    </label>
+  `).join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Approve Pending Actions</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("approvals")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/approvals">Approvals</a>
+        <h1>Approve Pending Actions</h1>
+        <p class="muted">Review each one-line summary and uncheck anything you do not want approved.</p>
+      </div>
+    </div>
+    <section class="panel">
+      ${approvals.length ? `<form method="post" action="/api/approval-bulk-action" class="bulk-approval-form">
+        <input type="hidden" name="actorRole" value="approver">
+        <label>Decision note
+          <input name="note" value="Bulk approved from dashboard after review">
+        </label>
+        <div class="bulk-approval-list">${rows}</div>
+        <div class="actions">
+          <button type="submit">Approve Checked</button>
+          <a class="button secondary" href="/approvals">Cancel</a>
+        </div>
+      </form>` : `<p class="muted">No pending approvals are available.</p><a class="button secondary" href="/approvals">Back to Approvals</a>`}
     </section>
   </main>
 </body>
@@ -13960,6 +14040,66 @@ async function processDashboardApprovalAction(input: {
   };
 }
 
+async function processDashboardBulkApprovalAction(input: {
+  approvalIds: string[];
+  actorRole: string;
+  note: string;
+}): Promise<DashboardFollowUpResult> {
+  const approvalIds = [...new Set(input.approvalIds.map((id) => id.trim()).filter(Boolean))];
+  if (!approvalIds.length) {
+    return { ok: false, error: "Select at least one pending approval to approve." };
+  }
+  const actorRole = normalizeActorRole(input.actorRole, "approver");
+  const approved: DashboardActionApproval[] = [];
+  const skipped: string[] = [];
+  for (const approvalId of approvalIds) {
+    const approvalForGate = await getActionApproval(approvalId);
+    if (!approvalForGate) {
+      skipped.push(`${approvalId}: not found or no longer pending`);
+      continue;
+    }
+    const project = await loadProjectConfig(approvalForGate.projectRootUri);
+    const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
+    if (!gate.allowed) {
+      skipped.push(`${approvalId}: ${gate.message}`);
+      continue;
+    }
+    const approval = await decideActionApproval({
+      approvalId,
+      decision: "approved",
+      actor: "dashboard",
+      actorRole,
+      note: input.note.trim() || "Bulk approved from dashboard."
+    });
+    if (!approval) {
+      skipped.push(`${approvalId}: not found or no longer pending`);
+      continue;
+    }
+    approved.push(approval);
+  }
+  if (!approved.length) {
+    return {
+      ok: false,
+      error: [
+        "No approvals changed.",
+        ...skipped.map((item) => `Skipped ${item}`)
+      ].join("\n")
+    };
+  }
+  return {
+    ok: true,
+    title: "Bulk approvals recorded",
+    output: [
+      `Approved: ${approved.length}`,
+      `Skipped: ${skipped.length}`,
+      ...approved.map((approval) => `Approved ${approval.id}: ${approvalOneLineSummary(approval)}`),
+      ...skipped.map((item) => `Skipped ${item}`),
+      "Decision receipts were recorded for approved items.",
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
 async function processDashboardArtifactLifecycleAction(input: {
   action: string;
   project: string;
@@ -15459,6 +15599,15 @@ function rolePreviewForApproval(approval: Awaited<ReturnType<typeof listActionAp
     : "Role preview: no decision role recorded yet.";
 }
 
+function approvalOneLineSummary(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  const rationale = approval.rationale ? ` - ${approval.rationale}` : "";
+  return truncateText(`${approval.actionType} ${approval.target} for ${approval.stageId} (${approval.agentId})${rationale}`, 180);
+}
+
+function truncateText(value: string, maxLength: number): string {
+  return value.length > maxLength ? `${value.slice(0, Math.max(0, maxLength - 3))}...` : value;
+}
+
 function approvalExecuteForm(approvalId: string): string {
   return `<form class="approval-form" method="post" action="/api/approval-action">
     <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
@@ -15600,6 +15749,15 @@ function dashboardCss(): string {
     .dismiss-form input { min-width: 140px; max-width: 190px; }
     .approval-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
     .approval-form input { min-width: 120px; max-width: 180px; }
+    .bulk-approval-form { display: grid; gap: 14px; }
+    .bulk-approval-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+    .bulk-approval-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .bulk-approval-list { display: grid; gap: 8px; }
+    .bulk-approval-row { display: grid !important; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px; border: 1px solid #e2e7f0; background: #f8fafc; color: #172033 !important; font-size: 13px !important; text-transform: none !important; }
+    .bulk-approval-row input { width: auto; min-width: 0; margin-top: 2px; }
+    .bulk-approval-row span { display: grid; gap: 3px; min-width: 0; }
+    .bulk-approval-row strong { font-size: 13px; line-height: 1.35; }
+    .bulk-approval-row small { color: #64748b; line-height: 1.35; overflow-wrap: anywhere; }
     .bulk-dismiss-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; align-items: end; }
     .bulk-dismiss-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .bulk-dismiss-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
