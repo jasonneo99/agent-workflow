@@ -49,6 +49,7 @@ npm run server-readiness
 npm run server-projects
 npm run server-resolve-project -- --project-id <project-id>
 npm run server-request-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
+npm run server-route-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
 npm run check
 npm run bundle-manifest
 ```

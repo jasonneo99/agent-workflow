@@ -123,6 +123,7 @@ npm run server-projects
 npm run server-projects -- --json
 npm run server-resolve-project -- --project-id <project-id>
 npm run server-request-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
+npm run server-route-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
 ```
 
 The command is read-only. It reports server-mode opt-in state, bind/port, auth
@@ -135,7 +136,9 @@ hidden unless `--include-roots` is explicitly provided. `server-resolve-project`
 resolves a single registered project id and rejects path-shaped input.
 `server-request-preview` validates the future remote request envelope, including
 project id, workflow id, actor role, auth posture, and idempotency, but never
-queues a workflow.
+queues a workflow. `server-route-preview` turns a valid preview envelope into
+an internal dry-run route and command preview while still refusing blocked
+requests.
 
 ## 3b. Optional Codex Plugin
 
@@ -748,6 +751,7 @@ JSON endpoints:
 /api/server-projects
 /api/server-project?projectId=<project-id>
 /api/server-request-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
+/api/server-route-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
 /api/queue
 /api/projects
 /api/run?id=<run-id>

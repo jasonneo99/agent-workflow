@@ -95,7 +95,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -2163,6 +2163,29 @@ program
   });
 
 program
+  .command("server-route-preview")
+  .description("Resolve a governed server-mode workflow request into an internal route without queueing work")
+  .requiredOption("--project-id <id>", "registered project id from server-projects")
+  .requiredOption("-w, --workflow <id>", "workflow id to request")
+  .requiredOption("-t, --task <text>", "natural-language task")
+  .option("--actor <name>", "requesting actor", "local-preview")
+  .option("--actor-role <role>", "project role for the request", "operator")
+  .option("--idempotency-key <key>", "client-provided idempotency key")
+  .option("--json", "print machine-readable route preview")
+  .action(async (options: { projectId: string; workflow: string; task: string; actor: string; actorRole: string; idempotencyKey?: string; json?: boolean }) => {
+    const report = await loadServerRoutePreview({
+      projectId: options.projectId,
+      workflowId: options.workflow,
+      task: options.task,
+      actor: options.actor,
+      actorRole: options.actorRole,
+      idempotencyKey: options.idempotencyKey
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerRoutePreview(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3702,6 +3725,28 @@ type ServerRequestPreviewReport = {
     status: ServerReadinessCheckStatus;
     detail: string;
   }>;
+  notes: string[];
+};
+
+type ServerRoutePreviewReport = {
+  kind: "agentflow_server_route_preview";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  dryRun: true;
+  envelope: ServerRequestPreviewReport["envelope"];
+  route: null | {
+    projectId: string;
+    projectName: string;
+    projectRootUri: string;
+    workflowId: string;
+    task: string;
+    policyProfile: string;
+    actor: string;
+    actorRole: string;
+    idempotencyKey: string;
+    commandPreview: string;
+  };
+  checks: ServerRequestPreviewReport["checks"];
   notes: string[];
 };
 
@@ -5251,6 +5296,82 @@ function formatServerRequestPreview(report: ServerRequestPreviewReport): string 
     `- task: ${report.envelope.task}`,
     `- policyProfile: ${report.envelope.policyProfile ?? "unknown"}`,
     `- wouldQueue: ${report.controls.wouldQueue ? "yes" : "no"}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+async function loadServerRoutePreview(input: {
+  projectId: string;
+  workflowId: string;
+  task: string;
+  actor: string;
+  actorRole: string;
+  idempotencyKey?: string;
+}): Promise<ServerRoutePreviewReport> {
+  const requestPreview = await loadServerRequestPreview(input);
+  const resolution = await resolveServerProjectReference({ projectId: input.projectId, includeRoot: true });
+  const route = requestPreview.status === "blocked" || !resolution.project?.rootUri
+    ? null
+    : {
+        projectId: requestPreview.envelope.projectId,
+        projectName: resolution.project.name,
+        projectRootUri: resolution.project.rootUri,
+        workflowId: requestPreview.envelope.workflow,
+        task: requestPreview.envelope.task,
+        policyProfile: requestPreview.envelope.policyProfile ?? "local",
+        actor: requestPreview.envelope.actor,
+        actorRole: requestPreview.envelope.actorRole,
+        idempotencyKey: requestPreview.envelope.idempotencyKey,
+        commandPreview: `agentflow run-and-watch ${shellQuote(requestPreview.envelope.workflow)} --project ${shellQuote(resolution.project.rootUri)} --task ${shellQuote(requestPreview.envelope.task)}`
+      };
+  return {
+    kind: "agentflow_server_route_preview",
+    generatedAt: new Date().toISOString(),
+    status: requestPreview.status,
+    dryRun: true,
+    envelope: requestPreview.envelope,
+    route,
+    checks: [
+      ...requestPreview.checks,
+      {
+        label: "Route adapter",
+        status: route ? "pass" : "fail",
+        detail: route ? "Request envelope resolves to an internal project route. No workflow was queued." : "Route was not produced because the request preview is blocked or project root is unavailable."
+      }
+    ],
+    notes: [
+      "Dry-run route preview only.",
+      "The route contains the local root for internal execution planning; do not expose it as the remote client contract.",
+      "Future server endpoints should require the same preview checks before queueing work."
+    ]
+  };
+}
+
+function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
+  return [
+    `Server route preview (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    "",
+    "Envelope:",
+    `- projectId: ${report.envelope.projectId}`,
+    `- workflow: ${report.envelope.workflow}`,
+    `- actorRole: ${report.envelope.actorRole}`,
+    `- idempotencyKey: ${report.envelope.idempotencyKey}`,
+    "",
+    "Route:",
+    ...(report.route ? [
+      `- project: ${report.route.projectName}`,
+      `- root: ${report.route.projectRootUri}`,
+      `- workflow: ${report.route.workflowId}`,
+      `- policyProfile: ${report.route.policyProfile}`,
+      `- commandPreview: ${report.route.commandPreview}`
+    ] : ["- No route produced."]),
     "",
     "Checks:",
     ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
@@ -7126,6 +7247,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/server-request-preview") {
     const report = await loadServerRequestPreview({
+      projectId: requestUrl.searchParams.get("projectId") ?? "",
+      workflowId: requestUrl.searchParams.get("workflow") ?? "",
+      task: requestUrl.searchParams.get("task") ?? "",
+      actor: requestUrl.searchParams.get("actor") ?? "dashboard-preview",
+      actorRole: requestUrl.searchParams.get("actorRole") ?? "operator",
+      idempotencyKey: requestUrl.searchParams.get("idempotencyKey") ?? undefined
+    });
+    response.writeHead(report.status === "blocked" ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-route-preview") {
+    const report = await loadServerRoutePreview({
       projectId: requestUrl.searchParams.get("projectId") ?? "",
       workflowId: requestUrl.searchParams.get("workflow") ?? "",
       task: requestUrl.searchParams.get("task") ?? "",
