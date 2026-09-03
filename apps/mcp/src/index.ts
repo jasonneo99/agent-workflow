@@ -29,7 +29,7 @@ const server = new McpServer(
       "Agent Workflow is the default orchestration layer for software-project work. " +
       "When this server is available and a request involves planning, implementation, debugging, testing, review, security, UX, documentation, release readiness, or project maintenance, use its tools before doing substantive work. " +
       "Prefer agentflow_orchestrate for ambiguous or multi-stage tasks and the narrowest matching tool for focused tasks. " +
-      "When any tool result says Approval required, ask the user in the current chat whether to approve, reject, execute, dismiss stale, or always approve the listed side effect, then call agentflow_approvals with the selected approval id. " +
+      "When any tool result says Approval required, ask the user in the current chat whether to approve and execute now, approve only, reject, dismiss stale, or always approve the listed side effect, then call agentflow_approvals with the selected approval id. Prefer approveAndExecute for executable inline approvals. " +
       "Use project paths that are accessible on Loki. If the target project is not accessible on Loki or this server cannot serve the task, continue with native Codex tools and state the fallback."
   }
 );
@@ -107,12 +107,13 @@ server.registerTool(
   "agentflow_approvals",
   {
     title: "AgentFlow action approvals",
-    description: "List, approve, reject, execute, dismiss stale approved actions, or add always-approve rules for agent-requested actions that require human approval.",
+    description: "List, approve, approve-and-execute, reject, execute, dismiss stale approved actions, or add always-approve rules for agent-requested actions that require human approval.",
     inputSchema: {
       status: z.enum(["pending", "approved", "executed", "failed", "rejected", "all"]).optional(),
       run: z.string().optional().describe("Filter by workflow run id."),
       project: z.string().optional().describe("Filter by project directory."),
       approve: z.string().optional().describe("Approval id to approve."),
+      approveAndExecute: z.string().optional().describe("Approval id to approve and immediately execute when the requested action is executable."),
       reject: z.string().optional().describe("Approval id to reject."),
       execute: z.string().optional().describe("Approval id to execute after it has been approved."),
       dismiss: z.string().optional().describe("Approval id to dismiss without execution when the approved action is stale or no longer needed."),
@@ -125,11 +126,12 @@ server.registerTool(
       json: z.boolean().optional().describe("Return approval JSON.")
     }
   },
-  async ({ status, run, project, approve, reject, execute, dismiss, always, alwaysScope, alwaysTarget, actor, note, limit, json }) => {
+  async ({ status, run, project, approve, approveAndExecute, reject, execute, dismiss, always, alwaysScope, alwaysTarget, actor, note, limit, json }) => {
     const args = ["approvals", "--status", status ?? "pending"];
     if (run) args.push("--run", run);
     if (project) args.push("--project", project);
     if (approve) args.push("--approve", approve);
+    if (approveAndExecute) args.push("--approve-execute", approveAndExecute);
     if (reject) args.push("--reject", reject);
     if (execute) args.push("--execute", execute);
     if (dismiss) args.push("--dismiss", dismiss);

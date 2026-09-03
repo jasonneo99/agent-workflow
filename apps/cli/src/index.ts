@@ -1721,11 +1721,12 @@ program
 
 program
   .command("approvals")
-  .description("List, approve, reject, execute, or add always rules for pending agent-requested actions")
+  .description("List, approve, approve-and-execute, reject, execute, dismiss, or add always rules for agent-requested actions")
   .option("--status <status>", "pending, approved, executed, failed, rejected, or all", "pending")
   .option("-r, --run <id>", "filter by workflow run id")
   .option("-p, --project <dir>", "filter by project directory")
   .option("--approve <id>", "approval id to approve")
+  .option("--approve-execute <id>", "approve an executable action and immediately execute it")
   .option("--reject <id>", "approval id to reject")
   .option("--execute <id>", "execute an approved action")
   .option("--dismiss <id>", "dismiss an approved action without execution")
@@ -1737,7 +1738,7 @@ program
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; dismiss?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; approveExecute?: string; reject?: string; execute?: string; dismiss?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1748,9 +1749,31 @@ program
       return;
     }
 
-    if ([options.approve, options.reject, options.execute, options.dismiss, options.always].filter(Boolean).length > 1) {
-      console.error("Choose only one of --approve, --reject, --execute, --dismiss, or --always.");
+    if ([options.approve, options.approveExecute, options.reject, options.execute, options.dismiss, options.always].filter(Boolean).length > 1) {
+      console.error("Choose only one of --approve, --approve-execute, --reject, --execute, --dismiss, or --always.");
       process.exitCode = 1;
+      return;
+    }
+
+    if (options.approveExecute) {
+      const result = await approveAndExecuteAction({
+        approvalId: options.approveExecute,
+        actor: options.actor,
+        approveActorRole: normalizeActorRole(options.actorRole, "approver"),
+        executeActorRole: "operator",
+        note: options.note
+      });
+      if (!result.ok) {
+        console.error(result.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(result.title);
+      console.log(result.output);
       return;
     }
 
@@ -1904,6 +1927,9 @@ program
       console.log(`  Role preview: ${rolePreviewForApproval(approval)}`);
       if (approval.status === "pending") {
         console.log(`  Approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`);
+        if (isExecutableApprovalAction(approval.actionType)) {
+          console.log(`  Approve + execute: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver`);
+        }
         if (approval.actionType === "local_command" || approval.actionType === "file_write") {
           console.log(`  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver`);
           console.log(`  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver`);
@@ -9260,7 +9286,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await processDashboardBulkApprovalAction({
       approvalIds: form.getAll("approvalId"),
       actorRole: form.get("actorRole") ?? "",
-      note: form.get("note") ?? ""
+      note: form.get("note") ?? "",
+      executeAfterApproval: form.get("executeAfterApproval") === "on"
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -10570,6 +10597,10 @@ function renderBulkApprovalsHtml(
         <input type="hidden" name="actorRole" value="approver">
         <label>Decision note
           <input name="note" value="Bulk approved from dashboard after review">
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="executeAfterApproval" checked>
+          Execute executable actions immediately after approval
         </label>
         <div class="bulk-approval-list">${rows}</div>
         <div class="actions">
@@ -14433,6 +14464,15 @@ async function processDashboardApprovalAction(input: {
   if (!approvalId) {
     return { ok: false, error: "Missing approval id." };
   }
+  if (decision === "approve_execute") {
+    return approveAndExecuteAction({
+      approvalId,
+      actor: "dashboard",
+      approveActorRole: normalizeActorRole(input.actorRole, "approver"),
+      executeActorRole: "operator",
+      note: input.note.trim()
+    });
+  }
   if (decision === "execute") {
     return executeApprovedAction({ approvalId, actor: "dashboard", actorRole: normalizeActorRole(input.actorRole, "operator") });
   }
@@ -14485,10 +14525,69 @@ async function processDashboardApprovalAction(input: {
   };
 }
 
+async function approveAndExecuteAction(input: {
+  approvalId: string;
+  actor: string;
+  approveActorRole: string;
+  executeActorRole: string;
+  note?: string;
+}): Promise<DashboardFollowUpResult> {
+  const approvalForGate = await getActionApproval(input.approvalId);
+  if (!approvalForGate) {
+    return { ok: false, error: "Approval was not found or is no longer pending." };
+  }
+  if (!isExecutableApprovalAction(approvalForGate.actionType)) {
+    return { ok: false, error: `Approval action type cannot be executed inline: ${approvalForGate.actionType}` };
+  }
+  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const approvalGate = evaluateRoleGate(project, input.approveActorRole, "can_approve_actions");
+  if (!approvalGate.allowed) {
+    return { ok: false, error: approvalGate.message };
+  }
+  const approval = await decideActionApproval({
+    approvalId: input.approvalId,
+    decision: "approved",
+    actor: input.actor,
+    actorRole: input.approveActorRole,
+    note: input.note?.trim() || "Approved and queued for immediate execution."
+  });
+  if (!approval) {
+    return { ok: false, error: "Approval was not found or is no longer pending." };
+  }
+  const execution = await executeApprovedAction({
+    approvalId: input.approvalId,
+    actor: input.actor,
+    actorRole: input.executeActorRole
+  });
+  if (!execution.ok) {
+    return {
+      ok: false,
+      error: [
+        "Action was approved, but immediate execution failed.",
+        execution.error
+      ].join("\n")
+    };
+  }
+  return {
+    ok: true,
+    title: "Action approved and executed",
+    runId: approval.runId,
+    output: [
+      `Approval: ${approval.id}`,
+      `Action: ${approval.actionType}`,
+      `Target: ${approval.target}`,
+      `Project: ${approval.projectRootUri}`,
+      `Approval role gate: ${approvalGate.message}`,
+      execution.output
+    ].join("\n")
+  };
+}
+
 async function processDashboardBulkApprovalAction(input: {
   approvalIds: string[];
   actorRole: string;
   note: string;
+  executeAfterApproval: boolean;
 }): Promise<DashboardFollowUpResult> {
   const approvalIds = [...new Set(input.approvalIds.map((id) => id.trim()).filter(Boolean))];
   if (!approvalIds.length) {
@@ -14496,11 +14595,28 @@ async function processDashboardBulkApprovalAction(input: {
   }
   const actorRole = normalizeActorRole(input.actorRole, "approver");
   const approved: DashboardActionApproval[] = [];
+  const executed: string[] = [];
   const skipped: string[] = [];
   for (const approvalId of approvalIds) {
     const approvalForGate = await getActionApproval(approvalId);
     if (!approvalForGate) {
       skipped.push(`${approvalId}: not found or no longer pending`);
+      continue;
+    }
+    if (input.executeAfterApproval && isExecutableApprovalAction(approvalForGate.actionType)) {
+      const result = await approveAndExecuteAction({
+        approvalId,
+        actor: "dashboard",
+        approveActorRole: actorRole,
+        executeActorRole: "operator",
+        note: input.note.trim() || "Bulk approved and executed from dashboard."
+      });
+      if (!result.ok) {
+        skipped.push(`${approvalId}: ${result.error}`);
+        continue;
+      }
+      approved.push(approvalForGate);
+      executed.push(`${approvalId}: ${approvalOneLineSummary(approvalForGate)}`);
       continue;
     }
     const project = await loadProjectConfig(approvalForGate.projectRootUri);
@@ -14536,10 +14652,14 @@ async function processDashboardBulkApprovalAction(input: {
     title: "Bulk approvals recorded",
     output: [
       `Approved: ${approved.length}`,
+      `Executed: ${executed.length}`,
       `Skipped: ${skipped.length}`,
       ...approved.map((approval) => `Approved ${approval.id}: ${approvalOneLineSummary(approval)}`),
+      ...executed.map((item) => `Executed ${item}`),
       ...skipped.map((item) => `Skipped ${item}`),
-      "Decision receipts were recorded for approved items.",
+      input.executeAfterApproval
+        ? "Decision and execution receipts were recorded where execution was available."
+        : "Decision receipts were recorded for approved items.",
       "Open: /approvals"
     ].join("\n")
   };
@@ -16129,14 +16249,22 @@ function isExecutableApprovalAction(actionType: string): boolean {
 
 function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
   const approvalId = approval.id;
+  const executable = isExecutableApprovalAction(approval.actionType);
   return `<div class="actions">
     <form class="approval-form" method="post" action="/api/approval-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+      <input type="hidden" name="decision" value="${executable ? "approve_execute" : "approved"}">
+      <input type="hidden" name="actorRole" value="approver">
+      <input name="note" aria-label="Approval note" placeholder="Optional note">
+      <button type="submit">${executable ? "Approve + Execute" : "Approve"}</button>
+    </form>
+    ${executable ? `<form class="approval-form" method="post" action="/api/approval-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
       <input type="hidden" name="decision" value="approved">
       <input type="hidden" name="actorRole" value="approver">
       <input name="note" aria-label="Approval note" placeholder="Optional note">
-      <button type="submit">Approve</button>
-    </form>
+      <button class="secondary" type="submit">Approve Only</button>
+    </form>` : ""}
     <form class="approval-form" method="post" action="/api/approval-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
       <input type="hidden" name="decision" value="rejected">
@@ -16217,13 +16345,14 @@ async function formatPendingApprovalNotice(runId: string, projectRootUri?: strin
     lines.push(
       `- ${approval.actionType} ${approval.target}`,
       `  id: ${approval.id}`,
-      `  requested by: ${approval.stageId} (${approval.agentId})`,
-      `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
-      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
-      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
-      executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
-      `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
-      "  approve in MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id."
+        `  requested by: ${approval.stageId} (${approval.agentId})`,
+        `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+        executable ? `  approve and execute in CLI: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver` : "",
+        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
+        executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
+        `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
+        "  approve in MCP/Codex: ask the user to choose approve and execute, approve only, reject, always exact, always broad, execute, or dismiss; then call agentflow_approvals with the matching field and id."
     );
   }
   return lines.filter(Boolean).join("\n");
@@ -16250,10 +16379,11 @@ async function formatPendingApprovalInboxNotice(projectRootUri?: string): Promis
       `  run: ${approval.runId}`,
       `  id: ${approval.id}`,
       `  approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+      executable ? `  approve and execute: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver` : "",
       approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
       approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
       executable ? `  execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
-      "  MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id."
+      "  MCP/Codex: ask the user to choose approve and execute, approve only, reject, always exact, always broad, execute, or dismiss; then call agentflow_approvals with the matching field and id."
     );
   }
   return lines.filter(Boolean).join("\n");
@@ -16494,6 +16624,8 @@ function dashboardCss(): string {
     .bulk-approval-form { display: grid; gap: 14px; }
     .bulk-approval-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .bulk-approval-form input { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
+    .bulk-approval-form .checkbox-row { display: flex; gap: 8px; align-items: center; text-transform: none; font-size: 13px; color: #172033; }
+    .bulk-approval-form .checkbox-row input { width: auto; min-width: 0; }
     .bulk-approval-list { display: grid; gap: 8px; }
     .bulk-approval-row { display: grid !important; grid-template-columns: 18px minmax(0, 1fr); gap: 10px; align-items: start; padding: 10px; border: 1px solid #e2e7f0; background: #f8fafc; color: #172033 !important; font-size: 13px !important; text-transform: none !important; }
     .bulk-approval-row input { width: auto; min-width: 0; margin-top: 2px; }

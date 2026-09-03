@@ -194,6 +194,7 @@ npm run agentflow -- resume-run --run <id> # Resume unfinished stages from the l
 npm run agentflow -- replay-run --run <id> # Queue a fresh replay from stored run metadata
 npm run agentflow -- approvals # Review pending agent-requested actions
 npm run agentflow -- approvals --approve <id> --actor "Your Name" --actor-role approver # Record role-aware approval
+npm run agentflow -- approvals --approve-execute <id> --actor "Your Name" --actor-role approver # Approve and run now
 npm run agentflow -- approval-rules -p . # List always-approved shell/fswrite rules
 npm run agentflow -- approval-rules -p . --remove <rule-id> # Remove an always-approved rule
 npm run agentflow -- roles -p . # Inspect team role config and recent approval decisions by role
@@ -226,7 +227,10 @@ show that approval id to the user in their current context. The workflow may kee
 running around it, but that specific side effect stays skipped until approved,
 rejected, dismissed as stale, always-approved, or executed through `agentflow_approvals` or the
 dashboard. MCP clients should ask the user in chat, then call
-`agentflow_approvals` with `approve`, `reject`, `dismiss`, `always`, or `execute`.
+`agentflow_approvals` with `approveAndExecute`, `approve`, `reject`, `dismiss`,
+`always`, or `execute`. For local inline approvals, prefer approve-and-execute
+for executable side effects; use approve-only when a team wants a separate
+operator step.
 
 The dashboard includes a **Graph** view for inspecting workflow stages, primary
 agents, subagents, context budgets, approval points, and policy fit before

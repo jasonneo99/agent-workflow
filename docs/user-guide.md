@@ -912,6 +912,7 @@ CLI equivalents:
 npm run agentflow -- approvals
 npm run agentflow -- approvals --status all
 npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
+npm run agentflow -- approvals --approve-execute <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
 npm run agentflow -- approvals --always <approval-id> --always-scope exact --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --always <approval-id> --always-scope broad --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
@@ -932,10 +933,13 @@ id and next commands. Pending approvals are side-effect gates: the workflow may
 continue around them, but the requested command, file write, deployment
 decision, artifact lifecycle action, or autonomy change remains skipped until
 you approve it. MCP clients such as Codex, VS Code, and Cursor should present
-the returned approval id to the user, ask whether to approve, reject, always
-approve the exact function call, always approve the broad function family, or
-execute or dismiss an already approved action, then call `agentflow_approvals`
-with the selected decision.
+the returned approval id to the user, ask whether to approve and execute now,
+approve only, reject, always approve the exact function call, always approve the
+broad function family, or execute or dismiss an already approved action, then
+call `agentflow_approvals` with the selected decision. For local inline
+approvals, `approveAndExecute` is the recommended default for executable side
+effects. Use approve-only when approval and execution should be handled by
+different people or tools.
 
 Deployment and autonomy approvals use the same inbox. They record a human
 decision for a risky operation, but they do not execute a local command by

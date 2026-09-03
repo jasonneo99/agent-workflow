@@ -50,7 +50,7 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
-- `agentflow_approvals`: list, approve, reject, execute, or add always-approve rules for agent-requested actions.
+- `agentflow_approvals`: list, approve, approve-and-execute, reject, execute, dismiss, or add always-approve rules for agent-requested actions.
 - `agentflow_approval_rules`: list or remove project-local always-approved shell/fswrite rules.
 - `agentflow_request_approval`: create deployment or autonomy approval requests in the shared inbox.
 - `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
@@ -72,12 +72,13 @@ Restart the Codex app after changing MCP configuration.
 
 When a tool response says `Approval required`, the requested side effect is
 waiting for a human decision in the current client. Surface the one-line summary
-and approval id to the user, then ask whether to approve, reject, always approve
-the exact function call, always approve the broad function family, execute an
-already approved action. Call `agentflow_approvals` with `approve`, `reject`,
-`always` plus `alwaysScope`, `execute`, or `dismiss` after the user decides. Use
-`dismiss` when an already-approved action is stale or no longer needed. The
-workflow may still complete other stages while that side effect stays skipped.
+and approval id to the user, then ask whether to approve and execute now,
+approve only, reject, always approve the exact function call, always approve the
+broad function family, execute an already approved action, or dismiss a stale
+approved action. Call `agentflow_approvals` with `approveAndExecute`, `approve`,
+`reject`, `always` plus `alwaysScope`, `execute`, or `dismiss` after the user
+decides. Prefer `approveAndExecute` for local inline approvals. The workflow may
+still complete other stages while that side effect stays skipped.
 
 ## Examples
 
