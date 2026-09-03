@@ -36,6 +36,12 @@ import { executeAllowedFileWrite } from "../../../packages/local-tools/src/file-
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
 import {
+  buildStorageMigrationPlan,
+  formatStorageMigrationPlan,
+  storageMigrationScript,
+  type StorageMigrationPlan
+} from "../../../packages/storage/src/migration-plan.js";
+import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
   createWorkflowRun,
@@ -98,7 +104,7 @@ const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime"
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -1051,6 +1057,66 @@ program
 
     await migrateStorage();
     console.log("Storage migrations applied.");
+  });
+
+program
+  .command("storage-migrate")
+  .description("Plan a dry-run migration from local enterprise storage to a shared LAN/Tailscale storage host")
+  .option("--target-host <host>", "shared storage host used to infer target URLs, for example hulk.local")
+  .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
+  .option("--source-redis-url <url>", "source Redis URL; defaults to REDIS_URL")
+  .option("--source-object-storage-endpoint <url>", "source MinIO/S3 endpoint; defaults to OBJECT_STORAGE_ENDPOINT")
+  .option("--source-object-storage-bucket <bucket>", "source object bucket; defaults to OBJECT_STORAGE_BUCKET")
+  .option("--target-database-url <url>", "target Postgres URL")
+  .option("--target-redis-url <url>", "target Redis URL")
+  .option("--target-object-storage-endpoint <url>", "target MinIO/S3 endpoint")
+  .option("--target-object-storage-bucket <bucket>", "target object bucket")
+  .option("--mode <mode>", "copy-empty-target or merge-preview", "copy-empty-target")
+  .option("--out <dir>", "plan output directory", ".agent-workflow/migrations")
+  .option("--write-plan", "write JSON, Markdown, and guarded shell script plan files")
+  .option("--json", "print machine-readable migration plan")
+  .action(async (options: {
+    targetHost?: string;
+    sourceDatabaseUrl?: string;
+    sourceRedisUrl?: string;
+    sourceObjectStorageEndpoint?: string;
+    sourceObjectStorageBucket?: string;
+    targetDatabaseUrl?: string;
+    targetRedisUrl?: string;
+    targetObjectStorageEndpoint?: string;
+    targetObjectStorageBucket?: string;
+    mode: string;
+    out: string;
+    writePlan?: boolean;
+    json?: boolean;
+  }) => {
+    const mode = parseStorageMigrationMode(options.mode);
+    const plan = await buildStorageMigrationPlan({
+      targetHost: options.targetHost,
+      sourceDatabaseUrl: options.sourceDatabaseUrl,
+      sourceRedisUrl: options.sourceRedisUrl,
+      sourceObjectStorageEndpoint: options.sourceObjectStorageEndpoint,
+      sourceObjectStorageBucket: options.sourceObjectStorageBucket,
+      targetDatabaseUrl: options.targetDatabaseUrl,
+      targetRedisUrl: options.targetRedisUrl,
+      targetObjectStorageEndpoint: options.targetObjectStorageEndpoint,
+      targetObjectStorageBucket: options.targetObjectStorageBucket,
+      mode
+    });
+    const written = options.writePlan ? await writeStorageMigrationPlanFiles(plan, options.out) : null;
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, written }, null, 2));
+      return;
+    }
+    console.log(formatStorageMigrationPlan(plan));
+    if (written) {
+      console.log("");
+      console.log("Written files:");
+      console.log(`- Markdown: ${written.markdownPath}`);
+      console.log(`- JSON: ${written.jsonPath}`);
+      console.log(`- Script: ${written.scriptPath}`);
+    }
+    if (plan.status === "blocked") process.exitCode = 2;
   });
 
 program
@@ -5887,6 +5953,21 @@ function restoreDrillCommands(projectRootUri?: string): string[] {
     `agentflow backup-report${projectArg}`,
     `agentflow artifact-lifecycle${projectArg} --restore-plan`
   ];
+}
+
+async function writeStorageMigrationPlanFiles(plan: StorageMigrationPlan, outDir: string): Promise<{ markdownPath: string; jsonPath: string; scriptPath: string }> {
+  const resolvedOut = path.resolve(process.cwd(), outDir);
+  await fs.mkdir(resolvedOut, { recursive: true });
+  const stamp = plan.generatedAt.replace(/[:.]/g, "-");
+  const base = `storage-migration-${stamp}`;
+  const markdownPath = path.join(resolvedOut, `${base}.md`);
+  const jsonPath = path.join(resolvedOut, `${base}.json`);
+  const scriptPath = path.join(resolvedOut, `${base}.sh`);
+  await fs.writeFile(markdownPath, `${formatStorageMigrationPlan(plan)}\n`, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await fs.writeFile(scriptPath, storageMigrationScript(), { encoding: "utf8", mode: 0o755 });
+  await fs.chmod(scriptPath, 0o755);
+  return { markdownPath, jsonPath, scriptPath };
 }
 
 async function loadServerReadinessReport(input: {
@@ -20704,6 +20785,13 @@ function parseModelTierOption(value: string): CandidateVariantPlan["modelTier"] 
     return normalized;
   }
   throw new Error(`Model tier must be one of: fast, standard, reasoning. Received: ${value}`);
+}
+
+function parseStorageMigrationMode(value: string): "copy-empty-target" | "merge-preview" {
+  const normalized = normalizeLookup(value);
+  if (normalized === "copy-empty-target" || normalized === "copyemptytarget" || normalized === "copy") return "copy-empty-target";
+  if (normalized === "merge-preview" || normalized === "mergepreview" || normalized === "merge") return "merge-preview";
+  throw new Error(`Storage migration mode must be copy-empty-target or merge-preview. Received: ${value}`);
 }
 
 function shellQuote(value: string): string {

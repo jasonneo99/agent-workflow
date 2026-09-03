@@ -13,7 +13,7 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 7. [Release Guide](release.md): contributor-safe checks, maintainer signing, and Trusted Publishing.
 8. [Bundle Trust](bundle-trust.md): verify signatures and manage trusted workflow-bundle signer keys.
 9. [Backup And Recovery](recovery.md): read-only backup inventory, restore-drill verification, and recovery procedure.
-10. [Governed Server Mode](server-mode.md): future opt-in shared runtime contract with secure local-first defaults.
+10. [Governed Server Mode](server-mode.md): future opt-in shared runtime contract, shared storage posture, and dry-run migration planning.
 11. [Definition Migrations](definition-migrations.md): upgrade and rollback guidance for reusable agent/workflow contracts.
 12. [Contract Tests](contract-tests.md): verify custom agents, workflows, and provider adapters.
 13. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.

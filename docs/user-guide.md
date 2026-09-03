@@ -148,6 +148,45 @@ repeat requests with the same idempotency key reuse the existing run.
 See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
 copyable end-to-end local smoke test.
 
+### Shared Storage Migration Planning
+
+Use `storage-migrate` when you want to move local enterprise storage to a
+trusted shared state-plane host such as a LAN or Tailscale machine running
+Postgres, Redis, and MinIO.
+
+Preview the current machine to a shared host without copying data:
+
+```bash
+npm run storage-migrate -- --target-host hulk.local
+```
+
+Write a reviewed operator package:
+
+```bash
+npm run storage-migrate -- --target-host hulk.local --write-plan
+```
+
+That writes Markdown, JSON, and a guarded shell script under
+`.agent-workflow/migrations/`. Reports redact credentials. The generated shell
+script still requires source and target environment variables and exits unless
+`AGENTFLOW_EXECUTE_STORAGE_MIGRATION=1` is set.
+
+Use explicit target URLs when the shared host does not use the default local
+developer ports:
+
+```bash
+npm run storage-migrate -- \
+  --target-database-url postgres://agentflow:agentflow@hulk.local:15432/agentflow \
+  --target-redis-url redis://hulk.local:16379 \
+  --target-object-storage-endpoint http://hulk.local:19000 \
+  --target-object-storage-bucket agentflow-artifacts \
+  --write-plan
+```
+
+The first supported execution shape is copy into an empty target. Merge-safe
+migration is intentionally preview-only until project/run id mapping, artifact
+verification, rollback, and destination-preservation checks are implemented.
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:

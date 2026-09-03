@@ -306,11 +306,15 @@ foundation is complete.
   - Done: record remote actor, role, auth method, project id, workflow id, and idempotency details in queue receipts.
   - Done: document reverse-proxy/TLS guidance without bundling public-network deployment defaults.
   - Done: document MCP stdio as the recommended IDE path for Codex, VS Code, Cursor, and local clients.
-  - Next: add the shared-storage host profile and migration/smoke workflow, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add shared-storage host detection and a dry-run migration operator package for LAN/Tailscale state-plane services.
+  - Next: add target count verification and dashboard visibility for shared-storage migration plans, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
-  - Add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
+  - Done: derive shared storage endpoints from configured URLs or explicit host overrides.
+  - Done: add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
+  - Done: write reviewed operator packages with Markdown, JSON, and a guarded shell script that requires explicit execution opt-in.
+  - Add target count verification for projects, workflow runs, tasks, approvals, receipts, artifacts, memory, and indexed files.
   - Support merge mode by mapping projects through `root_uri`, preserving existing destination runs, and rewriting dependent project ids safely.
   - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
   - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.

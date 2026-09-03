@@ -91,6 +91,7 @@
     "project-files": "tsx apps/cli/src/index.ts project-files",
     "reset-storage": "tsx apps/cli/src/index.ts reset-storage --yes",
     "restore-drill": "tsx apps/cli/src/index.ts restore-drill",
+    "storage-migrate": "tsx apps/cli/src/index.ts storage-migrate",
     "status": "tsx apps/cli/src/index.ts status",
     "test": "node --import tsx --test 'packages/**/*.test.ts'",
     "smoke": "bash scripts/smoke-enterprise.sh",

@@ -305,6 +305,24 @@ Shared storage host:
 - Verify migrated projects, runs, artifacts, approvals, receipts, memory, and
   index state before switching daily workflows to the shared host.
 
+Plan the migration without copying data:
+
+```bash
+npm run storage-migrate -- --target-host hulk.local
+```
+
+Write a reviewed operator package:
+
+```bash
+npm run storage-migrate -- --target-host hulk.local --write-plan
+```
+
+That writes Markdown, JSON, and a guarded shell script under
+`.agent-workflow/migrations/`. The generated script exits unless
+`AGENTFLOW_EXECUTE_STORAGE_MIGRATION=1` is set and still expects source/target
+connection details to be supplied as environment variables. This keeps the open
+source process dry-run-first and avoids committing secrets into migration files.
+
 ## Readiness Checklist
 
 Before adding remote execution endpoints:
@@ -322,8 +340,8 @@ Before adding remote execution endpoints:
       still dry-run-by-default.
 - [x] Add an authenticated queueing endpoint after route previews are reviewed,
       with dry-run as the default and real queueing behind an explicit env gate.
-- [ ] Add a shared-storage host profile for LAN/Tailscale state-plane services.
-- [ ] Add a dry-run shared-storage migration and verification workflow.
+- [x] Add a shared-storage host profile for LAN/Tailscale state-plane services.
+- [x] Add a dry-run shared-storage migration and verification workflow.
 - [ ] Require auth for all remaining mutation endpoints.
 - [ ] Require role capability checks for all remaining mutation endpoints.
 - [ ] Require idempotency keys for all remaining mutation endpoints.

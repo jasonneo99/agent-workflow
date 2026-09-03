@@ -7,7 +7,7 @@ export interface ServiceCheck {
   message: string;
 }
 
-export async function checkServices(endpoints = defaultServiceEndpoints): Promise<ServiceCheck[]> {
+export async function checkServices(endpoints = defaultServiceEndpoints()): Promise<ServiceCheck[]> {
   return Promise.all(endpoints.map(checkService));
 }
 
@@ -43,4 +43,3 @@ function checkService(endpoint: ServiceEndpoint): Promise<ServiceCheck> {
     });
   });
 }
-
