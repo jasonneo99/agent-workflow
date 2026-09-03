@@ -2703,9 +2703,9 @@ program
 
 program
   .command("learning-daemon")
-  .description("Run the local learning daemon in observe or propose mode")
+  .description("Run the local learning daemon in observe, propose, or apply-approved planning mode")
   .requiredOption("-p, --project <dir>", "project directory")
-  .option("--mode <mode>", "daemon mode: observe or propose", "observe")
+  .option("--mode <mode>", "daemon mode: observe, propose, or apply-approved", "observe")
   .option("--once", "run a single daemon tick and exit")
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
@@ -2754,6 +2754,7 @@ program
         ticks,
         proposals: update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
         inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
+        applicationActions: update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
         lastError,
         command: `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
       };
@@ -2768,7 +2769,7 @@ program
         const update = await runLearningDaemonTick({ projectDir, mode, limit });
         await writeStatus(stop ? "stopping" : "running", update);
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}`);
+          console.log(`Learning daemon tick ${ticks}: report=${update.report.runsAnalyzed} run(s), proposals=${update.proposalSet.proposals.length}, inbox=${update.approvalQueue.items.length}, applicationActions=${update.applicationPlan?.actions.length ?? 0}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -3745,7 +3746,7 @@ type LearningApplicationAction = {
   blockedUntil: string[];
 };
 
-type LearningDaemonMode = "observe" | "propose";
+type LearningDaemonMode = "observe" | "propose" | "apply-approved";
 
 type LearningDaemonHeartbeat = {
   kind: "agentflow_learning_daemon_status";
@@ -3763,6 +3764,7 @@ type LearningDaemonHeartbeat = {
   ticks: number;
   proposals: number;
   inboxItems: number;
+  applicationActions: number;
   command: string;
 };
 
@@ -3784,6 +3786,7 @@ type DashboardLearningDaemonStatus = {
   ticks: number;
   proposals: number;
   inboxItems: number;
+  applicationActions: number;
   lastError: string;
   command: string;
 };
@@ -8007,17 +8010,21 @@ async function runLearningDaemonTick(input: {
   projectDir: string;
   mode: LearningDaemonMode;
   limit: number;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue }> {
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
   const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue);
+  const applicationPlan = buildLearningApplicationPlan(approvalQueue, "all");
   await writeLearningReport(input.projectDir, report);
-  if (input.mode === "propose") {
+  if (input.mode === "propose" || input.mode === "apply-approved") {
     await writeLearningProposals(input.projectDir, proposalSet);
     await writeLearningApprovalQueue(input.projectDir, approvalQueue);
   }
-  return { report, proposalSet, approvalQueue };
+  if (input.mode === "apply-approved") {
+    await writeLearningApplicationPlan(input.projectDir, applicationPlan);
+  }
+  return { report, proposalSet, approvalQueue, applicationPlan };
 }
 
 async function writeLearningReport(projectDir: string, report: LearningReport): Promise<void> {
@@ -10970,7 +10977,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   `).join("");
   const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
   const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(report.projectDir)} --write`;
-  const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode propose`;
+  const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode apply-approved`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
     <section class="panel">
@@ -10987,7 +10994,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local observe/propose loop over Agent Workflow-owned learning state.</span></div></div>
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon) : `<p class="muted">No project selected.</p>`}
-      <p class="muted">Start propose mode with <code>${escapeHtml(daemonCommand)}</code>. It may update Agent Workflow-created learning files, but it does not apply source, provider, tuning, command, network, or export changes.</p>
+      <p class="muted">Start apply-approved mode with <code>${escapeHtml(daemonCommand)}</code>. It may update Agent Workflow-created learning files and application plans, but it does not apply source, provider, tuning, command, network, or export changes.</p>
     </section>
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
@@ -11031,6 +11038,7 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus): 
       <div><strong>Ticks</strong>${formatNumber(status.ticks)}</div>
       <div><strong>Proposals</strong>${formatNumber(status.proposals)}</div>
       <div><strong>Inbox Items</strong>${formatNumber(status.inboxItems)}</div>
+      <div><strong>Application Actions</strong>${formatNumber(status.applicationActions)}</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(status.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(status.command)}</code></div>
       ${status.lastError ? `<div><strong>Last Error</strong>${escapeHtml(status.lastError)}</div>` : ""}
@@ -12310,7 +12318,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       configured: true,
       projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : projectDir,
       daemonId: typeof heartbeat.daemonId === "string" ? heartbeat.daemonId : null,
-      mode: heartbeat.mode === "observe" || heartbeat.mode === "propose" ? heartbeat.mode : null,
+      mode: heartbeat.mode === "observe" || heartbeat.mode === "propose" || heartbeat.mode === "apply-approved" ? heartbeat.mode : null,
       status: running ? "running" : heartbeatStatus === "failed" ? "failed" : heartbeatStatus === "stopped" ? "stopped" : "stale",
       pid,
       processAlive,
@@ -12323,6 +12331,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
       proposals: typeof heartbeat.proposals === "number" ? heartbeat.proposals : 0,
       inboxItems: typeof heartbeat.inboxItems === "number" ? heartbeat.inboxItems : 0,
+      applicationActions: typeof heartbeat.applicationActions === "number" ? heartbeat.applicationActions : 0,
       lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
       command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
     };
@@ -12345,6 +12354,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       ticks: 0,
       proposals: 0,
       inboxItems: 0,
+      applicationActions: 0,
       lastError: "",
       command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode observe`
     };
@@ -12363,6 +12373,7 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Ticks: ${status.ticks}`,
     `Proposals: ${status.proposals}`,
     `Inbox items: ${status.inboxItems}`,
+    `Application actions: ${status.applicationActions}`,
     status.lastError ? `Last error: ${status.lastError}` : "",
     `Heartbeat file: ${status.heartbeatPath}`,
     `Start command: ${status.command}`
@@ -12388,8 +12399,8 @@ function normalizeWorkerId(value?: string): string {
 }
 
 function parseLearningDaemonMode(value: string): LearningDaemonMode {
-  if (value === "observe" || value === "propose") return value;
-  throw new Error(`Learning daemon mode must be observe or propose. Received: ${value}`);
+  if (value === "observe" || value === "propose" || value === "apply-approved") return value;
+  throw new Error(`Learning daemon mode must be observe, propose, or apply-approved. Received: ${value}`);
 }
 
 function safeWorkerHeartbeatFileSegment(value: string): string {

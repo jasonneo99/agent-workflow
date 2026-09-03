@@ -244,6 +244,7 @@ agentflow learning-daemon-status --project /path/to/project
 agentflow learning-daemon --project /path/to/project --mode observe --once
 agentflow learning-daemon --project /path/to/project --mode observe
 agentflow learning-daemon --project /path/to/project --mode propose
+agentflow learning-daemon --project /path/to/project --mode apply-approved
 agentflow learning-application-plan --project /path/to/project
 agentflow learning-application-plan --project /path/to/project --write
 ```
@@ -312,7 +313,8 @@ policy and approval state allow writes.
 ### Phase 4: Daemon Mode
 
 - Status: started with local `observe` / `propose` daemon modes, one-shot
-  ticks, status heartbeat, dashboard status, and MCP status/tick wrappers.
+  ticks, planning-only `apply-approved`, status heartbeat, dashboard status,
+  and MCP status/tick wrappers.
 - Add heartbeat, scheduling, stale detection, and bounded polling.
 - Support `observe`, `propose`, and `apply-approved` modes.
 - Add danger gates and approval requirements for risky changes.

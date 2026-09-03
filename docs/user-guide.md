@@ -1286,7 +1286,9 @@ npm run agentflow -- learning-approvals --project /path/to/project --approve lea
 npm run agentflow -- learning-daemon-status --project /path/to/project
 npm run agentflow -- learning-daemon --project /path/to/project --mode observe --once
 npm run agentflow -- learning-daemon --project /path/to/project --mode propose --once
+npm run agentflow -- learning-daemon --project /path/to/project --mode apply-approved --once
 npm run learning:daemon -- --project /path/to/project --mode propose
+npm run learning:daemon -- --project /path/to/project --mode apply-approved
 npm run agentflow -- learning-application-plan --project /path/to/project
 npm run agentflow -- learning-application-plan --project /path/to/project --write
 ```
@@ -1371,10 +1373,10 @@ the same page shows the review file status and markdown preview.
 
 ## 25. Recommended Next Improvement
 
-The next improvement is `apply-approved` daemon mode: let the daemon refresh
-application plans on a schedule for already approved proposals while still
-requiring the existing tuning/action approval gates for actual behavior changes.
-See the [Roadmap](roadmap.md) for the shared-platform implementation sequence.
+The next improvement is proposal-to-action receipts: add append-only local
+history when proposals become application plans, when planned actions are
+superseded, and when users reject a planned action. See the [Roadmap](roadmap.md)
+for the shared-platform implementation sequence.
 ### Tuning approval history
 
 Approval queue writes now append lifecycle events to `.agent-workflow/tuning/approval-history.json` and a readable `approval-history.md`. Approvals, rejections, and written applications are recorded automatically. Record an explicit rollback or replacement without changing the queue:

@@ -954,7 +954,7 @@ server.registerTool(
     description: "Run one bounded local learning daemon tick in observe or propose mode.",
     inputSchema: {
       project: z.string().describe("Absolute or relative project directory."),
-      mode: z.enum(["observe", "propose"]).optional().describe("observe writes latest report/status; propose also refreshes proposal inbox."),
+      mode: z.enum(["observe", "propose", "apply-approved"]).optional().describe("observe writes latest report/status; propose also refreshes proposal inbox; apply-approved also refreshes approved application plans."),
       limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
       json: z.boolean().optional().describe("Return final daemon status JSON.")
     }

@@ -110,10 +110,14 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Expose `learning-application-plan` in CLI, dashboard, API, and MCP.
   - Write only Agent Workflow-created application plan files under `.agent-workflow/learning/`.
 
-- [ ] Local learning apply-approved mode.
+- [x] Local learning apply-approved mode.
   - Let the daemon prepare application plans on a schedule for approved proposals.
+  - Keep `apply-approved` planning-only: it refreshes Agent Workflow-created application plan files and does not execute the planned commands.
   - Keep dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, and private-data actions approval-gated.
   - Start local-only; make server mode an explicit future deployment posture.
+
+- [ ] Local learning proposal-to-action receipts.
+  - Record an append-only local history when proposals become application plans, when planned actions are superseded, and when users reject a planned action.
 
 ## Phase 3: Distribution And Enterprise Adoption
 
