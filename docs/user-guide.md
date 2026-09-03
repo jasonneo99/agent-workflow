@@ -258,6 +258,39 @@ Use provider-refined summaries only for smaller or targeted passes:
 npm run index-project -- --project /path/to/project --max-files 40 --refine
 ```
 
+## 5A. Discover Local Projects
+
+Use `discover-projects` when you want Agent Workflow to find candidate projects
+before deciding what to initialize or index:
+
+```bash
+npm run agentflow -- discover-projects --roots ~/Projects --spotlight auto
+npm run agentflow -- discover-projects --roots ~/Projects,/Volumes/Work --max-depth 6 --max-candidates 300 --write
+```
+
+On macOS, `--spotlight auto` uses Spotlight metadata when `mdfind` is available,
+then falls back to filesystem marker discovery. The command reads directory
+names and marker files such as `package.json`, `pyproject.toml`, `go.mod`,
+`AGENTS.md`, `.agent-workflow`, and `.git`; it does not index project contents.
+
+For a whole-drive preview on macOS:
+
+```bash
+npm run agentflow -- discover-projects --roots / --spotlight auto --max-depth 6 --max-candidates 300 --write
+```
+
+Review the candidates before initializing or indexing. Default excludes skip
+system, cache, dependency, backup, photo library, and private runtime
+directories. Written reports stay under `.agent-workflow/discovery/` in the
+Agent Workflow repo.
+
+The dashboard exposes the same dry-run report at:
+
+```text
+http://127.0.0.1:17888/discovery
+http://127.0.0.1:17888/api/discovery
+```
+
 ## 6. Available Workflows
 
 Current workflow ids:

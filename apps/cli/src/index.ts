@@ -1158,6 +1158,32 @@ program
   });
 
 program
+  .command("discover-projects")
+  .description("Dry-run local project discovery across governed roots without indexing file contents")
+  .option("--roots <list>", "comma-separated roots to scan", path.join(os.homedir(), "Projects"))
+  .option("--max-depth <number>", "maximum directory depth below each root", "5")
+  .option("--max-candidates <number>", "maximum candidates to return", "200")
+  .option("--spotlight <mode>", "macOS Spotlight mode: auto, on, or off", "auto")
+  .option("--write", "write report under .agent-workflow/discovery")
+  .option("--json", "print JSON")
+  .action(async (options: { roots: string; maxDepth: string; maxCandidates: string; spotlight: string; write?: boolean; json?: boolean }) => {
+    const report = await discoverLocalProjects({
+      roots: splitCommaList(options.roots).map((item) => path.resolve(process.cwd(), item)),
+      maxDepth: parsePositiveInteger(options.maxDepth, 5),
+      maxCandidates: parsePositiveInteger(options.maxCandidates, 200),
+      spotlight: parseSpotlightMode(options.spotlight)
+    });
+    if (options.write) {
+      await writeDiscoveryReport(report);
+    }
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    console.log(formatDiscoveryReport(report));
+  });
+
+program
   .command("project-files")
   .description("List indexed project file summaries")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -4114,6 +4140,36 @@ type LearningSettings = {
   projectRootUri: string;
   updatedAt: string;
   workflowShapeAutoUpdate: boolean;
+};
+
+type SpotlightMode = "auto" | "on" | "off";
+
+type ProjectDiscoveryCandidate = {
+  rootUri: string;
+  name: string;
+  markers: string[];
+  source: "spotlight" | "filesystem" | "combined";
+  confidence: "high" | "medium" | "low";
+  initialized: boolean;
+  registered: boolean;
+  suggestedCommands: string[];
+};
+
+type ProjectDiscoveryReport = {
+  kind: "agentflow_project_discovery_report";
+  generatedAt: string;
+  roots: string[];
+  maxDepth: number;
+  maxCandidates: number;
+  spotlight: {
+    requested: SpotlightMode;
+    used: boolean;
+    available: boolean;
+  };
+  excludes: string[];
+  candidates: ProjectDiscoveryCandidate[];
+  warnings: string[];
+  nextCommands: string[];
 };
 
 type DashboardLearningDaemonStatus = {
@@ -8632,6 +8688,255 @@ async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Pro
   return available.length ? available : [fallbackProjectDir];
 }
 
+const discoveryMarkerFiles = [
+  ".agent-workflow",
+  "AGENTS.md",
+  "package.json",
+  "pyproject.toml",
+  "Cargo.toml",
+  "go.mod",
+  "pom.xml",
+  "build.gradle",
+  "composer.json",
+  "Gemfile",
+  "deno.json",
+  "pnpm-workspace.yaml",
+  "turbo.json",
+  ".git"
+];
+
+const discoveryExcludedSegments = [
+  ".Trash",
+  ".git",
+  ".hg",
+  ".svn",
+  ".cache",
+  ".npm",
+  ".pnpm-store",
+  ".yarn",
+  ".gradle",
+  ".cargo",
+  ".rustup",
+  ".venv",
+  "node_modules",
+  "dist",
+  "build",
+  "target",
+  "Library",
+  "Applications",
+  "System",
+  "private",
+  "dev",
+  "proc",
+  "tmp",
+  "Backups.backupdb",
+  "Photos Library.photoslibrary",
+  "Music Library.musiclibrary"
+];
+
+async function discoverLocalProjects(input: {
+  roots: string[];
+  maxDepth: number;
+  maxCandidates: number;
+  spotlight: SpotlightMode;
+}): Promise<ProjectDiscoveryReport> {
+  const warnings: string[] = [];
+  const registered = new Set((await listProjectStorageSummaries(500).catch(() => [])).map((project) => path.resolve(project.rootUri)));
+  const roots = orderedUnique(input.roots.map((root) => path.resolve(process.cwd(), root)));
+  const byRoot = new Map<string, ProjectDiscoveryCandidate>();
+  const useSpotlight = input.spotlight !== "off" && process.platform === "darwin";
+  const spotlightAvailable = useSpotlight ? (await commandAvailable("mdfind")) : false;
+  if (input.spotlight === "on" && !spotlightAvailable) {
+    warnings.push("Spotlight requested, but mdfind is unavailable. Used filesystem discovery only.");
+  }
+  if (spotlightAvailable) {
+    for (const root of roots) {
+      const candidates = await discoverProjectsWithSpotlight(root, input.maxCandidates).catch((error) => {
+        warnings.push(`Spotlight discovery failed for ${root}: ${error instanceof Error ? error.message : String(error)}`);
+        return [];
+      });
+      for (const candidateRoot of candidates) {
+        await addDiscoveryCandidate(byRoot, candidateRoot, "spotlight", registered);
+      }
+    }
+  }
+  for (const root of roots) {
+    const candidates = await discoverProjectsWithFilesystem(root, input.maxDepth, input.maxCandidates).catch((error) => {
+      warnings.push(`Filesystem discovery failed for ${root}: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    for (const candidateRoot of candidates) {
+      await addDiscoveryCandidate(byRoot, candidateRoot, "filesystem", registered);
+    }
+  }
+  const candidates = [...byRoot.values()]
+    .sort((left, right) => candidateRank(right) - candidateRank(left) || left.rootUri.localeCompare(right.rootUri))
+    .slice(0, input.maxCandidates);
+  return {
+    kind: "agentflow_project_discovery_report",
+    generatedAt: new Date().toISOString(),
+    roots,
+    maxDepth: input.maxDepth,
+    maxCandidates: input.maxCandidates,
+    spotlight: {
+      requested: input.spotlight,
+      used: spotlightAvailable,
+      available: spotlightAvailable
+    },
+    excludes: discoveryExcludedSegments,
+    candidates,
+    warnings,
+    nextCommands: [
+      "Review candidates before initializing or indexing.",
+      "Initialize a candidate: npm run init-project -- --project <path> --profile enterprise",
+      "Index an initialized candidate: npm run index-project -- --project <path> --max-files 100",
+      "For whole-drive discovery on macOS: npm run agentflow -- discover-projects --roots / --spotlight auto --max-depth 6 --write"
+    ]
+  };
+}
+
+async function discoverProjectsWithSpotlight(root: string, maxCandidates: number): Promise<string[]> {
+  if (!await pathExists(root)) return [];
+  const markerNames = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "AGENTS.md", "pnpm-workspace.yaml", "turbo.json"];
+  const roots = new Set<string>();
+  for (const marker of markerNames) {
+    if (roots.size >= maxCandidates) break;
+    const result = await execFileText("mdfind", ["-onlyin", root, `kMDItemFSName == '${marker}'`], { allowFailure: true });
+    if (result.exitCode !== 0) continue;
+    for (const filePath of result.stdout.split(/\r?\n/).filter(Boolean)) {
+      if (roots.size >= maxCandidates) break;
+      const candidateRoot = path.dirname(filePath);
+      if (!isDiscoveryPathExcluded(candidateRoot, root)) {
+        roots.add(candidateRoot);
+      }
+    }
+  }
+  return [...roots];
+}
+
+async function discoverProjectsWithFilesystem(root: string, maxDepth: number, maxCandidates: number): Promise<string[]> {
+  if (!await pathExists(root)) return [];
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: root, depth: 0 }];
+  const candidates = new Set<string>();
+  while (queue.length && candidates.size < maxCandidates) {
+    const current = queue.shift();
+    if (!current || isDiscoveryPathExcluded(current.dir, root)) continue;
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    const names = new Set(entries.map((entry) => entry.name));
+    if (discoveryMarkerFiles.some((marker) => names.has(marker))) {
+      candidates.add(current.dir);
+    }
+    if (current.depth >= maxDepth) continue;
+    for (const entry of entries) {
+      if (!entry.isDirectory() || discoveryExcludedSegments.includes(entry.name)) continue;
+      queue.push({ dir: path.join(current.dir, entry.name), depth: current.depth + 1 });
+    }
+  }
+  return [...candidates];
+}
+
+async function addDiscoveryCandidate(byRoot: Map<string, ProjectDiscoveryCandidate>, candidateRoot: string, source: ProjectDiscoveryCandidate["source"], registered: Set<string>): Promise<void> {
+  const rootUri = path.resolve(candidateRoot);
+  if (isDiscoveryPathExcluded(rootUri)) return;
+  const markers = await readDiscoveryMarkers(rootUri);
+  if (!markers.length) return;
+  const existing = byRoot.get(rootUri);
+  const combinedSource = existing && existing.source !== source ? "combined" : source;
+  const initialized = markers.includes(".agent-workflow") && markers.includes("AGENTS.md");
+  const candidate: ProjectDiscoveryCandidate = {
+    rootUri,
+    name: path.basename(rootUri),
+    markers: orderedUnique([...(existing?.markers ?? []), ...markers]).sort(),
+    source: combinedSource,
+    confidence: discoveryConfidence(markers),
+    initialized,
+    registered: registered.has(rootUri),
+    suggestedCommands: initialized
+      ? [`npm run index-project -- --project ${shellQuote(rootUri)} --max-files 100`]
+      : [`npm run init-project -- --project ${shellQuote(rootUri)} --profile enterprise`, `npm run index-project -- --project ${shellQuote(rootUri)} --max-files 100`]
+  };
+  byRoot.set(rootUri, candidate);
+}
+
+async function readDiscoveryMarkers(candidateRoot: string): Promise<string[]> {
+  const markers: string[] = [];
+  for (const marker of discoveryMarkerFiles) {
+    if (await pathExists(path.join(candidateRoot, marker))) {
+      markers.push(marker);
+    }
+  }
+  return markers;
+}
+
+function discoveryConfidence(markers: string[]): ProjectDiscoveryCandidate["confidence"] {
+  if (markers.includes(".agent-workflow") || markers.includes("AGENTS.md") || markers.includes(".git")) return "high";
+  if (markers.some((marker) => ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "pnpm-workspace.yaml"].includes(marker))) return "medium";
+  return "low";
+}
+
+function candidateRank(candidate: ProjectDiscoveryCandidate): number {
+  const confidenceScore = candidate.confidence === "high" ? 1000 : candidate.confidence === "medium" ? 500 : 100;
+  return confidenceScore + candidate.markers.length * 10 + (candidate.registered ? 5 : 0) + (candidate.initialized ? 3 : 0);
+}
+
+function isDiscoveryPathExcluded(candidatePath: string, scanRoot?: string): boolean {
+  const resolvedPath = path.resolve(candidatePath);
+  const resolvedRoot = scanRoot ? path.resolve(scanRoot) : "";
+  const relativePath = resolvedRoot && isPathInside(resolvedPath, resolvedRoot) ? path.relative(resolvedRoot, resolvedPath) : resolvedPath;
+  const parts = relativePath.split(path.sep).filter(Boolean);
+  return parts.some((part) => discoveryExcludedSegments.includes(part));
+}
+
+async function commandAvailable(command: string): Promise<boolean> {
+  const result = await execFileText("sh", ["-lc", `command -v ${shellQuote(command)} >/dev/null 2>&1`], { allowFailure: true });
+  return result.exitCode === 0;
+}
+
+async function writeDiscoveryReport(report: ProjectDiscoveryReport): Promise<void> {
+  const discoveryDir = path.join(rootDir, ".agent-workflow", "discovery");
+  await fs.mkdir(discoveryDir, { recursive: true });
+  await fs.writeFile(path.join(discoveryDir, "latest.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(discoveryDir, "latest.md"), `${formatDiscoveryReport(report)}\n`, "utf8");
+}
+
+function formatDiscoveryReport(report: ProjectDiscoveryReport): string {
+  const lines = [
+    "# Agent Workflow Project Discovery",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Roots: ${report.roots.join(", ")}`,
+    `Spotlight: requested=${report.spotlight.requested}, used=${report.spotlight.used}`,
+    `Candidates: ${report.candidates.length}`,
+    ""
+  ];
+  if (report.warnings.length) {
+    lines.push("## Warnings", "", ...report.warnings.map((warning) => `- ${warning}`), "");
+  }
+  lines.push("## Candidates", "");
+  if (!report.candidates.length) {
+    lines.push("No candidate projects found.", "");
+  }
+  for (const candidate of report.candidates) {
+    lines.push(
+      `- ${candidate.rootUri}`,
+      `  - name: ${candidate.name}`,
+      `  - confidence: ${candidate.confidence}`,
+      `  - source: ${candidate.source}`,
+      `  - initialized: ${candidate.initialized}`,
+      `  - registered: ${candidate.registered}`,
+      `  - markers: ${candidate.markers.join(", ")}`,
+      `  - next: ${candidate.suggestedCommands[0] ?? "review manually"}`
+    );
+  }
+  lines.push("", "## Next Commands", "", ...report.nextCommands.map((command) => `- ${command}`));
+  return lines.join("\n");
+}
+
 async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promise<boolean> {
   const override = process.env.AGENTFLOW_LEARNING_WORKFLOW_SHAPE_AUTO_UPDATE;
   if (override === "0" || override === "false" || override === "off") {
@@ -9693,6 +9998,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/discovery") {
+    const report = await discoverLocalProjects({
+      roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
+      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
+      maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
+      spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/governance") {
     const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -10314,6 +10631,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProjectsHtml(projects));
+    return;
+  }
+
+  if (requestUrl.pathname === "/discovery") {
+    const report = await discoverLocalProjects({
+      roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
+      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
+      maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
+      spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
+    });
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDiscoveryHtml(report, requestUrl.searchParams));
     return;
   }
 
@@ -13210,6 +13539,82 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
 </html>`;
 }
 
+function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchParams): string {
+  const spotlightOptions = ["auto", "on", "off"].map((mode) => `<option value="${mode}"${report.spotlight.requested === mode ? " selected" : ""}>${mode}</option>`).join("");
+  const rows = report.candidates.map((candidate) => `
+    <tr>
+      <td>${escapeHtml(candidate.name)}<br><span class="muted">${escapeHtml(candidate.rootUri)}</span></td>
+      <td><span class="flag ${candidate.confidence === "high" ? "good" : candidate.confidence === "medium" ? "queued" : "warn"}">${escapeHtml(candidate.confidence)}</span></td>
+      <td>${escapeHtml(candidate.source)}</td>
+      <td>${candidate.initialized ? "yes" : "no"}</td>
+      <td>${candidate.registered ? "yes" : "no"}</td>
+      <td>${escapeHtml(candidate.markers.join(", "))}</td>
+      <td>${candidate.suggestedCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join("<br>")}</td>
+    </tr>
+  `).join("");
+  const warningItems = report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const nextItems = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const jsonParams = new URLSearchParams(params);
+  if (!jsonParams.has("roots")) jsonParams.set("roots", report.roots.join(","));
+  if (!jsonParams.has("maxDepth")) jsonParams.set("maxDepth", String(report.maxDepth));
+  if (!jsonParams.has("maxCandidates")) jsonParams.set("maxCandidates", String(report.maxCandidates));
+  if (!jsonParams.has("spotlight")) jsonParams.set("spotlight", report.spotlight.requested);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Discovery</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("discovery")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Discovery</h1>
+        <p class="muted">Local-only project discovery across governed roots. This page reads directory names and marker files only; it does not index file contents.</p>
+      </div>
+      <a class="button secondary" href="/api/discovery?${escapeHtml(jsonParams.toString())}">JSON</a>
+    </div>
+    <section class="panel">
+      <form method="get" class="workflow-form">
+        <label class="wide">Roots
+          <input name="roots" value="${escapeHtml(report.roots.join(","))}" placeholder="/Users/you/Projects,/path/to/root">
+        </label>
+        <label>Max depth
+          <input name="maxDepth" value="${escapeHtml(String(report.maxDepth))}" inputmode="numeric">
+        </label>
+        <label>Max candidates
+          <input name="maxCandidates" value="${escapeHtml(String(report.maxCandidates))}" inputmode="numeric">
+        </label>
+        <label>Spotlight
+          <select name="spotlight">${spotlightOptions}</select>
+        </label>
+        <div class="form-actions"><button type="submit">Discover</button></div>
+      </form>
+      <p class="muted">For a whole-drive preview on macOS, use root <code>/</code> with Spotlight <code>auto</code>. Default excludes skip system, cache, dependency, photo library, backup, and private runtime directories.</p>
+    </section>
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Candidates", report.candidates.length, "review before indexing")}
+        ${metricCard("Roots", report.roots.length, "governed scan roots")}
+        ${metricCard("Spotlight", report.spotlight.used ? "used" : "not used", report.spotlight.available ? "available" : "unavailable")}
+        ${metricCard("Max Depth", report.maxDepth, "filesystem fallback")}
+      </div>
+    </section>
+    ${warningItems ? `<section class="panel"><h2>Warnings</h2><ul>${warningItems}</ul></section>` : ""}
+    <section class="panel">
+      <h2>Candidate Projects</h2>
+      <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Markers</th><th>Next Commands</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">No candidate projects found.</td></tr>"}</tbody></table></div>
+    </section>
+    <section class="panel"><h2>Next Commands</h2><ul>${nextItems}</ul></section>
+  </main>
+</body>
+</html>`;
+}
+
 function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
   const project = detail.project;
   const contextRows = detail.contextFiles.map((file) => `
@@ -14644,6 +15049,18 @@ async function updateDashboardRouting(input: {
 
 function splitProviderList(value: string): string[] {
   return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function splitCommaList(value: string): string[] {
+  return value.split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseSpotlightMode(value: string): SpotlightMode {
+  const normalized = normalizeLookup(value);
+  if (normalized === "on" || normalized === "off" || normalized === "auto") {
+    return normalized;
+  }
+  return "auto";
 }
 
 function orderedUnique(values: string[]): string[] {
@@ -16807,7 +17224,7 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -16822,6 +17239,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       label: "Projects",
       items: [
         ["projects", "/projects", "Projects"],
+        ["discovery", "/discovery", "Discovery"],
         ["workflow-graph", "/workflow-graph", "Graph"],
         ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"]
       ]

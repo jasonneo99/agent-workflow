@@ -165,6 +165,7 @@ npm run agentflow -- schemas       # List JSON Schemas for agents, workflows, pr
 npm run agentflow -- schemas -p . --write-vscode # Add YAML validation to VS Code/Cursor workspace settings
 npm run agentflow -- workflow-graph -w build-feature -p . # Preview stages, approvals, agents, and context budgets
 npm run agentflow -- workflow-graph -w build-feature -p . --mermaid # Renderable workflow graph
+npm run agentflow -- discover-projects --roots ~/Projects --spotlight auto # Dry-run local project discovery without indexing contents
 npm run bundle-registry      # Inspect trusted bundle registry entries and local install status
 npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
 npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
