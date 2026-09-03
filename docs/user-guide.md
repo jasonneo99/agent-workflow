@@ -944,6 +944,14 @@ npm run agentflow -- request-approval \
 
 Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
 
+The dashboard Approvals page can add these rules from a pending approval. Use
+**Always Exact** to approve the same command or file path next time. Use
+**Always Prefix \*** for command families such as `npm run *`, which means
+"starts with this command prefix." Use **Always Path** for file-write globs such
+as `.agent-workflow/notes/**`. Adding a rule can approve the current request,
+but already queued workflow runs keep their original policy snapshot; future
+runs pick up the new project config.
+
 ```yaml
 actions:
   allowed_commands:

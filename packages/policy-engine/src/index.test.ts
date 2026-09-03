@@ -100,6 +100,36 @@ test("approval rules match scoped commands and file writes", () => {
   assert.equal(fileRule?.id, "small-source-note");
 });
 
+test("approval rule command wildcards match command prefixes only", () => {
+  const wildcardProject = projectConfigSchema.parse({
+    ...project,
+    actions: {
+      ...project.actions,
+      approval_rules: [
+        ...project.actions.approval_rules,
+        {
+          id: "npm-run-family",
+          action_type: "local_command",
+          target: "npm run *",
+          effect: "auto_execute"
+        }
+      ]
+    }
+  });
+  const matched = evaluateActionApprovalRule({
+    project: wildcardProject,
+    actionType: "local_command",
+    target: "npm run typecheck"
+  });
+  const unmatched = evaluateActionApprovalRule({
+    project: wildcardProject,
+    actionType: "local_command",
+    target: "npm test"
+  });
+  assert.equal(matched?.id, "npm-run-family");
+  assert.equal(unmatched?.id, "tests");
+});
+
 test("approval rules do not match writes above their byte cap", () => {
   const fileRule = evaluateActionApprovalRule({
     project,

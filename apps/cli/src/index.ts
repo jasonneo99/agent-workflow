@@ -8408,6 +8408,57 @@ async function writeLearningApplicationPlan(projectDir: string, plan: LearningAp
   await fs.writeFile(path.join(learningDir, "application-plan.md"), formatLearningApplicationPlanMarkdown(plan), "utf8");
 }
 
+async function appendProjectApprovalRule(input: {
+  projectRootUri: string;
+  actionType: "local_command" | "file_write";
+  target: string;
+  description: string;
+  payload: Record<string, unknown>;
+}): Promise<{ id: string; configPath: string; created: boolean }> {
+  const projectRoot = path.resolve(input.projectRootUri);
+  const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+  const expectedDir = path.join(projectRoot, ".agent-workflow");
+  await ensureProjectSubdir(projectRoot, expectedDir, ".agent-workflow");
+  const raw = await fs.readFile(configPath, "utf8");
+  const current = YAML.parse(raw) as Record<string, unknown>;
+  const actions = isRecord(current.actions) ? current.actions : {};
+  const approvalRules = Array.isArray(actions.approval_rules) ? actions.approval_rules : [];
+  const existing = approvalRules.find((rule) =>
+    isRecord(rule)
+    && rule.action_type === input.actionType
+    && rule.target === input.target
+    && rule.effect === "auto_execute"
+  );
+  if (isRecord(existing) && typeof existing.id === "string") {
+    return { id: existing.id, configPath, created: false };
+  }
+
+  const baseId = `always-${safeId(input.actionType)}-${safeId(input.target).slice(0, 52)}`;
+  const existingIds = new Set(approvalRules.filter(isRecord).map((rule) => typeof rule.id === "string" ? rule.id : "").filter(Boolean));
+  const id = uniqueApprovalRuleId(baseId, existingIds);
+  const rule: Record<string, unknown> = {
+    id,
+    description: input.description,
+    action_type: input.actionType,
+    target: input.target,
+    effect: "auto_execute"
+  };
+  if (input.actionType === "file_write") {
+    const bytes = typeof input.payload.bytes === "number" ? input.payload.bytes : undefined;
+    rule.max_bytes = bytes && bytes > 0 ? Math.max(4096, bytes) : 4096;
+  }
+  const next = {
+    ...current,
+    actions: {
+      ...actions,
+      approval_rules: [...approvalRules, rule]
+    }
+  };
+  projectConfigSchema.parse(next);
+  await fs.writeFile(configPath, YAML.stringify(next), "utf8");
+  return { id, configPath, created: true };
+}
+
 async function ensureProjectSubdir(projectDir: string, targetDir: string, label: string): Promise<void> {
   const projectRoot = path.resolve(projectDir);
   const resolved = path.resolve(targetDir);
@@ -8946,6 +8997,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       approvalIds: form.getAll("approvalId"),
       actorRole: form.get("actorRole") ?? "",
       note: form.get("note") ?? ""
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-rule-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardApprovalRuleAction({
+      approvalId: form.get("approvalId") ?? "",
+      target: form.get("target") ?? "",
+      actorRole: form.get("actorRole") ?? "",
+      note: form.get("note") ?? "",
+      approveCurrent: form.get("approveCurrent") === "on"
     });
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -10120,7 +10185,7 @@ function renderApprovalsHtml(
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
       <td>${escapeHtml(approval.rationale)}<br><span class="muted">${escapeHtml(rolePreviewForApproval(approval))}</span>${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
-      <td>${approval.status === "pending" ? approvalDecisionForms(approval.id) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
   const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
@@ -14100,6 +14165,71 @@ async function processDashboardBulkApprovalAction(input: {
   };
 }
 
+async function processDashboardApprovalRuleAction(input: {
+  approvalId: string;
+  target: string;
+  actorRole: string;
+  note: string;
+  approveCurrent: boolean;
+}): Promise<DashboardFollowUpResult> {
+  const approvalId = input.approvalId.trim();
+  const target = input.target.trim();
+  if (!approvalId) {
+    return { ok: false, error: "Missing approval id." };
+  }
+  if (!target) {
+    return { ok: false, error: "Missing approval rule target." };
+  }
+  const approvalForGate = await getActionApproval(approvalId);
+  if (!approvalForGate) {
+    return { ok: false, error: "Approval was not found or is no longer pending." };
+  }
+  if (approvalForGate.actionType !== "local_command" && approvalForGate.actionType !== "file_write") {
+    return { ok: false, error: "Always approve rules are only supported for local_command and file_write approvals." };
+  }
+  const actorRole = normalizeActorRole(input.actorRole, "approver");
+  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
+  if (!gate.allowed) {
+    return { ok: false, error: gate.message };
+  }
+  const rule = await appendProjectApprovalRule({
+    projectRootUri: approvalForGate.projectRootUri,
+    actionType: approvalForGate.actionType,
+    target,
+    description: input.note.trim() || `Always approve ${approvalForGate.actionType} ${target}.`,
+    payload: approvalForGate.payload
+  });
+  let approval: DashboardActionApproval | null = null;
+  if (input.approveCurrent) {
+    approval = await decideActionApproval({
+      approvalId,
+      decision: "approved",
+      actor: "dashboard",
+      actorRole,
+      note: input.note.trim() || `Approved current request and added approval rule ${rule.id}.`
+    });
+    if (!approval) {
+      return { ok: false, error: "Approval rule was written, but the current approval was no longer pending." };
+    }
+  }
+  return {
+    ok: true,
+    title: rule.created ? "Approval rule added" : "Approval rule already exists",
+    runId: approvalForGate.runId,
+    output: [
+      `Rule: ${rule.id}`,
+      `Action: ${approvalForGate.actionType}`,
+      `Target pattern: ${target}`,
+      `Project: ${approvalForGate.projectRootUri}`,
+      `Config: ${rule.configPath}`,
+      `Current approval: ${approval ? `approved ${approval.id}` : "left pending"}`,
+      "Future matching actions must still pass allowed command/path policy and blocklists.",
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
 async function processDashboardArtifactLifecycleAction(input: {
   action: string;
   project: string;
@@ -15565,7 +15695,8 @@ function isExecutableApprovalAction(actionType: string): boolean {
   return actionType === "local_command" || actionType === "file_write" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore";
 }
 
-function approvalDecisionForms(approvalId: string): string {
+function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  const approvalId = approval.id;
   return `<div class="actions">
     <form class="approval-form" method="post" action="/api/approval-action">
       <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
@@ -15581,7 +15712,35 @@ function approvalDecisionForms(approvalId: string): string {
       <input name="note" aria-label="Rejection note" placeholder="Optional note">
       <button class="danger" type="submit">Reject</button>
     </form>
+    ${approvalRuleForms(approval)}
   </div>`;
+}
+
+function approvalRuleForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  if (approval.actionType !== "local_command" && approval.actionType !== "file_write") {
+    return "";
+  }
+  const exact = approvalRuleExactTarget(approval);
+  const broad = approvalRuleBroadTarget(approval);
+  const exactLabel = approval.actionType === "local_command" ? "Always Exact" : "Always File";
+  const broadLabel = approval.actionType === "local_command" ? "Always Prefix *" : "Always Path";
+  return `
+    <form class="approval-form approval-rule-form" method="post" action="/api/approval-rule-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
+      <input type="hidden" name="actorRole" value="approver">
+      <input type="hidden" name="target" value="${escapeHtml(exact)}">
+      <input type="hidden" name="approveCurrent" value="on">
+      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(exact)}">
+      <button class="secondary" type="submit">${escapeHtml(exactLabel)}</button>
+    </form>
+    ${broad && broad !== exact ? `<form class="approval-form approval-rule-form" method="post" action="/api/approval-rule-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
+      <input type="hidden" name="actorRole" value="approver">
+      <input type="hidden" name="target" value="${escapeHtml(broad)}">
+      <input type="hidden" name="approveCurrent" value="on">
+      <input name="note" aria-label="Rule note" value="Always approve ${escapeHtml(broad)}">
+      <button class="secondary" type="submit">${escapeHtml(broadLabel)}</button>
+    </form>` : ""}`;
 }
 
 function rolePreviewForApproval(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
@@ -15602,6 +15761,63 @@ function rolePreviewForApproval(approval: Awaited<ReturnType<typeof listActionAp
 function approvalOneLineSummary(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
   const rationale = approval.rationale ? ` - ${approval.rationale}` : "";
   return truncateText(`${approval.actionType} ${approval.target} for ${approval.stageId} (${approval.agentId})${rationale}`, 180);
+}
+
+function approvalRuleExactTarget(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  if (approval.actionType === "local_command" && typeof approval.payload.commandLine === "string") {
+    return normalizeApprovalRuleCommand(approval.payload.commandLine);
+  }
+  if (approval.actionType === "file_write" && typeof approval.payload.relativePath === "string") {
+    return normalizeApprovalRulePath(approval.payload.relativePath);
+  }
+  return approval.actionType === "local_command"
+    ? normalizeApprovalRuleCommand(approval.target)
+    : normalizeApprovalRulePath(approval.target);
+}
+
+function approvalRuleBroadTarget(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
+  const exact = approvalRuleExactTarget(approval);
+  if (approval.actionType === "local_command") {
+    const parts = exact.split(" ").filter(Boolean);
+    if (parts.length >= 2) {
+      return `${parts.slice(0, 2).join(" ")} *`;
+    }
+    if (parts.length === 1) {
+      return `${parts[0]} *`;
+    }
+    return exact;
+  }
+  if (approval.actionType === "file_write") {
+    const dir = path.posix.dirname(exact.replaceAll(path.sep, "/"));
+    return dir && dir !== "." ? `${dir}/**` : exact;
+  }
+  return exact;
+}
+
+function normalizeApprovalRuleCommand(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function normalizeApprovalRulePath(value: string): string {
+  return value.trim().replace(/^\.\//, "").replaceAll(path.sep, "/");
+}
+
+function uniqueApprovalRuleId(baseId: string, existingIds: Set<string>): string {
+  let id = baseId || "always-approve";
+  let index = 2;
+  while (existingIds.has(id)) {
+    id = `${baseId}-${index}`;
+    index += 1;
+  }
+  return id;
+}
+
+function safeId(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "item";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function truncateText(value: string, maxLength: number): string {
