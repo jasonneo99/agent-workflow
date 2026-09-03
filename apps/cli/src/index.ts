@@ -11036,7 +11036,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
   const viewParam = params.get("view");
-  const view = viewParam === "mind-map" || viewParam === "network" ? viewParam : "graph";
+  const view: "graph" | "mind-map" | "network" | "all" = viewParam === "mind-map" || viewParam === "network" || viewParam === "all" ? viewParam : "graph";
   const orientation: "horizontal" | "radial" = params.get("orientation") === "radial" ? "radial" : "horizontal";
   const categoryFilter = params.get("category")?.trim() || "";
   const approvalFilter = params.get("approval")?.trim() || "all";
@@ -11049,8 +11049,10 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const graphHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "graph" });
   const mindMapHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "mind-map" });
   const networkHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network" });
-  const networkHorizontalHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", orientation: "horizontal" });
-  const networkRadialHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", orientation: "radial" });
+  const allHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "all" });
+  const networkLinkView = view === "all" ? "all" : "network";
+  const networkHorizontalHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: networkLinkView, orientation: "horizontal" });
+  const networkRadialHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: networkLinkView, orientation: "radial" });
   const captureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, capture: true });
   const exitCaptureHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, capture: false });
   const clearStageHref = workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view, stage: "" });
@@ -11084,11 +11086,17 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const warningHtml = warnings.length
     ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
     : "";
+  const stageHrefView = view === "all" ? "all" : "network";
+  const flowSection = `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
+  const mindMapSection = `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`;
+  const networkSection = `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation, (stageId) => workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: stageHrefView, stage: stageId }), focusedStageId)}</section>`;
   const visual = view === "mind-map"
-    ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
+    ? mindMapSection
     : view === "network"
-      ? `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation, (stageId) => workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", stage: stageId }), focusedStageId)}</section>`
-      : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
+      ? networkSection
+      : view === "all"
+        ? `${flowSection}${mindMapSection}${networkSection}`
+        : flowSection;
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
@@ -11144,6 +11152,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
         <a class="segment ${view === "graph" ? "active" : ""}" href="${escapeHtml(graphHref)}"><strong>Flow</strong><span>Stages in order</span></a>
         <a class="segment ${view === "mind-map" ? "active" : ""}" href="${escapeHtml(mindMapHref)}"><strong>Map</strong><span>Workflow branches</span></a>
         <a class="segment ${view === "network" ? "active" : ""}" href="${escapeHtml(networkHref)}"><strong>Network</strong><span>Runs and agents</span></a>
+        <a class="segment ${view === "all" ? "active" : ""}" href="${escapeHtml(allHref)}"><strong>All</strong><span>Full graph stack</span></a>
       </div>
     </section>
     ${visual}
@@ -11282,7 +11291,7 @@ function workflowGraphDashboardHref(
     policyProfile,
     view: options.view
   });
-  if (options.view === "network" && options.orientation === "radial") query.set("orientation", "radial");
+  if ((options.view === "network" || options.view === "all") && options.orientation === "radial") query.set("orientation", "radial");
   if (options.category) query.set("category", options.category);
   if (options.approval !== "all") query.set("approval", options.approval);
   if (options.policyStatus !== "all") query.set("policyStatus", options.policyStatus);
