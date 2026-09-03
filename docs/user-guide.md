@@ -659,6 +659,13 @@ count, and log links. Use **Install / Refresh** after changing `.env`,
 upgrading Agent Workflow, or changing the durable project. Use **Uninstall** to
 return to terminal-only supervision.
 
+The Learning page is project-scoped. A selected project can show historical
+learning evidence while its daemon status says `missing` if the durable
+supervisor is watching a different project. Use **Watch This Project** on the
+Learning page to write `AGENTFLOW_LEARNING_PROJECT` into the Agent Workflow
+`.env` and refresh the LaunchAgent so the selected project becomes the durable
+learning target.
+
 Set `AGENTFLOW_LEARNING_DAEMON=0` before installing or launching if you want the
 dashboard and worker without the local learning loop.
 

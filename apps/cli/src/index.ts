@@ -9455,6 +9455,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-daemon-target") {
+    const form = await readFormBody(request);
+    const result = await processDashboardLearningDaemonTarget({
+      project: form.get("project") ?? "",
+      mode: form.get("mode") ?? "apply-approved"
+    });
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/launchagent-action") {
     const form = await readFormBody(request);
     const result = await processDashboardLaunchAgentAction(form.get("action") ?? "");
@@ -10142,6 +10153,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
     const learningSettings = project ? await readLearningSettings(project).catch(() => null) : null;
     const learningActionReceipts = project ? await readLearningActionReceipts(project).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), project))) : null;
+    const supervisor = await loadDashboardSupervisorStatus();
     const workflowShape = project
       ? await loadWorkflowShapeOptimization({
         projectDir: project,
@@ -10150,7 +10162,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       }).catch(() => null)
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, learningSettings, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, learningSettings, supervisor, projects, requestUrl.searchParams));
     return;
   }
 
@@ -12186,14 +12198,14 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate, supervisor)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -12236,7 +12248,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean, supervisor: DashboardSupervisorStatus): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -12271,9 +12283,10 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       </div>
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
+    ${renderLearningSupervisorTargetHtml(report.projectDir, supervisor)}
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local autonomous loop over Agent Workflow-owned learning state.</span></div></div>
-      ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon) : `<p class="muted">No project selected.</p>`}
+      ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It updates Agent Workflow-created learning files and application plans by default, but does not apply source, provider, tuning, command, network, or export changes.</p>
     </section>
     ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate) : ""}
@@ -12305,8 +12318,41 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   `;
 }
 
-function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus): string {
+function renderLearningSupervisorTargetHtml(projectDir: string, supervisor: DashboardSupervisorStatus): string {
+  const targetMatches = supervisor.learningProject === projectDir;
+  const statusText = supervisor.learningEnabled
+    ? targetMatches ? "watching this project" : supervisor.learningProject ? "watching another project" : "enabled without target"
+    : "disabled";
+  return `
+    <section class="panel compact-panel">
+      <div class="section-heading">
+        <div>
+          <h2>Durable Learning Target</h2>
+          <span class="muted">LaunchAgent supervision can keep one local learning daemon durable by default.</span>
+        </div>
+        <form method="post" action="/api/learning-daemon-target" class="inline-form compact-form">
+          <input type="hidden" name="project" value="${escapeHtml(projectDir)}">
+          <input type="hidden" name="mode" value="apply-approved">
+          <button type="submit" class="secondary">${targetMatches ? "Refresh Durable Target" : "Watch This Project"}</button>
+        </form>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Status</strong>${escapeHtml(statusText)}</div>
+        <div><strong>Supervisor</strong>${escapeHtml(supervisor.status)}</div>
+        <div><strong>Current Target</strong>${escapeHtml(supervisor.learningProject ?? "none")}</div>
+        <div><strong>Selected Project</strong>${escapeHtml(projectDir)}</div>
+        <div><strong>Mode</strong>${escapeHtml(supervisor.learningMode ?? "n/a")}</div>
+      </div>
+      ${targetMatches ? "" : `<p class="warn-box">The selected project can still show historical learning evidence, but its daemon heartbeat is missing because the durable supervisor is currently watching ${escapeHtml(supervisor.learningProject ?? "no project")}.</p>`}
+    </section>
+  `;
+}
+
+function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, supervisor: DashboardSupervisorStatus): string {
   const age = status.ageMs === null ? "n/a" : formatDuration(Math.max(0, status.ageMs));
+  const statusDetail = status.status === "missing" && supervisor.learningProject && supervisor.learningProject !== status.projectRootUri
+    ? `No heartbeat for this project because the durable supervisor is watching ${supervisor.learningProject}.`
+    : "";
   return `
     <div class="meta-grid">
       <div><strong>Status</strong><span class="status ${status.status === "running" ? "completed" : status.status === "missing" ? "queued" : "failed"}">${escapeHtml(status.status)}</span></div>
@@ -12327,6 +12373,7 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus): 
       <div><strong>Start Command</strong><code>${escapeHtml(status.command)}</code></div>
       ${status.lastError ? `<div><strong>Last Error</strong>${escapeHtml(status.lastError)}</div>` : ""}
     </div>
+    ${statusDetail ? `<p class="warn-box">${escapeHtml(statusDetail)}</p>` : ""}
   `;
 }
 
@@ -13766,20 +13813,11 @@ async function processDashboardLaunchAgentAction(action: string): Promise<Dashbo
   if (!scriptName) {
     return { ok: false, error: "LaunchAgent action must be install, refresh, or uninstall." };
   }
-  await fs.mkdir(defaultLaunchAgentLogDir, { recursive: true });
-  const actionLogPath = path.join(defaultLaunchAgentLogDir, "actions.log");
   const scriptPath = path.join(rootDir, "scripts", scriptName);
   if (!await pathExists(scriptPath)) {
     return { ok: false, error: `Missing LaunchAgent script: ${scriptPath}` };
   }
-  const command = `${shellQuote(process.execPath)} ${shellQuote(scriptPath)} >> ${shellQuote(actionLogPath)} 2>&1`;
-  const child = spawn("sh", ["-lc", `sleep 1; ${command}`], {
-    cwd: rootDir,
-    env: process.env,
-    detached: true,
-    stdio: "ignore"
-  });
-  child.unref();
+  const actionLogPath = await scheduleDashboardLaunchAgentScript(scriptName);
   const verb = normalized === "uninstall" ? "uninstall" : "install/refresh";
   return {
     ok: true,
@@ -13791,6 +13829,59 @@ async function processDashboardLaunchAgentAction(action: string): Promise<Dashbo
       "Refresh Settings in a few seconds to see the new launchd status."
     ].join("\n")
   };
+}
+
+async function processDashboardLearningDaemonTarget(input: { project: string; mode: string }): Promise<DashboardFollowUpResult> {
+  const projectDir = path.resolve(process.cwd(), input.project.trim());
+  if (!input.project.trim()) {
+    return { ok: false, error: "Missing project path." };
+  }
+  if (!await pathExists(projectDir)) {
+    return { ok: false, error: `Project path does not exist: ${projectDir}` };
+  }
+  const mode = input.mode === "observe" || input.mode === "propose" || input.mode === "apply-approved" ? input.mode : "apply-approved";
+  await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_PROJECT", projectDir);
+  await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_MODE", mode);
+  await updateEnvValue(configuredEnvPath, "AGENTFLOW_LEARNING_DAEMON", "1");
+  process.env.AGENTFLOW_LEARNING_PROJECT = projectDir;
+  process.env.AGENTFLOW_LEARNING_MODE = mode;
+  process.env.AGENTFLOW_LEARNING_DAEMON = "1";
+  const launchAgent = await loadDashboardLaunchAgentStatus();
+  const refreshLine = launchAgent.supported && launchAgent.installed
+    ? "A LaunchAgent refresh was scheduled so the durable supervisor picks up the new learning target."
+    : "LaunchAgent is not installed. Run npm run dev:agentflow or npm run dev:agentflow:launchd:install to start the daemon.";
+  if (launchAgent.supported && launchAgent.installed) {
+    await scheduleDashboardLaunchAgentScript("install-launchagent.mjs");
+  }
+  return {
+    ok: true,
+    title: "Learning daemon target updated",
+    output: [
+      `AGENTFLOW_LEARNING_PROJECT=${projectDir}`,
+      `AGENTFLOW_LEARNING_MODE=${mode}`,
+      "AGENTFLOW_LEARNING_DAEMON=1",
+      refreshLine,
+      `Open: /learning?project=${encodeURIComponent(projectDir)}`
+    ].join("\n")
+  };
+}
+
+async function scheduleDashboardLaunchAgentScript(scriptName: string): Promise<string> {
+  await fs.mkdir(defaultLaunchAgentLogDir, { recursive: true });
+  const actionLogPath = path.join(defaultLaunchAgentLogDir, "actions.log");
+  const scriptPath = path.join(rootDir, "scripts", scriptName);
+  if (!await pathExists(scriptPath)) {
+    throw new Error(`Missing LaunchAgent script: ${scriptPath}`);
+  }
+  const command = `${shellQuote(process.execPath)} ${shellQuote(scriptPath)} >> ${shellQuote(actionLogPath)} 2>&1`;
+  const child = spawn("sh", ["-lc", `sleep 1; ${command}`], {
+    cwd: rootDir,
+    env: process.env,
+    detached: true,
+    stdio: "ignore"
+  });
+  child.unref();
+  return actionLogPath;
 }
 
 async function loadDashboardLaunchAgentLog(kind: "stdout" | "stderr"): Promise<{ ok: boolean; kind: "stdout" | "stderr"; filePath: string; content: string; error?: string }> {
