@@ -2407,7 +2407,7 @@ function summarizeWorkflowShapeRecommendations(recommendations: WorkflowShapeRec
   if (input.projectContext.indexedFiles === 0) {
     summary.push("Project context has not been indexed yet; run indexing before trusting shape optimization.");
   }
-  summary.push("Learning-owned recommendation artifacts may refresh automatically; applying changes to shared workflows, reusable agents, provider settings, project source, or tuning application still requires approval.");
+  summary.push("Learning-owned recommendation artifacts may refresh automatically; low/medium-risk project-local optimization overlays may apply autonomously, while shared workflows, reusable agents, provider settings, project source, high-risk tuning/eval actions, commands, and exports still require approval.");
   return summary;
 }
 

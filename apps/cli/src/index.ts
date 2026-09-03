@@ -3033,6 +3033,8 @@ program
         proposals: update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
         inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
         applicationActions: update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
+        autonomousAppliedActions: update?.autonomousApplication.appliedActions ?? lastStatus?.autonomousAppliedActions ?? 0,
+        autonomousApplyMaxRisk: update?.autonomousApplyMaxRisk ?? lastStatus?.autonomousApplyMaxRisk ?? await learningAutonomousApplyMaxRisk(statusProjectDir),
         workflowShapeRecommendations: update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
         workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(statusProjectDir),
         lastError,
@@ -3057,6 +3059,7 @@ program
         let proposalCount = 0;
         let inboxCount = 0;
         let applicationActions = 0;
+        let autonomousAppliedActions = 0;
         let workflowShapeRecommendations = 0;
         const projectErrors: string[] = [];
         for (const targetProjectDir of targets) {
@@ -3068,6 +3071,7 @@ program
             proposalCount += update.proposalSet.proposals.length;
             inboxCount += update.approvalQueue.items.length;
             applicationActions += update.applicationPlan?.actions.length ?? 0;
+            autonomousAppliedActions += update.autonomousApplication.appliedActions;
             workflowShapeRecommendations += update.workflowShape?.recommendations.length ?? 0;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -3077,7 +3081,7 @@ program
         }
         await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir);
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, workflowShape=${workflowShapeRecommendations}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -3128,7 +3132,7 @@ program
 
 program
   .command("learning-application-plan")
-  .description("Prepare a dry-run application plan from approved learning proposals without applying changes")
+  .description("Prepare an application plan from approved or auto-approved learning proposals")
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--ids <ids>", "comma-separated approved proposal ids or approval ids to include, or all", "all")
   .option("--write", "write application plan files under .agent-workflow/learning")
@@ -4133,7 +4137,7 @@ type LearningApplicationAction = {
   id: string;
   proposalId: string;
   title: string;
-  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "manual_review";
+  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "apply_tuning_overlay" | "manual_review";
   dangerGate: "none" | "approval_required";
   rationale: string;
   command: string | null;
@@ -4141,7 +4145,17 @@ type LearningApplicationAction = {
   blockedUntil: string[];
 };
 
-type LearningActionReceiptStatus = "planned" | "superseded" | "rejected";
+type LearningAutonomousApplicationResult = {
+  kind: "agentflow_learning_autonomous_application";
+  projectRootUri: string;
+  generatedAt: string;
+  appliedActions: number;
+  skippedActions: number;
+  filesWritten: string[];
+  notes: string[];
+};
+
+type LearningActionReceiptStatus = "planned" | "applied" | "superseded" | "rejected";
 
 type LearningActionReceiptLog = {
   kind: "agentflow_learning_action_receipts";
@@ -4185,6 +4199,8 @@ type LearningDaemonHeartbeat = {
   proposals: number;
   inboxItems: number;
   applicationActions: number;
+  autonomousAppliedActions?: number;
+  autonomousApplyMaxRisk?: LearningRiskLevel;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
   command: string;
@@ -4195,6 +4211,7 @@ type LearningSettings = {
   projectRootUri: string;
   updatedAt: string;
   workflowShapeAutoUpdate: boolean;
+  autonomousApplyMaxRisk: LearningRiskLevel;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -4270,6 +4287,8 @@ type DashboardLearningDaemonStatus = {
   proposals: number;
   inboxItems: number;
   applicationActions: number;
+  autonomousAppliedActions: number;
+  autonomousApplyMaxRisk: LearningRiskLevel;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
   lastError: string;
@@ -7569,7 +7588,7 @@ async function loadLearningReport(input: {
   if (evaluationRuns.length === 0) evalGaps.push("Run or create an evaluation suite before promoting routing, prompt, or context-budget changes.");
   if (failedRuns.length > 0 && repeatedFailurePatterns.length === 0) evalGaps.push("Failed runs exist, but stage-level health did not isolate a repeated failing stage yet.");
   if (proposals.proposals.some((proposal) => proposal.kind === "feedback_needed")) evalGaps.push("Some routes need human feedback before the daemon can rank them confidently.");
-  if (!evalGaps.length) evalGaps.push("Learning evidence is ready for proposal generation, but application should still require approval.");
+  if (!evalGaps.length) evalGaps.push("Learning evidence is ready for autonomous low/medium local optimization and high-risk approval review.");
   return {
     kind: "agentflow_learning_report",
     generatedAt: new Date().toISOString(),
@@ -7596,10 +7615,11 @@ async function loadLearningReport(input: {
       "Generate compact local learning reports and proposal previews.",
       "Update learning files and future learning database rows that Agent Workflow created and owns by default.",
       "Refresh workflow-shape and agent-type recommendation files automatically when the autonomous optimizer is enabled.",
-      "Prepare approved application plans for owned learning-state changes."
+      "Auto-approve and apply low/medium-risk project-local tuning overlays when autonomous mode is enabled.",
+      "Prepare approval queues only for high-risk or outside-boundary changes."
     ],
     approvalRequiredActions: [
-      "Apply project-local tuning notes outside Agent Workflow-owned learning state.",
+      "Apply high-risk project-local changes such as generated eval suites or debug workflow execution.",
       "Promote workflow-shape recommendations into shared workflows or reusable agent cards.",
       "Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source.",
       "Run commands, tests, web/model research, network calls, or external tools.",
@@ -7744,7 +7764,7 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
     addProposal({
       priority: pattern.failureRate >= 0.5 ? "high" : "medium",
       kind: "repeated_failure",
-      riskLevel: "medium",
+      riskLevel: "high",
       title: `Investigate repeated failures in ${pattern.stageId}`,
       target: `${pattern.workflowId}/${pattern.stageId}/${pattern.agentId}`,
       rationale: `${pattern.failedTasks} of ${pattern.totalTasks} recent stage task(s) failed.`,
@@ -7773,8 +7793,8 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
         `fallbackRate=${item.fallbackRate}`,
         `averageLatencyMs=${item.averageLatencyMs ?? "n/a"}`
       ],
-      recommendation: item.recommendation,
-      approvalRequired: true
+      recommendation: `${item.recommendation} In autonomous mode, write project-local tuning overlay notes before promoting any shared workflow or provider change.`,
+      approvalRequired: false
     });
   }
 
@@ -7783,7 +7803,7 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
     addProposal({
       priority: feedbackGap ? "medium" : "low",
       kind: feedbackGap ? "feedback_gap" : "eval_gap",
-      riskLevel: "low",
+      riskLevel: feedbackGap ? "low" : "high",
       title: feedbackGap ? "Collect developer feedback" : "Improve evaluation evidence",
       target: report.projectDir,
       rationale: gap,
@@ -7791,7 +7811,7 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
       recommendation: feedbackGap
         ? "Record accepted, revised, or rejected feedback on recent workflow runs before promoting tuning changes."
         : "Create or run a small local evaluation suite before applying prompt, routing, or context-budget changes.",
-      approvalRequired: false
+      approvalRequired: !feedbackGap
     });
   }
 
@@ -7804,8 +7824,8 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
       target: report.projectDir,
       rationale: `${report.proposalPreview.total} tuning proposal candidate(s), including ${report.proposalPreview.highPriority} high-priority item(s), are available.`,
       evidence: Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `${kind}=${count}`),
-      recommendation: "Queue tuning approvals and inspect patch plans before applying project-local tuning notes.",
-      approvalRequired: true
+      recommendation: "Write project-local tuning overlay notes automatically in autonomous mode. Promote shared workflow/provider changes only with approval.",
+      approvalRequired: false
     });
   }
 
@@ -7836,7 +7856,8 @@ function summarizeLearningProposals(proposals: LearningProposal[], report: Learn
 function buildLearningApprovalQueue(
   proposalSet: LearningProposalSet,
   selectedIds: string[] | "all" = "all",
-  existingQueue?: LearningApprovalQueue
+  existingQueue?: LearningApprovalQueue,
+  autonomousApplyMaxRisk: LearningRiskLevel = "medium"
 ): LearningApprovalQueue {
   const requestedIds = selectedIds === "all" ? proposalSet.proposals.map((proposal) => proposal.id) : selectedIds;
   const requestedIdSet = new Set(requestedIds);
@@ -7853,14 +7874,16 @@ function buildLearningApprovalQueue(
     skippedIds: requestedIds.filter((id) => !selectedIdSet.has(id)),
     items: selected.map((proposal) => {
       const existing = existingByProposal.get(proposal.id);
+      const autoApproved = !proposal.approvalRequired && riskRank(proposal.riskLevel) <= riskRank(autonomousApplyMaxRisk);
+      const status = existing?.status === "pending" && autoApproved ? "approved" : existing?.status ?? (autoApproved ? "approved" : "pending");
       return {
         id: existing?.id ?? `learn-approval-${proposal.id.replace(/^learn-/, "")}`,
         proposalId: proposal.id,
-        status: existing?.status ?? "pending",
+        status,
         createdAt: existing?.createdAt ?? generatedAt,
-        decidedAt: existing?.decidedAt,
-        reviewer: existing?.reviewer,
-        note: existing?.note,
+        decidedAt: existing?.decidedAt ?? (status === "approved" && autoApproved ? generatedAt : undefined),
+        reviewer: existing?.reviewer ?? (status === "approved" && autoApproved ? "learning-daemon" : undefined),
+        note: existing?.note ?? (status === "approved" && autoApproved ? `Autonomous local approval: risk=${proposal.riskLevel}, threshold=${autonomousApplyMaxRisk}.` : undefined),
         proposal
       };
     })
@@ -8083,13 +8106,13 @@ function buildLearningApplicationAction(projectRootUri: string, item: LearningAp
     return {
       id,
       proposalId: item.proposalId,
-      title: "Review tuning proposal path",
-      actionType: "review_tuning",
-      dangerGate: "approval_required",
+      title: "Apply project-local tuning overlay",
+      actionType: "apply_tuning_overlay",
+      dangerGate: "none",
       rationale: proposal.rationale,
-      command: `npm run agentflow -- queue-tuning-approvals --project ${shellQuote(projectRootUri)} --ids all --write`,
-      writesOwnedLearningStateOnly: false,
-      blockedUntil: ["A developer reviews tuning proposals and approves only safe project-local tuning changes."]
+      command: `npm run agentflow -- apply-tuning-proposals --project ${shellQuote(projectRootUri)} --ids all --write`,
+      writesOwnedLearningStateOnly: true,
+      blockedUntil: []
     };
   }
   return {
@@ -8112,8 +8135,8 @@ function summarizeLearningApplicationPlan(actions: LearningApplicationAction[], 
   }
   return [
     `${actions.length} action plan(s) prepared from approved learning proposals.`,
-    `${actions.filter((action) => action.dangerGate === "approval_required").length} action(s) still require approval before behavior changes.`,
-    `${actions.filter((action) => action.writesOwnedLearningStateOnly).length} action(s) are limited to Agent Workflow-owned learning state.`,
+    `${actions.filter((action) => action.dangerGate === "approval_required").length} high-risk action(s) still require approval.`,
+    `${actions.filter((action) => action.dangerGate === "none").length} low/medium-risk local action(s) can run autonomously.`,
     "This plan does not apply source, provider, reusable bundle, command, network, or export changes."
   ];
 }
@@ -8175,6 +8198,89 @@ function formatLearningApplicationPlanMarkdown(plan: LearningApplicationPlan): s
   ].filter(Boolean).join("\n");
 }
 
+function emptyLearningAutonomousApplicationResult(projectRootUri: string): LearningAutonomousApplicationResult {
+  return {
+    kind: "agentflow_learning_autonomous_application",
+    projectRootUri,
+    generatedAt: new Date().toISOString(),
+    appliedActions: 0,
+    skippedActions: 0,
+    filesWritten: [],
+    notes: ["No autonomous local application was performed."]
+  };
+}
+
+async function applyAutonomousLearningApplicationPlan(projectDir: string, plan: LearningApplicationPlan): Promise<LearningAutonomousApplicationResult> {
+  const safeActions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "apply_tuning_overlay");
+  const filesWritten: string[] = [];
+  const notes: string[] = [];
+  let appliedActions = 0;
+  if (safeActions.length) {
+    const tuningProposals = await loadTuningProposals({ projectDir, limit: 50 });
+    const tuningPlan = buildTuningApplicationPlan(tuningProposals, "all");
+    if (tuningPlan.selectedIds.length) {
+      await writeTuningApplicationPlan(projectDir, tuningPlan);
+      await recordTuningHistory(projectDir, tuningPlan.selectedIds, "applied", "learning-daemon", "autonomous local tuning overlay");
+      filesWritten.push(...tuningPlan.files.map((file) => file.relativePath));
+      appliedActions = safeActions.length;
+      notes.push(`Applied project-local tuning overlay for ${tuningPlan.selectedIds.length} tuning proposal(s).`);
+    } else {
+      notes.push("Safe tuning-overlay action was available, but no concrete tuning proposal rows were ready to apply.");
+    }
+  }
+  if (!safeActions.length) {
+    notes.push("No safe local tuning overlay actions were available to apply.");
+  }
+  const skippedActions = plan.actions.length - appliedActions;
+  if (skippedActions > 0) {
+    notes.push(`${skippedActions} action(s) were left for approval because they are high-risk or outside autonomous local scope.`);
+  }
+  const result: LearningAutonomousApplicationResult = {
+    kind: "agentflow_learning_autonomous_application",
+    projectRootUri: projectDir,
+    generatedAt: new Date().toISOString(),
+    appliedActions,
+    skippedActions,
+    filesWritten,
+    notes
+  };
+  await writeLearningAutonomousApplicationResult(projectDir, result);
+  return result;
+}
+
+function filterAppliedLearningApplicationPlan(plan: LearningApplicationPlan): LearningApplicationPlan {
+  const actions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "apply_tuning_overlay");
+  return {
+    ...plan,
+    actions,
+    selectedIds: actions.map((action) => action.proposalId),
+    skippedIds: [],
+    summary: actions.length
+      ? [`${actions.length} autonomous local action(s) applied.`]
+      : ["No autonomous local actions applied."]
+  };
+}
+
+function formatLearningAutonomousApplicationResult(result: LearningAutonomousApplicationResult): string {
+  return [
+    "# Agent Workflow Autonomous Learning Application",
+    "",
+    `Project: ${result.projectRootUri}`,
+    `Generated: ${result.generatedAt}`,
+    `Applied actions: ${result.appliedActions}`,
+    `Skipped actions: ${result.skippedActions}`,
+    "",
+    "## Notes",
+    "",
+    ...result.notes.map((note) => `- ${note}`),
+    "",
+    "## Files Written",
+    "",
+    ...(result.filesWritten.length ? result.filesWritten.map((file) => `- \`${file}\``) : ["- none"]),
+    ""
+  ].join("\n");
+}
+
 function emptyLearningActionReceipts(projectRootUri: string): LearningActionReceiptLog {
   return {
     kind: "agentflow_learning_action_receipts",
@@ -8184,11 +8290,11 @@ function emptyLearningActionReceipts(projectRootUri: string): LearningActionRece
   };
 }
 
-function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, plan: LearningApplicationPlan, actor: string, note: string): LearningActionReceiptLog {
+function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, plan: LearningApplicationPlan, actor: string, note: string, status: Extract<LearningActionReceiptStatus, "planned" | "applied"> = "planned"): LearningActionReceiptLog {
   const createdAt = new Date().toISOString();
   const alreadyClosed = new Set(log.events.filter((event) => event.status === "superseded" || event.status === "rejected").map((event) => `${event.actionId}|${event.proposalId}|${event.status}`));
   const currentPlanKeys = new Set(plan.actions.map((action) => `${action.id}|${action.proposalId}`));
-  const activeKeys = new Set(log.events.filter((event) => event.status === "planned").map((event) => `${event.planGeneratedAt}|${event.actionId}|${event.proposalId}`));
+  const activeKeys = new Set(log.events.filter((event) => event.status === status).map((event) => `${event.planGeneratedAt}|${event.actionId}|${event.proposalId}|${event.status}`));
   const nextEvents = [...log.events];
   for (const event of log.events) {
     const key = `${event.actionId}|${event.proposalId}`;
@@ -8205,13 +8311,13 @@ function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, pl
     }
   }
   for (const action of plan.actions) {
-    const key = `${plan.generatedAt}|${action.id}|${action.proposalId}`;
+    const key = `${plan.generatedAt}|${action.id}|${action.proposalId}|${status}`;
     if (activeKeys.has(key)) {
       continue;
     }
     nextEvents.push({
       id: `receipt-${String(nextEvents.length + 1).padStart(4, "0")}`,
-      status: "planned",
+      status,
       actionId: action.id,
       proposalId: action.proposalId,
       planGeneratedAt: plan.generatedAt,
@@ -8263,7 +8369,7 @@ function formatLearningActionReceipts(log: LearningActionReceiptLog): string {
   return [
     `Learning Action Receipts: ${log.projectRootUri}`,
     `Updated: ${log.updatedAt}`,
-    `Counts: planned=${counts.planned ?? 0} superseded=${counts.superseded ?? 0} rejected=${counts.rejected ?? 0}`,
+    `Counts: planned=${counts.planned ?? 0} applied=${counts.applied ?? 0} superseded=${counts.superseded ?? 0} rejected=${counts.rejected ?? 0}`,
     "",
     log.events.length
       ? log.events.map((event) => [
@@ -8716,9 +8822,9 @@ async function writeLearningActionReceipts(projectDir: string, receipts: Learnin
   await fs.writeFile(path.join(learningDir, "action-receipts.md"), formatLearningActionReceiptsMarkdown(receipts), "utf8");
 }
 
-async function recordLearningApplicationPlanReceipts(projectDir: string, plan: LearningApplicationPlan, actor: string, note: string): Promise<LearningActionReceiptLog> {
+async function recordLearningApplicationPlanReceipts(projectDir: string, plan: LearningApplicationPlan, actor: string, note: string, status: Extract<LearningActionReceiptStatus, "planned" | "applied"> = "planned"): Promise<LearningActionReceiptLog> {
   const existing = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
-  const receipts = appendLearningApplicationPlanReceipts(existing, plan, actor, note);
+  const receipts = appendLearningApplicationPlanReceipts(existing, plan, actor, note, status);
   await writeLearningActionReceipts(projectDir, receipts);
   return receipts;
 }
@@ -8727,16 +8833,18 @@ async function runLearningDaemonTick(input: {
   projectDir: string;
   mode: LearningDaemonMode;
   limit: number;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; workflowShapeAutoUpdate: boolean }> {
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; workflowShapeAutoUpdate: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
-  const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue);
+  const autonomousApplyMaxRisk = await learningAutonomousApplyMaxRisk(input.projectDir);
+  const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue, autonomousApplyMaxRisk);
   const applicationPlan = buildLearningApplicationPlan(approvalQueue, "all");
   const workflowShapeAutoUpdate = await learningWorkflowShapeAutoUpdateEnabled(input.projectDir);
   const workflowShape = workflowShapeAutoUpdate
     ? await loadWorkflowShapeOptimization({ projectDir: input.projectDir, limit: input.limit })
     : null;
+  let autonomousApplication = emptyLearningAutonomousApplicationResult(input.projectDir);
   await writeLearningReport(input.projectDir, report);
   if (workflowShape) {
     await writeWorkflowShapeOptimization(input.projectDir, workflowShape);
@@ -8748,8 +8856,12 @@ async function runLearningDaemonTick(input: {
   if (input.mode === "apply-approved") {
     await writeLearningApplicationPlan(input.projectDir, applicationPlan);
     await recordLearningApplicationPlanReceipts(input.projectDir, applicationPlan, "learning-daemon", "apply-approved planning tick");
+    autonomousApplication = await applyAutonomousLearningApplicationPlan(input.projectDir, applicationPlan);
+    if (autonomousApplication.appliedActions > 0) {
+      await recordLearningApplicationPlanReceipts(input.projectDir, filterAppliedLearningApplicationPlan(applicationPlan), "learning-daemon", "autonomous local apply tick", "applied");
+    }
   }
-  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate };
+  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate, autonomousApplyMaxRisk, autonomousApplication };
 }
 
 async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
@@ -9217,14 +9329,29 @@ async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promi
   return settings?.workflowShapeAutoUpdate ?? true;
 }
 
+async function learningAutonomousApplyMaxRisk(projectDir: string): Promise<LearningRiskLevel> {
+  const override = process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK;
+  if (override) {
+    return parseLearningRiskLevel(override);
+  }
+  const settings = await readLearningSettings(projectDir).catch(() => null);
+  return settings?.autonomousApplyMaxRisk ?? "medium";
+}
+
 async function readLearningSettings(projectDir: string): Promise<LearningSettings> {
   const settingsPath = path.join(projectDir, ".agent-workflow", "learning", "settings.json");
   const raw = await fs.readFile(settingsPath, "utf8");
-  const parsed = JSON.parse(raw) as LearningSettings;
+  const parsed = JSON.parse(raw) as Partial<LearningSettings>;
   if (parsed.kind !== "agentflow_learning_settings" || typeof parsed.workflowShapeAutoUpdate !== "boolean") {
     throw new Error(`Invalid learning settings: ${settingsPath}`);
   }
-  return parsed;
+  return {
+    kind: "agentflow_learning_settings",
+    projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectDir,
+    updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+    workflowShapeAutoUpdate: parsed.workflowShapeAutoUpdate,
+    autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium"))
+  };
 }
 
 async function writeLearningSettings(projectDir: string, settings: LearningSettings): Promise<void> {
@@ -9257,6 +9384,13 @@ async function writeLearningApplicationPlan(projectDir: string, plan: LearningAp
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "application-plan.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(learningDir, "application-plan.md"), formatLearningApplicationPlanMarkdown(plan), "utf8");
+}
+
+async function writeLearningAutonomousApplicationResult(projectDir: string, result: LearningAutonomousApplicationResult): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "autonomous-application.json"), `${JSON.stringify(result, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "autonomous-application.md"), formatLearningAutonomousApplicationResult(result), "utf8");
 }
 
 async function appendProjectApprovalRule(input: {
@@ -10067,7 +10201,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       kind: "agentflow_learning_settings",
       projectRootUri: projectDir,
       updatedAt: new Date().toISOString(),
-      workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on"
+      workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on",
+      autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium")
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -12885,8 +13020,9 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
+  const autonomousApplyMaxRisk = learningSettings?.autonomousApplyMaxRisk ?? "medium";
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate, supervisor)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate, autonomousApplyMaxRisk, supervisor)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -12929,7 +13065,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean, supervisor: DashboardSupervisorStatus): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, supervisor: DashboardSupervisorStatus): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -12968,9 +13104,9 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local autonomous loop over Agent Workflow-owned learning state.</span></div></div>
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
-      <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It updates Agent Workflow-created learning files and application plans by default, but does not apply source, provider, tuning, command, network, or export changes.</p>
+      <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It auto-applies low/medium-risk Agent Workflow-owned local optimization files by default, including project-local tuning overlays. High-risk source, provider, command, network, reusable bundle, and export changes still require approval.</p>
     </section>
-    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate) : ""}
+    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, autonomousApplyMaxRisk) : ""}
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
       <div class="split-grid">
@@ -12985,12 +13121,12 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <section class="panel"><h2>Proposal Preview</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposal candidates yet.</td></tr>"}</tbody></table></div></section>
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
-      <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Approval records do not apply changes; they only capture review intent for the future daemon.</p>
+      <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Low/medium-risk items auto-approve in autonomous mode; high-risk items wait here for review.</p>
       <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel">
       <div class="section-heading"><div><h2>Approved Application Plan</h2><span class="muted">${learningApplicationPlan ? `${learningApplicationPlan.actions.length} planned action(s)` : "No approved application plan yet."}</span></div></div>
-      <p class="muted">Generate a saved plan with <code>${escapeHtml(applicationPlanCommand)}</code>. This still does not apply behavior changes.</p>
+      <p class="muted">Generate a saved plan with <code>${escapeHtml(applicationPlanCommand)}</code>. The daemon applies safe local overlay actions automatically and leaves high-risk actions gated.</p>
       <div class="table-wrap"><table><thead><tr><th>Action</th><th>Type</th><th>Gate</th><th>Owned State Only</th><th>Command</th></tr></thead><tbody>${applicationRows || "<tr><td colspan=\"5\">No approved learning proposals selected for application planning.</td></tr>"}</tbody></table></div>
     </section>
     ${learningActionReceipts ? renderLearningActionReceiptsHtml(learningActionReceipts, report.limit) : ""}
@@ -13057,6 +13193,8 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
       <div><strong>Proposals</strong>${formatNumber(status.proposals)}</div>
       <div><strong>Inbox Items</strong>${formatNumber(status.inboxItems)}</div>
       <div><strong>Application Actions</strong>${formatNumber(status.applicationActions)}</div>
+      <div><strong>Auto-applied</strong>${formatNumber(status.autonomousAppliedActions)}</div>
+      <div><strong>Auto-apply Risk</strong>${escapeHtml(status.autonomousApplyMaxRisk)}</div>
       <div><strong>Shape Auto Update</strong>${status.workflowShapeAutoUpdate === false ? "off" : "on"}</div>
       <div><strong>Shape Recommendations</strong>${formatNumber(status.workflowShapeRecommendations ?? 0)}</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(status.heartbeatPath)}</div>
@@ -13067,7 +13205,7 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
   `;
 }
 
-function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean): string {
+function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel): string {
   const recommendationRows = report.recommendations.map((item) => `
     <tr>
       <td>${escapeHtml(item.id)}<br><span class="muted">${escapeHtml(item.kind)}</span></td>
@@ -13081,6 +13219,7 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
   const summaryItems = report.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
   const fileItems = report.ownedLearningFiles.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join("");
   const settingsButton = "Save optimizer setting";
+  const riskOptions = ["low", "medium", "high"].map((risk) => `<option value="${risk}"${autonomousApplyMaxRisk === risk ? " selected" : ""}>${risk}</option>`).join("");
   return `
     <section class="panel">
       <div class="section-heading">
@@ -13097,6 +13236,9 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <label class="checkbox-label">
           <input type="checkbox" name="workflowShapeAutoUpdate" value="on" ${autoUpdate ? "checked" : ""}>
           Autonomous optimizer writes learning-owned recommendation files
+        </label>
+        <label>Auto-apply through
+          <select name="autonomousApplyMaxRisk">${riskOptions}</select>
         </label>
         <button type="submit" class="secondary">${escapeHtml(settingsButton)}</button>
       </form>
@@ -14753,6 +14895,8 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       proposals: typeof heartbeat.proposals === "number" ? heartbeat.proposals : 0,
       inboxItems: typeof heartbeat.inboxItems === "number" ? heartbeat.inboxItems : 0,
       applicationActions: typeof heartbeat.applicationActions === "number" ? heartbeat.applicationActions : 0,
+      autonomousAppliedActions: typeof heartbeat.autonomousAppliedActions === "number" ? heartbeat.autonomousAppliedActions : 0,
+      autonomousApplyMaxRisk: parseLearningRiskLevel(typeof heartbeat.autonomousApplyMaxRisk === "string" ? heartbeat.autonomousApplyMaxRisk : "medium"),
       lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
       command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -14776,6 +14920,8 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       proposals: 0,
       inboxItems: 0,
       applicationActions: 0,
+      autonomousAppliedActions: 0,
+      autonomousApplyMaxRisk: "medium",
       lastError: "",
       command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -14795,6 +14941,8 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Proposals: ${status.proposals}`,
     `Inbox items: ${status.inboxItems}`,
     `Application actions: ${status.applicationActions}`,
+    `Autonomous applied actions: ${status.autonomousAppliedActions}`,
+    `Autonomous apply max risk: ${status.autonomousApplyMaxRisk}`,
     status.lastError ? `Last error: ${status.lastError}` : "",
     `Heartbeat file: ${status.heartbeatPath}`,
     `Start command: ${status.command}`
@@ -14822,6 +14970,18 @@ function normalizeWorkerId(value?: string): string {
 function parseLearningDaemonMode(value: string): LearningDaemonMode {
   if (value === "observe" || value === "propose" || value === "apply-approved") return value;
   throw new Error(`Learning daemon mode must be observe, propose, or apply-approved. Received: ${value}`);
+}
+
+function parseLearningRiskLevel(value: string): LearningRiskLevel {
+  const normalized = normalizeLookup(value);
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized;
+  }
+  return "medium";
+}
+
+function riskRank(value: LearningRiskLevel): number {
+  return value === "low" ? 1 : value === "medium" ? 2 : 3;
 }
 
 function safeWorkerHeartbeatFileSegment(value: string): string {
@@ -21302,6 +21462,7 @@ async function loadSourceSummaries(input: {
 }
 
 async function loadPreferenceNotes(projectDir: string): Promise<string[]> {
+  const tuningNotes = await loadProjectTuningNotes(projectDir);
   try {
     const memory = await getLatestMemory({
       projectRootUri: projectDir,
@@ -21311,15 +21472,42 @@ async function loadPreferenceNotes(projectDir: string): Promise<string[]> {
       .filter((item) => item.metadata?.kind === "run_feedback")
       .slice(0, 8);
 
-    return feedbackItems.map((item) => {
+    return [
+      ...tuningNotes,
+      ...feedbackItems.map((item) => {
       const rating = typeof item.metadata.rating === "string" ? item.metadata.rating : "unknown";
       const workflowId = typeof item.metadata.workflowId === "string" ? item.metadata.workflowId : "unknown-workflow";
       const note = typeof item.metadata.note === "string" && item.metadata.note.trim() ? ` Note: ${item.metadata.note.trim()}` : "";
       return `${rating} feedback for ${workflowId}.${note} (${item.updatedAt})`;
-    });
+      })
+    ];
   } catch {
-    return [];
+    return tuningNotes;
   }
+}
+
+async function loadProjectTuningNotes(projectDir: string): Promise<string[]> {
+  const files = [
+    ".agent-workflow/tuning/agent-notes.md",
+    ".agent-workflow/tuning/context-budget-notes.md",
+    ".agent-workflow/tuning/routing-preferences.md",
+    ".agent-workflow/tuning/proposals.md"
+  ];
+  const notes: string[] = [];
+  for (const relativePath of files) {
+    const absolutePath = path.join(projectDir, relativePath);
+    if (!await pathExists(absolutePath)) continue;
+    const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    const compact = raw.split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith("#"))
+      .slice(0, 16)
+      .join(" ");
+    if (compact) {
+      notes.push(`${relativePath}: ${compact.slice(0, 1200)}`);
+    }
+  }
+  return notes;
 }
 
 program.parseAsync(process.argv).catch((error: unknown) => {

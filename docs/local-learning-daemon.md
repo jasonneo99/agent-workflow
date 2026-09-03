@@ -85,8 +85,9 @@ the action changes behavior outside an ephemeral report.
 | Create dry-run proposals for routing, context budgets, prompt notes, eval cases, or workflow improvements | Automatic |
 | Write or update Agent Workflow-created proposal files under `.agent-workflow/learning/` | Automatic when project policy allows writes |
 | Write or update future Agent Workflow-created `learning_signals`, `learning_proposals`, and learning status database rows | Automatic when using local Agent Workflow storage |
-| Queue approval requests for proposed changes | Automatic |
-| Write approved project-local tuning notes under `.agent-workflow/tuning/` | Approval required |
+| Auto-approve and apply low/medium-risk project-local optimization overlays | Automatic by default |
+| Queue approval requests for high-risk proposed changes | Automatic |
+| Write high-risk project-local tuning, eval, workflow, source, provider, command, network, or export changes | Approval required |
 | Generate reusable bundle patch plans for `agents/`, `workflows/`, docs, or schemas | Approval required |
 | Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source | Approval required |
 | Run commands, tests, package scripts, or external tools | Approval required unless a project approval rule explicitly auto-executes it |
@@ -98,8 +99,9 @@ Recommended daemon modes:
 
 - `apply-approved`: default autonomous local mode. Refresh Agent
   Workflow-owned reports, proposal state, workflow-shape recommendation files,
-  and approved application-plan files without changing project source, reusable
-  workflows, reusable agents, providers, commands, networks, or exports.
+  application-plan files, and low/medium-risk project-local optimization
+  overlays without changing project source, reusable workflows, reusable agents,
+  providers, commands, networks, or exports.
 - `observe`: read evidence and write reports only.
 - `propose`: write local learning proposals and queue approvals.
 - `wide-open-local`: maximum local automation for trusted owners, still bounded
@@ -340,6 +342,8 @@ policy and approval state allow writes.
 - Add heartbeat, scheduling, stale detection, and bounded polling.
 - Default to `apply-approved` autonomous local mode while still supporting
   `observe` and `propose`.
+- Default autonomous apply threshold to low/medium risk; high-risk proposals
+  remain approval-gated.
 - Add danger gates and approval requirements for risky changes.
 - Add dashboard mode controls and privacy status.
 - Add workflow shape optimization that uses local run history, failures,
@@ -354,8 +358,8 @@ policy and approval state allow writes.
 - Provide a dashboard switch to turn autonomous recommendation-file refresh off
   for approval-first review.
 - Keep shared `workflows/*.yaml`, reusable agents, provider settings, project
-  source, tuning application, commands, network calls, and private-data export
-  approval-gated.
+  source, commands, network calls, high-risk tuning/eval application, and
+  private-data export approval-gated.
 
 ### Phase 5: Research And Shared Learning
 

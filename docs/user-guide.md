@@ -1432,9 +1432,11 @@ npm run agentflow -- learning-workflow-shape --project /path/to/project --workfl
 
 The daemon defaults to `apply-approved`, which autonomously refreshes
 Agent Workflow-owned learning reports, proposal state, workflow-shape
-recommendation files, and approved application-plan files. Use `--mode observe`
-for read-mostly behavior or `--mode propose` for proposal/inbox generation
-without application plans.
+recommendation files, application-plan files, and low/medium-risk
+project-local optimization overlays. Use `--mode observe` for read-mostly
+behavior or `--mode propose` for proposal/inbox generation without application
+plans. The dashboard setting **Auto-apply through** defaults to `medium`; set it
+to `low` for stricter review or `high` only if you want maximum local autonomy.
 
 In the dashboard, open:
 
@@ -1457,6 +1459,8 @@ http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&work
 - `approval-inbox.md`
 - `application-plan.json`
 - `application-plan.md`
+- `autonomous-application.json`
+- `autonomous-application.md`
 - `action-receipts.json`
 - `action-receipts.md`
 - `workflow-shape-proposals.json`
@@ -1473,8 +1477,8 @@ learning-owned shape recommendation files. Turn it off for approval-first
 review of those recommendations.
 
 When `learning-application-plan --write` or the daemon's `apply-approved` mode
-turns approved proposals into planned actions, Agent Workflow records
-append-only proposal-to-action receipts. If a newer plan makes a planned action
+turns approved or auto-approved proposals into local actions, Agent Workflow
+records append-only proposal-to-action receipts. If a newer plan makes a planned action
 obsolete, it appends a `superseded` receipt. If you decide a planned action
 should not be followed, reject it from the CLI, dashboard, or MCP; rejection
 also appends a receipt and does not execute or apply anything.
