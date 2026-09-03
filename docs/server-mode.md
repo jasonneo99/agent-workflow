@@ -336,6 +336,16 @@ host unless explicit target URLs are supplied.
 If source and target resolve to the same storage endpoints, the plan is blocked;
 that usually means the current machine is already using the shared state plane.
 
+After a reviewed copy, verify durable state without mutating either side:
+
+```bash
+npm run storage-verify -- --target-host 100.78.183.30
+```
+
+The verifier compares service reachability plus durable table counts and compact
+fingerprints for registry definitions, projects, indexed files, index state,
+runs, tasks, receipts, approvals, artifacts, and memory items.
+
 ## Readiness Checklist
 
 Before adding remote execution endpoints:

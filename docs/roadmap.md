@@ -307,19 +307,20 @@ foundation is complete.
   - Done: document reverse-proxy/TLS guidance without bundling public-network deployment defaults.
   - Done: document MCP stdio as the recommended IDE path for Codex, VS Code, Cursor, and local clients.
   - Done: add shared-storage host detection and a dry-run migration operator package for LAN/Tailscale state-plane services.
-  - Next: add target count verification and dashboard visibility for shared-storage migration plans, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add target count/fingerprint verification for shared-storage migration proof.
+  - Next: add dashboard visibility for shared-storage migration and verification reports, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
   - Done: derive shared storage endpoints from configured URLs or explicit host overrides.
   - Done: add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
   - Done: write reviewed operator packages with Markdown, JSON, and a guarded shell script that requires explicit execution opt-in.
-  - Add target count verification for projects, workflow runs, tasks, approvals, receipts, artifacts, memory, and indexed files.
+  - Done: add target count and compact fingerprint verification for projects, workflow runs, tasks, approvals, receipts, artifacts, memory, indexed files, index state, and registry definitions.
   - Support merge mode by mapping projects through `root_uri`, preserving existing destination runs, and rewriting dependent project ids safely.
   - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
   - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
   - Mirror object-storage artifacts from local MinIO to destination MinIO when artifacts reference object-backed payloads.
-  - Verify migrated counts, sample historical runs, artifacts, approvals, receipts, memory items, and project index state before recommending clients switch to shared storage.
+  - Verify object bucket contents, sample historical runs, artifacts, approvals, receipts, memory items, and project index state before recommending clients switch to shared storage.
   - Keep destructive or overwrite behavior unavailable unless a future explicit capability flag and backup confirmation are added.
 
 - [ ] Team roles and separation of duties.

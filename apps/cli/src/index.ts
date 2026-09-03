@@ -41,6 +41,7 @@ import {
   storageMigrationScript,
   type StorageMigrationPlan
 } from "../../../packages/storage/src/migration-plan.js";
+import { buildStorageVerificationReport, formatStorageVerificationReport } from "../../../packages/storage/src/verification.js";
 import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
@@ -104,7 +105,7 @@ const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime"
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -1117,6 +1118,51 @@ program
       console.log(`- Script: ${written.scriptPath}`);
     }
     if (plan.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("storage-verify")
+  .description("Compare durable Agent Workflow state between a source and target storage plane without mutating either")
+  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 100.78.183.30")
+  .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
+  .option("--source-redis-url <url>", "source Redis URL; defaults to REDIS_URL")
+  .option("--source-object-storage-endpoint <url>", "source MinIO/S3 endpoint; defaults to OBJECT_STORAGE_ENDPOINT")
+  .option("--source-object-storage-bucket <bucket>", "source object bucket; defaults to OBJECT_STORAGE_BUCKET")
+  .option("--target-database-url <url>", "target Postgres URL")
+  .option("--target-redis-url <url>", "target Redis URL")
+  .option("--target-object-storage-endpoint <url>", "target MinIO/S3 endpoint")
+  .option("--target-object-storage-bucket <bucket>", "target object bucket")
+  .option("--json", "print machine-readable verification report")
+  .action(async (options: {
+    targetHost?: string;
+    sourceDatabaseUrl?: string;
+    sourceRedisUrl?: string;
+    sourceObjectStorageEndpoint?: string;
+    sourceObjectStorageBucket?: string;
+    targetDatabaseUrl?: string;
+    targetRedisUrl?: string;
+    targetObjectStorageEndpoint?: string;
+    targetObjectStorageBucket?: string;
+    json?: boolean;
+  }) => {
+    const report = await buildStorageVerificationReport({
+      targetHost: options.targetHost,
+      sourceDatabaseUrl: options.sourceDatabaseUrl,
+      sourceRedisUrl: options.sourceRedisUrl,
+      sourceObjectStorageEndpoint: options.sourceObjectStorageEndpoint,
+      sourceObjectStorageBucket: options.sourceObjectStorageBucket,
+      targetDatabaseUrl: options.targetDatabaseUrl,
+      targetRedisUrl: options.targetRedisUrl,
+      targetObjectStorageEndpoint: options.targetObjectStorageEndpoint,
+      targetObjectStorageBucket: options.targetObjectStorageBucket
+    });
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    console.log(formatStorageVerificationReport(report));
+    if (report.status === "blocked") process.exitCode = 2;
+    if (report.status === "mismatch") process.exitCode = 1;
   });
 
 program

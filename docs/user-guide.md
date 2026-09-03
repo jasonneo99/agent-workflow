@@ -205,6 +205,20 @@ verification, rollback, and destination-preservation checks are implemented.
 If source and target resolve to the same storage endpoints, the plan is blocked;
 that usually means the current machine is already using the shared state plane.
 
+After a migration copy, compare durable source and target state:
+
+```bash
+npm run storage-verify -- --target-host 100.78.183.30
+npm run storage-verify -- --target-host 100.78.183.30 --json
+```
+
+`storage-verify` checks service reachability and compares durable table counts
+and fingerprints for agents, workflows, projects, project files, index state,
+workflow runs, workflow tasks, action receipts, approvals, artifacts, and memory
+items. It is read-only. If source and target are the same shared storage plane,
+the report returns `attention` instead of pretending it verified a migration
+copy.
+
 ## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:

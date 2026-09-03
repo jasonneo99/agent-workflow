@@ -65,9 +65,9 @@ export async function buildStorageMigrationPlan(input: StorageMigrationPlanInput
     objectStorageBucket: input.sourceObjectStorageBucket ?? sourceEnv.OBJECT_STORAGE_BUCKET
   });
   const target = storageEndpointSummary({
-    databaseUrl: input.targetDatabaseUrl ?? targetEnv.DATABASE_URL,
-    redisUrl: input.targetRedisUrl ?? targetEnv.REDIS_URL,
-    objectStorageEndpoint: input.targetObjectStorageEndpoint ?? targetEnv.OBJECT_STORAGE_ENDPOINT,
+    databaseUrl: input.targetDatabaseUrl ?? targetEnv.DATABASE_URL ?? endpointUrlWhenHostMatches(source.databaseUrl, targetHost),
+    redisUrl: input.targetRedisUrl ?? targetEnv.REDIS_URL ?? endpointUrlWhenHostMatches(source.redisUrl, targetHost),
+    objectStorageEndpoint: input.targetObjectStorageEndpoint ?? targetEnv.OBJECT_STORAGE_ENDPOINT ?? endpointUrlWhenHostMatches(source.objectStorageEndpoint, targetHost),
     objectStorageBucket: input.targetObjectStorageBucket ?? targetEnv.OBJECT_STORAGE_BUCKET
   }, targetHost);
   const sourceChecks = await checkServices(defaultServiceEndpoints({
@@ -266,6 +266,15 @@ function sameEndpointWarnings(source: StorageMigrationEndpointSummary, target: S
     warnings.push("source and target object storage point to the same endpoint and bucket");
   }
   return warnings;
+}
+
+function endpointUrlWhenHostMatches(value: string, host: string | undefined): string | undefined {
+  if (!host) return undefined;
+  try {
+    return new URL(value).hostname === host ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function canonicalUrl(value: string): string {
