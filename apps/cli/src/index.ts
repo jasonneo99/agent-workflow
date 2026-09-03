@@ -1830,6 +1830,12 @@ program
       console.log(`  Project: ${approval.projectRootUri}`);
       console.log(`  Rationale: ${approval.rationale}`);
       console.log(`  Role preview: ${rolePreviewForApproval(approval)}`);
+      if (approval.status === "pending") {
+        console.log(`  Approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`);
+      }
+      if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType)) {
+        console.log(`  Execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator`);
+      }
       if (approval.decidedBy) {
         console.log(`  Decided: ${approval.decidedBy}${approval.decidedRole ? ` (${approval.decidedRole})` : ""} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
       }
@@ -3454,6 +3460,11 @@ program
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
       console.log(`Concurrency: ${concurrency}`);
+      const approvalNotice = await formatPendingApprovalInboxNotice(projectRootUri);
+      if (approvalNotice) {
+        console.log("");
+        console.log(approvalNotice);
+      }
       return;
     }
 
@@ -3517,6 +3528,10 @@ program
         await writeHeartbeat(stop ? "stopping" : "running", result);
         if (result.claimed > 0 || result.failed > 0) {
           console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
+          const approvalNotice = await formatPendingApprovalInboxNotice(projectRootUri);
+          if (approvalNotice) {
+            console.log(approvalNotice);
+          }
         }
       }
     });
@@ -3602,6 +3617,14 @@ interface RunSummary {
   }>;
   keyFindings: string[];
   failures: string[];
+  pendingApprovals: Array<{
+    id: string;
+    actionType: string;
+    target: string;
+    stageId: string;
+    agentId: string;
+    executable: boolean;
+  }>;
   artifactUris: string[];
   recommendedNextAction: string;
 }
@@ -4424,6 +4447,14 @@ async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: R
       })),
       keyFindings: findings.length ? findings.slice(0, 8) : details.receipts.slice(-5).map((receipt) => `${receipt.agentId}: ${receipt.summary}`),
       failures: [...failures, ...commandFailures].slice(0, 8),
+      pendingApprovals: (await listActionApprovals({ runId, status: "pending", limit: 25 })).map((approval) => ({
+        id: approval.id,
+        actionType: approval.actionType,
+        target: approval.target,
+        stageId: approval.stageId,
+        agentId: approval.agentId,
+        executable: isExecutableApprovalAction(approval.actionType)
+      })),
       artifactUris: artifacts.map((artifact) => `${artifact.kind}: ${artifact.uri}`).slice(0, 12),
       recommendedNextAction: recommendNextAction(details.run.status, details.run.workflowId, failedTasks, [...failures, ...commandFailures])
     }
@@ -8757,6 +8788,18 @@ function formatRunSummary(summary: RunSummary): string {
     "Failures:",
     ...(summary.failures.length ? summary.failures.map((failure) => `- ${failure}`) : ["- None"]),
     "",
+    "Approvals:",
+    ...(summary.pendingApprovals.length
+      ? summary.pendingApprovals.slice(0, 8).map((approval) => [
+        `- Approval required: ${approval.actionType} ${approval.target}`,
+        `  id: ${approval.id}`,
+        `  requested by: ${approval.stageId} (${approval.agentId})`,
+        `  CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+        approval.executable ? `  Execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
+        `  MCP/Codex: call agentflow_approvals with approve="${approval.id}"${approval.executable ? `, then execute="${approval.id}"` : ""}`
+      ].filter(Boolean).join("\n"))
+      : ["- None"]),
+    "",
     "Recommended next action:",
     summary.recommendedNextAction,
     "",
@@ -10218,6 +10261,16 @@ function renderApprovalsHtml(
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
         ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
+      </div>
+    </section>
+    <section class="panel approval-explainer">
+      <h2>How Approvals Work</h2>
+      <p>Approvals are permission for side effects. A queued approval does not mean the whole workflow is stopped; it means that specific command, file write, deployment decision, artifact lifecycle action, or autonomy change is waiting for a human decision.</p>
+      <div class="grid">
+        <div><strong>Approve</strong><span>Records a one-time decision for this request.</span></div>
+        <div><strong>Execute</strong><span>Runs an approved command or file write when execution is supported.</span></div>
+        <div><strong>Always</strong><span>Adds a project-local rule so future matching safe requests can proceed automatically.</span></div>
+        <div><strong>Reject</strong><span>Leaves the side effect skipped and records why it should not run.</span></div>
       </div>
     </section>
     <section class="panel">
@@ -13783,6 +13836,7 @@ async function queueDashboardWorkflowRun(input: {
       `Status: ${watchResult.status}`,
       `Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed`,
       `Receipts: ${watchResult.receipts}`,
+      await formatPendingApprovalNotice(queued.run.runId, queued.projectDir),
       ticks.length ? ticks.join("\n") : "Worker did not claim tasks during the watch window."
     );
   } else {
@@ -13845,9 +13899,10 @@ async function processDashboardRun(input: {
         `Status: ${watchResult.status}`,
         `Tasks: ${watchResult.completedTasks}/${watchResult.totalTasks} completed, ${watchResult.failedTasks} failed`,
         `Receipts: ${watchResult.receipts}`,
+        await formatPendingApprovalNotice(runId, details.run.projectRootUri),
         ticks.length ? ticks.join("\n") : "Worker did not claim tasks during the watch window.",
         `Open: /run?id=${encodeURIComponent(runId)}`
-      ].join("\n")
+      ].filter(Boolean).join("\n")
     };
   }
 
@@ -13865,6 +13920,7 @@ async function processDashboardRun(input: {
       updated.run ? `Status: ${updated.run.status}` : "",
       `Tasks: ${completedTasks}/${updated.tasks.length} completed, ${failedTasks} failed`,
       `Receipts: ${updated.receipts.length}`,
+      await formatPendingApprovalNotice(runId, updated.run?.projectRootUri ?? details.run.projectRootUri),
       `Open: /run?id=${encodeURIComponent(runId)}`
     ].filter(Boolean).join("\n")
   };
@@ -15761,6 +15817,64 @@ function rolePreviewForApproval(approval: Awaited<ReturnType<typeof listActionAp
 function approvalOneLineSummary(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
   const rationale = approval.rationale ? ` - ${approval.rationale}` : "";
   return truncateText(`${approval.actionType} ${approval.target} for ${approval.stageId} (${approval.agentId})${rationale}`, 180);
+}
+
+async function formatPendingApprovalNotice(runId: string, projectRootUri?: string): Promise<string> {
+  const approvals = await listActionApprovals({
+    runId,
+    projectRootUri,
+    status: "pending",
+    limit: 10
+  });
+  if (!approvals.length) {
+    return "";
+  }
+
+  const lines = [
+    "Approval required:",
+    "The workflow can keep processing other stages, but these side effects are waiting for approval in your current client."
+  ];
+  for (const approval of approvals) {
+    const executable = isExecutableApprovalAction(approval.actionType);
+    lines.push(
+      `- ${approval.actionType} ${approval.target}`,
+      `  id: ${approval.id}`,
+      `  requested by: ${approval.stageId} (${approval.agentId})`,
+      `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+      executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
+      `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
+      `  approve in MCP/Codex: call agentflow_approvals with approve="${approval.id}"${executable ? `, then execute="${approval.id}"` : ""}`
+    );
+  }
+  return lines.filter(Boolean).join("\n");
+}
+
+async function formatPendingApprovalInboxNotice(projectRootUri?: string): Promise<string> {
+  const approvals = await listActionApprovals({
+    projectRootUri,
+    status: "pending",
+    limit: 5
+  });
+  if (!approvals.length) {
+    return "";
+  }
+
+  const lines = [
+    `Approval required: ${approvals.length} pending side effect${approvals.length === 1 ? "" : "s"} need a decision.`,
+    "The workflow may continue around them, but these requested actions will stay skipped until approved."
+  ];
+  for (const approval of approvals) {
+    const executable = isExecutableApprovalAction(approval.actionType);
+    lines.push(
+      `- ${approval.actionType} ${approval.target}`,
+      `  run: ${approval.runId}`,
+      `  id: ${approval.id}`,
+      `  approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
+      executable ? `  execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
+      `  MCP/Codex: call agentflow_approvals with approve="${approval.id}"${executable ? `, then execute="${approval.id}"` : ""}`
+    );
+  }
+  return lines.filter(Boolean).join("\n");
 }
 
 function approvalRuleExactTarget(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {

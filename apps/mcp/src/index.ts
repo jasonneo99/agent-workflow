@@ -458,7 +458,7 @@ server.registerTool(
       task: z.string().describe("Task description."),
       queueOnly: z.boolean().optional().describe("Only queue the run and return immediately. Defaults to false so Codex-facing calls do not get stuck in queued state."),
       includeBrief: z.boolean().optional().describe("Print the compiled brief in the result."),
-      workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick when queueOnly is false."),
+      workerLimit: z.number().int().positive().max(50).optional().describe("Maximum queued stage tasks to process per worker tick when queueOnly is false. If a stage requests an approved side effect, the tool output includes approval ids and agentflow_approvals follow-up instructions."),
       timeoutMs: z.number().int().positive().optional().describe("Maximum time to wait for completion when queueOnly is false."),
       out: z.string().optional().describe("Export directory when queueOnly is false."),
       skipIndex: z.boolean().optional().describe("Skip project indexing before queueing."),
@@ -502,7 +502,7 @@ server.registerTool(
   "agentflow_run_and_watch",
   {
     title: "AgentFlow run and watch",
-    description: "Index a project, queue a workflow, process worker tasks until complete or failed, export reports, and return the summary.",
+    description: "Index a project, queue a workflow, process worker tasks until complete or failed, export reports, and return the summary. If approval is required, the result tells the caller which approval ids to approve or execute in their current context.",
     inputSchema: {
       workflow: z.string().describe("Workflow id or alias, for example build-feature, review-pr, or review-change."),
       project: z.string().describe("Absolute or relative project directory."),

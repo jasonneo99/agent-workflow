@@ -219,6 +219,11 @@ npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```
 
+If a workflow, worker, dashboard action, or MCP call returns `Approval required`,
+show that approval id to the user in their current context. The workflow may keep
+running around it, but that specific side effect stays skipped until approved,
+rejected, or executed through `agentflow_approvals` or the dashboard.
+
 The dashboard includes a **Graph** view for inspecting workflow stages, primary
 agents, subagents, context budgets, approval points, and policy fit before
 queueing work.

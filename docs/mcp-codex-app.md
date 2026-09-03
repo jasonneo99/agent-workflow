@@ -69,6 +69,12 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_provider_use`: switch or update selected model provider in `.env`.
 - `agentflow_provider_smoke`: run a minimal provider contract smoke workflow.
 
+When a tool response says `Approval required`, the requested side effect is
+waiting for a human decision in the current client. Surface the one-line summary
+and approval id to the user, then call `agentflow_approvals` with `approve`,
+`reject`, or `execute` after the user decides. The workflow may still complete
+other stages while that side effect stays skipped.
+
 ## Examples
 
 After Docker services are running, ask Codex:

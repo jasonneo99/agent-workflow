@@ -921,6 +921,15 @@ npm run agentflow -- roles --project /path/to/project --role approver --status a
 npm run agentflow -- roles --project /path/to/project --json
 ```
 
+When a workflow, worker, dashboard action, or MCP call creates a required
+approval, Agent Workflow reports it back in that same context with the approval
+id and next commands. Pending approvals are side-effect gates: the workflow may
+continue around them, but the requested command, file write, deployment
+decision, artifact lifecycle action, or autonomy change remains skipped until
+you approve it. MCP clients such as Codex, VS Code, and Cursor should present
+the returned approval id to the user and call `agentflow_approvals` to approve,
+reject, or execute it.
+
 Deployment and autonomy approvals use the same inbox. They record a human
 decision for a risky operation, but they do not execute a local command by
 themselves. Run the actual deployment or autonomy-changing command separately

@@ -174,6 +174,7 @@ trust gaps.
   - Done: execute approved local commands and file writes with current project policy rechecked and normal action receipts preserved.
   - Done: add narrowly scoped reusable approval rules for low-risk allowed actions.
   - Done: extend the same inbox shape to deployment and autonomy approvals.
+  - Done: return approval-required notices with approval ids and CLI/MCP/dashboard next steps in workflow, worker, dashboard, and run summary contexts.
 
 - [x] Evaluation gates and regression budgets.
   - Done: define project-local quality, latency, fallback, and cost thresholds.
