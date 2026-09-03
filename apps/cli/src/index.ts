@@ -2078,6 +2078,21 @@ program
   });
 
 program
+  .command("restore-drill")
+  .description("Verify archived/restored artifact lineage without mutating storage")
+  .option("-p, --project <dir>", "filter by project directory")
+  .option("-l, --limit <number>", "number of restored artifact snapshots to inspect", "100")
+  .option("--json", "print machine-readable restore verification report")
+  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+    const projectRootUri = options.project ? path.resolve(process.cwd(), options.project) : undefined;
+    const report = await loadRestoreDrillReport({
+      projectRootUri,
+      limit: parsePositiveInteger(options.limit, 100)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatRestoreDrillReport(report));
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3463,6 +3478,33 @@ type BackupRestoreReport = {
   notes: string[];
 };
 
+type RestoreDrillReport = {
+  kind: "agentflow_restore_drill_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  status: "pass" | "attention";
+  services: Awaited<ReturnType<typeof checkServices>>;
+  restoredSnapshotsInspected: number;
+  passed: number;
+  warnings: number;
+  checks: RestoreDrillCheck[];
+  recommendedCommands: string[];
+  notes: string[];
+};
+
+type RestoreDrillCheck = {
+  restoredArtifactId: string;
+  restoredArtifactUri: string;
+  runId: string;
+  sourceArchiveUri: string | null;
+  originalUri: string | null;
+  status: "pass" | "warn";
+  contentHashMatches: boolean;
+  originalStillPresent: boolean | null;
+  detail: string;
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -4258,6 +4300,124 @@ function formatBackupKindCounts(counts: BackupRestoreReport["inventory"]["byKind
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([kind, value]) => `${kind}=${value.count}/${formatBytes(value.bytes)}`)
     .join(", ");
+}
+
+async function loadRestoreDrillReport(input: {
+  projectRootUri?: string;
+  limit: number;
+}): Promise<RestoreDrillReport> {
+  const projectRootUri = input.projectRootUri?.trim() || undefined;
+  const services = await checkServices();
+  const servicesReachable = services.every((service) => service.reachable);
+  if (!servicesReachable) {
+    return {
+      kind: "agentflow_restore_drill_report",
+      generatedAt: new Date().toISOString(),
+      projectRootUri: projectRootUri ?? null,
+      limit: input.limit,
+      status: "attention",
+      services,
+      restoredSnapshotsInspected: 0,
+      passed: 0,
+      warnings: services.filter((service) => !service.reachable).length,
+      checks: [],
+      recommendedCommands: restoreDrillCommands(projectRootUri),
+      notes: ["Enterprise services are not all reachable. Start local services before running restore verification."]
+    };
+  }
+
+  const restoredRows = await listArtifactLifecycle({ projectRootUri, kind: "restored_artifact", limit: input.limit });
+  const checks: RestoreDrillCheck[] = [];
+  for (const row of restoredRows) {
+    const restoredArtifact = await getArtifactByUri(row.uri);
+    const restoreSource = restoredArtifact ? objectFromRecord(restoredArtifact.content, "restoreSource") : {};
+    const restoreMetadata = restoredArtifact ? objectFromRecord(restoredArtifact.content, "restoreMetadata") : {};
+    const sourceArchiveUri = stringFromRecord(restoreSource, "archivedArtifactUri");
+    const originalUri = stringFromRecord(restoreMetadata, "originalUri") || stringFromRecord(restoredArtifact?.content ?? {}, "restoredTargetUri");
+    const archivedArtifact = sourceArchiveUri ? await getArtifactByUri(sourceArchiveUri) : null;
+    const originalArtifact = originalUri ? await getArtifactByUri(originalUri) : null;
+    const restoredContent = restoredArtifact?.content.restoredContent;
+    const archivedContent = archivedArtifact?.content.archivedContent;
+    const contentHashMatches = restoredContent !== undefined && archivedContent !== undefined && stableHash(restoredContent) === stableHash(archivedContent);
+    const missing = [
+      restoredArtifact ? "" : "restored artifact row missing",
+      sourceArchiveUri ? "" : "source archive URI missing",
+      archivedArtifact ? "" : "source archive artifact missing",
+      originalUri ? "" : "original URI missing",
+      contentHashMatches ? "" : "restored content hash does not match archived content"
+    ].filter(Boolean);
+    checks.push({
+      restoredArtifactId: row.id,
+      restoredArtifactUri: row.uri,
+      runId: row.runId,
+      sourceArchiveUri: sourceArchiveUri ?? null,
+      originalUri: originalUri ?? null,
+      status: missing.length ? "warn" : "pass",
+      contentHashMatches,
+      originalStillPresent: originalUri ? Boolean(originalArtifact) : null,
+      detail: missing.length ? missing.join("; ") : "Restore lineage and copied content hash verified."
+    });
+  }
+
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const notes = [
+    restoredRows.length ? "" : "No restored_artifact snapshots were found. Run archive and restore approvals first, then rerun restore-drill.",
+    warnings ? "One or more restored snapshots need review before treating restore evidence as verified." : "",
+    restoredRows.length && !warnings ? "Restore drill passed for the inspected restored artifact snapshots." : ""
+  ].filter(Boolean);
+  return {
+    kind: "agentflow_restore_drill_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRootUri ?? null,
+    limit: input.limit,
+    status: restoredRows.length > 0 && warnings === 0 ? "pass" : "attention",
+    services,
+    restoredSnapshotsInspected: restoredRows.length,
+    passed: checks.filter((check) => check.status === "pass").length,
+    warnings,
+    checks,
+    recommendedCommands: restoreDrillCommands(projectRootUri),
+    notes
+  };
+}
+
+function formatRestoreDrillReport(report: RestoreDrillReport): string {
+  return [
+    `Restore drill (${report.generatedAt})`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Status: ${report.status}`,
+    `Restored snapshots inspected: ${report.restoredSnapshotsInspected}`,
+    `Passed: ${report.passed}`,
+    `Warnings: ${report.warnings}`,
+    "",
+    "Services:",
+    ...report.services.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`),
+    "",
+    "Lineage checks:",
+    ...(report.checks.length ? report.checks.map((check) => [
+      `- ${check.status.toUpperCase()} ${check.restoredArtifactId}`,
+      `  restored: ${check.restoredArtifactUri}`,
+      `  archive: ${check.sourceArchiveUri ?? "missing"}`,
+      `  original: ${check.originalUri ?? "missing"}${check.originalStillPresent === null ? "" : ` (${check.originalStillPresent ? "present" : "not present"})`}`,
+      `  content hash: ${check.contentHashMatches ? "match" : "mismatch"}`,
+      `  detail: ${check.detail}`
+    ].join("\n")) : ["- No restored artifact snapshots found."]),
+    "",
+    "Recommended commands:",
+    ...report.recommendedCommands.map((command) => `- ${command}`),
+    "",
+    "Notes:",
+    ...(report.notes.length ? report.notes.map((note) => `- ${note}`) : ["- No restore drill notes."])
+  ].join("\n");
+}
+
+function restoreDrillCommands(projectRootUri?: string): string[] {
+  const projectArg = projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : "";
+  return [
+    `agentflow restore-drill${projectArg} --json`,
+    `agentflow backup-report${projectArg}`,
+    `agentflow artifact-lifecycle${projectArg} --restore-plan`
+  ];
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {

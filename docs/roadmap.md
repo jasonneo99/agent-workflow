@@ -280,11 +280,11 @@ foundation is complete.
   - [x] Run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
   - Next: continue artifact lifecycle governance with real restore execution behind disabled-by-default capability flags and approval rechecks.
 
-- [ ] Backup, restore, and disaster-recovery validation.
+- [x] Backup, restore, and disaster-recovery validation.
   - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
-  - [ ] Provide documented recovery procedures and automated restore verification.
-  - Next: provide documented recovery procedures and automated restore verification.
+  - [x] Provide documented recovery procedures and automated restore verification.
+  - Next: design the governed server-mode contract with secure local-first defaults.
 
 ## Contribution Boundary
 

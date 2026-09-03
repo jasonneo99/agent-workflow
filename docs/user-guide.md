@@ -1371,6 +1371,9 @@ agentflow backup-report
 agentflow backup-report --project /path/to/project
 agentflow backup-report --project /path/to/project --json
 npm run backup-report -- --project templates/project
+agentflow restore-drill --project /path/to/project
+agentflow restore-drill --project /path/to/project --json
+npm run restore-drill -- --project templates/project
 ```
 
 The report does not create backup files or mutate storage. It checks enterprise
@@ -1383,3 +1386,8 @@ project files or deleting data.
 
 Open `/backup-report` in the dashboard for the same read-only report. The JSON
 endpoint is `/api/backup-report`.
+
+Use `restore-drill` after archive and restore snapshots exist. It verifies
+`restored_artifact -> archived_artifact -> original URI` lineage and compares
+the copied restored content hash against the archived content hash. See
+[Backup And Recovery](recovery.md) for the full recovery checklist.
