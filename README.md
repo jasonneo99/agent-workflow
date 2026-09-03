@@ -303,6 +303,20 @@ npm run bootstrap-storage
 npm run doctor
 ```
 
+To preview a local-to-shared storage move, use read-only migration planning:
+
+```bash
+npm run storage-migrate -- --target-host 100.78.183.30 --mode merge-preview --write-plan
+npm run agentflow -- storage-merge-manifest \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --write
+```
+
+The merge manifest maps projects by `root_uri` and classifies source-only,
+existing, conflicting, and project-id-rewrite rows before any shared-storage
+merge is allowed.
+
 For file-based output only (no Docker required), use `--profile simple` during project init.
 
 ## Adding Your Own Agents

@@ -347,6 +347,23 @@ Merge preview is read-only. It compares durable table counts, sampled project
 roots, and source/target differences, then writes a non-executing operator
 package that describes the future merge-safe import path.
 
+Before building or running any write-capable merge, generate a row-level merge
+manifest:
+
+```bash
+npm run agentflow -- storage-merge-manifest \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --write
+```
+
+The manifest is still read-only. It maps projects by `root_uri`, preserves
+existing target project ids, classifies source-only rows, existing rows,
+conflicts, and dependent rows that would need project-id rewriting across
+projects, indexed files, index state, runs, tasks, receipts, approvals,
+artifacts, and memory. Treat a clean manifest as the prerequisite evidence for
+future merge execution.
+
 After a reviewed copy, verify durable state without mutating either side:
 
 ```bash

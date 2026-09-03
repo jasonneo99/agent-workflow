@@ -215,6 +215,23 @@ npm run storage-migrate -- --mode merge-preview --write-plan
 The merge-preview package includes Markdown and JSON preflight evidence plus a
 non-executing shell script that explains why a merge-safe importer is required.
 
+For an existing shared target, the next proof step is a row-level merge
+manifest:
+
+```bash
+npm run agentflow -- storage-merge-manifest \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --write
+```
+
+`storage-merge-manifest` is read-only. It maps projects by `root_uri`, keeps
+existing shared project ids as the destination identity, and counts source-only,
+existing, conflicting, and project-id-rewrite rows for projects, indexed files,
+index state, workflow runs, workflow tasks, action receipts, approvals,
+artifacts, and memory items. Use this before any future write-capable merge
+importer.
+
 After a migration copy, compare durable source and target state:
 
 ```bash

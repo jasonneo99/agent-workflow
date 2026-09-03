@@ -42,6 +42,11 @@ import {
   type StorageMigrationPlan
 } from "../../../packages/storage/src/migration-plan.js";
 import {
+  buildStorageMergeManifest,
+  formatStorageMergeManifest,
+  type StorageMergeManifest
+} from "../../../packages/storage/src/merge-manifest.js";
+import {
   buildStorageVerificationReport,
   formatStorageVerificationReport,
   type StorageVerificationReport
@@ -1122,6 +1127,43 @@ program
       console.log(`- Script: ${written.scriptPath}`);
     }
     if (plan.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("storage-merge-manifest")
+  .description("Build a read-only row-level merge manifest between two Agent Workflow Postgres databases")
+  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 100.78.183.30")
+  .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
+  .option("--target-database-url <url>", "target Postgres URL")
+  .option("--out <dir>", "manifest output directory", ".agent-workflow/migrations")
+  .option("--write", "write JSON and Markdown manifest files")
+  .option("--json", "print machine-readable merge manifest")
+  .action(async (options: {
+    targetHost?: string;
+    sourceDatabaseUrl?: string;
+    targetDatabaseUrl?: string;
+    out: string;
+    write?: boolean;
+    json?: boolean;
+  }) => {
+    const manifest = await buildStorageMergeManifest({
+      targetHost: options.targetHost,
+      sourceDatabaseUrl: options.sourceDatabaseUrl,
+      targetDatabaseUrl: options.targetDatabaseUrl
+    });
+    const written = options.write ? await writeStorageMergeManifestFiles(manifest, options.out) : null;
+    if (options.json) {
+      console.log(JSON.stringify({ ...manifest, written }, null, 2));
+      return;
+    }
+    console.log(formatStorageMergeManifest(manifest));
+    if (written) {
+      console.log("");
+      console.log("Written files:");
+      console.log(`- Markdown: ${written.markdownPath}`);
+      console.log(`- JSON: ${written.jsonPath}`);
+    }
+    if (manifest.status === "blocked") process.exitCode = 2;
   });
 
 program
@@ -6141,6 +6183,18 @@ async function writeStorageMigrationPlanFiles(plan: StorageMigrationPlan, outDir
   await fs.writeFile(scriptPath, storageMigrationScript(plan.mode), { encoding: "utf8", mode: 0o755 });
   await fs.chmod(scriptPath, 0o755);
   return { markdownPath, jsonPath, scriptPath };
+}
+
+async function writeStorageMergeManifestFiles(manifest: StorageMergeManifest, outDir: string): Promise<{ markdownPath: string; jsonPath: string }> {
+  const resolvedOut = path.resolve(process.cwd(), outDir);
+  await fs.mkdir(resolvedOut, { recursive: true });
+  const stamp = manifest.generatedAt.replace(/[:.]/g, "-");
+  const base = `storage-merge-manifest-${stamp}`;
+  const markdownPath = path.join(resolvedOut, `${base}.md`);
+  const jsonPath = path.join(resolvedOut, `${base}.json`);
+  await fs.writeFile(markdownPath, `${formatStorageMergeManifest(manifest)}\n`, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+  return { markdownPath, jsonPath };
 }
 
 async function loadStorageMigrationPlanListing(inputDir?: string): Promise<StorageMigrationPlanListing> {

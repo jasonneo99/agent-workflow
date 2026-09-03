@@ -92,6 +92,7 @@
     "reset-storage": "tsx apps/cli/src/index.ts reset-storage --yes",
     "restore-drill": "tsx apps/cli/src/index.ts restore-drill",
     "storage-migrate": "tsx apps/cli/src/index.ts storage-migrate",
+    "storage-merge-manifest": "tsx apps/cli/src/index.ts storage-merge-manifest",
     "storage-verify": "tsx apps/cli/src/index.ts storage-verify",
     "status": "tsx apps/cli/src/index.ts status",
     "test": "node --import tsx --test 'packages/**/*.test.ts'",
