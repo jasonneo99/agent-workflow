@@ -330,6 +330,7 @@ Afterward, inspect primary shared-storage proof and fallback posture:
 ```bash
 npm run storage-merge-evidence
 npm run offline-fallback
+npm run object-artifact-proof
 ```
 
 If shared storage is unavailable, record local fallback work before switching:

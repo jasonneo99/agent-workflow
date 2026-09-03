@@ -260,6 +260,7 @@ Inspect post-merge evidence:
 
 ```bash
 npm run storage-merge-evidence
+npm run object-artifact-proof
 ```
 
 Inspect fallback posture:

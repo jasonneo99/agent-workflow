@@ -86,6 +86,7 @@
     "validate-examples": "node scripts/validate-scrubbed-examples.mjs",
     "list": "tsx apps/cli/src/index.ts list",
     "mcp": "tsx apps/mcp/src/index.ts",
+    "object-artifact-proof": "tsx apps/cli/src/index.ts object-artifact-proof",
     "offline-fallback": "tsx apps/cli/src/index.ts offline-fallback",
     "offline-sync": "tsx apps/cli/src/index.ts offline-sync",
     "provider-check": "tsx apps/cli/src/index.ts provider-check",

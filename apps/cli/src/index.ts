@@ -120,7 +120,7 @@ const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime"
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "offline-fallback", "offline-sync", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -1282,6 +1282,32 @@ program
     });
     console.log(options.json ? JSON.stringify(result, null, 2) : formatOfflineFallbackSyncResult(result));
     if (result.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("object-artifact-proof")
+  .description("Inspect object-backed artifact references and optionally verify them in MinIO/S3 with mc")
+  .option("-p, --project <dir>", "only inspect artifacts for one project root")
+  .option("-l, --limit <number>", "number of recent artifacts to inspect", "500")
+  .option("--endpoint <url>", "object storage endpoint; defaults to OBJECT_STORAGE_ENDPOINT")
+  .option("--bucket <bucket>", "object storage bucket; defaults to OBJECT_STORAGE_BUCKET")
+  .option("--access-key <key>", "object storage access key; defaults to OBJECT_STORAGE_ACCESS_KEY")
+  .option("--secret-key <key>", "object storage secret key; defaults to OBJECT_STORAGE_SECRET_KEY")
+  .option("--verify", "verify referenced object keys with MinIO Client (mc)")
+  .option("--json", "print machine-readable object artifact proof")
+  .action(async (options: { project?: string; limit: string; endpoint?: string; bucket?: string; accessKey?: string; secretKey?: string; verify?: boolean; json?: boolean }) => {
+    const report = await buildObjectArtifactProofReport({
+      projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      limit: parsePositiveInteger(options.limit, 500),
+      endpoint: options.endpoint,
+      bucket: options.bucket,
+      accessKey: options.accessKey,
+      secretKey: options.secretKey,
+      verify: Boolean(options.verify)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatObjectArtifactProofReport(report));
+    if (report.status === "missing") process.exitCode = 1;
+    if (report.status === "blocked") process.exitCode = 2;
   });
 
 program
@@ -5137,6 +5163,35 @@ type OfflineSyncSchedulerStatus = {
   message: string;
 };
 
+type ObjectArtifactProofReport = {
+  kind: "agentflow_object_artifact_proof_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  status: "metadata-only" | "verified" | "missing" | "blocked";
+  endpoint: string;
+  bucket: string;
+  inspectedArtifacts: number;
+  referencedObjects: number;
+  verifiedObjects: number;
+  missingObjects: number;
+  verification: "disabled" | "mc" | "unavailable";
+  objects: ObjectArtifactReferenceProof[];
+  warnings: string[];
+  recommendations: string[];
+};
+
+type ObjectArtifactReferenceProof = {
+  key: string;
+  artifactId: string;
+  artifactUri: string;
+  artifactKind: string;
+  runId: string;
+  source: string;
+  status: "not-checked" | "present" | "missing";
+  message: string;
+};
+
 type ServerReadinessStatus = "local-only" | "ready" | "attention" | "blocked";
 type ServerReadinessCheckStatus = "pass" | "warn" | "fail";
 
@@ -7143,6 +7198,192 @@ function formatOfflineSyncSchedulerStatus(status: OfflineSyncSchedulerStatus): s
     `Next run after: ${status.nextRunAfter ?? "n/a"}`,
     `Last result: ${status.lastResultPath ?? "none"}`,
     `Message: ${status.message}`
+  ].join("\n");
+}
+
+async function buildObjectArtifactProofReport(input: {
+  projectRootUri?: string;
+  limit: number;
+  endpoint?: string;
+  bucket?: string;
+  accessKey?: string;
+  secretKey?: string;
+  verify: boolean;
+}): Promise<ObjectArtifactProofReport> {
+  const endpoint = input.endpoint ?? process.env.OBJECT_STORAGE_ENDPOINT ?? "not configured";
+  const bucket = input.bucket ?? process.env.OBJECT_STORAGE_BUCKET ?? "agentflow-artifacts";
+  const warnings: string[] = [];
+  const recommendations: string[] = [];
+  const artifacts = await listArtifactLifecycle({
+    projectRootUri: input.projectRootUri,
+    limit: input.limit
+  });
+  const objectRefs: ObjectArtifactReferenceProof[] = [];
+  for (const row of artifacts) {
+    const artifact = await getArtifactByUri(row.uri);
+    if (!artifact) continue;
+    for (const ref of collectObjectReferences(artifact.content)) {
+      objectRefs.push({
+        key: normalizeObjectArtifactKey(ref.value, bucket),
+        artifactId: artifact.id,
+        artifactUri: artifact.uri,
+        artifactKind: artifact.kind,
+        runId: artifact.runId,
+        source: ref.path,
+        status: "not-checked",
+        message: "verification disabled"
+      });
+    }
+  }
+  if (!objectRefs.length) {
+    recommendations.push("No object-backed artifact references were found in inspected artifact content. Current artifact merge proof is covered by Postgres artifact rows.");
+  }
+  let verification: ObjectArtifactProofReport["verification"] = "disabled";
+  if (input.verify && objectRefs.length) {
+    const accessKey = input.accessKey ?? process.env.OBJECT_STORAGE_ACCESS_KEY;
+    const secretKey = input.secretKey ?? process.env.OBJECT_STORAGE_SECRET_KEY;
+    const mcAvailable = await commandAvailable("mc");
+    if (!mcAvailable || !accessKey || !secretKey || endpoint === "not configured") {
+      verification = "unavailable";
+      warnings.push("Object verification requested, but mc, OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_ACCESS_KEY, or OBJECT_STORAGE_SECRET_KEY is unavailable.");
+      recommendations.push("Install MinIO Client and configure object-storage credentials before running object-artifact-proof --verify.");
+    } else {
+      verification = "mc";
+      await verifyObjectReferencesWithMc(objectRefs, {
+        endpoint,
+        bucket,
+        accessKey,
+        secretKey
+      });
+    }
+  }
+  const verifiedObjects = objectRefs.filter((ref) => ref.status === "present").length;
+  const missingObjects = objectRefs.filter((ref) => ref.status === "missing").length;
+  const status: ObjectArtifactProofReport["status"] = missingObjects > 0
+    ? "missing"
+    : verification === "mc"
+      ? "verified"
+      : verification === "unavailable"
+        ? "blocked"
+        : "metadata-only";
+  return {
+    kind: "agentflow_object_artifact_proof_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: input.projectRootUri ?? null,
+    limit: input.limit,
+    status,
+    endpoint: redactDashboardUrl(endpoint),
+    bucket,
+    inspectedArtifacts: artifacts.length,
+    referencedObjects: objectRefs.length,
+    verifiedObjects,
+    missingObjects,
+    verification,
+    objects: objectRefs.slice(0, 200),
+    warnings,
+    recommendations
+  };
+}
+
+function collectObjectReferences(value: unknown, pathPrefix = "content", depth = 0): Array<{ path: string; value: string }> {
+  if (depth > 8) return [];
+  if (typeof value === "string") {
+    return looksLikeObjectReference(value) ? [{ path: pathPrefix, value }] : [];
+  }
+  if (!value || typeof value !== "object") return [];
+  if (Array.isArray(value)) {
+    return value.flatMap((item, index) => collectObjectReferences(item, `${pathPrefix}[${index}]`, depth + 1));
+  }
+  const refs: Array<{ path: string; value: string }> = [];
+  for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+    const nestedPath = `${pathPrefix}.${key}`;
+    if (typeof nested === "string" && objectReferenceKeyNames.has(normalizeLookup(key))) {
+      refs.push({ path: nestedPath, value: nested });
+      continue;
+    }
+    refs.push(...collectObjectReferences(nested, nestedPath, depth + 1));
+  }
+  return refs;
+}
+
+const objectReferenceKeyNames = new Set([
+  "objectkey",
+  "objectkeys",
+  "objectpath",
+  "storagekey",
+  "storagepath",
+  "s3key",
+  "miniokey",
+  "bucketkey"
+]);
+
+function looksLikeObjectReference(value: string): boolean {
+  return /^(s3|r2|minio|object):\/\//i.test(value);
+}
+
+function normalizeObjectArtifactKey(value: string, bucket: string): string {
+  const trimmed = value.trim();
+  if (/^(s3|r2|minio|object):\/\//i.test(trimmed)) {
+    try {
+      const url = new URL(trimmed);
+      const pathname = url.pathname.replace(/^\/+/, "");
+      if (url.hostname === bucket) return pathname;
+      return pathname || url.hostname;
+    } catch {
+      return trimmed.replace(/^(s3|r2|minio|object):\/\//i, "").replace(new RegExp(`^${escapeRegExp(bucket)}/`), "");
+    }
+  }
+  return trimmed.replace(new RegExp(`^${escapeRegExp(bucket)}/`), "").replace(/^\/+/, "");
+}
+
+async function verifyObjectReferencesWithMc(refs: ObjectArtifactReferenceProof[], input: {
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+}): Promise<void> {
+  const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-object-proof");
+  await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
+  const env = {
+    ...process.env,
+    MC_CONFIG_DIR: mcConfigDir
+  };
+  const aliasResult = await execFileText("mc", ["alias", "set", "agentflow-object-proof", input.endpoint, input.accessKey, input.secretKey], { allowFailure: true, env });
+  if (aliasResult.exitCode !== 0) {
+    for (const ref of refs) {
+      ref.status = "missing";
+      ref.message = compactDashboardText(aliasResult.stderr || aliasResult.stdout || "mc alias setup failed", 300);
+    }
+    return;
+  }
+  for (const ref of refs.slice(0, 200)) {
+    const result = await execFileText("mc", ["stat", `agentflow-object-proof/${input.bucket}/${ref.key}`], { allowFailure: true, env });
+    ref.status = result.exitCode === 0 ? "present" : "missing";
+    ref.message = result.exitCode === 0 ? "present" : compactDashboardText(result.stderr || result.stdout || "object missing", 300);
+  }
+}
+
+function formatObjectArtifactProofReport(report: ObjectArtifactProofReport): string {
+  return [
+    `Object artifact proof (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Project: ${report.projectRootUri ?? "all projects"}`,
+    `Endpoint: ${report.endpoint}`,
+    `Bucket: ${report.bucket}`,
+    `Inspected artifacts: ${report.inspectedArtifacts}`,
+    `Referenced objects: ${report.referencedObjects}`,
+    `Verified objects: ${report.verifiedObjects}`,
+    `Missing objects: ${report.missingObjects}`,
+    `Verification: ${report.verification}`,
+    "",
+    "Objects:",
+    ...(report.objects.length ? report.objects.slice(0, 20).map((item) => `- ${item.status} ${item.key} (${item.artifactKind} ${item.artifactUri})`) : ["- none"]),
+    "",
+    "Warnings:",
+    ...(report.warnings.length ? report.warnings.map((warning) => `- ${warning}`) : ["- none"]),
+    "",
+    "Recommendations:",
+    ...(report.recommendations.length ? report.recommendations.map((item) => `- ${item}`) : ["- none"])
   ].join("\n");
 }
 
@@ -11881,14 +12122,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/server-readiness") {
     const migrationDir = requestUrl.searchParams.get("migrationDir") ?? undefined;
+    const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
     const report = await loadServerReadinessReport({
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      projectRootUri,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
     });
     const mergeEvidence = await loadStorageMergeEvidenceListing(migrationDir);
     const offlineFallback = await loadOfflineFallbackReport();
+    const objectProof = await buildObjectArtifactProofReport({
+      projectRootUri: projectRootUri || undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
+      verify: requestUrl.searchParams.get("verifyObjects") === "1"
+    });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ...report, mergeEvidence, offlineFallback }, null, 2));
+    response.end(JSON.stringify({ ...report, mergeEvidence, offlineFallback, objectProof }, null, 2));
     return;
   }
 
@@ -11925,6 +12172,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/offline-fallback") {
     const report = await loadOfflineFallbackReport();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/object-artifact-proof") {
+    const report = await buildObjectArtifactProofReport({
+      projectRootUri: requestUrl.searchParams.get("project") || undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
+      verify: requestUrl.searchParams.get("verify") === "1"
+    });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -12476,9 +12734,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const migrationPlans = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
     const mergeEvidence = await loadStorageMergeEvidenceListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
     const offlineFallback = await loadOfflineFallbackReport();
+    const objectProof = await buildObjectArtifactProofReport({
+      projectRootUri: report.projectRootUri || undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
+      verify: requestUrl.searchParams.get("verifyObjects") === "1"
+    });
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, projects, requestUrl.searchParams));
     return;
   }
 
@@ -15243,7 +15506,51 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
   </section>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, params: URLSearchParams): string {
+  const statusClass = report.status === "verified" || report.status === "metadata-only" ? "completed" : report.status === "missing" ? "failed" : "queued";
+  const query = new URLSearchParams();
+  if (report.projectRootUri) query.set("project", report.projectRootUri);
+  query.set("limit", String(report.limit));
+  const verifyQuery = new URLSearchParams(query);
+  verifyQuery.set("verify", "1");
+  const sampleRows = report.objects.slice(0, 12).map((object) => `<tr>
+    <td><span class="status ${object.status === "present" ? "completed" : object.status === "missing" ? "failed" : "queued"}">${escapeHtml(object.status)}</span></td>
+    <td><code>${escapeHtml(object.key)}</code><br><span class="muted">${escapeHtml(object.source)}</span></td>
+    <td>${escapeHtml(object.artifactKind)}<br><code>${escapeHtml(object.artifactUri)}</code></td>
+    <td>${escapeHtml(object.message)}</td>
+  </tr>`).join("");
+  const warnings = report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const recommendations = report.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>Object Artifact Proof</h2><span class="muted">Read-only proof for object-backed artifact references after storage merge.</span></div>
+      <div class="actions"><a class="button secondary" href="/api/object-artifact-proof?${escapeHtml(query.toString())}">JSON</a><a class="button secondary" href="/api/object-artifact-proof?${escapeHtml(verifyQuery.toString())}">Verify JSON</a></div>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Status", report.status, "object reference proof")}
+      ${metricCard("Artifacts", report.inspectedArtifacts, "recent rows inspected")}
+      ${metricCard("Object Refs", report.referencedObjects, "references discovered")}
+      ${metricCard("Missing", report.missingObjects, "verified missing objects")}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Endpoint</strong>${escapeHtml(report.endpoint)}</div>
+      <div><strong>Bucket</strong>${escapeHtml(report.bucket)}</div>
+      <div><strong>Verification</strong><span class="status ${statusClass}">${escapeHtml(report.verification)}</span></div>
+      <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
+    </div>
+    <form method="get" action="/server-readiness" class="inline-form compact-form">
+      ${[...params.entries()].filter(([key]) => key !== "objectLimit" && key !== "verifyObjects").map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`).join("")}
+      <label>Object limit<input name="objectLimit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
+      <label class="check-row"><input type="checkbox" name="verifyObjects" value="1"> Verify with mc</label>
+      <button type="submit">Refresh Object Proof</button>
+    </form>
+    ${warnings ? `<details class="governance-details" open><summary>Warnings</summary><ul>${warnings}</ul></details>` : ""}
+    ${recommendations ? `<details class="governance-details"><summary>Recommendations</summary><ul>${recommendations}</ul></details>` : ""}
+    <div class="table-wrap"><table><thead><tr><th>Status</th><th>Object Key</th><th>Artifact</th><th>Detail</th></tr></thead><tbody>${sampleRows || '<tr><td colspan="4">No object-backed artifact references found in inspected rows.</td></tr>'}</tbody></table></div>
+  </section>`;
+}
+
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -15326,6 +15633,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
   ${renderPostMergeEvidencePanel(mergeEvidence)}
   ${renderOfflineFallbackPanel(offlineFallback)}
+  ${renderObjectArtifactProofPanel(objectProof, params)}
   <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
   <div class="metric-grid">
     ${metricCard("Plans", migrationPlans.plans.length, "generated migration packages")}
@@ -16447,9 +16755,9 @@ function parseLaunchctlNumber(output: string, key: string): number | null {
   return match ? Number.parseInt(match[1] ?? "", 10) : null;
 }
 
-async function execFileText(command: string, args: string[], options: { allowFailure?: boolean } = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+async function execFileText(command: string, args: string[], options: { allowFailure?: boolean; env?: NodeJS.ProcessEnv } = {}): Promise<{ exitCode: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { cwd: rootDir, env: process.env, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
+    execFile(command, args, { cwd: rootDir, env: options.env ?? process.env, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       const rawCode = (error as NodeJS.ErrnoException | null)?.code;
       const exitCode = typeof rawCode === "number" ? rawCode : error ? 1 : 0;
       if (error && !options.allowFailure) {
@@ -22468,6 +22776,10 @@ function redactDashboardUrl(value: string): string {
   } catch {
     return value.replace(/:\/\/[^:@\s]+:[^@\s]+@/g, "://user:redacted@");
   }
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function sleep(ms: number): Promise<void> {

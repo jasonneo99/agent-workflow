@@ -400,6 +400,17 @@ manifest, latest persisted import result when available, latest backup folder,
 remaining source-only rows from the latest manifest, and whether the shared
 storage plane is proven enough for normal primary use.
 
+Inspect object-backed artifact proof:
+
+```bash
+npm run object-artifact-proof
+npm run object-artifact-proof -- --verify
+```
+
+The default report scans recent artifact rows for object-storage references in
+artifact content. Verification uses MinIO Client (`mc`) only when requested and
+credentials are configured; otherwise the report stays metadata-only.
+
 ### Offline Fallback
 
 Shared storage can be the normal primary state plane while localhost Docker
