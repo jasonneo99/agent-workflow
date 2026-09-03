@@ -53,6 +53,7 @@ npm run server-readiness -- --json
 npm run server-projects
 npm run server-projects -- --json
 npm run server-resolve-project -- --project-id <project-id>
+npm run server-request-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
 ```
 
 Recommended default binding stays loopback:
@@ -235,6 +236,8 @@ Before adding remote execution endpoints:
       path execution.
 - [x] Add project id resolution that rejects path-shaped input and resolves
       only registered project ids.
+- [x] Add an authenticated request-envelope preview for future remote execution
+      requests before implementing mutation endpoints.
 - [ ] Add project id based routing for future remote execution requests.
 - [ ] Require auth for all mutation endpoints.
 - [ ] Require role capability checks for all mutation endpoints.

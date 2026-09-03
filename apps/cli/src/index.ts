@@ -95,7 +95,7 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -2140,6 +2140,29 @@ program
   });
 
 program
+  .command("server-request-preview")
+  .description("Preview a governed server-mode workflow request envelope without queueing work")
+  .requiredOption("--project-id <id>", "registered project id from server-projects")
+  .requiredOption("-w, --workflow <id>", "workflow id to request")
+  .requiredOption("-t, --task <text>", "natural-language task")
+  .option("--actor <name>", "requesting actor", "local-preview")
+  .option("--actor-role <role>", "project role for the request", "operator")
+  .option("--idempotency-key <key>", "client-provided idempotency key")
+  .option("--json", "print machine-readable request preview")
+  .action(async (options: { projectId: string; workflow: string; task: string; actor: string; actorRole: string; idempotencyKey?: string; json?: boolean }) => {
+    const report = await loadServerRequestPreview({
+      projectId: options.projectId,
+      workflowId: options.workflow,
+      task: options.task,
+      actor: options.actor,
+      actorRole: options.actorRole,
+      idempotencyKey: options.idempotencyKey
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerRequestPreview(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
   .command("export-run")
   .description("Export a workflow run report as Markdown and JSON")
   .requiredOption("-r, --run <id>", "workflow run id")
@@ -3649,6 +3672,39 @@ type ServerProjectResolution = {
   }>;
 };
 
+type ServerRequestPreviewReport = {
+  kind: "agentflow_server_request_preview";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  envelope: {
+    requestId: string;
+    idempotencyKey: string;
+    actor: string;
+    actorRole: string;
+    projectId: string;
+    workflow: string;
+    task: string;
+    policyProfile: string | null;
+    source: "server-request-preview";
+  };
+  controls: {
+    serverModeEnabled: boolean;
+    authMode: string;
+    authConfigured: boolean;
+    projectResolved: boolean;
+    roleGate: "pass" | "warn" | "fail";
+    workflowFound: boolean;
+    idempotencyProvided: boolean;
+    wouldQueue: false;
+  };
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  notes: string[];
+};
+
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
   const details = await getWorkflowRunDetails(runId);
   if (!details.run) {
@@ -5056,6 +5112,151 @@ function formatServerProjectResolution(result: ServerProjectResolution): string 
     "",
     "Checks:",
     ...result.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`)
+  ].join("\n");
+}
+
+async function loadServerRequestPreview(input: {
+  projectId: string;
+  workflowId: string;
+  task: string;
+  actor: string;
+  actorRole: string;
+  idempotencyKey?: string;
+}): Promise<ServerRequestPreviewReport> {
+  const projectResolution = await resolveServerProjectReference({ projectId: input.projectId, includeRoot: true });
+  const workflows = await loadWorkflows(rootDir);
+  const workflowFound = workflows.some((workflow) => workflow.id === input.workflowId);
+  const projectRoot = projectResolution.project?.rootUri ?? null;
+  const projectConfig = projectRoot ? await loadRegisteredProjectConfig({
+    id: projectResolution.project?.projectId ?? input.projectId,
+    name: projectResolution.project?.name ?? "unknown",
+    rootUri: projectRoot,
+    profile: "enterprise",
+    config: {},
+    updatedAt: "",
+    indexedFiles: 0,
+    indexedTokens: 0,
+    lastIndexedAt: null,
+    memoryItems: 0,
+    runCount: 0,
+    completedRuns: 0,
+    failedRuns: 0,
+    queuedRuns: 0,
+    runningRuns: 0,
+    lastRunAt: null,
+    lastRunId: null,
+    lastWorkflowId: null,
+    lastRunStatus: null
+  }) : null;
+  const roleGate = projectConfig
+    ? evaluateRoleGate(projectConfig, input.actorRole, "can_request_approvals")
+    : { allowed: false, message: "Project config is unavailable; role capability cannot be checked." };
+  const roleStatus: ServerRequestPreviewReport["controls"]["roleGate"] = !projectConfig
+    ? "fail"
+    : projectConfig.team.enforcement === "enforce" && !roleGate.allowed
+      ? "fail"
+      : roleGate.allowed
+        ? "pass"
+        : "warn";
+  const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "none";
+  const authConfigured = authMode === "oidc-proxy" || authMode === "token" && Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
+  const idempotencyProvided = Boolean(input.idempotencyKey?.trim());
+  const envelope = {
+    requestId: `req_${stableHash([input.projectId, input.workflowId, input.task, input.actor, new Date().toISOString()]).slice(0, 16)}`,
+    idempotencyKey: input.idempotencyKey?.trim() || `preview_${stableHash([input.projectId, input.workflowId, input.task, input.actor, input.actorRole]).slice(0, 24)}`,
+    actor: input.actor.trim() || "local-preview",
+    actorRole: input.actorRole.trim() || "operator",
+    projectId: input.projectId.trim(),
+    workflow: input.workflowId.trim(),
+    task: input.task.trim(),
+    policyProfile: projectConfig?.execution.policy_profile ?? null,
+    source: "server-request-preview" as const
+  };
+  const checks: ServerRequestPreviewReport["checks"] = [
+    {
+      label: "Project id",
+      status: projectResolution.resolved ? "pass" : "fail",
+      detail: projectResolution.resolved ? "Project id resolves to one registered project." : projectResolution.reason ?? "Project id did not resolve."
+    },
+    {
+      label: "Workflow",
+      status: workflowFound ? "pass" : "fail",
+      detail: workflowFound ? "Workflow id exists in the installed bundle." : "Workflow id was not found in the installed bundle."
+    },
+    {
+      label: "Task",
+      status: envelope.task ? "pass" : "fail",
+      detail: envelope.task ? "Task text is present." : "Task text is required."
+    },
+    {
+      label: "Actor role",
+      status: roleStatus,
+      detail: roleGate.message
+    },
+    {
+      label: "Server auth",
+      status: !serverModeEnabled ? "warn" : authConfigured ? "pass" : "fail",
+      detail: !serverModeEnabled ? "Server mode is disabled; this is a local preview only." : authConfigured ? "Server auth is configured for the selected mode." : "Server auth is required before remote mutation requests."
+    },
+    {
+      label: "Idempotency",
+      status: idempotencyProvided ? "pass" : "warn",
+      detail: idempotencyProvided ? "Client idempotency key is present." : "Preview generated a suggested idempotency key; remote mutation endpoints should require a client-provided key."
+    },
+    {
+      label: "Execution",
+      status: "pass",
+      detail: "Preview only. No workflow was queued and no worker task was executed."
+    }
+  ];
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  return {
+    kind: "agentflow_server_request_preview",
+    generatedAt: new Date().toISOString(),
+    status: failures > 0 ? "blocked" : warnings > 0 ? "attention" : "ready",
+    envelope,
+    controls: {
+      serverModeEnabled,
+      authMode,
+      authConfigured,
+      projectResolved: projectResolution.resolved,
+      roleGate: roleStatus,
+      workflowFound,
+      idempotencyProvided,
+      wouldQueue: false
+    },
+    checks,
+    notes: [
+      "This is a contract preview for future governed server-mode mutation requests.",
+      "Use projectId instead of a filesystem path.",
+      "Remote execution endpoints are not implemented by this command."
+    ]
+  };
+}
+
+function formatServerRequestPreview(report: ServerRequestPreviewReport): string {
+  return [
+    `Server request preview (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    "",
+    "Envelope:",
+    `- requestId: ${report.envelope.requestId}`,
+    `- idempotencyKey: ${report.envelope.idempotencyKey}`,
+    `- actor: ${report.envelope.actor}`,
+    `- actorRole: ${report.envelope.actorRole}`,
+    `- projectId: ${report.envelope.projectId}`,
+    `- workflow: ${report.envelope.workflow}`,
+    `- task: ${report.envelope.task}`,
+    `- policyProfile: ${report.envelope.policyProfile ?? "unknown"}`,
+    `- wouldQueue: ${report.controls.wouldQueue ? "yes" : "no"}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
   ].join("\n");
 }
 
@@ -6920,6 +7121,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(result.resolved ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-request-preview") {
+    const report = await loadServerRequestPreview({
+      projectId: requestUrl.searchParams.get("projectId") ?? "",
+      workflowId: requestUrl.searchParams.get("workflow") ?? "",
+      task: requestUrl.searchParams.get("task") ?? "",
+      actor: requestUrl.searchParams.get("actor") ?? "dashboard-preview",
+      actorRole: requestUrl.searchParams.get("actorRole") ?? "operator",
+      idempotencyKey: requestUrl.searchParams.get("idempotencyKey") ?? undefined
+    });
+    response.writeHead(report.status === "blocked" ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 

@@ -241,7 +241,8 @@ foundation is complete.
   - Done: add a read-only server-mode readiness command, JSON API, and dashboard page before any remote execution endpoints.
   - Done: add registered-project previews for future server-mode clients that use project ids and hide local roots by default.
   - Done: add project id resolution for future server-mode routing that rejects path-shaped input and resolves only registered project ids.
-  - Next: add an authenticated request envelope preview for future remote execution requests before implementing mutation endpoints.
+  - Done: add an authenticated request-envelope preview for future remote execution requests before implementing mutation endpoints.
+  - Next: add a guarded project-id routing adapter behind the same preview checks, still dry-run-by-default.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.

@@ -91,6 +91,7 @@
     "server-readiness": "tsx apps/cli/src/index.ts server-readiness",
     "server-projects": "tsx apps/cli/src/index.ts server-projects",
     "server-resolve-project": "tsx apps/cli/src/index.ts server-resolve-project",
+    "server-request-preview": "tsx apps/cli/src/index.ts server-request-preview",
     "worker": "tsx apps/cli/src/index.ts worker",
     "worker:daemon": "tsx apps/cli/src/index.ts worker --watch --limit 6 --interval-ms 2000",
     "worker:watch": "tsx apps/cli/src/index.ts worker --watch --limit 1",
