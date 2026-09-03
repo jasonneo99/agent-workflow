@@ -237,7 +237,8 @@ foundation is complete.
   - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
   - Define auth, project registration, role enforcement, audit receipts, and network binding defaults before exposing workflow execution remotely.
   - Document LAN/shared deployment risks and provide secure defaults that do not expose dev Postgres, Redis, MinIO, or project files accidentally.
-  - Next: design the server-mode contract after artifact lifecycle and backup/restore governance are further along.
+  - Done: document the governed server-mode contract with secure local-first defaults, opt-in controls, auth requirements, project registration, endpoint classes, role checks, and audit receipt requirements.
+  - Next: add a read-only server-mode readiness command before any remote execution endpoints.
 
 - [ ] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
@@ -264,7 +265,7 @@ foundation is complete.
   - [x] Add real archive execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
-  - Next: continue backup, restore, and disaster-recovery validation.
+  - Next: see Backup, restore, and disaster-recovery validation.
 
 - [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
@@ -278,13 +279,13 @@ foundation is complete.
   - [x] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
   - [x] Add clearer hover, focus, tooltip, and accessibility affordances to operations snapshot actions.
   - [x] Run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
-  - Next: continue artifact lifecycle governance with real restore execution behind disabled-by-default capability flags and approval rechecks.
+  - Next: see Governed server mode for the next shared-runtime milestone.
 
 - [x] Backup, restore, and disaster-recovery validation.
   - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [x] Provide documented recovery procedures and automated restore verification.
-  - Next: design the governed server-mode contract with secure local-first defaults.
+  - Next: add a read-only server-mode readiness command before any remote execution endpoints.
 
 ## Contribution Boundary
 

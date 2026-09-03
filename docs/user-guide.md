@@ -96,7 +96,24 @@ Agent Workflow can run from VS Code, Cursor, Codex, or another MCP-capable clien
 
 See [MCP Client Setup](mcp-clients.md) for config examples.
 
-## 3a. Optional Codex Plugin
+## 3a. Local-First Versus Server Mode
+
+The recommended developer workflow is local-first: the CLI, MCP stdio server,
+dashboard, worker, and enterprise storage run on the developer machine. This is
+the safest default for Codex, VS Code, Cursor, and other local agent clients
+because project files, provider credentials, and action approvals stay local.
+
+Future governed server mode is an explicit opt-in path for teams that want a
+shared Agent Workflow runtime on a trusted network. Binding the dashboard to a
+network interface is not enough to enable server mode. Server mode requires a
+separate contract for authentication, registered project ids, role checks,
+project policy rechecks, idempotency, audit receipts, and safe network/storage
+boundaries.
+
+Read [Governed Server Mode](server-mode.md) before exposing Agent Workflow
+outside one local machine.
+
+## 3b. Optional Codex Plugin
 
 Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:
 
