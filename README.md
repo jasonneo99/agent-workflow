@@ -224,9 +224,9 @@ npm run agentflow -- dashboard # Start local web dashboard
 If a workflow, worker, dashboard action, or MCP call returns `Approval required`,
 show that approval id to the user in their current context. The workflow may keep
 running around it, but that specific side effect stays skipped until approved,
-rejected, always-approved, or executed through `agentflow_approvals` or the
+rejected, dismissed as stale, always-approved, or executed through `agentflow_approvals` or the
 dashboard. MCP clients should ask the user in chat, then call
-`agentflow_approvals` with `approve`, `reject`, `always`, or `execute`.
+`agentflow_approvals` with `approve`, `reject`, `dismiss`, `always`, or `execute`.
 
 The dashboard includes a **Graph** view for inspecting workflow stages, primary
 agents, subagents, context budgets, approval points, and policy fit before

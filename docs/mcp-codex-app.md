@@ -73,10 +73,11 @@ Restart the Codex app after changing MCP configuration.
 When a tool response says `Approval required`, the requested side effect is
 waiting for a human decision in the current client. Surface the one-line summary
 and approval id to the user, then ask whether to approve, reject, always approve
-the exact function call, always approve the broad function family, or execute an
+the exact function call, always approve the broad function family, execute an
 already approved action. Call `agentflow_approvals` with `approve`, `reject`,
-`always` plus `alwaysScope`, or `execute` after the user decides. The workflow
-may still complete other stages while that side effect stays skipped.
+`always` plus `alwaysScope`, `execute`, or `dismiss` after the user decides. Use
+`dismiss` when an already-approved action is stale or no longer needed. The
+workflow may still complete other stages while that side effect stays skipped.
 
 ## Examples
 

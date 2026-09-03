@@ -1728,6 +1728,7 @@ program
   .option("--approve <id>", "approval id to approve")
   .option("--reject <id>", "approval id to reject")
   .option("--execute <id>", "execute an approved action")
+  .option("--dismiss <id>", "dismiss an approved action without execution")
   .option("--always <id>", "approval id to approve current request and add a future auto-execute rule")
   .option("--always-scope <scope>", "rule scope for --always: exact, broad, or target", "exact")
   .option("--always-target <pattern>", "explicit stored target pattern when --always-scope target is used")
@@ -1736,7 +1737,7 @@ program
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; reject?: string; execute?: string; dismiss?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -1747,9 +1748,30 @@ program
       return;
     }
 
-    if ([options.approve, options.reject, options.execute, options.always].filter(Boolean).length > 1) {
-      console.error("Choose only one of --approve, --reject, --execute, or --always.");
+    if ([options.approve, options.reject, options.execute, options.dismiss, options.always].filter(Boolean).length > 1) {
+      console.error("Choose only one of --approve, --reject, --execute, --dismiss, or --always.");
       process.exitCode = 1;
+      return;
+    }
+
+    if (options.dismiss) {
+      const result = await dismissApprovedAction({
+        approvalId: options.dismiss,
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "operator"),
+        note: options.note
+      });
+      if (!result.ok) {
+        console.error(result.error);
+        process.exitCode = 1;
+        return;
+      }
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(result.title);
+      console.log(result.output);
       return;
     }
 
@@ -1889,6 +1911,7 @@ program
       }
       if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType)) {
         console.log(`  Execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator`);
+        console.log(`  Dismiss stale: npm run agentflow -- approvals --dismiss ${approval.id} --actor "Your Name" --actor-role operator --note "Out of date"`);
       }
       if (approval.decidedBy) {
         console.log(`  Decided: ${approval.decidedBy}${approval.decidedRole ? ` (${approval.decidedRole})` : ""} at ${approval.decidedAt ?? "unknown"}${approval.decisionNote ? ` - ${approval.decisionNote}` : ""}`);
@@ -10449,7 +10472,7 @@ function renderApprovalsHtml(
       <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
       <td>${escapeHtml(approval.rationale)}<br><span class="muted">${escapeHtml(rolePreviewForApproval(approval))}</span>${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
-      <td>${approval.status === "pending" ? approvalDecisionForms(approval) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalExecuteForm(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalApprovedActionForms(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
   const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
@@ -14408,8 +14431,16 @@ async function processDashboardApprovalAction(input: {
   if (decision === "execute") {
     return executeApprovedAction({ approvalId, actor: "dashboard", actorRole: normalizeActorRole(input.actorRole, "operator") });
   }
+  if (decision === "dismiss") {
+    return dismissApprovedAction({
+      approvalId,
+      actor: "dashboard",
+      actorRole: normalizeActorRole(input.actorRole, "operator"),
+      note: input.note.trim()
+    });
+  }
   if (decision !== "approved" && decision !== "rejected") {
-    return { ok: false, error: "Decision must be approved or rejected." };
+    return { ok: false, error: "Decision must be approved, rejected, execute, or dismiss." };
   }
   const approvalForGate = await getActionApproval(approvalId);
   if (!approvalForGate) {
@@ -14773,6 +14804,55 @@ async function requestRunLevelApproval(input: {
       `Workflow context: ${workflow.id}`,
       `Project: ${projectDir}`,
       "Open: /approvals"
+    ].join("\n")
+  };
+}
+
+async function dismissApprovedAction(input: {
+  approvalId: string;
+  actor: string;
+  actorRole?: string;
+  note?: string;
+}): Promise<DashboardFollowUpResult> {
+  const approval = await getActionApproval(input.approvalId);
+  if (!approval) {
+    return { ok: false, error: `Unknown approval: ${input.approvalId}` };
+  }
+  if (approval.status !== "approved" && approval.status !== "failed") {
+    return { ok: false, error: `Approval must be approved or failed before dismissal. Current status: ${approval.status}` };
+  }
+  const project = await loadProjectConfig(approval.projectRootUri);
+  const actorRole = input.actorRole ?? project.team.default_actor_role;
+  const executionRoleGate = evaluateRoleGate(project, actorRole, "can_execute_approved_actions");
+  if (!executionRoleGate.allowed) {
+    return { ok: false, error: executionRoleGate.message };
+  }
+  const summary = input.note?.trim()
+    ? `Approved action dismissed without execution: ${input.note.trim()}`
+    : "Approved action dismissed without execution.";
+  const dismissed = await markActionApprovalExecution({
+    approvalId: approval.id,
+    status: "failed",
+    actor: input.actor,
+    actorRole,
+    summary
+  });
+  if (!dismissed) {
+    return { ok: false, error: "Approval was not found or could not be dismissed." };
+  }
+  return {
+    ok: true,
+    title: "Approved action dismissed",
+    runId: approval.runId,
+    output: [
+      `Approval: ${approval.id}`,
+      `Action: ${approval.actionType}`,
+      `Target: ${approval.target}`,
+      `Project: ${approval.projectRootUri}`,
+      `Role gate: ${executionRoleGate.message}`,
+      summary,
+      "Receipt recorded; the action was not executed.",
+      "Open: /approvals?status=failed"
     ].join("\n")
   };
 }
@@ -16258,6 +16338,20 @@ function approvalExecuteForm(approvalId: string): string {
     <input type="hidden" name="actorRole" value="operator">
     <button type="submit">Execute</button>
   </form>`;
+}
+
+function approvalDismissForm(approvalId: string): string {
+  return `<form class="approval-form" method="post" action="/api/approval-action">
+    <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+    <input type="hidden" name="decision" value="dismiss">
+    <input type="hidden" name="actorRole" value="operator">
+    <input name="note" aria-label="Dismissal note" placeholder="Why skip it?">
+    <button class="secondary" type="submit">Dismiss</button>
+  </form>`;
+}
+
+function approvalApprovedActionForms(approvalId: string): string {
+  return `<div class="actions">${approvalExecuteForm(approvalId)}${approvalDismissForm(approvalId)}</div>`;
 }
 
 function formatApprovalPayload(payload: Record<string, unknown>): string {

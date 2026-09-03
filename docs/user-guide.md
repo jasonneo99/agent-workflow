@@ -915,6 +915,7 @@ npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --act
 npm run agentflow -- approvals --always <approval-id> --always-scope exact --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --always <approval-id> --always-scope broad --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
+npm run agentflow -- approvals --dismiss <approval-id> --actor "Your Name" --actor-role operator --note "Out of date"
 npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --actor-role approver --note "Not needed"
 npm run agentflow -- approval-rules --project /path/to/project
 npm run agentflow -- approval-rules --project /path/to/project --remove <rule-id> --actor "Your Name"
@@ -933,8 +934,8 @@ decision, artifact lifecycle action, or autonomy change remains skipped until
 you approve it. MCP clients such as Codex, VS Code, and Cursor should present
 the returned approval id to the user, ask whether to approve, reject, always
 approve the exact function call, always approve the broad function family, or
-execute an already approved action, then call `agentflow_approvals` with the
-selected decision.
+execute or dismiss an already approved action, then call `agentflow_approvals`
+with the selected decision.
 
 Deployment and autonomy approvals use the same inbox. They record a human
 decision for a risky operation, but they do not execute a local command by
