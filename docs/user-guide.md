@@ -869,6 +869,10 @@ and the latest approval activity. Filter by project, role, approval status, or
 action type when you need a focused local audit view. `/api/roles` exposes the
 same filtered data for local automation or IDE integrations.
 
+Add `--export` to write a local Markdown and JSON audit snapshot under
+`.agent-workflow/exports/roles/`. Use `--out <dir>` when you want a different
+export location.
+
 Projects that want role checks to block mismatched approval actions can opt in:
 
 ```yaml
@@ -903,6 +907,7 @@ npm run agentflow -- approvals --reject <approval-id> --actor "Your Name" --acto
 npm run agentflow -- roles --project /path/to/project --limit 50
 npm run agentflow -- roles --project /path/to/project --role approver --status approved
 npm run agentflow -- roles --project /path/to/project --action local_command
+npm run agentflow -- roles --project /path/to/project --role approver --status approved --export
 npm run agentflow -- roles --project /path/to/project --json
 ```
 

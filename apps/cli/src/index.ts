@@ -949,8 +949,10 @@ program
   .option("--role <role>", "filter approvals by decided or executed role")
   .option("--status <status>", "filter approvals by status, or all", "all")
   .option("--action <action>", "filter approvals by action type")
+  .option("--export", "write Markdown and JSON role audit snapshot files")
+  .option("-o, --out <dir>", "export directory; defaults to project-local or repo-local .agent-workflow/exports/roles")
   .option("--json", "print machine-readable role governance report")
-  .action(async (options: { project?: string; limit: string; role?: string; status: string; action?: string; json?: boolean }) => {
+  .action(async (options: { project?: string; limit: string; role?: string; status: string; action?: string; export?: boolean; out?: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -967,6 +969,13 @@ program
       status: options.status,
       actionType: options.action
     });
+    if (options.export) {
+      const exported = await writeRoleAuditSnapshot(report, options.out);
+      console.log(`Role audit snapshot written:`);
+      console.log(`- Markdown: ${exported.markdownPath}`);
+      console.log(`- JSON: ${exported.jsonPath}`);
+      if (!options.json) return;
+    }
     console.log(options.json ? JSON.stringify(report, null, 2) : formatRoleGovernanceReport(report));
   });
 
@@ -4059,6 +4068,72 @@ function formatRoleGovernanceReport(report: DashboardRoleGovernanceReport): stri
     lines.push(`- ${role.role}: total=${role.total} pending=${role.pending} approved=${role.approved} rejected=${role.rejected} executed=${role.executed} failed=${role.failed}`);
   }
   return lines.join("\n");
+}
+
+async function writeRoleAuditSnapshot(report: DashboardRoleGovernanceReport, outDir?: string): Promise<{ markdownPath: string; jsonPath: string }> {
+  const baseDir = outDir?.trim()
+    ? path.resolve(process.cwd(), outDir)
+    : path.join(report.projectRootUri ?? rootDir, ".agent-workflow", "exports", "roles");
+  await fs.mkdir(baseDir, { recursive: true });
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const filterSegment = safeFileSegment([
+    report.filters.role ?? "all-roles",
+    report.filters.status,
+    report.filters.actionType ?? "all-actions"
+  ].join("-"));
+  const markdownPath = path.join(baseDir, `${stamp}-${filterSegment}.md`);
+  const jsonPath = path.join(baseDir, `${stamp}-${filterSegment}.json`);
+  await fs.writeFile(markdownPath, `${formatRoleAuditSnapshotMarkdown(report)}\n`, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return { markdownPath, jsonPath };
+}
+
+function formatRoleAuditSnapshotMarkdown(report: DashboardRoleGovernanceReport): string {
+  return [
+    "# Role Audit Snapshot",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Filters: role=${report.filters.role ?? "all"} status=${report.filters.status} action=${report.filters.actionType ?? "all"}`,
+    `Recent approvals: ${report.recentApprovals.length}`,
+    "",
+    "## Decision Counts",
+    "",
+    "| Role | Total | Pending | Approved | Rejected | Executed | Failed |",
+    "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+    ...(report.decisionsByRole.length
+      ? report.decisionsByRole.map((role) => `| ${escapeMarkdownTable(role.role)} | ${role.total} | ${role.pending} | ${role.approved} | ${role.rejected} | ${role.executed} | ${role.failed} |`)
+      : ["| none | 0 | 0 | 0 | 0 | 0 | 0 |"]),
+    "",
+    "## Configured Roles",
+    "",
+    ...report.projects.flatMap((project) => [
+      `### ${project.name}`,
+      "",
+      `Root: \`${project.rootUri}\``,
+      `Config: ${project.configStatus}`,
+      `Enforcement: ${project.enforcement}`,
+      `Separation of duties: ${project.separationOfDuties}`,
+      "",
+      "| Role | Capabilities | Description |",
+      "| --- | --- | --- |",
+      ...(project.roles.length
+        ? project.roles.map((role) => `| ${escapeMarkdownTable(role.id)} | ${escapeMarkdownTable(role.capabilities.join(", ") || "none")} | ${escapeMarkdownTable(role.description || "")} |`)
+        : ["| none | none | No roles configured. |"]),
+      ""
+    ]),
+    "## Recent Approval Activity",
+    "",
+    "| Status | Action | Decision Role | Execution Role | Project | Updated |",
+    "| --- | --- | --- | --- | --- | --- |",
+    ...(report.recentApprovals.length
+      ? report.recentApprovals.map((approval) => `| ${escapeMarkdownTable(approval.status)} | ${escapeMarkdownTable(approval.actionType)} | ${escapeMarkdownTable(approval.decidedRole ?? "none")} | ${escapeMarkdownTable(approval.executedRole ?? "none")} | ${escapeMarkdownTable(approval.projectName)} | ${escapeMarkdownTable(approval.updatedAt)} |`)
+      : ["| none | none | none | none | none | none |"])
+  ].join("\n");
+}
+
+function escapeMarkdownTable(value: string): string {
+  return value.replaceAll("|", "\\|").replace(/\r?\n/g, " ");
 }
 
 async function loadArtifactLifecycleReport(input: { projectRootUri?: string; kind?: string; limit?: number; prunePlan?: boolean; archivePlan?: boolean; restorePlan?: boolean; minAgeDays?: number; minBytes?: number; includeAudit?: boolean } = {}): Promise<ArtifactLifecycleReport> {
