@@ -6138,7 +6138,7 @@ async function writeStorageMigrationPlanFiles(plan: StorageMigrationPlan, outDir
   const scriptPath = path.join(resolvedOut, `${base}.sh`);
   await fs.writeFile(markdownPath, `${formatStorageMigrationPlan(plan)}\n`, "utf8");
   await fs.writeFile(jsonPath, `${JSON.stringify(plan, null, 2)}\n`, "utf8");
-  await fs.writeFile(scriptPath, storageMigrationScript(), { encoding: "utf8", mode: 0o755 });
+  await fs.writeFile(scriptPath, storageMigrationScript(plan.mode), { encoding: "utf8", mode: 0o755 });
   await fs.chmod(scriptPath, 0o755);
   return { markdownPath, jsonPath, scriptPath };
 }

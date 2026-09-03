@@ -335,6 +335,17 @@ Then `npm run storage-migrate -- --write-plan` infers the target URLs from that
 host unless explicit target URLs are supplied.
 If source and target resolve to the same storage endpoints, the plan is blocked;
 that usually means the current machine is already using the shared state plane.
+If the target already contains Agent Workflow rows, `copy-empty-target` is also
+blocked because restoring a full database dump could overwrite or collide with
+newer shared history. Use merge preview instead:
+
+```bash
+npm run storage-migrate -- --mode merge-preview --write-plan
+```
+
+Merge preview is read-only. It compares durable table counts, sampled project
+roots, and source/target differences, then writes a non-executing operator
+package that describes the future merge-safe import path.
 
 After a reviewed copy, verify durable state without mutating either side:
 

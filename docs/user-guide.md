@@ -204,6 +204,16 @@ migration is intentionally preview-only until project/run id mapping, artifact
 verification, rollback, and destination-preservation checks are implemented.
 If source and target resolve to the same storage endpoints, the plan is blocked;
 that usually means the current machine is already using the shared state plane.
+If the target already contains Agent Workflow rows, copy mode is blocked too.
+Use a merge preview to inspect old local storage against an existing shared
+target without overwriting newer shared history:
+
+```bash
+npm run storage-migrate -- --mode merge-preview --write-plan
+```
+
+The merge-preview package includes Markdown and JSON preflight evidence plus a
+non-executing shell script that explains why a merge-safe importer is required.
 
 After a migration copy, compare durable source and target state:
 
