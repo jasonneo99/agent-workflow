@@ -405,11 +405,14 @@ Inspect object-backed artifact proof:
 ```bash
 npm run object-artifact-proof
 npm run object-artifact-proof -- --verify
+npm run object-artifact-proof -- --enumerate-buckets
 ```
 
 The default report scans recent artifact rows for object-storage references in
 artifact content. Verification uses MinIO Client (`mc`) only when requested and
 credentials are configured; otherwise the report stays metadata-only.
+Bucket enumeration also uses `mc`, compares source and target object keys, and
+prints a dry-run mirror plan for any source keys missing from the target bucket.
 
 ### Offline Fallback
 

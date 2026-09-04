@@ -318,7 +318,8 @@ foundation is complete.
   - Done: add an explicit offline sync reconciler command/dashboard action that detects localhost and shared storage health, writes merge/import evidence, and marks queued fallback items synced after an insert-only execution.
   - Done: add daemon-triggered dry-run scheduling for the offline sync reconciler, with persisted scheduler status and dashboard readiness visibility.
   - Done: add object-backed artifact proof for recent artifact rows, with optional `mc` verification and dashboard visibility on Server Readiness.
-  - Next: add full bucket enumeration and richer post-merge proof checks, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: add full source/target bucket enumeration with missing-key counts, sample deltas, and a dry-run object mirror plan.
+  - Next: add richer post-merge proof checks and explicit approved object mirror execution, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
 
 - [ ] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.

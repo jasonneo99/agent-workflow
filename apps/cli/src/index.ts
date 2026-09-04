@@ -1293,9 +1293,36 @@ program
   .option("--bucket <bucket>", "object storage bucket; defaults to OBJECT_STORAGE_BUCKET")
   .option("--access-key <key>", "object storage access key; defaults to OBJECT_STORAGE_ACCESS_KEY")
   .option("--secret-key <key>", "object storage secret key; defaults to OBJECT_STORAGE_SECRET_KEY")
+  .option("--enumerate-buckets", "compare source and target object bucket keys with MinIO Client (mc)")
+  .option("--source-endpoint <url>", "source object endpoint for bucket enumeration; defaults to localhost MinIO")
+  .option("--source-bucket <bucket>", "source object bucket for bucket enumeration; defaults to OBJECT_STORAGE_BUCKET")
+  .option("--source-access-key <key>", "source object access key; defaults to OBJECT_STORAGE_ACCESS_KEY")
+  .option("--source-secret-key <key>", "source object secret key; defaults to OBJECT_STORAGE_SECRET_KEY")
+  .option("--target-endpoint <url>", "target object endpoint for bucket enumeration; defaults to OBJECT_STORAGE_ENDPOINT")
+  .option("--target-bucket <bucket>", "target object bucket for bucket enumeration; defaults to OBJECT_STORAGE_BUCKET")
+  .option("--target-access-key <key>", "target object access key; defaults to OBJECT_STORAGE_ACCESS_KEY")
+  .option("--target-secret-key <key>", "target object secret key; defaults to OBJECT_STORAGE_SECRET_KEY")
   .option("--verify", "verify referenced object keys with MinIO Client (mc)")
   .option("--json", "print machine-readable object artifact proof")
-  .action(async (options: { project?: string; limit: string; endpoint?: string; bucket?: string; accessKey?: string; secretKey?: string; verify?: boolean; json?: boolean }) => {
+  .action(async (options: {
+    project?: string;
+    limit: string;
+    endpoint?: string;
+    bucket?: string;
+    accessKey?: string;
+    secretKey?: string;
+    enumerateBuckets?: boolean;
+    sourceEndpoint?: string;
+    sourceBucket?: string;
+    sourceAccessKey?: string;
+    sourceSecretKey?: string;
+    targetEndpoint?: string;
+    targetBucket?: string;
+    targetAccessKey?: string;
+    targetSecretKey?: string;
+    verify?: boolean;
+    json?: boolean;
+  }) => {
     const report = await buildObjectArtifactProofReport({
       projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
       limit: parsePositiveInteger(options.limit, 500),
@@ -1303,6 +1330,15 @@ program
       bucket: options.bucket,
       accessKey: options.accessKey,
       secretKey: options.secretKey,
+      enumerateBuckets: Boolean(options.enumerateBuckets),
+      sourceEndpoint: options.sourceEndpoint,
+      sourceBucket: options.sourceBucket,
+      sourceAccessKey: options.sourceAccessKey,
+      sourceSecretKey: options.sourceSecretKey,
+      targetEndpoint: options.targetEndpoint,
+      targetBucket: options.targetBucket,
+      targetAccessKey: options.targetAccessKey,
+      targetSecretKey: options.targetSecretKey,
       verify: Boolean(options.verify)
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatObjectArtifactProofReport(report));
@@ -5176,6 +5212,7 @@ type ObjectArtifactProofReport = {
   verifiedObjects: number;
   missingObjects: number;
   verification: "disabled" | "mc" | "unavailable";
+  bucketParity: ObjectBucketParityProof | null;
   objects: ObjectArtifactReferenceProof[];
   warnings: string[];
   recommendations: string[];
@@ -5189,6 +5226,22 @@ type ObjectArtifactReferenceProof = {
   runId: string;
   source: string;
   status: "not-checked" | "present" | "missing";
+  message: string;
+};
+
+type ObjectBucketParityProof = {
+  status: "not-checked" | "verified" | "missing" | "blocked";
+  sourceEndpoint: string;
+  sourceBucket: string;
+  targetEndpoint: string;
+  targetBucket: string;
+  sourceObjects: number;
+  targetObjects: number;
+  missingInTarget: number;
+  extraInTarget: number;
+  sampledMissingKeys: string[];
+  sampledExtraKeys: string[];
+  mirrorPlan: string[];
   message: string;
 };
 
@@ -7208,6 +7261,15 @@ async function buildObjectArtifactProofReport(input: {
   bucket?: string;
   accessKey?: string;
   secretKey?: string;
+  enumerateBuckets?: boolean;
+  sourceEndpoint?: string;
+  sourceBucket?: string;
+  sourceAccessKey?: string;
+  sourceSecretKey?: string;
+  targetEndpoint?: string;
+  targetBucket?: string;
+  targetAccessKey?: string;
+  targetSecretKey?: string;
   verify: boolean;
 }): Promise<ObjectArtifactProofReport> {
   const endpoint = input.endpoint ?? process.env.OBJECT_STORAGE_ENDPOINT ?? "not configured";
@@ -7257,12 +7319,32 @@ async function buildObjectArtifactProofReport(input: {
       });
     }
   }
+  const bucketParity = input.enumerateBuckets
+    ? await buildObjectBucketParityProof({
+      sourceEndpoint: input.sourceEndpoint ?? "http://127.0.0.1:19000",
+      sourceBucket: input.sourceBucket ?? bucket,
+      sourceAccessKey: input.sourceAccessKey ?? input.accessKey ?? process.env.OBJECT_STORAGE_ACCESS_KEY,
+      sourceSecretKey: input.sourceSecretKey ?? input.secretKey ?? process.env.OBJECT_STORAGE_SECRET_KEY,
+      targetEndpoint: input.targetEndpoint ?? endpoint,
+      targetBucket: input.targetBucket ?? bucket,
+      targetAccessKey: input.targetAccessKey ?? input.accessKey ?? process.env.OBJECT_STORAGE_ACCESS_KEY,
+      targetSecretKey: input.targetSecretKey ?? input.secretKey ?? process.env.OBJECT_STORAGE_SECRET_KEY
+    })
+    : null;
+  if (bucketParity?.status === "blocked") warnings.push(bucketParity.message);
+  if (bucketParity?.status === "missing") recommendations.push("Review the object mirror plan and mirror missing source objects to the target bucket before relying on shared storage as complete artifact storage.");
   const verifiedObjects = objectRefs.filter((ref) => ref.status === "present").length;
   const missingObjects = objectRefs.filter((ref) => ref.status === "missing").length;
   const status: ObjectArtifactProofReport["status"] = missingObjects > 0
     ? "missing"
+    : bucketParity?.status === "missing"
+      ? "missing"
+      : bucketParity?.status === "blocked"
+        ? "blocked"
     : verification === "mc"
       ? "verified"
+      : bucketParity?.status === "verified"
+        ? "verified"
       : verification === "unavailable"
         ? "blocked"
         : "metadata-only";
@@ -7279,10 +7361,142 @@ async function buildObjectArtifactProofReport(input: {
     verifiedObjects,
     missingObjects,
     verification,
+    bucketParity,
     objects: objectRefs.slice(0, 200),
     warnings,
     recommendations
   };
+}
+
+async function buildObjectBucketParityProof(input: {
+  sourceEndpoint: string;
+  sourceBucket: string;
+  sourceAccessKey?: string;
+  sourceSecretKey?: string;
+  targetEndpoint: string;
+  targetBucket: string;
+  targetAccessKey?: string;
+  targetSecretKey?: string;
+}): Promise<ObjectBucketParityProof> {
+  const mirrorPlan = [
+    `mc alias set agentflow-object-source ${shellQuote(input.sourceEndpoint)} "$SOURCE_OBJECT_STORAGE_ACCESS_KEY" "$SOURCE_OBJECT_STORAGE_SECRET_KEY"`,
+    `mc alias set agentflow-object-target ${shellQuote(input.targetEndpoint)} "$TARGET_OBJECT_STORAGE_ACCESS_KEY" "$TARGET_OBJECT_STORAGE_SECRET_KEY"`,
+    `mc mirror --overwrite=false "agentflow-object-source/${input.sourceBucket}" "agentflow-object-target/${input.targetBucket}"`
+  ];
+  const mcAvailable = await commandAvailable("mc");
+  const missingConfig = [
+    !mcAvailable ? "mc" : "",
+    !input.sourceEndpoint ? "source endpoint" : "",
+    !input.sourceBucket ? "source bucket" : "",
+    !input.sourceAccessKey ? "source access key" : "",
+    !input.sourceSecretKey ? "source secret key" : "",
+    !input.targetEndpoint || input.targetEndpoint === "not configured" ? "target endpoint" : "",
+    !input.targetBucket ? "target bucket" : "",
+    !input.targetAccessKey ? "target access key" : "",
+    !input.targetSecretKey ? "target secret key" : ""
+  ].filter(Boolean);
+  const blockedBase = {
+    status: "blocked" as const,
+    sourceEndpoint: redactDashboardUrl(input.sourceEndpoint || "missing"),
+    sourceBucket: input.sourceBucket || "missing",
+    targetEndpoint: redactDashboardUrl(input.targetEndpoint || "missing"),
+    targetBucket: input.targetBucket || "missing",
+    sourceObjects: 0,
+    targetObjects: 0,
+    missingInTarget: 0,
+    extraInTarget: 0,
+    sampledMissingKeys: [],
+    sampledExtraKeys: [],
+    mirrorPlan
+  };
+  if (missingConfig.length) {
+    return {
+      ...blockedBase,
+      message: `Bucket enumeration needs ${missingConfig.join(", ")}.`
+    };
+  }
+  const source = await listBucketKeysWithMc({
+    alias: "agentflow-object-source",
+    endpoint: input.sourceEndpoint,
+    bucket: input.sourceBucket,
+    accessKey: input.sourceAccessKey!,
+    secretKey: input.sourceSecretKey!
+  });
+  const target = await listBucketKeysWithMc({
+    alias: "agentflow-object-target",
+    endpoint: input.targetEndpoint,
+    bucket: input.targetBucket,
+    accessKey: input.targetAccessKey!,
+    secretKey: input.targetSecretKey!
+  });
+  if (!source.ok || !target.ok) {
+    return {
+      ...blockedBase,
+      message: [source.ok ? "" : `source: ${source.error}`, target.ok ? "" : `target: ${target.error}`].filter(Boolean).join(" ")
+    };
+  }
+  const sourceKeys = new Set(source.keys);
+  const targetKeys = new Set(target.keys);
+  const missing = [...sourceKeys].filter((key) => !targetKeys.has(key)).sort();
+  const extra = [...targetKeys].filter((key) => !sourceKeys.has(key)).sort();
+  return {
+    status: missing.length ? "missing" : "verified",
+    sourceEndpoint: redactDashboardUrl(input.sourceEndpoint),
+    sourceBucket: input.sourceBucket,
+    targetEndpoint: redactDashboardUrl(input.targetEndpoint),
+    targetBucket: input.targetBucket,
+    sourceObjects: sourceKeys.size,
+    targetObjects: targetKeys.size,
+    missingInTarget: missing.length,
+    extraInTarget: extra.length,
+    sampledMissingKeys: missing.slice(0, 25),
+    sampledExtraKeys: extra.slice(0, 25),
+    mirrorPlan,
+    message: missing.length
+      ? `${missing.length} source object(s) are missing from the target bucket.`
+      : "Target bucket contains every enumerated source object key."
+  };
+}
+
+async function listBucketKeysWithMc(input: {
+  alias: string;
+  endpoint: string;
+  bucket: string;
+  accessKey: string;
+  secretKey: string;
+}): Promise<{ ok: true; keys: string[] } | { ok: false; error: string }> {
+  const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-object-proof");
+  await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
+  const env = {
+    ...process.env,
+    MC_CONFIG_DIR: mcConfigDir
+  };
+  const aliasResult = await execFileText("mc", ["alias", "set", input.alias, input.endpoint, input.accessKey, input.secretKey], { allowFailure: true, env });
+  if (aliasResult.exitCode !== 0) {
+    return { ok: false, error: compactDashboardText(aliasResult.stderr || aliasResult.stdout || `mc alias set failed for ${input.alias}`, 300) };
+  }
+  const listResult = await execFileText("mc", ["find", `${input.alias}/${input.bucket}`, "--json", "--type", "f"], { allowFailure: true, env });
+  if (listResult.exitCode !== 0) {
+    return { ok: false, error: compactDashboardText(listResult.stderr || listResult.stdout || `mc find failed for ${input.alias}/${input.bucket}`, 300) };
+  }
+  return { ok: true, keys: parseMcFindKeys(listResult.stdout, input.alias, input.bucket) };
+}
+
+function parseMcFindKeys(output: string, alias: string, bucket: string): string[] {
+  const prefix = `${alias}/${bucket}/`;
+  const keys = new Set<string>();
+  for (const line of output.split(/\r?\n/).map((item) => item.trim()).filter(Boolean)) {
+    let candidate = line;
+    try {
+      const parsed = JSON.parse(line) as Record<string, unknown>;
+      candidate = String(parsed.key ?? parsed.name ?? parsed.url ?? parsed.file ?? "");
+    } catch {
+      candidate = line;
+    }
+    const normalized = candidate.replace(/^file:\/\//, "").replace(prefix, "").replace(new RegExp(`^.*?/${escapeRegExp(bucket)}/`), "");
+    if (normalized && normalized !== bucket) keys.add(normalized);
+  }
+  return [...keys].sort();
 }
 
 function collectObjectReferences(value: unknown, pathPrefix = "content", depth = 0): Array<{ path: string; value: string }> {
@@ -7375,6 +7589,11 @@ function formatObjectArtifactProofReport(report: ObjectArtifactProofReport): str
     `Verified objects: ${report.verifiedObjects}`,
     `Missing objects: ${report.missingObjects}`,
     `Verification: ${report.verification}`,
+    "",
+    "Bucket parity:",
+    report.bucketParity
+      ? `- ${report.bucketParity.status}: source=${report.bucketParity.sourceObjects}, target=${report.bucketParity.targetObjects}, missing=${report.bucketParity.missingInTarget}, extra=${report.bucketParity.extraInTarget}\n- ${report.bucketParity.message}`
+      : "- not checked",
     "",
     "Objects:",
     ...(report.objects.length ? report.objects.slice(0, 20).map((item) => `- ${item.status} ${item.key} (${item.artifactKind} ${item.artifactUri})`) : ["- none"]),
@@ -12132,6 +12351,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const objectProof = await buildObjectArtifactProofReport({
       projectRootUri: projectRootUri || undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
+      enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -12181,6 +12401,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const report = await buildObjectArtifactProofReport({
       projectRootUri: requestUrl.searchParams.get("project") || undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
+      enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verify") === "1"
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -12737,6 +12958,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const objectProof = await buildObjectArtifactProofReport({
       projectRootUri: report.projectRootUri || undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
+      enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
     const projects = await listProjectStorageSummaries(100);
@@ -15521,6 +15743,10 @@ function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, param
   </tr>`).join("");
   const warnings = report.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
   const recommendations = report.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const bucket = report.bucketParity;
+  const bucketStatusClass = bucket?.status === "verified" ? "completed" : bucket?.status === "missing" ? "failed" : "queued";
+  const missingRows = bucket?.sampledMissingKeys.map((key) => `<li><code>${escapeHtml(key)}</code></li>`).join("") ?? "";
+  const mirrorRows = bucket?.mirrorPlan.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
   return `<section class="panel">
     <div class="section-heading">
       <div><h2>Object Artifact Proof</h2><span class="muted">Read-only proof for object-backed artifact references after storage merge.</span></div>
@@ -15531,6 +15757,7 @@ function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, param
       ${metricCard("Artifacts", report.inspectedArtifacts, "recent rows inspected")}
       ${metricCard("Object Refs", report.referencedObjects, "references discovered")}
       ${metricCard("Missing", report.missingObjects, "verified missing objects")}
+      ${metricCard("Bucket Parity", bucket ? bucket.status : "not checked", bucket ? `${bucket.missingInTarget} missing` : "optional mc enumeration")}
     </div>
     <div class="meta-grid compact">
       <div><strong>Endpoint</strong>${escapeHtml(report.endpoint)}</div>
@@ -15542,8 +15769,17 @@ function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, param
       ${[...params.entries()].filter(([key]) => key !== "objectLimit" && key !== "verifyObjects").map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`).join("")}
       <label>Object limit<input name="objectLimit" inputmode="numeric" value="${escapeHtml(String(report.limit))}"></label>
       <label class="check-row"><input type="checkbox" name="verifyObjects" value="1"> Verify with mc</label>
+      <label class="check-row"><input type="checkbox" name="enumerateBuckets" value="1"> Enumerate buckets</label>
       <button type="submit">Refresh Object Proof</button>
     </form>
+    ${bucket ? `<div class="meta-grid compact">
+      <div><strong>Bucket Status</strong><span class="status ${bucketStatusClass}">${escapeHtml(bucket.status)}</span><br><span class="muted">${escapeHtml(bucket.message)}</span></div>
+      <div><strong>Source Bucket</strong>${escapeHtml(bucket.sourceEndpoint)}<br>${escapeHtml(bucket.sourceBucket)} (${formatNumber(bucket.sourceObjects)} object(s))</div>
+      <div><strong>Target Bucket</strong>${escapeHtml(bucket.targetEndpoint)}<br>${escapeHtml(bucket.targetBucket)} (${formatNumber(bucket.targetObjects)} object(s))</div>
+      <div><strong>Delta</strong>${formatNumber(bucket.missingInTarget)} missing<br><span class="muted">${formatNumber(bucket.extraInTarget)} extra in target</span></div>
+    </div>
+    ${missingRows ? `<details class="governance-details" open><summary>Sample Missing Keys</summary><ul>${missingRows}</ul></details>` : ""}
+    <details class="governance-details"><summary>Dry-Run Mirror Plan</summary><ul>${mirrorRows}</ul></details>` : ""}
     ${warnings ? `<details class="governance-details" open><summary>Warnings</summary><ul>${warnings}</ul></details>` : ""}
     ${recommendations ? `<details class="governance-details"><summary>Recommendations</summary><ul>${recommendations}</ul></details>` : ""}
     <div class="table-wrap"><table><thead><tr><th>Status</th><th>Object Key</th><th>Artifact</th><th>Detail</th></tr></thead><tbody>${sampleRows || '<tr><td colspan="4">No object-backed artifact references found in inspected rows.</td></tr>'}</tbody></table></div>
