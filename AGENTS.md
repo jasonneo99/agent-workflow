@@ -15,7 +15,9 @@ This repository is the shared Portable Agent Workflows kit. It defines reusable 
 
 Core agents:
 
-- `workflow-orchestrator`: routes tasks, delegates to specialists, and owns final workflow coherence.
+- `workflow-orchestrator`: Jarvis Orchestrator; routes natural-language goals,
+  delegates to specialists, and owns final workflow coherence across registered
+  projects.
 - `task-triager`: classifies work and selects the right workflow.
 - `context-curator`: keeps project context compact and current.
 
