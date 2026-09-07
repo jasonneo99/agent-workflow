@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { projectConfigSchema, workflowSchema } from "../../agent-registry/src/schemas.js";
@@ -95,7 +95,9 @@ test("unreachable Hulk fails closed unless explicit local fallback is configured
   const result = await executeExecutorSnapshot(fixture({ local_fallback: "explicit" }), { executable: "/definitely/missing/hulk-executor", localFallback: fallback });
   assert.equal(fallbackCalls, 1);
   assert.equal(result.fallbackUsed, true);
-  assert.notEqual(result.executionHost, "hulk");
+  assert.equal(result.requestedHost, "hulk");
+  assert.equal(result.executionHost, hostname());
+  assert.equal(result.stdout, "local");
 });
 
 test("current registration recheck rejects project-name spoofing and configuration drift", () => {
