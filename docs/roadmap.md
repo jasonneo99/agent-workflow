@@ -42,6 +42,108 @@ Completed foundations:
 - Open-source boundary and shared-IP comparison docs.
 - Agent design-pattern gap analysis covering single-shot, ReAct, planner-executor, reflexive, verifier-gated, and combined production architectures.
 
+## Milestone Map
+
+Ultimate goal: make Agent Workflow a portable, local-first, open-source
+developer operating layer for AI agents. A developer should be able to connect
+Codex, Cursor, VS Code, CLI, MCP, local models, OpenAI, Bedrock, or BYO model
+gateways; point Agent Workflow at a project; and get repeatable agentic
+development workflows that understand project-local context, route work to the
+right specialists and models, manage approvals safely, reduce tokens and cost,
+learn from outcomes, and improve over time without exporting private project
+intelligence by default.
+
+These milestones organize the detailed roadmap items below:
+
+1. **Portable Core**
+   - Workstreams: reusable agent cards, reusable workflow definitions, project
+     templates, CLI commands, MCP tools, provider-neutral schemas, workflow
+     authoring, bundle compatibility, and IDE onboarding.
+   - Current status: core is usable and versioned; keep future changes
+     provider-neutral and portable across Codex, Cursor, VS Code, CLI, and MCP.
+
+2. **Enterprise Local Runtime**
+   - Workstreams: Postgres/pgvector, Redis, object storage, durable runs,
+     tasks, approvals, receipts, artifacts, memory, indexes, project registry,
+     and bootstrap/doctor tooling.
+   - Current status: local enterprise storage is the default serious workflow;
+     simple flat-file mode remains an opt-in lightweight path.
+
+3. **Developer Dashboard**
+   - Workstreams: dashboard home, runs, queue, approvals, projects, agents,
+     providers, model catalog, learning, graph, settings, governance, server
+     readiness, screenshots, action feedback, and visual polish.
+   - Current status: dashboard is broad and useful; continue prioritizing
+     action clarity, fewer confusing lists, and decision-ready status surfaces.
+
+4. **Safe Autonomy**
+   - Workstreams: action policies, approval inbox, always-approved local rules,
+     approval autopilot, backlog radar, daemon-safe cleanup, stale-run repair,
+     deployment/autonomy approvals, and high-risk human gates.
+   - Current status: low/medium local developer side effects can be automated
+     by policy; high-risk, destructive, provider, server, network, production,
+     and private-data actions stay gated.
+
+5. **Model Intelligence Layer**
+   - Workstreams: provider adapters, live model catalogs, auto tier routing,
+     local/BYO/OpenAI/Bedrock/Kiro support, model policy selection, cost and
+     quality reporting, fallback behavior, and provider-specific overrides.
+   - Current status: model selection can use live catalogs and policy scoring;
+     next improvement is stronger holdout evidence before expanding local or
+     cheaper routing thresholds.
+
+6. **Local Learning Daemon**
+   - Workstreams: learning reports, proposal inbox, apply-approved mode,
+     workflow-shape optimizer, project discovery, daemon heartbeat/status,
+     approval autopilot integration, and owned learning files.
+   - Current status: daemon can observe, propose, and autonomously update
+     Agent Workflow-owned local learning state across registered projects.
+
+7. **Self-Improving Agent System**
+   - Workstreams: agent-improvement reports, YAML patch previews, holdout eval
+     scoring, promotion queues, rollback/source-hash evidence, project-local
+     agent cards, and owner-controlled auto-apply.
+   - Current status: recommendations, patches, evals, and promotions exist;
+     next improvement is low-risk project-local auto-apply for passing patches
+     with rollback receipts.
+
+8. **Multi-Project / Multi-Machine State Plane**
+   - Workstreams: shared storage migration, Hulk/LAN/Tailscale state plane,
+     project alias merge, object artifact proof, offline fallback, background
+     sync, cross-machine path mapping, and switch-over evidence.
+   - Current status: shared storage can be proven as primary while localhost
+     storage remains fallback-only; continue hardening sync and recovery proof.
+
+9. **Governed Server Mode**
+   - Workstreams: authenticated HTTP mode, registered project ids, request
+     envelopes, route previews, queue endpoint, approval/action envelopes,
+     auth hardening, rate limits, redacted audit logs, network binding defaults,
+     and reverse-proxy/TLS guidance.
+   - Current status: queueing is gated and approval/action preview exists;
+     next improvement is the mutation-disabled remote approval/action endpoint
+     behind explicit server-mode/auth/role/idempotency/receipt gates.
+
+10. **Production-Ready Developer Workflow**
+    - Workstreams: one-command dev startup, LaunchAgent durability, worker
+      supervision, run-and-watch, onboarding docs, local smoke tests, dashboard
+      feedback, and default recommended workflow.
+    - Current status: local dev startup and durable supervision are usable;
+      keep reducing setup ambiguity and stuck-process confusion.
+
+11. **Trust, Recovery, And Distribution**
+    - Workstreams: signed bundles, trusted registry, npm publishing, release
+      checks, scrubbed examples, screenshots, backup/restore, disaster recovery,
+      bundle lifecycle planning, and contribution boundaries.
+    - Current status: package distribution and trust primitives exist; keep
+      release/readiness evidence and recovery proof easy to verify.
+
+12. **Ecosystem Fit**
+    - Workstreams: Codex, Cursor, VS Code, CLI, MCP stdio, future hosted/server
+      clients, local models, OpenAI, Bedrock, BYO gateways, and open-source docs
+      for integration examples.
+    - Current status: MCP/client integrations work but need continued transport
+      diagnostics and reload guidance for Codex-side stdio failures.
+
 ## Phase 1: Shared Platform Hardening
 
 Goal: make the reusable platform safer and easier to adopt without requiring private product context.
@@ -516,6 +618,52 @@ foundation is complete.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [x] Provide documented recovery procedures and automated restore verification.
   - Next: see Governed server mode for registered-project routing and shared-runtime readiness.
+
+## Roadmap Task And Bug Register
+
+This register records cross-cutting tasks and recurring defects that should stay
+visible even when the detailed roadmap sections move around. The dashboard reads
+this file directly, so roadmap updates automatically flow into `/roadmap` and
+`/api/roadmap`.
+
+- [x] Task: create a live roadmap dashboard with list and Gantt-style views.
+  - Milestone: 3 Developer Dashboard
+  - Priority: medium
+  - Status: implemented as a read-only dashboard generated from `docs/roadmap.md`.
+  - Scope: expose all checklist tasks, next actions, bugs, milestone links, and source line references without creating a second roadmap database.
+
+- [ ] Bug: recurring Codex MCP transport closes during planning or approval calls.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Severity: high
+  - Status: open
+  - Permanent fix direction: add supervised and reconnectable MCP lifecycle diagnostics, keep stdio payloads compact, record exact launcher exit and stderr evidence, surface recovery actions in Runtime Monitor and Roadmap dashboards, and preserve CLI fallback receipts when the client-owned stdio pipe drops.
+  - Current mitigation: Agent Workflow services continue running independently, the CLI fallback can complete local work, and restarting the Codex task/app creates a fresh private MCP subprocess.
+  - Boundary: Agent Workflow can detect, diagnose, record, and guide recovery, but Codex owns the private stdio transport and may still close it outside this repository.
+
+- [ ] Task: link every future roadmap task or bug to a milestone.
+  - Milestone: 3 Developer Dashboard
+  - Priority: high
+  - Status: active convention
+  - Rule: prefer an explicit `Milestone: N` detail line for new cross-cutting register items; the dashboard falls back to keyword inference for older roadmap checklist items.
+
+- [x] Task: surface next best prioritized roadmap work on the dashboard home.
+  - Milestone: 3 Developer Dashboard
+  - Priority: medium
+  - Status: implemented
+  - Scope: show the top open roadmap tasks and bugs, critical/high counts, and quick links into list or Gantt roadmap views.
+
+- [x] Task: add roadmap status editing from the dashboard.
+  - Milestone: 3 Developer Dashboard
+  - Priority: medium
+  - Status: implemented
+  - Scope: allow checklist-backed roadmap tasks and bugs to be marked done or reopened from `/roadmap` while keeping generated `Next:` rows read-only.
+
+- [x] Task: add roadmap priority editing from the dashboard.
+  - Milestone: 3 Developer Dashboard
+  - Priority: medium
+  - Status: implemented
+  - Scope: allow checklist-backed roadmap tasks and bugs to set explicit `Priority:` values from `/roadmap` while preserving inferred priorities for older items.
 
 ## Contribution Boundary
 

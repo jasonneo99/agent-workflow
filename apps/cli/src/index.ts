@@ -2607,7 +2607,7 @@ program
         process.exitCode = 1;
         return;
       }
-      const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
+      const project = await loadApprovalProjectConfig(approvalForGate);
       const actorRole = normalizeActorRole(options.actorRole, "approver");
       const gate = evaluateRoleGate(project, actorRole, options.approve ? "can_approve_actions" : "can_reject_actions");
       if (!gate.allowed) {
@@ -5886,6 +5886,7 @@ type DashboardHomeHealth = {
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
   runtimeMonitor: RuntimeMonitorReport;
+  roadmap: RoadmapDashboardReport;
   queue: DashboardQueueItem[];
   projects: DashboardProjectSummary[];
   services: Awaited<ReturnType<typeof checkServices>>;
@@ -17727,6 +17728,31 @@ async function loadLocalProjectConfig(projectRootUri: string): Promise<ProjectCo
   return loadProjectConfig(await resolveLocalProjectRootUri(projectRootUri));
 }
 
+async function loadApprovalProjectConfig(approval: DashboardActionApproval): Promise<ProjectConfig> {
+  try {
+    return await loadLocalProjectConfig(approval.projectRootUri);
+  } catch (primaryError) {
+    const hostProject = await loadProjectConfig(rootDir).catch(() => null);
+    if (hostProject?.project.name === approval.projectName) return hostProject;
+    const summaries = await listProjectStorageSummaries(1000).catch(() => []);
+    const candidates: string[] = [];
+    for (const summary of summaries) {
+      if (summary.name !== approval.projectName) continue;
+      const resolution = await resolveLocalProjectPath(summary.rootUri);
+      if (!resolution.localPathExists) continue;
+      const configPath = path.join(resolution.localRootUri, ".agent-workflow", "project.yaml");
+      if (await pathExists(configPath)) candidates.push(resolution.localRootUri);
+    }
+    const preferred = [...new Set(candidates)].sort((left, right) => {
+      const leftWorktree = left.includes(`${path.sep}.codex${path.sep}worktrees${path.sep}`) ? 1 : 0;
+      const rightWorktree = right.includes(`${path.sep}.codex${path.sep}worktrees${path.sep}`) ? 1 : 0;
+      return leftWorktree - rightWorktree || left.length - right.length || left.localeCompare(right);
+    })[0];
+    if (preferred) return loadProjectConfig(preferred);
+    throw primaryError;
+  }
+}
+
 async function loadPrivateEvaluationScoring(
   projectDir: string,
   profilePath: string
@@ -18173,6 +18199,27 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/roadmap-item") {
+    const form = await readFormBody(request);
+    const result = await appendRoadmapRegisterItem(form);
+    respondDashboardAction(request, response, form, result, "/roadmap");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/roadmap-status") {
+    const form = await readFormBody(request);
+    const result = await updateRoadmapTaskStatus(form);
+    respondDashboardAction(request, response, form, result, "/roadmap");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/roadmap-priority") {
+    const form = await readFormBody(request);
+    const result = await updateRoadmapTaskPriority(form);
+    respondDashboardAction(request, response, form, result, "/roadmap");
+    return;
+  }
+
   if (requestUrl.pathname === "/api/runs") {
     const runs = await listWorkflowRuns(50);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -18562,6 +18609,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/model-catalog") {
     const report = await loadDashboardModelCatalogReport();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/roadmap") {
+    const report = await loadRoadmapDashboardReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -19301,6 +19355,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/roadmap") {
+    const report = await loadRoadmapDashboardReport();
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderRoadmapDashboardHtml(report, requestUrl.searchParams));
+    return;
+  }
+
   if (requestUrl.pathname === "/info" || requestUrl.pathname === "/settings") {
     const info = await withTimeout(
       loadDashboardInfo(dashboardUrlFromRequest(request)),
@@ -19312,12 +19373,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows, worker, supervisor, runtimeMonitor, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
+  const [runs, workflows, worker, supervisor, runtimeMonitor, roadmap, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
     listWorkflowRuns(25),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
     loadRuntimeMonitorReport(),
+    loadRoadmapDashboardReport(),
     listWorkflowQueue(100),
     listProjectStorageSummaries(100),
     checkServices(),
@@ -19337,6 +19399,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     worker,
     supervisor,
     runtimeMonitor,
+    roadmap,
     queue,
     projects,
     services,
@@ -19399,6 +19462,7 @@ function renderDashboardHtml(
       </div>
     </div>
     ${renderDashboardActionCenterHtml(health)}
+    ${renderDashboardRoadmapPriorityHtml(health.roadmap)}
     <section class="panel">
       <h2>System Health</h2>
       ${renderDashboardHealthHtml(health)}
@@ -20090,6 +20154,549 @@ function renderApprovalRulesHtml(
   </main>
 </body>
 </html>`;
+}
+
+type RoadmapTaskStatus = "done" | "open" | "next";
+type RoadmapTaskKind = "task" | "bug";
+type RoadmapPriority = "critical" | "high" | "medium" | "low";
+
+type RoadmapMilestone = {
+  number: number;
+  title: string;
+  workstreams: string[];
+  status: string;
+};
+
+type RoadmapTask = {
+  id: string;
+  kind: RoadmapTaskKind;
+  status: RoadmapTaskStatus;
+  phase: string;
+  title: string;
+  milestoneNumber: number | null;
+  milestoneTitle: string | null;
+  priority: RoadmapPriority;
+  sourceLine: number;
+  details: string[];
+};
+
+type RoadmapDashboardReport = {
+  kind: "agentflow_roadmap_dashboard";
+  generatedAt: string;
+  roadmapPath: string;
+  milestones: RoadmapMilestone[];
+  tasks: RoadmapTask[];
+  bugs: RoadmapTask[];
+  summary: {
+    milestoneCount: number;
+    taskCount: number;
+    bugCount: number;
+    openCount: number;
+    doneCount: number;
+    nextCount: number;
+    priorityCounts: Record<RoadmapPriority, number>;
+  };
+};
+
+async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
+  const roadmapPath = path.join(rootDir, "docs", "roadmap.md");
+  const markdown = await fs.readFile(roadmapPath, "utf8");
+  const lines = markdown.split(/\r?\n/u);
+  const milestones = parseRoadmapMilestones(lines);
+  const milestoneByNumber = new Map(milestones.map((milestone) => [milestone.number, milestone]));
+  const tasks = parseRoadmapTasks(lines, milestoneByNumber);
+  const bugs = tasks.filter((task) => task.kind === "bug");
+  return {
+    kind: "agentflow_roadmap_dashboard",
+    generatedAt: new Date().toISOString(),
+    roadmapPath,
+    milestones,
+    tasks,
+    bugs,
+    summary: {
+      milestoneCount: milestones.length,
+      taskCount: tasks.length,
+      bugCount: bugs.length,
+      openCount: tasks.filter((task) => task.status === "open").length,
+      doneCount: tasks.filter((task) => task.status === "done").length,
+      nextCount: tasks.filter((task) => task.status === "next").length,
+      priorityCounts: roadmapPriorityOrder().reduce((counts, priority) => {
+        counts[priority] = tasks.filter((task) => task.priority === priority).length;
+        return counts;
+      }, {} as Record<RoadmapPriority, number>)
+    }
+  };
+}
+
+function parseRoadmapMilestones(lines: string[]): RoadmapMilestone[] {
+  const milestones: RoadmapMilestone[] = [];
+  let current: RoadmapMilestone | null = null;
+  let inMilestoneMap = false;
+  let continuation: "workstreams" | "status" | null = null;
+  for (const line of lines) {
+    if (line.startsWith("## Milestone Map")) {
+      inMilestoneMap = true;
+      continue;
+    }
+    if (inMilestoneMap && line.startsWith("## ") && !line.startsWith("## Milestone Map")) break;
+    if (!inMilestoneMap) continue;
+    const match = line.match(/^(\d+)\.\s+\*\*(.+?)\*\*/u);
+    if (match) {
+      current = { number: Number(match[1]), title: match[2], workstreams: [], status: "" };
+      milestones.push(current);
+      continuation = null;
+      continue;
+    }
+    if (!current) continue;
+    const workstream = line.match(/^\s+-\s+Workstreams:\s+(.+)$/u);
+    if (workstream) {
+      current.workstreams = workstream[1].split(",").map((item) => item.trim().replace(/\.$/u, "")).filter(Boolean);
+      continuation = "workstreams";
+      continue;
+    }
+    const status = line.match(/^\s+-\s+Current status:\s+(.+)$/u);
+    if (status) {
+      current.status = status[1];
+      continuation = "status";
+      continue;
+    }
+    if (continuation && /^\s{5,}\S/u.test(line)) {
+      if (continuation === "status") current.status = `${current.status} ${line.trim()}`.trim();
+      if (continuation === "workstreams") {
+        current.workstreams = `${current.workstreams.join(", ")} ${line.trim()}`
+          .split(",")
+          .map((item) => item.trim().replace(/\.$/u, ""))
+          .filter(Boolean);
+      }
+      continue;
+    }
+    if (line.trim() === "") continuation = null;
+  }
+  return milestones;
+}
+
+function parseRoadmapTasks(lines: string[], milestoneByNumber: Map<number, RoadmapMilestone>): RoadmapTask[] {
+  const tasks: RoadmapTask[] = [];
+  let phase = "Unassigned";
+  let activeTask: RoadmapTask | null = null;
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const phaseMatch = line.match(/^##\s+(.+)$/u);
+    if (phaseMatch) {
+      phase = phaseMatch[1];
+      activeTask = null;
+      continue;
+    }
+    const checklist = line.match(/^- \[(x| )\]\s+(.+)$/iu);
+    if (checklist) {
+      const title = cleanRoadmapTaskTitle(checklist[2]);
+      const kind: RoadmapTaskKind = /^Bug:/iu.test(title) ? "bug" : "task";
+      const milestoneNumber = inferRoadmapMilestoneNumber(title, phase, []);
+      const milestone = milestoneNumber ? milestoneByNumber.get(milestoneNumber) ?? null : null;
+      activeTask = {
+        id: roadmapTaskId(title, index + 1),
+        kind,
+        status: checklist[1].toLowerCase() === "x" ? "done" : "open",
+        phase,
+        title,
+        milestoneNumber: milestone?.number ?? milestoneNumber,
+        milestoneTitle: milestone?.title ?? null,
+        priority: inferRoadmapPriority(title, phase, [], kind, checklist[1].toLowerCase() === "x" ? "done" : "open"),
+        sourceLine: index + 1,
+        details: []
+      };
+      tasks.push(activeTask);
+      continue;
+    }
+    if (!activeTask) continue;
+    const detail = line.match(/^\s+-\s+(.+)$/u);
+    if (!detail) continue;
+    activeTask.details.push(detail[1]);
+    const explicitMilestone = detail[1].match(/^Milestone:\s*(\d+)/iu);
+      if (explicitMilestone) {
+        const milestone = milestoneByNumber.get(Number(explicitMilestone[1])) ?? null;
+        activeTask.milestoneNumber = milestone?.number ?? Number(explicitMilestone[1]);
+        activeTask.milestoneTitle = milestone?.title ?? activeTask.milestoneTitle;
+      }
+      const explicitPriority = detail[1].match(/^Priority:\s*(critical|high|medium|low)/iu);
+      if (explicitPriority) activeTask.priority = explicitPriority[1].toLowerCase() as RoadmapPriority;
+      const next = detail[1].match(/^Next:\s+(.+)$/iu);
+      if (next) {
+        const nextTitle = cleanRoadmapTaskTitle(next[1]);
+        const inferred = inferRoadmapMilestoneNumber(nextTitle, phase, activeTask.details) ?? activeTask.milestoneNumber;
+        const milestone = inferred ? milestoneByNumber.get(inferred) ?? null : null;
+        const nextKind: RoadmapTaskKind = /^Bug:/iu.test(nextTitle) ? "bug" : "task";
+        tasks.push({
+          id: roadmapTaskId(nextTitle, index + 1),
+          kind: nextKind,
+          status: "next",
+          phase,
+          title: nextTitle,
+          milestoneNumber: milestone?.number ?? inferred,
+          milestoneTitle: milestone?.title ?? null,
+          priority: inferRoadmapPriority(nextTitle, phase, activeTask.details, nextKind, "next"),
+          sourceLine: index + 1,
+          details: [`Parent: ${activeTask.title}`]
+        });
+    }
+  }
+  return tasks.map((task) => {
+    if (task.milestoneNumber) return task;
+    const inferred = inferRoadmapMilestoneNumber(task.title, task.phase, task.details);
+    const milestone = inferred ? milestoneByNumber.get(inferred) ?? null : null;
+    return { ...task, milestoneNumber: milestone?.number ?? inferred, milestoneTitle: milestone?.title ?? null };
+  });
+}
+
+async function appendRoadmapRegisterItem(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const kind: RoadmapTaskKind = form.get("kind") === "bug" ? "bug" : "task";
+  const title = cleanRoadmapFormText(form.get("title") ?? "");
+  if (!title) return { ok: false, error: "Roadmap item title is required." };
+  const milestone = parsePositiveInteger(form.get("milestone") ?? "", 0);
+  if (milestone < 1 || milestone > 12) return { ok: false, error: "Roadmap item needs a milestone from 1 through 12." };
+  const priority = parseRoadmapPriority(form.get("priority") ?? "") ?? (kind === "bug" ? "high" : "medium");
+  const note = cleanRoadmapFormText(form.get("note") ?? "");
+  const status = form.get("status") === "done" ? "x" : " ";
+  const roadmapPath = path.join(rootDir, "docs", "roadmap.md");
+  const markdown = await fs.readFile(roadmapPath, "utf8");
+  const marker = "\n## Contribution Boundary";
+  const itemTitle = title.match(/^(Task|Bug):/iu) ? title : `${kind === "bug" ? "Bug" : "Task"}: ${title}`;
+  const item = [
+    `- [${status}] ${itemTitle}`,
+    `  - Milestone: ${milestone}`,
+    `  - Priority: ${priority}`,
+    `  - Status: ${status === "x" ? "done" : "open"}`,
+    ...(note ? [`  - Note: ${note}`] : []),
+    ""
+  ].join("\n");
+  const nextMarkdown = markdown.includes(marker)
+    ? markdown.replace(marker, `\n${item}${marker}`)
+    : `${markdown.trimEnd()}\n\n## Roadmap Task And Bug Register\n\n${item}`;
+  await fs.writeFile(roadmapPath, nextMarkdown, "utf8");
+  return {
+    ok: true,
+    title: "Roadmap item recorded",
+    output: `${itemTitle} was added to docs/roadmap.md with milestone ${milestone} and ${priority} priority.`
+  };
+}
+
+async function updateRoadmapTaskStatus(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const lineNumber = parsePositiveInteger(form.get("line") ?? "", 0);
+  const desiredStatus = form.get("status") === "done" ? "done" : form.get("status") === "open" ? "open" : null;
+  if (!lineNumber || !desiredStatus) return { ok: false, error: "Roadmap status update requires a checklist line and status." };
+  const roadmapPath = path.join(rootDir, "docs", "roadmap.md");
+  const markdown = await fs.readFile(roadmapPath, "utf8");
+  const lines = markdown.split(/\r?\n/u);
+  const index = lineNumber - 1;
+  const line = lines[index];
+  if (!line || !/^- \[(x| )\]\s+/iu.test(line)) {
+    return { ok: false, error: "Only checklist-backed roadmap rows can be marked done or open." };
+  }
+  const nextMarker = desiredStatus === "done" ? "x" : " ";
+  const nextLine = line.replace(/^- \[(x| )\]/iu, `- [${nextMarker}]`);
+  if (nextLine === line) {
+    return { ok: true, title: "Roadmap already up to date", output: `docs/roadmap.md:${lineNumber} already has status ${desiredStatus}.` };
+  }
+  lines[index] = nextLine;
+  await fs.writeFile(roadmapPath, lines.join("\n"), "utf8");
+  return {
+    ok: true,
+    title: `Roadmap marked ${desiredStatus}`,
+    output: `Updated docs/roadmap.md:${lineNumber} to ${desiredStatus}.`
+  };
+}
+
+async function updateRoadmapTaskPriority(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const lineNumber = parsePositiveInteger(form.get("line") ?? "", 0);
+  const priority = parseRoadmapPriority(form.get("priority") ?? "");
+  if (!lineNumber || !priority) return { ok: false, error: "Roadmap priority update requires a checklist line and valid priority." };
+  const roadmapPath = path.join(rootDir, "docs", "roadmap.md");
+  const markdown = await fs.readFile(roadmapPath, "utf8");
+  const lines = markdown.split(/\r?\n/u);
+  const index = lineNumber - 1;
+  const line = lines[index];
+  if (!line || !/^- \[(x| )\]\s+/iu.test(line)) {
+    return { ok: false, error: "Only checklist-backed roadmap rows can have priority edited." };
+  }
+
+  let insertAt = index + 1;
+  let existingPriorityIndex = -1;
+  for (let cursor = index + 1; cursor < lines.length; cursor += 1) {
+    const current = lines[cursor];
+    if (/^##\s+/u.test(current) || /^- \[(x| )\]\s+/iu.test(current)) break;
+    if (/^\s+-\s+Milestone:/iu.test(current)) insertAt = cursor + 1;
+    if (/^\s+-\s+Priority:/iu.test(current)) {
+      existingPriorityIndex = cursor;
+      break;
+    }
+  }
+  if (existingPriorityIndex >= 0) {
+    lines[existingPriorityIndex] = `  - Priority: ${priority}`;
+  } else {
+    lines.splice(insertAt, 0, `  - Priority: ${priority}`);
+  }
+  await fs.writeFile(roadmapPath, lines.join("\n"), "utf8");
+  return {
+    ok: true,
+    title: `Roadmap priority set to ${priority}`,
+    output: `Updated docs/roadmap.md:${lineNumber} priority to ${priority}.`
+  };
+}
+
+function cleanRoadmapFormText(value: string): string {
+  return value.replace(/\s+/gu, " ").trim().replace(/[<>]/gu, "");
+}
+
+function cleanRoadmapTaskTitle(value: string): string {
+  return value.replace(/\s+$/u, "").replace(/\.$/u, "");
+}
+
+function roadmapTaskId(title: string, line: number): string {
+  return `${line}-${title.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "").slice(0, 60)}`;
+}
+
+function inferRoadmapMilestoneNumber(title: string, phase: string, details: string[]): number | null {
+  const haystack = `${title} ${phase} ${details.join(" ")}`.toLowerCase();
+  if (/\bmcp\b|codex|cursor|vs code|\bide\b|stdio|transport/u.test(haystack)) return 12;
+  if (/signed|trusted|registry|npm|publish|release|backup|restore|disaster|bundle/u.test(haystack)) return 11;
+  if (/launchagent|supervisor|worker|run-and-watch|startup|stale process|durable workflow/u.test(haystack)) return 10;
+  if (/server mode|authenticated|http|rate limit|remote|request envelope|reverse proxy|tls/u.test(haystack)) return 9;
+  if (/hulk|shared storage|offline|sync|state plane|migration|cross-machine|alias|object storage/u.test(haystack)) return 8;
+  if (/agent improvement|promotion|holdout|yaml patch|self-improv|agent definition/u.test(haystack)) return 7;
+  if (/learning|daemon|proposal|workflow shape|discovery|feedback memory/u.test(haystack)) return 6;
+  if (/model|provider|routing|catalog|token|cost|quality|tuning|eval/u.test(haystack)) return 5;
+  if (/approval|autonomy|policy|role|governance|safety|permission|gate/u.test(haystack)) return 4;
+  if (/dashboard|graph|gantt|roadmap|ux|visual|navigation|settings|surface/u.test(haystack)) return 3;
+  if (/postgres|pgvector|redis|minio|enterprise storage|durable|receipt|artifact/u.test(haystack)) return 2;
+  if (/portable|workflow authoring|template|schema|cli|core|project onboarding/u.test(haystack)) return 1;
+  return null;
+}
+
+function parseRoadmapPriority(value: string): RoadmapPriority | null {
+  const normalized = value.trim().toLowerCase();
+  return roadmapPriorityOrder().includes(normalized as RoadmapPriority) ? normalized as RoadmapPriority : null;
+}
+
+function roadmapPriorityOrder(): RoadmapPriority[] {
+  return ["critical", "high", "medium", "low"];
+}
+
+function roadmapPriorityRank(priority: RoadmapPriority): number {
+  return roadmapPriorityOrder().indexOf(priority);
+}
+
+function inferRoadmapPriority(title: string, phase: string, details: string[], kind: RoadmapTaskKind, status: RoadmapTaskStatus): RoadmapPriority {
+  const explicit = details.map((detail) => detail.match(/^Priority:\s*(critical|high|medium|low)/iu)?.[1]).find(Boolean);
+  if (explicit) return explicit.toLowerCase() as RoadmapPriority;
+  if (status === "done") return "low";
+  const haystack = `${title} ${phase} ${details.join(" ")}`.toLowerCase();
+  if (kind === "bug" && /transport closed|data loss|secret|security|production|destructive|auth/u.test(haystack)) return "high";
+  if (/next:|next best|high priority|server mode|shared storage|approval|mcp|transport|production/u.test(haystack)) return "high";
+  if (/dashboard|learning|model|routing|eval|provider|autonomy|offline|sync/u.test(haystack)) return "medium";
+  return "low";
+}
+
+function renderRoadmapDashboardHtml(report: RoadmapDashboardReport, params: URLSearchParams): string {
+  const view = params.get("view") === "gantt" ? "gantt" : "list";
+  const milestoneFilter = params.get("milestone") ?? "all";
+  const statusFilter = params.get("status") ?? "open";
+  const priorityFilter = params.get("priority") ?? "all";
+  const visibleTasks = report.tasks.filter((task) => {
+    const milestoneOk = milestoneFilter === "all" || String(task.milestoneNumber ?? "none") === milestoneFilter;
+    const statusOk = statusFilter === "all" || task.status === statusFilter || (statusFilter === "open" && task.status === "next");
+    const priorityOk = priorityFilter === "all" || task.priority === priorityFilter;
+    return milestoneOk && statusOk && priorityOk;
+  }).sort(compareRoadmapTasks);
+  const milestoneOptions = [
+    `<option value="all"${milestoneFilter === "all" ? " selected" : ""}>All milestones</option>`,
+    `<option value="none"${milestoneFilter === "none" ? " selected" : ""}>Unlinked</option>`,
+    ...report.milestones.map((milestone) => `<option value="${milestone.number}"${milestoneFilter === String(milestone.number) ? " selected" : ""}>${milestone.number}. ${escapeHtml(milestone.title)}</option>`)
+  ].join("");
+  const statusOptions = ["open", "next", "done", "all"].map((status) => `<option value="${status}"${statusFilter === status ? " selected" : ""}>${escapeHtml(titleCase(status))}</option>`).join("");
+  const priorityOptions = [
+    `<option value="all"${priorityFilter === "all" ? " selected" : ""}>All priorities</option>`,
+    ...roadmapPriorityOrder().map((priority) => `<option value="${priority}"${priorityFilter === priority ? " selected" : ""}>${escapeHtml(titleCase(priority))}</option>`)
+  ].join("");
+  const viewParams = new URLSearchParams(params);
+  viewParams.set("view", view === "gantt" ? "list" : "gantt");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Roadmap</title>
+  <style>${dashboardCss()}${roadmapDashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("roadmap")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Roadmap</h1>
+        <p class="muted">Live milestone, task, and bug view generated from <code>docs/roadmap.md</code>.</p>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/api/roadmap">JSON</a>
+        <a class="button secondary" href="/roadmap?${escapeHtml(viewParams.toString())}">${view === "gantt" ? "List View" : "Gantt View"}</a>
+      </div>
+    </div>
+    ${renderDashboardActionHistory()}
+    <section class="panel">
+      <form class="workflow-form" method="get" action="/roadmap">
+        <input type="hidden" name="view" value="${escapeHtml(view)}">
+        <label>Milestone<select name="milestone">${milestoneOptions}</select></label>
+        <label>Status<select name="status">${statusOptions}</select></label>
+        <label>Priority<select name="priority">${priorityOptions}</select></label>
+        <div class="form-actions"><button type="submit">${iconLabel("search", "Filter")}</button><a class="button secondary" href="/roadmap?view=${escapeHtml(view)}">Reset</a></div>
+      </form>
+    </section>
+    ${renderRoadmapCaptureForm(report, params)}
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Milestones", report.summary.milestoneCount, "goal lanes", "clipboard")}
+        ${metricCard("Open", report.summary.openCount + report.summary.nextCount, "active tasks", "activity")}
+        ${metricCard("Done", report.summary.doneCount, "completed items", "check")}
+        ${metricCard("Bugs", report.summary.bugCount, "tracked defects", "warning")}
+        ${metricCard("High Priority", report.summary.priorityCounts.critical + report.summary.priorityCounts.high, "critical/high", "warning")}
+      </div>
+      <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Tasks link to milestones by explicit <code>Milestone:</code> notes when present, otherwise by roadmap keyword inference.</p>
+    </section>
+    ${renderRoadmapMilestoneIndex(report)}
+    ${view === "gantt" ? renderRoadmapGantt(visibleTasks, report.milestones) : renderRoadmapTaskList(visibleTasks, params)}
+  </main>
+</body>
+</html>`;
+}
+
+function renderRoadmapMilestoneIndex(report: RoadmapDashboardReport): string {
+  const rows = report.milestones.map((milestone) => {
+    const linked = report.tasks.filter((task) => task.milestoneNumber === milestone.number);
+    const open = linked.filter((task) => task.status !== "done").length;
+    return `<tr>
+      <td><strong>${milestone.number}. ${escapeHtml(milestone.title)}</strong><br><span class="muted">${escapeHtml(milestone.status || "No status text recorded.")}</span></td>
+      <td>${formatNumber(linked.length)}<br><span class="muted">${formatNumber(open)} open</span></td>
+      <td>${milestone.workstreams.slice(0, 8).map((item) => `<span class="tag">${escapeHtml(item)}</span>`).join(" ")}</td>
+      <td><a href="/roadmap?milestone=${milestone.number}&status=all">Open</a></td>
+    </tr>`;
+  }).join("");
+  return `<section class="panel"><h2>Milestone Index</h2><div class="table-wrap"><table><thead><tr><th>Milestone</th><th>Tasks</th><th>Workstreams</th><th>View</th></tr></thead><tbody>${rows}</tbody></table></div></section>`;
+}
+
+function renderRoadmapTaskList(tasks: RoadmapTask[], params: URLSearchParams): string {
+  const rows = tasks.map((task) => `
+    <tr class="roadmap-${task.kind}">
+      <td><span class="status ${task.status === "done" ? "completed" : task.status === "next" ? "running" : "queued"}">${escapeHtml(task.status)}</span><br><span class="priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span><br><span class="muted">${escapeHtml(task.kind)}</span></td>
+      <td>${task.milestoneNumber ? `<strong>${task.milestoneNumber}. ${escapeHtml(task.milestoneTitle ?? "Milestone")}</strong>` : "<span class=\"muted\">Unlinked</span>"}<br><span class="muted">${escapeHtml(task.phase)}</span></td>
+      <td><strong>${escapeHtml(task.title)}</strong>${task.details.length ? `<br><span class="muted">${escapeHtml(task.details.slice(0, 2).join(" "))}</span>` : ""}</td>
+      <td><code>docs/roadmap.md:${task.sourceLine}</code></td>
+      <td>${renderRoadmapRowActions(task, params)}</td>
+    </tr>
+  `).join("");
+  return `<section class="panel"><h2>Task And Bug List</h2><div class="table-wrap"><table><thead><tr><th>Status</th><th>Milestone</th><th>Task</th><th>Source</th><th>Actions</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No matching roadmap tasks found.</td></tr>"}</tbody></table></div></section>`;
+}
+
+function renderRoadmapStatusControls(task: RoadmapTask, params: URLSearchParams): string {
+  if (task.status === "next") return "<span class=\"muted\">Derived next action</span>";
+  const nextStatus = task.status === "done" ? "open" : "done";
+  return `<form class="inline-form compact-form" method="post" action="/api/roadmap-status">
+    ${dashboardReturnInput("/roadmap", params)}
+    <input type="hidden" name="line" value="${escapeHtml(String(task.sourceLine))}">
+    <input type="hidden" name="status" value="${escapeHtml(nextStatus)}">
+    <button class="${nextStatus === "done" ? "" : "secondary"}" type="submit">${nextStatus === "done" ? "Mark Done" : "Reopen"}</button>
+  </form>`;
+}
+
+function renderRoadmapPriorityControls(task: RoadmapTask, params: URLSearchParams): string {
+  if (task.status === "next") return "";
+  const options = roadmapPriorityOrder().map((priority) => `<option value="${priority}"${priority === task.priority ? " selected" : ""}>${escapeHtml(titleCase(priority))}</option>`).join("");
+  return `<form class="inline-form compact-form" method="post" action="/api/roadmap-priority">
+    ${dashboardReturnInput("/roadmap", params)}
+    <input type="hidden" name="line" value="${escapeHtml(String(task.sourceLine))}">
+    <select name="priority" aria-label="Priority for ${escapeHtml(task.title)}">${options}</select>
+    <button class="secondary" type="submit">Set Priority</button>
+  </form>`;
+}
+
+function renderRoadmapRowActions(task: RoadmapTask, params: URLSearchParams): string {
+  if (task.status === "next") return renderRoadmapStatusControls(task, params);
+  return `<div class="roadmap-row-actions">${renderRoadmapStatusControls(task, params)}${renderRoadmapPriorityControls(task, params)}</div>`;
+}
+
+function renderRoadmapGantt(tasks: RoadmapTask[], milestones: RoadmapMilestone[]): string {
+  const orderedMilestones = milestones.filter((milestone) => tasks.some((task) => task.milestoneNumber === milestone.number));
+  const unlinkedTasks = tasks.filter((task) => !task.milestoneNumber);
+  const rows = [
+    ...orderedMilestones.map((milestone) => renderRoadmapGanttLane(`${milestone.number}. ${milestone.title}`, tasks.filter((task) => task.milestoneNumber === milestone.number), milestone.number)),
+    ...(unlinkedTasks.length ? [renderRoadmapGanttLane("Unlinked", unlinkedTasks, 12)] : [])
+  ].join("");
+  return `<section class="panel"><h2>Gantt View</h2><p class="muted">Relative roadmap timeline by milestone. No calendar dates are invented; bar placement follows task order and status.</p><div class="roadmap-gantt"><div class="roadmap-gantt-head"><span>Milestone</span><span>Now</span><span>Next</span><span>Later</span><span>Future</span></div>${rows || "<p class=\"muted\">No matching roadmap tasks found.</p>"}</div></section>`;
+}
+
+function renderRoadmapGanttLane(label: string, tasks: RoadmapTask[], seed: number): string {
+  const bars = tasks.map((task, index) => {
+    const column = task.status === "done" ? 1 : task.status === "next" ? 2 : Math.min(4, 2 + ((index + seed) % 3));
+    const width = Math.min(3, Math.max(1, 1 + Math.floor(task.details.length / 4)));
+    return `<a class="roadmap-bar ${task.kind} ${task.status} priority-${task.priority}" style="grid-column:${column} / span ${width}" title="${escapeHtml(`${task.priority}: ${task.title}`)}" href="/roadmap?milestone=${encodeURIComponent(String(task.milestoneNumber ?? "none"))}&status=all"><small>${escapeHtml(task.priority)}</small><span>${escapeHtml(truncateMiddle(task.title, 72))}</span></a>`;
+  }).join("");
+  return `<div class="roadmap-gantt-row"><strong>${escapeHtml(label)}</strong><div class="roadmap-bars">${bars}</div></div>`;
+}
+
+function roadmapDashboardCss(): string {
+  return `
+    .roadmap-bug td:first-child { border-left: 4px solid #ef4444; }
+    .roadmap-task td:first-child { border-left: 4px solid #2563eb; }
+    .roadmap-gantt { display: grid; gap: 0.75rem; }
+    .roadmap-gantt-head { display: grid; grid-template-columns: 220px repeat(4, 1fr); color: #53627a; font-size: 0.82rem; font-weight: 700; text-transform: uppercase; }
+    .roadmap-gantt-row { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; align-items: start; border-top: 1px solid #dbe3f0; padding-top: 0.85rem; }
+    .roadmap-bars { display: grid; grid-template-columns: repeat(4, minmax(120px, 1fr)); gap: 0.45rem; min-height: 2.4rem; }
+    .roadmap-bar { display: flex; align-items: center; min-height: 2.35rem; padding: 0.4rem 0.65rem; border: 1px solid #9db7ff; background: #eef4ff; color: #123ca4; text-decoration: none; box-shadow: 0 6px 18px rgba(37, 99, 235, 0.08); }
+    .roadmap-bar { gap: 0.55rem; }
+    .roadmap-bar small, .priority { display: inline-flex; width: fit-content; padding: 0.1rem 0.35rem; border: 1px solid currentColor; font-size: 0.72rem; font-weight: 800; text-transform: uppercase; }
+    .priority-critical, .roadmap-bar.priority-critical { border-color: #dc2626; color: #991b1b; background: #fef2f2; }
+    .priority-high, .roadmap-bar.priority-high { border-color: #f97316; color: #9a3412; background: #fff7ed; }
+    .priority-medium, .roadmap-bar.priority-medium { border-color: #2563eb; color: #1e40af; background: #eff6ff; }
+    .priority-low, .roadmap-bar.priority-low { border-color: #16a34a; color: #166534; background: #f0fdf4; }
+    .roadmap-bar.done { opacity: 0.72; background: #edfdf5; border-color: #86efac; color: #166534; }
+    .roadmap-bar.next { background: #fff7ed; border-color: #fdba74; color: #9a3412; }
+    .roadmap-bar.bug { background: #fff1f2; border-color: #fda4af; color: #9f1239; }
+    .roadmap-bar span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .roadmap-row-actions { display: grid; gap: 0.45rem; min-width: 220px; }
+    .roadmap-row-actions .inline-form { justify-content: flex-start; }
+    .roadmap-row-actions select { min-height: 34px; }
+    @media (max-width: 900px) {
+      .roadmap-gantt-head { display: none; }
+      .roadmap-gantt-row { grid-template-columns: 1fr; }
+      .roadmap-bars { grid-template-columns: 1fr; }
+      .roadmap-bar { grid-column: 1 / -1 !important; }
+    }
+  `;
+}
+
+function compareRoadmapTasks(a: RoadmapTask, b: RoadmapTask): number {
+  const priority = roadmapPriorityRank(a.priority) - roadmapPriorityRank(b.priority);
+  if (priority !== 0) return priority;
+  const statusA = a.status === "next" ? 0 : a.status === "open" ? 1 : 2;
+  const statusB = b.status === "next" ? 0 : b.status === "open" ? 1 : 2;
+  if (statusA !== statusB) return statusA - statusB;
+  return a.sourceLine - b.sourceLine;
+}
+
+function renderRoadmapCaptureForm(report: RoadmapDashboardReport, params: URLSearchParams): string {
+  const milestoneOptions = report.milestones.map((milestone) => `<option value="${milestone.number}">${milestone.number}. ${escapeHtml(milestone.title)}</option>`).join("");
+  const priorityOptions = roadmapPriorityOrder().map((priority) => `<option value="${priority}"${priority === "medium" ? " selected" : ""}>${escapeHtml(titleCase(priority))}</option>`).join("");
+  return `<section class="panel">
+    <div class="section-heading"><div><h2>Record Task Or Bug</h2><span class="muted">Append a milestone-linked item to the roadmap register. This writes only <code>docs/roadmap.md</code>.</span></div></div>
+    <form class="workflow-form" method="post" action="/api/roadmap-item">
+      ${dashboardReturnInput("/roadmap", params)}
+      <label>Type<select name="kind"><option value="task">Task</option><option value="bug">Bug</option></select></label>
+      <label>Milestone<select name="milestone">${milestoneOptions}</select></label>
+      <label>Priority<select name="priority">${priorityOptions}</select></label>
+      <label class="wide">Title<input name="title" maxlength="180" placeholder="Add the smallest useful description"></label>
+      <label class="wide">Note<input name="note" maxlength="240" placeholder="Optional context, evidence, or acceptance hint"></label>
+      <div class="form-actions"><button type="submit">${iconLabel("plus", "Add To Roadmap")}</button></div>
+    </form>
+  </section>`;
 }
 
 function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
@@ -26477,7 +27084,7 @@ async function processDashboardApprovalAction(input: {
   if (!approvalForGate) {
     return { ok: false, error: "Approval was not found or is no longer pending." };
   }
-  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadApprovalProjectConfig(approvalForGate);
   const actorRole = normalizeActorRole(input.actorRole, "approver");
   const gate = evaluateRoleGate(project, actorRole, decision === "approved" ? "can_approve_actions" : "can_reject_actions");
   if (!gate.allowed) {
@@ -26525,7 +27132,7 @@ async function approveAndExecuteAction(input: {
   if (!isExecutableApprovalAction(approvalForGate.actionType)) {
     return { ok: false, error: `Approval action type cannot be executed inline: ${approvalForGate.actionType}` };
   }
-  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadApprovalProjectConfig(approvalForGate);
   const approvalGate = evaluateRoleGate(project, input.approveActorRole, "can_approve_actions");
   if (!approvalGate.allowed) {
     return { ok: false, error: approvalGate.message };
@@ -26605,7 +27212,7 @@ async function processDashboardBulkApprovalAction(input: {
       executed.push(`${approvalId}: ${approvalOneLineSummary(approvalForGate)}`);
       continue;
     }
-    const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
+    const project = await loadApprovalProjectConfig(approvalForGate);
     const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
     if (!gate.allowed) {
       skipped.push(`${approvalId}: ${gate.message}`);
@@ -27251,7 +27858,7 @@ async function processDashboardApprovalRuleAction(input: {
     return { ok: false, error: "Always approve rules are only supported for local_command, file_write, and executor_adapter approvals." };
   }
   const actorRole = normalizeActorRole(input.actorRole, "approver");
-  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadApprovalProjectConfig(approvalForGate);
   const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
   if (!gate.allowed) {
     return { ok: false, error: gate.message };
@@ -27508,7 +28115,7 @@ async function dismissApprovedAction(input: {
   if (approval.status !== "approved" && approval.status !== "failed" && approval.status !== "dismissed") {
     return { ok: false, error: `Approval must be approved or failed before dismissal. Current status: ${approval.status}` };
   }
-  const project = await loadLocalProjectConfig(approval.projectRootUri);
+  const project = await loadApprovalProjectConfig(approval);
   const actorRole = input.actorRole ?? project.team.default_actor_role;
   const executionRoleGate = evaluateRoleGate(project, actorRole, "can_execute_approved_actions");
   if (!executionRoleGate.allowed) {
@@ -27569,7 +28176,7 @@ async function executeApprovedAction(input: {
   if (approval.status !== "approved" && approval.status !== "failed") {
     return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
   }
-  const project = await loadLocalProjectConfig(approval.projectRootUri);
+  const project = await loadApprovalProjectConfig(approval);
   const executionRoleGate = evaluateRoleGate(project, input.actorRole ?? project.team.default_actor_role, "can_execute_approved_actions");
   if (!executionRoleGate.allowed) {
     return { ok: false, error: executionRoleGate.message };
@@ -29108,6 +29715,43 @@ function renderDashboardActionCenterHtml(health: DashboardHomeHealth): string {
   </section>`;
 }
 
+function renderDashboardRoadmapPriorityHtml(report: RoadmapDashboardReport): string {
+  const openTasks = report.tasks
+    .filter((task) => task.status !== "done")
+    .sort(compareRoadmapTasks)
+    .slice(0, 3);
+  const rows = openTasks.map((task) => `
+    <div class="command-item ${task.kind === "bug" || task.priority === "critical" || task.priority === "high" ? "warn" : "good"}">
+      <div>
+        <strong>${escapeHtml(task.title)}</strong>
+        <span>${task.milestoneNumber ? `Milestone ${task.milestoneNumber}: ${escapeHtml(task.milestoneTitle ?? "")}` : "Unlinked"} · ${escapeHtml(task.priority)} priority · ${escapeHtml(task.status)}</span>
+      </div>
+      <a class="button secondary" href="/roadmap?milestone=${encodeURIComponent(String(task.milestoneNumber ?? "all"))}&status=all&priority=${encodeURIComponent(task.priority)}">Open</a>
+    </div>
+  `).join("");
+  return `<section class="panel command-center warn">
+    <div class="section-heading">
+      <div>
+        <h2>Next Best Work</h2>
+        <span class="muted">Top open roadmap items, generated from <code>docs/roadmap.md</code>.</span>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/roadmap">Roadmap</a>
+        <a class="button secondary" href="/roadmap?view=gantt&status=open">Gantt</a>
+      </div>
+    </div>
+    <div class="command-summary">
+      <div><strong>${formatNumber(report.summary.openCount + report.summary.nextCount)} open roadmap item${report.summary.openCount + report.summary.nextCount === 1 ? "" : "s"}</strong><span>${formatNumber(report.summary.priorityCounts.critical + report.summary.priorityCounts.high)} critical/high priority item${report.summary.priorityCounts.critical + report.summary.priorityCounts.high === 1 ? "" : "s"} across ${formatNumber(report.summary.milestoneCount)} milestones.</span></div>
+      <div class="command-facts">
+        <a href="/roadmap?priority=high&status=open"><strong>${formatNumber(report.summary.priorityCounts.high)}</strong><span>high</span></a>
+        <a href="/roadmap?priority=critical&status=open"><strong>${formatNumber(report.summary.priorityCounts.critical)}</strong><span>critical</span></a>
+        <a href="/roadmap?status=open"><strong>${formatNumber(report.summary.bugCount)}</strong><span>bugs</span></a>
+      </div>
+    </div>
+    ${rows ? `<div class="command-list">${rows}</div>` : "<p class=\"muted\">No open roadmap items found.</p>"}
+  </section>`;
+}
+
 function dashboardActionItems(health: DashboardHomeHealth): Array<{ severity: "bad" | "warn" | "good"; title: string; detail: string; href: string; action: string }> {
   const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
   const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
@@ -29363,7 +30007,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -29391,7 +30035,8 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
         ["learning", "/learning", "Learning", "brain"],
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
         ["model-improvement", "/model-improvement", "Model Improve", "sparkles"],
-        ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"]
+        ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"],
+        ["roadmap", "/roadmap", "Roadmap", "clipboard"]
       ]
     },
     {
