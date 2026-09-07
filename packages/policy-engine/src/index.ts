@@ -96,14 +96,56 @@ export function resolveExecutionPolicy(
       policy_profile: profile
     }
   });
-  const serialized = JSON.stringify(resolved);
-
   return {
     profile,
     project: resolved,
     snapshot: resolved,
-    snapshotHash: createHash("sha256").update(serialized).digest("hex")
+    snapshotHash: canonicalJsonHash(resolved)
   };
+}
+
+export function canonicalJsonHash(value: unknown): string {
+  return createHash("sha256").update(canonicalJsonStringify(value)).digest("hex");
+}
+
+export function canonicalJsonStringify(value: unknown): string {
+  return JSON.stringify(canonicalizeJson(value));
+}
+
+function canonicalizeJson(value: unknown): unknown {
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "bigint") {
+    throw new TypeError("Cannot canonicalize bigint values for JSON hashing.");
+  }
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") {
+    return undefined;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => {
+      const canonical = canonicalizeJson(item);
+      return canonical === undefined ? null : canonical;
+    });
+  }
+  if (value && typeof value === "object") {
+    const jsonValue = value as { toJSON?: () => unknown };
+    if (typeof jsonValue.toJSON === "function") {
+      return canonicalizeJson(jsonValue.toJSON());
+    }
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const canonical = canonicalizeJson((value as Record<string, unknown>)[key]);
+      if (canonical !== undefined) {
+        output[key] = canonical;
+      }
+    }
+    return output;
+  }
+  return null;
 }
 
 export function evaluateAgentAutonomy(agent: AgentCard, project: ProjectConfig): PolicyDecision {

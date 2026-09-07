@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { evaluateActionApprovalRule, resolveExecutionPolicy } from "./index.js";
+import { canonicalJsonHash, evaluateActionApprovalRule, resolveExecutionPolicy } from "./index.js";
 
 const project = projectConfigSchema.parse({
   project: {
@@ -81,6 +81,37 @@ test("policy snapshots are stable and unknown profiles fail closed", () => {
     resolveExecutionPolicy(project, "production").snapshotHash
   );
   assert.throws(() => resolveExecutionPolicy(project, "missing"), /Unknown execution policy profile/);
+});
+
+test("policy snapshot hashes survive jsonb-style recursive key reordering", () => {
+  const original = {
+    policies: {
+      require_receipts: true,
+      nested: {
+        z: "last",
+        a: [{ write: "src/**", command: "npm test" }]
+      }
+    },
+    actions: {
+      allowed_write_paths: ["src/**"],
+      allowed_commands: ["npm test"]
+    }
+  };
+  const reordered = {
+    actions: {
+      allowed_commands: ["npm test"],
+      allowed_write_paths: ["src/**"]
+    },
+    policies: {
+      nested: {
+        a: [{ command: "npm test", write: "src/**" }],
+        z: "last"
+      },
+      require_receipts: true
+    }
+  };
+
+  assert.equal(canonicalJsonHash(original), canonicalJsonHash(reordered));
 });
 
 test("approval rules match scoped commands and file writes", () => {
