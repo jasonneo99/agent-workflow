@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
-import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "./index.js";
+import { agentWorkflowEnvPath, findAgentWorkflowRoot, parseProjectRootAliases, resolveLocalProjectPath } from "./index.js";
 
 test("finds the package root from source modules", () => {
   const root = findAgentWorkflowRoot(import.meta.url);
@@ -12,4 +12,33 @@ test("finds the package root from source modules", () => {
 
 test("installed packages use a user configuration path", () => {
   assert.match(agentWorkflowEnvPath("/opt/package", "/tmp/project"), /\.config\/agent-workflow\/\.env$/);
+});
+
+test("parses project root aliases from environment-style values", () => {
+  assert.deepEqual(parseProjectRootAliases("/home/me/Projects=/Users/me/Projects;/srv=/Volumes/srv", "/"), [
+    { from: "/home/me/Projects", to: "/Users/me/Projects", source: "env" },
+    { from: "/srv", to: "/Volumes/srv", source: "env" }
+  ]);
+});
+
+test("resolves Linux project roots to the current macOS home checkout", async () => {
+  const resolution = await resolveLocalProjectPath("/home/jasonmiller/Projects/fleet-config", {
+    homeDir: "/Users/jasonmiller",
+    exists: (target) => target === "/Users/jasonmiller/Projects/fleet-config"
+  });
+  assert.equal(resolution.storageRootUri, "/home/jasonmiller/Projects/fleet-config");
+  assert.equal(resolution.localRootUri, "/Users/jasonmiller/Projects/fleet-config");
+  assert.equal(resolution.mapped, true);
+  assert.equal(resolution.source, "mac-home");
+});
+
+test("resolves explicit project root aliases before basename fallback", async () => {
+  const resolution = await resolveLocalProjectPath("/mnt/shared/fleet-config", {
+    cwd: "/",
+    env: { AGENTFLOW_PROJECT_PATH_MAP: "/mnt/shared=/Users/jasonmiller/Projects" },
+    homeDir: "/Users/jasonmiller",
+    exists: (target) => target === "/Users/jasonmiller/Projects/fleet-config"
+  });
+  assert.equal(resolution.localRootUri, "/Users/jasonmiller/Projects/fleet-config");
+  assert.equal(resolution.source, "env");
 });

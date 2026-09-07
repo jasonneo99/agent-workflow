@@ -10,6 +10,9 @@ stages:
   - id: contract
     agent: task-triager
     goal: Verify provider contract compliance by returning concise structured output without requesting commands or file writes.
+    pattern:
+      type: single-shot
+      promotion_gate: evaluation
     context:
       load:
         - project_context

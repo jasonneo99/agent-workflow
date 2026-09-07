@@ -27,6 +27,12 @@ const workflow: WorkflowDefinition = {
     agent: "backend-engineer",
     goal: "Implement API audit logging.",
     subagents: [],
+    pattern: {
+      type: "executor",
+      requires_verifier: false,
+      promotion_gate: "none",
+      stop_conditions: []
+    },
     context: {
       load: [],
       max_tokens: 4000

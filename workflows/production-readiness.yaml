@@ -10,6 +10,9 @@ stages:
   - id: frontend-review
     agent: frontend-engineer
     goal: Review frontend implementation for responsive behavior, accessibility, broken assets, and production-readiness risks.
+    pattern:
+      type: verifier
+      promotion_gate: none
     context:
       load:
         - project_contract
@@ -19,6 +22,9 @@ stages:
   - id: security-review
     agent: security-reviewer
     goal: Identify security risks including exposed secrets, missing auth, unsafe dependencies, and deployment misconfigurations.
+    pattern:
+      type: verifier
+      promotion_gate: policy
     context:
       load:
         - project_contract
@@ -28,6 +34,9 @@ stages:
   - id: site-quality
     agent: ux-reviewer
     goal: Review production site for SEO, trust signals, mobile usability, content quality, and conversion readiness.
+    pattern:
+      type: verifier
+      promotion_gate: none
     subagents:
       - frontend-engineer
     context:
@@ -39,6 +48,9 @@ stages:
   - id: summary
     agent: pr-preparer
     goal: Consolidate all findings into a prioritized production-readiness report with recommended actions.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
     context:
       load:
         - specialist_summaries

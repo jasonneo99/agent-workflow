@@ -10,6 +10,13 @@ export interface WorkflowGraphStage {
   agentAutonomy: string;
   modelTier: string | null;
   goal: string;
+  pattern: {
+    type: string;
+    maxIterations: number | null;
+    requiresVerifier: boolean;
+    promotionGate: string;
+    stopConditions: string[];
+  };
   subagents: Array<{
     id: string;
     displayName: string | null;
@@ -95,6 +102,13 @@ export function buildWorkflowGraphReport(input: {
       agentAutonomy: agent ? String(agent.autonomy) : "unknown",
       modelTier: agent?.model_tier ?? null,
       goal: stage.goal,
+      pattern: {
+        type: stage.pattern.type,
+        maxIterations: stage.pattern.max_iterations ?? null,
+        requiresVerifier: stage.pattern.requires_verifier,
+        promotionGate: stage.pattern.promotion_gate,
+        stopConditions: stage.pattern.stop_conditions
+      },
       subagents,
       contextLoads: stage.context.load,
       contextMaxTokens: stage.context.max_tokens,
@@ -157,6 +171,7 @@ export function formatWorkflowGraphReport(report: WorkflowGraphReport): string {
     ...report.stages.map((stage) => [
       `${stage.order}. ${stage.id} -> ${stage.agentId}${stage.agentDisplayName ? ` (${stage.agentDisplayName})` : ""}`,
       `   Goal: ${stage.goal}`,
+      `   Pattern: ${stage.pattern.type}${stage.pattern.maxIterations ? `; max iterations ${stage.pattern.maxIterations}` : ""}; promotion gate ${stage.pattern.promotionGate}; verifier ${stage.pattern.requiresVerifier ? "required" : "not required"}`,
       `   Depends on: ${stage.dependsOn.length ? stage.dependsOn.join(", ") : "start"}`,
       `   Context: ${stage.contextMaxTokens} tokens; loads ${stage.contextLoads.length ? stage.contextLoads.join(", ") : "none"}`,
       `   Subagents: ${stage.subagents.length ? stage.subagents.map((subagent) => subagent.id).join(", ") : "none"}`,
@@ -180,7 +195,7 @@ function buildMermaid(workflow: WorkflowDefinition, stages: WorkflowGraphStage[]
     `  start([${escapeMermaid(workflow.id)}])`
   ];
   for (const stage of stages) {
-    const label = `${stage.order}. ${stage.id}\\n${stage.agentId}\\n${stage.contextMaxTokens} tokens${stage.approvalRequired || stage.policyApprovalRequired ? "\\napproval" : ""}${stage.policyAllowed ? "" : "\\nblocked"}`;
+    const label = `${stage.order}. ${stage.id}\\n${stage.agentId}\\n${stage.pattern.type}\\n${stage.contextMaxTokens} tokens${stage.approvalRequired || stage.policyApprovalRequired ? "\\napproval" : ""}${stage.policyAllowed ? "" : "\\nblocked"}`;
     lines.push(`  ${nodeId(stage.id)}["${escapeMermaid(label)}"]`);
   }
   lines.push(`  start --> ${nodeId(stages[0]?.id ?? "end")}`);

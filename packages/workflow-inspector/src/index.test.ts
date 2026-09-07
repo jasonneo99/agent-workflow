@@ -54,6 +54,12 @@ const workflow: WorkflowDefinition = {
       agent: "workflow-orchestrator",
       goal: "Check readiness.",
       subagents: [],
+      pattern: {
+        type: "verifier",
+        requires_verifier: false,
+        promotion_gate: "release",
+        stop_conditions: []
+      },
       context: { load: ["commands"], max_tokens: 3000 },
       approval_required: false,
       output: "readiness"
@@ -63,6 +69,12 @@ const workflow: WorkflowDefinition = {
       agent: "release-manager",
       goal: "Recommend release.",
       subagents: ["workflow-orchestrator"],
+      pattern: {
+        type: "finalizer",
+        requires_verifier: false,
+        promotion_gate: "release",
+        stop_conditions: []
+      },
       context: { load: ["readiness"], max_tokens: 2000 },
       approval_required: true,
       output: "decision"

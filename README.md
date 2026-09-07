@@ -71,7 +71,8 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 |----------|--------|--------|
 | `auto` | Smart per-stage routing across configured providers | Any configured provider |
 | `mock` | None (deterministic) | No config needed |
-| `byo` | Any OpenAI-compatible gateway | `BYO_MODEL_BASE_URL` + `BYO_MODEL_NAME` |
+| `local` | Ollama, LM Studio, or llama.cpp-compatible localhost runtime | `LOCAL_MODEL_BASE_URL` + `LOCAL_MODEL_NAME` |
+| `byo` | Any remote or enterprise OpenAI-compatible gateway | `BYO_MODEL_BASE_URL` + `BYO_MODEL_NAME` |
 | `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
 | `openai-compatible` | Legacy BYO-compatible alias | `OPENAI_COMPATIBLE_BASE_URL` + model name |
@@ -82,17 +83,24 @@ Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
 ```bash
 # Smart routing across configured providers
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_MODEL_POLICY=best-coding
 
-# BYO model gateway: Ollama, LM Studio, vLLM, LiteLLM, internal routers, etc.
+# Local model runtime: Ollama, LM Studio, llama.cpp-compatible endpoints
+DEFAULT_MODEL_PROVIDER=local
+LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
+LOCAL_MODEL_NAME=auto
+LOCAL_MODEL_API_KEY=
+
+# BYO model gateway: vLLM, LiteLLM, internal routers, etc.
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=llama3.1
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=
 
 # AWS Bedrock
 DEFAULT_MODEL_PROVIDER=bedrock
-BEDROCK_MODEL=amazon.nova-pro-v1:0
+BEDROCK_MODEL=auto
 AWS_REGION=us-east-1
 
 # Kiro CLI
@@ -103,16 +111,24 @@ KIRO_AGENT=
 # OpenAI
 DEFAULT_MODEL_PROVIDER=openai
 OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=auto
 ```
 
-For a fresh install, BYO can be configured either through `npm run setup` or by manually adding those four `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and the model is available.
+For a fresh install, local and BYO providers can be configured either through `npm run setup` or by manually adding the `LOCAL_*` or `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and shows the model selected from its catalog.
 
 ## Model Tier Routing
 
-Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). With `DEFAULT_MODEL_PROVIDER=auto`, Agent Workflow chooses a ready provider for each tier. BYO/local models are preferred for cheaper stages, OpenAI is preferred for reasoning when configured, and Bedrock is included when AWS credentials are valid.
+Agents are assigned cost tiers (`fast`, `standard`, `reasoning`). With `DEFAULT_MODEL_PROVIDER=auto`, Agent Workflow chooses a ready provider for each tier. Local/BYO models are preferred for cheaper stages, OpenAI is preferred for reasoning when configured, and Bedrock is included when AWS credentials are valid.
 
-Provider adapters then route to the right model:
+Provider adapters then route to the right model. For catalog-backed providers,
+`MODEL=auto` refreshes the live model catalog exposed to your API key, AWS
+profile, or local endpoint and picks a model per tier, so newly available
+releases can be used without changing Agent Workflow source. Set per-tier model
+environment variables only when you want to pin exact models.
+
+Use `AGENTFLOW_MODEL_POLICY` to tune the catalog selector without hard-coding
+model IDs: `lowest-cost`, `balanced`, `best-coding` (default), or
+`maximum-reasoning`.
 
 | Tier | Use case | Default routing behavior |
 |------|----------|--------------------------|
@@ -120,7 +136,11 @@ Provider adapters then route to the right model:
 | `standard` | Implementation, frontend, backend | Provider adapter uses its configured default model |
 | `reasoning` | Architecture, security, UX review | Provider adapter chooses higher effort/capability where supported |
 
-Override per-tier models where the provider supports it, such as `BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, and `BEDROCK_MODEL_REASONING`.
+Override per-tier models where the provider supports it, such as
+`OPENAI_MODEL_FAST`, `OPENAI_MODEL_STANDARD`, `OPENAI_MODEL_REASONING`,
+`BYO_MODEL_FAST`, `BYO_MODEL_STANDARD`, `BYO_MODEL_REASONING`,
+`BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, and
+`BEDROCK_MODEL_REASONING`.
 
 ## Architecture
 
@@ -151,7 +171,7 @@ npm run agentflow -- bundle-upgrade-preview -p . # Preview project bundle migrat
 npm run agentflow -- definition-migrations -p . # Show definition changes, upgrade steps, validation, and rollback
 npm run agentflow -- bundle-adopt -p . --force # Record current bundle as the reviewed project baseline
 npm run doctor                 # Check local services
-npm run dashboard              # Inspect runs, providers, usage, projects, roles, artifacts, graph, and bundle readiness
+npm run dashboard              # Inspect runs, providers, model catalog, usage, projects, roles, artifacts, graph, and bundle readiness
 
 # Project operations
 npm run init-project -- -p .   # Install agent workflow into a project
@@ -172,11 +192,13 @@ npm run bundle-pin -- -p .   # Dry-run a project-local bundle version pin
 npm run bundle-lifecycle-plan -- -p . # Dry-run reviewed upgrade command plan
 
 # Workflow execution (requires enterprise storage)
-npm run dev:agentflow       # Start services, dashboard, worker, and learning daemon
+npm run dev:agentflow       # Start dashboard, worker, learning daemon, and local storage when URLs are localhost
 npm run dev:agentflow:stop  # Stop the local dashboard, worker, and learning daemon
 npm run dev:agentflow:launchd:install   # macOS: start at login and restart after crashes
 npm run dev:agentflow:launchd:uninstall # macOS: remove the LaunchAgent
 npm run agentflow -- learning-daemon --all-projects --mode apply-approved --once # Refresh learning state for all registered projects once
+npm run agentflow -- learning-action-receipts -p . --health # Inspect learning receipt health and duplicate pressure
+npm run agentflow -- learning-action-receipts -p . --compact # Backup and compact duplicate daemon-owned learning receipts
 npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
 npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run worker -- --watch --project /path/to/project # Use project worker_pool defaults from .agent-workflow/project.yaml
@@ -205,6 +227,8 @@ npm run agentflow -- approval-rules -p . --remove <rule-id> # Remove an always-a
 npm run agentflow -- roles -p . # Inspect team role config and recent approval decisions by role
 npm run agentflow -- artifact-lifecycle -p . # Inspect read-only artifact inventory and lifecycle hints
 npm run agentflow -- artifact-lifecycle -p . --prune-plan # Preview exact artifact prune candidates without deleting anything
+npm run agentflow -- server-mutation-controls # Audit server-mode mutation auth, role, idempotency, gates, and receipts
+npm run agentflow -- server-approval-preview --project-id <project-id> --approval-id <approval-id> --decision approve-and-execute # Preview remote approval/action controls without mutation
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics
@@ -219,6 +243,10 @@ npm run agentflow -- queue-tuning-approvals -p . --ids all # Dry-run approval qu
 npm run agentflow -- tuning-approvals -p . --approve tune-001 # Approve a queued item
 npm run agentflow -- generate-tuning-patches -p . # Dry-run reviewable patch-plan files
 npm run agentflow -- model-improvement-plan -p . # Dry-run scrubbed eval/dataset plan files
+npm run agentflow -- agent-improvement-report -p . --write # Refresh local agent-card improvement recommendations
+npm run agentflow -- agent-improvement-patches -p . --write # Generate validated agent-card YAML patch previews
+npm run agentflow -- agent-improvement-evals -p . --write # Score agent-card patches against holdout run evidence
+npm run agentflow -- agent-improvement-promotions -p . --write # Queue eval-passing agent-card promotions with receipts
 npm run agentflow -- candidate-comparison-plan -p . # Dry-run baseline/candidate eval suites
 npm run agentflow -- promotion-note-plan -p . # Dry-run reviewed routing-note plan from promotable comparisons
 npm run agentflow -- apply-tuning-patches -p . # Dry-run applied local tuning notes
@@ -269,6 +297,14 @@ Agent Workflow is not tied to a specific coding environment. Use the CLI directl
 
 See [docs/mcp-clients.md](docs/mcp-clients.md) for VS Code, Cursor, and Codex config examples.
 
+If an MCP client reports `Transport closed`, restart that client or Codex task
+to create a fresh stdio subprocess. Agent Workflow writes metadata-only MCP
+lifecycle breadcrumbs to `.agent-workflow/runtime/mcp/stdio.log` and launcher
+breadcrumbs to `.agent-workflow/runtime/mcp/launcher.log`; it avoids `.env`
+values, provider keys, database URLs, storage secrets, prompt bodies, and
+artifacts. Run `npm run runtime-monitor -- --check-mcp` to verify the launcher
+and MCP tool list independently of the Codex private stdio connection.
+
 ## Docs
 
 - [User Guide](docs/user-guide.md): full install and usage guide
@@ -315,7 +351,9 @@ npm run agentflow -- storage-merge-manifest \
 
 The merge manifest maps projects by `root_uri` and classifies source-only,
 existing, conflicting, and project-id-rewrite rows before any shared-storage
-merge is allowed.
+merge is allowed. It also flags historical runs or tasks that reference missing
+or changed legacy agent/workflow definitions so current shared bundle
+definitions are not overwritten blindly.
 
 When the reviewed manifest and backups are ready, dry-run and then explicitly
 execute the insert-only merge:
@@ -330,9 +368,28 @@ Afterward, inspect primary shared-storage proof and fallback posture:
 ```bash
 npm run storage-merge-evidence
 npm run offline-fallback
+npm run agentflow -- storage-project-conflicts \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url "$DATABASE_URL"
+npm run agentflow -- storage-project-decision \
+  --root /path/to/project \
+  --action preserve-target-project \
+  --source-project-id <source-id> \
+  --target-project-id <target-id> \
+  --note "Reviewed source/target metadata; shared target is canonical."
 npm run object-artifact-proof
 npm run object-artifact-proof -- --enumerate-buckets
+npm run object-artifact-proof -- --enumerate-buckets --verify --write
 ```
+
+`storage-merge-evidence` includes a switch-over checklist for the latest saved
+manifest/import/backup/object evidence. It samples historical durable tables
+and classifies remaining conflicts by operator risk. Project row conflicts are
+critical because they decide the canonical project record. `project_files` and
+`project_index_state` conflicts are treated as refreshable index/cache evidence
+that can be regenerated after switch-over. Shared-primary status stays in
+attention while critical row conflicts, unresolved legacy definition references,
+stale imports, missing backups, or object bucket parity proof remain.
 
 If shared storage is unavailable, record local fallback work before switching:
 
@@ -397,14 +454,14 @@ stages:
 - **Model tier routing** — fast agents use cheap models, reasoning agents use capable ones
 - **Incremental context indexing** — reuses unchanged summaries, refreshes changed files first, and prunes deleted summaries after a baseline exists
 - **Dashboard savings estimates** — shows real-provider mix, latency, compact prompt tokens, and estimated indexed-context tokens avoided, with mock/test runs excluded by default
-- **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Settings, and home health cards
+- **Dashboard control center** — left-nav pages for Queue, Projects, Runs, Providers, Catalog, Settings, and home health cards
 - **Project dashboard** — inspect per-project context files, indexed summaries, memory, recent runs, and project-scoped quick actions
 - **Editor validation** — ship JSON Schemas for agents, workflows, project config, and schedules, with VS Code/Cursor YAML associations
 - **Queue control panel** — inspect queued/running/failed workflow runs, process worker batches, requeue interrupted stages, retry failed stages, or cancel active work
 - **Approval inbox** — review, approve, or reject agent-requested commands and file writes when project policy requires approval
 - **Reusable approval rules** — auto-execute narrowly scoped low-risk local actions without expanding the project policy boundary
 - **OpenTelemetry-style observability** — export run spans and metrics without prompt or artifact payload bodies
-- **Local dev supervisor** — run `npm run dev:agentflow` to start services, dashboard, worker, learning daemon, and heartbeat monitoring together
+- **Local dev supervisor** — run `npm run dev:agentflow` to start the dashboard, worker, learning daemon, and heartbeat monitoring; local Docker storage starts only when configured storage URLs are localhost, or when `AGENTFLOW_START_LOCAL_STORAGE=1`
 - **macOS LaunchAgent** — install `dev:agentflow` as a per-user launchd service for login startup and crash restart; Settings shows plist status, install/refresh/uninstall controls, and launchd stdout/stderr links
 - **Background worker heartbeat** — run `npm run worker:daemon` and see live worker status in the dashboard
 - **Conditional skipping** — orchestration skips redundant steps when prior steps found nothing

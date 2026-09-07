@@ -87,6 +87,9 @@ the action changes behavior outside an ephemeral report.
 | Write or update future Agent Workflow-created `learning_signals`, `learning_proposals`, and learning status database rows | Automatic when using local Agent Workflow storage |
 | Auto-approve and apply low/medium-risk project-local optimization overlays | Automatic by default |
 | Queue approval requests for high-risk proposed changes | Automatic |
+| Preview stale Agent Workflow MCP sessions from this checkout | Automatic |
+| Terminate old duplicate Agent Workflow MCP sessions when `AGENTFLOW_DAEMON_CLEANUP_STALE_MCP=on` and `AGENTFLOW_MCP_CLEANUP_MODE=auto-low-risk` | Automatic, low-risk only |
+| Reconcile queued/running workflow runs whose child tasks are already terminal | Automatic by default |
 | Write high-risk project-local tuning, eval, workflow, source, provider, command, network, or export changes | Approval required |
 | Generate reusable bundle patch plans for `agents/`, `workflows/`, docs, or schemas | Approval required |
 | Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source | Approval required |
@@ -110,6 +113,171 @@ Recommended daemon modes:
 `wide-open-local` is not a bypass. It should allow the daemon to keep working
 without prompts for safe reversible work, but it must still stop for dangerous
 changes.
+
+### Stale MCP Cleanup
+
+Codex, Cursor, and other IDE clients can leave old Agent Workflow MCP server
+processes behind after restarts or interrupted sessions. The runtime monitor and
+learning daemon can identify these as cleanup candidates without touching
+unrelated processes.
+
+The open-source default is preview-only:
+
+```bash
+AGENTFLOW_DAEMON_CLEANUP_STALE_MCP=off
+AGENTFLOW_MCP_CLEANUP_MODE=preview
+AGENTFLOW_MCP_STALE_MINUTES=60
+```
+
+To let the daemon clean up only low-risk candidates:
+
+```bash
+AGENTFLOW_DAEMON_CLEANUP_STALE_MCP=on
+AGENTFLOW_MCP_CLEANUP_MODE=auto-low-risk
+AGENTFLOW_MCP_STALE_MINUTES=60
+```
+
+Low-risk means the process is an Agent Workflow MCP command from the current
+checkout, belongs to an older duplicate MCP session, and is older than the stale
+threshold. The newest MCP session is preserved so the current IDE bridge is not
+terminated.
+
+Useful commands:
+
+```bash
+npm run runtime-monitor -- --cleanup-mcp
+npm run runtime-monitor -- --cleanup-mcp --confirm
+npm run runtime-monitor -- --cleanup-mcp --confirm --auto-low-risk
+```
+
+The daemon writes the latest audit receipt to:
+
+```text
+.agent-workflow/learning/mcp-cleanup-receipt.json
+.agent-workflow/learning/mcp-cleanup-receipt.md
+```
+
+## Stale Run Reconciliation
+
+Interrupted workers, retries, or cancelled downstream stages can leave a parent
+workflow run marked `queued` or `running` after every child task is already in a
+terminal state. The daemon treats that as Agent Workflow bookkeeping, not as
+project behavior, and can repair it automatically.
+
+The daemon only reconciles runs when there are no queued, running, or failed
+child tasks left. Mixed completed/cancelled runs become `completed`.
+All-cancelled runs become `cancelled`. Every repair writes a
+`stale_run_reconciled` receipt.
+
+The default is on:
+
+```bash
+AGENTFLOW_DAEMON_RECONCILE_STALE_RUNS=on
+AGENTFLOW_STALE_RUN_RECONCILE_LIMIT=50
+```
+
+To run it manually:
+
+```bash
+npm run runtime-monitor -- --reconcile-stale-runs
+npm run runtime-monitor -- --reconcile-stale-runs --confirm
+```
+
+The daemon writes the latest audit receipt to:
+
+```text
+.agent-workflow/learning/stale-run-reconciliation-receipt.json
+.agent-workflow/learning/stale-run-reconciliation-receipt.md
+```
+
+## Agent Definition Improvement Loop
+
+The daemon can also improve the agents themselves. The first open-source slice
+is evidence collection and recommendation generation; it does not silently edit
+canonical reusable agent cards.
+
+The loop reads:
+
+- reusable and project-local agent cards
+- workflow stage and subagent references
+- local run status, stage health, feedback counts, and cost/routing signals
+- compact cost/quality reports and evaluation metadata when available
+
+It writes Agent Workflow-owned learning artifacts:
+
+```text
+.agent-workflow/learning/agent-improvement-report.json
+.agent-workflow/learning/agent-improvement-recommendations.md
+.agent-workflow/learning/agent-improvement-patches.json
+.agent-workflow/learning/agent-improvement-patches.md
+.agent-workflow/learning/agent-improvement-evals.json
+.agent-workflow/learning/agent-improvement-evals.md
+.agent-workflow/learning/agent-improvement-promotions.json
+.agent-workflow/learning/agent-improvement-promotions.md
+.agent-workflow/learning/agent-improvement-promotion-receipts.json
+.agent-workflow/learning/agent-improvement-promotion-receipts.md
+```
+
+Run it manually:
+
+```bash
+npm run agentflow -- agent-improvement-report --project /path/to/project
+npm run agentflow -- agent-improvement-report --project /path/to/project --write
+npm run agentflow -- agent-improvement-report --project /path/to/project --agent ux-reviewer --json
+npm run agentflow -- agent-improvement-patches --project /path/to/project
+npm run agentflow -- agent-improvement-patches --project /path/to/project --write
+npm run agentflow -- agent-improvement-patches --project /path/to/project --ids ux-reviewer --json
+npm run agentflow -- agent-improvement-evals --project /path/to/project
+npm run agentflow -- agent-improvement-evals --project /path/to/project --write
+npm run agentflow -- agent-improvement-evals --project /path/to/project --ids ux-reviewer --json
+npm run agentflow -- agent-improvement-promotions --project /path/to/project
+npm run agentflow -- agent-improvement-promotions --project /path/to/project --write
+npm run agentflow -- agent-improvement-promotions --project /path/to/project --approve promotion-patch-agent-ux-reviewer-improvement --reviewer "Your Name" --note "Approved after holdout eval review"
+```
+
+The same report is available in the dashboard on `/learning` and through MCP as
+`agentflow_agent_improvement_report`. Patch previews are available as
+`agentflow_agent_improvement_patches`. Holdout promotion scoring is available
+as `agentflow_agent_improvement_evals`. Promotion queue decisions and receipts
+are available as `agentflow_agent_improvement_promotions`.
+
+The report recommends improvements to fields such as `prompt`, `can`,
+`requires_approval`, `context_budget`, and `outputs`. Examples include adding
+receipt expectations, stronger validation language, accessibility criteria for
+UX agents, secret/auth checks for engineering and security agents, or clearer
+selection rules for unused agents.
+
+Safe autonomy for this loop:
+
+- The daemon may refresh the report and recommendations during each learning
+  tick.
+- It may generate abstract research queries based on public role names such as
+  "UX reviewer" or "test engineer".
+- It must not include private source, logs, prompts, feedback, eval cases, or
+  customer data in research prompts without explicit approval.
+
+Approval remains required before the daemon:
+
+- edits `agents/**/*.yaml`
+- edits project-local `.agent-workflow/agents/*.yaml`
+- adds new reusable agent types
+- expands tool permissions or autonomy
+- weakens safety boundaries
+- promotes a candidate into a signed/released bundle
+
+Patch previews include source-hash checks, schema validation, full proposed
+YAML, a review diff, and rollback references. They are still learning-owned
+artifacts; they do not edit agent files.
+
+Holdout eval scoring compares patch previews against recent representative run
+evidence before promotion. It checks schema validity, rollback source hashes,
+minimum holdout task coverage, risk boundaries, and whether local feedback,
+failure, or routing evidence supports the patch. The output marks each patch
+`pass`, `warn`, or `fail`, then separates manual promotion readiness from
+future owner-enabled project-local auto-apply readiness.
+
+The next phase should add promotion receipts and an owner setting that can
+auto-apply only low-risk project-local agent-card edits.
 
 ## Storage Model
 
@@ -171,6 +339,8 @@ Project-local exports:
   signals.json
   proposals.json
   proposal-history.md
+  action-receipts.json
+  action-receipts.md
   research-notes.md
 ```
 
@@ -222,6 +392,8 @@ Approval should be required when a proposal:
 Add a **Learning** dashboard area with:
 
 - Learning daemon status and heartbeat.
+- Project path mapping when shared storage keeps a project under one host path
+  and the current machine uses another local checkout path.
 - Current mode: `observe`, `propose`, `apply-approved`, or
   `wide-open-local`.
 - Latest learning report.
@@ -234,6 +406,8 @@ Add a **Learning** dashboard area with:
 - Eval coverage gaps.
 - Proposal inbox with approve/reject/defer actions.
 - Applied learning timeline.
+- Learning receipt health with duplicate daemon-open receipt counts,
+  backup-first compaction, and the latest compaction backup path.
 - Privacy/export safety status.
 - Research notes and whether they are approved for use.
 
@@ -258,6 +432,8 @@ agentflow learning-daemon --project /path/to/project --mode apply-approved
 agentflow learning-application-plan --project /path/to/project
 agentflow learning-application-plan --project /path/to/project --write
 agentflow learning-action-receipts --project /path/to/project
+agentflow learning-action-receipts --project /path/to/project --health
+agentflow learning-action-receipts --project /path/to/project --compact
 agentflow learning-action-receipts --project /path/to/project --reject learn-action-001 --actor "Your Name"
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature --write
@@ -267,6 +443,16 @@ agentflow learning-workflow-shape --project /path/to/project --workflow build-fe
 own `.agent-workflow/learning/` report, inbox, application plan, shape
 recommendations, and daemon heartbeat. A failed or unavailable project records a
 failed heartbeat for that project without stopping the daemon for the rest.
+
+When shared storage contains project roots from another machine, map those roots
+to local checkouts before writing project-local learning files:
+
+```bash
+AGENTFLOW_PROJECT_PATH_MAP=/home/jasonmiller/Projects=/Users/jasonmiller/Projects
+```
+
+The dashboard also detects the common Linux-home to macOS-home mapping
+automatically when the target checkout exists locally.
 
 Future approved-application and research commands:
 

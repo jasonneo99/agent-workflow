@@ -33,6 +33,16 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
     });
   }
 
+  if (provider === "local") {
+    return new OpenAICompatibleProvider({
+      id: "local",
+      baseUrlEnv: "LOCAL_MODEL_BASE_URL",
+      modelEnv: "LOCAL_MODEL_NAME",
+      apiKeyEnv: "LOCAL_MODEL_API_KEY",
+      defaultBaseURL: "http://localhost:11434/v1"
+    });
+  }
+
   if (provider === "bedrock") {
     return new BedrockProvider();
   }
@@ -48,13 +58,16 @@ function resolveAutoProviderFallback(): string {
   if (process.env.AGENTFLOW_PROVIDER_STANDARD && process.env.AGENTFLOW_PROVIDER_STANDARD !== "auto") {
     return process.env.AGENTFLOW_PROVIDER_STANDARD;
   }
-  if (process.env.BYO_MODEL_BASE_URL && process.env.BYO_MODEL_NAME) {
+  if (process.env.BYO_MODEL_BASE_URL) {
     return "byo";
+  }
+  if (process.env.LOCAL_MODEL_BASE_URL || process.env.LOCAL_MODEL_NAME) {
+    return "local";
   }
   if (process.env.OPENAI_API_KEY) {
     return "openai";
   }
-  if (process.env.OPENAI_COMPATIBLE_BASE_URL && process.env.OPENAI_COMPATIBLE_MODEL) {
+  if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";
   }
   if (process.env.BEDROCK_MODEL || process.env.AWS_PROFILE || process.env.AWS_REGION || process.env.BEDROCK_REGION) {

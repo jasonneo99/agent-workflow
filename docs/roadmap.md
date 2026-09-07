@@ -40,6 +40,7 @@ Completed foundations:
 - Cost/quality reports, feedback memory, preference scorecards, and tuning proposals.
 - Opt-in project-local tuning overlays under `.agent-workflow/tuning/`.
 - Open-source boundary and shared-IP comparison docs.
+- Agent design-pattern gap analysis covering single-shot, ReAct, planner-executor, reflexive, verifier-gated, and combined production architectures.
 
 ## Phase 1: Shared Platform Hardening
 
@@ -69,6 +70,13 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Preserve dry-run and explicit-write defaults for risky operations.
   - Persist the selected profile and immutable resolved policy snapshot with each run without requiring separate storage per target environment.
 
+- [x] Live provider model catalog routing.
+  - Support `MODEL=auto` for OpenAI, BYO/OpenAI-compatible gateways, and Bedrock so tier models are selected from the live model catalog available to the user's key, local endpoint, or AWS profile.
+  - Support `AGENTFLOW_MODEL_POLICY` so users can choose lowest-cost, balanced, best-coding, or maximum-reasoning catalog selection without pinning provider-specific model IDs.
+  - Keep exact per-tier model overrides for pinned reproducible runs.
+  - Show selected tier models and catalog status in provider checks and dashboard surfaces without hard-coding release-specific model IDs into workflow definitions.
+  - Explain auto model selection in `/model-catalog` and `/api/model-catalog`, including provider availability, override source, estimated cost class, policy score, tier fit, and top catalog candidates.
+
 ## Phase 2: Evaluation And Personalization
 
 Goal: improve quality and cost while keeping personalization auditable and portable.
@@ -76,6 +84,33 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 - [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.
+
+- [x] First-class local model provider and hybrid routing.
+  - Add an explicitly selected local inference provider for runtimes such as
+    Ollama or llama.cpp while preserving the existing OpenAI-compatible path.
+  - Keep hosted providers, including OpenAI, as the default; local inference is
+    an opt-in privacy, offline, and cost-control tier rather than an automatic
+    replacement.
+  - Start with low-risk, read-only workloads such as summarization,
+    classification, log triage, and routine reports. Do not use local model
+    output to bypass deterministic authorization, approval, or command policy.
+  - Extend provider checks, live model discovery, tier routing, dashboard
+    visibility, and evaluation reports to distinguish local runtime readiness,
+    model availability, latency, quality, energy use, fallback, and avoided API
+    cost.
+  - Validate with representative scrubbed evals and require reviewed promotion
+    evidence before any project enables automatic local routing.
+  - Done: add `DEFAULT_MODEL_PROVIDER=local` as a first-class OpenAI-compatible
+    adapter with `LOCAL_MODEL_*` configuration, Ollama-compatible localhost
+    defaults, auto-routing priority, dashboard provider controls, docs, examples,
+    and provider tests.
+  - Done: add local-provider evaluation and savings evidence to
+    `/model-improvement` and usage summaries, comparing local/BYO stage volume,
+    latency, feedback quality, fallback rate, hosted baselines, and avoided
+    hosted calls before expanding local routing beyond low-risk stages.
+  - Next: add a local-vs-hosted holdout comparison runner that can generate
+    promotion evidence for specific stages before project owners raise local
+    routing risk thresholds.
 
 - [x] Dashboard run comparison view.
   - Compare runs by workflow, stage, agent, provider, tier, quality, fallback, and feedback.
@@ -136,10 +171,39 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Prefer project-local workflow overlays before shared workflow or reusable agent changes.
   - Keep shared `workflows/*.yaml`, reusable agents, provider settings, project source, and tuning application approval-gated.
 
+- [x] Local learning agent definition improvement loop.
+  - Use the learning daemon to inspect reusable and project-local agents by role, workflow usage, failures, feedback, routing/cost signals, eval evidence, and project context.
+  - Generate role-specific improvement candidates for agent prompts, capabilities, approval boundaries, context budgets, and validation expectations.
+  - Write only Agent Workflow-owned recommendation artifacts by default: `.agent-workflow/learning/agent-improvement-report.json` and `.agent-workflow/learning/agent-improvement-recommendations.md`.
+  - Expose the loop through `agent-improvement-report`, `/api/agent-improvement-report`, the `/learning` dashboard, and MCP.
+  - Done: add `agent-improvement-patches`, `/api/agent-improvement-patches`, MCP patch previews, schema validation, source hashes, rollback references, and dashboard links for exact YAML patch review without editing agent files.
+  - Done: add holdout eval scoring with `agent-improvement-evals`, `/api/agent-improvement-evals`, MCP, daemon refresh, dashboard promotion scores, pass/warn/fail gates, representative task coverage, source-hash rollback evidence, and future auto-apply readiness.
+  - Done: add candidate promotion queues and receipts with `agent-improvement-promotions`, `/api/agent-improvement-promotions`, MCP, daemon refresh, dashboard visibility, source-hash preservation, superseded stale items, and approval/rejection receipt files.
+  - Keep reusable `agents/**/*.yaml`, project-local agent definitions, new agent types, tool privileges, broader autonomy, web/model research, and release promotion gated until an explicit owner-controlled auto-promotion apply phase exists.
+  - Next: add an owner-controlled low-risk project-local agent-card auto-apply setting that can promote only passing project-local patches with fresh source hashes and rollback receipts.
+
 - [x] Local learning proposal-to-action receipts.
   - Record an append-only local history when proposals become application plans, when planned actions are superseded, and when users reject a planned action.
   - Expose receipts in CLI, dashboard, API, and MCP.
   - Write only Agent Workflow-owned receipt files under `.agent-workflow/learning/`.
+  - Done: add receipt health reporting, duplicate daemon-open receipt detection, and backup-first compaction through CLI, JSON API, and the `/learning` dashboard.
+
+- [x] Daemon stale MCP session hygiene.
+  - Detect Agent Workflow MCP processes from the current checkout and group them into launch sessions.
+  - Preserve the newest MCP session while marking only old duplicate sessions as low-risk auto-cleanable candidates.
+  - Keep open-source defaults preview-only; allow owners to opt into `auto-low-risk` cleanup with env settings.
+  - Write Agent Workflow-owned cleanup receipts under `.agent-workflow/learning/` and surface daemon cleanup status in the dashboard.
+
+- [x] Daemon stale run reconciliation.
+  - Detect queued/running parent workflow runs whose child tasks are already terminal, with no queued, running, or failed child tasks remaining.
+  - Let the learning daemon automatically repair safe Agent Workflow bookkeeping by completing mixed completed/cancelled runs or cancelling all-cancelled runs, then write `stale_run_reconciled` receipts.
+  - Expose preview/execute through `runtime-monitor --reconcile-stale-runs`, JSON runtime monitor output, and the dashboard Runtime Monitor panel.
+
+- [x] Local feedback inbox.
+  - Group recent unreviewed runs across one project or all registered projects into probably accept, probably revise, and probably reject buckets.
+  - Show task summary, stage completion, quality/fallback/latency signals, key findings, failures, and recommended next action before asking for feedback.
+  - Expose feedback triage in CLI, dashboard, and JSON API while recording feedback through the existing local feedback artifact/memory path.
+  - Done: add a bulk review screen where suggested ratings and notes can be edited, unchecked, and submitted together.
 
 ## Phase 3: Distribution And Enterprise Adoption
 
@@ -149,10 +213,18 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Generate MCP config snippets.
   - Validate local server/provider readiness.
   - Explain model-provider ownership clearly.
+  - Done: add metadata-only MCP lifecycle logging for stdio transport start, connect, close, and exit events so client pipe failures can be distinguished from Agent Workflow service outages.
+  - Done: add a packaged MCP launcher that resolves the local repo, prefers the compiled MCP server when available, writes metadata-only launcher events, and avoids logging secrets.
+  - Done: add runtime-monitor MCP pipeline readiness with plugin, launcher, repo, built-server, recent lifecycle events, dashboard status, and `npm run runtime-monitor -- --check-mcp` smoke verification.
+  - Recorded: recurring Codex-side `Transport closed` failures can still happen at approval calls after the launcher smoke check passes, because Codex owns the private stdio subprocess and can retain a stale pipe while Agent Workflow services remain healthy.
+  - Done: add Codex/IDE reload guidance to runtime-monitor CLI output, dashboard Runtime Monitor, MCP docs, and client docs when launcher smoke passes but the client still reports `Transport closed`.
+  - Done: add dedicated MCP approval-call diagnostics that correlate `agentflow_approvals` invocations with launcher lifecycle events, stderr/output byte counts, exit status, timeout state, client reload guidance, and CLI fallback receipts without logging secrets or prompt/artifact bodies.
+  - Done: compact MCP tool responses by default and include CLI fallback guidance when output is truncated, reducing stdio payload pressure during large approval or review responses.
 
 - [x] Package/install story beyond cloning the repo.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
   - Keep repo-based development workflow available.
+  - Done: keep macOS LaunchAgent plists free of `.env` secrets; the supervisor reads local config at runtime instead of embedding provider, database, Redis, or object-storage credentials into launchd metadata.
   - Done: verify release readiness after recent dashboard and model-improvement improvements with the read-only release checker and dry-run release prep.
   - Done: run the real signed patch release prep for the next package version.
   - Done: publish `0.2.4` through GitHub Actions Trusted Publishing.
@@ -190,6 +262,13 @@ trust gaps.
   - Done: return approval-required notices with approval ids and CLI/MCP/dashboard next steps in workflow, worker, dashboard, and run summary contexts.
   - Done: expose approve, reject, execute, and function-style always-approve decisions through the MCP approval tool so clients can ask in the current chat and then act.
   - Done: add CLI, MCP, API, and dashboard management for listing and removing project-local always-approved rules.
+  - Done: add approval autopilot for local developer setups that approve and execute policy-allowed low/medium executable side effects while keeping high-risk, destructive, provider, server, network, deployment, and autonomy actions human-gated.
+  - Done: let the learning daemon run approval autopilot on each `apply-approved` tick when enabled, with dashboard-visible on/off, risk threshold, executed, and skipped counters.
+  - Done: add approval backlog radar in CLI, MCP, JSON API, dashboard, and daemon heartbeat to surface pending, approved-but-not-executed, failed, stale, and autopilot-blocked items.
+  - Done: add approval backlog triage categories and dashboard next-action guidance so watched-and-attempted failures are grouped by missing tool, command failure, ready-to-execute work, stale review, manual decision, historical audit trail, or needs-review state.
+  - Done: add dashboard bulk triage actions for retrying failed missing-tool approvals and dismissing reviewed command failures through the same policy-rechecked approval execution/dismissal receipt paths.
+  - Done: separate active approval work from historical failed approval evidence in the dashboard, including retry-ready missing-tool failures when the executable is now available.
+  - Done: add a reviewed/not-actionable bulk dashboard action for old failed approval rows so noisy historical failures can be dismissed without deleting audit receipts.
 
 - [x] Evaluation gates and regression budgets.
   - Done: define project-local quality, latency, fallback, and cost thresholds.
@@ -221,6 +300,16 @@ trust gaps.
   - Done: add definition migration and rollback guidance for changed bundle contracts.
   - Done: add contract tests for custom agents, workflows, and provider adapters.
   - Done: add dashboard visibility for bundle compatibility, migration guidance, and contract-test readiness.
+
+- [x] Pattern-aware workflow execution.
+  - Done: add [Agent Design Pattern Gap Analysis](agent-design-patterns-gap.md) to document how Agent Workflow maps to single-shot, ReAct, planner-executor, reflexive, verifier-gated, and combined production architectures.
+  - Done: add optional stage metadata for single-shot, planner, executor, ReAct, reflexive, verifier, and finalizer behavior.
+  - Done: annotate built-in reusable workflows with provider-neutral pattern metadata.
+  - Done: expose stage pattern and promotion-gate metadata in CLI graph reports, Mermaid output, dashboard stage matrix, network hover text, and graph handoff exports.
+  - Done: add bounded ReAct loop receipts that record observation, action request, policy decision, result receipt, iteration budget, and stop reason for ReAct-stage local commands and file writes.
+  - Done: add dashboard explanations for stage pattern, promotion gate, verifier expectation, ReAct iteration budget, and approval path in graph and mind-map views.
+  - Done: add run-detail dashboard explanations for why a workflow shape, model tier, provider, or fallback path was selected, using existing route receipts and run evidence.
+  - Keep pattern metadata provider-neutral and safe for reusable open-source workflow bundles.
 
 - [x] Dashboard graph and mind-map visualization.
   - Done: add `/workflow-graph` and `/api/workflow-graph` for browser and machine-readable workflow connection inspection.
@@ -317,11 +406,32 @@ foundation is complete.
   - Done: add a local offline sync queue with CLI/dashboard actions to record fallback start, offline runs, sync-back intent, and synced queue items.
   - Done: add an explicit offline sync reconciler command/dashboard action that detects localhost and shared storage health, writes merge/import evidence, and marks queued fallback items synced after an insert-only execution.
   - Done: add daemon-triggered dry-run scheduling for the offline sync reconciler, with persisted scheduler status and dashboard readiness visibility.
+  - Done: add opt-in daemon execute mode for insert-only offline sync reconciliation, with scheduler mode visibility in CLI receipts and the Server Readiness dashboard.
   - Done: add object-backed artifact proof for recent artifact rows, with optional `mc` verification and dashboard visibility on Server Readiness.
+  - Done: add dashboard project path mapping so shared storage can keep a registered project under one host path while the current machine uses a mounted/local checkout path, with `AGENTFLOW_PROJECT_PATH_MAP` support and automatic Linux-home to macOS-home detection.
+  - Done: add project identity grouping and a dry-run project alias merge plan so operators can preview canonical targets, source aliases, impacted rows, warnings, and rollback guidance before consolidating duplicate host-path project rows.
   - Done: add full source/target bucket enumeration with missing-key counts, sample deltas, and a dry-run object mirror plan.
-  - Next: add richer post-merge proof checks and explicit approved object mirror execution, then require the same auth, role, and idempotency controls for additional mutation endpoints before exposing them through server mode.
+  - Done: allow object artifact proof and bucket enumeration to fall back to Docker `minio/mc` when local MinIO Client is not installed, with verifier mode shown in CLI and dashboard output.
+  - Done: have `bootstrap-storage` ensure the configured object-storage bucket exists through the same native-or-Docker MinIO verifier path.
+  - Done: add a Shared State Plane proof roll-up on Server Readiness and `/api/server-readiness` that combines Hulk/shared reachability, shared endpoint detection, post-merge evidence, storage parity, object proof, offline sync queue health, local fallback posture, and server controls.
+  - Done: add explicit approved object mirror execution for MinIO artifacts, dry-run-first, with approval, role, idempotency, and receipt controls before any real object copy.
+  - Done: add a server mutation-control matrix in CLI, JSON API, and Server Readiness that distinguishes remote mutation endpoints from local dashboard operator actions and audits auth, role, idempotency, gates, and receipts.
+  - Done: add dedicated MCP approval-call diagnostics that correlate `agentflow_approvals` invocations with launcher lifecycle events, stderr/output byte counts, exit status, timeout state, client reload guidance, and CLI fallback receipts without logging secrets or prompt/artifact bodies.
+  - Done: detect missing or changed legacy agent/workflow definitions referenced by historical runs/tasks in the storage merge manifest, preserving current target definitions and surfacing readability warnings instead of overwriting shared bundle definitions blindly.
+  - Done: add cross-machine project-root aliasing for local config reads, approved command cwd, approved file writes, stale-input checks, and dashboard readiness when shared storage contains host-specific project roots.
+  - Done: classify approval-only lifecycle drift as a non-blocking warning when matching durable run, task, receipt, artifact, and memory evidence is already preserved.
+  - Done: record reviewed preserve-target canonical project decisions for the Tellara and JobSearchOS source/target project conflicts using backup evidence.
+  - Done: allow shared-primary proof to pass with visible non-blocking warnings for refreshable index/cache rows and approval lifecycle drift.
+  - Done: regenerate shared-storage project indexes for Agent Workflow, Tellara, JobSearchOS, Truck Outfitters Unlimited, and the template project after the merge.
+  - Done: add a concise Server Readiness operator note showing Hulk/shared storage as the primary state plane, localhost storage as fallback-only, pending offline queue items, and non-blocking warning evidence.
+  - Done: finish the offline fallback background sync loop with opt-in daemon execution for insert-only reconciliation when Hulk and localhost fallback storage are both reachable.
+  - Done: add a dedicated Auth Hardening roll-up to Server Readiness and `/api/server-readiness`, summarizing server exposure, auth, origins, project-id routing, role enforcement, and remote mutation gates.
+  - Done: add configurable request-size and per-actor/IP rate-limit controls to `/api/server-queue`, mutation-control reporting, Auth Hardening, docs, and `.env.example`.
+  - Done: add audit-friendly remote request logs with redacted request envelopes, rate-limit decisions, auth outcomes, CLI/API inspection, Server Readiness visibility, docs, and `.env.example`.
+  - Done: add preview-only authenticated remote approval/action envelopes with registered project ids, approval ownership checks, role gates, idempotency posture, policy rechecks, separation-of-duties checks, redacted request auditing, CLI/API access, and mutation-control matrix visibility before exposing any local approval POST route remotely.
+  - Next: promote the approval/action envelope into a mutation-disabled remote execution endpoint behind explicit server-mode, auth, role-enforcement, idempotency, and per-action receipt gates.
 
-- [ ] High priority: shared storage migration utility.
+- [x] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
   - Done: derive shared storage endpoints from configured URLs or explicit host overrides.
   - Done: add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
@@ -332,10 +442,25 @@ foundation is complete.
   - Done: add a row-level merge manifest command for existing shared targets that maps projects through `root_uri`, preserves existing destination project ids, and identifies rows that need safe project-id rewriting.
   - Done: support executable insert-only merge mode by executing only a reviewed merge manifest, preserving existing destination rows, and rewriting dependent project ids safely.
   - Done: add post-merge evidence and offline fallback diagnostics plus a local sync queue so operators know when local resources can stay stopped and what fallback work needs to be merged back.
-  - Back up both source and destination Postgres databases before any write, with clear rollback instructions.
-  - Detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
-  - Mirror object-storage artifacts from local MinIO to destination MinIO when artifacts reference object-backed payloads.
-  - Verify object bucket contents, sample historical runs, artifacts, approvals, receipts, memory items, and project index state before recommending clients switch to shared storage.
+  - Done: back up both source and destination Postgres databases before any write, with clear rollback instructions, blocking execution when `pg_dump` cannot create both dumps.
+  - Done: detect missing legacy agent/workflow definitions referenced by historical runs and preserve readability without overriding current bundle definitions blindly.
+  - Done: mirror object-storage artifacts from local MinIO to destination MinIO through an explicit `object_mirror` approval that uses `mc mirror --overwrite=false`, stores no credentials in approval payloads, and records execution receipts.
+  - Done: add a post-merge switch-over proof checklist that samples historical durable tables from the latest manifest, surfaces remaining conflicts/project-id rewrites, checks backup/import evidence, and calls out missing object bucket parity before recommending shared storage as primary.
+  - Done: allow `object-artifact-proof --write` to persist Markdown/JSON object parity evidence into the migration evidence directory for switch-over checks.
+  - Done: allow object proof verification and bucket enumeration to use Docker `minio/mc` fallback when the local `mc` binary is missing.
+  - Done: ensure the configured object-storage bucket during `bootstrap-storage` so an empty but valid shared state plane is ready for future artifacts.
+  - Done: include deterministic representative row samples for projects, historical runs, artifacts, approvals, receipts, memory, indexed files, and index state in new merge manifests and the Server Readiness switch-over proof.
+  - Done: classify remaining switch-over conflicts as canonical project blockers, durable history blockers, or refreshable index/cache rows in CLI and Server Readiness evidence.
+  - Done: add a read-only `storage-project-conflicts` resolver preview that compares source/target project metadata, linked row counts, config hashes, and decision-record templates.
+  - Done: add an operator decision recorder for canonical project choices so shared-primary proof can reference reviewed conflict decisions without overwriting target rows.
+  - Done: add a dashboard action for reviewing and recording project-conflict decisions from Server Readiness.
+  - Done: add cross-machine project-root aliasing so approvals created on Hulk/Linux paths can resolve to this Mac's local project checkout for policy/autopilot checks and local execution cwd, while preserving stored `root_uri` audit history.
+  - Done: classify approval-only lifecycle drift as a non-blocking warning when durable outcome rows are preserved, and keep refreshable project index/cache conflicts visible without blocking shared-primary proof.
+  - Done: record reviewed preserve-target decisions for Tellara and JobSearchOS canonical project conflicts.
+  - Done: regenerate shared-storage project indexes for the projects shown in warning samples.
+  - Done: publish the shared-primary/fallback operator note on Server Readiness and in the server-mode/user guide docs.
+  - Done: finish the offline fallback background sync loop and dashboard reconciliation state, with opt-in daemon execution mode for insert-only sync.
+  - Next: continue the authenticated server-mode hardening work after local/shared storage fallback is proven.
   - Keep destructive or overwrite behavior unavailable unless a future explicit capability flag and backup confirmation are added.
 
 - [ ] Team roles and separation of duties.
@@ -382,6 +507,8 @@ foundation is complete.
   - [x] Run a final dashboard UX review after the grouped navigation and operations snapshot updates.
   - [x] Add clearer hover, focus, tooltip, and accessibility affordances to operations snapshot actions.
   - [x] Run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
+  - [x] Add a lightweight built-in dashboard icon set for grouped navigation, metric cards, status feedback, run dialogs, and common action buttons without adding runtime dependencies.
+  - [x] Add shared dashboard action helpers so POST-heavy pages can preserve context with `returnTo`, flash feedback, and browser-local recent action history.
   - Next: see Governed server mode for the next shared-runtime milestone.
 
 - [x] Backup, restore, and disaster-recovery validation.

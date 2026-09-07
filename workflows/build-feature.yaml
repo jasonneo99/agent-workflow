@@ -10,6 +10,9 @@ stages:
   - id: orient
     agent: task-triager
     goal: Classify the request, select relevant specialists, and identify missing context.
+    pattern:
+      type: planner
+      promotion_gate: none
     context:
       load:
         - project_contract
@@ -19,6 +22,10 @@ stages:
   - id: plan
     agent: technical-architect
     goal: Produce a scoped implementation plan that follows project patterns.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
     subagents:
       - ux-reviewer
       - database-engineer
@@ -32,6 +39,10 @@ stages:
   - id: implement
     agent: implementation-agent
     goal: Apply the approved implementation plan locally.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
     subagents:
       - frontend-engineer
       - backend-engineer
@@ -44,6 +55,9 @@ stages:
   - id: verify
     agent: auto-test-runner
     goal: Run configured tests and summarize verification.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
     context:
       load:
         - commands
@@ -53,6 +67,10 @@ stages:
   - id: document
     agent: auto-docs-update
     goal: Update relevant docs, commands, and decision logs.
+    pattern:
+      type: reflexive
+      requires_verifier: true
+      promotion_gate: policy
     context:
       load:
         - change_summary
@@ -62,10 +80,12 @@ stages:
   - id: package
     agent: pr-preparer
     goal: Prepare review summary, PR notes, test evidence, and residual risk.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
     context:
       load:
         - diff_summary
         - verification_report
       max_tokens: 3000
     output: pr_package
-

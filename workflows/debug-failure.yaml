@@ -11,6 +11,9 @@ stages:
   - id: collect
     agent: ci-debugger
     goal: Gather the smallest useful failure evidence.
+    pattern:
+      type: planner
+      promotion_gate: none
     context:
       load:
         - logs
@@ -21,6 +24,11 @@ stages:
   - id: reproduce
     agent: test-engineer
     goal: Reproduce the failure locally or explain why it cannot be reproduced.
+    pattern:
+      type: react
+      max_iterations: 3
+      requires_verifier: true
+      promotion_gate: evaluation
     context:
       load:
         - commands
@@ -30,6 +38,10 @@ stages:
   - id: fix
     agent: implementation-agent
     goal: Apply the smallest credible fix.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
     context:
       load:
         - diagnosis
@@ -39,10 +51,12 @@ stages:
   - id: verify
     agent: auto-test-runner
     goal: Verify the fix and record residual risk.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
     context:
       load:
         - commands
         - changed_files
       max_tokens: 4000
     output: automated_verification
-

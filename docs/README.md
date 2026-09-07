@@ -19,19 +19,20 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 13. [Integration Examples](integration-examples.md): copyable model-provider and IDE/client examples.
 14. [Agent Roster](agent-roster.md): built-in agents and automatic agents.
 15. [Architecture](architecture.md): runtime, storage, indexing, safe actions, and model portability.
-16. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
-17. [Model Improvement Workflow](model-improvement.md): diagnose quality, cost, prompt, context, eval, routing, retrieval, or fine-tune paths.
-18. [Local Learning Daemon](local-learning-daemon.md): autonomous local learning from approved feedback, run history, failures, evals, and research notes.
-19. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
-20. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
-21. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-22. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-23. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
-24. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-25. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
-26. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
-27. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-28. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+16. [Agent Design Pattern Gap Analysis](agent-design-patterns-gap.md): compare Agent Workflow to single-shot, ReAct, planner-executor, reflexive, verifier-gated, and combined production patterns.
+17. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
+18. [Model Improvement Workflow](model-improvement.md): diagnose quality, cost, prompt, context, eval, routing, retrieval, or fine-tune paths.
+19. [Local Learning Daemon](local-learning-daemon.md): autonomous local learning from approved feedback, run history, failures, evals, and research notes.
+20. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
+21. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
+22. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+23. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+24. [Comparison, Gap, And Synergy](comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private.
+25. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+26. [Profiles](profiles.md): enterprise, simple, and project-specific initialization profiles.
+27. [Tellara Integration](tellara-integration.md): Tellara-specific setup and examples.
+28. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+29. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
@@ -89,7 +90,7 @@ The root `agent-workflow.bundle.json` records reusable agent/workflow bundle ver
 
 ## Dashboard Preview
 
-The local dashboard gives developers a control center for run health, queue recovery, provider routing, project context, workflow graphs, role governance, artifact lifecycle visibility, model-improvement evidence, candidate comparisons, and run evidence.
+The local dashboard gives developers a control center for run health, queue recovery, provider routing, model-catalog explanations, project context, workflow graphs, role governance, artifact lifecycle visibility, model-improvement evidence, candidate comparisons, and run evidence.
 
 ![Agent Workflow dashboard](assets/screenshots/dashboard-home.png)
 
@@ -114,7 +115,7 @@ For local models, hosted gateways, enterprise routers, LiteLLM, vLLM, LM Studio,
 ```env
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=llama3.1
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=not-required
 ```
 

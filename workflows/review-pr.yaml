@@ -12,6 +12,10 @@ stages:
   - id: inspect
     agent: technical-architect
     goal: Understand the change, behavioral surface, and risk.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: none
     context:
       load:
         - diff
@@ -21,6 +25,9 @@ stages:
   - id: specialist-review
     agent: workflow-orchestrator
     goal: Delegate focused reviews and collect only actionable findings.
+    pattern:
+      type: verifier
+      promotion_gate: policy
     subagents:
       - test-engineer
       - security-reviewer
@@ -35,9 +42,11 @@ stages:
   - id: final-review
     agent: pr-preparer
     goal: Produce ordered findings, open questions, and verification gaps.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
     context:
       load:
         - specialist_summaries
       max_tokens: 3000
     output: pr_review
-

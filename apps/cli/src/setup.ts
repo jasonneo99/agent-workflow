@@ -45,7 +45,7 @@ async function main(): Promise<void> {
   console.log("");
   console.log("  1) auto          — Smart routing across configured providers by stage tier.");
   console.log("  2) mock          — No model calls. Good for testing workflows locally.");
-  console.log("  3) openai        — OpenAI API (GPT-4o, GPT-5.5, etc.)");
+  console.log("  3) openai        — OpenAI API with live model-catalog tier selection");
   console.log("  4) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
   console.log("  5) byo           — Bring your own OpenAI-compatible model gateway");
   console.log("  6) openai-compatible — Same as BYO, with legacy env names");
@@ -61,15 +61,15 @@ async function main(): Promise<void> {
   if (provider === "openai") {
     console.log("");
     answers.openaiKey = await ask("  OpenAI API key: ");
-    const model = await ask("  Model [default gpt-4o]: ");
-    answers.openaiModel = model.trim() || "gpt-4o";
+    const model = await ask("  Model [default auto]: ");
+    answers.openaiModel = model.trim() || "auto";
   }
 
   if (provider === "bedrock") {
     console.log("");
     console.log("  Bedrock uses your AWS credential chain (SSO, env vars, or ~/.aws/credentials).");
-    const model = await ask("  Model [default amazon.nova-pro-v1:0]: ");
-    answers.bedrockModel = model.trim() || "amazon.nova-pro-v1:0";
+    const model = await ask("  Model [default auto]: ");
+    answers.bedrockModel = model.trim() || "auto";
     const region = await ask("  AWS region [default us-east-1]: ");
     answers.bedrockRegion = region.trim() || "us-east-1";
     const profile = await ask("  AWS profile (leave blank for default): ");
@@ -90,7 +90,8 @@ async function main(): Promise<void> {
     console.log("  BYO uses any OpenAI-compatible chat-completions endpoint.");
     const baseUrl = await ask("  Base URL [default http://localhost:11434/v1]: ");
     answers.byoBaseUrl = baseUrl.trim() || "http://localhost:11434/v1";
-    answers.byoModel = await ask("  Model name (required): ");
+    const model = await ask("  Model name [default auto]: ");
+    answers.byoModel = model.trim() || "auto";
     const key = await ask("  API key (leave blank if not needed): ");
     answers.byoKey = key.trim() || undefined;
   }
@@ -99,7 +100,8 @@ async function main(): Promise<void> {
     console.log("");
     const baseUrl = await ask("  Base URL [default http://localhost:11434/v1]: ");
     answers.compatibleBaseUrl = baseUrl.trim() || "http://localhost:11434/v1";
-    answers.compatibleModel = await ask("  Model name (required): ");
+    const model = await ask("  Model name [default auto]: ");
+    answers.compatibleModel = model.trim() || "auto";
     const key = await ask("  API key (leave blank if not needed): ");
     answers.compatibleKey = key.trim() || undefined;
   }
@@ -177,18 +179,19 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
   if (answers.provider === "auto") {
     lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
     lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro");
+    lines.push("AGENTFLOW_MODEL_POLICY=best-coding");
   }
 
   if (answers.provider === "openai") {
     lines.push(`OPENAI_API_KEY=${answers.openaiKey ?? ""}`);
-    lines.push(`OPENAI_MODEL=${answers.openaiModel ?? "gpt-4o"}`);
+    lines.push(`OPENAI_MODEL=${answers.openaiModel ?? "auto"}`);
   }
 
   if (answers.provider === "bedrock") {
-    lines.push(`BEDROCK_MODEL=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
-    lines.push(`BEDROCK_MODEL_FAST=amazon.nova-lite-v1:0`);
-    lines.push(`BEDROCK_MODEL_STANDARD=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
-    lines.push(`BEDROCK_MODEL_REASONING=${answers.bedrockModel ?? "amazon.nova-pro-v1:0"}`);
+    lines.push(`BEDROCK_MODEL=${answers.bedrockModel ?? "auto"}`);
+    lines.push("BEDROCK_MODEL_FAST=");
+    lines.push("BEDROCK_MODEL_STANDARD=");
+    lines.push("BEDROCK_MODEL_REASONING=");
     lines.push(`AWS_REGION=${answers.bedrockRegion ?? "us-east-1"}`);
     if (answers.awsProfile) {
       lines.push(`AWS_PROFILE=${answers.awsProfile}`);

@@ -55,12 +55,32 @@ npm run agentflow -- schemas --project /path/to/project --write-vscode
 
 Codex CLI, its IDE extension, and the desktop app share MCP configuration on the same host. Project-scoped `.codex/config.toml` is loaded only for trusted projects, so reload the IDE and trust the workspace after installation.
 
+If a client reports `Transport closed`, restart that IDE/client to create a
+fresh stdio subprocess. Agent Workflow also writes MCP lifecycle breadcrumbs to
+`.agent-workflow/runtime/mcp/stdio.log` and launcher breadcrumbs to
+`.agent-workflow/runtime/mcp/launcher.log` so you can distinguish a closed
+client pipe from a dashboard, worker, provider, or storage outage. Run
+`npm run runtime-monitor -- --check-mcp` from the Agent Workflow repo to verify
+the launcher and tool list independently of the IDE/client's private stdio
+transport. The logs intentionally exclude `.env` values, provider keys,
+database URLs, storage secrets, prompt bodies, and artifacts.
+The `/server-readiness` Runtime Monitor panel shows the same check plus a
+Codex / IDE Reload Guidance callout for the common case where the launcher
+smoke passes but the client still has a stale private pipe.
+It also shows metadata-only approval-call diagnostics for `agentflow_approvals`
+so approval failures can be correlated with launcher lifecycle events and CLI
+fallback receipts without exposing approval notes, prompts, artifacts, or
+secrets.
+MCP responses are compacted by default for stdio stability. Increase
+`AGENTFLOW_MCP_MAX_OUTPUT_CHARS` only for clients that tolerate larger payloads;
+for complete output, run the CLI command printed in the MCP response.
+
 For BYO model usage, `.env` only needs a reachable OpenAI-compatible endpoint:
 
 ```env
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=llama3.1
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=not-required
 ```
 

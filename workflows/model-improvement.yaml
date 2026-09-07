@@ -10,6 +10,10 @@ stages:
   - id: diagnose
     agent: model-improvement-diagnostician
     goal: Classify the quality or cost problem and identify the smallest effective improvement lever.
+    pattern:
+      type: reflexive
+      requires_verifier: true
+      promotion_gate: evaluation
     subagents:
       - context-curator
       - routing-optimizer
@@ -25,6 +29,9 @@ stages:
   - id: eval-plan
     agent: eval-curator
     goal: Propose scrubbed local evaluation coverage from explicitly approved feedback and known failure patterns.
+    pattern:
+      type: verifier
+      promotion_gate: approval
     context:
       load:
         - model_improvement_diagnosis
@@ -36,6 +43,10 @@ stages:
   - id: routing-plan
     agent: routing-optimizer
     goal: Recommend provider routing, fallback, context budget, or prompt tuning changes that can be validated against a baseline.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: evaluation
     context:
       load:
         - model_improvement_diagnosis
@@ -48,6 +59,9 @@ stages:
   - id: promotion-plan
     agent: release-manager
     goal: Define the evidence required before adopting candidate prompt, context, routing, retrieval, or fine-tuning changes.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
     context:
       load:
         - routing_optimization_plan

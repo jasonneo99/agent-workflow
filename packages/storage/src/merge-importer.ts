@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import path from "node:path";
+import { spawn } from "node:child_process";
 import pg from "pg";
 import { buildStorageMergeManifest, type StorageMergeManifest } from "./merge-manifest.js";
 
@@ -10,6 +12,7 @@ export interface StorageMergeImportInput {
   targetDatabaseUrl?: string;
   execute?: boolean;
   allowStaleManifest?: boolean;
+  backupDir?: string;
 }
 
 export interface StorageMergeImportResult {
@@ -22,9 +25,17 @@ export interface StorageMergeImportResult {
   targetDatabaseUrl: string;
   reviewedManifestGeneratedAt: string;
   staleManifest: boolean;
+  backup: StorageMergeBackupResult | null;
   operations: StorageMergeImportOperation[];
   warnings: string[];
   notes: string[];
+}
+
+export interface StorageMergeBackupResult {
+  directory: string;
+  sourcePath: string;
+  targetPath: string;
+  rollbackInstructions: string[];
 }
 
 export interface StorageMergeImportOperation {
@@ -54,6 +65,19 @@ export async function runStorageMergeImport(input: StorageMergeImportInput): Pro
     ], true);
   }
 
+  const backup = input.execute
+    ? await createStorageMergeBackups({
+        sourceDatabaseUrl,
+        targetDatabaseUrl,
+        backupDir: input.backupDir ?? path.dirname(input.manifestPath)
+      }).catch((error) => error instanceof Error ? error : new Error(String(error)))
+    : null;
+  if (backup instanceof Error) {
+    return blockedResult(input, reviewedManifest, sourceDatabaseUrl, targetDatabaseUrl, [
+      `database backup failed before merge import: ${backup.message}`
+    ], staleManifest);
+  }
+
   const sourceClient = new Client({ connectionString: sourceDatabaseUrl });
   const targetClient = new Client({ connectionString: targetDatabaseUrl });
   await Promise.all([sourceClient.connect(), targetClient.connect()]);
@@ -71,14 +95,16 @@ export async function runStorageMergeImport(input: StorageMergeImportInput): Pro
       targetDatabaseUrl: redactUrl(targetDatabaseUrl),
       reviewedManifestGeneratedAt: reviewedManifest.generatedAt,
       staleManifest,
+      backup,
       operations,
       warnings: liveManifest.warnings,
       notes: [
         input.execute
-          ? "Merge importer executed inside a target database transaction and used insert-only conflict handling."
+          ? "Source and target Postgres backups were created before the merge importer executed inside a target database transaction with insert-only conflict handling."
           : "Dry-run only. No source or target rows were inserted, updated, deleted, or overwritten.",
         "Existing target rows and conflicting project/index rows are skipped by design.",
-        "Historical source-only runs, tasks, receipts, approvals, artifacts, and memory are imported with project ids rewritten through root_uri where needed."
+        "Historical source-only runs, tasks, receipts, approvals, artifacts, and memory are imported with project ids rewritten through root_uri where needed.",
+        legacyDefinitionImportNote(liveManifest)
       ]
     };
   } finally {
@@ -101,6 +127,14 @@ export function formatStorageMergeImportResult(result: StorageMergeImportResult)
     "Target:",
     `- Database: ${result.targetDatabaseUrl}`,
     "",
+    "Backups:",
+    ...(result.backup ? [
+      `- Directory: ${result.backup.directory}`,
+      `- Source: ${result.backup.sourcePath}`,
+      `- Target: ${result.backup.targetPath}`,
+      ...result.backup.rollbackInstructions.map((instruction) => `- ${instruction}`)
+    ] : ["- none; execute mode creates source and target backups before writing."]),
+    "",
     "Operations:",
     ...result.operations.map((operation) => `- ${operation.table}: ${operation.action}, candidates=${operation.candidateRows}, ${result.mode === "execute" ? "inserted" : "would insert"}=${operation.affectedRows}`),
     "",
@@ -110,6 +144,120 @@ export function formatStorageMergeImportResult(result: StorageMergeImportResult)
     "Notes:",
     ...result.notes.map((note) => `- ${note}`)
   ].join("\n");
+}
+
+async function createStorageMergeBackups(input: {
+  sourceDatabaseUrl: string;
+  targetDatabaseUrl: string;
+  backupDir: string;
+}): Promise<StorageMergeBackupResult> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const directory = path.resolve(input.backupDir, `storage-merge-backup-${stamp}`);
+  await fs.mkdir(directory, { recursive: true });
+  const sourcePath = path.join(directory, "source-before-merge.dump");
+  const targetPath = path.join(directory, "target-before-merge.dump");
+  await dumpPostgresDatabase(input.sourceDatabaseUrl, sourcePath);
+  await dumpPostgresDatabase(input.targetDatabaseUrl, targetPath);
+  await fs.writeFile(path.join(directory, "ROLLBACK.md"), [
+    "# Storage Merge Rollback",
+    "",
+    "These backups were created before an insert-only Agent Workflow shared-storage merge import.",
+    "",
+    "Rollback options:",
+    "",
+    `- Restore source database: pg_restore --clean --if-exists --dbname <source-database-url> ${shellSafePath(sourcePath)}`,
+    `- Restore target database: pg_restore --clean --if-exists --dbname <target-database-url> ${shellSafePath(targetPath)}`,
+    "- Review merge import JSON before restoring; the importer is insert-only, so targeted cleanup may be enough when only duplicated evidence was inserted.",
+    "- Keep these dump files private because database backups may contain project names, paths, run metadata, artifacts, and approval history."
+  ].join("\n"), "utf8");
+  return {
+    directory,
+    sourcePath,
+    targetPath,
+    rollbackInstructions: [
+      `Restore source with pg_restore --clean --if-exists --dbname <source-database-url> ${shellSafePath(sourcePath)}`,
+      `Restore target with pg_restore --clean --if-exists --dbname <target-database-url> ${shellSafePath(targetPath)}`,
+      "Keep dump files private; they may contain project metadata and workflow history."
+    ]
+  };
+}
+
+async function dumpPostgresDatabase(databaseUrl: string, outPath: string): Promise<void> {
+  const parsed = new URL(databaseUrl);
+  const args = [
+    "--format=custom",
+    "--file", outPath,
+    "--host", parsed.hostname,
+    "--port", parsed.port || "5432",
+    "--username", decodeURIComponent(parsed.username),
+    "--dbname", decodeURIComponent(parsed.pathname.replace(/^\//, ""))
+  ];
+  const env = {
+    ...process.env,
+    PGPASSWORD: decodeURIComponent(parsed.password),
+    PGCONNECT_TIMEOUT: process.env.PGCONNECT_TIMEOUT ?? "10"
+  };
+  try {
+    await runBackupCommand("pg_dump", args, env);
+  } catch (error) {
+    if (!isMissingExecutableError(error)) throw error;
+    await dumpPostgresDatabaseWithDocker(parsed, outPath, env);
+  }
+}
+
+async function runBackupCommand(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const child = spawn(command, args, { env, stdio: ["ignore", "ignore", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr = `${stderr}${chunk.toString("utf8")}`.slice(-2000);
+    });
+    child.on("error", (error) => reject(error));
+    child.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`${command} exited ${code ?? "unknown"}: ${stderr.trim() || "no stderr"}`));
+    });
+  });
+}
+
+async function dumpPostgresDatabaseWithDocker(parsed: URL, outPath: string, env: NodeJS.ProcessEnv): Promise<void> {
+  const outDir = path.dirname(outPath);
+  const outName = path.basename(outPath);
+  const dockerHost = dockerReachableHost(parsed.hostname);
+  const image = process.env.AGENTFLOW_PGDUMP_DOCKER_IMAGE ?? "pgvector/pgvector:pg16";
+  const args = [
+    "run",
+    "--rm",
+    "--volume", `${outDir}:/backup`,
+    "--env", "PGPASSWORD",
+    "--env", "PGCONNECT_TIMEOUT",
+    image,
+    "pg_dump",
+    "--format=custom",
+    "--file", `/backup/${outName}`,
+    "--host", dockerHost,
+    "--port", parsed.port || "5432",
+    "--username", decodeURIComponent(parsed.username),
+    "--dbname", decodeURIComponent(parsed.pathname.replace(/^\//, ""))
+  ];
+  await runBackupCommand("docker", args, env).catch((error) => {
+    if (isMissingExecutableError(error)) {
+      throw new Error("pg_dump is not installed and Docker is not available for the backup fallback");
+    }
+    throw error;
+  });
+}
+
+function dockerReachableHost(hostname: string): string {
+  return hostname === "127.0.0.1" || hostname === "localhost" ? "host.docker.internal" : hostname;
+}
+
+function isMissingExecutableError(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
+function shellSafePath(value: string): string {
+  return value.includes(" ") ? JSON.stringify(value) : value;
 }
 
 async function dryRunImport(sourceClient: pg.Client, targetClient: pg.Client): Promise<StorageMergeImportOperation[]> {
@@ -412,6 +560,7 @@ function blockedResult(
     targetDatabaseUrl: targetDatabaseUrl ? redactUrl(targetDatabaseUrl) : "missing",
     reviewedManifestGeneratedAt: manifest.generatedAt,
     staleManifest,
+    backup: null,
     operations: [],
     warnings,
     notes: ["No source or target rows were inserted, updated, deleted, or overwritten."]
@@ -421,8 +570,33 @@ function blockedResult(
 function manifestSignature(manifest: StorageMergeManifest): string {
   return JSON.stringify({
     projects: manifest.projectMappings.map((mapping) => [mapping.rootUri, mapping.action]),
-    tables: manifest.tablePlans.map((plan) => [plan.table, plan.sourceRows, plan.targetRows, plan.insertRows, plan.existingRows, plan.conflictRows, plan.projectIdRewriteRows])
+    tables: manifest.tablePlans.map((plan) => [plan.table, plan.sourceRows, plan.targetRows, plan.insertRows, plan.existingRows, plan.conflictRows, plan.projectIdRewriteRows]),
+    legacyDefinitions: (manifest.legacyDefinitionReferences ?? []).map((reference) => [
+      reference.definitionType,
+      reference.definitionId,
+      reference.action,
+      reference.referenceCount,
+      reference.sourceRegistry,
+      reference.targetRegistry,
+      reference.targetDiffers
+    ])
   });
+}
+
+function legacyDefinitionImportNote(manifest: StorageMergeManifest): string {
+  const references = manifest.legacyDefinitionReferences ?? [];
+  if (!references.length) {
+    return "No historical runs or tasks reference missing or changed agent/workflow registry definitions.";
+  }
+  const insertable = references.filter((reference) => reference.action === "insert-missing-registry").length;
+  const preserved = references.filter((reference) => reference.action === "preserve-target-current").length;
+  const warnings = references.filter((reference) => reference.action === "readability-warning").length;
+  return [
+    `Legacy definition references reviewed: ${references.length}.`,
+    insertable ? `${insertable} missing registry definition(s) are insert-only candidates.` : "",
+    preserved ? `${preserved} changed definition(s) keep the current target registry definition.` : "",
+    warnings ? `${warnings} unresolved historical reference(s) require artifact/stage-output inspection for readability.` : ""
+  ].filter(Boolean).join(" ");
 }
 
 function unredactedUrlFromEnv(primary: string, fallback: string): string | undefined {

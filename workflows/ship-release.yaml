@@ -11,6 +11,9 @@ stages:
   - id: readiness
     agent: auto-release-check
     goal: Check tests, migrations, config, docs, rollback, and monitoring.
+    pattern:
+      type: verifier
+      promotion_gate: release
     context:
       load:
         - release_policy
@@ -21,6 +24,10 @@ stages:
   - id: notes
     agent: docs-maintainer
     goal: Prepare release notes and user-facing change summaries.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: approval
     context:
       load:
         - changelog
@@ -30,6 +37,9 @@ stages:
   - id: go-no-go
     agent: release-manager
     goal: Produce a go/no-go recommendation and approval checklist.
+    pattern:
+      type: finalizer
+      promotion_gate: release
     approval_required: true
     context:
       load:
@@ -37,4 +47,3 @@ stages:
         - release_notes
       max_tokens: 3000
     output: release_readiness
-

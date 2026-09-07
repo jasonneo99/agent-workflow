@@ -5,7 +5,7 @@ Agent Workflow has two separate integration layers:
 1. The model provider configured in `.env`.
 2. The client surface that calls Agent Workflow through CLI or MCP.
 
-You can mix and match them. For example, Cursor can call Agent Workflow over MCP while Agent Workflow uses a local Ollama model, OpenAI, AWS Bedrock, or an enterprise LiteLLM gateway.
+You can mix and match them. For example, Cursor can call Agent Workflow over MCP while Agent Workflow uses a first-class local Ollama model, OpenAI, AWS Bedrock, or an enterprise LiteLLM gateway.
 
 ## Model Provider Examples
 
@@ -22,15 +22,15 @@ npm run provider-check
 npm run smoke
 ```
 
-### BYO: Ollama
+### Local: Ollama
 
 Use this when Ollama exposes an OpenAI-compatible endpoint on your machine.
 
 ```env
-DEFAULT_MODEL_PROVIDER=byo
-BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=llama3.1
-BYO_MODEL_API_KEY=not-required
+DEFAULT_MODEL_PROVIDER=local
+LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
+LOCAL_MODEL_NAME=auto
+LOCAL_MODEL_API_KEY=not-required
 ```
 
 ```bash
@@ -38,15 +38,15 @@ npm run provider-check
 npm run provider-smoke
 ```
 
-### BYO: LM Studio
+### Local: LM Studio
 
 Use this when LM Studio's local server is running.
 
 ```env
-DEFAULT_MODEL_PROVIDER=byo
-BYO_MODEL_BASE_URL=http://localhost:1234/v1
-BYO_MODEL_NAME=<loaded-model-name>
-BYO_MODEL_API_KEY=not-required
+DEFAULT_MODEL_PROVIDER=local
+LOCAL_MODEL_BASE_URL=http://localhost:1234/v1
+LOCAL_MODEL_NAME=auto
+LOCAL_MODEL_API_KEY=not-required
 ```
 
 ```bash
@@ -60,7 +60,7 @@ Use this for a self-hosted vLLM OpenAI-compatible server.
 ```env
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:8000/v1
-BYO_MODEL_NAME=<served-model-name>
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=not-required
 ```
 
@@ -75,7 +75,7 @@ Use this for a team or enterprise model router. The gateway can route to OpenAI,
 ```env
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=https://llm-gateway.example.com/v1
-BYO_MODEL_NAME=<gateway-model-alias>
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=<gateway-api-key>
 ```
 
@@ -89,9 +89,10 @@ Use this when you want cheap local/default execution for most stages and stronge
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
+AGENTFLOW_MODEL_POLICY=best-coding
 ```
 
 Run `npm run agentflow -- provider-use auto --check` to preview which provider will be used for `fast`, `standard`, and `reasoning` stages. If AWS SSO is active, Bedrock can participate in the route; if it is expired, auto routing skips Bedrock and reports the checked providers in the route reason.
@@ -99,22 +100,23 @@ Run `npm run agentflow -- provider-use auto --check` to preview which provider w
 For explicit tier routing, use:
 
 ```env
-DEFAULT_MODEL_PROVIDER=byo
+DEFAULT_MODEL_PROVIDER=auto
 AGENTFLOW_ROUTING_MODE=adaptive
-AGENTFLOW_PROVIDER_FAST=byo
-AGENTFLOW_PROVIDER_STANDARD=byo
+AGENTFLOW_PROVIDER_FAST=local
+AGENTFLOW_PROVIDER_STANDARD=local
 AGENTFLOW_PROVIDER_REASONING=openai
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 
-BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=qwen2.5-coder:14b
-BYO_MODEL_FAST=llama3.1:8b
-BYO_MODEL_STANDARD=qwen2.5-coder:14b
-BYO_MODEL_REASONING=deepseek-r1:32b
+LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
+LOCAL_MODEL_NAME=qwen2.5-coder:14b
+LOCAL_MODEL_FAST=llama3.1:8b
+LOCAL_MODEL_STANDARD=qwen2.5-coder:14b
+LOCAL_MODEL_REASONING=deepseek-r1:32b
 
 OPENAI_API_KEY=<openai-api-key>
-OPENAI_MODEL_REASONING=gpt-4o
+OPENAI_MODEL=auto
+OPENAI_MODEL_REASONING=
 ```
 
 Every stage records routing and quality metadata in its artifacts.
@@ -126,13 +128,18 @@ Use this when you want Agent Workflow to call the OpenAI Responses API directly.
 ```env
 DEFAULT_MODEL_PROVIDER=openai
 OPENAI_API_KEY=<openai-api-key>
-OPENAI_MODEL=gpt-4o
+OPENAI_MODEL=auto
 ```
 
 ```bash
 npm run provider-check
 npm run provider-smoke
 ```
+
+`OPENAI_MODEL=auto` refreshes available models from the live OpenAI catalog and
+chooses a model per tier. Use exact `OPENAI_MODEL_FAST`,
+`OPENAI_MODEL_STANDARD`, or `OPENAI_MODEL_REASONING` values only when you need
+reproducible pinned runs.
 
 ### AWS Bedrock
 
@@ -142,10 +149,10 @@ Use this when you want direct Bedrock execution through the AWS SDK credential c
 DEFAULT_MODEL_PROVIDER=bedrock
 AWS_REGION=us-east-1
 AWS_PROFILE=<optional-profile>
-BEDROCK_MODEL=amazon.nova-pro-v1:0
-BEDROCK_MODEL_FAST=amazon.nova-lite-v1:0
-BEDROCK_MODEL_STANDARD=amazon.nova-pro-v1:0
-BEDROCK_MODEL_REASONING=amazon.nova-pro-v1:0
+BEDROCK_MODEL=auto
+BEDROCK_MODEL_FAST=
+BEDROCK_MODEL_STANDARD=
+BEDROCK_MODEL_REASONING=
 ```
 
 ```bash
@@ -172,12 +179,12 @@ npm run provider-check
 
 ### Legacy OpenAI-Compatible
 
-Use this for older installs that already use `OPENAI_COMPATIBLE_*`. Prefer `byo` for new setups.
+Use this for older installs that already use `OPENAI_COMPATIBLE_*`. Prefer `local` for on-machine runtimes and `byo` for new remote or enterprise gateways.
 
 ```env
 DEFAULT_MODEL_PROVIDER=openai-compatible
 OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
-OPENAI_COMPATIBLE_MODEL=llama3.1
+OPENAI_COMPATIBLE_MODEL=auto
 OPENAI_COMPATIBLE_API_KEY=not-required
 ```
 
@@ -280,9 +287,9 @@ Use the same local stdio command if your client supports MCP server configuratio
 | Client | Provider | Use case |
 | --- | --- | --- |
 | Terminal | `mock` | Validate installation and workflows without model calls |
-| Terminal | `byo` with Ollama | Local/offline development loops |
+| Terminal | `local` with Ollama | Local/offline development loops |
 | VS Code | `byo` with LiteLLM | Team gateway with centralized model routing |
-| Cursor | `byo` with LM Studio | Local model experimentation in an IDE |
+| Cursor | `local` with LM Studio | Local model experimentation in an IDE |
 | Cursor | `openai` | Direct OpenAI-backed agent workflows |
 | Codex | `byo` | Codex as client, external model gateway as provider |
 | Any MCP client | `bedrock` | AWS-native enterprise environments |

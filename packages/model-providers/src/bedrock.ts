@@ -10,6 +10,9 @@ import {
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
+import { selectModelFromCatalog } from "./catalog.js";
+
+const AUTO_MODEL = "auto";
 
 /**
  * Model tier configuration. Each tier maps to the best available model
@@ -22,7 +25,7 @@ const defaultModelTiers: Record<ModelTier, string> = {
   reasoning: "amazon.nova-pro-v1:0"
 };
 
-function resolveModelForTier(tier: ModelTier | undefined, fallbackModel: string): string {
+function configuredModelForTier(tier: ModelTier | undefined, fallbackModel: string): string {
   if (!tier) {
     return fallbackModel;
   }
@@ -31,7 +34,7 @@ function resolveModelForTier(tier: ModelTier | undefined, fallbackModel: string)
   if (envValue) {
     return envValue;
   }
-  return defaultModelTiers[tier] ?? fallbackModel;
+  return fallbackModel;
 }
 
 export class BedrockProvider implements ModelProvider {
@@ -43,7 +46,7 @@ export class BedrockProvider implements ModelProvider {
 
   constructor(input: { model?: string; region?: string; id?: string } = {}) {
     this.id = input.id ?? this.id;
-    this.model = input.model ?? process.env.BEDROCK_MODEL ?? defaultModelTiers.standard;
+    this.model = input.model ?? process.env.BEDROCK_MODEL ?? AUTO_MODEL;
     this.region = input.region ?? process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
     this.runtimeClient = new BedrockRuntimeClient({ region: this.region });
     this.controlClient = new BedrockClient({ region: this.region });
@@ -51,10 +54,20 @@ export class BedrockProvider implements ModelProvider {
 
   async check(): Promise<{ ready: boolean; details: string[] }> {
     try {
-      await this.controlClient.send(new ListFoundationModelsCommand({}));
+      const modelIds = await this.loadModelCatalog();
+      const tierModels = await Promise.all((["fast", "standard", "reasoning"] as const).map(async (tier) => {
+        const resolved = await this.resolveModelForTier(tier);
+        return `${tier}: ${resolved.model}${resolved.source === "catalog" ? " (auto)" : ""}`;
+      }));
+      const configuredModels = (["fast", "standard", "reasoning"] as const)
+        .map((tier) => configuredModelForTier(tier, this.model))
+        .filter((model) => model !== AUTO_MODEL);
+      const configuredModelsAvailable = configuredModels.every((model) => modelIds.includes(model));
       return {
-        ready: true,
-        details: [`${this.id} configured. Model: ${this.model}. Region: ${this.region}.`]
+        ready: configuredModelsAvailable,
+        details: configuredModelsAvailable
+          ? [`${this.id} configured. Region: ${this.region}.`, `Tier models: ${tierModels.join(", ")}`]
+          : [`${this.id} configured. Region: ${this.region}.`, `Configured model was not listed: ${configuredModels.join(", ")}`]
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -69,7 +82,7 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const modelForStage = resolveModelForTier(input.modelTier, this.model);
+    const { model: modelForStage } = await this.resolveModelForTier(input.modelTier);
     const text = await this.converseJson({
       system: [
         "You are executing one stage in a durable agent workflow.",
@@ -108,6 +121,7 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
+    const { model } = await this.resolveModelForTier("fast");
     const text = await this.converseJson({
       system: [
         "Summarize one project file for future coding-agent context retrieval.",
@@ -115,7 +129,8 @@ export class BedrockProvider implements ModelProvider {
         "Emphasize purpose, public interfaces, commands, constraints, and when an agent should read this file."
       ].join(" "),
       prompt: buildFileSummaryPrompt(input),
-      temperature: 0.1
+      temperature: 0.1,
+      modelOverride: model
     });
     const parsed = normalizeFileSummaryArtifact(extractJsonObject(text) as FileSummaryJsonArtifact);
     const summary = [
@@ -128,7 +143,7 @@ export class BedrockProvider implements ModelProvider {
       summary,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model,
         sourceUri: input.sourceUri,
         refined: true,
         keyFacts: parsed.keyFacts,
@@ -160,6 +175,26 @@ export class BedrockProvider implements ModelProvider {
       throw new Error(`${this.id} returned an empty response.`);
     }
     return text;
+  }
+
+  private async resolveModelForTier(tier: ModelTier | undefined): Promise<{ model: string; source: "env" | "catalog" }> {
+    const configured = tier ? configuredModelForTier(tier, this.model) : this.model;
+    if (configured !== AUTO_MODEL) {
+      return { model: configured, source: "env" };
+    }
+    const catalog = await this.loadModelCatalog();
+    const selected = selectModelFromCatalog(catalog, tier ?? "standard", { provider: "bedrock" });
+    if (!selected) {
+      const fallback = defaultModelTiers[tier ?? "standard"];
+      return { model: fallback, source: "env" };
+    }
+    return { model: selected, source: "catalog" };
+  }
+
+  private async loadModelCatalog(): Promise<string[]> {
+    const response = await this.controlClient.send(new ListFoundationModelsCommand({}));
+    return [...new Set(response.modelSummaries?.map((model) => model.modelId).filter((modelId): modelId is string => Boolean(modelId)) ?? [])]
+      .sort((a, b) => a.localeCompare(b));
   }
 }
 

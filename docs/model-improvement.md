@@ -64,8 +64,14 @@ reduce token cost while preserving review quality.
 
 Open the local dashboard at `/model-improvement?project=/path/to/project` to
 inspect scorecard health, feedback coverage, evaluation coverage, tuning
-proposal mix, routing recommendations, and promotion readiness. The dashboard
-view is read-only and uses existing project-local evidence.
+proposal mix, routing recommendations, local-provider evidence, and promotion
+readiness. The dashboard view is read-only and uses existing project-local
+evidence.
+
+The Local Provider Evidence panel distinguishes on-machine or BYO-compatible
+routes from hosted providers. It summarizes local stage volume, hosted stage
+volume, avoided hosted calls, fallback rate, feedback quality, latency, and the
+next recommendation before local routing expands beyond low-risk work.
 
 ![Model improvement dashboard](assets/screenshots/dashboard-model-improvement.png)
 
@@ -94,6 +100,8 @@ The workflow is most useful after you have at least one of these:
 - Accepted, revised, or rejected feedback on a run
 - A private eval suite under `.agent-workflow/evaluations/`
 - Provider routing receipts from `DEFAULT_MODEL_PROVIDER=auto`
+- Local or BYO model route receipts when you are evaluating avoided hosted API
+  calls
 - A known failure mode, such as weak UX review or noisy implementation plans
 
 Useful commands:

@@ -29,10 +29,10 @@ import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/da
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
-import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
+import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
-import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
-import { executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
+import { assertCommandAllowed, executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
+import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { defaultServiceEndpoints } from "../../../packages/storage/src/config.js";
 import { checkServices } from "../../../packages/storage/src/doctor.js";
@@ -44,8 +44,10 @@ import {
 } from "../../../packages/storage/src/migration-plan.js";
 import {
   buildStorageMergeManifest,
+  buildStorageProjectConflictReport,
   formatStorageMergeManifest,
-  type StorageMergeManifest
+  type StorageMergeManifest,
+  type StorageProjectConflictReport
 } from "../../../packages/storage/src/merge-manifest.js";
 import {
   formatStorageMergeImportResult,
@@ -77,6 +79,7 @@ import {
   listArtifacts,
   listProjectFileSummaries,
   listProjectStorageSummaries,
+  listStaleTerminalWorkflowRuns,
   listWorkflowQueue,
   listWorkflowStageHealthForRuns,
   listWorkflowStageRunsForRuns,
@@ -86,6 +89,7 @@ import {
   markActionApprovalExecution,
   recordRunAction,
   requestActionApproval,
+  reconcileStaleTerminalWorkflowRuns,
   requeueExpiredWorkflowTaskLeases,
   requeueRunningWorkflowTasks,
   replayWorkflowRun,
@@ -100,7 +104,10 @@ import {
 } from "../../../packages/storage/src/postgres.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
+import { explainModelCatalogSelection, normalizeModelSelectionPolicy, selectModelFromCatalog, type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy } from "../../../packages/model-providers/src/catalog.js";
+import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../packages/model-providers/src/openai.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
+import type { ModelTier } from "../../../packages/model-providers/src/types.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
@@ -118,9 +125,15 @@ const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "ru
 const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
 const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
+const defaultServerRequestAuditLogPath = path.join(rootDir, ".agent-workflow", "runtime", "server", "request-log.jsonl");
+
+function envFlagEnabled(value: string | undefined): boolean {
+  if (!value) return false;
+  return ["1", "true", "on", "yes"].includes(value.trim().toLowerCase());
+}
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "server-readiness", "server-projects", "server-resolve-project", "server-request-preview", "server-route-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -230,6 +243,132 @@ type DashboardLaunchAgentStatus = {
   installCommand: string;
   uninstallCommand: string;
 };
+
+type RuntimeMonitorReport = {
+  kind: "agentflow_runtime_monitor_report";
+  generatedAt: string;
+  storageHost: string | null;
+  hulk: {
+    host: string | null;
+    source: "AGENTFLOW_SHARED_STORAGE_HOST" | "configured-endpoints" | "not-configured";
+    reachable: boolean;
+    services: Awaited<ReturnType<typeof checkServices>>;
+  };
+  localServices: Awaited<ReturnType<typeof checkServices>>;
+  docker: {
+    status: "running" | "unavailable";
+    message: string;
+    containers: Array<{ name: string; image: string; ports: string }>;
+  };
+  ports: Array<{
+    label: string;
+    port: number;
+    status: "listening" | "closed";
+    pid: number | null;
+    command: string;
+  }>;
+  processes: Array<{
+    role: "dashboard" | "worker" | "learning-daemon" | "mcp" | "supervisor" | "other";
+    status: "ok" | "attention";
+    count: number;
+    pids: number[];
+    detail: string;
+  }>;
+  mcpPipeline: {
+    status: "ok" | "attention";
+    pluginEnabled: boolean;
+    pluginRoot: string;
+    manifestPath: string;
+    launcherPath: string;
+    launcherExists: boolean;
+    launcherExecutable: boolean;
+    repoResolved: boolean;
+    resolvedRepo: string | null;
+    serverBuilt: boolean;
+    stdioLogPath: string;
+    launcherLogPath: string;
+    lastStdioEvents: Array<Record<string, unknown>>;
+    lastLauncherEvents: Array<Record<string, unknown>>;
+    lastSpawnAt: string | null;
+    lastExitAt: string | null;
+    lastExitCode: number | null;
+    smoke: {
+      status: "not-run" | "passed" | "failed";
+      toolCount: number | null;
+      message: string;
+      command: string;
+      checkedAt: string | null;
+    };
+    clientReload: {
+      suspectedStalePipe: boolean;
+      summary: string;
+      steps: string[];
+    };
+    approvalDiagnostics: {
+      recentEvents: Array<Record<string, unknown>>;
+      lastCallAt: string | null;
+      lastResultAt: string | null;
+      lastExitCode: number | null;
+      lastTimedOut: boolean | null;
+      summary: string;
+      fallbackCommand: string;
+    };
+  };
+  mcpCleanup: {
+    candidateCount: number;
+    candidates: Array<{
+      pid: number;
+      parentPid: number | null;
+      command: string;
+      reason: string;
+      ageMs: number | null;
+      startedAt: string | null;
+      sessionKey: string;
+      risk: "low" | "medium";
+      autoCleanable: boolean;
+    }>;
+    autoCleanup: {
+      enabled: boolean;
+      mode: "preview" | "auto-low-risk";
+      staleMinutes: number;
+    };
+    previewCommand: string;
+    executeCommand: string;
+  };
+  staleRuns: {
+    candidateCount: number;
+    candidates: Array<{
+      runId: string;
+      workflowId: string;
+      runStatus: string;
+      task: string;
+      projectRootUri: string;
+      totalTasks: number;
+      completedTasks: number;
+      cancelledTasks: number;
+      recommendedStatus: "completed" | "cancelled";
+      startedAt: string | null;
+    }>;
+    autoReconcile: {
+      enabled: boolean;
+      limit: number;
+    };
+    previewCommand: string;
+    executeCommand: string;
+  };
+  recommendations: string[];
+};
+
+type RuntimeMcpCleanupResult = {
+  kind: "agentflow_mcp_cleanup_result";
+  generatedAt: string;
+  mode: "preview" | "execute";
+  candidates: RuntimeMonitorReport["mcpCleanup"]["candidates"];
+  terminated: Array<{ pid: number; status: "sent" | "skipped" | "failed"; message: string }>;
+  warnings: string[];
+};
+
+type RuntimeStaleRunReconciliationResult = Awaited<ReturnType<typeof reconcileStaleTerminalWorkflowRuns>>;
 
 type WorkflowPreset = {
   id: string;
@@ -751,7 +890,7 @@ program
     console.log(`DEFAULT_MODEL_PROVIDER=${providerId}`);
 
     if (providerId === "openai") {
-      console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY.");
+      console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY. Set OPENAI_MODEL=auto to select tier models from the live OpenAI catalog.");
     } else if (providerId === "auto") {
       console.log("Using auto routing. Agent Workflow will pick a ready provider per stage tier.");
     } else if (providerId === "byo") {
@@ -1054,7 +1193,9 @@ program
     const workflows = await loadWorkflowRecords(rootDir);
     await migrateStorage();
     const result = await seedRegistry(agents, workflows);
+    const bucketResult = await ensureObjectStorageBucket();
     console.log(`Seeded ${result.agents} agents and ${result.workflows} workflows into enterprise storage.`);
+    console.log(bucketResult.ok ? `OK: ${bucketResult.message}` : `WARN: ${bucketResult.message}`);
   });
 
 program
@@ -1198,7 +1339,8 @@ program
       sourceDatabaseUrl: options.sourceDatabaseUrl,
       targetDatabaseUrl: options.targetDatabaseUrl,
       execute: options.execute,
-      allowStaleManifest: options.allowStaleManifest
+      allowStaleManifest: options.allowStaleManifest,
+      backupDir: options.out
     });
     const written = options.writeResult ? await writeStorageMergeImportResultFiles(result, options.out) : null;
     if (options.json) {
@@ -1224,6 +1366,55 @@ program
     const report = await loadStorageMergeEvidenceListing(options.dir);
     console.log(options.json ? JSON.stringify(report, null, 2) : formatStorageMergeEvidenceListing(report));
     if (!report.safePrimaryStatePlane) process.exitCode = 1;
+  });
+
+program
+  .command("storage-project-conflicts")
+  .description("Preview source/target project metadata conflicts before treating shared storage as primary")
+  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 100.78.183.30")
+  .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
+  .option("--target-database-url <url>", "target Postgres URL")
+  .option("--json", "print machine-readable project conflict report")
+  .action(async (options: { targetHost?: string; sourceDatabaseUrl?: string; targetDatabaseUrl?: string; json?: boolean }) => {
+    const report = await buildStorageProjectConflictReport({
+      targetHost: options.targetHost,
+      sourceDatabaseUrl: options.sourceDatabaseUrl,
+      targetDatabaseUrl: options.targetDatabaseUrl
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatStorageProjectConflictReport(report));
+    if (report.conflicts.some((conflict) => conflict.recommendation === "manual-review")) process.exitCode = 1;
+  });
+
+program
+  .command("storage-project-decision")
+  .description("Record a reviewed canonical project decision in local migration evidence")
+  .requiredOption("--root <uri>", "project root_uri being decided")
+  .requiredOption("--action <action>", "preserve-target-project, promote-source-project, or manual-project-review")
+  .option("--source-project-id <id>", "source project id from storage-project-conflicts")
+  .option("--target-project-id <id>", "target project id from storage-project-conflicts")
+  .option("--reviewer <name>", "operator/reviewer name", process.env.USER || "operator")
+  .requiredOption("--note <text>", "decision rationale")
+  .option("--out <dir>", "migration evidence directory", ".agent-workflow/migrations")
+  .option("--json", "print machine-readable write result")
+  .action(async (options: { root: string; action: string; sourceProjectId?: string; targetProjectId?: string; reviewer: string; note: string; out: string; json?: boolean }) => {
+    if (!["preserve-target-project", "promote-source-project", "manual-project-review"].includes(options.action)) {
+      throw new Error("--action must be preserve-target-project, promote-source-project, or manual-project-review");
+    }
+    const result = await writeStorageProjectConflictDecision({
+      outDir: options.out,
+      rootUri: options.root,
+      action: options.action,
+      sourceProjectId: options.sourceProjectId,
+      targetProjectId: options.targetProjectId,
+      reviewer: options.reviewer,
+      note: options.note
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`Recorded project decision: ${result.jsonPath}`);
+    console.log(`Decision count: ${result.decisionCount}`);
   });
 
 program
@@ -1263,14 +1454,16 @@ program
   .description("Prepare or execute a local fallback sync back into configured shared storage")
   .option("--out <dir>", "migration evidence output directory", ".agent-workflow/migrations")
   .option("--scheduler-check", "run the daemon-style dry-run scheduler check once")
+  .option("--scheduler-execute", "allow the scheduler check to execute insert-only sync when ready")
   .option("--scheduler-interval-ms <number>", "minimum interval for scheduler checks", "900000")
   .option("--execute", "execute the insert-only merge and mark pending fallback items synced")
   .option("--json", "print machine-readable offline sync result")
-  .action(async (options: { out: string; schedulerCheck?: boolean; schedulerIntervalMs: string; execute?: boolean; json?: boolean }) => {
+  .action(async (options: { out: string; schedulerCheck?: boolean; schedulerExecute?: boolean; schedulerIntervalMs: string; execute?: boolean; json?: boolean }) => {
     if (options.schedulerCheck) {
       const status = await runDaemonOfflineSyncScheduler({
         actor: "cli",
-        minIntervalMs: parsePositiveInteger(options.schedulerIntervalMs, 900000)
+        minIntervalMs: parsePositiveInteger(options.schedulerIntervalMs, 900000),
+        execute: Boolean(options.schedulerExecute)
       });
       console.log(options.json ? JSON.stringify(status, null, 2) : formatOfflineSyncSchedulerStatus(status));
       return;
@@ -1303,6 +1496,11 @@ program
   .option("--target-access-key <key>", "target object access key; defaults to OBJECT_STORAGE_ACCESS_KEY")
   .option("--target-secret-key <key>", "target object secret key; defaults to OBJECT_STORAGE_SECRET_KEY")
   .option("--verify", "verify referenced object keys with MinIO Client (mc)")
+  .option("--queue-mirror-approval", "queue an approval for the missing-object mirror plan; requires --project and --enumerate-buckets")
+  .option("--write", "write object proof evidence to .agent-workflow/migrations")
+  .option("--out <dir>", "directory for --write output", ".agent-workflow/migrations")
+  .option("--actor <name>", "person or tool requesting mirror approval", "cli")
+  .option("--actor-role <role>", "project role for approval request audit", "operator")
   .option("--json", "print machine-readable object artifact proof")
   .action(async (options: {
     project?: string;
@@ -1321,6 +1519,11 @@ program
     targetAccessKey?: string;
     targetSecretKey?: string;
     verify?: boolean;
+    queueMirrorApproval?: boolean;
+    write?: boolean;
+    out: string;
+    actor: string;
+    actorRole: string;
     json?: boolean;
   }) => {
     const report = await buildObjectArtifactProofReport({
@@ -1341,7 +1544,45 @@ program
       targetSecretKey: options.targetSecretKey,
       verify: Boolean(options.verify)
     });
-    console.log(options.json ? JSON.stringify(report, null, 2) : formatObjectArtifactProofReport(report));
+    const written = options.write ? await writeObjectArtifactProofEvidence(report, options.out) : null;
+    if (options.queueMirrorApproval) {
+      const result = await queueObjectMirrorApproval({
+        projectPath: options.project,
+        report,
+        sourceEndpoint: options.sourceEndpoint ?? "http://127.0.0.1:19000",
+        sourceBucket: options.sourceBucket ?? options.bucket ?? process.env.OBJECT_STORAGE_BUCKET ?? "agentflow-artifacts",
+        targetEndpoint: options.targetEndpoint ?? options.endpoint ?? process.env.OBJECT_STORAGE_ENDPOINT ?? "",
+        targetBucket: options.targetBucket ?? options.bucket ?? process.env.OBJECT_STORAGE_BUCKET ?? "agentflow-artifacts",
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "operator")
+      });
+      if (options.json) {
+        console.log(JSON.stringify({ ...report, written, mirrorApproval: result }, null, 2));
+      } else {
+        console.log(formatObjectArtifactProofReport(report));
+        if (written) {
+          console.log("");
+          console.log("Written files:");
+          console.log(`- Markdown: ${written.markdownPath}`);
+          console.log(`- JSON: ${written.jsonPath}`);
+        }
+        console.log("");
+        console.log(result.ok ? result.output : result.error);
+      }
+      if (!result.ok) process.exitCode = 1;
+      return;
+    }
+    if (options.json) {
+      console.log(JSON.stringify(written ? { ...report, written } : report, null, 2));
+    } else {
+      console.log(formatObjectArtifactProofReport(report));
+      if (written) {
+        console.log("");
+        console.log("Written files:");
+        console.log(`- Markdown: ${written.markdownPath}`);
+        console.log(`- JSON: ${written.jsonPath}`);
+      }
+    }
     if (report.status === "missing") process.exitCode = 1;
     if (report.status === "blocked") process.exitCode = 2;
   });
@@ -1598,6 +1839,23 @@ program
       console.log(`${summary.sourceUri} tokens=${summary.tokenEstimate}`);
       console.log(`  ${summary.summary.split("\n").join("\n  ")}`);
     }
+  });
+
+program
+  .command("project-alias-merge-plan")
+  .description("Preview a dry-run plan for consolidating duplicate project identity aliases")
+  .option("--json", "Print machine-readable JSON")
+  .option("-l, --limit <number>", "number of registered project rows to inspect", "500")
+  .action(async (options: { json?: boolean; limit: string }) => {
+    const limit = parsePositiveInteger(options.limit, 500);
+    const projects = await listProjectStorageSummaries(limit);
+    const identities = await loadDashboardProjectIdentityGroups(projects);
+    const plan = buildDashboardProjectAliasMergePlan(projects, identities);
+    if (options.json) {
+      console.log(JSON.stringify(plan, null, 2));
+      return;
+    }
+    console.log(formatDashboardProjectAliasMergePlan(plan));
   });
 
 program
@@ -2174,7 +2432,7 @@ program
 program
   .command("approvals")
   .description("List, approve, approve-and-execute, reject, execute, dismiss, or add always rules for agent-requested actions")
-  .option("--status <status>", "pending, approved, executed, failed, rejected, or all", "pending")
+  .option("--status <status>", "pending, approved, executed, failed, dismissed, rejected, or all", "pending")
   .option("-r, --run <id>", "filter by workflow run id")
   .option("-p, --project <dir>", "filter by project directory")
   .option("--approve <id>", "approval id to approve")
@@ -2183,6 +2441,9 @@ program
   .option("--execute <id>", "execute an approved action")
   .option("--dismiss <id>", "dismiss an approved action without execution")
   .option("--always <id>", "approval id to approve current request and add a future auto-execute rule")
+  .option("--auto-approve-execute", "auto approve pending approvals and execute pending or already-approved executable actions at or below the configured risk threshold")
+  .option("--max-risk <risk>", "max risk for --auto-approve-execute: low, medium, or high", process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK ?? "medium")
+  .option("--dry-run", "preview --auto-approve-execute without changing approvals")
   .option("--always-scope <scope>", "rule scope for --always: exact, broad, or target", "exact")
   .option("--always-target <pattern>", "explicit stored target pattern when --always-scope target is used")
   .option("--actor <name>", "person or tool making the decision", "cli")
@@ -2190,7 +2451,7 @@ program
   .option("--note <text>", "decision note")
   .option("-l, --limit <number>", "number of approvals to show", "25")
   .option("--json", "print JSON")
-  .action(async (options: { status: string; run?: string; project?: string; approve?: string; approveExecute?: string; reject?: string; execute?: string; dismiss?: string; always?: string; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
+  .action(async (options: { status: string; run?: string; project?: string; approve?: string; approveExecute?: string; reject?: string; execute?: string; dismiss?: string; always?: string; autoApproveExecute?: boolean; maxRisk: string; dryRun?: boolean; alwaysScope: string; alwaysTarget?: string; actor: string; actorRole?: string; note?: string; limit: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2201,9 +2462,28 @@ program
       return;
     }
 
-    if ([options.approve, options.approveExecute, options.reject, options.execute, options.dismiss, options.always].filter(Boolean).length > 1) {
-      console.error("Choose only one of --approve, --approve-execute, --reject, --execute, --dismiss, or --always.");
+    if ([options.approve, options.approveExecute, options.reject, options.execute, options.dismiss, options.always, options.autoApproveExecute ? "auto" : ""].filter(Boolean).length > 1) {
+      console.error("Choose only one of --approve, --approve-execute, --reject, --execute, --dismiss, --always, or --auto-approve-execute.");
       process.exitCode = 1;
+      return;
+    }
+
+    if (options.autoApproveExecute) {
+      const result = await runApprovalAutopilot({
+        projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+        runId: options.run,
+        limit: parsePositiveInteger(options.limit, 25),
+        maxRisk: parseApprovalAutopilotRisk(options.maxRisk),
+        execute: !options.dryRun,
+        actor: options.actor,
+        actorRole: normalizeActorRole(options.actorRole, "approver")
+      });
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(formatApprovalAutopilotResult(result));
+      if (result.items.some((item) => item.status === "failed")) process.exitCode = 1;
       return;
     }
 
@@ -2325,7 +2605,7 @@ program
         process.exitCode = 1;
         return;
       }
-      const project = await loadProjectConfig(approvalForGate.projectRootUri);
+      const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
       const actorRole = normalizeActorRole(options.actorRole, "approver");
       const gate = evaluateRoleGate(project, actorRole, options.approve ? "can_approve_actions" : "can_reject_actions");
       if (!gate.allowed) {
@@ -2442,6 +2722,34 @@ program
       console.log(`  Effect: ${rule.effect}${rule.maxBytes ? `, max_bytes=${rule.maxBytes}` : ""}`);
       console.log(`  Remove: npm run agentflow -- approval-rules --project ${shellQuote(rule.projectRootUri)} --remove ${rule.id}`);
     }
+  });
+
+program
+  .command("approval-backlog")
+  .description("Surface pending, stale, warning, and failed approval items without changing them")
+  .option("--status <status>", "pending, approved, executed, failed, dismissed, rejected, or all", "all")
+  .option("-p, --project <dir>", "project directory filter")
+  .option("--stale-minutes <number>", "age before pending or approved approvals are considered stale", "60")
+  .option("-l, --limit <number>", "number of approvals to inspect", "500")
+  .option("--json", "print JSON")
+  .action(async (options: { status: string; project?: string; staleMinutes: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const report = await buildApprovalBacklogReport({
+      status: options.status === "all" ? undefined : options.status,
+      projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      staleMinutes: parsePositiveInteger(options.staleMinutes, 60),
+      limit: parsePositiveInteger(options.limit, 500)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatApprovalBacklogReport(report));
+    if ((report.severityCounts.error ?? 0) > 0) process.exitCode = 1;
   });
 
 program
@@ -2716,6 +3024,42 @@ program
   });
 
 program
+  .command("runtime-monitor")
+  .description("Inspect local Agent Workflow processes, local service listeners, and shared Hulk storage health")
+  .option("--cleanup-mcp", "preview stale Agent Workflow MCP cleanup candidates; pair with --confirm to terminate them")
+  .option("--reconcile-stale-runs", "preview stale workflow runs whose child tasks are already terminal; pair with --confirm to repair them")
+  .option("--check-mcp", "run an on-demand MCP launcher smoke check")
+  .option("--confirm", "confirm cleanup-mcp termination")
+  .option("--auto-low-risk", "with cleanup-mcp, terminate only old duplicate low-risk MCP candidates")
+  .option("--stale-minutes <number>", "age threshold for daemon/auto-low-risk MCP cleanup candidates")
+  .option("--stale-run-limit <number>", "maximum stale terminal workflow runs to inspect or reconcile", "50")
+  .option("--json", "print machine-readable runtime monitor report")
+  .action(async (options: { cleanupMcp?: boolean; reconcileStaleRuns?: boolean; checkMcp?: boolean; confirm?: boolean; autoLowRisk?: boolean; staleMinutes?: string; staleRunLimit: string; json?: boolean }) => {
+    if (options.cleanupMcp) {
+      const result = await cleanupRuntimeMcpProcesses({
+        execute: Boolean(options.confirm),
+        autoLowRiskOnly: Boolean(options.autoLowRisk),
+        staleMinutes: parseRuntimeMcpStaleMinutes(options.staleMinutes)
+      });
+      console.log(options.json ? JSON.stringify(result, null, 2) : formatRuntimeMcpCleanupResult(result));
+      if (result.warnings.length) process.exitCode = 1;
+      return;
+    }
+    if (options.reconcileStaleRuns) {
+      const result = await reconcileStaleTerminalWorkflowRuns({
+        execute: Boolean(options.confirm),
+        limit: parsePositiveInteger(options.staleRunLimit, 50),
+        actor: "runtime-monitor"
+      });
+      console.log(options.json ? JSON.stringify(result, null, 2) : formatRuntimeStaleRunReconciliationResult(result));
+      return;
+    }
+    const report = await loadRuntimeMonitorReport({ checkMcp: Boolean(options.checkMcp) });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatRuntimeMonitorReport(report));
+    if (!report.hulk.reachable || report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status === "failed") process.exitCode = 1;
+  });
+
+program
   .command("server-readiness")
   .description("Inspect read-only governed server-mode readiness without enabling remote execution")
   .option("-p, --project <dir>", "filter by project directory")
@@ -2728,6 +3072,26 @@ program
       limit: parsePositiveInteger(options.limit, 100)
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatServerReadinessReport(report));
+  });
+
+program
+  .command("server-mutation-controls")
+  .description("Audit governed server-mode mutation endpoint controls without enabling remote execution")
+  .option("--json", "print machine-readable mutation control report")
+  .action(async (options: { json?: boolean }) => {
+    const report = buildServerMutationControlReport();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerMutationControlReport(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("server-request-log")
+  .description("Inspect redacted governed server-mode request audit events")
+  .option("-l, --limit <number>", "number of recent audit events to show", "50")
+  .option("--json", "print machine-readable request audit log")
+  .action(async (options: { limit: string; json?: boolean }) => {
+    const report = await loadServerRequestAuditLog(parsePositiveInteger(options.limit, 50));
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerRequestAuditReport(report));
   });
 
 program
@@ -2805,6 +3169,29 @@ program
       idempotencyKey: options.idempotencyKey
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatServerRoutePreview(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("server-approval-preview")
+  .description("Preview a governed server-mode approval/action envelope without deciding or executing it")
+  .requiredOption("--project-id <id>", "registered project id from server-projects")
+  .requiredOption("--approval-id <id>", "approval id to preview")
+  .option("--decision <decision>", "approve, reject, execute, approve-and-execute, dismiss, or always-approve", "approve-and-execute")
+  .option("--actor <name>", "requesting actor", "local-preview")
+  .option("--actor-role <role>", "project role for the approval/action request", "approver")
+  .option("--idempotency-key <key>", "client-provided idempotency key")
+  .option("--json", "print machine-readable approval/action preview")
+  .action(async (options: { projectId: string; approvalId: string; decision: string; actor: string; actorRole: string; idempotencyKey?: string; json?: boolean }) => {
+    const report = await loadServerApprovalPreview({
+      projectId: options.projectId,
+      approvalId: options.approvalId,
+      decision: options.decision,
+      actor: options.actor,
+      actorRole: options.actorRole,
+      idempotencyKey: options.idempotencyKey
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerApprovalPreview(report));
     if (report.status === "blocked") process.exitCode = 2;
   });
 
@@ -3153,6 +3540,30 @@ program
   });
 
 program
+  .command("feedback-inbox")
+  .description("List unreviewed runs grouped by likely feedback decision")
+  .option("-p, --project <dir>", "project directory filter")
+  .option("-l, --limit <number>", "number of recent finished runs to scan", "50")
+  .option("--json", "print JSON")
+  .action(async (options: { project?: string; limit: string; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const report = await loadDashboardFeedbackInboxReport({
+      projectRootUri: options.project ? path.resolve(process.cwd(), options.project) : undefined,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatFeedbackInboxReport(report));
+  });
+
+program
   .command("preference-scorecard")
   .description("Aggregate feedback, quality, fallback, and routing performance by workflow, stage, agent, provider, and tier")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -3319,11 +3730,14 @@ program
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "60000")
   .option("--offline-sync-interval-ms <number>", "minimum interval between daemon-triggered offline sync dry runs", "900000")
+  .option("--offline-sync-execute", "allow daemon-triggered offline sync to execute insert-only reconciliation when ready")
   .option("--disable-offline-sync", "disable daemon-triggered offline sync dry-run checks")
+  .option("--approval-autopilot", "auto approve and execute eligible low/medium pending or already-approved approvals each tick")
+  .option("--disable-approval-autopilot", "disable daemon approval autopilot even when project settings enable it")
   .option("--daemon-id <id>", "stable daemon identity for dashboard visibility")
   .option("--heartbeat-file <path>", "learning daemon heartbeat file path")
   .option("--json", "print final daemon status JSON")
-  .action(async (options: { project?: string; allProjects?: boolean; mode: string; once?: boolean; limit: string; intervalMs: string; offlineSyncIntervalMs: string; disableOfflineSync?: boolean; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
+  .action(async (options: { project?: string; allProjects?: boolean; mode: string; once?: boolean; limit: string; intervalMs: string; offlineSyncIntervalMs: string; offlineSyncExecute?: boolean; disableOfflineSync?: boolean; approvalAutopilot?: boolean; disableApprovalAutopilot?: boolean; daemonId?: string; heartbeatFile?: string; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -3350,13 +3764,41 @@ program
       return;
     }
     const offlineSyncIntervalMs = parsePositiveInteger(options.offlineSyncIntervalMs, 900000);
+    const offlineSyncExecute = options.offlineSyncExecute || envFlagEnabled(process.env.AGENTFLOW_OFFLINE_SYNC_AUTO_EXECUTE);
     const daemonId = normalizeWorkerId(options.daemonId) ?? "learning-daemon";
+    const approvalAutopilotOverride = options.disableApprovalAutopilot ? false : options.approvalAutopilot ? true : undefined;
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile ?? path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json"));
     const startedAt = new Date().toISOString();
     let stop = false;
     let ticks = 0;
     let lastStatus: LearningDaemonHeartbeat | null = null;
-    const writeStatus = async (status: LearningDaemonHeartbeat["status"], update?: Awaited<ReturnType<typeof runLearningDaemonTick>>, lastError?: string, statusProjectDir = projectDir): Promise<LearningDaemonHeartbeat> => {
+    const writeStatus = async (
+      status: LearningDaemonHeartbeat["status"],
+      update?: Awaited<ReturnType<typeof runLearningDaemonTick>>,
+      lastError?: string,
+      statusProjectDir = projectDir,
+      aggregate?: {
+        proposals?: number;
+        inboxItems?: number;
+        applicationActions?: number;
+        autonomousAppliedActions?: number;
+        agentImprovementCandidates?: number;
+        agentImprovementPatchPreviews?: number;
+        agentImprovementEvalPasses?: number;
+        agentImprovementPromotions?: number;
+        agentImprovementPromotionPending?: number;
+        workflowShapeRecommendations?: number;
+        approvalAutopilotEnabled?: boolean;
+        approvalAutopilotMaxRisk?: ApprovalAutopilotRisk;
+        approvalAutopilotExecuted?: number;
+        approvalAutopilotSkipped?: number;
+        approvalBacklogWarnings?: number;
+        approvalBacklogErrors?: number;
+        approvalBacklogScanned?: number;
+        mcpCleanup?: RuntimeMcpCleanupResult;
+        staleRunReconciliation?: RuntimeStaleRunReconciliationResult;
+      }
+    ): Promise<LearningDaemonHeartbeat> => {
       const heartbeat: LearningDaemonHeartbeat = {
         kind: "agentflow_learning_daemon_status",
         pid: process.pid,
@@ -3371,13 +3813,37 @@ program
         intervalMs,
         limit,
         ticks,
-        proposals: update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
-        inboxItems: update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
-        applicationActions: update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
-        autonomousAppliedActions: update?.autonomousApplication.appliedActions ?? lastStatus?.autonomousAppliedActions ?? 0,
+        proposals: aggregate?.proposals ?? update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
+        inboxItems: aggregate?.inboxItems ?? update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
+        applicationActions: aggregate?.applicationActions ?? update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
+        autonomousAppliedActions: aggregate?.autonomousAppliedActions ?? update?.autonomousApplication.appliedActions ?? lastStatus?.autonomousAppliedActions ?? 0,
         autonomousApplyMaxRisk: update?.autonomousApplyMaxRisk ?? lastStatus?.autonomousApplyMaxRisk ?? await learningAutonomousApplyMaxRisk(statusProjectDir),
-        workflowShapeRecommendations: update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
+        agentImprovementCandidates: aggregate?.agentImprovementCandidates ?? update?.agentImprovement.candidates.length ?? lastStatus?.agentImprovementCandidates ?? 0,
+        agentImprovementPatchPreviews: aggregate?.agentImprovementPatchPreviews ?? update?.agentImprovementPatchPlan.patches.length ?? lastStatus?.agentImprovementPatchPreviews ?? 0,
+        agentImprovementEvalPasses: aggregate?.agentImprovementEvalPasses ?? update?.agentImprovementEvalPlan.evaluations.filter((item) => item.status === "pass").length ?? lastStatus?.agentImprovementEvalPasses ?? 0,
+        agentImprovementPromotions: aggregate?.agentImprovementPromotions ?? update?.agentImprovementPromotionQueue.items.length ?? lastStatus?.agentImprovementPromotions ?? 0,
+        agentImprovementPromotionPending: aggregate?.agentImprovementPromotionPending ?? update?.agentImprovementPromotionQueue.items.filter((item) => item.status === "pending").length ?? lastStatus?.agentImprovementPromotionPending ?? 0,
+        workflowShapeRecommendations: aggregate?.workflowShapeRecommendations ?? update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
         workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(statusProjectDir),
+        approvalAutopilotEnabled: aggregate?.approvalAutopilotEnabled ?? update?.approvalAutopilotEnabled ?? lastStatus?.approvalAutopilotEnabled ?? await learningApprovalAutopilotEnabled(statusProjectDir),
+        approvalAutopilotMaxRisk: aggregate?.approvalAutopilotMaxRisk ?? update?.approvalAutopilotMaxRisk ?? lastStatus?.approvalAutopilotMaxRisk ?? await learningApprovalAutopilotMaxRisk(statusProjectDir),
+        approvalAutopilotExecuted: aggregate?.approvalAutopilotExecuted ?? update?.approvalAutopilot.executed ?? lastStatus?.approvalAutopilotExecuted ?? 0,
+        approvalAutopilotSkipped: aggregate?.approvalAutopilotSkipped ?? update?.approvalAutopilot.skipped ?? lastStatus?.approvalAutopilotSkipped ?? 0,
+        approvalBacklogWarnings: aggregate?.approvalBacklogWarnings ?? update?.approvalBacklog.severityCounts.warning ?? lastStatus?.approvalBacklogWarnings ?? 0,
+        approvalBacklogErrors: aggregate?.approvalBacklogErrors ?? update?.approvalBacklog.severityCounts.error ?? lastStatus?.approvalBacklogErrors ?? 0,
+        approvalBacklogScanned: aggregate?.approvalBacklogScanned ?? update?.approvalBacklog.scanned ?? lastStatus?.approvalBacklogScanned ?? 0,
+        mcpCleanupEnabled: learningDaemonMcpCleanupEnabled(),
+        mcpCleanupMode: learningDaemonMcpCleanupMode(),
+        mcpCleanupStaleMinutes: parseRuntimeMcpStaleMinutes(),
+        mcpCleanupCandidates: aggregate?.mcpCleanup?.candidates.length ?? lastStatus?.mcpCleanupCandidates ?? 0,
+        mcpCleanupAutoCleanable: aggregate?.mcpCleanup?.candidates.filter((candidate) => candidate.autoCleanable).length ?? lastStatus?.mcpCleanupAutoCleanable ?? 0,
+        mcpCleanupTerminated: aggregate?.mcpCleanup?.terminated.filter((item) => item.status === "sent").length ?? lastStatus?.mcpCleanupTerminated ?? 0,
+        mcpCleanupWarnings: aggregate?.mcpCleanup?.warnings.length ?? lastStatus?.mcpCleanupWarnings ?? 0,
+        lastMcpCleanupAt: aggregate?.mcpCleanup?.generatedAt ?? lastStatus?.lastMcpCleanupAt ?? null,
+        staleRunReconcileEnabled: staleRunReconcileConfig().enabled,
+        staleRunReconcileCandidates: aggregate?.staleRunReconciliation?.candidates.length ?? lastStatus?.staleRunReconcileCandidates ?? 0,
+        staleRunReconciled: aggregate?.staleRunReconciliation?.reconciled.filter((item) => item.updated).length ?? lastStatus?.staleRunReconciled ?? 0,
+        lastStaleRunReconcileAt: aggregate?.staleRunReconciliation?.generatedAt ?? lastStatus?.lastStaleRunReconcileAt ?? null,
         offlineSyncStatus: lastStatus?.offlineSyncStatus ?? null,
         lastError,
         command: allProjects
@@ -3402,11 +3868,25 @@ program
         let inboxCount = 0;
         let applicationActions = 0;
         let autonomousAppliedActions = 0;
+        let agentImprovementCandidates = 0;
+        let agentImprovementPatchPreviews = 0;
+        let agentImprovementEvalPasses = 0;
+        let agentImprovementPromotions = 0;
+        let agentImprovementPromotionPending = 0;
         let workflowShapeRecommendations = 0;
+        let approvalAutopilotExecuted = 0;
+        let approvalAutopilotSkipped = 0;
+        let approvalBacklogWarnings = 0;
+        let approvalBacklogErrors = 0;
+        let approvalBacklogScanned = 0;
+        let approvalAutopilotEnabled = false;
+        let approvalAutopilotMaxRisk: ApprovalAutopilotRisk = await learningApprovalAutopilotMaxRisk(projectDir);
+        let mcpCleanup: RuntimeMcpCleanupResult | undefined;
+        let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
         for (const targetProjectDir of targets) {
           try {
-            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit });
+            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit, daemonId, approvalAutopilotOverride });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
             analyzedRuns += update.report.runsAnalyzed;
@@ -3414,18 +3894,54 @@ program
             inboxCount += update.approvalQueue.items.length;
             applicationActions += update.applicationPlan?.actions.length ?? 0;
             autonomousAppliedActions += update.autonomousApplication.appliedActions;
+            agentImprovementCandidates += update.agentImprovement.candidates.length;
+            agentImprovementPatchPreviews += update.agentImprovementPatchPlan.patches.length;
+            agentImprovementEvalPasses += update.agentImprovementEvalPlan.evaluations.filter((item) => item.status === "pass").length;
+            agentImprovementPromotions += update.agentImprovementPromotionQueue.items.length;
+            agentImprovementPromotionPending += update.agentImprovementPromotionQueue.items.filter((item) => item.status === "pending").length;
             workflowShapeRecommendations += update.workflowShape?.recommendations.length ?? 0;
+            autonomousAppliedActions += update.approvalAutopilot.executed;
+            approvalAutopilotExecuted += update.approvalAutopilot.executed;
+            approvalAutopilotSkipped += update.approvalAutopilot.skipped;
+            approvalBacklogWarnings += update.approvalBacklog.severityCounts.warning ?? 0;
+            approvalBacklogErrors += update.approvalBacklog.severityCounts.error ?? 0;
+            approvalBacklogScanned += update.approvalBacklog.scanned;
+            approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
+            approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${targetProjectDir}: ${message}`);
             await writeStatus("failed", undefined, message, targetProjectDir);
           }
         }
-        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir);
+        mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
+        staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
+        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
+          proposals: proposalCount,
+          inboxItems: inboxCount,
+          applicationActions,
+            autonomousAppliedActions,
+            agentImprovementCandidates,
+            agentImprovementPatchPreviews,
+            agentImprovementEvalPasses,
+            agentImprovementPromotions,
+            agentImprovementPromotionPending,
+            workflowShapeRecommendations,
+          approvalAutopilotEnabled,
+          approvalAutopilotMaxRisk,
+          approvalAutopilotExecuted,
+          approvalAutopilotSkipped,
+          approvalBacklogWarnings,
+          approvalBacklogErrors,
+          approvalBacklogScanned,
+          mcpCleanup,
+          staleRunReconciliation
+        });
         if (!options.disableOfflineSync) {
           const offlineSync = await runDaemonOfflineSyncScheduler({
             actor: daemonId,
-            minIntervalMs: offlineSyncIntervalMs
+            minIntervalMs: offlineSyncIntervalMs,
+            execute: offlineSyncExecute
           });
           if (lastStatus) {
             lastStatus.offlineSyncStatus = offlineSync;
@@ -3433,7 +3949,7 @@ program
           }
         }
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -3519,11 +4035,31 @@ program
   .description("List or update append-only receipts for local learning proposal-to-action plans")
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--reject <ids>", "comma-separated planned action ids or proposal ids to reject, or all")
+  .option("--health", "show receipt health and duplicate pressure instead of the full receipt log")
+  .option("--compact", "backup and compact duplicate daemon-owned planned/applied receipts")
   .option("--actor <name>", "actor name", "developer")
   .option("--note <text>", "receipt note")
   .option("--json", "print receipt log JSON")
-  .action(async (options: { project: string; reject?: string; actor: string; note?: string; json?: boolean }) => {
+  .action(async (options: { project: string; reject?: string; health?: boolean; compact?: boolean; actor: string; note?: string; json?: boolean }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
+    if (options.compact) {
+      const result = await compactLearningActionReceiptFiles(projectDir);
+      if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+        return;
+      }
+      console.log(formatLearningActionReceiptCompaction(result));
+      return;
+    }
+    if (options.health) {
+      const health = await loadLearningActionReceiptHealth(projectDir);
+      if (options.json) {
+        console.log(JSON.stringify(health, null, 2));
+        return;
+      }
+      console.log(formatLearningActionReceiptHealth(health));
+      return;
+    }
     let receipts = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
     if (options.reject) {
       receipts = appendLearningActionRejectionReceipts(receipts, parseProposalIds(options.reject), options.actor, options.note ?? "Rejected planned learning action.");
@@ -3580,6 +4116,239 @@ program
     } else {
       console.log("");
       console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned workflow-shape learning files.");
+    }
+  });
+
+program
+  .command("agent-improvement-report")
+  .description("Analyze agents and recommend safe local-first definition improvements from run history, feedback, routing, eval, and role evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--agent <id>", "focus on one agent id")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--write", "write agent-improvement learning artifacts under .agent-workflow/learning")
+  .option("--json", "print agent improvement report JSON")
+  .action(async (options: { project: string; agent?: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadAgentImprovementReport({
+      projectDir,
+      agentId: options.agent,
+      limit: parsePositiveInteger(options.limit, 50),
+      mode: options.write ? "write-owned-learning-state" : "read-only"
+    });
+    if (options.write) {
+      await writeAgentImprovementReport(projectDir, report);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    console.log(formatAgentImprovementReport(report));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-report.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-recommendations.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned agent-improvement learning files.");
+    }
+  });
+
+program
+  .command("agent-improvement-patches")
+  .description("Generate validated YAML patch previews from agent improvement candidates without editing agent definitions")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated candidate ids or agent ids to include, or all", "all")
+  .option("--agent <id>", "focus on one agent id")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--write", "write agent-improvement patch plan files under .agent-workflow/learning")
+  .option("--json", "print agent improvement patch plan JSON")
+  .action(async (options: { project: string; ids: string; agent?: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadAgentImprovementReport({
+      projectDir,
+      agentId: options.agent,
+      limit: parsePositiveInteger(options.limit, 50),
+      mode: "read-only"
+    });
+    const patchPlan = await buildAgentImprovementPatchPlan(projectDir, report, parseProposalIds(options.ids));
+    if (options.write) {
+      await writeAgentImprovementPatchPlan(projectDir, patchPlan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(patchPlan, null, 2));
+      return;
+    }
+
+    console.log(formatAgentImprovementPatchPlan(patchPlan));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-patches.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-patches.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned patch preview files.");
+    }
+  });
+
+program
+  .command("agent-improvement-evals")
+  .description("Score agent improvement patch previews against recent holdout run evidence before promotion or auto-apply")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated patch ids, candidate ids, or agent ids to include, or all", "all")
+  .option("--agent <id>", "focus on one agent id")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--write", "write agent-improvement eval files under .agent-workflow/learning")
+  .option("--json", "print agent improvement eval JSON")
+  .action(async (options: { project: string; ids: string; agent?: string; limit: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadAgentImprovementReport({
+      projectDir,
+      agentId: options.agent,
+      limit: parsePositiveInteger(options.limit, 50),
+      mode: "read-only"
+    });
+    const patchPlan = await buildAgentImprovementPatchPlan(projectDir, report, parseProposalIds(options.ids));
+    const evalPlan = await buildAgentImprovementEvalPlan(projectDir, patchPlan, parseProposalIds(options.ids), parsePositiveInteger(options.limit, 50));
+    if (options.write) {
+      await writeAgentImprovementEvalPlan(projectDir, evalPlan);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(evalPlan, null, 2));
+      return;
+    }
+
+    console.log(formatAgentImprovementEvalPlan(evalPlan));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-evals.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-evals.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned holdout eval files.");
+    }
+  });
+
+program
+  .command("agent-improvement-promotions")
+  .description("Create and decide an auditable promotion queue for eval-passing agent improvement patches")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated patch ids, eval ids, promotion ids, candidate ids, or agent ids to include, or all", "all")
+  .option("--agent <id>", "focus on one agent id")
+  .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
+  .option("--approve <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to approve, or all")
+  .option("--reject <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to reject, or all")
+  .option("--reviewer <name>", "reviewer name")
+  .option("--note <text>", "decision note")
+  .option("--write", "write promotion queue files under .agent-workflow/learning")
+  .option("--json", "print agent improvement promotion queue JSON")
+  .action(async (options: { project: string; ids: string; agent?: string; limit: string; approve?: string; reject?: string; reviewer?: string; note?: string; write?: boolean; json?: boolean }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+
+    const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject));
+    if (decisionCount > 1) {
+      console.error("Use either --approve or --reject, not both.");
+      process.exitCode = 1;
+      return;
+    }
+
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const limit = parsePositiveInteger(options.limit, 50);
+    const ids = parseProposalIds(options.ids);
+    const report = await loadAgentImprovementReport({
+      projectDir,
+      agentId: options.agent,
+      limit,
+      mode: "read-only"
+    });
+    const patchPlan = await buildAgentImprovementPatchPlan(projectDir, report, ids);
+    const evalPlan = await buildAgentImprovementEvalPlan(projectDir, patchPlan, ids, limit);
+    const existingQueue = await readAgentImprovementPromotionQueue(projectDir).catch(() => undefined);
+    let queue = buildAgentImprovementPromotionQueue(projectDir, patchPlan, evalPlan, ids, existingQueue);
+    let receipts: AgentImprovementPromotionReceiptLog | null = null;
+
+    if (options.approve || options.reject) {
+      const result = await decideAgentImprovementPromotions({
+        projectDir,
+        queue,
+        ids: parseProposalIds(options.approve ?? options.reject),
+        status: options.approve ? "approved" : "rejected",
+        reviewer: options.reviewer,
+        note: options.note
+      });
+      queue = result.queue;
+      receipts = result.receipts;
+      if (result.skippedIds.length) {
+        console.error(`Skipped unknown ids: ${result.skippedIds.join(", ")}`);
+      }
+    }
+
+    if (options.write || options.approve || options.reject) {
+      await writeAgentImprovementPromotionQueue(projectDir, queue);
+    }
+
+    if (options.json) {
+      console.log(JSON.stringify(receipts ? { ...queue, receipts } : queue, null, 2));
+      return;
+    }
+
+    console.log(formatAgentImprovementPromotionQueue(queue));
+    if (receipts) {
+      console.log("");
+      console.log(formatAgentImprovementPromotionReceipts(receipts));
+    }
+    if (options.write || options.approve || options.reject) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.md");
+      if (receipts) {
+        console.log("Wrote .agent-workflow/learning/agent-improvement-promotion-receipts.json");
+        console.log("Wrote .agent-workflow/learning/agent-improvement-promotion-receipts.md");
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned promotion queue files.");
     }
   });
 
@@ -4403,6 +5172,73 @@ type DashboardUsageSummary = {
 type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
 type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
+type DashboardProjectIdentityGroup = {
+  canonicalRootUri: string;
+  primaryRootUri: string;
+  canonicalName: string;
+  localPathExists: boolean;
+  source: DashboardProjectPathResolution["source"];
+  projects: DashboardProjectSummary[];
+  totalRuns: number;
+  totalIndexedFiles: number;
+  totalMemoryItems: number;
+  activeRuns: number;
+  failedRuns: number;
+  lastRunAt: string | null;
+  aliases: Array<{
+    rootUri: string;
+    mapped: boolean;
+    source: DashboardProjectPathResolution["source"];
+  }>;
+};
+
+type DashboardProjectAliasMergePlan = {
+  kind: "agentflow_project_alias_merge_plan";
+  generatedAt: string;
+  dryRun: true;
+  identityCount: number;
+  projectCount: number;
+  candidateCount: number;
+  sourceProjectCount: number;
+  groups: DashboardProjectAliasMergeGroup[];
+  summary: string[];
+};
+
+type DashboardProjectAliasMergeGroup = {
+  canonicalRootUri: string;
+  target: DashboardProjectAliasMergeProject;
+  sources: DashboardProjectAliasMergeProject[];
+  impactedRows: {
+    projectRows: number;
+    workflowRuns: number;
+    activeRuns: number;
+    failedRuns: number;
+    projectFiles: number;
+    memoryItems: number;
+    indexedTokens: number;
+    indirectRunArtifacts: string;
+  };
+  risk: "low" | "medium" | "high";
+  conflictWarnings: string[];
+  preflightChecks: string[];
+  rollbackOutline: string[];
+};
+
+type DashboardProjectAliasMergeProject = {
+  id: string;
+  name: string;
+  rootUri: string;
+  profile: string;
+  indexedFiles: number;
+  indexedTokens: number;
+  memoryItems: number;
+  runCount: number;
+  completedRuns: number;
+  failedRuns: number;
+  activeRuns: number;
+  lastRunAt: string | null;
+};
+
 type DashboardAgentSource = "shared" | "project-local";
 
 type DashboardAgentSummary = {
@@ -4521,6 +5357,214 @@ type LearningReport = {
   nextCommands: string[];
 };
 
+type AgentImprovementReport = {
+  kind: "agentflow_agent_improvement_report";
+  generatedAt: string;
+  projectRootUri: string;
+  limit: number;
+  mode: "read-only" | "write-owned-learning-state";
+  agentsAnalyzed: number;
+  candidates: AgentImprovementCandidate[];
+  evidenceSummary: {
+    runsAnalyzed: number;
+    workflowReferences: number;
+    projectLocalAgents: number;
+    sharedAgents: number;
+    feedbackCounts: Record<string, number>;
+    failedRuns: number;
+  };
+  ownedLearningFiles: string[];
+  autonomyBoundary: {
+    automatic: string[];
+    approvalRequired: string[];
+  };
+  privacyBoundaries: string[];
+  nextCommands: string[];
+};
+
+type AgentImprovementCandidate = {
+  id: string;
+  agentId: string;
+  displayName: string;
+  scope: "shared" | "project-local";
+  category: AgentCard["category"];
+  priority: LearningProposalPriority;
+  riskLevel: LearningRiskLevel;
+  sourcePath: string;
+  currentRoleSummary: string;
+  evidence: string[];
+  recommendation: string;
+  suggestedMutableFields: Array<"purpose" | "use_when" | "avoid_when" | "can" | "cannot" | "requires_approval" | "context_budget" | "outputs" | "prompt">;
+  safeResearchQueries: string[];
+  validationPlan: string[];
+  autoApplyEligible: boolean;
+  approvalRequired: boolean;
+};
+
+type AgentImprovementPatchPlan = {
+  kind: "agentflow_agent_improvement_patch_plan";
+  generatedAt: string;
+  projectRootUri: string;
+  sourceReportGeneratedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  patches: AgentImprovementPatch[];
+  summary: string[];
+  ownedLearningFiles: string[];
+};
+
+type AgentImprovementPatch = {
+  id: string;
+  candidateId: string;
+  agentId: string;
+  displayName: string;
+  scope: "shared" | "project-local";
+  sourcePath: string;
+  sourceHash: string;
+  priority: LearningProposalPriority;
+  riskLevel: LearningRiskLevel;
+  approvalRequired: boolean;
+  autoApplyEligible: boolean;
+  changedFields: AgentImprovementCandidate["suggestedMutableFields"];
+  rationale: string;
+  validation: {
+    schemaValid: boolean;
+    errors: string[];
+  };
+  unifiedDiff: string;
+  proposedYaml: string;
+  rollback: {
+    restoreSourceHash: string;
+    restorePath: string;
+  };
+};
+
+type AgentImprovementEvalPlan = {
+  kind: "agentflow_agent_improvement_eval_plan";
+  generatedAt: string;
+  projectRootUri: string;
+  sourcePatchPlanGeneratedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  evaluations: AgentImprovementEval[];
+  summary: string[];
+  promotionPolicy: {
+    passThreshold: number;
+    autoApplyThreshold: number;
+    minimumHoldoutTasks: number;
+    maxRiskForAutoApply: LearningRiskLevel;
+  };
+  ownedLearningFiles: string[];
+};
+
+type AgentImprovementEval = {
+  id: string;
+  patchId: string;
+  candidateId: string;
+  agentId: string;
+  displayName: string;
+  scope: "shared" | "project-local";
+  sourcePath: string;
+  priority: LearningProposalPriority;
+  riskLevel: LearningRiskLevel;
+  score: number;
+  status: "pass" | "warn" | "fail";
+  promotionReady: boolean;
+  autoApplyReady: boolean;
+  holdoutTasks: Array<{
+    runId: string;
+    workflowId: string;
+    task: string;
+    status: string;
+    startedAt: string;
+    evidence: string;
+  }>;
+  gates: Array<{
+    id: string;
+    passed: boolean;
+    weight: number;
+    message: string;
+  }>;
+  rollback: AgentImprovementPatch["rollback"] & {
+    sourceHashCurrent: boolean;
+  };
+  recommendation: string;
+};
+
+type AgentImprovementPromotionStatus = "pending" | "approved" | "rejected" | "superseded";
+
+type AgentImprovementPromotionQueue = {
+  kind: "agentflow_agent_improvement_promotion_queue";
+  generatedAt: string;
+  updatedAt: string;
+  projectRootUri: string;
+  sourceEvalPlanGeneratedAt: string;
+  selectedIds: string[];
+  skippedIds: string[];
+  summary: string[];
+  items: AgentImprovementPromotionItem[];
+  ownedLearningFiles: string[];
+};
+
+type AgentImprovementPromotionItem = {
+  id: string;
+  patchId: string;
+  evalId: string;
+  candidateId: string;
+  agentId: string;
+  displayName: string;
+  scope: "shared" | "project-local";
+  status: AgentImprovementPromotionStatus;
+  createdAt: string;
+  decidedAt: string | null;
+  reviewer: string | null;
+  note: string | null;
+  score: number;
+  promotionReady: boolean;
+  autoApplyReady: boolean;
+  priority: LearningProposalPriority;
+  riskLevel: LearningRiskLevel;
+  sourcePath: string;
+  sourceHash: string;
+  diff: string;
+  rollback: AgentImprovementPatch["rollback"] & { sourceHashCurrent: boolean };
+  approvalRequired: boolean;
+  recommendation: string;
+  rationale: string;
+};
+
+type AgentImprovementPromotionReceiptLog = {
+  kind: "agentflow_agent_improvement_promotion_receipts";
+  projectRootUri: string;
+  updatedAt: string;
+  events: AgentImprovementPromotionReceipt[];
+};
+
+type AgentImprovementPromotionReceipt = {
+  id: string;
+  promotionId: string;
+  patchId: string;
+  evalId: string;
+  agentId: string;
+  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected">;
+  score: number;
+  riskLevel: LearningRiskLevel;
+  scope: "shared" | "project-local";
+  actor: string;
+  note: string;
+  sourcePath: string;
+  sourceHash: string;
+  rollback: AgentImprovementPromotionItem["rollback"];
+  createdAt: string;
+};
+
+type AgentImprovementPromotionDecisionResult = {
+  queue: AgentImprovementPromotionQueue;
+  receipts: AgentImprovementPromotionReceiptLog;
+  selectedIds: string[];
+  skippedIds: string[];
+};
+
 type LearningProposalPriority = "high" | "medium" | "low";
 type LearningProposalKind = "repeated_failure" | "cost_routing" | "eval_gap" | "feedback_gap" | "proposal_followup";
 type LearningRiskLevel = "low" | "medium" | "high";
@@ -4633,6 +5677,32 @@ type LearningActionReceipt = {
   writesOwnedLearningStateOnly: boolean;
 };
 
+type LearningActionReceiptHealth = {
+  kind: "agentflow_learning_action_receipt_health";
+  projectRootUri: string;
+  generatedAt: string;
+  updatedAt: string;
+  totalReceipts: number;
+  counts: Record<string, number>;
+  daemonOpenReceipts: number;
+  uniqueDaemonOpenReceipts: number;
+  duplicateDaemonOpenReceipts: number;
+  compactableReceiptCount: number;
+  latestReceiptAt: string | null;
+  latestBackupPath: string | null;
+  recommendation: string;
+};
+
+type LearningActionReceiptCompactionResult = {
+  kind: "agentflow_learning_action_receipt_compaction";
+  projectRootUri: string;
+  generatedAt: string;
+  before: LearningActionReceiptHealth;
+  after: LearningActionReceiptHealth;
+  removedReceipts: number;
+  backupPaths: string[];
+};
+
 type LearningDaemonMode = "observe" | "propose" | "apply-approved";
 
 type LearningDaemonHeartbeat = {
@@ -4655,8 +5725,32 @@ type LearningDaemonHeartbeat = {
   applicationActions: number;
   autonomousAppliedActions?: number;
   autonomousApplyMaxRisk?: LearningRiskLevel;
+  agentImprovementCandidates?: number;
+  agentImprovementPatchPreviews?: number;
+  agentImprovementEvalPasses?: number;
+  agentImprovementPromotions?: number;
+  agentImprovementPromotionPending?: number;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
+  approvalAutopilotEnabled?: boolean;
+  approvalAutopilotMaxRisk?: ApprovalAutopilotRisk;
+  approvalAutopilotExecuted?: number;
+  approvalAutopilotSkipped?: number;
+  approvalBacklogWarnings?: number;
+  approvalBacklogErrors?: number;
+  approvalBacklogScanned?: number;
+  mcpCleanupEnabled?: boolean;
+  mcpCleanupMode?: RuntimeMonitorReport["mcpCleanup"]["autoCleanup"]["mode"];
+  mcpCleanupStaleMinutes?: number;
+  mcpCleanupCandidates?: number;
+  mcpCleanupAutoCleanable?: number;
+  mcpCleanupTerminated?: number;
+  mcpCleanupWarnings?: number;
+  lastMcpCleanupAt?: string | null;
+  staleRunReconcileEnabled?: boolean;
+  staleRunReconcileCandidates?: number;
+  staleRunReconciled?: number;
+  lastStaleRunReconcileAt?: string | null;
   offlineSyncStatus?: OfflineSyncSchedulerStatus | null;
   command: string;
 };
@@ -4667,6 +5761,8 @@ type LearningSettings = {
   updatedAt: string;
   workflowShapeAutoUpdate: boolean;
   autonomousApplyMaxRisk: LearningRiskLevel;
+  approvalAutopilotEnabled: boolean;
+  approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -4726,6 +5822,7 @@ type ProjectDiscoveryAdoptionResult = {
 type DashboardLearningDaemonStatus = {
   heartbeatPath: string;
   configured: boolean;
+  projectPathExists: boolean;
   projectRootUri: string;
   daemonId: string | null;
   mode: LearningDaemonMode | null;
@@ -4744,20 +5841,56 @@ type DashboardLearningDaemonStatus = {
   applicationActions: number;
   autonomousAppliedActions: number;
   autonomousApplyMaxRisk: LearningRiskLevel;
+  agentImprovementCandidates: number;
+  agentImprovementPatchPreviews: number;
+  agentImprovementEvalPasses: number;
+  agentImprovementPromotions: number;
+  agentImprovementPromotionPending: number;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
+  approvalAutopilotEnabled: boolean;
+  approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
+  approvalAutopilotExecuted: number;
+  approvalAutopilotSkipped: number;
+  approvalBacklogWarnings: number;
+  approvalBacklogErrors: number;
+  approvalBacklogScanned: number;
+  mcpCleanupEnabled: boolean;
+  mcpCleanupMode: RuntimeMonitorReport["mcpCleanup"]["autoCleanup"]["mode"];
+  mcpCleanupStaleMinutes: number;
+  mcpCleanupCandidates: number;
+  mcpCleanupAutoCleanable: number;
+  mcpCleanupTerminated: number;
+  mcpCleanupWarnings: number;
+  lastMcpCleanupAt: string | null;
+  staleRunReconcileEnabled: boolean;
+  staleRunReconcileCandidates: number;
+  staleRunReconciled: number;
+  lastStaleRunReconcileAt: string | null;
   lastError: string;
   command: string;
+};
+
+type DashboardProjectPathResolution = {
+  storageRootUri: string;
+  localRootUri: string;
+  localPathExists: boolean;
+  mapped: boolean;
+  source: "exact" | "env" | "mac-home" | "linux-home" | "projects-basename" | "missing";
+  note: string;
 };
 
 type DashboardHomeHealth = {
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
+  runtimeMonitor: RuntimeMonitorReport;
   queue: DashboardQueueItem[];
   projects: DashboardProjectSummary[];
   services: Awaited<ReturnType<typeof checkServices>>;
   provider: string;
   latestFailedRun: DashboardRunStatus | null;
+  pendingApprovals: DashboardActionApproval[];
+  approvedExecutableApprovals: DashboardActionApproval[];
 };
 
 type DashboardProjectDetail = {
@@ -4776,6 +5909,60 @@ type DashboardProjectDetail = {
 };
 
 type DashboardActionApproval = Awaited<ReturnType<typeof listActionApprovals>>[number];
+type ApprovalAutopilotRisk = "low" | "medium" | "high";
+type ApprovalAutopilotResult = {
+  kind: "agentflow_approval_autopilot_result";
+  generatedAt: string;
+  mode: "dry-run" | "execute";
+  maxRisk: ApprovalAutopilotRisk;
+  scanned: number;
+  approved: number;
+  executed: number;
+  skipped: number;
+  items: Array<{
+    approvalId: string;
+    actionType: string;
+    target: string;
+    risk: ApprovalAutopilotRisk;
+    status: "would_execute" | "executed" | "skipped" | "failed";
+    summary: string;
+    reasons: string[];
+  }>;
+};
+type ApprovalBacklogSeverity = "info" | "warning" | "error";
+type ApprovalBacklogCategory = "missing_tool" | "resolved_missing_tool" | "command_failed" | "ready_to_execute" | "stale_review" | "manual_decision" | "historical_info" | "needs_review";
+type ApprovalBacklogItem = {
+  approvalId: string;
+  status: string;
+  actionType: string;
+  target: string;
+  runId: string;
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  projectRootUri: string;
+  createdAt: string;
+  updatedAt: string;
+  ageMinutes: number | null;
+  severity: ApprovalBacklogSeverity;
+  reason: string;
+  category: ApprovalBacklogCategory;
+  nextAction: string;
+  autopilotRisk?: ApprovalAutopilotRisk;
+  autopilotEligible?: boolean;
+};
+type ApprovalBacklogReport = {
+  kind: "agentflow_approval_backlog_report";
+  generatedAt: string;
+  projectRootUri: string | null;
+  statusFilter: string | null;
+  staleMinutes: number;
+  scanned: number;
+  counts: Record<string, number>;
+  severityCounts: Record<ApprovalBacklogSeverity, number>;
+  categoryCounts: Record<ApprovalBacklogCategory, number>;
+  items: ApprovalBacklogItem[];
+};
 type DashboardApprovalRuleSummary = {
   projectName: string;
   projectRootUri: string;
@@ -5094,7 +6281,29 @@ type StorageMergeEvidenceListing = {
     sourceOnlyRows: number;
     conflictRows: number;
     projectIdRewriteRows: number;
+    legacyDefinitionReferences: number;
+    legacyReadabilityWarnings: number;
+    changedDefinitionReferences: number;
     tableCount: number;
+    projectMappings: Array<{
+      rootUri: string;
+      sourceProjectId: string;
+      targetProjectId: string | null;
+      action: string;
+      sourceName?: string | null;
+      targetName?: string | null;
+    }>;
+    tables: Array<{
+      table: string;
+      sourceRows: number;
+      insertRows: number;
+      conflictRows: number;
+      projectIdRewriteRows: number;
+      sampleSourceKeys: string[];
+      sampleExistingKeys: string[];
+      sampleInsertKeys: string[];
+      sampleConflictKeys: string[];
+    }>;
   } | null;
   latestImport: {
     jsonPath: string;
@@ -5110,9 +6319,59 @@ type StorageMergeEvidenceListing = {
     generatedAt: string | null;
     files: Array<{ name: string; sizeBytes: number }>;
   } | null;
+  latestObjectProof: {
+    jsonPath: string;
+    markdownPath: string | null;
+    generatedAt: string;
+    status: string;
+    referencedObjects: number;
+    verifiedObjects: number;
+    missingObjects: number;
+    bucketParityStatus: string | null;
+    missingInTarget: number | null;
+    extraInTarget: number | null;
+  } | null;
+  latestProjectDecisions: {
+    jsonPath: string;
+    generatedAt: string;
+    decisions: Array<{
+      rootUri: string;
+      action: string;
+      sourceProjectId: string | null;
+      targetProjectId: string | null;
+      reviewer: string;
+      note: string;
+      decidedAt: string;
+    }>;
+  } | null;
+  switchOverProof: {
+    status: "ready" | "attention";
+    checks: Array<{
+      label: string;
+      status: "pass" | "warn" | "fail";
+      detail: string;
+    }>;
+    recommendedCommands: string[];
+  };
+  conflictClassification: {
+    criticalRows: number;
+    derivedRows: number;
+    informationalRows: number;
+    rows: Array<{
+      table: string;
+      severity: "critical" | "warning" | "info";
+      class: "canonical-project-conflict" | "derived-index-cache" | "approval-lifecycle-conflict" | "historical-state-conflict";
+      conflictRows: number;
+      sampleConflictKeys: string[];
+      resolution: string;
+      reviewedDecision?: string;
+    }>;
+  };
   safePrimaryStatePlane: boolean;
   warnings: string[];
 };
+
+type StorageProjectDecisionEntry = NonNullable<StorageMergeEvidenceListing["latestProjectDecisions"]>["decisions"][number];
 
 type OfflineFallbackReport = {
   kind: "agentflow_offline_fallback_report";
@@ -5192,6 +6451,7 @@ type OfflineSyncSchedulerStatus = {
   kind: "agentflow_offline_sync_scheduler_status";
   updatedAt: string;
   status: "idle" | "waiting" | "ready" | "blocked" | "synced" | "error";
+  mode: "dry-run" | "execute";
   pendingQueueItems: number;
   lastRunAt: string | null;
   nextRunAfter: string | null;
@@ -5211,7 +6471,7 @@ type ObjectArtifactProofReport = {
   referencedObjects: number;
   verifiedObjects: number;
   missingObjects: number;
-  verification: "disabled" | "mc" | "unavailable";
+  verification: "disabled" | "mc" | "docker-mc" | "unavailable";
   bucketParity: ObjectBucketParityProof | null;
   objects: ObjectArtifactReferenceProof[];
   warnings: string[];
@@ -5239,6 +6499,7 @@ type ObjectBucketParityProof = {
   targetObjects: number;
   missingInTarget: number;
   extraInTarget: number;
+  verifier: "mc" | "docker-mc" | "unavailable";
   sampledMissingKeys: string[];
   sampledExtraKeys: string[];
   mirrorPlan: string[];
@@ -5280,6 +6541,7 @@ type ServerReadinessReport = {
     implemented: boolean;
     ready: boolean;
   }>;
+  authHardening: ServerAuthHardeningReport;
   checks: Array<{
     label: string;
     status: ServerReadinessCheckStatus;
@@ -5287,6 +6549,35 @@ type ServerReadinessReport = {
   }>;
   recommendedCommands: string[];
   notes: string[];
+};
+
+type ServerAuthHardeningReport = {
+  status: ServerReadinessStatus;
+  summary: string;
+  readyControls: number;
+  warningControls: number;
+  failingControls: number;
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  recommendedActions: string[];
+};
+
+type SharedStatePlaneProof = {
+  kind: "agentflow_shared_state_plane_proof";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  summary: string;
+  sharedHost: string | null;
+  localFallbackCanStayStopped: boolean;
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  recommendedActions: string[];
 };
 
 type ServerProjectRegistryReport = {
@@ -5398,6 +6689,56 @@ type ServerRoutePreviewReport = {
   notes: string[];
 };
 
+type ServerApprovalPreviewReport = {
+  kind: "agentflow_server_approval_preview";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  dryRun: true;
+  envelope: {
+    requestId: string;
+    idempotencyKey: string;
+    actor: string;
+    actorRole: string;
+    projectId: string;
+    approvalId: string;
+    decision: "approve" | "reject" | "execute" | "approve-and-execute" | "dismiss" | "always-approve";
+    source: "server-approval-preview";
+  };
+  approval: null | {
+    id: string;
+    runId: string;
+    workflowId: string;
+    stageId: string;
+    agentId: string;
+    status: string;
+    actionType: string;
+    target: string;
+    projectRootHash: string;
+    executable: boolean;
+  };
+  controls: {
+    serverModeEnabled: boolean;
+    authMode: string;
+    authConfigured: boolean;
+    authAccepted: boolean | null;
+    projectResolved: boolean;
+    approvalResolved: boolean;
+    projectMatchesApproval: boolean;
+    roleGate: "pass" | "warn" | "fail";
+    executionRoleGate: "pass" | "warn" | "fail" | "not-applicable";
+    separationOfDuties: "pass" | "warn" | "fail" | "not-applicable";
+    policyRecheck: "pass" | "warn" | "fail" | "not-applicable";
+    idempotencyProvided: boolean;
+    wouldMutate: false;
+  };
+  checks: Array<{
+    label: string;
+    status: ServerReadinessCheckStatus;
+    detail: string;
+  }>;
+  notes: string[];
+};
+
 type ServerQueueReport = {
   kind: "agentflow_server_queue_report";
   generatedAt: string;
@@ -5420,10 +6761,112 @@ type ServerQueueReport = {
     executeRequested: boolean;
     queueExecutionEnabled: boolean;
     clientProvidedIdempotency: boolean;
+    requestBodyMaxBytes: number;
+    rateLimitPerMinute: number;
+    rateLimitAccepted: boolean;
     wouldQueue: boolean;
   };
   checks: ServerRequestPreviewReport["checks"];
   notes: string[];
+};
+
+type ServerRequestAuditEvent = {
+  kind: "agentflow_server_request_audit_event";
+  version: 1;
+  generatedAt: string;
+  requestId: string | null;
+  method: string;
+  path: string;
+  status: "queued" | "ready" | "attention" | "blocked" | "rejected";
+  dryRun: boolean;
+  executeRequested: boolean;
+  projectId: string | null;
+  projectRootHash: string | null;
+  workflowId: string | null;
+  taskHash: string | null;
+  taskBytes: number;
+  actorHash: string | null;
+  actorRole: string | null;
+  auth: {
+    method: string;
+    accepted: boolean;
+    errorCode: string | null;
+  };
+  rateLimit: {
+    accepted: boolean | null;
+    keyHash: string | null;
+    limit: number | null;
+    remaining: number | null;
+    resetAt: string | null;
+  };
+  idempotencyKeyHash: string | null;
+  clientProvidedIdempotency: boolean;
+  queuedRunId: string | null;
+  reusedRun: boolean | null;
+  bodyBytes: number | null;
+  remoteHash: string | null;
+  originHash: string | null;
+  userAgentHash: string | null;
+  checks: Array<{ label: string; status: string }>;
+};
+
+type ServerRequestAuditReport = {
+  kind: "agentflow_server_request_audit_report";
+  generatedAt: string;
+  logPath: string;
+  limit: number;
+  totalRead: number;
+  invalidLines: number;
+  latestAt: string | null;
+  statusCounts: Record<string, number>;
+  authCounts: Record<string, number>;
+  rateLimited: number;
+  queued: number;
+  blocked: number;
+  dryRuns: number;
+  events: ServerRequestAuditEvent[];
+  notes: string[];
+};
+
+type ServerMutationControlReport = {
+  kind: "agentflow_server_mutation_control_report";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  mode: {
+    serverModeEnabled: boolean;
+    bind: string;
+    networkExposed: boolean;
+    authMode: string;
+    tokenConfigured: boolean;
+    queueExecutionEnabled: boolean;
+    requestBodyMaxBytes: number;
+    rateLimitPerMinute: number;
+  };
+  summary: {
+    endpoints: number;
+    remoteMutationEndpoints: number;
+    readyRemoteMutations: number;
+    blockedRemoteMutations: number;
+    localOnlyMutations: number;
+  };
+  endpoints: Array<{
+    name: string;
+    method: string;
+    path: string;
+    exposure: "read-only" | "local-mutation" | "remote-mutation";
+    implemented: boolean;
+    remoteEligible: boolean;
+    dryRunDefault: boolean;
+    executionGate: string;
+    roleCapability: string | null;
+    receipt: string | null;
+    requiredControls: string[];
+    presentControls: string[];
+    missingControls: string[];
+    status: "ready" | "attention" | "blocked";
+    notes: string[];
+  }>;
+  recommendedActions: string[];
 };
 
 async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: RunSummary } | { ok: false }> {
@@ -5530,13 +6973,14 @@ async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false)
     !(summary.name === "Provider Smoke Project" && /agentflow-provider-smoke\./.test(summary.rootUri))
   );
   const projects = await Promise.all(governedSummaries.map(async (summary) => {
-    const accessible = await pathExists(summary.rootUri);
-    const agentsFile = accessible && await pathExists(path.join(summary.rootUri, "AGENTS.md"));
+    const projectPath = await resolveDashboardProjectPath(summary.rootUri);
+    const accessible = projectPath.localPathExists;
+    const agentsFile = accessible && await pathExists(path.join(projectPath.localRootUri, "AGENTS.md"));
     let configStatus: "valid" | "missing" | "invalid" = "missing";
     let localConfig: ProjectConfig | null = null;
-    if (accessible && await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+    if (accessible && await pathExists(path.join(projectPath.localRootUri, ".agent-workflow", "project.yaml"))) {
       try {
-        localConfig = await loadProjectConfig(summary.rootUri);
+        localConfig = await loadProjectConfig(projectPath.localRootUri);
         configStatus = "valid";
       } catch {
         configStatus = "invalid";
@@ -5643,9 +7087,10 @@ function approvalMatchesRoleFilter(approval: DashboardActionApproval, role: stri
 async function loadDashboardRoleProject(summary: DashboardProjectSummary): Promise<DashboardRoleProject> {
   let configStatus: DashboardRoleProject["configStatus"] = "missing";
   let config: ProjectConfig | null = null;
-  if (await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+  const projectPath = await resolveDashboardProjectPath(summary.rootUri);
+  if (await pathExists(path.join(projectPath.localRootUri, ".agent-workflow", "project.yaml"))) {
     try {
-      config = await loadProjectConfig(summary.rootUri);
+      config = await loadProjectConfig(projectPath.localRootUri);
       configStatus = "valid";
     } catch {
       configStatus = "invalid";
@@ -5974,11 +7419,12 @@ async function resolveArtifactLifecyclePolicy(projectRootUri: string | null): Pr
     allowRestoreExecution: false,
     allowPruneExecution: false
   };
-  if (!projectRootUri || !await pathExists(path.join(projectRootUri, ".agent-workflow", "project.yaml"))) {
+  const localProjectRootUri = projectRootUri ? await resolveLocalProjectRootUri(projectRootUri) : null;
+  if (!localProjectRootUri || !await pathExists(path.join(localProjectRootUri, ".agent-workflow", "project.yaml"))) {
     return fallback;
   }
   try {
-    const project = await loadProjectConfig(projectRootUri);
+    const project = await loadProjectConfig(localProjectRootUri);
     return lifecyclePolicyFromProject(project, "project");
   } catch {
     return fallback;
@@ -6030,7 +7476,7 @@ async function queueArtifactLifecycleApprovals(input: {
     };
   }
 
-  const project = await loadProjectConfig(projectRootUri);
+  const project = await loadLocalProjectConfig(projectRootUri);
   const requestRoleGate = evaluateRoleGate(project, input.actorRole, "can_request_approvals");
   if (!requestRoleGate.allowed) {
     return {
@@ -6567,6 +8013,18 @@ async function writeStorageMergeImportResultFiles(result: StorageMergeImportResu
   return { markdownPath, jsonPath };
 }
 
+async function writeObjectArtifactProofEvidence(report: ObjectArtifactProofReport, outDir: string): Promise<{ markdownPath: string; jsonPath: string }> {
+  const resolvedOut = path.resolve(process.cwd(), outDir);
+  await fs.mkdir(resolvedOut, { recursive: true });
+  const stamp = report.generatedAt.replace(/[:.]/g, "-");
+  const base = `object-artifact-proof-${stamp}`;
+  const markdownPath = path.join(resolvedOut, `${base}.md`);
+  const jsonPath = path.join(resolvedOut, `${base}.json`);
+  await fs.writeFile(markdownPath, `${formatObjectArtifactProofReport(report)}\n`, "utf8");
+  await fs.writeFile(jsonPath, `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  return { markdownPath, jsonPath };
+}
+
 async function loadStorageMigrationPlanListing(inputDir?: string): Promise<StorageMigrationPlanListing> {
   const directory = path.resolve(process.cwd(), inputDir?.trim() || ".agent-workflow/migrations");
   const warnings: string[] = [];
@@ -6644,6 +8102,10 @@ async function loadStorageMergeEvidenceListing(inputDir?: string): Promise<Stora
         latestManifest: null,
         latestImport: null,
         latestBackup: null,
+        latestObjectProof: null,
+        latestProjectDecisions: null,
+        switchOverProof: buildStorageSwitchOverProof(null, null, null, null, null),
+        conflictClassification: classifyStorageMergeConflicts(null, null),
         safePrimaryStatePlane: false,
         warnings: [`No migration evidence directory found at ${directory}.`]
       };
@@ -6654,16 +8116,13 @@ async function loadStorageMergeEvidenceListing(inputDir?: string): Promise<Stora
   const manifest = await latestMergeManifest(directory, entries, warnings);
   const importResult = await latestMergeImportResult(directory, entries, warnings);
   const backup = await latestMergeBackup(directory, entries);
-  const safePrimaryStatePlane = Boolean(
-    manifest &&
-    manifest.sourceOnlyRows === 0 &&
-    importResult &&
-    importResult.status === "completed" &&
-    backup &&
-    backup.files.length >= 2
-  );
+  const objectProof = await latestObjectArtifactProof(directory, entries, warnings);
+  const projectDecisions = await latestStorageProjectConflictDecisions(directory, entries, warnings);
+  const conflictClassification = classifyStorageMergeConflicts(manifest, projectDecisions);
+  const switchOverProof = buildStorageSwitchOverProof(manifest, importResult, backup, objectProof, conflictClassification);
+  const safePrimaryStatePlane = switchOverProof.status === "ready";
   if (!safePrimaryStatePlane) {
-    warnings.push("Shared storage is not yet fully proven as primary by local evidence: need latest manifest with zero source-only rows, completed import result, and source/target backups.");
+    warnings.push("Shared storage is not yet fully proven as primary by local evidence: review the switch-over proof checks and run the recommended follow-up commands.");
   }
   return {
     kind: "agentflow_storage_merge_evidence_listing",
@@ -6672,8 +8131,82 @@ async function loadStorageMergeEvidenceListing(inputDir?: string): Promise<Stora
     latestManifest: manifest,
     latestImport: importResult,
     latestBackup: backup,
+    latestObjectProof: objectProof,
+    latestProjectDecisions: projectDecisions,
+    switchOverProof,
+    conflictClassification,
     safePrimaryStatePlane,
     warnings
+  };
+}
+
+function classifyStorageMergeConflicts(
+  manifest: StorageMergeEvidenceListing["latestManifest"],
+  decisions: StorageMergeEvidenceListing["latestProjectDecisions"]
+): StorageMergeEvidenceListing["conflictClassification"] {
+  const rows: StorageMergeEvidenceListing["conflictClassification"]["rows"] = [];
+  const decisionsByRoot = new Map((decisions?.decisions ?? []).map((decision) => [decision.rootUri, decision]));
+  const durableOutcomeTables = new Set(["workflow_runs", "workflow_tasks", "action_receipts", "artifacts", "memory_items"]);
+  const durableOutcomeConflictRows = (manifest?.tables ?? [])
+    .filter((table) => durableOutcomeTables.has(table.table))
+    .reduce((sum, table) => sum + table.conflictRows + table.insertRows, 0);
+  for (const table of manifest?.tables ?? []) {
+    if (table.conflictRows === 0) continue;
+    if (table.table === "projects") {
+      const reviewedKeys = table.sampleConflictKeys.filter((key) => decisionsByRoot.has(key));
+      const unreviewedRows = Math.max(0, table.conflictRows - reviewedKeys.length);
+      rows.push({
+        table: table.table,
+        severity: unreviewedRows > 0 ? "critical" : "info",
+        class: "canonical-project-conflict",
+        conflictRows: unreviewedRows,
+        sampleConflictKeys: table.sampleConflictKeys,
+        resolution: unreviewedRows > 0
+          ? "Inspect project metadata differences and choose the canonical project record before treating shared storage as the primary state plane."
+          : "All sampled project conflicts have reviewed local decision records; target rows remain preserved.",
+        reviewedDecision: reviewedKeys.length ? `${reviewedKeys.length} reviewed decision(s)` : undefined
+      });
+      continue;
+    }
+    if (table.table === "project_files" || table.table === "project_index_state") {
+      rows.push({
+        table: table.table,
+        severity: "warning",
+        class: "derived-index-cache",
+        conflictRows: table.conflictRows,
+        sampleConflictKeys: table.sampleConflictKeys,
+        resolution: "Regenerate project indexes on shared storage after switch-over; these rows are refreshable cache evidence, not durable workflow history."
+      });
+      continue;
+    }
+    if (table.table === "action_approvals") {
+      const approvalOnlyLifecycleDrift = durableOutcomeConflictRows === 0 && table.insertRows === 0;
+      rows.push({
+        table: table.table,
+        severity: approvalOnlyLifecycleDrift ? "warning" : "critical",
+        class: "approval-lifecycle-conflict",
+        conflictRows: table.conflictRows,
+        sampleConflictKeys: table.sampleConflictKeys,
+        resolution: approvalOnlyLifecycleDrift
+          ? "Preserve target approval lifecycle state. Durable run, task, receipt, artifact, and memory rows are already present, so approval-row drift is operational history rather than missing workflow evidence."
+          : "Review approval rows with their matching run, task, receipt, artifact, and memory history before treating shared storage as primary."
+      });
+      continue;
+    }
+    rows.push({
+      table: table.table,
+      severity: "critical",
+      class: "historical-state-conflict",
+      conflictRows: table.conflictRows,
+      sampleConflictKeys: table.sampleConflictKeys,
+      resolution: "Review durable history rows before merge; do not overwrite target run, task, approval, receipt, artifact, or memory state without an operator decision."
+    });
+  }
+  return {
+    criticalRows: rows.filter((row) => row.severity === "critical").reduce((sum, row) => sum + row.conflictRows, 0),
+    derivedRows: rows.filter((row) => row.class === "derived-index-cache").reduce((sum, row) => sum + row.conflictRows, 0),
+    informationalRows: rows.filter((row) => row.severity === "info").reduce((sum, row) => sum + row.conflictRows, 0),
+    rows
   };
 }
 
@@ -6698,7 +8231,22 @@ async function latestMergeManifest(directory: string, entries: string[], warning
       sourceOnlyRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.insertRows, 0),
       conflictRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.conflictRows, 0),
       projectIdRewriteRows: manifest.tablePlans.reduce((sum, plan) => sum + plan.projectIdRewriteRows, 0),
-      tableCount: manifest.tablePlans.length
+      legacyDefinitionReferences: (manifest.legacyDefinitionReferences ?? []).length,
+      legacyReadabilityWarnings: (manifest.legacyDefinitionReferences ?? []).filter((reference) => reference.action === "readability-warning").length,
+      changedDefinitionReferences: (manifest.legacyDefinitionReferences ?? []).filter((reference) => reference.action === "preserve-target-current").length,
+      tableCount: manifest.tablePlans.length,
+      projectMappings: manifest.projectMappings ?? [],
+      tables: manifest.tablePlans.map((plan) => ({
+        table: plan.table,
+        sourceRows: plan.sourceRows,
+        insertRows: plan.insertRows,
+        conflictRows: plan.conflictRows,
+        projectIdRewriteRows: plan.projectIdRewriteRows,
+        sampleSourceKeys: plan.sampleSourceKeys ?? [],
+        sampleExistingKeys: plan.sampleExistingKeys ?? [],
+        sampleInsertKeys: plan.sampleInsertKeys ?? [],
+        sampleConflictKeys: plan.sampleConflictKeys ?? []
+      }))
     };
   }
   return null;
@@ -6753,6 +8301,173 @@ async function latestMergeBackup(directory: string, entries: string[]): Promise<
     };
   }
   return null;
+}
+
+async function latestObjectArtifactProof(directory: string, entries: string[], warnings: string[]): Promise<StorageMergeEvidenceListing["latestObjectProof"]> {
+  const jsonFiles = entries
+    .filter((entry) => entry.startsWith("object-artifact-proof-") && entry.endsWith(".json"))
+    .sort()
+    .reverse();
+  for (const entry of jsonFiles) {
+    const jsonPath = path.join(directory, entry);
+    const result = await readJsonFile<ObjectArtifactProofReport>(jsonPath);
+    if (!result || result.kind !== "agentflow_object_artifact_proof_report") {
+      warnings.push(`Skipped unrecognized object artifact proof JSON: ${jsonPath}`);
+      continue;
+    }
+    const basePath = jsonPath.slice(0, -".json".length);
+    return {
+      jsonPath,
+      markdownPath: await pathIsFile(`${basePath}.md`) ? `${basePath}.md` : null,
+      generatedAt: result.generatedAt,
+      status: result.status,
+      referencedObjects: result.referencedObjects,
+      verifiedObjects: result.verifiedObjects,
+      missingObjects: result.missingObjects,
+      bucketParityStatus: result.bucketParity?.status ?? null,
+      missingInTarget: result.bucketParity?.missingInTarget ?? null,
+      extraInTarget: result.bucketParity?.extraInTarget ?? null
+    };
+  }
+  return null;
+}
+
+async function latestStorageProjectConflictDecisions(directory: string, entries: string[], warnings: string[]): Promise<StorageMergeEvidenceListing["latestProjectDecisions"]> {
+  const jsonFiles = [
+    ...entries.filter((entry) => entry === "storage-project-decisions.json"),
+    ...entries
+      .filter((entry) => entry.startsWith("storage-project-decisions-") && entry.endsWith(".json"))
+      .sort()
+      .reverse()
+  ];
+  for (const entry of jsonFiles) {
+    const jsonPath = path.join(directory, entry);
+    const result = await readJsonFile<{ kind?: string; generatedAt?: string; decisions?: StorageProjectDecisionEntry[] }>(jsonPath);
+    if (!result || result.kind !== "agentflow_storage_project_conflict_decisions" || !Array.isArray(result.decisions)) {
+      warnings.push(`Skipped unrecognized project decision JSON: ${jsonPath}`);
+      continue;
+    }
+    return {
+      jsonPath,
+      generatedAt: result.generatedAt ?? new Date(0).toISOString(),
+      decisions: result.decisions
+    };
+  }
+  return null;
+}
+
+async function writeStorageProjectConflictDecision(input: {
+  outDir: string;
+  rootUri: string;
+  action: string;
+  sourceProjectId?: string;
+  targetProjectId?: string;
+  reviewer: string;
+  note: string;
+}): Promise<{ jsonPath: string; decisionCount: number }> {
+  const directory = path.resolve(process.cwd(), input.outDir);
+  await fs.mkdir(directory, { recursive: true });
+  const entries = await fs.readdir(directory).catch(() => []);
+  const latest = await latestStorageProjectConflictDecisions(directory, entries, []);
+  const decidedAt = new Date().toISOString();
+  const decisions = [
+    ...(latest?.decisions ?? []).filter((decision) => decision.rootUri !== input.rootUri),
+    {
+      rootUri: input.rootUri,
+      action: input.action,
+      sourceProjectId: input.sourceProjectId ?? null,
+      targetProjectId: input.targetProjectId ?? null,
+      reviewer: input.reviewer,
+      note: input.note,
+      decidedAt
+    }
+  ].sort((a, b) => a.rootUri.localeCompare(b.rootUri));
+  const jsonPath = path.join(directory, "storage-project-decisions.json");
+  const tempPath = path.join(directory, `storage-project-decisions-${process.pid}-${Date.now()}.tmp`);
+  await fs.writeFile(tempPath, `${JSON.stringify({
+    kind: "agentflow_storage_project_conflict_decisions",
+    generatedAt: decidedAt,
+    decisions
+  }, null, 2)}\n`, "utf8");
+  await fs.rename(tempPath, jsonPath);
+  return { jsonPath, decisionCount: decisions.length };
+}
+
+function buildStorageSwitchOverProof(
+  manifest: StorageMergeEvidenceListing["latestManifest"],
+  importResult: StorageMergeEvidenceListing["latestImport"],
+  backup: StorageMergeEvidenceListing["latestBackup"],
+  objectProof: StorageMergeEvidenceListing["latestObjectProof"],
+  conflictClassification: StorageMergeEvidenceListing["conflictClassification"] | null
+): StorageMergeEvidenceListing["switchOverProof"] {
+  const checks: StorageMergeEvidenceListing["switchOverProof"]["checks"] = [];
+  const classifiedCriticalConflictRows = conflictClassification?.criticalRows ?? null;
+  const commands = [
+    "npm run storage-merge-manifest -- --write",
+    "npm run agentflow -- storage-project-conflicts --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow --target-database-url \"$DATABASE_URL\"",
+    "npm run agentflow -- storage-project-decision --root <root_uri> --action preserve-target-project --source-project-id <source_id> --target-project-id <target_id> --note \"Reviewed source/target metadata; shared target is canonical.\"",
+    "npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json",
+    "npm run storage-merge-import -- --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json --execute",
+    "npm run object-artifact-proof -- --enumerate-buckets --verify",
+    "npm run storage-merge-evidence"
+  ];
+
+  checks.push({
+    label: "Latest merge manifest",
+    status: manifest ? manifest.status === "blocked" ? "fail" : "pass" : "fail",
+    detail: manifest ? `${manifest.tableCount} table plan(s), ${manifest.sourceOnlyRows} source-only row(s), ${manifest.conflictRows} conflict(s).` : "No reviewed merge manifest was found."
+  });
+  checks.push({
+    label: "No source-only rows remain",
+    status: manifest && manifest.sourceOnlyRows === 0 ? "pass" : "warn",
+    detail: manifest ? `${manifest.sourceOnlyRows} source-only row(s) remain in the latest manifest.` : "Generate a manifest after the latest import."
+  });
+  checks.push({
+    label: "No critical row conflicts",
+    status: manifest && classifiedCriticalConflictRows === 0 ? "pass" : "fail",
+    detail: manifest ? `${classifiedCriticalConflictRows ?? manifest.conflictRows} classified critical conflict row(s), ${manifest.conflictRows} total conflict row(s), ${manifest.projectIdRewriteRows} project-id rewrite row(s) tracked.` : "No manifest conflict evidence was found."
+  });
+  checks.push({
+    label: "Legacy definitions readable",
+    status: !manifest ? "fail" : manifest.legacyReadabilityWarnings > 0 ? "warn" : "pass",
+    detail: manifest
+      ? `${manifest.legacyDefinitionReferences} legacy reference issue(s), ${manifest.changedDefinitionReferences} changed definition(s), ${manifest.legacyReadabilityWarnings} unresolved readability warning(s).`
+      : "No legacy definition evidence was found."
+  });
+  checks.push({
+    label: "Import completed",
+    status: importResult?.status === "completed" && importResult.mode === "execute" && !importResult.staleManifest ? "pass" : "fail",
+    detail: importResult ? `${importResult.status} ${importResult.mode}, affected=${importResult.affectedRows}, stale=${importResult.staleManifest ? "yes" : "no"}.` : "No completed execute import result was found."
+  });
+  checks.push({
+    label: "Backup available",
+    status: backup && backup.files.length >= 2 ? "pass" : "fail",
+    detail: backup ? `${backup.files.length} backup file(s) in ${backup.path}.` : "No source/target backup folder was found."
+  });
+  for (const table of ["workflow_runs", "artifacts", "action_approvals", "action_receipts", "memory_items", "project_files", "project_index_state"]) {
+    const plan = manifest?.tables.find((item) => item.table === table);
+    checks.push({
+      label: `Historical ${table}`,
+      status: plan && plan.conflictRows === 0 ? "pass" : "warn",
+      detail: plan
+        ? `source=${plan.sourceRows}, source-only=${plan.insertRows}, conflicts=${plan.conflictRows}, project-id rewrites=${plan.projectIdRewriteRows}.`
+        : "No table evidence was found in the latest manifest."
+    });
+  }
+  checks.push({
+    label: "Object bucket parity",
+    status: objectProof?.status === "verified" && objectProof.bucketParityStatus === "verified" && objectProof.missingObjects === 0 && objectProof.missingInTarget === 0 ? "pass" : "warn",
+    detail: objectProof
+      ? `${objectProof.status}, refs=${objectProof.referencedObjects}, verified=${objectProof.verifiedObjects}, missing=${objectProof.missingObjects}, bucket=${objectProof.bucketParityStatus ?? "not checked"}, target-missing=${objectProof.missingInTarget ?? "n/a"}.`
+      : "Run object-artifact-proof --write with bucket enumeration and verification after any object mirror action; this evidence command does not contact MinIO unless object proof was recorded."
+  });
+
+  const blocking = checks.some((check) => check.status === "fail");
+  return {
+    status: blocking ? "attention" : "ready",
+    checks,
+    recommendedCommands: commands
+  };
 }
 
 async function loadOfflineFallbackReport(): Promise<OfflineFallbackReport> {
@@ -6810,6 +8525,7 @@ function emptyOfflineSyncSchedulerStatus(): OfflineSyncSchedulerStatus {
     kind: "agentflow_offline_sync_scheduler_status",
     updatedAt: new Date().toISOString(),
     status: "idle",
+    mode: "dry-run",
     pendingQueueItems: 0,
     lastRunAt: null,
     nextRunAfter: null,
@@ -6859,6 +8575,7 @@ async function readOfflineSyncSchedulerStatus(): Promise<OfflineSyncSchedulerSta
     kind: "agentflow_offline_sync_scheduler_status",
     updatedAt: status.updatedAt || new Date().toISOString(),
     status: ["idle", "waiting", "ready", "blocked", "synced", "error"].includes(status.status) ? status.status : "idle",
+    mode: status.mode === "execute" ? "execute" : "dry-run",
     pendingQueueItems: Number.isFinite(status.pendingQueueItems) ? status.pendingQueueItems : 0,
     lastRunAt: status.lastRunAt ?? null,
     nextRunAfter: status.nextRunAfter ?? null,
@@ -7008,7 +8725,8 @@ async function runOfflineFallbackSync(input: { outDir: string; execute: boolean;
     manifestPath: manifestWritten.jsonPath,
     sourceDatabaseUrl,
     targetDatabaseUrl,
-    execute: input.execute
+    execute: input.execute,
+    backupDir: input.outDir
   });
   const importWritten = await writeStorageMergeImportResultFiles(importResult, input.outDir);
   written.importMarkdownPath = importWritten.markdownPath;
@@ -7059,8 +8777,9 @@ async function runOfflineFallbackSync(input: { outDir: string; execute: boolean;
   return { ...result, written };
 }
 
-async function runDaemonOfflineSyncScheduler(input: { actor: string; minIntervalMs: number }): Promise<OfflineSyncSchedulerStatus> {
+async function runDaemonOfflineSyncScheduler(input: { actor: string; minIntervalMs: number; execute?: boolean }): Promise<OfflineSyncSchedulerStatus> {
   const now = new Date();
+  const mode: OfflineSyncSchedulerStatus["mode"] = input.execute ? "execute" : "dry-run";
   const queue = await readOfflineFallbackQueue().catch(() => emptyOfflineFallbackQueue());
   const pendingItems = queue.items.filter((item) => item.status === "pending" && (item.action === "offline-run" || item.action === "sync-back"));
   const previous = await readOfflineSyncSchedulerStatus().catch(() => emptyOfflineSyncSchedulerStatus());
@@ -7069,6 +8788,7 @@ async function runDaemonOfflineSyncScheduler(input: { actor: string; minInterval
       kind: "agentflow_offline_sync_scheduler_status",
       updatedAt: now.toISOString(),
       status: "idle",
+      mode,
       pendingQueueItems: 0,
       lastRunAt: previous.lastRunAt,
       nextRunAfter: null,
@@ -7085,11 +8805,12 @@ async function runDaemonOfflineSyncScheduler(input: { actor: string; minInterval
       kind: "agentflow_offline_sync_scheduler_status",
       updatedAt: now.toISOString(),
       status: "waiting",
+      mode,
       pendingQueueItems: pendingItems.length,
       lastRunAt: previous.lastRunAt,
       nextRunAfter: nextRunAfter.toISOString(),
       lastResultPath: previous.lastResultPath,
-      message: `Waiting until ${nextRunAfter.toISOString()} before the next offline sync dry run.`
+      message: `Waiting until ${nextRunAfter.toISOString()} before the next offline sync ${mode}.`
     };
     await writeOfflineSyncSchedulerStatus(status);
     return status;
@@ -7106,6 +8827,7 @@ async function runDaemonOfflineSyncScheduler(input: { actor: string; minInterval
       kind: "agentflow_offline_sync_scheduler_status",
       updatedAt: now.toISOString(),
       status: "blocked",
+      mode,
       pendingQueueItems: pendingItems.length,
       lastRunAt: previous.lastRunAt,
       nextRunAfter: new Date(now.getTime() + input.minIntervalMs).toISOString(),
@@ -7119,20 +8841,23 @@ async function runDaemonOfflineSyncScheduler(input: { actor: string; minInterval
   try {
     const result = await runOfflineFallbackSync({
       outDir: ".agent-workflow/migrations",
-      execute: false,
+      execute: input.execute === true,
       actor: input.actor
     });
     const status: OfflineSyncSchedulerStatus = {
       kind: "agentflow_offline_sync_scheduler_status",
       updatedAt: new Date().toISOString(),
       status: result.status === "ready" ? "ready" : result.status === "completed" ? "synced" : "blocked",
+      mode,
       pendingQueueItems: pendingItems.length,
       lastRunAt: result.generatedAt,
       nextRunAfter: new Date(Date.parse(result.generatedAt) + input.minIntervalMs).toISOString(),
       lastResultPath: result.written.receiptPath ?? null,
       message: result.status === "ready"
-        ? "Offline sync dry run is ready. Review the manifest/import evidence, then execute sync from Server Readiness when appropriate."
-        : `Offline sync dry run returned ${result.status}.`
+        ? `Offline sync ${mode} is ready. Review the manifest/import evidence${mode === "dry-run" ? ", then execute sync from Server Readiness when appropriate" : ""}.`
+        : result.status === "completed"
+          ? `Offline sync execute completed and marked ${result.syncedQueueItems} queue item(s) synced.`
+        : `Offline sync ${mode} returned ${result.status}.`
     };
     await writeOfflineSyncSchedulerStatus(status);
     return status;
@@ -7141,6 +8866,7 @@ async function runDaemonOfflineSyncScheduler(input: { actor: string; minInterval
       kind: "agentflow_offline_sync_scheduler_status",
       updatedAt: new Date().toISOString(),
       status: "error",
+      mode,
       pendingQueueItems: pendingItems.length,
       lastRunAt: previous.lastRunAt,
       nextRunAfter: new Date(now.getTime() + input.minIntervalMs).toISOString(),
@@ -7304,19 +9030,21 @@ async function buildObjectArtifactProofReport(input: {
   if (input.verify && objectRefs.length) {
     const accessKey = input.accessKey ?? process.env.OBJECT_STORAGE_ACCESS_KEY;
     const secretKey = input.secretKey ?? process.env.OBJECT_STORAGE_SECRET_KEY;
-    const mcAvailable = await commandAvailable("mc");
-    if (!mcAvailable || !accessKey || !secretKey || endpoint === "not configured") {
+    if (!accessKey || !secretKey || endpoint === "not configured") {
       verification = "unavailable";
-      warnings.push("Object verification requested, but mc, OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_ACCESS_KEY, or OBJECT_STORAGE_SECRET_KEY is unavailable.");
-      recommendations.push("Install MinIO Client and configure object-storage credentials before running object-artifact-proof --verify.");
+      warnings.push("Object verification requested, but OBJECT_STORAGE_ENDPOINT, OBJECT_STORAGE_ACCESS_KEY, or OBJECT_STORAGE_SECRET_KEY is unavailable.");
+      recommendations.push("Configure object-storage credentials before running object-artifact-proof --verify.");
     } else {
-      verification = "mc";
-      await verifyObjectReferencesWithMc(objectRefs, {
+      verification = await verifyObjectReferencesWithMc(objectRefs, {
         endpoint,
         bucket,
         accessKey,
         secretKey
       });
+      if (verification === "unavailable") {
+        warnings.push("Object verification requested, but neither MinIO Client nor Docker minio/mc fallback is available.");
+        recommendations.push("Install MinIO Client or Docker before running object-artifact-proof --verify.");
+      }
     }
   }
   const bucketParity = input.enumerateBuckets
@@ -7333,6 +9061,7 @@ async function buildObjectArtifactProofReport(input: {
     : null;
   if (bucketParity?.status === "blocked") warnings.push(bucketParity.message);
   if (bucketParity?.status === "missing") recommendations.push("Review the object mirror plan and mirror missing source objects to the target bucket before relying on shared storage as complete artifact storage.");
+  if (bucketParity?.verifier === "docker-mc") recommendations.push("Bucket enumeration used Docker minio/mc fallback because local MinIO Client was unavailable.");
   const verifiedObjects = objectRefs.filter((ref) => ref.status === "present").length;
   const missingObjects = objectRefs.filter((ref) => ref.status === "missing").length;
   const status: ObjectArtifactProofReport["status"] = missingObjects > 0
@@ -7341,7 +9070,7 @@ async function buildObjectArtifactProofReport(input: {
       ? "missing"
       : bucketParity?.status === "blocked"
         ? "blocked"
-    : verification === "mc"
+    : verification === "mc" || verification === "docker-mc"
       ? "verified"
       : bucketParity?.status === "verified"
         ? "verified"
@@ -7368,6 +9097,160 @@ async function buildObjectArtifactProofReport(input: {
   };
 }
 
+async function queueObjectMirrorApproval(input: {
+  projectPath?: string;
+  report: ObjectArtifactProofReport;
+  sourceEndpoint: string;
+  sourceBucket: string;
+  targetEndpoint: string;
+  targetBucket: string;
+  actor: string;
+  actorRole: string;
+}): Promise<DashboardFollowUpResult & { approvalId?: string }> {
+  if (!input.projectPath) {
+    return { ok: false, error: "Queueing object mirror approval requires --project so roles and receipts are project-scoped." };
+  }
+  if (!input.report.bucketParity) {
+    return { ok: false, error: "Queueing object mirror approval requires --enumerate-buckets so missing target keys are known." };
+  }
+  if (input.report.bucketParity.status !== "missing" || input.report.bucketParity.missingInTarget <= 0) {
+    return { ok: false, error: `No mirror approval needed. Bucket parity status is ${input.report.bucketParity.status}.` };
+  }
+  let sourceEndpoint: string;
+  let targetEndpoint: string;
+  try {
+    sourceEndpoint = validateObjectMirrorEndpoint(input.sourceEndpoint, "source endpoint");
+    targetEndpoint = validateObjectMirrorEndpoint(input.targetEndpoint, "target endpoint");
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  if (sourceEndpoint === targetEndpoint && input.sourceBucket === input.targetBucket) {
+    return { ok: false, error: "Source and target object buckets resolve to the same endpoint and bucket." };
+  }
+
+  const projectDir = path.resolve(process.cwd(), input.projectPath);
+  const configuredProject = await loadProjectConfig(projectDir);
+  const requestRoleGate = evaluateRoleGate(configuredProject, input.actorRole, "can_request_approvals");
+  if (!requestRoleGate.allowed) {
+    return { ok: false, error: requestRoleGate.message };
+  }
+  const resolvedPolicy = resolveExecutionPolicy(configuredProject, "local");
+  const workflows = await loadWorkflows(rootDir);
+  const workflow = resolveWorkflow(workflows, "maintain-context");
+  if (!workflow) {
+    return { ok: false, error: "The maintain-context workflow is required to queue object mirror approvals." };
+  }
+  const agents = await loadAgentRecords(rootDir);
+  const workflowRecords = await loadWorkflowRecords(rootDir);
+  await seedRegistry(agents, workflowRecords);
+  const target = `${input.sourceBucket} -> ${input.targetBucket}`;
+  const payload = {
+    requestType: "object_mirror",
+    sourceEndpoint,
+    sourceBucket: input.sourceBucket,
+    targetEndpoint,
+    targetBucket: input.targetBucket,
+    missingInTarget: input.report.bucketParity.missingInTarget,
+    sampledMissingKeys: input.report.bucketParity.sampledMissingKeys,
+    mirrorMode: "copy-missing-only",
+    overwrite: false,
+    requestedBy: input.actor,
+    requestedByRole: input.actorRole,
+    requestedAt: new Date().toISOString()
+  };
+  const idempotencyKey = stableHash({
+    objectMirror: true,
+    projectDir,
+    sourceEndpoint,
+    sourceBucket: input.sourceBucket,
+    targetEndpoint,
+    targetBucket: input.targetBucket,
+    missingInTarget: input.report.bucketParity.missingInTarget,
+    sampledMissingKeys: input.report.bucketParity.sampledMissingKeys
+  });
+  const run = await createWorkflowRun({
+    projectName: resolvedPolicy.project.project.name,
+    projectRootUri: projectDir,
+    projectProfile: "custom",
+    projectConfig: configuredProject,
+    workflow,
+    task: `Approval requested to mirror missing object artifacts: ${target}`,
+    autonomy: String(resolvedPolicy.project.project.autonomy),
+    policyProfile: resolvedPolicy.profile,
+    policySnapshot: resolvedPolicy.snapshot,
+    policySnapshotHash: resolvedPolicy.snapshotHash,
+    compiledBrief: [
+      "# Object Mirror Approval",
+      "",
+      `Source: ${sourceEndpoint}/${input.sourceBucket}`,
+      `Target: ${targetEndpoint}/${input.targetBucket}`,
+      `Missing target keys: ${input.report.bucketParity.missingInTarget}`,
+      "Mode: copy missing objects only; do not overwrite target objects.",
+      "",
+      "## Sample Missing Keys",
+      ...input.report.bucketParity.sampledMissingKeys.map((key) => `- ${key}`)
+    ].join("\n"),
+    compiledBriefMetadata: {
+      objectMirror: payload
+    }
+  });
+  const approval = await requestActionApproval({
+    runId: run.runId,
+    taskId: null,
+    stageId: "object-mirror-approval",
+    agentId: workflow.lead,
+    actionType: "object_mirror",
+    target,
+    rationale: `Mirror ${input.report.bucketParity.missingInTarget} source object(s) missing from the target bucket after shared-storage migration proof.`,
+    policyDecision: {
+      approvalRequired: true,
+      requestType: "object_mirror",
+      actorRole: input.actorRole,
+      policyProfile: resolvedPolicy.profile,
+      policySnapshotHash: resolvedPolicy.snapshotHash,
+      overwrite: false
+    },
+    payload,
+    idempotencyKey
+  });
+  await completeApprovalRequestRun({
+    runId: run.runId,
+    agentId: workflow.lead,
+    summary: `Object mirror approval queued for ${target}`,
+    metadata: {
+      ...payload,
+      target,
+      approvalId: approval.approvalId
+    }
+  });
+  return {
+    ok: true,
+    title: "Object mirror approval queued",
+    runId: run.runId,
+    approvalId: approval.approvalId,
+    output: [
+      `Approval: ${approval.approvalId}`,
+      `Run: ${run.runId}`,
+      `Source: ${sourceEndpoint}/${input.sourceBucket}`,
+      `Target: ${targetEndpoint}/${input.targetBucket}`,
+      `Missing target objects: ${input.report.bucketParity.missingInTarget}`,
+      `Role gate: ${requestRoleGate.message}`,
+      "Approve and execute from /approvals or with:",
+      `npm run agentflow -- approvals --approve-execute ${approval.approvalId} --actor "${input.actor}" --actor-role approver`
+    ].join("\n")
+  };
+}
+
+function validateObjectMirrorEndpoint(value: string, label = "endpoint"): string {
+  const trimmed = value.trim();
+  if (!trimmed) throw new Error(`Object mirror ${label} is required.`);
+  const url = new URL(trimmed);
+  if (url.username || url.password) {
+    throw new Error(`Object mirror ${label} must not include credentials.`);
+  }
+  return url.toString().replace(/\/$/u, "");
+}
+
 async function buildObjectBucketParityProof(input: {
   sourceEndpoint: string;
   sourceBucket: string;
@@ -7383,9 +9266,7 @@ async function buildObjectBucketParityProof(input: {
     `mc alias set agentflow-object-target ${shellQuote(input.targetEndpoint)} "$TARGET_OBJECT_STORAGE_ACCESS_KEY" "$TARGET_OBJECT_STORAGE_SECRET_KEY"`,
     `mc mirror --overwrite=false "agentflow-object-source/${input.sourceBucket}" "agentflow-object-target/${input.targetBucket}"`
   ];
-  const mcAvailable = await commandAvailable("mc");
   const missingConfig = [
-    !mcAvailable ? "mc" : "",
     !input.sourceEndpoint ? "source endpoint" : "",
     !input.sourceBucket ? "source bucket" : "",
     !input.sourceAccessKey ? "source access key" : "",
@@ -7405,6 +9286,7 @@ async function buildObjectBucketParityProof(input: {
     targetObjects: 0,
     missingInTarget: 0,
     extraInTarget: 0,
+    verifier: "unavailable" as const,
     sampledMissingKeys: [],
     sampledExtraKeys: [],
     mirrorPlan
@@ -7432,6 +9314,7 @@ async function buildObjectBucketParityProof(input: {
   if (!source.ok || !target.ok) {
     return {
       ...blockedBase,
+      verifier: mergeMcVerifier(source.verifier, target.verifier),
       message: [source.ok ? "" : `source: ${source.error}`, target.ok ? "" : `target: ${target.error}`].filter(Boolean).join(" ")
     };
   }
@@ -7449,6 +9332,7 @@ async function buildObjectBucketParityProof(input: {
     targetObjects: targetKeys.size,
     missingInTarget: missing.length,
     extraInTarget: extra.length,
+    verifier: mergeMcVerifier(source.verifier, target.verifier),
     sampledMissingKeys: missing.slice(0, 25),
     sampledExtraKeys: extra.slice(0, 25),
     mirrorPlan,
@@ -7464,22 +9348,108 @@ async function listBucketKeysWithMc(input: {
   bucket: string;
   accessKey: string;
   secretKey: string;
-}): Promise<{ ok: true; keys: string[] } | { ok: false; error: string }> {
+}): Promise<{ ok: true; keys: string[]; verifier: McRunnerMode } | { ok: false; error: string; verifier: ObjectBucketParityProof["verifier"] }> {
   const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-object-proof");
   await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
-  const env = {
-    ...process.env,
-    MC_CONFIG_DIR: mcConfigDir
-  };
-  const aliasResult = await execFileText("mc", ["alias", "set", input.alias, input.endpoint, input.accessKey, input.secretKey], { allowFailure: true, env });
+  const runner = await resolveMcRunner(mcConfigDir);
+  if (!runner) return { ok: false, error: "Bucket enumeration needs MinIO Client or Docker minio/mc fallback.", verifier: "unavailable" };
+  const aliasResult = await execMcText(runner, ["alias", "set", input.alias, runner.mapEndpoint(input.endpoint), input.accessKey, input.secretKey]);
   if (aliasResult.exitCode !== 0) {
-    return { ok: false, error: compactDashboardText(aliasResult.stderr || aliasResult.stdout || `mc alias set failed for ${input.alias}`, 300) };
+    return { ok: false, error: compactDashboardText(aliasResult.stderr || aliasResult.stdout || `${runner.mode} alias set failed for ${input.alias}`, 300), verifier: runner.mode };
   }
-  const listResult = await execFileText("mc", ["find", `${input.alias}/${input.bucket}`, "--json", "--type", "f"], { allowFailure: true, env });
+  const listResult = await execMcText(runner, ["find", `${input.alias}/${input.bucket}`, "--json"]);
   if (listResult.exitCode !== 0) {
-    return { ok: false, error: compactDashboardText(listResult.stderr || listResult.stdout || `mc find failed for ${input.alias}/${input.bucket}`, 300) };
+    return { ok: false, error: compactDashboardText(listResult.stderr || listResult.stdout || `${runner.mode} find failed for ${input.alias}/${input.bucket}`, 300), verifier: runner.mode };
   }
-  return { ok: true, keys: parseMcFindKeys(listResult.stdout, input.alias, input.bucket) };
+  return { ok: true, keys: parseMcFindKeys(listResult.stdout, input.alias, input.bucket), verifier: runner.mode };
+}
+
+function mergeMcVerifier(...verifiers: ObjectBucketParityProof["verifier"][]): ObjectBucketParityProof["verifier"] {
+  if (verifiers.includes("docker-mc")) return "docker-mc";
+  if (verifiers.includes("mc")) return "mc";
+  return "unavailable";
+}
+
+type McRunnerMode = "mc" | "docker-mc";
+type McRunner = {
+  mode: McRunnerMode;
+  command: string;
+  argsPrefix: string[];
+  env: NodeJS.ProcessEnv;
+  mapEndpoint: (endpoint: string) => string;
+};
+
+async function ensureObjectStorageBucket(): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
+  const endpoint = process.env.OBJECT_STORAGE_ENDPOINT;
+  const bucket = process.env.OBJECT_STORAGE_BUCKET || "agentflow-artifacts";
+  const accessKey = process.env.OBJECT_STORAGE_ACCESS_KEY;
+  const secretKey = process.env.OBJECT_STORAGE_SECRET_KEY;
+  if (!endpoint || !accessKey || !secretKey) {
+    return { ok: false, message: "Object storage bucket was not checked because endpoint or credentials are not configured." };
+  }
+  const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-bootstrap");
+  await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
+  const runner = await resolveMcRunner(mcConfigDir);
+  if (!runner) {
+    return { ok: false, message: `Object storage bucket ${bucket} was not checked because MinIO Client and Docker minio/mc fallback are unavailable.` };
+  }
+  const alias = "agentflow-bootstrap";
+  const aliasResult = await execMcText(runner, ["alias", "set", alias, runner.mapEndpoint(endpoint), accessKey, secretKey]);
+  if (aliasResult.exitCode !== 0) {
+    return { ok: false, message: compactDashboardText(aliasResult.stderr || aliasResult.stdout || `${runner.mode} alias setup failed for object storage bootstrap`, 300) };
+  }
+  const bucketResult = await execMcText(runner, ["mb", "--ignore-existing", `${alias}/${bucket}`]);
+  if (bucketResult.exitCode !== 0) {
+    return { ok: false, message: compactDashboardText(bucketResult.stderr || bucketResult.stdout || `${runner.mode} bucket creation failed for ${bucket}`, 300) };
+  }
+  return { ok: true, message: `Object storage bucket ${bucket} is present via ${runner.mode}.` };
+}
+
+async function resolveMcRunner(configDir: string): Promise<McRunner | null> {
+  if (await commandAvailable("mc")) {
+    return {
+      mode: "mc",
+      command: "mc",
+      argsPrefix: [],
+      env: { ...process.env, MC_CONFIG_DIR: configDir },
+      mapEndpoint: (endpoint) => endpoint
+    };
+  }
+  if (await commandAvailable("docker")) {
+    const image = process.env.AGENTFLOW_MC_DOCKER_IMAGE || "minio/mc";
+    return {
+      mode: "docker-mc",
+      command: "docker",
+      argsPrefix: [
+        "run",
+        "--rm",
+        "--add-host",
+        "host.docker.internal:host-gateway",
+        "--volume",
+        `${configDir}:/mc-config`,
+        "--env",
+        "MC_CONFIG_DIR=/mc-config",
+        image
+      ],
+      env: process.env,
+      mapEndpoint: dockerReachableObjectEndpoint
+    };
+  }
+  return null;
+}
+
+async function execMcText(runner: McRunner, args: string[]): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+  return execFileText(runner.command, [...runner.argsPrefix, ...args], { allowFailure: true, env: runner.env });
+}
+
+function dockerReachableObjectEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint);
+    if (url.hostname === "127.0.0.1" || url.hostname === "localhost") url.hostname = "host.docker.internal";
+    return url.toString().replace(/\/$/u, "");
+  } catch {
+    return endpoint;
+  }
 }
 
 function parseMcFindKeys(output: string, alias: string, bucket: string): string[] {
@@ -7555,26 +9525,196 @@ async function verifyObjectReferencesWithMc(refs: ObjectArtifactReferenceProof[]
   bucket: string;
   accessKey: string;
   secretKey: string;
-}): Promise<void> {
+}): Promise<ObjectArtifactProofReport["verification"]> {
   const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-object-proof");
   await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
-  const env = {
-    ...process.env,
-    MC_CONFIG_DIR: mcConfigDir
-  };
-  const aliasResult = await execFileText("mc", ["alias", "set", "agentflow-object-proof", input.endpoint, input.accessKey, input.secretKey], { allowFailure: true, env });
+  const runner = await resolveMcRunner(mcConfigDir);
+  if (!runner) {
+    for (const ref of refs) {
+      ref.status = "not-checked";
+      ref.message = "MinIO Client and Docker minio/mc fallback are unavailable.";
+    }
+    return "unavailable";
+  }
+  const aliasResult = await execMcText(runner, ["alias", "set", "agentflow-object-proof", runner.mapEndpoint(input.endpoint), input.accessKey, input.secretKey]);
   if (aliasResult.exitCode !== 0) {
     for (const ref of refs) {
       ref.status = "missing";
-      ref.message = compactDashboardText(aliasResult.stderr || aliasResult.stdout || "mc alias setup failed", 300);
+      ref.message = compactDashboardText(aliasResult.stderr || aliasResult.stdout || `${runner.mode} alias setup failed`, 300);
     }
-    return;
+    return runner.mode;
   }
   for (const ref of refs.slice(0, 200)) {
-    const result = await execFileText("mc", ["stat", `agentflow-object-proof/${input.bucket}/${ref.key}`], { allowFailure: true, env });
+    const result = await execMcText(runner, ["stat", `agentflow-object-proof/${input.bucket}/${ref.key}`]);
     ref.status = result.exitCode === 0 ? "present" : "missing";
     ref.message = result.exitCode === 0 ? "present" : compactDashboardText(result.stderr || result.stdout || "object missing", 300);
   }
+  return runner.mode;
+}
+
+async function executeObjectMirrorApproval(input: {
+  approval: Awaited<ReturnType<typeof getActionApproval>>;
+  actor: string;
+  actorRole?: string;
+  executionRoleGate: string;
+  separationGate: string;
+}): Promise<DashboardFollowUpResult> {
+  const approval = input.approval;
+  if (!approval) {
+    return { ok: false, error: "Approval was not found." };
+  }
+  const previous = await findRunActionByIdempotencyKey({
+    runId: approval.runId,
+    artifactKind: "object_mirror",
+    idempotencyKey: approval.idempotencyKey
+  });
+  if (previous) {
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "executed",
+      actor: input.actor,
+      actorRole: input.actorRole,
+      summary: `Object mirror already had an execution artifact: ${previous.uri}`,
+      artifactUri: previous.uri
+    });
+    return {
+      ok: true,
+      title: "Object mirror reused",
+      runId: approval.runId,
+      output: [
+        `Approval: ${approval.id}`,
+        `Artifact: ${previous.uri}`
+      ].join("\n")
+    };
+  }
+
+  const payload = approval.payload;
+  let sourceEndpoint: string;
+  let targetEndpoint: string;
+  try {
+    sourceEndpoint = validateObjectMirrorEndpoint(String(payload.sourceEndpoint ?? ""));
+    targetEndpoint = validateObjectMirrorEndpoint(String(payload.targetEndpoint ?? ""));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "failed",
+      actor: input.actor,
+      actorRole: input.actorRole,
+      summary: `Object mirror approval payload is invalid: ${message}`,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+  const sourceBucket = String(payload.sourceBucket ?? "").trim();
+  const targetBucket = String(payload.targetBucket ?? "").trim();
+  if (!sourceBucket || !targetBucket) {
+    return { ok: false, error: "Object mirror approval payload is missing sourceBucket or targetBucket." };
+  }
+  const sourceAccessKey = process.env.SOURCE_OBJECT_STORAGE_ACCESS_KEY ?? process.env.OBJECT_STORAGE_ACCESS_KEY;
+  const sourceSecretKey = process.env.SOURCE_OBJECT_STORAGE_SECRET_KEY ?? process.env.OBJECT_STORAGE_SECRET_KEY;
+  const targetAccessKey = process.env.TARGET_OBJECT_STORAGE_ACCESS_KEY ?? process.env.OBJECT_STORAGE_ACCESS_KEY;
+  const targetSecretKey = process.env.TARGET_OBJECT_STORAGE_SECRET_KEY ?? process.env.OBJECT_STORAGE_SECRET_KEY;
+  const mcAvailable = await commandAvailable("mc");
+  const missingConfig = [
+    !mcAvailable ? "mc" : "",
+    !sourceAccessKey ? "SOURCE_OBJECT_STORAGE_ACCESS_KEY or OBJECT_STORAGE_ACCESS_KEY" : "",
+    !sourceSecretKey ? "SOURCE_OBJECT_STORAGE_SECRET_KEY or OBJECT_STORAGE_SECRET_KEY" : "",
+    !targetAccessKey ? "TARGET_OBJECT_STORAGE_ACCESS_KEY or OBJECT_STORAGE_ACCESS_KEY" : "",
+    !targetSecretKey ? "TARGET_OBJECT_STORAGE_SECRET_KEY or OBJECT_STORAGE_SECRET_KEY" : ""
+  ].filter(Boolean);
+  if (missingConfig.length) {
+    const message = `Object mirror execution needs ${missingConfig.join(", ")}.`;
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "failed",
+      actor: input.actor,
+      actorRole: input.actorRole,
+      summary: message,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+
+  const mcConfigDir = path.join(rootDir, ".agent-workflow", "runtime", "mc-object-mirror");
+  await fs.mkdir(mcConfigDir, { recursive: true, mode: 0o700 });
+  const env = { ...process.env, MC_CONFIG_DIR: mcConfigDir };
+  const sourceAlias = `agentflow-mirror-source-${approval.id.slice(0, 8)}`;
+  const targetAlias = `agentflow-mirror-target-${approval.id.slice(0, 8)}`;
+  const sourceAliasResult = await execFileText("mc", ["alias", "set", sourceAlias, sourceEndpoint, sourceAccessKey!, sourceSecretKey!], { allowFailure: true, env });
+  const targetAliasResult = await execFileText("mc", ["alias", "set", targetAlias, targetEndpoint, targetAccessKey!, targetSecretKey!], { allowFailure: true, env });
+  if (sourceAliasResult.exitCode !== 0 || targetAliasResult.exitCode !== 0) {
+    const message = compactDashboardText(sourceAliasResult.stderr || sourceAliasResult.stdout || targetAliasResult.stderr || targetAliasResult.stdout || "mc alias setup failed", 500);
+    await markActionApprovalExecution({
+      approvalId: approval.id,
+      status: "failed",
+      actor: input.actor,
+      actorRole: input.actorRole,
+      summary: `Object mirror alias setup failed: ${message}`,
+      error: message
+    });
+    return { ok: false, error: message };
+  }
+  const mirrorResult = await execFileText("mc", [
+    "mirror",
+    "--overwrite=false",
+    `${sourceAlias}/${sourceBucket}`,
+    `${targetAlias}/${targetBucket}`
+  ], { allowFailure: true, env });
+  const summary = mirrorResult.exitCode === 0
+    ? `Object mirror completed from ${sourceBucket} to ${targetBucket}.`
+    : `Object mirror failed with exit ${mirrorResult.exitCode}.`;
+  const artifactUri = await recordRunAction({
+    runId: approval.runId,
+    taskId: approval.taskId,
+    agentId: approval.agentId,
+    actionType: "object_mirror",
+    target: approval.target,
+    summary,
+    artifactKind: "object_mirror",
+    artifactContent: {
+      approvalId: approval.id,
+      sourceEndpoint: redactDashboardUrl(sourceEndpoint),
+      sourceBucket,
+      targetEndpoint: redactDashboardUrl(targetEndpoint),
+      targetBucket,
+      overwrite: false,
+      exitCode: mirrorResult.exitCode,
+      stdout: compactDashboardText(mirrorResult.stdout, 1000),
+      stderr: compactDashboardText(mirrorResult.stderr, 1000),
+      executionRoleGate: input.executionRoleGate,
+      separationGate: input.separationGate,
+      requestedMissingInTarget: typeof payload.missingInTarget === "number" ? payload.missingInTarget : null,
+      sampledMissingKeys: Array.isArray(payload.sampledMissingKeys) ? payload.sampledMissingKeys.slice(0, 25) : []
+    },
+    idempotencyKey: approval.idempotencyKey
+  });
+  await markActionApprovalExecution({
+    approvalId: approval.id,
+    status: mirrorResult.exitCode === 0 ? "executed" : "failed",
+    actor: input.actor,
+    actorRole: input.actorRole,
+    summary,
+    artifactUri,
+    error: mirrorResult.exitCode === 0 ? undefined : compactDashboardText(mirrorResult.stderr || mirrorResult.stdout, 500)
+  });
+  if (mirrorResult.exitCode !== 0) {
+    return { ok: false, error: `${summary} ${compactDashboardText(mirrorResult.stderr || mirrorResult.stdout, 500)}` };
+  }
+  return {
+    ok: true,
+    title: "Object mirror executed",
+    runId: approval.runId,
+    output: [
+      `Approval: ${approval.id}`,
+      summary,
+      `Source: ${sourceEndpoint}/${sourceBucket}`,
+      `Target: ${targetEndpoint}/${targetBucket}`,
+      `Artifact: ${artifactUri}`,
+      `Role gate: ${input.executionRoleGate}`,
+      `Separation of duties: ${input.separationGate}`
+    ].join("\n")
+  };
 }
 
 function formatObjectArtifactProofReport(report: ObjectArtifactProofReport): string {
@@ -7592,7 +9732,7 @@ function formatObjectArtifactProofReport(report: ObjectArtifactProofReport): str
     "",
     "Bucket parity:",
     report.bucketParity
-      ? `- ${report.bucketParity.status}: source=${report.bucketParity.sourceObjects}, target=${report.bucketParity.targetObjects}, missing=${report.bucketParity.missingInTarget}, extra=${report.bucketParity.extraInTarget}\n- ${report.bucketParity.message}`
+      ? `- ${report.bucketParity.status}: source=${report.bucketParity.sourceObjects}, target=${report.bucketParity.targetObjects}, missing=${report.bucketParity.missingInTarget}, extra=${report.bucketParity.extraInTarget}, verifier=${report.bucketParity.verifier}\n- ${report.bucketParity.message}`
       : "- not checked",
     "",
     "Objects:",
@@ -7673,9 +9813,183 @@ function formatStorageMergeEvidenceListing(report: StorageMergeEvidenceListing):
       ? `- ${report.latestBackup.generatedAt ?? "unknown"}: ${report.latestBackup.path}\n${report.latestBackup.files.map((file) => `  - ${file.name}: ${formatBytes(file.sizeBytes)}`).join("\n")}`
       : "- none",
     "",
+    "Latest object proof:",
+    report.latestObjectProof
+      ? `- ${report.latestObjectProof.generatedAt}: ${report.latestObjectProof.status}, refs=${report.latestObjectProof.referencedObjects}, verified=${report.latestObjectProof.verifiedObjects}, missing=${report.latestObjectProof.missingObjects}, bucket=${report.latestObjectProof.bucketParityStatus ?? "not checked"}\n  ${report.latestObjectProof.jsonPath}`
+      : "- none",
+    "",
+    "Switch-over proof:",
+    `- Status: ${report.switchOverProof.status}`,
+    ...report.switchOverProof.checks.map((check) => `- ${check.status}: ${check.label} - ${check.detail}`),
+    "",
+    "Conflict classification:",
+    `- Critical rows: ${report.conflictClassification.criticalRows}`,
+    `- Refreshable derived rows: ${report.conflictClassification.derivedRows}`,
+    ...(report.conflictClassification.rows.length
+      ? report.conflictClassification.rows.map((row) => {
+          const samples = row.sampleConflictKeys.slice(0, 3).join("; ");
+          return `- ${row.severity}: ${row.table} (${row.class}) conflicts=${row.conflictRows}${samples ? ` samples=${samples}` : ""}\n  ${row.resolution}`;
+        })
+      : ["- none"]),
+    "",
+    "Sampled historical evidence:",
+    ...(report.latestManifest?.tables.length
+      ? report.latestManifest.tables.map((table) => {
+          const samples = table.sampleConflictKeys.length ? table.sampleConflictKeys : table.sampleExistingKeys.length ? table.sampleExistingKeys : table.sampleSourceKeys;
+          return `- ${table.table}: source=${table.sourceRows}, insert=${table.insertRows}, conflict=${table.conflictRows}, samples=${samples.slice(0, 3).join("; ") || "regenerate manifest to capture samples"}`;
+        })
+      : ["- none"]),
+    "",
+    "Recommended commands:",
+    ...report.switchOverProof.recommendedCommands.map((command) => `- ${command}`),
+    "",
     "Warnings:",
     ...(report.warnings.length ? report.warnings.map((warning) => `- ${warning}`) : ["- none"])
   ].join("\n");
+}
+
+function formatStorageProjectConflictReport(report: StorageProjectConflictReport): string {
+  return [
+    `Storage project conflicts (${report.generatedAt})`,
+    `Source: ${report.sourceDatabaseUrl}`,
+    `Target: ${report.targetDatabaseUrl}`,
+    "",
+    "Conflicts:",
+    ...(report.conflicts.length
+      ? report.conflicts.flatMap((conflict) => [
+          `- ${conflict.rootUri}`,
+          `  recommendation: ${conflict.recommendation}`,
+          `  reason: ${conflict.reason}`,
+          `  differing fields: ${conflict.differingFields.join(", ") || "none"}`,
+          `  source: ${conflict.source.name ?? "unnamed"} (${conflict.source.projectId}), profile=${conflict.source.profile ?? "n/a"}, updated=${conflict.source.updatedAt ?? "n/a"}, config=${conflict.source.configHash}, runs=${conflict.source.linkedRows.workflow_runs}`,
+          `  target: ${conflict.target.name ?? "unnamed"} (${conflict.target.projectId}), profile=${conflict.target.profile ?? "n/a"}, updated=${conflict.target.updatedAt ?? "n/a"}, config=${conflict.target.configHash}, runs=${conflict.target.linkedRows.workflow_runs}`,
+          `  decision: ${conflict.decisionRecord.action} - ${conflict.decisionRecord.note}`
+        ])
+      : ["- none"]),
+    "",
+    "Recommendations:",
+    ...report.recommendations.map((recommendation) => `- ${recommendation}`)
+  ].join("\n");
+}
+
+function buildSharedStatePlaneProof(input: {
+  server: ServerReadinessReport;
+  storageVerification: StorageVerificationReport;
+  mergeEvidence: StorageMergeEvidenceListing;
+  offlineFallback: OfflineFallbackReport;
+  objectProof: ObjectArtifactProofReport;
+  runtimeMonitor: RuntimeMonitorReport;
+}): SharedStatePlaneProof {
+  const checks: SharedStatePlaneProof["checks"] = [];
+  const sharedReachable = input.runtimeMonitor.hulk.reachable || input.offlineFallback.currentServicesReachable;
+  const sharedConfigured = Boolean(input.runtimeMonitor.storageHost || input.runtimeMonitor.hulk.host);
+  const sameSharedStatePlane = input.storageVerification.status === "attention" &&
+    input.storageVerification.diffs.every((diff) => diff.status === "match") &&
+    input.storageVerification.warnings.some((warning) => warning.includes("source and target database URLs point to the same endpoint")) &&
+    sharedConfigured;
+  checks.push({
+    label: "Shared storage host",
+    status: sharedConfigured && sharedReachable ? "pass" : sharedConfigured ? "fail" : "warn",
+    detail: sharedConfigured
+      ? `${input.runtimeMonitor.storageHost ?? input.runtimeMonitor.hulk.host} is ${sharedReachable ? "reachable" : "not fully reachable"}.`
+      : "No shared storage host is configured; this machine is still local-only."
+  });
+  checks.push({
+    label: "Current storage points shared",
+    status: input.runtimeMonitor.hulk.source === "not-configured" ? "warn" : "pass",
+    detail: input.runtimeMonitor.hulk.source === "not-configured"
+      ? "Configured storage does not identify a shared/non-loopback state plane."
+      : `Shared state plane inferred from ${input.runtimeMonitor.hulk.source}.`
+  });
+  checks.push({
+    label: "Post-merge evidence",
+    status: input.mergeEvidence.safePrimaryStatePlane ? "pass" : "warn",
+    detail: input.mergeEvidence.safePrimaryStatePlane
+      ? "Latest merge evidence shows zero source-only rows, completed import, and backups."
+      : "Need latest manifest with zero source-only rows, completed import result, and source/target backups."
+  });
+  checks.push({
+    label: "Storage row parity",
+    status: input.storageVerification.status === "match" || sameSharedStatePlane ? "pass" : input.storageVerification.status === "blocked" ? "fail" : "warn",
+    detail: sameSharedStatePlane
+      ? "Source and target resolve to the same shared storage plane; durable table fingerprints match within that plane."
+      : input.storageVerification.status === "match"
+      ? "Durable table counts and compact fingerprints match."
+      : `${input.storageVerification.status}: review table diffs before declaring shared storage primary.`
+  });
+  checks.push({
+    label: "Object artifact parity",
+    status: input.objectProof.status === "verified" || input.objectProof.status === "metadata-only"
+      ? "pass"
+      : input.objectProof.status === "missing"
+        ? "fail"
+        : "warn",
+    detail: input.objectProof.status === "verified"
+      ? "Object-backed artifact references and/or bucket parity are verified."
+      : input.objectProof.status === "metadata-only"
+        ? "No object-backed references required verification in the inspected window, or verification was intentionally metadata-only."
+        : input.objectProof.status === "missing"
+          ? "Object-backed artifacts or source bucket keys are missing from the target."
+          : "Object proof is blocked or unavailable; run with mc verification/enumeration when object-backed artifacts matter."
+  });
+  const pendingOfflineItems = input.offlineFallback.queue.items.filter((item) => item.status === "pending").length;
+  checks.push({
+    label: "Offline sync queue",
+    status: pendingOfflineItems === 0 ? "pass" : "warn",
+    detail: pendingOfflineItems === 0
+      ? "No pending offline fallback items need sync-back."
+      : `${pendingOfflineItems} pending offline fallback item(s) should be synced back to shared storage.`
+  });
+  checks.push({
+    label: "Local fallback posture",
+    status: sharedReachable ? "pass" : input.offlineFallback.localServicesReachable ? "warn" : "fail",
+    detail: sharedReachable
+      ? input.offlineFallback.localServicesReachable
+        ? "Shared storage is online. Local fallback services are available but can stay stopped unless needed."
+        : "Shared storage is online. Local fallback services can stay stopped."
+      : input.offlineFallback.localServicesReachable
+        ? "Shared storage is offline; local fallback is available for offline work."
+        : "Shared storage is offline and local fallback is not fully available."
+  });
+  checks.push({
+    label: "Server controls",
+    status: !input.server.mode.enabled
+      ? "warn"
+      : input.server.status === "ready"
+        ? "pass"
+        : input.server.status === "blocked"
+          ? "fail"
+          : "warn",
+    detail: !input.server.mode.enabled
+      ? "Server mode is disabled; CLI, MCP stdio, dashboard, and worker remain local-first."
+      : `Server mode readiness is ${input.server.status}; auth=${input.server.mode.authMode}, bind=${input.server.mode.bind}:${input.server.mode.port}.`
+  });
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const status: SharedStatePlaneProof["status"] = failures ? "blocked" : warnings ? "attention" : "ready";
+  const recommendedActions = checks
+    .filter((check) => check.status !== "pass")
+    .map((check) => `${check.label}: ${check.detail}`);
+  if (input.objectProof.bucketParity?.status === "missing") {
+    recommendedActions.push("Run the object mirror plan after review, then rerun object-artifact-proof with bucket enumeration.");
+  }
+  if (input.offlineFallback.mode === "shared-online" && input.offlineFallback.localServicesReachable) {
+    recommendedActions.push("Local fallback services are optional while shared storage is healthy; stop them to reduce local resource use.");
+  }
+  return {
+    kind: "agentflow_shared_state_plane_proof",
+    generatedAt: new Date().toISOString(),
+    status,
+    summary: status === "ready"
+      ? "Shared storage has enough evidence to act as the primary Agent Workflow state plane."
+      : status === "attention"
+        ? "Shared storage is usable for local-first development, but some proof or governance checks still need review."
+        : "Shared storage should not be treated as primary until blocking checks are resolved.",
+    sharedHost: input.runtimeMonitor.storageHost ?? input.runtimeMonitor.hulk.host,
+    localFallbackCanStayStopped: sharedReachable && pendingOfflineItems === 0,
+    checks,
+    recommendedActions
+  };
 }
 
 function formatOfflineFallbackReport(report: OfflineFallbackReport): string {
@@ -7716,6 +10030,675 @@ function formatOfflineFallbackQueue(queue: OfflineFallbackQueue): string {
   ].join("\n");
 }
 
+function runtimeMcpCleanupConfig(): RuntimeMonitorReport["mcpCleanup"]["autoCleanup"] {
+  return {
+    enabled: learningDaemonMcpCleanupEnabled(),
+    mode: learningDaemonMcpCleanupMode(),
+    staleMinutes: parseRuntimeMcpStaleMinutes()
+  };
+}
+
+function learningDaemonMcpCleanupEnabled(): boolean {
+  return envFlag("AGENTFLOW_DAEMON_CLEANUP_STALE_MCP");
+}
+
+function learningDaemonMcpCleanupMode(): RuntimeMonitorReport["mcpCleanup"]["autoCleanup"]["mode"] {
+  const normalized = normalizeLookup(process.env.AGENTFLOW_MCP_CLEANUP_MODE ?? "preview");
+  return normalized === "auto-low-risk" || normalized === "autolowrisk" ? "auto-low-risk" : "preview";
+}
+
+function parseRuntimeMcpStaleMinutes(value = process.env.AGENTFLOW_MCP_STALE_MINUTES): number {
+  return parsePositiveInteger(value ?? "", 60);
+}
+
+function staleRunReconcileConfig(): RuntimeMonitorReport["staleRuns"]["autoReconcile"] {
+  const value = process.env.AGENTFLOW_DAEMON_RECONCILE_STALE_RUNS?.trim().toLowerCase();
+  return {
+    enabled: value ? value !== "0" && value !== "false" && value !== "no" && value !== "off" : true,
+    limit: parseStaleRunReconcileLimit()
+  };
+}
+
+function parseStaleRunReconcileLimit(value = process.env.AGENTFLOW_STALE_RUN_RECONCILE_LIMIT): number {
+  return parsePositiveInteger(value ?? "", 50);
+}
+
+function agentWorkflowPluginRoot(): string {
+  return path.join(os.homedir(), ".codex", "plugins", "cache", "personal", "agent-workflow", "0.1.0+codex.20260729214514");
+}
+
+async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Promise<RuntimeMonitorReport> {
+  const hulkTarget = resolveHulkStorageTarget();
+  const hulkServices = hulkTarget.host
+    ? await checkServices(defaultServiceEndpoints({
+        AGENTFLOW_SHARED_STORAGE_HOST: hulkTarget.host,
+        AGENTFLOW_POSTGRES_PORT: process.env.AGENTFLOW_POSTGRES_PORT,
+        AGENTFLOW_REDIS_PORT: process.env.AGENTFLOW_REDIS_PORT,
+        AGENTFLOW_MINIO_PORT: process.env.AGENTFLOW_MINIO_PORT
+      } as NodeJS.ProcessEnv))
+    : [];
+  const localServices = await checkServices(defaultServiceEndpoints({
+    DATABASE_URL: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
+    REDIS_URL: "redis://127.0.0.1:16379",
+    OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000"
+  } as NodeJS.ProcessEnv));
+  const [docker, ports, processes, mcpPipeline, staleRuns] = await Promise.all([
+    loadDockerMonitorStatus(),
+    loadRuntimePortStatuses(),
+    loadRuntimeProcessGroups(),
+    loadMcpPipelineStatus({ checkMcp: Boolean(input.checkMcp) }),
+    listStaleTerminalWorkflowRuns(parseStaleRunReconcileLimit())
+  ]);
+  const mcpCandidates = await loadRuntimeMcpCleanupCandidates();
+  const mcpCleanupConfig = runtimeMcpCleanupConfig();
+  const staleRunConfig = staleRunReconcileConfig();
+  const recommendations = runtimeMonitorRecommendations({
+    hulkReachable: hulkServices.length > 0 && hulkServices.every((service) => service.reachable),
+    localServicesReachable: localServices.every((service) => service.reachable),
+    docker,
+    processes,
+    mcpPipeline,
+    staleRunCount: staleRuns.length
+  });
+  return {
+    kind: "agentflow_runtime_monitor_report",
+    generatedAt: new Date().toISOString(),
+    storageHost: hulkTarget.host,
+    hulk: {
+      host: hulkTarget.host,
+      source: hulkTarget.source,
+      reachable: hulkServices.length > 0 && hulkServices.every((service) => service.reachable),
+      services: hulkServices
+    },
+    localServices,
+    docker,
+    ports,
+    processes,
+    mcpPipeline,
+    mcpCleanup: {
+      candidateCount: mcpCandidates.length,
+      candidates: mcpCandidates,
+      autoCleanup: mcpCleanupConfig,
+      previewCommand: `npm run runtime-monitor -- --cleanup-mcp --stale-minutes ${mcpCleanupConfig.staleMinutes}`,
+      executeCommand: `npm run runtime-monitor -- --cleanup-mcp --confirm --stale-minutes ${mcpCleanupConfig.staleMinutes}`
+    },
+    staleRuns: {
+      candidateCount: staleRuns.length,
+      candidates: staleRuns.map((run) => ({
+        runId: run.runId,
+        workflowId: run.workflowId,
+        runStatus: run.runStatus,
+        task: run.task,
+        projectRootUri: run.projectRootUri,
+        totalTasks: run.totalTasks,
+        completedTasks: run.completedTasks,
+        cancelledTasks: run.cancelledTasks,
+        recommendedStatus: run.recommendedStatus,
+        startedAt: run.startedAt
+      })),
+      autoReconcile: staleRunConfig,
+      previewCommand: `npm run runtime-monitor -- --reconcile-stale-runs --stale-run-limit ${staleRunConfig.limit}`,
+      executeCommand: `npm run runtime-monitor -- --reconcile-stale-runs --confirm --stale-run-limit ${staleRunConfig.limit}`
+    },
+    recommendations
+  };
+}
+
+function resolveHulkStorageTarget(): { host: string | null; source: RuntimeMonitorReport["hulk"]["source"] } {
+  if (process.env.AGENTFLOW_SHARED_STORAGE_HOST?.trim()) {
+    return { host: process.env.AGENTFLOW_SHARED_STORAGE_HOST.trim(), source: "AGENTFLOW_SHARED_STORAGE_HOST" };
+  }
+  const configured = defaultServiceEndpoints();
+  const nonLocal = configured.find((service) => !isLoopbackBind(service.host));
+  return nonLocal ? { host: nonLocal.host, source: "configured-endpoints" } : { host: null, source: "not-configured" };
+}
+
+async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promise<RuntimeMonitorReport["mcpPipeline"]> {
+  const pluginRoot = agentWorkflowPluginRoot();
+  const manifestPath = path.join(pluginRoot, ".mcp.json");
+  const launcherPath = path.join(pluginRoot, "scripts", "run-agent-workflow-mcp.sh");
+  const stdioLogPath = path.join(rootDir, ".agent-workflow", "runtime", "mcp", "stdio.log");
+  const launcherLogPath = path.join(rootDir, ".agent-workflow", "runtime", "mcp", "launcher.log");
+  let [configText, launcherStat, repoResolved, serverBuilt, lastStdioEvents, lastLauncherEvents] = await Promise.all([
+    fs.readFile(path.join(os.homedir(), ".codex", "config.toml"), "utf8").catch(() => ""),
+    fs.stat(launcherPath).catch(() => null),
+    pathExists(path.join(rootDir, "package.json")),
+    pathExists(path.join(rootDir, "dist", "apps", "mcp", "src", "index.js")),
+    tailJsonl(stdioLogPath, 12),
+    tailJsonl(launcherLogPath, 12)
+  ]);
+  const pluginEnabled = /\[plugins\."agent-workflow@personal"\][\s\S]*?enabled\s*=\s*true/.test(configText);
+  const launcherExists = Boolean(launcherStat);
+  const launcherExecutable = Boolean(launcherStat && (launcherStat.mode & 0o111));
+  const smoke = input.checkMcp
+    ? await runMcpPipelineSmoke({ launcherPath, pluginRoot })
+    : {
+        status: "not-run" as const,
+        toolCount: null,
+        message: "Run npm run runtime-monitor -- --check-mcp to verify the Codex plugin launcher on demand.",
+        command: "npm run runtime-monitor -- --check-mcp",
+        checkedAt: null
+      };
+  if (input.checkMcp) {
+    [lastStdioEvents, lastLauncherEvents] = await Promise.all([
+      tailJsonl(stdioLogPath, 12),
+      tailJsonl(launcherLogPath, 12)
+    ]);
+  }
+  const lastSpawn = [...lastStdioEvents].reverse().find((event) => event.event === "start");
+  const lastExit = [...lastStdioEvents].reverse().find((event) => event.event === "exit");
+  const ready = pluginEnabled && launcherExists && repoResolved && serverBuilt && (!input.checkMcp || smoke.status === "passed");
+  const clientReload = buildMcpClientReloadGuidance({
+    smoke,
+    lastSpawnAt: typeof lastSpawn?.ts === "string" ? lastSpawn.ts : null,
+    lastExitAt: typeof lastExit?.ts === "string" ? lastExit.ts : null,
+    lastExitCode: typeof lastExit?.code === "number" ? lastExit.code : null,
+    recentExitCount: lastStdioEvents.filter((event) => event.event === "exit").length
+  });
+  const approvalDiagnostics = buildMcpApprovalDiagnostics(lastStdioEvents);
+  return {
+    status: ready ? "ok" : "attention",
+    pluginEnabled,
+    pluginRoot,
+    manifestPath,
+    launcherPath,
+    launcherExists,
+    launcherExecutable,
+    repoResolved,
+    resolvedRepo: repoResolved ? rootDir : null,
+    serverBuilt,
+    stdioLogPath,
+    launcherLogPath,
+    lastStdioEvents,
+    lastLauncherEvents,
+    lastSpawnAt: typeof lastSpawn?.ts === "string" ? lastSpawn.ts : null,
+    lastExitAt: typeof lastExit?.ts === "string" ? lastExit.ts : null,
+    lastExitCode: typeof lastExit?.code === "number" ? lastExit.code : null,
+    smoke,
+    clientReload,
+    approvalDiagnostics
+  };
+}
+
+function buildMcpApprovalDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["approvalDiagnostics"] {
+  const recentEvents = events.filter((event) => String(event.event ?? "").startsWith("approval-call-")).slice(-8);
+  const lastCall = [...recentEvents].reverse().find((event) => event.event === "approval-call-start");
+  const lastResult = [...recentEvents].reverse().find((event) => event.event === "approval-call-result");
+  const lastCallAt = typeof lastCall?.ts === "string" ? lastCall.ts : null;
+  const lastResultAt = typeof lastResult?.ts === "string" ? lastResult.ts : null;
+  const lastExitCode = typeof lastResult?.exitCode === "number" ? lastResult.exitCode : null;
+  const lastTimedOut = typeof lastResult?.timedOut === "boolean" ? lastResult.timedOut : null;
+  const summary = !recentEvents.length
+    ? "No MCP approval calls have been recorded in the recent stdio log window."
+    : lastResult
+      ? `Last MCP approval call finished with exit code ${lastExitCode ?? "unknown"}${lastTimedOut ? " after timing out" : ""}.`
+      : "An MCP approval call started, but no result event is visible in the recent stdio log window; the client pipe may have closed mid-call.";
+  return {
+    recentEvents,
+    lastCallAt,
+    lastResultAt,
+    lastExitCode,
+    lastTimedOut,
+    summary,
+    fallbackCommand: "npm run agentflow -- approvals --status pending --run <run-id>"
+  };
+}
+
+function buildMcpClientReloadGuidance(input: {
+  smoke: RuntimeMonitorReport["mcpPipeline"]["smoke"];
+  lastSpawnAt: string | null;
+  lastExitAt: string | null;
+  lastExitCode: number | null;
+  recentExitCount: number;
+}): RuntimeMonitorReport["mcpPipeline"]["clientReload"] {
+  const smokePassed = input.smoke.status === "passed";
+  const recentExitAfterSpawn = Boolean(input.lastExitAt && (!input.lastSpawnAt || input.lastExitAt >= input.lastSpawnAt));
+  const suspectedStalePipe = smokePassed && (recentExitAfterSpawn || input.recentExitCount > 1);
+  const summary = suspectedStalePipe
+    ? "Launcher smoke passed, but recent stdio exits suggest a Codex/IDE client pipe may be stale. Restart or reload the client/task if it still reports Transport closed."
+    : smokePassed
+      ? "Launcher smoke passed. If a specific Codex task still reports Transport closed, that task likely needs a client-side reload."
+      : input.smoke.status === "failed"
+        ? "Launcher smoke failed. Fix the launcher/server issue before restarting the client."
+        : "Run MCP smoke before deciding whether this is an Agent Workflow launcher issue or a stale Codex/IDE pipe.";
+  const steps = [
+    "Run MCP Smoke from Runtime Monitor or `npm run runtime-monitor -- --check-mcp`.",
+    "If smoke passes but Codex still reports `Transport closed`, restart the Codex task/app or reload the IDE MCP client so it creates a fresh stdio subprocess.",
+    "If multiple old MCP sessions are shown, preview Cleanup Stale MCP Sessions and terminate only stale Agent Workflow sessions from this checkout.",
+    "If smoke fails, inspect `.agent-workflow/runtime/mcp/launcher.log` and `.agent-workflow/runtime/mcp/stdio.log` before changing provider or storage settings."
+  ];
+  return { suspectedStalePipe, summary, steps };
+}
+
+async function runMcpPipelineSmoke(input: { launcherPath: string; pluginRoot: string }): Promise<RuntimeMonitorReport["mcpPipeline"]["smoke"]> {
+  const command = `bash ${input.launcherPath}`;
+  const checkedAt = new Date().toISOString();
+  try {
+    const [{ Client }, { StdioClientTransport }] = await Promise.all([
+      import("@modelcontextprotocol/sdk/client/index.js"),
+      import("@modelcontextprotocol/sdk/client/stdio.js")
+    ]);
+    const transport = new StdioClientTransport({
+      command: "bash",
+      args: [input.launcherPath],
+      cwd: input.pluginRoot,
+      env: { ...process.env, AGENT_WORKFLOW_HOME: rootDir }
+    });
+    const client = new Client({ name: "agentflow-runtime-monitor", version: "0.0.0" });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    await client.close().catch(() => {});
+    return {
+      status: "passed",
+      toolCount: tools.tools.length,
+      message: `MCP launcher connected and returned ${tools.tools.length} tool(s).`,
+      command,
+      checkedAt
+    };
+  } catch (error) {
+    return {
+      status: "failed",
+      toolCount: null,
+      message: error instanceof Error ? error.message : String(error),
+      command,
+      checkedAt
+    };
+  }
+}
+
+async function tailJsonl(filePath: string, maxLines: number): Promise<Array<Record<string, unknown>>> {
+  const raw = await fs.readFile(filePath, "utf8").catch(() => "");
+  if (!raw.trim()) return [];
+  return raw.trim().split(/\r?\n/).slice(-maxLines).map((line) => {
+    try {
+      return JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      return { event: "unparseable", detail: compactDashboardText(line, 240) };
+    }
+  });
+}
+
+async function loadDockerMonitorStatus(): Promise<RuntimeMonitorReport["docker"]> {
+  const result = await execFileText("docker", ["ps", "--format", "{{.Names}}\t{{.Image}}\t{{.Ports}}"], { allowFailure: true });
+  if (result.exitCode !== 0) {
+    return {
+      status: "unavailable",
+      message: compactDashboardText(result.stderr || result.stdout || "docker ps failed", 500),
+      containers: []
+    };
+  }
+  const containers = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [name = "", image = "", ports = ""] = line.split("\t");
+    return { name, image, ports };
+  });
+  return {
+    status: "running",
+    message: containers.length ? `${containers.length} running container(s).` : "Docker is available with no running containers.",
+    containers
+  };
+}
+
+async function loadRuntimePortStatuses(): Promise<RuntimeMonitorReport["ports"]> {
+  const targets = [
+    { label: "Postgres default", port: 5432 },
+    { label: "Agent Workflow Postgres", port: 15432 },
+    { label: "Redis default", port: 6379 },
+    { label: "Agent Workflow Redis", port: 16379 },
+    { label: "MinIO API default", port: 9000 },
+    { label: "MinIO console", port: 9001 },
+    { label: "Agent Workflow MinIO", port: 19000 },
+    { label: "Agent Workflow dashboard", port: Number(process.env.AGENTFLOW_DASHBOARD_PORT ?? 17888) },
+    { label: "Common app dev server", port: 3000 },
+    { label: "Ollama/OpenAI-compatible local", port: 11434 }
+  ];
+  return Promise.all(targets.map(async (target) => {
+    const result = await execFileText("lsof", ["-nP", `-iTCP:${target.port}`, "-sTCP:LISTEN"], { allowFailure: true });
+    const listener = parseLsofListener(result.stdout);
+    return {
+      ...target,
+      status: listener ? "listening" : "closed",
+      pid: listener?.pid ?? null,
+      command: listener?.command ?? ""
+    };
+  }));
+}
+
+function parseLsofListener(output: string): { command: string; pid: number } | null {
+  const line = output.split(/\r?\n/).slice(1).find((item) => item.trim());
+  if (!line) return null;
+  const parts = line.trim().split(/\s+/);
+  const pid = Number.parseInt(parts[1] ?? "", 10);
+  return Number.isFinite(pid) ? { command: parts[0] ?? "unknown", pid } : null;
+}
+
+async function loadRuntimeProcessGroups(): Promise<RuntimeMonitorReport["processes"]> {
+  const result = await execFileText("ps", ["-axo", "pid=,ppid=,args="], { allowFailure: true });
+  const rows = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const match = line.match(/^(\d+)\s+(\d+)\s+(.+)$/);
+    const pid = Number.parseInt(match?.[1] ?? "", 10);
+    const parentPid = Number.parseInt(match?.[2] ?? "", 10);
+    return match && Number.isFinite(pid) ? {
+      pid,
+      parentPid: Number.isFinite(parentPid) ? parentPid : null,
+      args: match[3] ?? ""
+    } : null;
+  }).filter((row): row is { pid: number; parentPid: number | null; args: string } => Boolean(row));
+  const matching = rows.filter((row) => /Agent Workflow|agentflow|apps\/mcp\/src\/index\.(ts|js)|apps\/cli\/src\/index\.ts|dev-agentflow\.mjs/i.test(row.args));
+  const matchingByPid = new Map(matching.map((row) => [row.pid, row]));
+  const groups: RuntimeMonitorReport["processes"] = [];
+  for (const role of ["supervisor", "dashboard", "worker", "learning-daemon", "mcp"] as const) {
+    const roleRows = matching.filter((row) => processMatchesRuntimeRole(row.args, role));
+    const logicalGroups = new Map<string, typeof roleRows>();
+    for (const row of roleRows) {
+      const key = runtimeProcessGroupKey(row, role, matchingByPid);
+      const group = logicalGroups.get(key) ?? [];
+      group.push(row);
+      logicalGroups.set(key, group);
+    }
+    const count = logicalGroups.size;
+    groups.push({
+      role,
+      status: role === "mcp" ? count > 4 ? "attention" : "ok" : count > 0 ? "ok" : "attention",
+      count,
+      pids: [...logicalGroups.values()].map((group) => group[0]?.pid).filter((pid): pid is number => typeof pid === "number").slice(0, 20),
+      detail: runtimeProcessDetail(role, count, roleRows.length)
+    });
+  }
+  return groups;
+}
+
+function runtimeProcessGroupKey(
+  row: { pid: number; parentPid: number | null; args: string },
+  role: RuntimeMonitorReport["processes"][number]["role"],
+  rowsByPid: Map<number, { pid: number; parentPid: number | null; args: string }>
+): string {
+  let current = row;
+  let root = row;
+  const seen = new Set<number>();
+  while (current.parentPid && !seen.has(current.parentPid)) {
+    seen.add(current.pid);
+    const parent = rowsByPid.get(current.parentPid);
+    if (!parent || !processMatchesRuntimeRole(parent.args, role)) {
+      break;
+    }
+    root = parent;
+    current = parent;
+  }
+  return `${role}:${root.pid}`;
+}
+
+async function loadRuntimeMcpCleanupCandidates(input: { staleMinutes?: number } = {}): Promise<RuntimeMonitorReport["mcpCleanup"]["candidates"]> {
+  const staleMinutes = input.staleMinutes ?? parseRuntimeMcpStaleMinutes();
+  const staleMs = staleMinutes * 60_000;
+  const result = await execFileText("ps", ["-axo", "pid=,ppid=,etime=,args="], { allowFailure: true });
+  const rows = result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const match = line.match(/^(\d+)\s+(\d+)\s+(\S+)\s+(.+)$/);
+    if (!match) return null;
+    const pid = Number.parseInt(match[1] ?? "", 10);
+    const parentPid = Number.parseInt(match[2] ?? "", 10);
+    const elapsedSeconds = parsePsElapsedSeconds(match[3] ?? "");
+    const command = match[4] ?? "";
+    if (!Number.isFinite(pid) || pid === process.pid) return null;
+    return {
+      pid,
+      parentPid: Number.isFinite(parentPid) ? parentPid : null,
+      elapsedSeconds: Number.isFinite(elapsedSeconds) ? elapsedSeconds : null,
+      command
+    };
+  }).filter((row): row is { pid: number; parentPid: number | null; elapsedSeconds: number | null; command: string } => Boolean(row));
+  const parentByPid = new Map(rows.map((row) => [row.pid, row]));
+  const mcpRows = rows.filter((row) => isAgentWorkflowMcpCommand(row.command));
+  const sessions = new Map<string, typeof mcpRows>();
+  for (const row of mcpRows) {
+    const sessionKey = runtimeMcpSessionKey(row, parentByPid);
+    const group = sessions.get(sessionKey) ?? [];
+    group.push(row);
+    sessions.set(sessionKey, group);
+  }
+  const sessionSummaries = [...sessions.entries()]
+    .map(([sessionKey, group]) => ({
+      sessionKey,
+      newestAgeMs: Math.min(...group.map((row) => row.elapsedSeconds === null ? Number.POSITIVE_INFINITY : row.elapsedSeconds * 1000)),
+      oldestAgeMs: Math.max(...group.map((row) => row.elapsedSeconds === null ? 0 : row.elapsedSeconds * 1000))
+    }))
+    .sort((left, right) => left.newestAgeMs - right.newestAgeMs);
+  const newestSessionKey = sessionSummaries[0]?.sessionKey ?? "";
+  const staleSessionKeys = new Set(sessionSummaries
+    .filter((session) => session.sessionKey !== newestSessionKey && session.oldestAgeMs >= staleMs)
+    .map((session) => session.sessionKey));
+  const candidates = mcpRows.map((row) => {
+    const sessionKey = runtimeMcpSessionKey(row, parentByPid);
+    const ageMs = row.elapsedSeconds === null ? null : row.elapsedSeconds * 1000;
+    const startedAt = ageMs === null ? null : new Date(Date.now() - ageMs).toISOString();
+    const autoCleanable = staleSessionKeys.has(sessionKey);
+    const risk: "low" | "medium" = autoCleanable ? "low" : "medium";
+    return {
+      pid: row.pid,
+      parentPid: row.parentPid,
+      command: row.command,
+      reason: autoCleanable
+        ? `Old duplicate Agent Workflow MCP session from this checkout; older than ${staleMinutes} minute threshold and not the newest session.`
+        : "Agent Workflow MCP process from this checkout; manual confirmation recommended because it is newest, young, or cannot be proven stale.",
+      ageMs,
+      startedAt,
+      sessionKey,
+      risk,
+      autoCleanable
+    };
+  });
+  return candidates.sort((left, right) => Number(right.autoCleanable) - Number(left.autoCleanable) || (right.ageMs ?? 0) - (left.ageMs ?? 0) || left.pid - right.pid);
+}
+
+function isAgentWorkflowMcpCommand(command: string): boolean {
+  const encodedRootDir = rootDir.replaceAll(" ", "%20");
+  return (command.includes(rootDir) || command.includes(encodedRootDir)) && /apps\/mcp\/src\/index\.(ts|js)/.test(command);
+}
+
+function parsePsElapsedSeconds(value: string): number | null {
+  const daySplit = value.split("-");
+  const days = daySplit.length === 2 ? Number.parseInt(daySplit[0] ?? "", 10) : 0;
+  const timePart = daySplit.at(-1) ?? "";
+  const parts = timePart.split(":").map((part) => Number.parseInt(part, 10));
+  if (parts.some((part) => !Number.isFinite(part))) return null;
+  const [hours, minutes, seconds] = parts.length === 3
+    ? parts
+    : parts.length === 2
+      ? [0, parts[0], parts[1]]
+      : [0, 0, parts[0]];
+  return (Number.isFinite(days) ? days : 0) * 86400 + (hours ?? 0) * 3600 + (minutes ?? 0) * 60 + (seconds ?? 0);
+}
+
+function runtimeMcpSessionKey(
+  row: { pid: number; parentPid: number | null; command: string },
+  parentByPid: Map<number, { pid: number; parentPid: number | null; command: string }>
+): string {
+  const parent = row.parentPid ? parentByPid.get(row.parentPid) : undefined;
+  if (parent?.command && /npm\b.*mcp|agentflow.*mcp|apps\/mcp\/src\/index\.ts/.test(parent.command)) {
+    return `parent:${parent.pid}`;
+  }
+  return `pid:${row.pid}`;
+}
+
+async function cleanupRuntimeMcpProcesses(input: { execute: boolean; pids?: number[]; autoLowRiskOnly?: boolean; staleMinutes?: number }): Promise<RuntimeMcpCleanupResult> {
+  const candidates = await loadRuntimeMcpCleanupCandidates({ staleMinutes: input.staleMinutes });
+  const allowedPids = new Set(candidates.map((candidate) => candidate.pid));
+  const selectedCandidates = input.pids?.length
+    ? candidates.filter((candidate) => input.pids?.includes(candidate.pid) && allowedPids.has(candidate.pid))
+    : candidates;
+  const executableCandidates = input.autoLowRiskOnly
+    ? selectedCandidates.filter((candidate) => candidate.autoCleanable && candidate.risk === "low")
+    : selectedCandidates;
+  const requestedPids = executableCandidates.map((candidate) => candidate.pid);
+  const warnings: string[] = [];
+  const terminated: RuntimeMcpCleanupResult["terminated"] = [];
+  if (!input.execute) {
+    return {
+      kind: "agentflow_mcp_cleanup_result",
+      generatedAt: new Date().toISOString(),
+      mode: "preview",
+      candidates,
+      terminated,
+      warnings
+    };
+  }
+  for (const pid of requestedPids) {
+    if (pid === process.pid || !allowedPids.has(pid)) {
+      terminated.push({ pid, status: "skipped", message: "PID is not an eligible Agent Workflow MCP cleanup candidate." });
+      continue;
+    }
+    try {
+      process.kill(pid, "SIGTERM");
+      terminated.push({ pid, status: "sent", message: "SIGTERM sent." });
+    } catch (error) {
+      warnings.push(`Failed to terminate ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+      terminated.push({ pid, status: "failed", message: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return {
+    kind: "agentflow_mcp_cleanup_result",
+    generatedAt: new Date().toISOString(),
+    mode: "execute",
+    candidates,
+    terminated,
+    warnings
+  };
+}
+
+function formatRuntimeMcpCleanupResult(result: RuntimeMcpCleanupResult): string {
+  const candidateRows = result.candidates.map((candidate) => `- ${candidate.pid} parent=${candidate.parentPid ?? "n/a"} risk=${candidate.risk} autoCleanable=${candidate.autoCleanable ? "yes" : "no"} age=${candidate.ageMs === null ? "n/a" : formatDuration(candidate.ageMs)}\n  ${candidate.reason}\n  ${candidate.command}`);
+  const terminatedRows = result.terminated.map((item) => `- ${item.pid}: ${item.status} (${item.message})`);
+  return [
+    `MCP cleanup ${result.mode} (${result.generatedAt})`,
+    "",
+    "Candidates:",
+    ...(candidateRows.length ? candidateRows : ["- none"]),
+    "",
+    "Terminated:",
+    ...(terminatedRows.length ? terminatedRows : ["- none; rerun with --confirm to terminate candidates."]),
+    "",
+    "Warnings:",
+    ...(result.warnings.length ? result.warnings.map((warning) => `- ${warning}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatRuntimeStaleRunReconciliationResult(result: RuntimeStaleRunReconciliationResult): string {
+  const candidateRows = result.candidates.map((candidate) => `- ${candidate.runId}: ${candidate.runStatus} -> ${candidate.recommendedStatus} (${candidate.workflowId}) ${candidate.completedTasks}/${candidate.totalTasks} completed, ${candidate.cancelledTasks} cancelled\n  ${candidate.task}\n  ${candidate.projectRootUri}`);
+  const reconciledRows = result.reconciled.map((item) => `- ${item.runId}: ${item.updated ? "updated" : "skipped"} as ${item.status}`);
+  return [
+    `Stale run reconciliation ${result.mode} (${result.generatedAt})`,
+    "",
+    "Candidates:",
+    ...(candidateRows.length ? candidateRows : ["- none"]),
+    "",
+    "Reconciled:",
+    ...(reconciledRows.length ? reconciledRows : ["- none; rerun with --confirm to update eligible runs."])
+  ].join("\n");
+}
+
+function formatMcpPipelineStatus(pipeline: RuntimeMonitorReport["mcpPipeline"]): string {
+  const launcherEvents = pipeline.lastLauncherEvents.slice(-5).map((event) => `- ${String(event.ts ?? "")} ${String(event.event ?? "")} ${compactDashboardText(JSON.stringify(event), 300)}`);
+  const stdioEvents = pipeline.lastStdioEvents.slice(-5).map((event) => `- ${String(event.ts ?? "")} ${String(event.event ?? "")} ${compactDashboardText(JSON.stringify(event), 300)}`);
+  return [
+    `MCP pipeline: ${pipeline.status}`,
+    `Plugin enabled: ${pipeline.pluginEnabled ? "yes" : "no"}`,
+    `Launcher: ${pipeline.launcherExists ? "found" : "missing"}${pipeline.launcherExecutable ? ", executable" : ""}`,
+    `Repo: ${pipeline.resolvedRepo ?? "not resolved"}`,
+    `Built server: ${pipeline.serverBuilt ? "yes" : "no"}`,
+    `Last spawn: ${pipeline.lastSpawnAt ?? "none"}`,
+    `Last exit: ${pipeline.lastExitAt ?? "none"}${pipeline.lastExitCode === null ? "" : ` code=${pipeline.lastExitCode}`}`,
+    `Smoke: ${pipeline.smoke.status} - ${pipeline.smoke.message}`,
+    `Command: ${pipeline.smoke.command}`,
+    `Client reload: ${pipeline.clientReload.summary}`,
+    ...pipeline.clientReload.steps.map((step) => `- ${step}`),
+    `Approval diagnostics: ${pipeline.approvalDiagnostics.summary}`,
+    `Approval fallback: ${pipeline.approvalDiagnostics.fallbackCommand}`,
+    "",
+    "Recent launcher events:",
+    ...(launcherEvents.length ? launcherEvents : ["- none"]),
+    "",
+    "Recent stdio events:",
+    ...(stdioEvents.length ? stdioEvents : ["- none"])
+  ].join("\n");
+}
+
+function processMatchesRuntimeRole(args: string, role: RuntimeMonitorReport["processes"][number]["role"]): boolean {
+  if (role === "supervisor") return /scripts\/dev-agentflow\.mjs/.test(args);
+  if (role === "dashboard") return /apps\/cli\/src\/index\.ts dashboard\b/.test(args) || /npm run agentflow dashboard\b/.test(args);
+  if (role === "worker") return /apps\/cli\/src\/index\.ts worker\b/.test(args) || /npm run agentflow worker\b/.test(args);
+  if (role === "learning-daemon") return /apps\/cli\/src\/index\.ts learning-daemon\b/.test(args) || /npm run agentflow learning-daemon\b/.test(args);
+  if (role === "mcp") return /apps\/mcp\/src\/index\.(ts|js)/.test(args);
+  return false;
+}
+
+function runtimeProcessDetail(role: RuntimeMonitorReport["processes"][number]["role"], count: number, physicalCount = count): string {
+  if (role === "mcp" && count > 4) return "Multiple MCP server processes are active. This can be normal across Codex sessions, but stale duplicates are worth cleaning up.";
+  if (role === "mcp" && count === 0) return "No MCP process is currently active; Codex starts the stdio MCP server on demand.";
+  if (count === 0) return `${role} process was not found locally.`;
+  const physical = physicalCount > count ? ` (${physicalCount} wrapper/child processes)` : "";
+  return `${count} logical ${role} process${count === 1 ? "" : "es"} found locally${physical}.`;
+}
+
+function runtimeMonitorRecommendations(input: {
+  hulkReachable: boolean;
+  localServicesReachable: boolean;
+  docker: RuntimeMonitorReport["docker"];
+  processes: RuntimeMonitorReport["processes"];
+  mcpPipeline: RuntimeMonitorReport["mcpPipeline"];
+  staleRunCount: number;
+}): string[] {
+  const notes: string[] = [];
+  if (input.hulkReachable) notes.push("Hulk/shared storage is reachable and can remain the primary state plane.");
+  else notes.push("Hulk/shared storage is not fully reachable; use offline fallback before queueing new shared-state work.");
+  if (!input.localServicesReachable) notes.push("Local Postgres/Redis/MinIO fallback services are stopped or incomplete, which is expected while Hulk is healthy.");
+  if (input.docker.status === "unavailable") notes.push("Docker/Colima is unavailable from this shell, so local fallback containers cannot be inspected here.");
+  const mcp = input.processes.find((processGroup) => processGroup.role === "mcp");
+  if (mcp && mcp.count > 4) notes.push("Consider restarting Codex or cleaning stale MCP sessions if MCP calls behave inconsistently.");
+  if (input.mcpPipeline.status !== "ok") notes.push("MCP pipeline needs attention; run npm run runtime-monitor -- --check-mcp and restart Codex if the launcher passes but Codex still reports Transport closed.");
+  else notes.push("MCP pipeline is configured for on-demand stdio launch; zero active MCP processes can be normal between Codex calls.");
+  if (input.staleRunCount > 0) notes.push(`${input.staleRunCount} stale terminal workflow run(s) can be reconciled because all child tasks are already terminal.`);
+  return notes;
+}
+
+function formatRuntimeMonitorReport(report: RuntimeMonitorReport): string {
+  return [
+    `Runtime monitor (${report.generatedAt})`,
+    `Hulk/shared host: ${report.hulk.host ?? "not configured"} (${report.hulk.source})`,
+    `Hulk/shared storage: ${report.hulk.reachable ? "reachable" : "attention"}`,
+    `Docker: ${report.docker.status} - ${report.docker.message}`,
+    "",
+    "Hulk/shared services:",
+    ...(report.hulk.services.length ? report.hulk.services.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`) : ["- No shared storage host configured."]),
+    "",
+    "Local service listeners:",
+    ...report.ports.map((port) => `- ${port.label} :${port.port}: ${port.status}${port.pid ? ` pid=${port.pid} ${port.command}` : ""}`),
+    "",
+    "Agent Workflow processes:",
+    ...report.processes.map((processGroup) => `- ${processGroup.role}: ${processGroup.count} (${processGroup.detail})`),
+    "",
+    "MCP pipeline:",
+    `- status: ${report.mcpPipeline.status}`,
+    `- plugin enabled: ${report.mcpPipeline.pluginEnabled ? "yes" : "no"}`,
+    `- launcher: ${report.mcpPipeline.launcherExists ? "found" : "missing"}${report.mcpPipeline.launcherExecutable ? ", executable" : ""}`,
+    `- repo: ${report.mcpPipeline.resolvedRepo ?? "not resolved"}`,
+    `- built server: ${report.mcpPipeline.serverBuilt ? "yes" : "no"}`,
+    `- last spawn: ${report.mcpPipeline.lastSpawnAt ?? "none"}`,
+    `- last exit: ${report.mcpPipeline.lastExitAt ?? "none"}${report.mcpPipeline.lastExitCode === null ? "" : ` code=${report.mcpPipeline.lastExitCode}`}`,
+    `- smoke: ${report.mcpPipeline.smoke.status} (${report.mcpPipeline.smoke.message})`,
+    `- smoke command: ${report.mcpPipeline.smoke.command}`,
+    `- client reload: ${report.mcpPipeline.clientReload.summary}`,
+    `- approval diagnostics: ${report.mcpPipeline.approvalDiagnostics.summary}`,
+    "",
+    "Stale terminal runs:",
+    `- candidates: ${report.staleRuns.candidateCount}`,
+    `- auto reconcile: ${report.staleRuns.autoReconcile.enabled ? "on" : "off"} (limit ${report.staleRuns.autoReconcile.limit})`,
+    `- preview: ${report.staleRuns.previewCommand}`,
+    `- execute: ${report.staleRuns.executeCommand}`,
+    "",
+    "Recommendations:",
+    ...report.recommendations.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
 async function loadServerReadinessReport(input: {
   projectRootUri?: string;
   limit: number;
@@ -7742,6 +10725,17 @@ async function loadServerReadinessReport(input: {
     tokenConfigured,
     projectRegistered,
     roleEnforcementReady
+  });
+  const mutationControls = buildServerMutationControlReport();
+  const authHardening = buildServerAuthHardeningReport({
+    enabled,
+    networkExposed,
+    authMode,
+    tokenConfigured,
+    allowedOrigins,
+    projectRegistered,
+    roleEnforcementReady,
+    mutationControls
   });
   const checks: ServerReadinessReport["checks"] = [
     {
@@ -7796,9 +10790,14 @@ async function loadServerReadinessReport(input: {
         : "Use team.enforcement: enforce before shared server mutation endpoints are enabled."
     },
     {
+      label: "Auth hardening",
+      status: authHardening.status === "blocked" ? "fail" : authHardening.status === "attention" ? "warn" : "pass",
+      detail: authHardening.summary
+    },
+    {
       label: "Mutation endpoints",
-      status: endpointClasses.some((endpoint) => endpoint.exposure === "mutation" && endpoint.implemented) ? "fail" : "pass",
-      detail: "Governed HTTP mutation endpoints are not implemented in this version; local dashboard POST actions remain intended for loopback developer use."
+      status: mutationControls.summary.blockedRemoteMutations > 0 && enabled ? "fail" : "pass",
+      detail: `${mutationControls.summary.remoteMutationEndpoints} governed remote mutation endpoint(s) are implemented; ${mutationControls.summary.blockedRemoteMutations} are blocked by current server-mode gates. Local dashboard POST actions remain loopback/operator tools.`
     }
   ];
   const failures = checks.filter((check) => check.status === "fail").length;
@@ -7828,6 +10827,7 @@ async function loadServerReadinessReport(input: {
     services,
     projects,
     endpointClasses,
+    authHardening,
     checks,
     recommendedCommands: serverReadinessCommands(projectRootUri),
     notes: serverReadinessNotes({ status, enabled, networkExposed, projectRegistered, roleEnforcementReady })
@@ -7860,14 +10860,14 @@ function serverEndpointClasses(input: {
       name: "Read-only status and reports",
       exposure: "read-only",
       requiredControls: ["registered projects", "safe redaction", "no secret values"],
-      implemented: false,
+      implemented: true,
       ready: input.enabled && input.projectRegistered
     },
     {
       name: "Workflow queueing and worker controls",
       exposure: "mutation",
-      requiredControls: ["auth", "project id", "operator role", "policy recheck", "idempotency key", "receipt"],
-      implemented: false,
+      requiredControls: ["auth", "project id", "operator role", "policy recheck", "idempotency key", "receipt", "redacted request audit log"],
+      implemented: true,
       ready: input.enabled && authReady && input.projectRegistered && input.roleEnforcementReady
     },
     {
@@ -7887,6 +10887,364 @@ function serverEndpointClasses(input: {
   ];
 }
 
+function buildServerMutationControlReport(): ServerMutationControlReport {
+  const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const bind = process.env.AGENTFLOW_SERVER_BIND?.trim() || "127.0.0.1";
+  const networkExposed = !isLoopbackBind(bind);
+  const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "none";
+  const tokenConfigured = Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
+  const queueExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_QUEUE");
+  const requestLimits = serverRequestLimits();
+  const authReady = authMode === "oidc-proxy" || authMode === "token" && tokenConfigured;
+  const endpointInputs: Array<Omit<ServerMutationControlReport["endpoints"][number], "missingControls" | "status">> = [
+    {
+      name: "Server readiness reports",
+      method: "GET",
+      path: "/api/server-readiness",
+      exposure: "read-only",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "none",
+      roleCapability: null,
+      receipt: null,
+      requiredControls: ["safe redaction", "no mutation"],
+      presentControls: ["safe redaction", "no mutation"],
+      notes: ["Read-only diagnostics can be proxied for shared dashboards after normal auth/rate-limit policy is applied."]
+    },
+    {
+      name: "Server project registry",
+      method: "GET",
+      path: "/api/server-projects",
+      exposure: "read-only",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "includeRoots=false by default",
+      roleCapability: null,
+      receipt: null,
+      requiredControls: ["project ids", "root redaction", "no mutation"],
+      presentControls: ["project ids", "root redaction", "no mutation"],
+      notes: ["Local roots are hidden unless an operator explicitly requests them."]
+    },
+    {
+      name: "Server request preview",
+      method: "GET",
+      path: "/api/server-request-preview",
+      exposure: "read-only",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "preview-only",
+      roleCapability: "can_request_approvals",
+      receipt: null,
+      requiredControls: ["project id", "workflow validation", "role check", "idempotency warning", "no mutation"],
+      presentControls: ["project id", "workflow validation", "role check", "idempotency warning", "no mutation"],
+      notes: ["Previews warn when the client did not provide an idempotency key."]
+    },
+    {
+      name: "Server route preview",
+      method: "GET",
+      path: "/api/server-route-preview",
+      exposure: "read-only",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "preview-only",
+      roleCapability: "can_request_approvals",
+      receipt: null,
+      requiredControls: ["request envelope", "registered project id", "role check", "workflow validation", "no mutation"],
+      presentControls: ["request envelope", "registered project id", "role check", "workflow validation", "no mutation"],
+      notes: ["The internal route contains local paths for execution planning; clients should keep using project ids."]
+    },
+    {
+      name: "Server approval/action preview",
+      method: "GET/POST",
+      path: "/api/server-approval-preview",
+      exposure: "read-only",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "preview-only",
+      roleCapability: "can_approve_actions / can_execute_approved_actions",
+      receipt: null,
+      requiredControls: ["auth posture check", "registered project id", "approval id", "role check", "separation-of-duties check", "policy recheck", "client idempotency warning", "redacted request audit log", "no mutation"],
+      presentControls: [
+        "auth posture check",
+        "registered project id",
+        "approval id",
+        "role check",
+        "separation-of-duties check",
+        "policy recheck",
+        "client idempotency warning",
+        "redacted request audit log",
+        "no mutation"
+      ],
+      notes: ["Previews approve/reject/execute/approve-and-execute/dismiss/always-approve envelopes without changing approval state."]
+    },
+    {
+      name: "Workflow queueing",
+      method: "POST",
+      path: "/api/server-queue",
+      exposure: "remote-mutation",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "AGENTFLOW_SERVER_MODE=1 and AGENTFLOW_SERVER_ENABLE_QUEUE=1 and execute=true",
+      roleCapability: "can_request_approvals",
+      receipt: "server_queue_request",
+      requiredControls: ["auth", "registered project id", "role check", "workflow validation", "client idempotency key", "request size limit", "rate limit", "explicit execution gate", "receipt", "duplicate idempotency reuse", "redacted request audit log"],
+      presentControls: [
+        ...(authReady ? ["auth"] : []),
+        "registered project id",
+        "role check",
+        "workflow validation",
+        "client idempotency key",
+        "request size limit",
+        "rate limit",
+        "explicit execution gate",
+        "receipt",
+        "duplicate idempotency reuse",
+        "redacted request audit log"
+      ],
+      notes: [
+        "Dry-run is the default response.",
+        "Real queueing is unavailable unless server mode, auth, queue gate, execute=true, and a client idempotency key are all present."
+      ]
+    },
+    {
+      name: "Dashboard queue actions",
+      method: "POST",
+      path: "/api/queue-action",
+      exposure: "local-mutation",
+      implemented: true,
+      remoteEligible: false,
+      dryRunDefault: false,
+      executionGate: "loopback dashboard operator action",
+      roleCapability: null,
+      receipt: "worker/runtime action receipts",
+      requiredControls: ["local operator context", "policy recheck", "receipt"],
+      presentControls: ["local operator context", "policy recheck", "receipt"],
+      notes: ["Do not expose this as a remote server-mode endpoint; add a dedicated authenticated endpoint instead."]
+    },
+    {
+      name: "Approval decisions and execution",
+      method: "POST",
+      path: "/api/approval-action",
+      exposure: "local-mutation",
+      implemented: true,
+      remoteEligible: false,
+      dryRunDefault: false,
+      executionGate: "approval decision form or MCP approval tool",
+      roleCapability: "approver/operator role checks when enabled",
+      receipt: "approval decision and execution receipts",
+      requiredControls: ["local operator context", "role enforcement when enabled", "policy recheck", "receipt"],
+      presentControls: ["local operator context", "role enforcement when enabled", "policy recheck", "receipt"],
+      notes: ["Remote approval APIs should get their own auth, separation-of-duties, idempotency, and receipt envelope before exposure."]
+    },
+    {
+      name: "Object mirror approval",
+      method: "POST",
+      path: "/api/object-mirror-approval",
+      exposure: "local-mutation",
+      implemented: true,
+      remoteEligible: false,
+      dryRunDefault: true,
+      executionGate: "operator queues approval, approved object_mirror executes through approval inbox",
+      roleCapability: "operator/approver split through approval flow",
+      receipt: "object_mirror",
+      requiredControls: ["fresh dry-run proof", "approval", "role recording", "idempotency", "receipt", "no stored credentials"],
+      presentControls: ["fresh dry-run proof", "approval", "role recording", "idempotency", "receipt", "no stored credentials"],
+      notes: ["Credentials are read from environment at execution time and are not stored in approval payloads."]
+    },
+    {
+      name: "Offline sync reconciler",
+      method: "POST",
+      path: "/api/offline-sync-action",
+      exposure: "local-mutation",
+      implemented: true,
+      remoteEligible: false,
+      dryRunDefault: true,
+      executionGate: "dashboard action or daemon dry-run scheduler",
+      roleCapability: null,
+      receipt: "offline sync queue and merge evidence",
+      requiredControls: ["local operator context", "dry-run-first", "insert-only merge", "receipt"],
+      presentControls: ["local operator context", "dry-run-first", "insert-only merge", "receipt"],
+      notes: ["Remote sync triggers should be added only after server auth, role, and idempotency envelopes are reused."]
+    }
+  ];
+  const endpoints = endpointInputs.map((endpoint) => {
+    const missingControls = endpoint.requiredControls.filter((control) => !endpoint.presentControls.includes(control));
+    const remoteBlocked = endpoint.exposure === "remote-mutation" && (missingControls.length > 0 || !serverModeEnabled || !authReady || !queueExecutionEnabled);
+    const status: ServerMutationControlReport["endpoints"][number]["status"] = endpoint.exposure === "remote-mutation"
+      ? (remoteBlocked ? "blocked" : "ready")
+      : endpoint.exposure === "local-mutation"
+        ? "attention"
+        : "ready";
+    return {
+      ...endpoint,
+      missingControls,
+      status
+    };
+  });
+  const remoteMutations = endpoints.filter((endpoint) => endpoint.exposure === "remote-mutation");
+  const blockedRemoteMutations = remoteMutations.filter((endpoint) => endpoint.status === "blocked").length;
+  const status: ServerMutationControlReport["status"] = blockedRemoteMutations > 0
+    ? (serverModeEnabled || networkExposed ? "blocked" : "attention")
+    : "ready";
+  const recommendedActions = [
+    !authReady ? "Configure AGENTFLOW_SERVER_AUTH=token with AGENTFLOW_SERVER_TOKEN, or AGENTFLOW_SERVER_AUTH=oidc-proxy behind a trusted reverse proxy, before remote mutation use." : null,
+    !queueExecutionEnabled ? "Keep AGENTFLOW_SERVER_ENABLE_QUEUE off until project registration, auth, roles, and idempotency checks are intentionally reviewed." : null,
+    "When adding any new remote mutation endpoint, reuse the server request envelope, require client idempotency, record an action receipt, and document the endpoint in this matrix.",
+    "Keep local dashboard POST routes loopback/operator-only unless they are replaced by dedicated governed server endpoints."
+  ].filter((action): action is string => Boolean(action));
+  return {
+    kind: "agentflow_server_mutation_control_report",
+    generatedAt: new Date().toISOString(),
+    status,
+    mode: {
+      serverModeEnabled,
+      bind,
+      networkExposed,
+      authMode,
+      tokenConfigured,
+      queueExecutionEnabled,
+      requestBodyMaxBytes: requestLimits.maxBodyBytes,
+      rateLimitPerMinute: requestLimits.rateLimitPerMinute
+    },
+    summary: {
+      endpoints: endpoints.length,
+      remoteMutationEndpoints: remoteMutations.length,
+      readyRemoteMutations: remoteMutations.filter((endpoint) => endpoint.status === "ready").length,
+      blockedRemoteMutations,
+      localOnlyMutations: endpoints.filter((endpoint) => endpoint.exposure === "local-mutation").length
+    },
+    endpoints,
+    recommendedActions
+  };
+}
+
+function buildServerAuthHardeningReport(input: {
+  enabled: boolean;
+  networkExposed: boolean;
+  authMode: string;
+  tokenConfigured: boolean;
+  allowedOrigins: string[];
+  projectRegistered: boolean;
+  roleEnforcementReady: boolean;
+  mutationControls: ServerMutationControlReport;
+}): ServerAuthHardeningReport {
+  const authReady = input.authMode === "oidc-proxy" || input.authMode === "token" && input.tokenConfigured;
+  const checks: ServerAuthHardeningReport["checks"] = [
+    {
+      label: "Server exposure is intentional",
+      status: input.networkExposed && !input.enabled ? "fail" : "pass",
+      detail: input.networkExposed
+        ? (input.enabled ? "Network binding is paired with explicit server-mode opt-in." : "Network binding is visible but AGENTFLOW_SERVER_MODE is not enabled.")
+        : "Loopback binding keeps this a local developer surface."
+    },
+    {
+      label: "Remote mutation auth is configured",
+      status: input.enabled ? (authReady ? "pass" : "fail") : "warn",
+      detail: input.enabled
+        ? (authReady ? `Server auth is ready through ${input.authMode}.` : "Set AGENTFLOW_SERVER_AUTH=token with AGENTFLOW_SERVER_TOKEN, or run behind an OIDC proxy.")
+        : "Local-only mode can stay unauthenticated, but auth is required before shared remote mutation use."
+    },
+    {
+      label: "Browser origins are bounded",
+      status: input.enabled ? (input.allowedOrigins.length > 0 ? "pass" : "fail") : "warn",
+      detail: input.allowedOrigins.length
+        ? input.allowedOrigins.join(", ")
+        : "No browser origins are configured for shared server-mode use."
+    },
+    {
+      label: "Projects resolve by registered ids",
+      status: input.projectRegistered ? "pass" : "fail",
+      detail: input.projectRegistered
+        ? "At least one registered project id is available for path-redacted requests."
+        : "Register projects before accepting shared client requests."
+    },
+    {
+      label: "Role enforcement protects mutations",
+      status: input.roleEnforcementReady ? "pass" : "warn",
+      detail: input.roleEnforcementReady
+        ? "Inspected projects enforce role checks for shared operation."
+        : "Set project team.enforcement to enforce before enabling remote mutation endpoints."
+    },
+    {
+      label: "Remote mutation gates are closed unless reviewed",
+      status: input.mutationControls.summary.blockedRemoteMutations > 0 && input.enabled ? "fail" : "pass",
+      detail: `${input.mutationControls.summary.readyRemoteMutations} remote mutation endpoint(s) ready; ${input.mutationControls.summary.blockedRemoteMutations} blocked by current gates.`
+    },
+    {
+      label: "Request size limit is bounded",
+      status: input.mutationControls.mode.requestBodyMaxBytes > 0 && input.mutationControls.mode.requestBodyMaxBytes <= 1_000_000 ? "pass" : "warn",
+      detail: `Server JSON mutation body limit is ${input.mutationControls.mode.requestBodyMaxBytes} bytes.`
+    },
+    {
+      label: "Rate limit is configured",
+      status: input.mutationControls.mode.rateLimitPerMinute > 0 ? "pass" : "warn",
+      detail: input.mutationControls.mode.rateLimitPerMinute > 0
+        ? `Server queue rate limit is ${input.mutationControls.mode.rateLimitPerMinute} request(s) per minute per actor/IP.`
+        : "Server queue rate limiting is disabled."
+    }
+  ];
+  const failingControls = checks.filter((check) => check.status === "fail").length;
+  const warningControls = checks.filter((check) => check.status === "warn").length;
+  const readyControls = checks.filter((check) => check.status === "pass").length;
+  const status: ServerReadinessStatus = failingControls > 0
+    ? "blocked"
+    : warningControls > 0
+      ? (input.enabled ? "attention" : "local-only")
+      : "ready";
+  const summary = status === "ready"
+    ? "Authenticated server-mode controls are ready for the currently implemented surface."
+    : status === "local-only"
+      ? "Local-only posture is safe; configure auth and origins before shared server use."
+      : status === "attention"
+        ? "Server mode is enabled with warnings that should be reviewed before expanding remote use."
+        : "Server-mode hardening has blocking gaps before remote mutation use.";
+  const recommendedActions = [
+    input.networkExposed && !input.enabled ? "Either return AGENTFLOW_SERVER_BIND to loopback or explicitly enable reviewed server mode." : null,
+    !authReady ? "Configure bearer-token auth or OIDC-proxy auth before exposing remote mutation endpoints." : null,
+    input.enabled && input.allowedOrigins.length === 0 ? "Set AGENTFLOW_SERVER_ALLOWED_ORIGINS for any browser-facing shared dashboard or API use." : null,
+    !input.projectRegistered ? "Register and index projects so server clients can use project ids instead of filesystem paths." : null,
+    !input.roleEnforcementReady ? "Switch shared projects from role preview to role enforcement before enabling queue execution." : null,
+    input.mutationControls.summary.blockedRemoteMutations > 0 ? "Review the mutation-control matrix before enabling AGENTFLOW_SERVER_ENABLE_QUEUE." : null,
+    input.mutationControls.mode.rateLimitPerMinute <= 0 ? "Set AGENTFLOW_SERVER_RATE_LIMIT_PER_MINUTE before shared queue use." : null
+  ].filter((action): action is string => Boolean(action));
+  return {
+    status,
+    summary,
+    readyControls,
+    warningControls,
+    failingControls,
+    checks,
+    recommendedActions
+  };
+}
+
+function formatServerMutationControlReport(report: ServerMutationControlReport): string {
+  return [
+    `Server mutation controls (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Mode: server=${report.mode.serverModeEnabled ? "enabled" : "disabled"}, bind=${report.mode.bind}${report.mode.networkExposed ? " network-exposed" : " loopback"}, auth=${report.mode.authMode}, queueGate=${report.mode.queueExecutionEnabled ? "on" : "off"}, bodyLimit=${report.mode.requestBodyMaxBytes} bytes, rateLimit=${report.mode.rateLimitPerMinute <= 0 ? "off" : `${report.mode.rateLimitPerMinute}/min`}`,
+    "",
+    "Summary:",
+    `- endpoints: ${report.summary.endpoints}`,
+    `- remote mutation endpoints: ${report.summary.remoteMutationEndpoints}`,
+    `- ready remote mutations: ${report.summary.readyRemoteMutations}`,
+    `- blocked remote mutations: ${report.summary.blockedRemoteMutations}`,
+    `- local-only mutations: ${report.summary.localOnlyMutations}`,
+    "",
+    "Endpoints:",
+    ...report.endpoints.map((endpoint) => `- ${endpoint.status.toUpperCase()} ${endpoint.method} ${endpoint.path}: ${endpoint.name} (${endpoint.exposure}); missing=${endpoint.missingControls.join(", ") || "none"}; gate=${endpoint.executionGate}`),
+    "",
+    "Recommended actions:",
+    ...report.recommendedActions.map((action) => `- ${action}`)
+  ].join("\n");
+}
+
 function formatServerReadinessReport(report: ServerReadinessReport): string {
   return [
     `Server mode readiness (${report.generatedAt})`,
@@ -7902,6 +11260,11 @@ function formatServerReadinessReport(report: ServerReadinessReport): string {
     "",
     "Checks:",
     ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Auth hardening:",
+    `- Status: ${report.authHardening.status}`,
+    `- Summary: ${report.authHardening.summary}`,
+    ...report.authHardening.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
     "",
     "Projects:",
     ...(report.projects.length ? report.projects.map((project) => `- ${project.name} (${project.id}): ${project.configStatus}, roles=${project.roles.join(", ") || "none"}, enforcement=${project.roleEnforcement}, separation=${project.separationOfDuties}`) : ["- No registered projects inspected."]),
@@ -7921,6 +11284,8 @@ function serverReadinessCommands(projectRootUri?: string): string[] {
   const projectArg = projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : "";
   return [
     `agentflow server-readiness${projectArg} --json`,
+    "agentflow server-mutation-controls --json",
+    "agentflow server-request-log --json",
     `agentflow roles${projectArg}`,
     "agentflow governance",
     `agentflow backup-report${projectArg}`
@@ -8020,13 +11385,14 @@ async function loadServerProjectRegistryReport(input: {
 
 async function loadServerProjectRegistryEntry(summary: DashboardProjectSummary, includeRoots: boolean): Promise<ServerProjectRegistryReport["projects"][number]> {
   const config = await loadRegisteredProjectConfig(summary);
+  const projectPath = await resolveDashboardProjectPath(summary.rootUri);
   const defaultWorkflow = config?.project.default_workflows[0] ?? "review-pr";
   return {
     projectId: summary.id,
     name: summary.name,
     rootUri: includeRoots ? summary.rootUri : null,
     rootHash: stableHash(summary.rootUri),
-    configStatus: config ? "valid" : await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml")) ? "invalid" : "missing",
+    configStatus: config ? "valid" : await pathExists(path.join(projectPath.localRootUri, ".agent-workflow", "project.yaml")) ? "invalid" : "missing",
     defaultWorkflows: config?.project.default_workflows ?? [],
     policyProfile: config?.execution.policy_profile ?? "local",
     roleEnforcement: config?.team.enforcement ?? "preview",
@@ -8039,9 +11405,10 @@ async function loadServerProjectRegistryEntry(summary: DashboardProjectSummary, 
 }
 
 async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Promise<ProjectConfig | null> {
-  if (await pathExists(path.join(summary.rootUri, ".agent-workflow", "project.yaml"))) {
+  const projectPath = await resolveDashboardProjectPath(summary.rootUri);
+  if (await pathExists(path.join(projectPath.localRootUri, ".agent-workflow", "project.yaml"))) {
     try {
-      return await loadProjectConfig(summary.rootUri);
+      return await loadProjectConfig(projectPath.localRootUri);
     } catch {
       return null;
     }
@@ -8433,7 +11800,281 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
   ].join("\n");
 }
 
-async function processServerQueueRequest(request: http.IncomingMessage, body: unknown): Promise<ServerQueueReport> {
+async function loadServerApprovalPreview(input: {
+  projectId: string;
+  approvalId: string;
+  decision: string;
+  actor: string;
+  actorRole: string;
+  idempotencyKey?: string;
+  request?: http.IncomingMessage;
+}): Promise<ServerApprovalPreviewReport> {
+  const decision = parseServerApprovalDecision(input.decision);
+  const projectResolution = await resolveServerProjectReference({ projectId: input.projectId, includeRoot: true });
+  const projectRoot = projectResolution.project?.rootUri ?? null;
+  const projectConfig = projectRoot ? await loadRegisteredProjectConfig({
+    id: projectResolution.project?.projectId ?? input.projectId,
+    name: projectResolution.project?.name ?? "unknown",
+    rootUri: projectRoot,
+    profile: "enterprise",
+    config: {},
+    updatedAt: "",
+    indexedFiles: 0,
+    indexedTokens: 0,
+    lastIndexedAt: null,
+    memoryItems: 0,
+    runCount: 0,
+    completedRuns: 0,
+    failedRuns: 0,
+    queuedRuns: 0,
+    runningRuns: 0,
+    lastRunAt: null,
+    lastRunId: null,
+    lastWorkflowId: null,
+    lastRunStatus: null
+  }) : null;
+  const approval = input.approvalId.trim() ? await getActionApproval(input.approvalId.trim()).catch(() => null) : null;
+  const actionRequiresApprovalDecision = decision === "approve" || decision === "reject" || decision === "approve-and-execute" || decision === "always-approve";
+  const actionRequiresExecution = decision === "execute" || decision === "approve-and-execute" || decision === "dismiss";
+  const approvalCapability: TeamRoleCapability = decision === "reject" ? "can_reject_actions" : "can_approve_actions";
+  const decisionGate = projectConfig && actionRequiresApprovalDecision
+    ? evaluateRoleGate(projectConfig, input.actorRole, approvalCapability)
+    : null;
+  const executionGate = projectConfig && actionRequiresExecution
+    ? evaluateRoleGate(projectConfig, input.actorRole, "can_execute_approved_actions")
+    : null;
+  const separationGate = projectConfig && approval && actionRequiresExecution
+    ? evaluateSeparationOfDuties(projectConfig, approval, input.actor)
+    : null;
+  const policyRecheck = projectConfig && approval
+    ? await previewApprovalPolicyRecheck(approval, projectConfig)
+    : { status: "not-applicable" as const, detail: "Approval or project config is unavailable." };
+  const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "none";
+  const authConfigured = authMode === "oidc-proxy" || authMode === "token" && Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
+  const auth = input.request ? validateServerMutationAuth(input.request) : null;
+  const idempotencyProvided = Boolean(input.idempotencyKey?.trim());
+  const projectMatchesApproval = Boolean(projectRoot && approval && path.resolve(approval.projectRootUri) === path.resolve(projectRoot));
+  const roleGateStatus = !actionRequiresApprovalDecision
+    ? "pass"
+    : !projectConfig
+      ? "fail"
+    : decisionGate?.allowed
+      ? "pass"
+      : projectConfig?.team.enforcement === "enforce"
+        ? "fail"
+        : "warn";
+  const executionRoleGateStatus = !actionRequiresExecution
+    ? "not-applicable"
+    : !projectConfig
+      ? "fail"
+    : executionGate?.allowed
+      ? "pass"
+      : projectConfig?.team.enforcement === "enforce"
+        ? "fail"
+        : "warn";
+  const separationStatus = !actionRequiresExecution
+    ? "not-applicable"
+    : separationGate?.allowed
+      ? "pass"
+      : projectConfig?.team.separation_of_duties.mode === "enforce"
+        ? "fail"
+        : "warn";
+  const envelope = {
+    requestId: `approval_req_${stableHash([input.projectId, input.approvalId, decision, input.actor, new Date().toISOString()]).slice(0, 16)}`,
+    idempotencyKey: input.idempotencyKey?.trim() || `approval_preview_${stableHash([input.projectId, input.approvalId, decision, input.actor, input.actorRole]).slice(0, 24)}`,
+    actor: input.actor.trim() || "local-preview",
+    actorRole: input.actorRole.trim() || "operator",
+    projectId: input.projectId.trim(),
+    approvalId: input.approvalId.trim(),
+    decision,
+    source: "server-approval-preview" as const
+  };
+  const checks: ServerApprovalPreviewReport["checks"] = [
+    {
+      label: "Project id",
+      status: projectResolution.resolved ? "pass" : "fail",
+      detail: projectResolution.resolved ? "Project id resolves to one registered project." : projectResolution.reason ?? "Project id did not resolve."
+    },
+    {
+      label: "Approval id",
+      status: approval ? "pass" : "fail",
+      detail: approval ? "Approval id resolves to one stored approval." : "Approval id is missing, invalid, or unknown."
+    },
+    {
+      label: "Project ownership",
+      status: !approval || !projectRoot ? "fail" : projectMatchesApproval ? "pass" : "fail",
+      detail: projectMatchesApproval ? "Approval belongs to the resolved registered project." : "Approval project root does not match the registered project id."
+    },
+    {
+      label: "Decision",
+      status: "pass",
+      detail: `Previewing ${decision}. No approval state will be changed.`
+    },
+    {
+      label: "Decision role",
+      status: roleGateStatus,
+      detail: decisionGate?.message ?? (actionRequiresApprovalDecision ? "Project config is unavailable; approval/rejection role capability cannot be checked." : "This decision does not require an approval/rejection role capability.")
+    },
+    {
+      label: "Execution role",
+      status: executionRoleGateStatus === "not-applicable" ? "pass" : executionRoleGateStatus,
+      detail: executionGate?.message ?? (actionRequiresExecution ? "Project config is unavailable; execution role capability cannot be checked." : "This decision does not execute an approved action.")
+    },
+    {
+      label: "Separation of duties",
+      status: separationStatus === "not-applicable" ? "pass" : separationStatus,
+      detail: separationGate?.message ?? (actionRequiresExecution ? "Approval or project config is unavailable; separation of duties cannot be checked." : "No execution is requested, so separation of duties does not apply.")
+    },
+    {
+      label: "Policy recheck",
+      status: policyRecheck.status === "not-applicable" ? "warn" : policyRecheck.status,
+      detail: policyRecheck.detail
+    },
+    {
+      label: "Server auth",
+      status: input.request
+        ? auth?.ok ? "pass" : "fail"
+        : !serverModeEnabled ? "warn" : authConfigured ? "pass" : "fail",
+      detail: input.request
+        ? auth?.ok ? `Authenticated with ${auth.method}.` : auth?.error ?? "Authentication failed."
+        : !serverModeEnabled ? "Server mode is disabled; this is a local preview only." : authConfigured ? "Server auth is configured for the selected mode." : "Server auth is required before remote approval/action mutation."
+    },
+    {
+      label: "Idempotency",
+      status: idempotencyProvided ? "pass" : "warn",
+      detail: idempotencyProvided ? "Client idempotency key is present." : "Preview generated a suggested idempotency key; remote mutation endpoints should require a client-provided key."
+    },
+    {
+      label: "Mutation",
+      status: "pass",
+      detail: "Preview only. No approval was decided, executed, dismissed, or converted into an always-approve rule."
+    }
+  ];
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const report: ServerApprovalPreviewReport = {
+    kind: "agentflow_server_approval_preview",
+    generatedAt: new Date().toISOString(),
+    status: failures > 0 ? "blocked" : warnings > 0 ? "attention" : "ready",
+    dryRun: true,
+    envelope,
+    approval: approval ? {
+      id: approval.id,
+      runId: approval.runId,
+      workflowId: approval.workflowId,
+      stageId: approval.stageId,
+      agentId: approval.agentId,
+      status: approval.status,
+      actionType: approval.actionType,
+      target: approval.target,
+      projectRootHash: stableHash(approval.projectRootUri).slice(0, 16),
+      executable: isExecutableApprovalAction(approval.actionType)
+    } : null,
+    controls: {
+      serverModeEnabled,
+      authMode,
+      authConfigured,
+      authAccepted: auth ? auth.ok : null,
+      projectResolved: projectResolution.resolved,
+      approvalResolved: Boolean(approval),
+      projectMatchesApproval,
+      roleGate: roleGateStatus,
+      executionRoleGate: executionRoleGateStatus,
+      separationOfDuties: separationStatus,
+      policyRecheck: policyRecheck.status,
+      idempotencyProvided,
+      wouldMutate: false
+    },
+    checks,
+    notes: [
+      "This previews the remote approval/action envelope only.",
+      "Future remote approval endpoints must reuse this registered project id, actor role, idempotency, policy recheck, auth, and audit shape before mutating approval state.",
+      "Local dashboard and MCP approval tools remain the only execution paths today."
+    ]
+  };
+  if (input.request) {
+    await safeAppendServerRequestAuditEvent(buildServerApprovalPreviewAuditEvent({
+      request: input.request,
+      report,
+      auth: auth ?? { ok: false, method: "unknown", error: "Authentication was not evaluated." }
+    }));
+  }
+  return report;
+}
+
+function parseServerApprovalDecision(value: string): ServerApprovalPreviewReport["envelope"]["decision"] {
+  const normalized = value.trim().toLowerCase().replaceAll("_", "-");
+  if (normalized === "approve" || normalized === "reject" || normalized === "execute" || normalized === "approve-and-execute" || normalized === "dismiss" || normalized === "always-approve") {
+    return normalized;
+  }
+  return "approve-and-execute";
+}
+
+async function previewApprovalPolicyRecheck(
+  approval: DashboardActionApproval,
+  project: ProjectConfig
+): Promise<{ status: "pass" | "warn" | "fail" | "not-applicable"; detail: string }> {
+  if (approval.actionType === "local_command") {
+    const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
+    try {
+      assertCommandAllowed(commandLine, project);
+      return { status: "pass", detail: "Command still passes the project action policy. Execution is not performed." };
+    } catch (error) {
+      return { status: "fail", detail: `Command policy recheck failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  if (approval.actionType === "file_write") {
+    try {
+      const fileWrite = await loadApprovedFileWrite(approval);
+      assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
+      return { status: "pass", detail: "File write still passes project path and byte policy. File contents were not written." };
+    } catch (error) {
+      return { status: "fail", detail: `File-write policy recheck failed: ${error instanceof Error ? error.message : String(error)}` };
+    }
+  }
+  if (approval.actionType === "artifact_archive" || approval.actionType === "artifact_restore" || approval.actionType === "artifact_prune" || approval.actionType === "object_mirror") {
+    return { status: "warn", detail: `${approval.actionType} has a dedicated execution path; preview confirms envelope controls but leaves the specialized dry-run proof to that action.` };
+  }
+  if (approval.actionType === "deployment" || approval.actionType === "autonomy") {
+    return { status: "not-applicable", detail: `${approval.actionType} records a human decision and does not execute a local side effect.` };
+  }
+  return { status: "warn", detail: `No policy recheck adapter exists yet for approval action type ${approval.actionType}.` };
+}
+
+function formatServerApprovalPreview(report: ServerApprovalPreviewReport): string {
+  return [
+    `Server approval preview (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    "",
+    "Envelope:",
+    `- requestId: ${report.envelope.requestId}`,
+    `- projectId: ${report.envelope.projectId}`,
+    `- approvalId: ${report.envelope.approvalId}`,
+    `- decision: ${report.envelope.decision}`,
+    `- actorRole: ${report.envelope.actorRole}`,
+    `- idempotencyKey: ${report.envelope.idempotencyKey}`,
+    "",
+    "Approval:",
+    ...(report.approval ? [
+      `- run: ${report.approval.runId}`,
+      `- workflow: ${report.approval.workflowId}`,
+      `- stage: ${report.approval.stageId} (${report.approval.agentId})`,
+      `- status: ${report.approval.status}`,
+      `- action: ${report.approval.actionType} ${report.approval.target}`,
+      `- projectRootHash: ${report.approval.projectRootHash}`
+    ] : ["- No approval resolved."]),
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+async function processServerQueueRequest(request: http.IncomingMessage, body: unknown, limits = serverRequestLimits()): Promise<ServerQueueReport> {
   const payload = objectValue(body);
   const executeRequested = payload.execute === true;
   const routePreview = await loadServerRoutePreview({
@@ -8448,6 +12089,11 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
   const queueExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_QUEUE");
   const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
   const clientProvidedIdempotency = Boolean(stringValue(payload.idempotencyKey)?.trim());
+  const rateLimit = checkServerQueueRateLimit({
+    request,
+    actor: routePreview.envelope.actor,
+    limitPerMinute: limits.rateLimitPerMinute
+  });
   const checks: ServerQueueReport["checks"] = [
     ...routePreview.checks,
     {
@@ -8468,6 +12114,18 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       label: "Client idempotency",
       status: clientProvidedIdempotency ? "pass" : "fail",
       detail: clientProvidedIdempotency ? "Client idempotency key is present." : "Queue requests require a client-provided idempotency key."
+    },
+    {
+      label: "Request limits",
+      status: "pass",
+      detail: `JSON body limit is ${limits.maxBodyBytes} bytes. Queue rate limit is ${limits.rateLimitPerMinute <= 0 ? "disabled" : `${limits.rateLimitPerMinute} request(s) per minute per actor/IP`}.`
+    },
+    {
+      label: "Queue rate limit",
+      status: rateLimit.ok ? "pass" : "fail",
+      detail: rateLimit.ok
+        ? `Rate limit accepted for ${rateLimit.key}; ${rateLimit.limit <= 0 ? "unlimited" : `${rateLimit.remaining} remaining`} until ${rateLimit.resetAt}.`
+        : `Rate limit exceeded for ${rateLimit.key}; try again after ${rateLimit.resetAt}.`
     }
   ];
   let queuedRun: ServerQueueReport["queuedRun"] = null;
@@ -8477,7 +12135,8 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
     && auth.ok
     && serverModeEnabled
     && queueExecutionEnabled
-    && clientProvidedIdempotency;
+    && clientProvidedIdempotency
+    && rateLimit.ok;
   if (canQueue && routePreview.route) {
     const existingRun = await findServerQueueRunByIdempotency({
       projectId: routePreview.route.projectId,
@@ -8570,7 +12229,7 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       : warnings > 0
         ? "attention"
         : "ready";
-  return {
+  const report: ServerQueueReport = {
     kind: "agentflow_server_queue_report",
     generatedAt: new Date().toISOString(),
     status,
@@ -8584,6 +12243,9 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       executeRequested,
       queueExecutionEnabled,
       clientProvidedIdempotency,
+      requestBodyMaxBytes: limits.maxBodyBytes,
+      rateLimitPerMinute: limits.rateLimitPerMinute,
+      rateLimitAccepted: rateLimit.ok,
       wouldQueue: Boolean(queuedRun)
     },
     checks,
@@ -8593,6 +12255,14 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       "Queue execution remains disabled unless server mode, token/OIDC auth, explicit execution, and the queue gate are all enabled."
     ]
   };
+  await safeAppendServerRequestAuditEvent(buildServerRequestAuditEvent({
+    request,
+    payload,
+    report,
+    auth,
+    rateLimit
+  }));
+  return report;
 }
 
 async function findServerQueueRunByIdempotency(input: {
@@ -8640,6 +12310,259 @@ function validateServerMutationAuth(request: http.IncomingMessage): { ok: true; 
 function firstHeader(value: string | string[] | undefined): string | null {
   if (Array.isArray(value)) return value[0] ?? null;
   return value ?? null;
+}
+
+function serverRequestAuditLogPath(): string {
+  const configured = process.env.AGENTFLOW_SERVER_REQUEST_LOG?.trim();
+  return configured ? path.resolve(process.cwd(), configured) : defaultServerRequestAuditLogPath;
+}
+
+function hashAuditValue(value: string | null | undefined): string | null {
+  const normalized = value?.trim();
+  return normalized ? stableHash(normalized).slice(0, 16) : null;
+}
+
+function finiteNumber(value: number): number | null {
+  return Number.isFinite(value) ? value : null;
+}
+
+function requestContentLength(request: http.IncomingMessage): number | null {
+  const value = firstHeader(request.headers["content-length"]);
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function serverAuditErrorCode(message: string): string {
+  const normalized = message.toLowerCase();
+  if (normalized.includes("exceeds")) return "body_too_large";
+  if (normalized.includes("json") || normalized.includes("parse") || normalized.includes("unexpected")) return "invalid_json";
+  return "request_error";
+}
+
+function buildServerRequestAuditEvent(input: {
+  request: http.IncomingMessage;
+  payload: Record<string, unknown>;
+  report: ServerQueueReport;
+  auth: ReturnType<typeof validateServerMutationAuth>;
+  rateLimit: ReturnType<typeof checkServerQueueRateLimit>;
+}): ServerRequestAuditEvent {
+  const task = stringValue(input.payload.task) ?? "";
+  return {
+    kind: "agentflow_server_request_audit_event",
+    version: 1,
+    generatedAt: input.report.generatedAt,
+    requestId: input.report.envelope.requestId,
+    method: input.request.method ?? "UNKNOWN",
+    path: "/api/server-queue",
+    status: input.report.status,
+    dryRun: input.report.dryRun,
+    executeRequested: input.report.controls.executeRequested,
+    projectId: input.report.envelope.projectId || null,
+    projectRootHash: hashAuditValue(input.report.route?.projectRootUri),
+    workflowId: input.report.envelope.workflow || null,
+    taskHash: hashAuditValue(task),
+    taskBytes: Buffer.byteLength(task, "utf8"),
+    actorHash: hashAuditValue(input.report.envelope.actor),
+    actorRole: input.report.envelope.actorRole || null,
+    auth: {
+      method: input.auth.method,
+      accepted: input.auth.ok,
+      errorCode: input.auth.ok ? null : serverAuditErrorCode(input.auth.error)
+    },
+    rateLimit: {
+      accepted: input.rateLimit.ok,
+      keyHash: hashAuditValue(input.rateLimit.key),
+      limit: finiteNumber(input.rateLimit.limit),
+      remaining: finiteNumber(input.rateLimit.remaining),
+      resetAt: input.rateLimit.resetAt
+    },
+    idempotencyKeyHash: hashAuditValue(input.report.envelope.idempotencyKey),
+    clientProvidedIdempotency: input.report.controls.clientProvidedIdempotency,
+    queuedRunId: input.report.queuedRun?.runId ?? null,
+    reusedRun: input.report.queuedRun?.reused ?? null,
+    bodyBytes: requestContentLength(input.request),
+    remoteHash: hashAuditValue(input.request.socket.remoteAddress),
+    originHash: hashAuditValue(firstHeader(input.request.headers.origin)),
+    userAgentHash: hashAuditValue(firstHeader(input.request.headers["user-agent"])),
+    checks: input.report.checks.map((check) => ({ label: check.label, status: check.status }))
+  };
+}
+
+function buildServerApprovalPreviewAuditEvent(input: {
+  request: http.IncomingMessage;
+  report: ServerApprovalPreviewReport;
+  auth: ReturnType<typeof validateServerMutationAuth>;
+}): ServerRequestAuditEvent {
+  return {
+    kind: "agentflow_server_request_audit_event",
+    version: 1,
+    generatedAt: input.report.generatedAt,
+    requestId: input.report.envelope.requestId,
+    method: input.request.method ?? "UNKNOWN",
+    path: "/api/server-approval-preview",
+    status: input.report.status,
+    dryRun: true,
+    executeRequested: input.report.envelope.decision === "execute" || input.report.envelope.decision === "approve-and-execute",
+    projectId: input.report.envelope.projectId || null,
+    projectRootHash: input.report.approval?.projectRootHash ?? null,
+    workflowId: input.report.approval?.workflowId ?? null,
+    taskHash: hashAuditValue(input.report.envelope.approvalId),
+    taskBytes: Buffer.byteLength(input.report.envelope.approvalId, "utf8"),
+    actorHash: hashAuditValue(input.report.envelope.actor),
+    actorRole: input.report.envelope.actorRole || null,
+    auth: {
+      method: input.auth.method,
+      accepted: input.auth.ok,
+      errorCode: input.auth.ok ? null : serverAuditErrorCode(input.auth.error)
+    },
+    rateLimit: {
+      accepted: null,
+      keyHash: null,
+      limit: null,
+      remaining: null,
+      resetAt: null
+    },
+    idempotencyKeyHash: hashAuditValue(input.report.envelope.idempotencyKey),
+    clientProvidedIdempotency: input.report.controls.idempotencyProvided,
+    queuedRunId: input.report.approval?.runId ?? null,
+    reusedRun: null,
+    bodyBytes: requestContentLength(input.request),
+    remoteHash: hashAuditValue(input.request.socket.remoteAddress),
+    originHash: hashAuditValue(firstHeader(input.request.headers.origin)),
+    userAgentHash: hashAuditValue(firstHeader(input.request.headers["user-agent"])),
+    checks: input.report.checks.map((check) => ({ label: check.label, status: check.status }))
+  };
+}
+
+function buildServerRequestBodyErrorAuditEvent(request: http.IncomingMessage, error: unknown, requestPath = "/api/server-queue"): ServerRequestAuditEvent {
+  const generatedAt = new Date().toISOString();
+  const errorMessage = error instanceof Error ? error.message : String(error);
+  return {
+    kind: "agentflow_server_request_audit_event",
+    version: 1,
+    generatedAt,
+    requestId: `req_body_${stableHash([generatedAt, request.method, request.url, requestContentLength(request)]).slice(0, 16)}`,
+    method: request.method ?? "UNKNOWN",
+    path: requestPath,
+    status: "rejected",
+    dryRun: true,
+    executeRequested: false,
+    projectId: null,
+    projectRootHash: null,
+    workflowId: null,
+    taskHash: null,
+    taskBytes: 0,
+    actorHash: null,
+    actorRole: null,
+    auth: {
+      method: process.env.AGENTFLOW_SERVER_AUTH?.trim() || "token",
+      accepted: false,
+      errorCode: serverAuditErrorCode(errorMessage)
+    },
+    rateLimit: {
+      accepted: null,
+      keyHash: null,
+      limit: null,
+      remaining: null,
+      resetAt: null
+    },
+    idempotencyKeyHash: null,
+    clientProvidedIdempotency: false,
+    queuedRunId: null,
+    reusedRun: null,
+    bodyBytes: requestContentLength(request),
+    remoteHash: hashAuditValue(request.socket.remoteAddress),
+    originHash: hashAuditValue(firstHeader(request.headers.origin)),
+    userAgentHash: hashAuditValue(firstHeader(request.headers["user-agent"])),
+    checks: [{ label: "Request body", status: "fail" }]
+  };
+}
+
+async function safeAppendServerRequestAuditEvent(event: ServerRequestAuditEvent): Promise<void> {
+  try {
+    const logPath = serverRequestAuditLogPath();
+    await fs.mkdir(path.dirname(logPath), { recursive: true });
+    await fs.appendFile(logPath, `${JSON.stringify(event)}\n`, "utf8");
+  } catch (error) {
+    console.error(`WARNING: failed to write server request audit log: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function loadServerRequestAuditLog(limit = 50): Promise<ServerRequestAuditReport> {
+  const logPath = serverRequestAuditLogPath();
+  const normalizedLimit = parsePositiveInteger(String(limit), 50);
+  let raw = "";
+  try {
+    raw = await fs.readFile(logPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const lines = raw.split(/\r?\n/).filter((line) => line.trim());
+  const events: ServerRequestAuditEvent[] = [];
+  let invalidLines = 0;
+  for (const line of lines) {
+    try {
+      const parsed = JSON.parse(line) as ServerRequestAuditEvent;
+      if (parsed?.kind === "agentflow_server_request_audit_event") events.push(parsed);
+      else invalidLines += 1;
+    } catch {
+      invalidLines += 1;
+    }
+  }
+  const latest = events.slice(-normalizedLimit).reverse();
+  const statusCounts: Record<string, number> = {};
+  const authCounts: Record<string, number> = {};
+  for (const event of events) {
+    statusCounts[event.status] = (statusCounts[event.status] ?? 0) + 1;
+    const authKey = `${event.auth.method}:${event.auth.accepted ? "accepted" : "rejected"}`;
+    authCounts[authKey] = (authCounts[authKey] ?? 0) + 1;
+  }
+  return {
+    kind: "agentflow_server_request_audit_report",
+    generatedAt: new Date().toISOString(),
+    logPath,
+    limit: normalizedLimit,
+    totalRead: events.length,
+    invalidLines,
+    latestAt: events.at(-1)?.generatedAt ?? null,
+    statusCounts,
+    authCounts,
+    rateLimited: events.filter((event) => event.rateLimit.accepted === false).length,
+    queued: events.filter((event) => event.status === "queued").length,
+    blocked: events.filter((event) => event.status === "blocked" || event.status === "rejected").length,
+    dryRuns: events.filter((event) => event.dryRun).length,
+    events: latest,
+    notes: [
+      "This log is redacted by design: actor, task, idempotency key, network address, origin, user-agent, and local project roots are stored as hashes.",
+      "It currently records the governed /api/server-queue mutation surface.",
+      "Use this as request evidence alongside per-run action receipts."
+    ]
+  };
+}
+
+function formatServerRequestAuditReport(report: ServerRequestAuditReport): string {
+  return [
+    `Server request audit log (${report.generatedAt})`,
+    `Path: ${report.logPath}`,
+    `Events: ${report.totalRead}`,
+    `Latest: ${report.latestAt ?? "none"}`,
+    `Invalid lines skipped: ${report.invalidLines}`,
+    "",
+    "Summary:",
+    `- queued: ${report.queued}`,
+    `- blocked/rejected: ${report.blocked}`,
+    `- dry runs: ${report.dryRuns}`,
+    `- rate limited: ${report.rateLimited}`,
+    `- status counts: ${formatInlineCounts(report.statusCounts) || "none"}`,
+    `- auth counts: ${formatInlineCounts(report.authCounts) || "none"}`,
+    "",
+    "Recent events:",
+    ...(report.events.length ? report.events.map((event) => `- ${event.generatedAt} ${event.status.toUpperCase()} ${event.method} ${event.path} project=${event.projectId ?? "n/a"} workflow=${event.workflowId ?? "n/a"} execute=${event.executeRequested ? "yes" : "no"} auth=${event.auth.method}:${event.auth.accepted ? "pass" : event.auth.errorCode ?? "fail"} rateLimit=${event.rateLimit.accepted === null ? "n/a" : event.rateLimit.accepted ? "pass" : "fail"} run=${event.queuedRunId ?? "none"}`) : ["- No server request audit events found."]),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -9118,7 +13041,7 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { in
     costMix: countDashboardStages(metricStages, (stage) => stage.estimatedCostTier),
     modelTierMix: countDashboardStages(metricStages, (stage) => stage.modelTier),
     byoSavingsStages: metricStages.filter((stage) =>
-      ["byo", "openai-compatible"].includes(stage.providerId) &&
+      ["local", "byo", "openai-compatible"].includes(stage.providerId) &&
       ["low", "medium", "none"].includes(stage.estimatedCostTier)
     ).length
   };
@@ -9173,11 +13096,12 @@ async function loadDashboardProjectDetail(rootUri: string): Promise<DashboardPro
   if (!project) {
     return null;
   }
+  const projectPath = await resolveDashboardProjectPath(rootUri);
   const [files, memory, runs, contextFiles] = await Promise.all([
     listProjectFileSummaries({ projectRootUri: rootUri, limit: 20 }),
     getLatestMemory({ projectRootUri: rootUri, limit: 8 }),
     listWorkflowRunsForProject({ projectRootUri: rootUri, limit: 12 }),
-    loadDashboardProjectContextFiles(rootUri)
+    loadDashboardProjectContextFiles(projectPath.localRootUri)
   ]);
   const config = project.config as {
     actions?: { allowed_write_paths?: string[] };
@@ -9192,6 +13116,201 @@ async function loadDashboardProjectDetail(rootUri: string): Promise<DashboardPro
     initialized: contextFiles.some((file) => file.relativePath === ".agent-workflow/project.yaml" && file.exists),
     allowWrites: Boolean(config.policies?.allow_wide_open || (config.actions?.allowed_write_paths?.length ?? 0) > 0)
   };
+}
+
+async function resolveDashboardProjectPath(rootUri: string): Promise<DashboardProjectPathResolution> {
+  return resolveLocalProjectPath(rootUri);
+}
+
+async function loadDashboardProjectIdentityGroups(projects: DashboardProjectSummary[]): Promise<DashboardProjectIdentityGroup[]> {
+  const resolutions = await Promise.all(projects.map(async (project) => ({
+    project,
+    resolution: await resolveDashboardProjectPath(project.rootUri)
+  })));
+  const grouped = new Map<string, Array<(typeof resolutions)[number]>>();
+  for (const item of resolutions) {
+    const key = item.resolution.localPathExists ? item.resolution.localRootUri : item.resolution.storageRootUri;
+    grouped.set(key, [...(grouped.get(key) ?? []), item]);
+  }
+  return [...grouped.entries()]
+    .map(([canonicalRootUri, items]) => {
+      const projectsInGroup = items.map((item) => item.project);
+      const latestRunAt = projectsInGroup
+        .map((project) => project.lastRunAt)
+        .filter((value): value is string => Boolean(value))
+        .sort()
+        .at(-1) ?? null;
+      const preferred = items.find((item) => item.resolution.localRootUri === canonicalRootUri)?.project ?? projectsInGroup[0];
+      const preferredResolution = items.find((item) => item.project === preferred)?.resolution ?? items[0].resolution;
+      return {
+        canonicalRootUri,
+        primaryRootUri: preferred.rootUri,
+        canonicalName: preferred.name,
+        localPathExists: items.some((item) => item.resolution.localPathExists),
+        source: preferredResolution.source,
+        projects: projectsInGroup,
+        totalRuns: projectsInGroup.reduce((sum, project) => sum + project.runCount, 0),
+        totalIndexedFiles: projectsInGroup.reduce((sum, project) => sum + project.indexedFiles, 0),
+        totalMemoryItems: projectsInGroup.reduce((sum, project) => sum + project.memoryItems, 0),
+        activeRuns: projectsInGroup.reduce((sum, project) => sum + project.queuedRuns + project.runningRuns, 0),
+        failedRuns: projectsInGroup.reduce((sum, project) => sum + project.failedRuns, 0),
+        lastRunAt: latestRunAt,
+        aliases: items.map((item) => ({
+          rootUri: item.resolution.storageRootUri,
+          mapped: item.resolution.mapped,
+          source: item.resolution.source
+        })).sort((left, right) => left.rootUri.localeCompare(right.rootUri))
+      };
+    })
+    .sort((left, right) => {
+      const latest = (right.lastRunAt ?? "").localeCompare(left.lastRunAt ?? "");
+      return latest || right.totalRuns - left.totalRuns || left.canonicalName.localeCompare(right.canonicalName);
+    });
+}
+
+function buildDashboardProjectAliasMergePlan(
+  projects: DashboardProjectSummary[],
+  identities: DashboardProjectIdentityGroup[]
+): DashboardProjectAliasMergePlan {
+  const groups = identities
+    .filter((identity) => identity.projects.length > 1)
+    .map((identity) => buildDashboardProjectAliasMergeGroup(identity));
+  const sourceProjectCount = groups.reduce((sum, group) => sum + group.sources.length, 0);
+  return {
+    kind: "agentflow_project_alias_merge_plan",
+    generatedAt: new Date().toISOString(),
+    dryRun: true,
+    identityCount: identities.length,
+    projectCount: projects.length,
+    candidateCount: groups.length,
+    sourceProjectCount,
+    groups,
+    summary: groups.length
+      ? [
+          `${groups.length} logical project identity group(s) have duplicate registered roots.`,
+          `${sourceProjectCount} source project row(s) could be consolidated into canonical targets after backup and conflict checks.`,
+          "This report is dry-run only; it does not update workflow runs, indexed files, memory items, approvals, or project rows."
+        ]
+      : [
+          "No duplicate project identity groups were found.",
+          "No project alias merge is recommended right now."
+        ]
+  };
+}
+
+function buildDashboardProjectAliasMergeGroup(identity: DashboardProjectIdentityGroup): DashboardProjectAliasMergeGroup {
+  const sortedProjects = [...identity.projects].sort((left, right) => {
+    const leftPrimary = left.rootUri === identity.primaryRootUri ? 1 : 0;
+    const rightPrimary = right.rootUri === identity.primaryRootUri ? 1 : 0;
+    return rightPrimary - leftPrimary
+      || right.runCount - left.runCount
+      || right.indexedFiles - left.indexedFiles
+      || (right.lastRunAt ?? "").localeCompare(left.lastRunAt ?? "")
+      || left.rootUri.localeCompare(right.rootUri);
+  });
+  const targetProject = sortedProjects[0];
+  const sourceProjects = sortedProjects.slice(1);
+  const target = dashboardProjectAliasMergeProject(targetProject);
+  const sources = sourceProjects.map(dashboardProjectAliasMergeProject);
+  const impactedRows = {
+    projectRows: sourceProjects.length,
+    workflowRuns: sources.reduce((sum, project) => sum + project.runCount, 0),
+    activeRuns: sources.reduce((sum, project) => sum + project.activeRuns, 0),
+    failedRuns: sources.reduce((sum, project) => sum + project.failedRuns, 0),
+    projectFiles: sources.reduce((sum, project) => sum + project.indexedFiles, 0),
+    memoryItems: sources.reduce((sum, project) => sum + project.memoryItems, 0),
+    indexedTokens: sources.reduce((sum, project) => sum + project.indexedTokens, 0),
+    indirectRunArtifacts: "via workflow_runs after project_id reassignment"
+  };
+  const conflictWarnings = buildProjectAliasMergeWarnings(target, sources, impactedRows);
+  const risk: DashboardProjectAliasMergeGroup["risk"] = impactedRows.activeRuns > 0 || conflictWarnings.length > 2
+    ? "high"
+    : impactedRows.projectFiles > 0 || impactedRows.memoryItems > 0
+      ? "medium"
+      : "low";
+  return {
+    canonicalRootUri: identity.canonicalRootUri,
+    target,
+    sources,
+    impactedRows,
+    risk,
+    conflictWarnings,
+    preflightChecks: [
+      "Run storage-merge-evidence and storage-verify immediately before execution.",
+      "Create a point-in-time database backup and object-storage inventory.",
+      "Confirm no source project alias has queued or running workflow runs.",
+      "Detect duplicate project_files.source_uri rows and preserve newer content_hash/token evidence.",
+      "Keep the source root_uri values as aliases in an auditable receipt before deleting or tombstoning rows."
+    ],
+    rollbackOutline: [
+      "Restore the database backup for a full rollback, or replay the generated mapping receipt to move project_id references back to each source project id.",
+      "Recreate source project rows from the pre-merge snapshot if they were tombstoned or removed.",
+      "Re-run storage-verify, project identity grouping, and a small workflow smoke test after rollback."
+    ]
+  };
+}
+
+function dashboardProjectAliasMergeProject(project: DashboardProjectSummary): DashboardProjectAliasMergeProject {
+  return {
+    id: project.id,
+    name: project.name,
+    rootUri: project.rootUri,
+    profile: project.profile,
+    indexedFiles: project.indexedFiles,
+    indexedTokens: project.indexedTokens,
+    memoryItems: project.memoryItems,
+    runCount: project.runCount,
+    completedRuns: project.completedRuns,
+    failedRuns: project.failedRuns,
+    activeRuns: project.queuedRuns + project.runningRuns,
+    lastRunAt: project.lastRunAt
+  };
+}
+
+function buildProjectAliasMergeWarnings(
+  target: DashboardProjectAliasMergeProject,
+  sources: DashboardProjectAliasMergeProject[],
+  impactedRows: DashboardProjectAliasMergeGroup["impactedRows"]
+): string[] {
+  const warnings: string[] = [];
+  if (impactedRows.activeRuns > 0) warnings.push("One or more source aliases have active runs; wait until they are terminal before merging.");
+  if (target.indexedFiles > 0 && impactedRows.projectFiles > 0) warnings.push("Target and source aliases both have indexed files; execution must de-duplicate source_uri/content_hash rows.");
+  if (target.memoryItems > 0 && impactedRows.memoryItems > 0) warnings.push("Target and source aliases both have memory items; execution should preserve provenance and avoid duplicate summaries.");
+  if (new Set([target.profile, ...sources.map((source) => source.profile)]).size > 1) warnings.push("Project aliases use different profiles; execution must choose a final profile intentionally.");
+  if (sources.some((source) => source.rootUri.startsWith("/home/")) && target.rootUri.startsWith("/Users/")) warnings.push("Linux and macOS home aliases are present; keep path mapping documented for shared Hulk storage.");
+  return warnings;
+}
+
+function formatDashboardProjectAliasMergePlan(plan: DashboardProjectAliasMergePlan): string {
+  const lines = [
+    `Project alias merge plan (${plan.dryRun ? "dry-run" : "execute"})`,
+    `Generated: ${plan.generatedAt}`,
+    `Identities: ${plan.identityCount}`,
+    `Registered projects: ${plan.projectCount}`,
+    `Merge candidates: ${plan.candidateCount}`,
+    `Source project rows: ${plan.sourceProjectCount}`,
+    "",
+    ...plan.summary.map((item) => `- ${item}`)
+  ];
+  for (const group of plan.groups) {
+    lines.push(
+      "",
+      `## ${group.target.name}`,
+      `Canonical: ${group.canonicalRootUri}`,
+      `Target: ${group.target.id} ${group.target.rootUri}`,
+      `Risk: ${group.risk}`,
+      `Sources: ${group.sources.length}`,
+      `Impact: ${group.impactedRows.workflowRuns} runs, ${group.impactedRows.projectFiles} indexed files, ${group.impactedRows.memoryItems} memory items, ${group.impactedRows.activeRuns} active runs`
+    );
+    for (const source of group.sources) {
+      lines.push(`- ${source.id} ${source.rootUri} (${source.runCount} runs, ${source.indexedFiles} files, ${source.memoryItems} memory)`);
+    }
+    if (group.conflictWarnings.length) {
+      lines.push("Warnings:");
+      for (const warning of group.conflictWarnings) lines.push(`- ${warning}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 async function loadDashboardProjectContextFiles(projectRootUri: string): Promise<DashboardProjectDetail["contextFiles"]> {
@@ -9542,6 +13661,1080 @@ async function writeWorkflowShapeOptimization(projectDir: string, report: Workfl
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "workflow-shape-proposals.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(learningDir, "stage-recommendations.md"), formatWorkflowShapeOptimizationMarkdown(report), "utf8");
+}
+
+async function loadAgentImprovementReport(input: {
+  projectDir: string;
+  agentId?: string;
+  limit: number;
+  mode: AgentImprovementReport["mode"];
+}): Promise<AgentImprovementReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const limit = Math.max(1, input.limit);
+  const agentRecords = await loadAgentImprovementRecords(projectDir);
+  const workflows = await loadWorkflows(rootDir);
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit });
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit });
+  const reports = (await Promise.all(runs.slice(0, Math.min(runs.length, 20)).map((run) => loadCostQualityReport(run.id)))).filter((report): report is CostQualityReport => report !== null);
+  const stageHealth = runs.length ? await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) }) : [];
+  const workflowStageRefs = new Map<string, Array<{ workflowId: string; stageId: string; subagent: boolean }>>();
+  for (const workflow of workflows) {
+    for (const stage of workflow.stages) {
+      const refs = workflowStageRefs.get(stage.agent) ?? [];
+      refs.push({ workflowId: workflow.id, stageId: stage.id, subagent: false });
+      workflowStageRefs.set(stage.agent, refs);
+      for (const subagent of stage.subagents) {
+        const subrefs = workflowStageRefs.get(subagent) ?? [];
+        subrefs.push({ workflowId: workflow.id, stageId: stage.id, subagent: true });
+        workflowStageRefs.set(subagent, subrefs);
+      }
+    }
+  }
+
+  const focusedRecords = input.agentId
+    ? agentRecords.filter((record) => record.agent.id === input.agentId)
+    : agentRecords;
+  const candidates = focusedRecords
+    .map((record) => buildAgentImprovementCandidate({
+      record,
+      workflowRefs: workflowStageRefs.get(record.agent.id) ?? [],
+      runs,
+      scorecard,
+      reports,
+      stageHealth
+    }))
+    .filter((candidate): candidate is AgentImprovementCandidate => candidate !== null)
+    .sort((left, right) => priorityRank(right.priority) - priorityRank(left.priority) || agentImprovementRiskRank(left.riskLevel) - agentImprovementRiskRank(right.riskLevel) || left.agentId.localeCompare(right.agentId));
+
+  const sharedAgents = agentRecords.filter((record) => record.scope === "shared").length;
+  const projectLocalAgents = agentRecords.filter((record) => record.scope === "project-local").length;
+  const workflowReferences = [...workflowStageRefs.values()].reduce((sum, refs) => sum + refs.length, 0);
+  return {
+    kind: "agentflow_agent_improvement_report",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    limit,
+    mode: input.mode,
+    agentsAnalyzed: focusedRecords.length,
+    candidates,
+    evidenceSummary: {
+      runsAnalyzed: runs.length,
+      workflowReferences,
+      projectLocalAgents,
+      sharedAgents,
+      feedbackCounts: scorecard.feedbackCounts,
+      failedRuns: runs.filter((run) => run.status === "failed").length
+    },
+    ownedLearningFiles: [
+      ".agent-workflow/learning/agent-improvement-report.json",
+      ".agent-workflow/learning/agent-improvement-recommendations.md"
+    ],
+    autonomyBoundary: {
+      automatic: [
+        "Generate role-specific agent improvement candidates from local run evidence and static agent-card quality checks.",
+        "Write Agent Workflow-owned learning reports under .agent-workflow/learning when --write or daemon-owned writes are enabled.",
+        "Draft safe research queries from generic agent role names and abstract evidence labels without exporting private source or logs."
+      ],
+      approvalRequired: [
+        "Edit shared agents/**/*.yaml or project-local .agent-workflow/agents/*.yaml.",
+        "Add new reusable agent types, new tool privileges, broader autonomy, or weaker safety boundaries.",
+        "Run network/model research with private project details, prompts, logs, eval cases, or source snippets.",
+        "Promote an agent-card improvement into a release bundle."
+      ]
+    },
+    privacyBoundaries: [
+      "The report uses local metadata, run status, stage health, feedback counts, and compact report summaries.",
+      "Generated research queries are intentionally abstract: job title, public practice area, and generic quality goal only.",
+      "No private source, prompts, secrets, logs, or customer/project-specific data should be sent to web/model research without explicit approval."
+    ],
+    nextCommands: [
+      `npm run agentflow -- agent-improvement-report --project ${shellQuote(projectDir)} --write`,
+      `npm run agentflow -- agent-task technical-architect --project ${shellQuote(projectDir)} --task "Review agent improvement candidates and identify safe low-risk agent-card patches"`,
+      `npm run agentflow -- learning-report --project ${shellQuote(projectDir)} --json`,
+      `npm run agentflow -- learning-workflow-shape --project ${shellQuote(projectDir)} --write`
+    ]
+  };
+}
+
+async function loadAgentImprovementRecords(projectDir: string): Promise<Array<{
+  agent: AgentCard;
+  sourcePath: string;
+  scope: "shared" | "project-local";
+}>> {
+  const sharedRecords = await loadAgentRecords(rootDir);
+  const records: Array<{
+    agent: AgentCard;
+    sourcePath: string;
+    scope: "shared" | "project-local";
+  }> = sharedRecords.map((record) => ({
+    agent: record.value,
+    sourcePath: record.path,
+    scope: "shared" as const
+  }));
+  const projectAgentsDir = path.join(projectDir, ".agent-workflow", "agents");
+  const entries = await fs.readdir(projectAgentsDir, { withFileTypes: true }).catch(() => [] as Dirent[]);
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".yaml")) {
+      continue;
+    }
+    const filePath = path.join(projectAgentsDir, entry.name);
+    records.push({
+      agent: await loadYamlFile(filePath, agentCardSchema),
+      sourcePath: path.relative(projectDir, filePath),
+      scope: "project-local"
+    });
+  }
+  const merged = new Map<string, typeof records[number]>();
+  for (const record of records) {
+    merged.set(record.agent.id, record);
+  }
+  return [...merged.values()];
+}
+
+function buildAgentImprovementCandidate(input: {
+  record: { agent: AgentCard; sourcePath: string; scope: "shared" | "project-local" };
+  workflowRefs: Array<{ workflowId: string; stageId: string; subagent: boolean }>;
+  runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>;
+  scorecard: PreferenceScorecard;
+  reports: CostQualityReport[];
+  stageHealth: Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>;
+}): AgentImprovementCandidate | null {
+  const { agent } = input.record;
+  const joined = [
+    agent.purpose,
+    ...agent.use_when,
+    ...agent.avoid_when,
+    ...agent.can,
+    ...agent.cannot,
+    ...agent.requires_approval,
+    agent.prompt
+  ].join("\n").toLowerCase();
+  const workflowRefs = input.workflowRefs;
+  const usedStageIds = new Set(workflowRefs.map((ref) => ref.stageId));
+  const failingStages = input.stageHealth.filter((stage) => usedStageIds.has(stage.stageId) && stage.failedTasks > 0);
+  const costGroups = input.scorecard.groups.filter((group) => group.agentId === agent.id || usedStageIds.has(group.stageId));
+  const fallbackGroups = costGroups.filter((group) => group.fallbackRate > 0 || (group.averageLatencyMs ?? 0) > 30_000);
+  const evidence: string[] = [];
+  const mutableFields = new Set<AgentImprovementCandidate["suggestedMutableFields"][number]>();
+  const recommendations: string[] = [];
+  let priority: LearningProposalPriority = "low";
+  let riskLevel: LearningRiskLevel = "low";
+
+  if (workflowRefs.length) {
+    evidence.push(`Referenced by ${workflowRefs.length} workflow stage/subagent slot(s).`);
+  } else {
+    evidence.push("No reusable workflow references this agent yet.");
+    recommendations.push("Clarify when this agent should be selected, or keep it out of default workflows until evidence supports it.");
+    mutableFields.add("use_when");
+    priority = "medium";
+  }
+  if (failingStages.length) {
+    const failed = failingStages.reduce((sum, stage) => sum + stage.failedTasks, 0);
+    const total = failingStages.reduce((sum, stage) => sum + stage.totalTasks, 0);
+    evidence.push(`${failed}/${total} recent task(s) failed in stages connected to this agent.`);
+    recommendations.push("Add stronger failure-mode handling, handoff expectations, and verification receipts for stages this agent touches.");
+    mutableFields.add("prompt");
+    mutableFields.add("outputs");
+    priority = "high";
+    riskLevel = "medium";
+  }
+  if (fallbackGroups.length) {
+    evidence.push(`${fallbackGroups.length} routing/cost group(s) show fallback or high latency pressure.`);
+    recommendations.push("Tune model-tier guidance and context budget so the router can choose cheaper fast models for routine work and reasoning models for risky work.");
+    mutableFields.add("context_budget");
+    mutableFields.add("prompt");
+    priority = priority === "high" ? priority : "medium";
+  }
+  if (!joined.includes("receipt")) {
+    evidence.push("Agent card does not explicitly require receipts or auditable evidence.");
+    recommendations.push("Add receipt language so autonomous actions leave compact proof of what changed, why, and how it was verified.");
+    mutableFields.add("prompt");
+  }
+  if (!joined.includes("validat") && !joined.includes("test")) {
+    evidence.push("Agent card does not strongly name validation or test expectations.");
+    recommendations.push("Add role-specific validation expectations before the agent marks work complete.");
+    mutableFields.add("prompt");
+    mutableFields.add("can");
+  }
+  if ((agent.category === "automatic" || String(agent.autonomy) === "wide-open") && !agent.requires_approval.length) {
+    evidence.push("Automatic/high-autonomy agent has no explicit approval boundary entries.");
+    recommendations.push("Add explicit danger gates for destructive commands, network/export behavior, privilege expansion, and shared-definition edits.");
+    mutableFields.add("requires_approval");
+    priority = "high";
+    riskLevel = "medium";
+  }
+  if ((agent.category === "product" || agent.id.includes("ux")) && !joined.includes("accessib")) {
+    evidence.push("Product/UX agent does not explicitly mention accessibility.");
+    recommendations.push("Add accessibility, responsive layout, and trust/polish review criteria to the role prompt.");
+    mutableFields.add("prompt");
+  }
+  if ((agent.category === "development" || agent.id.includes("security")) && !joined.includes("secret") && !joined.includes("auth")) {
+    evidence.push("Development/security-adjacent agent card does not explicitly mention auth or secret handling.");
+    recommendations.push("Add scoped checks for auth boundaries, secrets, permissions, and blast radius when relevant to the role.");
+    mutableFields.add("prompt");
+  }
+  if (!recommendations.length) {
+    return null;
+  }
+
+  const autoApplyEligible = input.record.scope === "project-local" && agentImprovementRiskRank(riskLevel) <= agentImprovementRiskRank("medium") && !recommendations.some((item) => /autonomy|approval|permission|privilege|network|export/i.test(item));
+  return {
+    id: `agent-${agent.id.replace(/[^a-z0-9_-]/gi, "-")}-improvement`,
+    agentId: agent.id,
+    displayName: agent.display_name,
+    scope: input.record.scope,
+    category: agent.category,
+    priority,
+    riskLevel,
+    sourcePath: input.record.sourcePath,
+    currentRoleSummary: agent.purpose,
+    evidence: evidence.slice(0, 6),
+    recommendation: dedupeStrings(recommendations).join(" "),
+    suggestedMutableFields: [...mutableFields],
+    safeResearchQueries: buildSafeAgentImprovementResearchQueries(agent),
+    validationPlan: [
+      "Validate updated agent YAML against the registry schema.",
+      "Run npm run validate and npm run contract-test.",
+      "Compare a small holdout set of recent tasks before/after the candidate prompt change.",
+      "Check cost, fallback, failure, and user-feedback deltas before promotion."
+    ],
+    autoApplyEligible,
+    approvalRequired: !autoApplyEligible
+  };
+}
+
+function buildSafeAgentImprovementResearchQueries(agent: AgentCard): string[] {
+  const role = agent.display_name || agent.id;
+  const category = agent.category;
+  return [
+    `best practices for ${role} AI agent role in software development workflows`,
+    `evaluation checklist for ${category} AI coding agent quality and reliability`,
+    `prompt design patterns for ${role} agent receipts validation and handoffs`
+  ];
+}
+
+function priorityRank(priority: LearningProposalPriority): number {
+  return priority === "high" ? 3 : priority === "medium" ? 2 : 1;
+}
+
+function agentImprovementRiskRank(risk: LearningRiskLevel): number {
+  return risk === "high" ? 3 : risk === "medium" ? 2 : 1;
+}
+
+function dedupeStrings(items: string[]): string[] {
+  return [...new Set(items)];
+}
+
+async function writeAgentImprovementReport(projectDir: string, report: AgentImprovementReport): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-report.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-recommendations.md"), formatAgentImprovementMarkdown(report), "utf8");
+}
+
+async function buildAgentImprovementPatchPlan(projectDir: string, report: AgentImprovementReport, ids: string[] | "all"): Promise<AgentImprovementPatchPlan> {
+  const candidates = report.candidates.filter((candidate) => ids === "all" || ids.includes(candidate.id) || ids.includes(candidate.agentId));
+  const selectedIds = candidates.map((candidate) => candidate.id);
+  const skippedIds = ids === "all" ? [] : ids.filter((id) => !selectedIds.includes(id) && !candidates.some((candidate) => candidate.agentId === id));
+  const records = await loadAgentImprovementRecords(projectDir);
+  const recordById = new Map(records.map((record) => [record.agent.id, record]));
+  const patches: AgentImprovementPatch[] = [];
+  for (const candidate of candidates) {
+    const record = recordById.get(candidate.agentId);
+    if (!record) {
+      continue;
+    }
+    const absoluteSourcePath = resolveAgentImprovementSourcePath(projectDir, record);
+    const sourceYaml = await fs.readFile(absoluteSourcePath, "utf8");
+    const sourceHash = sha256(sourceYaml);
+    const proposedAgent = proposeAgentImprovement(record.agent, candidate);
+    const validation = agentCardSchema.safeParse(proposedAgent);
+    const proposedYaml = YAML.stringify(proposedAgent);
+    patches.push({
+      id: `patch-${candidate.id}`,
+      candidateId: candidate.id,
+      agentId: candidate.agentId,
+      displayName: candidate.displayName,
+      scope: candidate.scope,
+      sourcePath: candidate.sourcePath,
+      sourceHash,
+      priority: candidate.priority,
+      riskLevel: candidate.riskLevel,
+      approvalRequired: candidate.approvalRequired || candidate.scope === "shared",
+      autoApplyEligible: candidate.autoApplyEligible && candidate.scope === "project-local" && validation.success,
+      changedFields: candidate.suggestedMutableFields,
+      rationale: candidate.recommendation,
+      validation: {
+        schemaValid: validation.success,
+        errors: validation.success ? [] : validation.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+      },
+      unifiedDiff: buildUnifiedDiff(candidate.sourcePath, sourceYaml, proposedYaml),
+      proposedYaml,
+      rollback: {
+        restoreSourceHash: sourceHash,
+        restorePath: candidate.sourcePath
+      }
+    });
+  }
+
+  return {
+    kind: "agentflow_agent_improvement_patch_plan",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    sourceReportGeneratedAt: report.generatedAt,
+    selectedIds,
+    skippedIds,
+    patches,
+    summary: [
+      `${patches.length} agent improvement patch preview(s) generated.`,
+      `${patches.filter((patch) => patch.validation.schemaValid).length} schema-valid preview(s).`,
+      `${patches.filter((patch) => patch.autoApplyEligible).length} low-risk project-local preview(s) would be eligible for a future explicit auto-apply setting.`,
+      `${patches.filter((patch) => patch.approvalRequired).length} preview(s) require approval before touching agent YAML.`
+    ],
+    ownedLearningFiles: [
+      ".agent-workflow/learning/agent-improvement-patches.json",
+      ".agent-workflow/learning/agent-improvement-patches.md"
+    ]
+  };
+}
+
+function resolveAgentImprovementSourcePath(projectDir: string, record: { sourcePath: string; scope: "shared" | "project-local" }): string {
+  return record.scope === "shared"
+    ? path.join(rootDir, record.sourcePath)
+    : path.join(projectDir, record.sourcePath);
+}
+
+function proposeAgentImprovement(agent: AgentCard, candidate: AgentImprovementCandidate): AgentCard {
+  const proposed = structuredClone(agent);
+  const notes = buildAgentImprovementPromptNotes(candidate);
+  if (candidate.suggestedMutableFields.includes("prompt")) {
+    proposed.prompt = appendAgentPromptNotes(proposed.prompt, notes);
+  }
+  if (candidate.suggestedMutableFields.includes("can")) {
+    proposed.can = addUniqueStrings(proposed.can, ["Produce role-specific validation evidence before handoff."]);
+  }
+  if (candidate.suggestedMutableFields.includes("requires_approval")) {
+    proposed.requires_approval = addUniqueStrings(proposed.requires_approval, [
+      "Destructive commands, external network or export actions, privilege expansion, provider changes, and edits to shared reusable definitions."
+    ]);
+  }
+  if (candidate.suggestedMutableFields.includes("context_budget")) {
+    proposed.context_budget = {
+      ...proposed.context_budget,
+      preferred_sources: addUniqueStrings(proposed.context_budget.preferred_sources, ["recent relevant receipts", "evaluation evidence", "project-local tuning notes"])
+    };
+  }
+  if (candidate.suggestedMutableFields.includes("outputs")) {
+    proposed.outputs = {
+      ...proposed.outputs,
+      schema: proposed.outputs.schema || "structured_summary"
+    };
+  }
+  return proposed;
+}
+
+function buildAgentImprovementPromptNotes(candidate: AgentImprovementCandidate): string {
+  const bullets = [
+    "Leave compact receipts for autonomous or delegated work, including what changed, why, and how it was checked.",
+    "Name the validation evidence needed before handoff, scaled to the risk of the task.",
+    candidate.category === "product" ? "Include accessibility, responsive behavior, user trust, and polish in product-surface reviews." : "",
+    candidate.category === "development" ? "Check auth, secret handling, permissions, and blast radius when the task touches runtime behavior." : "",
+    candidate.category === "automatic" ? "Stop for approval before destructive, external, provider, privilege, or reusable-definition changes." : ""
+  ].filter(Boolean);
+  return [
+    "Local learning improvement notes:",
+    ...bullets.map((item) => `- ${item}`)
+  ].join("\n");
+}
+
+function appendAgentPromptNotes(prompt: string, notes: string): string {
+  if (prompt.includes("Local learning improvement notes:")) {
+    return prompt;
+  }
+  return `${prompt.trim()}\n\n${notes}\n`;
+}
+
+function addUniqueStrings(values: string[], additions: string[]): string[] {
+  const seen = new Set(values);
+  const output = [...values];
+  for (const addition of additions) {
+    if (!seen.has(addition)) {
+      output.push(addition);
+      seen.add(addition);
+    }
+  }
+  return output;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function buildUnifiedDiff(filePath: string, before: string, after: string): string {
+  if (before === after) {
+    return "";
+  }
+  const beforeLines = before.trimEnd().split("\n");
+  const afterLines = after.trimEnd().split("\n");
+  return [
+    `--- a/${filePath}`,
+    `+++ b/${filePath}`,
+    "@@ full-file preview @@",
+    ...beforeLines.map((line) => `-${line}`),
+    ...afterLines.map((line) => `+${line}`)
+  ].join("\n");
+}
+
+async function writeAgentImprovementPatchPlan(projectDir: string, plan: AgentImprovementPatchPlan): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-patches.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-patches.md"), formatAgentImprovementPatchPlanMarkdown(plan), "utf8");
+}
+
+async function buildAgentImprovementEvalPlan(projectDir: string, patchPlan: AgentImprovementPatchPlan, ids: string[] | "all", limit: number): Promise<AgentImprovementEvalPlan> {
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: Math.max(1, limit) });
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit: Math.max(1, limit) });
+  const selectedPatches = patchPlan.patches.filter((patch) =>
+    ids === "all" || ids.includes(patch.id) || ids.includes(patch.candidateId) || ids.includes(patch.agentId)
+  );
+  const selectedIds = selectedPatches.map((patch) => patch.id);
+  const skippedIds = ids === "all" ? [] : ids.filter((id) => !selectedPatches.some((patch) => patch.id === id || patch.candidateId === id || patch.agentId === id));
+  const evaluations = await Promise.all(selectedPatches.map((patch) => buildAgentImprovementEval(projectDir, patch, runs, scorecard)));
+  const passCount = evaluations.filter((item) => item.status === "pass").length;
+  const warnCount = evaluations.filter((item) => item.status === "warn").length;
+  const failCount = evaluations.filter((item) => item.status === "fail").length;
+  return {
+    kind: "agentflow_agent_improvement_eval_plan",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    sourcePatchPlanGeneratedAt: patchPlan.generatedAt,
+    selectedIds,
+    skippedIds,
+    evaluations,
+    summary: [
+      `${evaluations.length} agent improvement patch eval(s) scored.`,
+      `${passCount} passed, ${warnCount} need more evidence, ${failCount} failed promotion gates.`,
+      `${evaluations.filter((item) => item.promotionReady).length} promotion-ready preview(s).`,
+      `${evaluations.filter((item) => item.autoApplyReady).length} future auto-apply-ready project-local preview(s).`
+    ],
+    promotionPolicy: {
+      passThreshold: 80,
+      autoApplyThreshold: 90,
+      minimumHoldoutTasks: 2,
+      maxRiskForAutoApply: "medium"
+    },
+    ownedLearningFiles: [
+      ".agent-workflow/learning/agent-improvement-evals.json",
+      ".agent-workflow/learning/agent-improvement-evals.md"
+    ]
+  };
+}
+
+async function buildAgentImprovementEval(
+  projectDir: string,
+  patch: AgentImprovementPatch,
+  runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>,
+  scorecard: PreferenceScorecard
+): Promise<AgentImprovementEval> {
+  const sourceCurrent = await fs.readFile(resolveAgentPatchSourcePath(projectDir, patch), "utf8").then((value) => sha256(value) === patch.sourceHash).catch(() => false);
+  const holdoutTasks = selectAgentImprovementHoldoutTasks(patch, runs);
+  const agentGroups = scorecard.groups.filter((group) => group.agentId === patch.agentId);
+  const hasFeedback = Object.values(scorecard.feedbackCounts).reduce((sum, count) => sum + count, 0) > 0;
+  const fallbackPressure = agentGroups.some((group) => group.fallbackRate > 0 || (group.averageLatencyMs ?? 0) > 30_000);
+  const gates: AgentImprovementEval["gates"] = [
+    {
+      id: "schema-valid",
+      passed: patch.validation.schemaValid,
+      weight: 25,
+      message: patch.validation.schemaValid ? "Proposed YAML validates against the agent schema." : `Schema validation failed: ${patch.validation.errors.join("; ")}`
+    },
+    {
+      id: "rollback-ready",
+      passed: Boolean(patch.rollback.restoreSourceHash && patch.rollback.restorePath && sourceCurrent),
+      weight: 20,
+      message: sourceCurrent ? "Current source hash matches the patch preview rollback hash." : "Source changed since patch preview; regenerate before promotion."
+    },
+    {
+      id: "holdout-coverage",
+      passed: holdoutTasks.length >= 2,
+      weight: 20,
+      message: holdoutTasks.length >= 2 ? `${holdoutTasks.length} representative task(s) available for before/after comparison.` : `${holdoutTasks.length} representative task(s) found; collect more runs before promotion.`
+    },
+    {
+      id: "risk-boundary",
+      passed: patch.riskLevel !== "high" && !/privilege|provider|network|export|weaker safety|broader autonomy/i.test(patch.rationale),
+      weight: 20,
+      message: patch.riskLevel === "high" ? "High-risk patches require manual review." : "Patch stays within low/medium-risk role guidance."
+    },
+    {
+      id: "evidence-signal",
+      passed: hasFeedback || fallbackPressure || holdoutTasks.some((task) => task.status === "failed"),
+      weight: 15,
+      message: hasFeedback || fallbackPressure ? "Local feedback or routing evidence supports scoring this patch." : "No strong feedback/routing/failure signal yet; treat as speculative."
+    }
+  ];
+  const score = gates.reduce((sum, gate) => sum + (gate.passed ? gate.weight : 0), 0);
+  const status: AgentImprovementEval["status"] = score >= 80 ? "pass" : score >= 55 ? "warn" : "fail";
+  const promotionReady = status === "pass" && patch.validation.schemaValid && sourceCurrent;
+  const autoApplyReady = promotionReady && patch.scope === "project-local" && patch.autoApplyEligible && score >= 90 && agentImprovementRiskRank(patch.riskLevel) <= agentImprovementRiskRank("medium");
+  return {
+    id: `eval-${patch.id}`,
+    patchId: patch.id,
+    candidateId: patch.candidateId,
+    agentId: patch.agentId,
+    displayName: patch.displayName,
+    scope: patch.scope,
+    sourcePath: patch.sourcePath,
+    priority: patch.priority,
+    riskLevel: patch.riskLevel,
+    score,
+    status,
+    promotionReady,
+    autoApplyReady,
+    holdoutTasks,
+    gates,
+    rollback: {
+      ...patch.rollback,
+      sourceHashCurrent: sourceCurrent
+    },
+    recommendation: promotionReady
+      ? autoApplyReady ? "Eligible for future owner-enabled project-local auto-apply." : "Promotion-ready for manual review; shared or gated scope prevents autonomous apply."
+      : "Do not promote yet; address failed gates or collect more holdout evidence."
+  };
+}
+
+function resolveAgentPatchSourcePath(projectDir: string, patch: AgentImprovementPatch): string {
+  return patch.scope === "shared" ? path.join(rootDir, patch.sourcePath) : path.join(projectDir, patch.sourcePath);
+}
+
+function selectAgentImprovementHoldoutTasks(patch: AgentImprovementPatch, runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>): AgentImprovementEval["holdoutTasks"] {
+  const agentTerms = new Set([
+    patch.agentId,
+    patch.displayName,
+    ...patch.changedFields
+  ].map((item) => normalizeLookup(item)).filter(Boolean));
+  return runs
+    .filter((run) => {
+      const haystack = normalizeLookup(`${run.workflowId} ${run.task} ${run.status}`);
+      return patch.scope === "shared" || [...agentTerms].some((term) => haystack.includes(term));
+    })
+    .slice(0, 5)
+    .map((run) => ({
+      runId: run.id,
+      workflowId: run.workflowId,
+      task: run.task,
+      status: run.status,
+      startedAt: run.startedAt,
+      evidence: run.status === "completed" ? "completed representative run" : run.status === "failed" ? "failed representative run" : "in-flight representative run"
+    }));
+}
+
+async function writeAgentImprovementEvalPlan(projectDir: string, plan: AgentImprovementEvalPlan): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-evals.json"), `${JSON.stringify(plan, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-evals.md"), formatAgentImprovementEvalPlanMarkdown(plan), "utf8");
+}
+
+function buildAgentImprovementPromotionQueue(
+  projectDir: string,
+  patchPlan: AgentImprovementPatchPlan,
+  evalPlan: AgentImprovementEvalPlan,
+  ids: string[] | "all",
+  existingQueue?: AgentImprovementPromotionQueue
+): AgentImprovementPromotionQueue {
+  const generatedAt = new Date().toISOString();
+  const patchById = new Map(patchPlan.patches.map((patch) => [patch.id, patch]));
+  const existingById = new Map((existingQueue?.items ?? []).map((item) => [item.id, item]));
+  const selectedEvaluations = evalPlan.evaluations.filter((evaluation) =>
+    evaluation.promotionReady &&
+    (ids === "all" || ids.includes(evaluation.id) || ids.includes(evaluation.patchId) || ids.includes(evaluation.candidateId) || ids.includes(evaluation.agentId))
+  );
+  const selectedIds = selectedEvaluations.map((evaluation) => evaluation.id);
+  const skippedIds = ids === "all" ? [] : ids.filter((id) =>
+    !selectedEvaluations.some((evaluation) => evaluation.id === id || evaluation.patchId === id || evaluation.candidateId === id || evaluation.agentId === id)
+  );
+  const items: AgentImprovementPromotionItem[] = selectedEvaluations.flatMap((evaluation) => {
+    const patch = patchById.get(evaluation.patchId);
+    if (!patch) {
+      return [];
+    }
+    const id = `promotion-${patch.id}`;
+    const previous = existingById.get(id);
+    const sourceHashStillMatches = previous?.sourceHash === patch.sourceHash && previous?.score === evaluation.score;
+    const preservedStatus = sourceHashStillMatches && previous?.status !== "superseded" ? previous?.status ?? "pending" : "pending";
+    const preserveDecision = sourceHashStillMatches && (preservedStatus === "approved" || preservedStatus === "rejected");
+    return [{
+      id,
+      patchId: patch.id,
+      evalId: evaluation.id,
+      candidateId: patch.candidateId,
+      agentId: patch.agentId,
+      displayName: patch.displayName,
+      scope: patch.scope,
+      status: preservedStatus,
+      createdAt: sourceHashStillMatches ? previous?.createdAt ?? generatedAt : generatedAt,
+      decidedAt: preserveDecision ? previous?.decidedAt ?? null : null,
+      reviewer: preserveDecision ? previous?.reviewer ?? null : null,
+      note: preserveDecision ? previous?.note ?? null : null,
+      score: evaluation.score,
+      promotionReady: evaluation.promotionReady,
+      autoApplyReady: evaluation.autoApplyReady,
+      priority: patch.priority,
+      riskLevel: patch.riskLevel,
+      sourcePath: patch.sourcePath,
+      sourceHash: patch.sourceHash,
+      diff: patch.unifiedDiff,
+      rollback: evaluation.rollback,
+      approvalRequired: patch.scope === "shared" || patch.approvalRequired || !evaluation.autoApplyReady,
+      recommendation: evaluation.recommendation,
+      rationale: patch.rationale
+    }];
+  });
+  const currentIds = new Set(items.map((item) => item.id));
+  const untouchedExistingItems = ids === "all"
+    ? []
+    : (existingQueue?.items ?? []).filter((item) => !currentIds.has(item.id));
+  const supersededItems = ids === "all"
+    ? (existingQueue?.items ?? [])
+      .filter((item) => !currentIds.has(item.id) && item.status !== "rejected")
+      .map((item) => ({
+        ...item,
+        status: "superseded" as const,
+        decidedAt: item.decidedAt ?? generatedAt,
+        note: item.note ?? "Superseded by a regenerated promotion queue or a no-longer-passing eval."
+      }))
+    : [];
+  const allItems = [...items, ...untouchedExistingItems, ...supersededItems].sort((left, right) =>
+    promotionStatusRank(left.status) - promotionStatusRank(right.status) ||
+    priorityRank(right.priority) - priorityRank(left.priority) ||
+    right.score - left.score ||
+    left.agentId.localeCompare(right.agentId)
+  );
+  const queue: AgentImprovementPromotionQueue = {
+    kind: "agentflow_agent_improvement_promotion_queue",
+    generatedAt,
+    updatedAt: generatedAt,
+    projectRootUri: projectDir,
+    sourceEvalPlanGeneratedAt: evalPlan.generatedAt,
+    selectedIds,
+    skippedIds,
+    summary: [],
+    items: allItems,
+    ownedLearningFiles: [
+      ".agent-workflow/learning/agent-improvement-promotions.json",
+      ".agent-workflow/learning/agent-improvement-promotions.md",
+      ".agent-workflow/learning/agent-improvement-promotion-receipts.json",
+      ".agent-workflow/learning/agent-improvement-promotion-receipts.md"
+    ]
+  };
+  return {
+    ...queue,
+    summary: summarizeAgentImprovementPromotionQueue(queue)
+  };
+}
+
+function summarizeAgentImprovementPromotionQueue(queue: AgentImprovementPromotionQueue): string[] {
+  const activeItems = queue.items.filter((item) => item.status !== "superseded");
+  return [
+    `${activeItems.length} promotion-ready agent improvement patch(es) queued.`,
+    `${activeItems.filter((item) => item.status === "pending").length} pending decision(s).`,
+    `${activeItems.filter((item) => item.status === "approved").length} approved decision(s).`,
+    `${activeItems.filter((item) => item.status === "rejected").length} rejected decision(s).`,
+    `${activeItems.filter((item) => item.autoApplyReady).length} project-local patch(es) meet future auto-apply gates.`,
+    `${activeItems.filter((item) => item.approvalRequired).length} patch(es) still require owner approval before editing YAML.`,
+    `${queue.items.filter((item) => item.status === "superseded").length} stale promotion item(s) marked superseded.`
+  ];
+}
+
+function promotionStatusRank(status: AgentImprovementPromotionStatus): number {
+  return status === "pending" ? 0 : status === "approved" ? 1 : status === "rejected" ? 2 : 3;
+}
+
+async function readAgentImprovementPromotionQueue(projectDir: string): Promise<AgentImprovementPromotionQueue> {
+  const queuePath = path.join(projectDir, ".agent-workflow", "learning", "agent-improvement-promotions.json");
+  const raw = await fs.readFile(queuePath, "utf8");
+  const parsed = JSON.parse(raw) as AgentImprovementPromotionQueue;
+  if (parsed.kind !== "agentflow_agent_improvement_promotion_queue" || !Array.isArray(parsed.items)) {
+    throw new Error(`Invalid agent improvement promotion queue: ${queuePath}`);
+  }
+  return parsed;
+}
+
+async function writeAgentImprovementPromotionQueue(projectDir: string, queue: AgentImprovementPromotionQueue): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-promotions.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-promotions.md"), formatAgentImprovementPromotionQueueMarkdown(queue), "utf8");
+}
+
+async function readAgentImprovementPromotionReceipts(projectDir: string): Promise<AgentImprovementPromotionReceiptLog> {
+  const receiptsPath = path.join(projectDir, ".agent-workflow", "learning", "agent-improvement-promotion-receipts.json");
+  const raw = await fs.readFile(receiptsPath, "utf8");
+  const parsed = JSON.parse(raw) as AgentImprovementPromotionReceiptLog;
+  if (parsed.kind !== "agentflow_agent_improvement_promotion_receipts" || !Array.isArray(parsed.events)) {
+    throw new Error(`Invalid agent improvement promotion receipts: ${receiptsPath}`);
+  }
+  return parsed;
+}
+
+function emptyAgentImprovementPromotionReceipts(projectDir: string): AgentImprovementPromotionReceiptLog {
+  return {
+    kind: "agentflow_agent_improvement_promotion_receipts",
+    projectRootUri: projectDir,
+    updatedAt: new Date().toISOString(),
+    events: []
+  };
+}
+
+async function writeAgentImprovementPromotionReceipts(projectDir: string, receipts: AgentImprovementPromotionReceiptLog): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-promotion-receipts.json"), `${JSON.stringify(receipts, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-promotion-receipts.md"), formatAgentImprovementPromotionReceiptsMarkdown(receipts), "utf8");
+}
+
+async function decideAgentImprovementPromotions(input: {
+  projectDir: string;
+  queue: AgentImprovementPromotionQueue;
+  ids: string[] | "all";
+  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected">;
+  reviewer?: string;
+  note?: string;
+}): Promise<AgentImprovementPromotionDecisionResult> {
+  const matching = input.queue.items.filter((item) =>
+    input.ids === "all" || input.ids.includes(item.id) || input.ids.includes(item.patchId) || input.ids.includes(item.evalId) || input.ids.includes(item.candidateId) || input.ids.includes(item.agentId)
+  );
+  const selected = matching.filter((item) => item.status === "pending");
+  const selectedIds = selected.map((item) => item.id);
+  const skippedIds = input.ids === "all" ? [] : input.ids.filter((id) =>
+    !matching.some((item) => item.id === id || item.patchId === id || item.evalId === id || item.candidateId === id || item.agentId === id)
+  );
+  const now = new Date().toISOString();
+  const queueDraft = {
+    ...input.queue,
+    updatedAt: now,
+    items: input.queue.items.map((item) => selectedIds.includes(item.id)
+      ? {
+        ...item,
+        status: input.status,
+        decidedAt: now,
+        reviewer: input.reviewer ?? "local-operator",
+        note: input.note ?? `${input.status} from agent-improvement-promotions`
+      }
+      : item)
+  };
+  const queue = {
+    ...queueDraft,
+    summary: summarizeAgentImprovementPromotionQueue(queueDraft)
+  };
+  const existingReceipts = await readAgentImprovementPromotionReceipts(input.projectDir).catch(() => emptyAgentImprovementPromotionReceipts(input.projectDir));
+  const existingKeys = new Set(existingReceipts.events.map((event) => `${event.promotionId}\0${event.status}\0${event.sourceHash}`));
+  const events = selected.flatMap((item) => {
+    const key = `${item.id}\0${input.status}\0${item.sourceHash}`;
+    if (existingKeys.has(key)) {
+      return [];
+    }
+    return [{
+      id: `receipt-${input.status}-${item.id}-${now.replace(/[^0-9]/g, "")}`,
+      promotionId: item.id,
+      patchId: item.patchId,
+      evalId: item.evalId,
+      agentId: item.agentId,
+      status: input.status,
+      score: item.score,
+      riskLevel: item.riskLevel,
+      scope: item.scope,
+      actor: input.reviewer ?? "local-operator",
+      note: input.note ?? `${input.status} from agent-improvement-promotions`,
+      sourcePath: item.sourcePath,
+      sourceHash: item.sourceHash,
+      rollback: item.rollback,
+      createdAt: now
+    }];
+  });
+  const receipts = {
+    ...existingReceipts,
+    updatedAt: now,
+    events: [...existingReceipts.events, ...events]
+  };
+  await writeAgentImprovementPromotionReceipts(input.projectDir, receipts);
+  return { queue, receipts, selectedIds, skippedIds };
+}
+
+function formatAgentImprovementPromotionQueue(queue: AgentImprovementPromotionQueue): string {
+  return [
+    `Agent improvement promotion queue (${queue.generatedAt})`,
+    `Project: ${queue.projectRootUri}`,
+    `Selected: ${queue.selectedIds.length}`,
+    `Skipped: ${queue.skippedIds.join(", ") || "none"}`,
+    "",
+    ...queue.summary.map((item) => `- ${item}`),
+    "",
+    "Promotions:",
+    ...(queue.items.length ? queue.items.map((item) => `- ${item.status} ${item.score}/100: ${item.agentId} (${item.scope}, ${item.priority}/${item.riskLevel}) approval=${item.approvalRequired ? "required" : "not-required"} ${item.id}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatAgentImprovementPromotionQueueMarkdown(queue: AgentImprovementPromotionQueue): string {
+  const rows = queue.items.map((item) => [
+    `## ${item.displayName} (${item.agentId})`,
+    "",
+    `- Promotion: ${item.id}`,
+    `- Status: ${item.status}`,
+    `- Score: ${item.score}/100`,
+    `- Scope: ${item.scope}`,
+    `- Risk: ${item.riskLevel}`,
+    `- Approval required: ${item.approvalRequired ? "yes" : "no"}`,
+    `- Auto-apply ready: ${item.autoApplyReady ? "yes" : "no"}`,
+    `- Source: ${item.sourcePath}`,
+    `- Source hash: ${item.sourceHash}`,
+    `- Rollback hash current: ${item.rollback.sourceHashCurrent ? "yes" : "no"}`,
+    `- Recommendation: ${item.recommendation}`,
+    "",
+    "Rationale:",
+    "",
+    item.rationale,
+    "",
+    "Diff:",
+    "",
+    "```diff",
+    item.diff || "(no diff)",
+    "```"
+  ].join("\n")).join("\n\n");
+  return [
+    "# Agent Improvement Promotion Queue",
+    "",
+    `Generated: ${queue.generatedAt}`,
+    `Updated: ${queue.updatedAt}`,
+    `Project: ${queue.projectRootUri}`,
+    `Source eval plan: ${queue.sourceEvalPlanGeneratedAt}`,
+    "",
+    "## Summary",
+    "",
+    ...queue.summary.map((item) => `- ${item}`),
+    "",
+    rows || "No promotion-ready agent improvement patches.",
+    ""
+  ].join("\n");
+}
+
+function formatAgentImprovementPromotionReceipts(receipts: AgentImprovementPromotionReceiptLog): string {
+  return [
+    `Agent improvement promotion receipts (${receipts.updatedAt})`,
+    `Project: ${receipts.projectRootUri}`,
+    `Events: ${receipts.events.length}`,
+    "",
+    ...(receipts.events.length ? receipts.events.slice(-20).map((event) => `- ${event.status}: ${event.agentId} ${event.score}/100 by ${event.actor} (${event.promotionId})`) : ["- none"])
+  ].join("\n");
+}
+
+function formatAgentImprovementPromotionReceiptsMarkdown(receipts: AgentImprovementPromotionReceiptLog): string {
+  return [
+    "# Agent Improvement Promotion Receipts",
+    "",
+    `Updated: ${receipts.updatedAt}`,
+    `Project: ${receipts.projectRootUri}`,
+    "",
+    ...(receipts.events.length
+      ? receipts.events.map((event) => [
+        `## ${event.status}: ${event.agentId}`,
+        "",
+        `- Receipt: ${event.id}`,
+        `- Promotion: ${event.promotionId}`,
+        `- Patch: ${event.patchId}`,
+        `- Eval: ${event.evalId}`,
+        `- Score: ${event.score}/100`,
+        `- Scope: ${event.scope}`,
+        `- Risk: ${event.riskLevel}`,
+        `- Actor: ${event.actor}`,
+        `- Note: ${event.note}`,
+        `- Source: ${event.sourcePath}`,
+        `- Source hash: ${event.sourceHash}`,
+        `- Rollback hash current: ${event.rollback.sourceHashCurrent ? "yes" : "no"}`
+      ].join("\n")).join("\n\n")
+      : ["No promotion decisions recorded yet."]),
+    ""
+  ].join("\n");
+}
+
+function formatAgentImprovementEvalPlan(plan: AgentImprovementEvalPlan): string {
+  return [
+    `Agent improvement eval plan (${plan.generatedAt})`,
+    `Project: ${plan.projectRootUri}`,
+    `Selected: ${plan.selectedIds.length}`,
+    `Skipped: ${plan.skippedIds.join(", ") || "none"}`,
+    `Policy: pass>=${plan.promotionPolicy.passThreshold}, auto>=${plan.promotionPolicy.autoApplyThreshold}, minimum holdout=${plan.promotionPolicy.minimumHoldoutTasks}`,
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    "Evaluations:",
+    ...(plan.evaluations.length ? plan.evaluations.map((item) => `- ${item.status} ${item.score}/100: ${item.agentId} (${item.scope}) holdout=${item.holdoutTasks.length} promotion=${item.promotionReady ? "ready" : "not-ready"} auto=${item.autoApplyReady ? "ready" : "not-ready"} - ${item.recommendation}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatAgentImprovementEvalPlanMarkdown(plan: AgentImprovementEvalPlan): string {
+  const rows = plan.evaluations.map((item) => [
+    `## ${item.displayName} (${item.agentId})`,
+    "",
+    `- Status: ${item.status}`,
+    `- Score: ${item.score}/100`,
+    `- Scope: ${item.scope}`,
+    `- Risk: ${item.riskLevel}`,
+    `- Promotion ready: ${item.promotionReady ? "yes" : "no"}`,
+    `- Auto-apply ready: ${item.autoApplyReady ? "yes" : "no"}`,
+    `- Rollback hash current: ${item.rollback.sourceHashCurrent ? "yes" : "no"}`,
+    `- Recommendation: ${item.recommendation}`,
+    "",
+    "### Gates",
+    "",
+    ...item.gates.map((gate) => `- ${gate.passed ? "pass" : "fail"} (${gate.weight}): ${gate.id} - ${gate.message}`),
+    "",
+    "### Holdout Tasks",
+    "",
+    ...(item.holdoutTasks.length ? item.holdoutTasks.map((task) => `- ${task.status}: ${task.workflowId} ${task.runId.slice(0, 8)} - ${task.task}`) : ["- none"])
+  ].join("\n")).join("\n\n");
+  return [
+    "# Agent Improvement Holdout Evals",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    "",
+    "## Summary",
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    rows || "No agent improvement evals generated.",
+    ""
+  ].join("\n");
+}
+
+function formatAgentImprovementPatchPlan(plan: AgentImprovementPatchPlan): string {
+  return [
+    `Agent improvement patch plan (${plan.generatedAt})`,
+    `Project: ${plan.projectRootUri}`,
+    `Selected: ${plan.selectedIds.length}`,
+    `Skipped: ${plan.skippedIds.join(", ") || "none"}`,
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    "Patches:",
+    ...(plan.patches.length ? plan.patches.map((patch) => `- ${patch.priority}/${patch.riskLevel}: ${patch.agentId} (${patch.scope}) fields=${patch.changedFields.join(", ") || "none"} schema=${patch.validation.schemaValid ? "valid" : "invalid"} approval=${patch.approvalRequired ? "required" : "not-required"}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatAgentImprovementPatchPlanMarkdown(plan: AgentImprovementPatchPlan): string {
+  const patches = plan.patches.map((patch) => [
+    `## ${patch.displayName} (${patch.agentId})`,
+    "",
+    `- Scope: ${patch.scope}`,
+    `- Source: ${patch.sourcePath}`,
+    `- Source hash: ${patch.sourceHash}`,
+    `- Priority/Risk: ${patch.priority}/${patch.riskLevel}`,
+    `- Schema valid: ${patch.validation.schemaValid ? "yes" : "no"}`,
+    `- Approval required: ${patch.approvalRequired ? "yes" : "no"}`,
+    `- Auto-apply eligible: ${patch.autoApplyEligible ? "yes" : "no"}`,
+    `- Changed fields: ${patch.changedFields.join(", ") || "none"}`,
+    `- Rationale: ${patch.rationale}`,
+    patch.validation.errors.length ? ["", "Validation errors:", ...patch.validation.errors.map((error) => `- ${error}`)].join("\n") : "",
+    "",
+    "```diff",
+    patch.unifiedDiff,
+    "```"
+  ].filter(Boolean).join("\n")).join("\n\n");
+  return [
+    "# Agent Improvement Patch Plan",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    "",
+    "## Summary",
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    patches || "No patch previews generated.",
+    ""
+  ].join("\n");
+}
+
+function formatAgentImprovementReport(report: AgentImprovementReport): string {
+  return [
+    `Agent improvement report (${report.generatedAt})`,
+    `Project: ${report.projectRootUri}`,
+    `Mode: ${report.mode}`,
+    `Agents analyzed: ${report.agentsAnalyzed}`,
+    `Evidence: runs=${report.evidenceSummary.runsAnalyzed}, failed=${report.evidenceSummary.failedRuns}, sharedAgents=${report.evidenceSummary.sharedAgents}, projectLocalAgents=${report.evidenceSummary.projectLocalAgents}, workflowRefs=${report.evidenceSummary.workflowReferences}`,
+    `Feedback: ${formatInlineCounts(report.evidenceSummary.feedbackCounts) || "none"}`,
+    "",
+    "Candidates:",
+    ...(report.candidates.length ? report.candidates.map((candidate) => `- ${candidate.priority}/${candidate.riskLevel}: ${candidate.agentId} (${candidate.scope}) - ${candidate.recommendation}`) : ["- none"]),
+    "",
+    "Automatic:",
+    ...report.autonomyBoundary.automatic.map((item) => `- ${item}`),
+    "",
+    "Requires approval:",
+    ...report.autonomyBoundary.approvalRequired.map((item) => `- ${item}`),
+    "",
+    "Privacy boundaries:",
+    ...report.privacyBoundaries.map((item) => `- ${item}`),
+    "",
+    "Next commands:",
+    ...report.nextCommands.map((command) => `- ${command}`)
+  ].join("\n");
+}
+
+function formatAgentImprovementMarkdown(report: AgentImprovementReport): string {
+  const candidateRows = report.candidates.map((candidate) => [
+    `### ${candidate.displayName} (${candidate.agentId})`,
+    "",
+    `- Scope: ${candidate.scope}`,
+    `- Source: ${candidate.sourcePath}`,
+    `- Priority/Risk: ${candidate.priority}/${candidate.riskLevel}`,
+    `- Auto-apply eligible: ${candidate.autoApplyEligible ? "yes" : "no"}`,
+    `- Recommendation: ${candidate.recommendation}`,
+    "- Evidence:",
+    ...candidate.evidence.map((item) => `  - ${item}`),
+    "- Suggested mutable fields:",
+    ...candidate.suggestedMutableFields.map((item) => `  - ${item}`),
+    "- Safe research queries:",
+    ...candidate.safeResearchQueries.map((item) => `  - ${item}`),
+    "- Validation plan:",
+    ...candidate.validationPlan.map((item) => `  - ${item}`)
+  ].join("\n")).join("\n\n");
+  return [
+    "# Agent Improvement Recommendations",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Mode: ${report.mode}`,
+    "",
+    "## Evidence Summary",
+    "",
+    `- Runs analyzed: ${report.evidenceSummary.runsAnalyzed}`,
+    `- Failed runs: ${report.evidenceSummary.failedRuns}`,
+    `- Shared agents: ${report.evidenceSummary.sharedAgents}`,
+    `- Project-local agents: ${report.evidenceSummary.projectLocalAgents}`,
+    `- Workflow references: ${report.evidenceSummary.workflowReferences}`,
+    `- Feedback: ${formatInlineCounts(report.evidenceSummary.feedbackCounts) || "none"}`,
+    "",
+    "## Candidates",
+    "",
+    candidateRows || "No agent-card improvement candidates found.",
+    "",
+    "## Autonomy Boundary",
+    "",
+    "Automatic:",
+    ...report.autonomyBoundary.automatic.map((item) => `- ${item}`),
+    "",
+    "Requires approval:",
+    ...report.autonomyBoundary.approvalRequired.map((item) => `- ${item}`),
+    "",
+    "## Privacy Boundaries",
+    "",
+    ...report.privacyBoundaries.map((item) => `- ${item}`),
+    ""
+  ].join("\n");
 }
 
 function formatLearningReport(report: LearningReport): string {
@@ -10117,13 +15310,100 @@ function emptyLearningActionReceipts(projectRootUri: string): LearningActionRece
   };
 }
 
+function learningActionReceiptOpenKey(event: Pick<LearningActionReceipt, "status" | "actionId" | "proposalId" | "actor" | "note" | "title" | "actionType" | "dangerGate" | "writesOwnedLearningStateOnly">): string {
+  return [
+    event.status,
+    event.actionId,
+    event.proposalId,
+    event.actor,
+    event.note,
+    event.title,
+    event.actionType,
+    event.dangerGate,
+    event.writesOwnedLearningStateOnly ? "owned" : "external"
+  ].join("\u0000");
+}
+
+function shouldCompactLearningActionReceipt(event: LearningActionReceipt): boolean {
+  return event.actor === "learning-daemon"
+    && (event.status === "planned" || event.status === "applied")
+    && (event.note === "apply-approved planning tick" || event.note === "autonomous local apply tick");
+}
+
+function compactLearningActionReceipts(log: LearningActionReceiptLog, updatedAt = new Date().toISOString()): LearningActionReceiptLog {
+  const seen = new Set<string>();
+  const events: LearningActionReceipt[] = [];
+  for (const event of log.events) {
+    if (!shouldCompactLearningActionReceipt(event)) {
+      events.push(event);
+      continue;
+    }
+    const key = learningActionReceiptOpenKey(event);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    events.push(event);
+  }
+  if (events.length === log.events.length) {
+    return log;
+  }
+  return {
+    ...log,
+    updatedAt,
+    events
+  };
+}
+
+function buildLearningActionReceiptHealth(log: LearningActionReceiptLog, latestBackupPath: string | null = null): LearningActionReceiptHealth {
+  const counts = countStrings(log.events.map((event) => event.status));
+  const daemonOpenKeys = new Set<string>();
+  let daemonOpenReceipts = 0;
+  let duplicateDaemonOpenReceipts = 0;
+  let latestReceiptAt: string | null = null;
+  for (const event of log.events) {
+    if (!latestReceiptAt || event.createdAt > latestReceiptAt) {
+      latestReceiptAt = event.createdAt;
+    }
+    if (!shouldCompactLearningActionReceipt(event)) {
+      continue;
+    }
+    daemonOpenReceipts += 1;
+    const key = learningActionReceiptOpenKey(event);
+    if (daemonOpenKeys.has(key)) {
+      duplicateDaemonOpenReceipts += 1;
+    } else {
+      daemonOpenKeys.add(key);
+    }
+  }
+  const recommendation = duplicateDaemonOpenReceipts > 0
+    ? `Compact ${duplicateDaemonOpenReceipts} duplicate daemon-owned planned/applied receipt(s).`
+    : "Receipt health is clean. No daemon-owned duplicates found.";
+  return {
+    kind: "agentflow_learning_action_receipt_health",
+    projectRootUri: log.projectRootUri,
+    generatedAt: new Date().toISOString(),
+    updatedAt: log.updatedAt,
+    totalReceipts: log.events.length,
+    counts,
+    daemonOpenReceipts,
+    uniqueDaemonOpenReceipts: daemonOpenKeys.size,
+    duplicateDaemonOpenReceipts,
+    compactableReceiptCount: duplicateDaemonOpenReceipts,
+    latestReceiptAt,
+    latestBackupPath,
+    recommendation
+  };
+}
+
 function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, plan: LearningApplicationPlan, actor: string, note: string, status: Extract<LearningActionReceiptStatus, "planned" | "applied"> = "planned"): LearningActionReceiptLog {
   const createdAt = new Date().toISOString();
-  const alreadyClosed = new Set(log.events.filter((event) => event.status === "superseded" || event.status === "rejected").map((event) => `${event.actionId}|${event.proposalId}|${event.status}`));
+  const compacted = compactLearningActionReceipts(log, createdAt);
+  const alreadyClosed = new Set(compacted.events.filter((event) => event.status === "superseded" || event.status === "rejected").map((event) => `${event.actionId}|${event.proposalId}|${event.status}`));
   const currentPlanKeys = new Set(plan.actions.map((action) => `${action.id}|${action.proposalId}`));
-  const activeKeys = new Set(log.events.filter((event) => event.status === status).map((event) => `${event.planGeneratedAt}|${event.actionId}|${event.proposalId}|${event.status}`));
-  const nextEvents = [...log.events];
-  for (const event of log.events) {
+  const activeKeys = new Set(compacted.events.filter((event) => event.status === status).map((event) => learningActionReceiptOpenKey(event)));
+  const nextEvents = [...compacted.events];
+  for (const event of compacted.events) {
     const key = `${event.actionId}|${event.proposalId}`;
     const supersedeKey = `${event.actionId}|${event.proposalId}|superseded`;
     if (event.status === "planned" && !currentPlanKeys.has(key) && !alreadyClosed.has(supersedeKey)) {
@@ -10138,10 +15418,21 @@ function appendLearningApplicationPlanReceipts(log: LearningActionReceiptLog, pl
     }
   }
   for (const action of plan.actions) {
-    const key = `${plan.generatedAt}|${action.id}|${action.proposalId}|${status}`;
+    const key = learningActionReceiptOpenKey({
+      status,
+      actionId: action.id,
+      proposalId: action.proposalId,
+      actor,
+      note,
+      title: action.title,
+      actionType: action.actionType,
+      dangerGate: action.dangerGate,
+      writesOwnedLearningStateOnly: action.writesOwnedLearningStateOnly
+    });
     if (activeKeys.has(key)) {
       continue;
     }
+    activeKeys.add(key);
     nextEvents.push({
       id: `receipt-${String(nextEvents.length + 1).padStart(4, "0")}`,
       status,
@@ -10227,6 +15518,33 @@ function formatLearningActionReceiptsMarkdown(log: LearningActionReceiptLog): st
   ].join("\n");
 }
 
+function formatLearningActionReceiptHealth(health: LearningActionReceiptHealth): string {
+  return [
+    `Learning Receipt Health: ${health.projectRootUri}`,
+    `Generated: ${health.generatedAt}`,
+    `Updated: ${health.updatedAt}`,
+    `Total receipts: ${health.totalReceipts}`,
+    `Counts: planned=${health.counts.planned ?? 0} applied=${health.counts.applied ?? 0} superseded=${health.counts.superseded ?? 0} rejected=${health.counts.rejected ?? 0}`,
+    `Daemon open receipts: ${health.daemonOpenReceipts}`,
+    `Unique daemon open receipts: ${health.uniqueDaemonOpenReceipts}`,
+    `Duplicate daemon open receipts: ${health.duplicateDaemonOpenReceipts}`,
+    `Latest receipt: ${health.latestReceiptAt ?? "none"}`,
+    `Latest backup: ${health.latestBackupPath ?? "none"}`,
+    `Recommendation: ${health.recommendation}`
+  ].join("\n");
+}
+
+function formatLearningActionReceiptCompaction(result: LearningActionReceiptCompactionResult): string {
+  return [
+    `Learning Receipt Compaction: ${result.projectRootUri}`,
+    `Removed receipts: ${result.removedReceipts}`,
+    `Before: ${result.before.totalReceipts} total, ${result.before.duplicateDaemonOpenReceipts} duplicate daemon open`,
+    `After: ${result.after.totalReceipts} total, ${result.after.duplicateDaemonOpenReceipts} duplicate daemon open`,
+    `Backups: ${result.backupPaths.length ? result.backupPaths.join(", ") : "none needed"}`,
+    `Recommendation: ${result.after.recommendation}`
+  ].join("\n");
+}
+
 async function loadDashboardModelImprovementReport(input: {
   projectDir: string;
   limit: number;
@@ -10234,7 +15552,9 @@ async function loadDashboardModelImprovementReport(input: {
   const projectDir = path.resolve(process.cwd(), input.projectDir);
   const scorecard = await loadPreferenceScorecard({ projectDir, limit: input.limit });
   const proposals = buildTuningProposals(scorecard);
+  const tuningOverlay = await loadDashboardTuningOverlayStatus(projectDir);
   const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const feedbackTargets = await loadDashboardFeedbackTargets(projectRuns);
   const evaluationRunList = projectRuns.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
   const proposalCounts = countStrings(proposals.proposals.map((proposal) => proposal.kind));
   const highPriorityProposals = proposals.proposals.filter((proposal) => proposal.priority === "high").length;
@@ -10263,6 +15583,7 @@ async function loadDashboardModelImprovementReport(input: {
     projectDir,
     scorecard,
     proposals,
+    localProviderEvidence: buildDashboardLocalProviderEvidence(scorecard),
     evaluationRuns: evaluationRunList.length,
     latestEvaluationAt: evaluationRunList.map((run) => run.startedAt).sort().at(-1) ?? null,
     proposalCounts,
@@ -10271,12 +15592,277 @@ async function loadDashboardModelImprovementReport(input: {
     routingProposals,
     promotionReady,
     readiness,
+    tuningOverlay,
+    feedbackTargets,
     nextCommands: [
       `npm run agentflow -- quality-report --run <run-id>`,
       `npm run agentflow -- feedback --run <run-id> --rating accepted|revised|rejected --note "<why>"`,
       `npm run agentflow -- tuning-proposals --project ${shellQuote(projectDir)}`,
       `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve quality while reducing cost"`
     ]
+  };
+}
+
+function buildDashboardLocalProviderEvidence(scorecard: PreferenceScorecard): DashboardLocalProviderEvidence {
+  const localProviderIds = new Set(["local", "byo", "openai-compatible"]);
+  const localGroups = scorecard.groups.filter((group) => localProviderIds.has(group.providerId));
+  const hostedGroups = scorecard.groups.filter((group) => !localProviderIds.has(group.providerId) && group.providerId !== "mock");
+  const localStageCount = localGroups.reduce((sum, group) => sum + group.runs, 0);
+  const hostedStageCount = hostedGroups.reduce((sum, group) => sum + group.runs, 0);
+  const localAccepted = localGroups.reduce((sum, group) => sum + group.accepted, 0);
+  const localRevised = localGroups.reduce((sum, group) => sum + group.revised, 0);
+  const localRejected = localGroups.reduce((sum, group) => sum + group.rejected, 0);
+  const localFallbackRate = weightedAverage(localGroups, (group) => group.fallbackRate, (group) => group.runs);
+  const localAverageLatencyMs = weightedAverageNullable(localGroups, (group) => group.averageLatencyMs, (group) => group.runs);
+  const localAverageQuality = weightedAverageNullable(localGroups, (group) => group.averageQuality, (group) => group.runs);
+  const hostedAverageLatencyMs = weightedAverageNullable(hostedGroups, (group) => group.averageLatencyMs, (group) => group.runs);
+  const hostedAverageQuality = weightedAverageNullable(hostedGroups, (group) => group.averageQuality, (group) => group.runs);
+  const configured = Boolean(process.env.LOCAL_MODEL_BASE_URL || process.env.LOCAL_MODEL_NAME || process.env.BYO_MODEL_BASE_URL || process.env.OPENAI_COMPATIBLE_BASE_URL);
+  const providerIds = [...new Set(localGroups.map((group) => group.providerId))].sort((a, b) => a.localeCompare(b));
+  const signalCount = localAccepted + localRevised + localRejected;
+
+  let status: DashboardLocalProviderEvidence["status"] = "not-configured";
+  let recommendation = "Configure a local runtime or BYO-compatible endpoint before evaluating avoided hosted calls.";
+  if (configured && localStageCount === 0) {
+    status = "needs-runs";
+    recommendation = "Run low-risk fast or standard stages through local routing to collect latency, quality, and fallback evidence.";
+  } else if (localStageCount > 0 && signalCount === 0) {
+    status = "watch";
+    recommendation = "Local provider stages exist, but feedback is missing. Record accepted/revised/rejected outcomes before expanding routing.";
+  } else if (localStageCount > 0 && (localFallbackRate ?? 0) > 0.2) {
+    status = "watch";
+    recommendation = "Local provider fallback rate is high. Keep local routing to low-risk stages until model selection or context improves.";
+  } else if (localStageCount > 0 && localRejected > localAccepted) {
+    status = "watch";
+    recommendation = "Local provider feedback is weak. Compare against a hosted baseline before promoting more stages.";
+  } else if (localStageCount > 0 && localAverageQuality !== null && hostedAverageQuality !== null && localAverageQuality + 0.05 < hostedAverageQuality) {
+    status = "candidate";
+    recommendation = "Local provider is saving hosted calls, but quality trails hosted runs. Keep local for fast stages and improve eval coverage.";
+  } else if (localStageCount > 0) {
+    status = "ready";
+    recommendation = "Local provider evidence is healthy enough to consider more fast/standard stages, with hosted reasoning fallback preserved.";
+  }
+
+  return {
+    status,
+    configured,
+    providerIds,
+    localStageCount,
+    hostedStageCount,
+    localAccepted,
+    localRevised,
+    localRejected,
+    localFallbackRate,
+    localAverageLatencyMs,
+    localAverageQuality,
+    hostedAverageLatencyMs,
+    hostedAverageQuality,
+    estimatedAvoidedHostedCalls: localStageCount,
+    recommendation
+  };
+}
+
+function weightedAverage<T>(items: T[], valueFor: (item: T) => number, weightFor: (item: T) => number): number | null {
+  const totals = items.reduce((acc, item) => {
+    const weight = weightFor(item);
+    return {
+      weighted: acc.weighted + valueFor(item) * weight,
+      weight: acc.weight + weight
+    };
+  }, { weighted: 0, weight: 0 });
+  return totals.weight > 0 ? Number((totals.weighted / totals.weight).toFixed(2)) : null;
+}
+
+function weightedAverageNullable<T>(items: T[], valueFor: (item: T) => number | null, weightFor: (item: T) => number): number | null {
+  const totals = items.reduce((acc, item) => {
+    const value = valueFor(item);
+    if (value === null) return acc;
+    const weight = weightFor(item);
+    return {
+      weighted: acc.weighted + value * weight,
+      weight: acc.weight + weight
+    };
+  }, { weighted: 0, weight: 0 });
+  return totals.weight > 0 ? Number((totals.weighted / totals.weight).toFixed(2)) : null;
+}
+
+async function loadDashboardFeedbackTargets(projectRuns: Awaited<ReturnType<typeof listWorkflowRunsForProject>>): Promise<DashboardFeedbackTarget[]> {
+  const candidates = projectRuns
+    .filter((run) => run.status === "completed" || run.status === "failed")
+    .slice(0, 25);
+  return loadDashboardFeedbackTargetsFromRuns(candidates, 8);
+}
+
+async function loadDashboardFeedbackTargetsFromRuns(
+  projectRuns: Awaited<ReturnType<typeof listWorkflowRunsForProject>>,
+  targetLimit: number
+): Promise<DashboardFeedbackTarget[]> {
+  const candidates = projectRuns.filter((run) => run.status === "completed" || run.status === "failed");
+  const reports = await Promise.all(candidates.map(async (run) => ({
+    run,
+    report: await loadCostQualityReport(run.id).catch(() => null),
+    summary: await summarizeWorkflowRun(run.id).catch(() => null)
+  })));
+  return reports
+    .filter((item) => !item.report?.feedback.latest)
+    .slice(0, targetLimit)
+    .map((item) => ({
+      runId: item.run.id,
+      workflowId: item.run.workflowId,
+      status: item.run.status,
+      task: item.run.task,
+      startedAt: item.run.startedAt,
+      finishedAt: item.run.finishedAt ?? null,
+      provider: item.run.providerOverride ?? null,
+      modelTier: item.run.modelTierOverride ?? null,
+      summary: item.summary?.ok ? {
+        completedTasks: item.summary.value.completedTasks,
+        failedTasks: item.summary.value.failedTasks,
+        totalTasks: item.summary.value.totalTasks,
+        keyFindings: item.summary.value.keyFindings.slice(0, 3),
+        failures: item.summary.value.failures.slice(0, 3),
+        recommendedNextAction: item.summary.value.recommendedNextAction
+      } : null,
+      quality: item.report ? {
+        averageQuality: item.report.averageQuality,
+        qualityPassCount: item.report.qualityPassCount,
+        qualityFailCount: item.report.qualityFailCount,
+        fallbackCount: item.report.fallbackCount,
+        averageLatencyMs: item.report.averageLatencyMs
+      } : null
+    }));
+}
+
+async function loadDashboardFeedbackInboxReport(input: {
+  projectRootUri?: string;
+  limit: number;
+}): Promise<DashboardFeedbackInboxReport> {
+  const projectRootUri = input.projectRootUri ? path.resolve(process.cwd(), input.projectRootUri) : null;
+  const runs = projectRootUri
+    ? await listWorkflowRunsForProject({ projectRootUri, limit: input.limit })
+    : await listWorkflowRuns(input.limit);
+  const targets = await loadDashboardFeedbackTargetsFromRuns(runs, input.limit);
+  const items = targets.map((target) => ({
+    ...target,
+    classification: classifyFeedbackTarget(target)
+  }));
+  const groups: DashboardFeedbackInboxReport["groups"] = {
+    probably_accept: [],
+    probably_revise: [],
+    probably_reject: []
+  };
+  for (const item of items) {
+    groups[item.classification.bucket].push(item);
+  }
+  return {
+    generatedAt: new Date().toISOString(),
+    projectRootUri,
+    limit: input.limit,
+    totalCandidates: runs.length,
+    totalTargets: items.length,
+    counts: {
+      probably_accept: groups.probably_accept.length,
+      probably_revise: groups.probably_revise.length,
+      probably_reject: groups.probably_reject.length
+    },
+    groups
+  };
+}
+
+function classifyFeedbackTarget(target: DashboardFeedbackTarget): DashboardFeedbackClassification {
+  const failures = target.summary?.failures.length ?? 0;
+  const failedTasks = target.summary?.failedTasks ?? 0;
+  const findings = target.summary?.keyFindings.length ?? 0;
+  const averageQuality = target.quality?.averageQuality ?? null;
+  const fallbackCount = target.quality?.fallbackCount ?? 0;
+  const qualityFailures = target.quality?.qualityFailCount ?? 0;
+  if (target.status === "failed" && findings === 0) {
+    return { bucket: "probably_reject", reason: "The run failed and did not produce useful findings." };
+  }
+  if (averageQuality !== null && averageQuality < 0.5) {
+    return { bucket: "probably_reject", reason: `Average quality is ${averageQuality}, below the useful-result threshold.` };
+  }
+  if (target.status === "completed" && failedTasks === 0 && failures === 0 && qualityFailures === 0 && fallbackCount === 0 && (averageQuality === null || averageQuality >= 0.75)) {
+    return { bucket: "probably_accept", reason: "The run completed cleanly with useful quality signals and no fallback or failure evidence." };
+  }
+  if (target.status === "failed" && findings > 0) {
+    return { bucket: "probably_revise", reason: "The run failed, but produced findings that may still be useful learning signal." };
+  }
+  if (failedTasks > 0 || failures > 0 || qualityFailures > 0 || fallbackCount > 0) {
+    return { bucket: "probably_revise", reason: "The run has useful evidence plus review-worthy failure, quality, or fallback signals." };
+  }
+  return { bucket: "probably_revise", reason: "The run needs a human check before treating it as accepted signal." };
+}
+
+function formatFeedbackInboxReport(report: DashboardFeedbackInboxReport): string {
+  return [
+    "Feedback Inbox",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri ?? "all registered projects"}`,
+    `Scanned: ${report.totalCandidates}`,
+    `Unreviewed: ${report.totalTargets}`,
+    `Buckets: accept=${report.counts.probably_accept} revise=${report.counts.probably_revise} reject=${report.counts.probably_reject}`,
+    "",
+    ...formatFeedbackInboxBucket("Probably Accept", "accepted", report.groups.probably_accept),
+    ...formatFeedbackInboxBucket("Probably Revise", "revised", report.groups.probably_revise),
+    ...formatFeedbackInboxBucket("Probably Reject", "rejected", report.groups.probably_reject)
+  ].join("\n");
+}
+
+function formatFeedbackInboxBucket(title: string, rating: FeedbackRating, items: DashboardFeedbackInboxItem[]): string[] {
+  if (!items.length) {
+    return [title, "- none", ""];
+  }
+  return [
+    title,
+    ...items.map((item) => [
+      `- ${item.runId} ${item.workflowId} ${item.status}`,
+      `  route: ${item.provider ?? "default"}/${item.modelTier ?? "auto tier"}`,
+      `  reason: ${item.classification.reason}`,
+      `  task: ${truncateText(item.task, 140)}`,
+      item.summary ? `  stages: ${item.summary.completedTasks}/${item.summary.totalTasks} complete, ${item.summary.failedTasks} failed` : "",
+      item.summary?.keyFindings.length ? `  findings: ${truncateText(item.summary.keyFindings[0], 160)}` : "",
+      item.summary?.failures.length ? `  failure: ${truncateText(item.summary.failures[0], 160)}` : "",
+      `  record: npm run agentflow -- feedback --run ${item.runId} --rating ${rating} --note ${shellQuote(defaultFeedbackNote(item, rating))}`
+    ].filter(Boolean).join("\n")),
+    ""
+  ];
+}
+
+async function loadDashboardTuningOverlayStatus(projectDir: string): Promise<DashboardTuningOverlayStatus> {
+  const overlayPath = path.join(projectDir, ".agent-workflow", "tuning", "proposals.json");
+  const historyPath = path.join(projectDir, ".agent-workflow", "tuning", "approval-history.json");
+  const overlayResult = await readDashboardJsonFile<TuningOverlayDocument>(overlayPath, (value) =>
+    value.kind === "agentflow_tuning_overlay" &&
+    Array.isArray(value.selectedIds) &&
+    Array.isArray(value.proposals)
+  );
+  const history = await readTuningApprovalHistory(projectDir).catch(() => null);
+  const appliedEvents = history?.events.filter((event) => event.status === "applied").length ?? 0;
+  const appliedProposalIds = [...new Set((history?.events ?? [])
+    .filter((event) => event.status === "applied")
+    .map((event) => event.proposalId))]
+    .sort();
+  const latestAppliedAt = history?.events
+    .filter((event) => event.status === "applied")
+    .map((event) => event.occurredAt)
+    .sort()
+    .at(-1) ?? null;
+  const duplicateAppliedEvents = history ? countDuplicateTuningHistoryEvents(history, "applied") : 0;
+  return {
+    exists: overlayResult.exists && !overlayResult.error && Boolean(overlayResult.value),
+    path: ".agent-workflow/tuning/proposals.json",
+    generatedAt: overlayResult.value?.generatedAt ?? null,
+    sourceGeneratedAt: overlayResult.value?.sourceGeneratedAt ?? null,
+    sourceRunsAnalyzed: overlayResult.value?.sourceRunsAnalyzed ?? null,
+    selectedIds: overlayResult.value?.selectedIds ?? [],
+    appliedProposalIds,
+    proposalCount: overlayResult.value?.proposals?.length ?? 0,
+    proposalKinds: countStrings((overlayResult.value?.proposals ?? []).map((proposal) => proposal.kind)),
+    latestAppliedAt,
+    appliedEvents,
+    duplicateAppliedEvents,
+    error: overlayResult.error
   };
 }
 
@@ -10601,11 +16187,82 @@ async function readTuningApprovalHistory(projectDir: string): Promise<TuningAppr
 async function recordTuningHistory(projectDir: string, proposalIds: string[], status: TuningHistoryStatus, actor?: string, note?: string, relatedProposalId?: string): Promise<void> {
   if (!proposalIds.length) return;
   const existing = await readTuningApprovalHistory(projectDir).catch(() => undefined);
-  const history = appendTuningApprovalHistory(existing, { projectRootUri: projectDir, proposalIds, status, actor, note, relatedProposalId });
+  const compacted = existing ? compactAutonomousTuningApprovalHistory(existing) : existing;
+  const idsToRecord = proposalIds.filter((proposalId) => shouldRecordTuningHistoryEvent(compacted, proposalId, status, actor, note, relatedProposalId));
+  if (!idsToRecord.length) {
+    if (existing && compacted && compacted.events.length !== existing.events.length) {
+      await writeTuningApprovalHistory(projectDir, compacted);
+    }
+    return;
+  }
+  const history = appendTuningApprovalHistory(compacted, { projectRootUri: projectDir, proposalIds: idsToRecord, status, actor, note, relatedProposalId });
+  await writeTuningApprovalHistory(projectDir, history);
+}
+
+async function writeTuningApprovalHistory(projectDir: string, history: TuningApprovalHistory): Promise<void> {
   const tuningDir = path.join(projectDir, ".agent-workflow", "tuning");
   await fs.mkdir(tuningDir, { recursive: true });
   await fs.writeFile(path.join(tuningDir, "approval-history.json"), `${JSON.stringify(history, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(tuningDir, "approval-history.md"), formatTuningApprovalHistoryMarkdown(history), "utf8");
+}
+
+function shouldRecordTuningHistoryEvent(history: TuningApprovalHistory | undefined, proposalId: string, status: TuningHistoryStatus, actor?: string, note?: string, relatedProposalId?: string): boolean {
+  const matching = [...(history?.events ?? [])].reverse().find((event) => event.proposalId === proposalId);
+  return !matching ||
+    matching.status !== status ||
+    matching.actor !== actor ||
+    matching.note !== note ||
+    matching.relatedProposalId !== relatedProposalId;
+}
+
+function compactAutonomousTuningApprovalHistory(history: TuningApprovalHistory): TuningApprovalHistory {
+  const seen = new Set<string>();
+  const events = history.events.filter((event) => {
+    if (event.status !== "applied" || event.actor !== "learning-daemon" || event.note !== "autonomous local tuning overlay") {
+      return true;
+    }
+    const key = tuningHistoryEventSignature(event);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+  if (events.length === history.events.length) {
+    return history;
+  }
+  return {
+    ...history,
+    updatedAt: new Date().toISOString(),
+    events
+  };
+}
+
+function countDuplicateTuningHistoryEvents(history: TuningApprovalHistory, status?: TuningHistoryStatus): number {
+  const seen = new Set<string>();
+  let duplicates = 0;
+  for (const event of history.events) {
+    if (status && event.status !== status) {
+      continue;
+    }
+    const key = tuningHistoryEventSignature(event);
+    if (seen.has(key)) {
+      duplicates += 1;
+    } else {
+      seen.add(key);
+    }
+  }
+  return duplicates;
+}
+
+function tuningHistoryEventSignature(event: TuningApprovalHistory["events"][number]): string {
+  return [
+    event.proposalId,
+    event.status,
+    event.actor ?? "",
+    event.note ?? "",
+    event.relatedProposalId ?? ""
+  ].join("\0");
 }
 
 async function readLearningApprovalQueue(projectDir: string): Promise<LearningApprovalQueue> {
@@ -10642,11 +16299,56 @@ async function readLearningActionReceipts(projectDir: string): Promise<LearningA
   return parsed;
 }
 
+async function latestLearningActionReceiptBackupPath(projectDir: string): Promise<string | null> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  const entries = await fs.readdir(learningDir, { withFileTypes: true }).catch(() => []);
+  const backups = entries
+    .filter((entry) => entry.isFile() && entry.name.startsWith("action-receipts.json.bak-"))
+    .map((entry) => path.join(learningDir, entry.name))
+    .sort();
+  return backups.at(-1) ?? null;
+}
+
+async function loadLearningActionReceiptHealth(projectDir: string): Promise<LearningActionReceiptHealth> {
+  const receipts = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
+  return buildLearningActionReceiptHealth(receipts, await latestLearningActionReceiptBackupPath(projectDir));
+}
+
 async function writeLearningActionReceipts(projectDir: string, receipts: LearningActionReceiptLog): Promise<void> {
   const learningDir = path.join(projectDir, ".agent-workflow", "learning");
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "action-receipts.json"), `${JSON.stringify(receipts, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(learningDir, "action-receipts.md"), formatLearningActionReceiptsMarkdown(receipts), "utf8");
+}
+
+async function compactLearningActionReceiptFiles(projectDir: string): Promise<LearningActionReceiptCompactionResult> {
+  const receipts = await readLearningActionReceipts(projectDir).catch(() => emptyLearningActionReceipts(projectDir));
+  const before = buildLearningActionReceiptHealth(receipts, await latestLearningActionReceiptBackupPath(projectDir));
+  const compacted = compactLearningActionReceipts(receipts);
+  const backupPaths: string[] = [];
+  if (compacted.events.length !== receipts.events.length) {
+    const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+    await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const jsonPath = path.join(learningDir, "action-receipts.json");
+    const markdownPath = path.join(learningDir, "action-receipts.md");
+    const jsonBackup = path.join(learningDir, `action-receipts.json.bak-${stamp}`);
+    const markdownBackup = path.join(learningDir, `action-receipts.md.bak-${stamp}`);
+    await fs.copyFile(jsonPath, jsonBackup).catch(() => undefined);
+    await fs.copyFile(markdownPath, markdownBackup).catch(() => undefined);
+    backupPaths.push(jsonBackup, markdownBackup);
+    await writeLearningActionReceipts(projectDir, compacted);
+  }
+  const afterReceipts = compacted.events.length !== receipts.events.length ? compacted : receipts;
+  return {
+    kind: "agentflow_learning_action_receipt_compaction",
+    projectRootUri: projectDir,
+    generatedAt: new Date().toISOString(),
+    before,
+    after: buildLearningActionReceiptHealth(afterReceipts, backupPaths[0] ?? before.latestBackupPath),
+    removedReceipts: receipts.events.length - compacted.events.length,
+    backupPaths
+  };
 }
 
 async function recordLearningApplicationPlanReceipts(projectDir: string, plan: LearningApplicationPlan, actor: string, note: string, status: Extract<LearningActionReceiptStatus, "planned" | "applied"> = "planned"): Promise<LearningActionReceiptLog> {
@@ -10660,7 +16362,9 @@ async function runLearningDaemonTick(input: {
   projectDir: string;
   mode: LearningDaemonMode;
   limit: number;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; workflowShapeAutoUpdate: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult }> {
+  daemonId?: string;
+  approvalAutopilotOverride?: boolean;
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; workflowShapeAutoUpdate: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
@@ -10671,11 +16375,27 @@ async function runLearningDaemonTick(input: {
   const workflowShape = workflowShapeAutoUpdate
     ? await loadWorkflowShapeOptimization({ projectDir: input.projectDir, limit: input.limit })
     : null;
+  const agentImprovement = await loadAgentImprovementReport({
+    projectDir: input.projectDir,
+    limit: input.limit,
+    mode: "write-owned-learning-state"
+  });
+  const agentImprovementPatchPlan = await buildAgentImprovementPatchPlan(input.projectDir, agentImprovement, "all");
+  const agentImprovementEvalPlan = await buildAgentImprovementEvalPlan(input.projectDir, agentImprovementPatchPlan, "all", input.limit);
+  const existingAgentPromotionQueue = await readAgentImprovementPromotionQueue(input.projectDir).catch(() => undefined);
+  const agentImprovementPromotionQueue = buildAgentImprovementPromotionQueue(input.projectDir, agentImprovementPatchPlan, agentImprovementEvalPlan, "all", existingAgentPromotionQueue);
+  const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
+  const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
   let autonomousApplication = emptyLearningAutonomousApplicationResult(input.projectDir);
+  let approvalAutopilot: ApprovalAutopilotResult = emptyApprovalAutopilotResult(approvalAutopilotMaxRisk);
   await writeLearningReport(input.projectDir, report);
   if (workflowShape) {
     await writeWorkflowShapeOptimization(input.projectDir, workflowShape);
   }
+  await writeAgentImprovementReport(input.projectDir, agentImprovement);
+  await writeAgentImprovementPatchPlan(input.projectDir, agentImprovementPatchPlan);
+  await writeAgentImprovementEvalPlan(input.projectDir, agentImprovementEvalPlan);
+  await writeAgentImprovementPromotionQueue(input.projectDir, agentImprovementPromotionQueue);
   if (input.mode === "propose" || input.mode === "apply-approved") {
     await writeLearningProposals(input.projectDir, proposalSet);
     await writeLearningApprovalQueue(input.projectDir, approvalQueue);
@@ -10684,11 +16404,168 @@ async function runLearningDaemonTick(input: {
     await writeLearningApplicationPlan(input.projectDir, applicationPlan);
     await recordLearningApplicationPlanReceipts(input.projectDir, applicationPlan, "learning-daemon", "apply-approved planning tick");
     autonomousApplication = await applyAutonomousLearningApplicationPlan(input.projectDir, applicationPlan);
+    if (approvalAutopilotEnabled) {
+      approvalAutopilot = await runApprovalAutopilot({
+        projectRootUri: input.projectDir,
+        limit: 100,
+        maxRisk: approvalAutopilotMaxRisk,
+        execute: true,
+        actor: input.daemonId ?? "learning-daemon",
+        actorRole: "approver"
+      });
+    }
     if (autonomousApplication.appliedActions > 0) {
       await recordLearningApplicationPlanReceipts(input.projectDir, filterAppliedLearningApplicationPlan(applicationPlan), "learning-daemon", "autonomous local apply tick", "applied");
     }
   }
-  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, workflowShapeAutoUpdate, autonomousApplyMaxRisk, autonomousApplication };
+  const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
+  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, workflowShapeAutoUpdate, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
+}
+
+async function runLearningDaemonMcpCleanup(projectDir: string): Promise<RuntimeMcpCleanupResult> {
+  const config = runtimeMcpCleanupConfig();
+  const result = await cleanupRuntimeMcpProcesses({
+    execute: config.enabled && config.mode === "auto-low-risk",
+    autoLowRiskOnly: true,
+    staleMinutes: config.staleMinutes
+  });
+  await writeLearningDaemonMcpCleanupReceipt(rootDir, projectDir, config, result);
+  return result;
+}
+
+async function runLearningDaemonStaleRunReconciliation(projectDir: string): Promise<RuntimeStaleRunReconciliationResult> {
+  const config = staleRunReconcileConfig();
+  const result = await reconcileStaleTerminalWorkflowRuns({
+    execute: config.enabled,
+    limit: config.limit,
+    actor: "learning-daemon"
+  });
+  await writeLearningDaemonStaleRunReconciliationReceipt(rootDir, projectDir, config, result);
+  return result;
+}
+
+async function writeLearningDaemonStaleRunReconciliationReceipt(
+  stateRootDir: string,
+  projectDir: string,
+  config: RuntimeMonitorReport["staleRuns"]["autoReconcile"],
+  result: RuntimeStaleRunReconciliationResult
+): Promise<void> {
+  const learningDir = path.join(stateRootDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(stateRootDir, learningDir, ".agent-workflow/learning");
+  const receipt = {
+    kind: "agentflow_learning_daemon_stale_run_reconciliation_receipt",
+    generatedAt: result.generatedAt,
+    projectRootUri: projectDir,
+    config,
+    mode: result.mode,
+    candidates: result.candidates.map((candidate) => ({
+      runId: candidate.runId,
+      workflowId: candidate.workflowId,
+      runStatus: candidate.runStatus,
+      recommendedStatus: candidate.recommendedStatus,
+      totalTasks: candidate.totalTasks,
+      completedTasks: candidate.completedTasks,
+      cancelledTasks: candidate.cancelledTasks,
+      startedAt: candidate.startedAt,
+      task: candidate.task
+    })),
+    reconciled: result.reconciled
+  };
+  await fs.writeFile(path.join(learningDir, "stale-run-reconciliation-receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "stale-run-reconciliation-receipt.md"), formatLearningDaemonStaleRunReconciliationReceipt(receipt), "utf8");
+}
+
+function formatLearningDaemonStaleRunReconciliationReceipt(receipt: {
+  kind: string;
+  generatedAt: string;
+  projectRootUri: string;
+  config: RuntimeMonitorReport["staleRuns"]["autoReconcile"];
+  mode: RuntimeStaleRunReconciliationResult["mode"];
+  candidates: Array<Pick<RuntimeMonitorReport["staleRuns"]["candidates"][number], "runId" | "workflowId" | "runStatus" | "recommendedStatus" | "totalTasks" | "completedTasks" | "cancelledTasks" | "startedAt" | "task">>;
+  reconciled: RuntimeStaleRunReconciliationResult["reconciled"];
+}): string {
+  return [
+    "# Learning Daemon Stale Run Reconciliation",
+    "",
+    `Generated: ${receipt.generatedAt}`,
+    `Project: ${receipt.projectRootUri}`,
+    `Enabled: ${receipt.config.enabled ? "yes" : "no"}`,
+    `Mode: ${receipt.mode}`,
+    `Limit: ${receipt.config.limit}`,
+    "",
+    "## Candidates",
+    ...(receipt.candidates.length
+      ? receipt.candidates.map((candidate) => `- ${candidate.runId} ${candidate.runStatus}->${candidate.recommendedStatus} workflow=${candidate.workflowId} tasks=${candidate.completedTasks}/${candidate.totalTasks} completed cancelled=${candidate.cancelledTasks} - ${candidate.task}`)
+      : ["- none"]),
+    "",
+    "## Reconciled",
+    ...(receipt.reconciled.length
+      ? receipt.reconciled.map((item) => `- ${item.runId}: ${item.updated ? "updated" : "skipped"} as ${item.status}`)
+      : ["- none"])
+  ].join("\n");
+}
+
+async function writeLearningDaemonMcpCleanupReceipt(
+  stateRootDir: string,
+  projectDir: string,
+  config: RuntimeMonitorReport["mcpCleanup"]["autoCleanup"],
+  result: RuntimeMcpCleanupResult
+): Promise<void> {
+  const learningDir = path.join(stateRootDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(stateRootDir, learningDir, ".agent-workflow/learning");
+  const receipt = {
+    kind: "agentflow_learning_daemon_mcp_cleanup_receipt",
+    generatedAt: result.generatedAt,
+    projectRootUri: projectDir,
+    config,
+    candidates: result.candidates.map((candidate) => ({
+      pid: candidate.pid,
+      parentPid: candidate.parentPid,
+      sessionKey: candidate.sessionKey,
+      risk: candidate.risk,
+      autoCleanable: candidate.autoCleanable,
+      ageMs: candidate.ageMs,
+      startedAt: candidate.startedAt,
+      reason: candidate.reason
+    })),
+    terminated: result.terminated,
+    warnings: result.warnings
+  };
+  await fs.writeFile(path.join(learningDir, "mcp-cleanup-receipt.json"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "mcp-cleanup-receipt.md"), formatLearningDaemonMcpCleanupReceipt(receipt), "utf8");
+}
+
+function formatLearningDaemonMcpCleanupReceipt(receipt: {
+  kind: string;
+  generatedAt: string;
+  projectRootUri: string;
+  config: RuntimeMonitorReport["mcpCleanup"]["autoCleanup"];
+  candidates: Array<Pick<RuntimeMonitorReport["mcpCleanup"]["candidates"][number], "pid" | "parentPid" | "sessionKey" | "risk" | "autoCleanable" | "ageMs" | "startedAt" | "reason">>;
+  terminated: RuntimeMcpCleanupResult["terminated"];
+  warnings: string[];
+}): string {
+  return [
+    "# Learning Daemon MCP Cleanup",
+    "",
+    `Generated: ${receipt.generatedAt}`,
+    `Project: ${receipt.projectRootUri}`,
+    `Enabled: ${receipt.config.enabled ? "yes" : "no"}`,
+    `Mode: ${receipt.config.mode}`,
+    `Stale threshold: ${receipt.config.staleMinutes} minute(s)`,
+    "",
+    "## Candidates",
+    ...(receipt.candidates.length
+      ? receipt.candidates.map((candidate) => `- PID ${candidate.pid} parent=${candidate.parentPid ?? "n/a"} session=${candidate.sessionKey} risk=${candidate.risk} autoCleanable=${candidate.autoCleanable ? "yes" : "no"} age=${candidate.ageMs === null ? "n/a" : formatDuration(candidate.ageMs)} - ${candidate.reason}`)
+      : ["- none"]),
+    "",
+    "## Terminated",
+    ...(receipt.terminated.length
+      ? receipt.terminated.map((item) => `- PID ${item.pid}: ${item.status} - ${item.message}`)
+      : ["- none"]),
+    "",
+    "## Warnings",
+    ...(receipt.warnings.length ? receipt.warnings.map((warning) => `- ${warning}`) : ["- none"])
+  ].join("\n");
 }
 
 async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
@@ -11165,6 +17042,27 @@ async function learningAutonomousApplyMaxRisk(projectDir: string): Promise<Learn
   return settings?.autonomousApplyMaxRisk ?? "medium";
 }
 
+async function learningApprovalAutopilotEnabled(projectDir: string): Promise<boolean> {
+  const override = process.env.AGENTFLOW_APPROVAL_AUTOPILOT;
+  if (override === "0" || override === "false" || override === "off") {
+    return false;
+  }
+  if (override === "1" || override === "true" || override === "on") {
+    return true;
+  }
+  const settings = await readLearningSettings(projectDir).catch(() => null);
+  return settings?.approvalAutopilotEnabled ?? false;
+}
+
+async function learningApprovalAutopilotMaxRisk(projectDir: string): Promise<ApprovalAutopilotRisk> {
+  const override = process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK;
+  if (override) {
+    return parseApprovalAutopilotRisk(override);
+  }
+  const settings = await readLearningSettings(projectDir).catch(() => null);
+  return settings?.approvalAutopilotMaxRisk ?? parseApprovalAutopilotRisk(process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK);
+}
+
 async function readLearningSettings(projectDir: string): Promise<LearningSettings> {
   const settingsPath = path.join(projectDir, ".agent-workflow", "learning", "settings.json");
   const raw = await fs.readFile(settingsPath, "utf8");
@@ -11177,7 +17075,9 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectDir,
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
     workflowShapeAutoUpdate: parsed.workflowShapeAutoUpdate,
-    autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium"))
+    autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
+    approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
+    approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium"))
   };
 }
 
@@ -11227,7 +17127,7 @@ async function appendProjectApprovalRule(input: {
   description: string;
   payload: Record<string, unknown>;
 }): Promise<{ id: string; configPath: string; created: boolean }> {
-  const projectRoot = path.resolve(input.projectRootUri);
+  const projectRoot = await resolveLocalProjectRootUri(input.projectRootUri);
   const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
   const expectedDir = path.join(projectRoot, ".agent-workflow");
   await ensureProjectSubdir(projectRoot, expectedDir, ".agent-workflow");
@@ -11817,6 +17717,14 @@ async function pathExists(target: string): Promise<boolean> {
   }
 }
 
+async function resolveLocalProjectRootUri(projectRootUri: string): Promise<string> {
+  return (await resolveLocalProjectPath(projectRootUri)).localRootUri;
+}
+
+async function loadLocalProjectConfig(projectRootUri: string): Promise<ProjectConfig> {
+  return loadProjectConfig(await resolveLocalProjectRootUri(projectRootUri));
+}
+
 async function loadPrivateEvaluationScoring(
   projectDir: string,
   profilePath: string
@@ -11866,8 +17774,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       workerConcurrency: form.get("workerConcurrency") ?? "",
       timeoutMs: form.get("timeoutMs") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, "/queue"));
     return;
   }
 
@@ -11882,8 +17789,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       reason: form.get("reason") ?? "",
       confirmed: form.get("confirmed") === "on"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, "/queue"));
     return;
   }
 
@@ -11895,21 +17801,40 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       actorRole: form.get("actorRole") ?? "",
       note: form.get("note") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/approvals");
     return;
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/api/approval-bulk-action") {
     const form = await readFormBody(request);
+    const decision = form.get("decision") ?? "";
     const result = await processDashboardBulkApprovalAction({
       approvalIds: form.getAll("approvalId"),
       actorRole: form.get("actorRole") ?? "",
       note: form.get("note") ?? "",
-      executeAfterApproval: form.get("executeAfterApproval") === "on"
+      executeAfterApproval: decision === "approve_execute" || form.get("executeAfterApproval") === "on"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/approvals");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-autopilot") {
+    const form = await readFormBody(request);
+    const result = await processDashboardApprovalAutopilotAction({
+      project: form.get("project") ?? "",
+      runId: form.get("runId") ?? "",
+      limit: form.get("limit") ?? "",
+      maxRisk: form.get("maxRisk") ?? "",
+      execute: form.get("execute") === "on"
+    });
+    respondDashboardAction(request, response, form, result, "/approvals");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/approval-triage-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardApprovalTriageAction(form);
+    respondDashboardAction(request, response, form, result, "/approvals");
     return;
   }
 
@@ -11922,8 +17847,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       note: form.get("note") ?? "",
       approveCurrent: form.get("approveCurrent") === "on"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/approvals");
     return;
   }
 
@@ -11934,8 +17858,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       ruleId: form.get("ruleId") ?? "",
       actor: "dashboard"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/approval-rules");
     return;
   }
 
@@ -11951,8 +17874,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       includeAudit: form.get("includeAudit") === "true",
       actorRole: form.get("actorRole") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/artifact-lifecycle");
     return;
   }
 
@@ -11969,8 +17891,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       workerConcurrency: form.get("workerConcurrency") ?? "",
       timeoutMs: form.get("timeoutMs") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, "/"));
     return;
   }
 
@@ -11981,8 +17902,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       maxFiles: form.get("maxFiles") ?? "",
       refine: form.get("refine") === "on"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, form.get("project") ? `/project?root=${encodeURIComponent(form.get("project") ?? "")}` : "/projects");
     return;
   }
 
@@ -12001,8 +17921,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       spotlight: parseSpotlightMode(form.get("spotlight") || "auto"),
       write: true
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result.ok
+    respondDashboardAction(request, response, form, result.ok
       ? {
         ok: true,
         title: "Discovery action completed",
@@ -12011,7 +17930,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : {
         ok: false,
         error: formatDiscoveryAdoptionResult(result)
-      }));
+      }, "/discovery");
     return;
   }
 
@@ -12019,8 +17938,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const form = await readFormBody(request);
     const project = form.get("project") ?? "";
     if (!project) {
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderDashboardActionResult({ ok: false, error: "Missing project." }));
+      respondDashboardAction(request, response, form, { ok: false, error: "Missing project." }, "/learning");
       return;
     }
     const projectDir = path.resolve(process.cwd(), project);
@@ -12029,7 +17947,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       projectRootUri: projectDir,
       updatedAt: new Date().toISOString(),
       workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on",
-      autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium")
+      autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
+      approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
+      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium")
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -12045,14 +17965,25 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const form = await readFormBody(request);
     const project = form.get("project") ?? "";
     if (!project) {
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderDashboardActionResult({ ok: false, error: "Missing project." }));
+      respondDashboardAction(request, response, form, { ok: false, error: "Missing project." }, "/learning");
+      return;
+    }
+    const action = form.get("action") ?? "";
+    if (action === "compact") {
+      const projectDir = path.resolve(process.cwd(), project);
+      await compactLearningActionReceiptFiles(projectDir);
+      const query = new URLSearchParams({
+        project: projectDir,
+        limit: form.get("limit") ?? "50"
+      });
+      if (form.get("workflow")) query.set("workflow", form.get("workflow") ?? "");
+      response.writeHead(303, { location: `/learning?${query.toString()}` });
+      response.end();
       return;
     }
     const rejectIds = form.get("reject") ?? "";
     if (!rejectIds.trim()) {
-      response.writeHead(400, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderDashboardActionResult({ ok: false, error: "Missing action id to reject." }));
+      respondDashboardAction(request, response, form, { ok: false, error: "Missing action id to reject." }, "/learning");
       return;
     }
     const projectDir = path.resolve(process.cwd(), project);
@@ -12080,40 +18011,56 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       mode: form.get("mode") ?? "apply-approved",
       scope: form.get("scope") ?? "project"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/learning");
     return;
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/api/launchagent-action") {
     const form = await readFormBody(request);
     const result = await processDashboardLaunchAgentAction(form.get("action") ?? "");
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/settings");
     return;
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/api/offline-fallback-action") {
     const form = await readFormBody(request);
     const result = await processDashboardOfflineFallbackAction(form);
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/server-readiness");
     return;
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/api/offline-sync-action") {
     const form = await readFormBody(request);
     const result = await processDashboardOfflineSyncAction(form);
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/server-readiness");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/object-mirror-approval") {
+    const form = await readFormBody(request);
+    const result = await processDashboardObjectMirrorApproval(form);
+    respondDashboardAction(request, response, form, result, "/server-readiness");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/storage-project-decision") {
+    const form = await readFormBody(request);
+    const result = await processDashboardStorageProjectDecisionAction(form);
+    respondDashboardAction(request, response, form, result, "/server-readiness");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/runtime-monitor-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardRuntimeMonitorAction(form);
+    respondDashboardAction(request, response, form, result, "/server-readiness");
     return;
   }
 
   if (request.method === "POST" && requestUrl.pathname === "/api/graph-handoff-export") {
     const form = await readFormBody(request);
     const result = await exportDashboardWorkflowGraphHandoff(form);
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/workflow-graph");
     return;
   }
 
@@ -12156,10 +18103,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       standardProvider: form.get("standardProvider") ?? "",
       reasoningProvider: form.get("reasoningProvider") ?? "",
       fallbackProvider: form.get("fallbackProvider") ?? "",
-      qualityThreshold: form.get("qualityThreshold") ?? ""
+      qualityThreshold: form.get("qualityThreshold") ?? "",
+      modelPolicy: form.get("modelPolicy") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/settings");
     return;
   }
 
@@ -12169,8 +18116,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       provider: form.get("provider") ?? "",
       model: form.get("model") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/settings");
     return;
   }
 
@@ -12184,8 +18130,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       registry: form.get("registry") ?? "",
       write: form.get("write") === "on"
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/bundles");
     return;
   }
 
@@ -12199,8 +18144,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       actionType: form.get("action") ?? "",
       out: form.get("out") ?? ""
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, "/roles");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/feedback-bulk-action") {
+    const form = await readFormBody(request);
+    const result = await processDashboardBulkFeedbackAction(form);
+    respondDashboardAction(request, response, form, result, "/feedback-inbox");
     return;
   }
 
@@ -12216,8 +18167,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       rating: form.get("rating") ?? undefined,
       note: form.get("note") ?? undefined
     });
-    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardActionResult(result));
+    respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, "/"));
     return;
   }
 
@@ -12247,15 +18197,28 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/approvals") {
-    const status = requestUrl.searchParams.get("status") ?? "pending";
-    const approvals = await listActionApprovals({
-      status: status === "all" ? undefined : status,
+    const status = requestUrl.searchParams.get("status") ?? "open";
+    const approvals = (await listActionApprovals({
+      status: status === "all" || status === "open" ? undefined : status,
       runId: requestUrl.searchParams.get("run") ?? undefined,
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
-    });
+    })).filter((approval) => status !== "open" || isOpenApproval(approval));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(approvals, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/approval-backlog") {
+    const status = requestUrl.searchParams.get("status") ?? "all";
+    const report = await buildApprovalBacklogReport({
+      status: status === "all" ? undefined : status,
+      projectRootUri: requestUrl.searchParams.get("project") ? path.resolve(process.cwd(), requestUrl.searchParams.get("project") ?? "") : undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
+      staleMinutes: parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "60", 60)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
@@ -12270,6 +18233,30 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(projects, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/project-identities") {
+    const projects = await listProjectStorageSummaries(100);
+    const identities = await loadDashboardProjectIdentityGroups(projects);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify({
+      kind: "agentflow_project_identities",
+      generatedAt: new Date().toISOString(),
+      identityCount: identities.length,
+      projectCount: projects.length,
+      identities
+    }, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/project-alias-merge-plan") {
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500);
+    const projects = await listProjectStorageSummaries(limit);
+    const identities = await loadDashboardProjectIdentityGroups(projects);
+    const plan = buildDashboardProjectAliasMergePlan(projects, identities);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(plan, null, 2));
     return;
   }
 
@@ -12354,8 +18341,34 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
+    const runtimeMonitor = await loadRuntimeMonitorReport();
+    const statePlaneProof = buildSharedStatePlaneProof({
+      server: report,
+      storageVerification: await buildStorageVerificationReport({
+        targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
+      }),
+      mergeEvidence,
+      offlineFallback,
+      objectProof,
+      runtimeMonitor
+    });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ...report, mergeEvidence, offlineFallback, objectProof }, null, 2));
+    const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
+    response.end(JSON.stringify({ ...report, statePlaneProof, mutationControls: buildServerMutationControlReport(), mergeEvidence, offlineFallback, objectProof, runtimeMonitor, requestAudit }, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-mutation-controls") {
+    const report = buildServerMutationControlReport();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/runtime-monitor") {
+    const report = await loadRuntimeMonitorReport({ checkMcp: requestUrl.searchParams.get("checkMcp") === "1" || requestUrl.searchParams.get("check-mcp") === "1" });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
@@ -12404,6 +18417,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verify") === "1"
     });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-request-log") {
+    const report = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -12459,9 +18479,59 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/server-approval-preview") {
+    const isPost = request.method === "POST";
+    let payload: Record<string, unknown> = {};
+    if (isPost) {
+      try {
+        payload = objectValue(await readJsonBody(request, serverRequestLimits().maxBodyBytes));
+      } catch (error) {
+        await safeAppendServerRequestAuditEvent(buildServerRequestBodyErrorAuditEvent(request, error, "/api/server-approval-preview"));
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+        response.end(JSON.stringify({
+          kind: "agentflow_server_approval_preview",
+          generatedAt: new Date().toISOString(),
+          status: "blocked",
+          dryRun: true,
+          error: error instanceof Error ? error.message : String(error),
+          checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
+        }, null, 2));
+        return;
+      }
+    }
+    const report = await loadServerApprovalPreview({
+      projectId: isPost ? stringValue(payload.projectId) ?? "" : requestUrl.searchParams.get("projectId") ?? "",
+      approvalId: isPost ? stringValue(payload.approvalId) ?? "" : requestUrl.searchParams.get("approvalId") ?? "",
+      decision: isPost ? stringValue(payload.decision) ?? "approve-and-execute" : requestUrl.searchParams.get("decision") ?? "approve-and-execute",
+      actor: isPost ? stringValue(payload.actor) ?? "server-preview" : requestUrl.searchParams.get("actor") ?? "server-preview",
+      actorRole: isPost ? stringValue(payload.actorRole) ?? "approver" : requestUrl.searchParams.get("actorRole") ?? "approver",
+      idempotencyKey: isPost ? stringValue(payload.idempotencyKey) ?? undefined : requestUrl.searchParams.get("idempotencyKey") ?? undefined,
+      request
+    });
+    response.writeHead(report.status === "blocked" ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/server-queue") {
-    const body = await readJsonBody(request);
-    const report = await processServerQueueRequest(request, body);
+    const limits = serverRequestLimits();
+    let body: unknown;
+    try {
+      body = await readJsonBody(request, limits.maxBodyBytes);
+    } catch (error) {
+      await safeAppendServerRequestAuditEvent(buildServerRequestBodyErrorAuditEvent(request, error));
+      response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        kind: "agentflow_server_queue_report",
+        generatedAt: new Date().toISOString(),
+        status: "blocked",
+        dryRun: true,
+        error: error instanceof Error ? error.message : String(error),
+        checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
+      }, null, 2));
+      return;
+    }
+    const report = await processServerQueueRequest(request, body, limits);
     response.writeHead(report.status === "blocked" ? 400 : report.status === "queued" ? 201 : 200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -12483,6 +18553,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/workflow-graph") {
     const report = await loadDashboardWorkflowGraph(requestUrl.searchParams);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/model-catalog") {
+    const report = await loadDashboardModelCatalogReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -12603,6 +18680,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/feedback-inbox") {
+    const report = await loadDashboardFeedbackInboxReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/learning-report") {
     const project = requestUrl.searchParams.get("project");
     if (!project) {
@@ -12672,6 +18759,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end("Missing project");
       return;
     }
+    if (requestUrl.searchParams.get("health") === "1") {
+      const health = await loadLearningActionReceiptHealth(path.resolve(process.cwd(), project));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(health, null, 2));
+      return;
+    }
     const receipts = await readLearningActionReceipts(project).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), project)));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(receipts, null, 2));
@@ -12692,6 +18785,90 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/agent-improvement-report") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadAgentImprovementReport({
+      projectDir: project,
+      agentId: requestUrl.searchParams.get("agent") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
+      mode: "read-only"
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/agent-improvement-patches") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadAgentImprovementReport({
+      projectDir: project,
+      agentId: requestUrl.searchParams.get("agent") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
+      mode: "read-only"
+    });
+    const plan = await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), project), report, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all"));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(plan, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/agent-improvement-evals") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50);
+    const report = await loadAgentImprovementReport({
+      projectDir: project,
+      agentId: requestUrl.searchParams.get("agent") ?? undefined,
+      limit,
+      mode: "read-only"
+    });
+    const ids = parseProposalIds(requestUrl.searchParams.get("ids") ?? "all");
+    const patchPlan = await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), project), report, ids);
+    const evalPlan = await buildAgentImprovementEvalPlan(path.resolve(process.cwd(), project), patchPlan, ids, limit);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(evalPlan, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/agent-improvement-promotions") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50);
+    const ids = parseProposalIds(requestUrl.searchParams.get("ids") ?? "all");
+    const projectDir = path.resolve(process.cwd(), project);
+    const report = await loadAgentImprovementReport({
+      projectDir,
+      agentId: requestUrl.searchParams.get("agent") ?? undefined,
+      limit,
+      mode: "read-only"
+    });
+    const patchPlan = await buildAgentImprovementPatchPlan(projectDir, report, ids);
+    const evalPlan = await buildAgentImprovementEvalPlan(projectDir, patchPlan, ids, limit);
+    const existingQueue = await readAgentImprovementPromotionQueue(projectDir).catch(() => undefined);
+    const queue = buildAgentImprovementPromotionQueue(projectDir, patchPlan, evalPlan, ids, existingQueue);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(queue, null, 2));
     return;
   }
 
@@ -12787,15 +18964,28 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/approvals") {
-    const status = requestUrl.searchParams.get("status") ?? "pending";
-    const approvals = await listActionApprovals({
-      status: status === "all" ? undefined : status,
+    const status = requestUrl.searchParams.get("status") ?? "open";
+    const [approvals, backlog] = await Promise.all([
+      listActionApprovals({
+      status: status === "all" || status === "open" ? undefined : status,
       runId: requestUrl.searchParams.get("run") ?? undefined,
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
-    });
+      }),
+      buildApprovalBacklogReport({
+        status: undefined,
+        projectRootUri: requestUrl.searchParams.get("project") ? path.resolve(process.cwd(), requestUrl.searchParams.get("project") ?? "") : undefined,
+        limit: parsePositiveInteger(requestUrl.searchParams.get("backlogLimit") ?? "500", 500),
+        staleMinutes: parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "60", 60)
+      })
+    ]);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderApprovalsHtml(approvals, status, requestUrl.searchParams));
+    response.end(renderApprovalsHtml(
+      approvals.filter((approval) => status !== "open" || isOpenApproval(approval)),
+      status,
+      requestUrl.searchParams,
+      backlog
+    ));
     return;
   }
 
@@ -12807,7 +18997,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
     });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderBulkApprovalsHtml(approvals));
+    response.end(renderBulkApprovalsHtml(approvals, requestUrl.searchParams));
     return;
   }
 
@@ -12853,30 +19043,78 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/feedback-inbox") {
+    const report = await loadDashboardFeedbackInboxReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    const projects = await listProjectStorageSummaries(100);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderFeedbackInboxHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/feedback-inbox/bulk") {
+    const report = await loadDashboardFeedbackInboxReport({
+      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderFeedbackBulkReviewHtml(report, requestUrl.searchParams));
+    return;
+  }
+
   if (requestUrl.pathname === "/learning") {
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+    const projectPath = project ? await resolveDashboardProjectPath(project) : null;
     const report = project
       ? await loadLearningReport({
-        projectDir: project,
+        projectDir: projectPath?.storageRootUri ?? project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       })
       : null;
-    const learningQueue = project ? await readLearningApprovalQueue(project).catch(() => null) : null;
-    const learningDaemon = project ? await loadLearningDaemonStatus(project) : null;
+    const localLearningDir = projectPath?.localRootUri ?? project;
+    const learningQueue = project ? await readLearningApprovalQueue(localLearningDir).catch(() => null) : null;
+    const learningDaemon = project ? await loadLearningDaemonStatus(localLearningDir) : null;
     const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
-    const learningSettings = project ? await readLearningSettings(project).catch(() => null) : null;
-    const learningActionReceipts = project ? await readLearningActionReceipts(project).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), project))) : null;
+    const learningSettings = project ? await readLearningSettings(localLearningDir).catch(() => null) : null;
+    const learningActionReceipts = project ? await readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir))) : null;
+    const learningActionReceiptHealth = project ? await loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir)) : null;
     const supervisor = await loadDashboardSupervisorStatus();
     const workflowShape = project
       ? await loadWorkflowShapeOptimization({
-        projectDir: project,
+        projectDir: localLearningDir,
         workflowId: requestUrl.searchParams.get("workflow") ?? undefined,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       }).catch(() => null)
       : null;
+    const agentImprovement = project
+      ? await loadAgentImprovementReport({
+        projectDir: localLearningDir,
+        agentId: requestUrl.searchParams.get("agent") ?? undefined,
+        limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
+        mode: "read-only"
+      }).catch(() => null)
+      : null;
+    const agentImprovementEval = agentImprovement
+      ? await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), localLearningDir), agentImprovement, "all")
+        .then((patchPlan) => buildAgentImprovementEvalPlan(path.resolve(process.cwd(), localLearningDir), patchPlan, "all", parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)))
+        .catch(() => null)
+      : null;
+    const agentImprovementPromotion = agentImprovement && agentImprovementEval
+      ? await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), localLearningDir), agentImprovement, "all")
+        .then(async (patchPlan) => buildAgentImprovementPromotionQueue(
+          path.resolve(process.cwd(), localLearningDir),
+          patchPlan,
+          agentImprovementEval,
+          "all",
+          await readAgentImprovementPromotionQueue(path.resolve(process.cwd(), localLearningDir)).catch(() => undefined)
+        ))
+        .catch(() => null)
+      : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, learningSettings, supervisor, projects, requestUrl.searchParams));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, learningSettings, supervisor, projects, requestUrl.searchParams, projectPath));
     return;
   }
 
@@ -12961,9 +19199,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
+    const runtimeMonitor = await loadRuntimeMonitorReport();
+    const statePlaneProof = buildSharedStatePlaneProof({
+      server: report,
+      storageVerification,
+      mergeEvidence,
+      offlineFallback,
+      objectProof,
+      runtimeMonitor
+    });
+    const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), requestAudit, projects, requestUrl.searchParams));
     return;
   }
 
@@ -12977,14 +19225,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/runs") {
     const runs = await listWorkflowRuns(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderRunsHtml(runs));
+    response.end(renderRunsHtml(runs, requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/projects") {
     const projects = await listProjectStorageSummaries(100);
+    const identities = await loadDashboardProjectIdentityGroups(projects);
+    const aliasMergePlan = buildDashboardProjectAliasMergePlan(projects, identities);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderProjectsHtml(projects));
+    response.end(renderProjectsHtml(projects, identities, aliasMergePlan));
     return;
   }
 
@@ -13023,7 +19273,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       return;
     }
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderProjectDetailHtml(detail));
+    response.end(renderProjectDetailHtml(detail, requestUrl.searchParams));
     return;
   }
 
@@ -13034,7 +19284,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
     );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderProvidersHtml(info));
+    response.end(renderProvidersHtml(info, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/model-catalog") {
+    const report = await withTimeout(
+      loadDashboardModelCatalogReport(),
+      5000,
+      () => fallbackDashboardModelCatalogReport()
+    );
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderModelCatalogHtml(report));
     return;
   }
 
@@ -13045,18 +19306,21 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
     );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderDashboardInfoHtml(info));
+    response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
     return;
   }
 
-  const [runs, workflows, worker, supervisor, queue, projects, services] = await Promise.all([
+  const [runs, workflows, worker, supervisor, runtimeMonitor, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
     listWorkflowRuns(25),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
+    loadRuntimeMonitorReport(),
     listWorkflowQueue(100),
     listProjectStorageSummaries(100),
-    checkServices()
+    checkServices(),
+    listActionApprovals({ status: "pending", limit: 25 }),
+    listActionApprovals({ status: "approved", limit: 25 })
   ]);
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
   const usage = await withTimeout(
@@ -13070,11 +19334,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   const health: DashboardHomeHealth = {
     worker,
     supervisor,
+    runtimeMonitor,
     queue,
     projects,
     services,
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    latestFailedRun: runs.find((run) => run.status === "failed") ?? null
+    latestFailedRun: runs.find((run) => run.status === "failed") ?? null,
+    pendingApprovals,
+    approvedExecutableApprovals: approvedExecutableApprovals.filter((approval) => isExecutableApprovalAction(approval.actionType) && !approval.executedAt)
   };
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs, workflows, usage, health));
@@ -13129,15 +19396,12 @@ function renderDashboardHtml(
         <a class="button secondary" href="/api/runs">JSON</a>
       </div>
     </div>
+    ${renderDashboardActionCenterHtml(health)}
     <section class="panel">
       <h2>System Health</h2>
       ${renderDashboardHealthHtml(health)}
     </section>
     ${renderDashboardOperationsSnapshotHtml(health)}
-    <section class="panel">
-      <h2>Needs Attention</h2>
-      ${renderDashboardAttentionHtml(health)}
-    </section>
     <section class="panel">
       <h2>Quick Actions</h2>
       <div class="actions">
@@ -13152,7 +19416,7 @@ function renderDashboardHtml(
         </div>
         <a class="button secondary" href="/queue">Open Queue</a>
       </div>
-      ${renderWorkerStatusHtml(health.worker)}
+      ${renderWorkerStatusHtml(health.worker, { compact: true })}
     </section>
     <section class="panel">
       <h2>Run Workflow</h2>
@@ -13221,7 +19485,16 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
         : "worker: none";
     return `
       <tr>
-        <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span></td>
+        <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span><div class="row-tools">${renderRunInfoDialog({
+          runId: item.runId,
+          workflowId: item.workflowId,
+          status: item.runStatus,
+          projectName: item.projectName,
+          projectRootUri: item.projectRootUri,
+          task: item.task,
+          startedAt: item.startedAt,
+          summary: [taskSummary, `current: ${currentStage}`, leaseDetail]
+        })}</div></td>
         <td><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span></td>
         <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
         <td>${escapeHtml(item.task)}</td>
@@ -13251,6 +19524,8 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
       </div>
       <a class="button secondary" href="/api/queue">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <div class="meta-grid">
         <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
@@ -13309,27 +19584,57 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
 function renderApprovalsHtml(
   approvals: Awaited<ReturnType<typeof listActionApprovals>>,
   status: string,
-  params: URLSearchParams = new URLSearchParams()
+  params: URLSearchParams = new URLSearchParams(),
+  backlog?: ApprovalBacklogReport
 ): string {
   const pendingCount = approvals.filter((approval) => approval.status === "pending").length;
+  const openCount = approvals.filter(isOpenApproval).length;
+  const totalOpenCount = status === "open"
+    ? openCount
+    : backlog?.items.filter(isOpenApprovalBacklogItem).length ?? openCount;
+  const projectFilter = params.get("project") ?? "";
+  const runFilter = params.get("run") ?? "";
+  const maxRisk = parseApprovalAutopilotRisk(params.get("maxRisk") ?? process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK);
   const bulkParams = new URLSearchParams();
-  if (params.get("run")) bulkParams.set("run", params.get("run") ?? "");
-  if (params.get("project")) bulkParams.set("project", params.get("project") ?? "");
+  if (runFilter) bulkParams.set("run", runFilter);
+  if (projectFilter) bulkParams.set("project", projectFilter);
   bulkParams.set("limit", params.get("limit") ?? "100");
   const bulkHref = `/approvals/bulk?${bulkParams.toString()}`;
   const rows = approvals.map((approval) => `
-    <tr>
+    <tr class="${approvalTableRowClass(approval)}">
       <td>${escapeHtml(approval.id.slice(0, 8))}<br><span class="muted">${escapeHtml(approval.id)}</span></td>
       <td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td>
       <td>${escapeHtml(approval.actionType)}<br><span class="muted">${escapeHtml(approval.stageId)} (${escapeHtml(approval.agentId)})</span></td>
       <td><code>${escapeHtml(approval.target)}</code><br><span class="muted">${escapeHtml(formatApprovalPayload(approval.payload))}</span></td>
-      <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span></td>
+      <td><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(approval.workflowId)}</span><div class="row-tools">${renderRunInfoDialog({
+        idSuffix: approval.id,
+        runId: approval.runId,
+        workflowId: approval.workflowId,
+        status: approval.status,
+        projectName: approval.projectName,
+        projectRootUri: approval.projectRootUri,
+        summary: [
+          `${approval.actionType}: ${approval.target}`,
+          `stage: ${approval.stageId} (${approval.agentId})`,
+          approval.rationale
+        ]
+      })}</div></td>
       <td>${escapeHtml(approval.projectName)}<br><span class="muted">${escapeHtml(approval.projectRootUri)}</span></td>
       <td>${escapeHtml(approval.rationale)}<br><span class="muted">${escapeHtml(rolePreviewForApproval(approval))}</span>${approval.decidedBy ? `<br><span class="muted">Decided by ${escapeHtml(approval.decidedBy)}${approval.decidedRole ? ` (${escapeHtml(approval.decidedRole)})` : ""} at ${renderDashboardDateTime(approval.decidedAt)}</span>` : ""}</td>
-      <td>${approval.status === "pending" ? approvalDecisionForms(approval) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalApprovedActionForms(approval.id) : escapeHtml(approval.decisionNote ?? "")}</td>
+      <td>${approval.status === "pending" ? approvalDecisionForms(approval) : approval.status === "approved" && isExecutableApprovalAction(approval.actionType) ? approvalApprovedActionForms(approval.id) : approval.status === "failed" && isExecutableApprovalAction(approval.actionType) ? approvalFailedActionForms(approval.id, approval.decisionNote ?? "") : escapeHtml(approval.decisionNote ?? "")}</td>
     </tr>
   `).join("");
-  const filterLink = (value: string, label: string) => `<a class="button ${status === value ? "" : "secondary"}" href="/approvals?status=${encodeURIComponent(value)}">${escapeHtml(label)}</a>`;
+  const mobileCards = approvals.map((approval) => renderMobileApprovalCard(
+    approval,
+    backlog?.items.find((item) => item.approvalId === approval.id)
+  )).join("");
+  const approvalsJsonParams = new URLSearchParams(params);
+  approvalsJsonParams.set("status", status);
+  const filterLink = (value: string, label: string) => {
+    const nextParams = new URLSearchParams(params);
+    nextParams.set("status", value);
+    return `<a class="button filter-${escapeHtml(value)} ${status === value ? "" : "secondary"}" href="/approvals?${escapeHtml(nextParams.toString())}">${escapeHtml(label)}</a>`;
+  };
 
   return `<!doctype html>
 <html>
@@ -13346,21 +19651,70 @@ function renderApprovalsHtml(
       <div>
         <a href="/">Dashboard</a>
         <h1>Approvals</h1>
-        <p class="muted">Human inbox for agent-requested local commands, file writes, deployment decisions, and autonomy decisions.</p>
+        <p class="muted approval-intro">Review and act on open workflow requests.</p>
       </div>
-      <a class="button secondary" href="/api/approvals?status=${encodeURIComponent(status)}">JSON</a>
+      <a class="button secondary" href="/api/approvals?${escapeHtml(approvalsJsonParams.toString())}">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
-      <div class="actions">
+      <div class="actions approval-filters" aria-label="Approval status filters">
+        ${filterLink("open", `Open (${totalOpenCount})`)}
         ${filterLink("pending", "Pending")}
         ${filterLink("approved", "Approved")}
         ${filterLink("executed", "Executed")}
         ${filterLink("failed", "Failed")}
+        ${filterLink("dismissed", "Dismissed")}
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
         ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
         <a class="button secondary" href="/approval-rules">Always Approved</a>
       </div>
+    </section>
+    <section class="panel approval-inbox-panel">
+      <div class="section-heading">
+        <div>
+          <h2>${status === "open" ? `${openCount} Open Action${openCount === 1 ? "" : "s"}` : "Action Requests"}</h2>
+          <span class="muted">${status === "open" ? "Pending decisions, approved actions ready to run, and failures needing review." : `Showing ${escapeHtml(status)} approval records.`}</span>
+        </div>
+      </div>
+      <div class="mobile-approval-list">${mobileCards || `<div class="approval-empty"><strong>No ${status === "open" ? "open actions" : `${escapeHtml(status)} approvals`}</strong><span>You’re all caught up.</span></div>`}</div>
+      <div class="desktop-approval-table table-wrap">
+        <table>
+          <thead><tr><th>Approval</th><th>Status</th><th>Action</th><th>Target</th><th>Run</th><th>Project</th><th>Rationale</th><th>Decision</th></tr></thead>
+          <tbody>${rows || "<tr><td colspan=\"8\">No approvals found.</td></tr>"}</tbody>
+        </table>
+      </div>
+    </section>
+    ${renderApprovalStatusContextPanel(status, backlog)}
+    ${backlog ? renderApprovalBacklogPanel(backlog) : ""}
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Approval Autopilot</h2>
+          <span class="muted">Approve and execute eligible low/medium local side effects after policy and role rechecks. Already-approved eligible actions are executed too. High-risk items stay pending.</span>
+        </div>
+      </div>
+      <form class="routing-form" method="post" action="/api/approval-autopilot">
+        <input type="hidden" name="project" value="${escapeHtml(projectFilter)}">
+        <input type="hidden" name="runId" value="${escapeHtml(runFilter)}">
+        <label>Max risk
+          <select name="maxRisk">
+            <option value="low"${maxRisk === "low" ? " selected" : ""}>low</option>
+            <option value="medium"${maxRisk === "medium" ? " selected" : ""}>medium</option>
+            <option value="high"${maxRisk === "high" ? " selected" : ""}>high</option>
+          </select>
+        </label>
+        <label>Limit
+          <input name="limit" value="${escapeHtml(params.get("limit") ?? "100")}" inputmode="numeric">
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" name="execute" value="on" checked>
+          Execute eligible actions now
+        </label>
+        <div class="form-actions"><button type="submit">Run Autopilot</button></div>
+      </form>
+      <p class="muted">Default max risk comes from <code>AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK</code> and falls back to <code>medium</code>. Autopilot scans pending and already-approved unexecuted actions. It does not execute deployment, autonomy, destructive prune, blocked policy, secret-looking file, server, provider, or network actions.</p>
     </section>
     <section class="panel approval-explainer">
       <h2>How Approvals Work</h2>
@@ -13372,20 +19726,254 @@ function renderApprovalsHtml(
         <div><strong>Reject</strong><span>Leaves the side effect skipped and records why it should not run.</span></div>
       </div>
     </section>
-    <section class="panel">
-      <h2>Action Requests</h2>
-      <table>
-        <thead><tr><th>Approval</th><th>Status</th><th>Action</th><th>Target</th><th>Run</th><th>Project</th><th>Rationale</th><th>Decision</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan=\"8\">No approvals found.</td></tr>"}</tbody>
-      </table>
-    </section>
   </main>
 </body>
 </html>`;
 }
 
+function isOpenApproval(approval: DashboardActionApproval): boolean {
+  return approval.status === "pending"
+    || (approval.status === "approved" && isExecutableApprovalAction(approval.actionType))
+    || (approval.status === "failed" && isExecutableApprovalAction(approval.actionType) && !isDismissedApproval(approval));
+}
+
+function isOpenApprovalBacklogItem(item: ApprovalBacklogItem): boolean {
+  return item.status === "pending"
+    || (item.status === "approved" && isExecutableApprovalAction(item.actionType))
+    || (item.status === "failed" && isExecutableApprovalAction(item.actionType) && item.category !== "historical_info");
+}
+
+function formatApprovalAge(ms: number): string {
+  if (ms < 60_000) return "just now";
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m ago`;
+  if (ms < 86_400_000) return `${Math.floor(ms / 3_600_000)}h ago`;
+  return `${Math.floor(ms / 86_400_000)}d ago`;
+}
+
+function renderMobileApprovalCard(approval: DashboardActionApproval, backlogItem?: ApprovalBacklogItem): string {
+  const risk = backlogItem?.autopilotRisk ?? (approval.actionType === "deployment" || approval.actionType === "autonomy" ? "high" : "medium");
+  const ageReference = approval.updatedAt ?? approval.createdAt;
+  const ageMs = Math.max(0, Date.now() - Date.parse(ageReference));
+  const executable = isExecutableApprovalAction(approval.actionType);
+  const decisionControls = approval.status === "pending"
+    ? `<div class="mobile-approval-actions">
+        <form method="post" action="/api/approval-action">
+          <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
+          <input type="hidden" name="decision" value="rejected">
+          <input type="hidden" name="actorRole" value="approver">
+          <button class="danger secondary" type="submit">Reject</button>
+        </form>
+        ${approval.actionType === "local_command" || approval.actionType === "file_write" ? `<form method="post" action="/api/approval-rule-action">
+          <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
+          <input type="hidden" name="actorRole" value="approver">
+          <input type="hidden" name="target" value="${escapeHtml(approvalRuleExactTarget(approval))}">
+          <input type="hidden" name="approveCurrent" value="on">
+          <input type="hidden" name="note" value="Always approve ${escapeHtml(approvalRuleDisplayTarget(approval, approvalRuleExactTarget(approval)))}">
+          <button class="secondary" type="submit">Always allow</button>
+        </form>` : ""}
+        <form method="post" action="/api/approval-action">
+          <input type="hidden" name="approvalId" value="${escapeHtml(approval.id)}">
+          <input type="hidden" name="decision" value="${executable ? "approve_execute" : "approved"}">
+          <input type="hidden" name="actorRole" value="approver">
+          <button type="submit">${executable ? "Approve & run" : "Approve"}</button>
+        </form>
+      </div>`
+    : approval.status === "approved" && executable
+      ? `<div class="mobile-approval-actions two-up">${approvalDismissForm(approval.id)}${approvalExecuteForm(approval.id).replace(">Execute<", ">Execute now<")}</div>`
+      : approval.status === "failed" && executable
+        ? `<div class="mobile-approval-actions two-up">${approvalDismissForm(approval.id)}${approvalExecuteForm(approval.id).replace(">Execute<", ">Retry now<")}</div>`
+        : `<p class="muted">${escapeHtml(approval.decisionNote ?? "No action available.")}</p>`;
+  return `<article class="mobile-approval-card risk-${escapeHtml(risk)}">
+    <div class="mobile-approval-meta">
+      <span class="approval-risk"><strong>${escapeHtml(titleCase(risk))} risk</strong></span>
+      <span class="approval-kind">${escapeHtml(titleCase(approval.actionType.replaceAll("_", " ")))}</span>
+      <span class="approval-age">${escapeHtml(formatApprovalAge(ageMs))}</span>
+    </div>
+    <div class="mobile-approval-context">
+      <strong>${escapeHtml(approval.projectName)}</strong>
+      <span>${escapeHtml(approval.workflowId)} · ${escapeHtml(approval.stageId)}</span>
+    </div>
+    <code class="mobile-approval-target">${escapeHtml(approval.target)}</code>
+    <details class="mobile-approval-details">
+      <summary>View details</summary>
+      <dl>
+        <div><dt>Requested by</dt><dd>${escapeHtml(approval.agentId)}</dd></div>
+        <div><dt>Why</dt><dd>${escapeHtml(approval.rationale)}</dd></div>
+        <div><dt>Approval ID</dt><dd>${escapeHtml(approval.id)}</dd></div>
+        <div><dt>Run</dt><dd><a href="/run?id=${encodeURIComponent(approval.runId)}">${escapeHtml(approval.runId)}</a></dd></div>
+        <div><dt>Payload</dt><dd>${escapeHtml(formatApprovalPayload(approval.payload))}</dd></div>
+      </dl>
+    </details>
+    ${decisionControls}
+  </article>`;
+}
+
+function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
+  const warningCount = report.severityCounts.warning ?? 0;
+  const errorCount = report.severityCounts.error ?? 0;
+  const attentionItems = report.items.filter((item) => item.severity !== "info").slice(0, 12);
+  const missingToolFailures = report.items.filter((item) => item.status === "failed" && item.category === "missing_tool" && isExecutableApprovalAction(item.actionType)).length;
+  const resolvedMissingToolFailures = report.items.filter((item) => item.status === "failed" && item.category === "resolved_missing_tool" && isExecutableApprovalAction(item.actionType)).length;
+  const commandFailures = report.items.filter((item) => item.status === "failed" && item.category === "command_failed" && isExecutableApprovalAction(item.actionType)).length;
+  const triageCards = approvalBacklogTriageOrder().map((category) => {
+    const count = report.categoryCounts[category] ?? 0;
+    return count ? `<div><strong>${escapeHtml(approvalBacklogCategoryLabel(category))}</strong><span>${formatNumber(count)}</span><small>${escapeHtml(approvalBacklogCategoryHint(category))}</small></div>` : "";
+  }).join("");
+  const rows = attentionItems.map((item) => `
+    <tr>
+      <td><span class="flag ${item.severity === "error" ? "warn" : "queued"}">${escapeHtml(item.severity)}</span><br><span class="muted">${escapeHtml(item.status)}</span></td>
+      <td>${escapeHtml(approvalBacklogCategoryLabel(item.category))}<br><span class="muted">${escapeHtml(item.actionType)}</span><br><span class="muted">${escapeHtml(item.stageId)} / ${escapeHtml(item.agentId)}</span></td>
+      <td><code>${escapeHtml(truncateMiddle(item.target, 96))}</code></td>
+      <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span></td>
+      <td>${escapeHtml(humanizeApprovalFailureText(item.reason))}${item.autopilotRisk ? `<br><span class="muted">autopilot ${item.autopilotEligible ? "eligible" : "blocked"} / ${escapeHtml(item.autopilotRisk)}</span>` : ""}<br><strong>Next:</strong> ${escapeHtml(item.nextAction)}</td>
+    </tr>
+  `).join("");
+  const radarParams = new URLSearchParams();
+  radarParams.set("limit", String(report.scanned || 500));
+  radarParams.set("staleMinutes", String(report.staleMinutes));
+  radarParams.set("status", report.statusFilter ?? "all");
+  if (report.projectRootUri) radarParams.set("project", report.projectRootUri);
+  const triageHiddenInputs = `
+    <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? "")}">
+    <input type="hidden" name="limit" value="${escapeHtml(String(report.scanned || 500))}">
+    <input type="hidden" name="staleMinutes" value="${escapeHtml(String(report.staleMinutes))}">
+  `;
+  const triageActions = missingToolFailures || resolvedMissingToolFailures || commandFailures
+    ? `<div class="approval-triage-actions">
+        ${missingToolFailures || resolvedMissingToolFailures ? `<form method="post" action="/api/approval-triage-action">
+          ${triageHiddenInputs}
+          <input type="hidden" name="action" value="retry-missing-tools">
+          <label class="check-row"><input type="checkbox" name="confirmed" required> Retry ${formatNumber(missingToolFailures + resolvedMissingToolFailures)} missing-tool failure${missingToolFailures + resolvedMissingToolFailures === 1 ? "" : "s"}</label>
+          <button type="submit">${iconLabel("refresh", "Retry Missing Tools")}</button>
+        </form>` : ""}
+        ${commandFailures ? `<form method="post" action="/api/approval-triage-action">
+          ${triageHiddenInputs}
+          <input type="hidden" name="action" value="dismiss-command-failures">
+          <label class="check-row"><input type="checkbox" name="confirmed" required> Dismiss ${formatNumber(commandFailures)} reviewed command failure${commandFailures === 1 ? "" : "s"}</label>
+          <button class="secondary" type="submit">${iconLabel("trash", "Dismiss Reviewed Failures")}</button>
+        </form>` : ""}
+      </div>`
+    : "";
+  return `
+    <section class="panel ${errorCount ? "warn-panel" : ""}">
+      <div class="section-heading">
+        <div>
+          <h2>Approval Backlog Radar</h2>
+          <span class="muted">Daemon-style scan across approval states for missed, stale, warning, and failed approval items.</span>
+        </div>
+        <a class="button secondary" href="/api/approval-backlog?${escapeHtml(radarParams.toString())}">JSON</a>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Scanned", report.scanned, "recent approvals")}
+        ${metricCard("Pending", report.counts.pending ?? 0, "waiting")}
+        ${metricCard("Approved", report.counts.approved ?? 0, "not executed")}
+        ${metricCard("Failed", report.counts.failed ?? 0, "errors")}
+        ${metricCard("Warnings", warningCount, "stale or needs action")}
+        ${metricCard("Errors", errorCount, "failed approvals")}
+      </div>
+      ${triageCards ? `<div class="approval-triage-grid">${triageCards}</div>` : ""}
+      ${triageActions}
+      <p class="muted">This radar scans across approval states even when the table below is filtered. Items older than ${formatNumber(report.staleMinutes)} minute(s) are treated as stale. Low/medium eligible items can be cleared by Approval Autopilot; high-risk or failed items stay visible for review.</p>
+      <div class="table-wrap"><table><thead><tr><th>Severity</th><th>Triage</th><th>Target</th><th>Run</th><th>Reason / Next Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No warning or error approval backlog items found.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderApprovalStatusContextPanel(status: string, backlog?: ApprovalBacklogReport): string {
+  if (!backlog) return "";
+  const activeFailures = backlog.categoryCounts.missing_tool ?? 0;
+  const commandFailures = backlog.categoryCounts.command_failed ?? 0;
+  const resolvedFailures = backlog.categoryCounts.resolved_missing_tool ?? 0;
+  const auditRows = backlog.categoryCounts.historical_info ?? 0;
+  const reviewedCandidateCount = commandFailures + resolvedFailures;
+  if (status === "failed") {
+    return `<section class="panel approval-context-panel">
+      <div class="section-heading">
+        <div>
+          <h2>Failed Approval Rows Are Audit Evidence</h2>
+          <span class="muted">This filter shows side effects that were attempted and failed at the time. Use the radar below for what needs action now.</span>
+        </div>
+      </div>
+      <div class="status-context-grid">
+        <div class="${activeFailures ? "bad" : "good"}"><strong>${formatNumber(activeFailures)}</strong><span>active failure${activeFailures === 1 ? "" : "s"} to review</span></div>
+        <div class="${commandFailures ? "warn" : "neutral"}"><strong>${formatNumber(commandFailures)}</strong><span>command failure${commandFailures === 1 ? "" : "s"} ready to review</span></div>
+        <div class="${resolvedFailures ? "warn" : "neutral"}"><strong>${formatNumber(resolvedFailures)}</strong><span>missing-tool failure${resolvedFailures === 1 ? "" : "s"} now retry-ready</span></div>
+        <div class="neutral"><strong>${formatNumber(auditRows)}</strong><span>historical row${auditRows === 1 ? "" : "s"} retained for receipts</span></div>
+      </div>
+      ${reviewedCandidateCount ? `<form class="inline-action-form" method="post" action="/api/approval-triage-action">
+        <input type="hidden" name="action" value="dismiss-reviewed-failures">
+        <input type="hidden" name="project" value="${escapeHtml(backlog.projectRootUri ?? "")}">
+        <input type="hidden" name="limit" value="${escapeHtml(String(backlog.scanned || 500))}">
+        <input type="hidden" name="staleMinutes" value="${escapeHtml(String(backlog.staleMinutes))}">
+        <label class="checkbox-label"><input type="checkbox" name="confirmed" required> Mark ${formatNumber(reviewedCandidateCount)} old failed approval${reviewedCandidateCount === 1 ? "" : "s"} reviewed/not actionable</label>
+        <button class="secondary" type="submit">${iconLabel("check", "Mark Reviewed")}</button>
+      </form>` : ""}
+    </section>`;
+  }
+  if (status === "dismissed" || status === "executed" || status === "rejected") {
+    return `<section class="panel approval-context-panel">
+      <h2>${escapeHtml(titleCase(status))} Rows Are History</h2>
+      <p class="muted">These approvals are retained as receipts. They should not be counted as open work unless a new run asks for the same side effect again.</p>
+    </section>`;
+  }
+  return "";
+}
+
+function approvalBacklogTriageOrder(): ApprovalBacklogCategory[] {
+  return ["missing_tool", "resolved_missing_tool", "command_failed", "ready_to_execute", "stale_review", "manual_decision", "needs_review", "historical_info"];
+}
+
+function approvalBacklogCategoryLabel(category: ApprovalBacklogCategory): string {
+  switch (category) {
+    case "missing_tool":
+      return "Missing Tool";
+    case "resolved_missing_tool":
+      return "Tool Available";
+    case "command_failed":
+      return "Command Failed";
+    case "ready_to_execute":
+      return "Ready To Execute";
+    case "stale_review":
+      return "Stale Review";
+    case "manual_decision":
+      return "Manual Decision";
+    case "historical_info":
+      return "Historical Info";
+    case "needs_review":
+      return "Needs Review";
+  }
+}
+
+function approvalBacklogCategoryHint(category: ApprovalBacklogCategory): string {
+  switch (category) {
+    case "missing_tool":
+      return "Install dependency, then retry.";
+    case "resolved_missing_tool":
+      return "Dependency is now available.";
+    case "command_failed":
+      return "Fix command/input, then retry or dismiss.";
+    case "ready_to_execute":
+      return "Execute or autopilot can clear.";
+    case "stale_review":
+      return "Refresh evidence or dismiss.";
+    case "manual_decision":
+      return "Decision recorded, no local execution.";
+    case "historical_info":
+      return "Audit trail, no action.";
+    case "needs_review":
+      return "Choose the next action.";
+  }
+}
+
+function approvalTableRowClass(approval: DashboardActionApproval): string {
+  if (approval.status === "executed" || approval.status === "dismissed" || approval.status === "rejected" || isDismissedApproval(approval)) return "approval-row-history";
+  if (approval.status === "failed") return "approval-row-failed";
+  return "";
+}
+
 function renderBulkApprovalsHtml(
-  approvals: Awaited<ReturnType<typeof listActionApprovals>>
+  approvals: Awaited<ReturnType<typeof listActionApprovals>>,
+  params: URLSearchParams = new URLSearchParams()
 ): string {
   const rows = approvals.map((approval) => `
     <label class="bulk-approval-row">
@@ -13414,19 +20002,19 @@ function renderBulkApprovalsHtml(
         <p class="muted">Review each one-line summary and uncheck anything you do not want approved.</p>
       </div>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       ${approvals.length ? `<form method="post" action="/api/approval-bulk-action" class="bulk-approval-form">
+        <input type="hidden" name="returnTo" value="/approvals/bulk?${escapeHtml(params.toString())}">
         <input type="hidden" name="actorRole" value="approver">
         <label>Decision note
           <input name="note" value="Bulk approved from dashboard after review">
         </label>
-        <label class="checkbox-row">
-          <input type="checkbox" name="executeAfterApproval" checked>
-          Execute executable actions immediately after approval
-        </label>
         <div class="bulk-approval-list">${rows}</div>
         <div class="actions">
-          <button type="submit">Approve Checked</button>
+          <button type="submit" name="decision" value="approve">Approve Checked</button>
+          <button type="submit" name="decision" value="approve_execute">Approve Checked + Execute</button>
           <a class="button secondary" href="/approvals">Cancel</a>
         </div>
       </form>` : `<p class="muted">No pending approvals are available.</p><a class="button secondary" href="/approvals">Back to Approvals</a>`}
@@ -13502,10 +20090,23 @@ function renderApprovalRulesHtml(
 </html>`;
 }
 
-function renderRunsHtml(runs: DashboardRunStatus[]): string {
+function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
   const rows = runs.map((run) => `
     <tr>
-      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span></td>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span><div class="row-tools">${renderRunInfoDialog({
+        runId: run.id,
+        workflowId: run.workflowId,
+        status: run.status,
+        projectName: run.projectName,
+        projectRootUri: run.projectRootUri,
+        task: run.task,
+        startedAt: run.startedAt,
+        summary: [
+          run.finishedAt ? `finished: ${formatDashboardDateTimeText(run.finishedAt)}` : "not finished yet",
+          run.providerOverride ? `provider: ${run.providerOverride}` : "provider: default route",
+          run.modelTierOverride ? `model tier: ${run.modelTierOverride}` : "model tier: workflow default"
+        ]
+      })}</div></td>
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td>${escapeHtml(run.workflowId)}</td>
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
@@ -13532,6 +20133,8 @@ function renderRunsHtml(runs: DashboardRunStatus[]): string {
       </div>
       <a class="button secondary" href="/api/runs">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <h2>Recent Runs</h2>
       <table>
@@ -13996,19 +20599,22 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
       <div>
         <h3>${escapeHtml(stage.id)}</h3>
         <p>${escapeHtml(stage.goal)}</p>
+        <p class="muted">${escapeHtml(stagePatternExplanation(stage))}</p>
         <div class="meta-grid compact">
           <div><strong>Agent</strong>${escapeHtml(stage.agentDisplayName ?? stage.agentId)}</div>
+          <div><strong>Pattern</strong>${escapeHtml(stage.pattern.type)}</div>
           <div><strong>Tier</strong>${escapeHtml(stage.modelTier ?? "not set")}</div>
           <div><strong>Context</strong>${formatNumber(stage.contextMaxTokens)} tokens</div>
           <div><strong>Policy</strong>${stage.policyAllowed ? "allowed" : "blocked"}</div>
+          <div><strong>Gate</strong>${escapeHtml(stage.pattern.promotionGate)}</div>
         </div>
         <div class="chip-row">${subagents}</div>
       </div>
     </div>`;
   }).join("");
   const stageRows = filteredStages.map((stage) => `
-    <tr id="${escapeHtml(stageAnchorId(stage.id))}"><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
-  `).join("") || '<tr><td colspan="7">No stages match the selected filters.</td></tr>';
+    <tr id="${escapeHtml(stageAnchorId(stage.id))}"><td>${stage.order}</td><td>${escapeHtml(stage.id)}</td><td>${escapeHtml(stage.agentId)}</td><td>${escapeHtml(stage.pattern.type)}<br><span class="muted">${escapeHtml(stage.pattern.promotionGate)}</span></td><td>${escapeHtml(stage.subagents.map((item) => item.id).join(", ") || "none")}</td><td>${formatNumber(stage.contextMaxTokens)}</td><td>${stage.approvalRequired || stage.policyApprovalRequired ? "yes" : "no"}</td><td>${stage.policyAllowed ? "allowed" : "blocked"}</td></tr>
+  `).join("") || '<tr><td colspan="8">No stages match the selected filters.</td></tr>';
   const warnings = [...report.warnings, ...report.runWarnings];
   const warningHtml = warnings.length
     ? `<section class="panel warn-panel"><h2>Warnings</h2><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul></section>`
@@ -14099,7 +20705,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
     ${visual}
     ${renderRecentGraphExportsHtml(report.recentGraphExports, projectValue)}
     ${renderFocusedStageRunsHtml(report, projectValue, clearStageHref)}
-    <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
+    <section class="panel"><h2>Stage Matrix</h2><div class="table-wrap"><table><thead><tr><th>#</th><th>Stage</th><th>Agent</th><th>Pattern</th><th>Subagents</th><th>Tokens</th><th>Approval</th><th>Policy</th></tr></thead><tbody>${stageRows}</tbody></table></div></section>
     <section class="panel"><h2>Mermaid</h2><pre>${escapeHtml(report.mermaid)}</pre></section>
   </main></body></html>`;
 }
@@ -14522,9 +21128,12 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: Workflow
       <strong>${formatNumber(stage.order)}. ${escapeHtml(stage.id)}</strong>
       <span>${escapeHtml(stage.agentDisplayName ?? stage.agentId)}</span>
       <small>${escapeHtml(stage.goal)}</small>
+      <small>${escapeHtml(stagePatternExplanation(stage))}</small>
       <div class="mind-node-meta">
+        <span>${escapeHtml(stage.pattern.type)}</span>
         <span>${formatNumber(stage.contextMaxTokens)} tokens</span>
         <span>${stage.approvalRequired || stage.policyApprovalRequired ? "approval" : "no approval"}</span>
+        <span>${escapeHtml(stage.pattern.promotionGate)}</span>
         <span>${stage.policyAllowed ? "allowed" : "blocked"}</span>
       </div>
       <div class="chip-row">${subagents}</div>
@@ -14611,7 +21220,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const stageNode: NetworkNode = {
       id: stageNodeId,
       label: stageNodeLabel(stage.id),
-      title: `${stage.id}: ${stage.goal}`,
+      title: `${stage.id}: ${stage.goal} (${stage.pattern.type}; gate ${stage.pattern.promotionGate})`,
       x: point.x,
       y: point.y,
       r: 22,
@@ -14883,6 +21492,23 @@ function countBy(values: string[]): Record<string, number> {
   }, {});
 }
 
+function stagePatternExplanation(stage: WorkflowGraphReport["stages"][number]): string {
+  const gate = stage.pattern.promotionGate === "none" ? "" : ` Promotion gate: ${stage.pattern.promotionGate}.`;
+  const verifier = stage.pattern.requiresVerifier ? " Verifier evidence is expected before promotion." : "";
+  const maxIterations = stage.pattern.maxIterations ? ` Limited to ${stage.pattern.maxIterations} observe-act iteration${stage.pattern.maxIterations === 1 ? "" : "s"}.` : "";
+  const approval = stage.approvalRequired || stage.policyApprovalRequired ? " Approval is required before this stage can fully execute." : "";
+  const base: Record<string, string> = {
+    "single-shot": "Used for one bounded model call with no explicit agent loop.",
+    planner: "Used to decompose the request, choose specialists, and set implementation direction.",
+    executor: "Used to apply scoped implementation work under project policy.",
+    react: "Used when the stage may observe, request a local action, inspect the result, and stop on evidence.",
+    reflexive: "Used to critique or update previous work before handing it forward.",
+    verifier: "Used to independently check behavior, tests, policy, or release readiness.",
+    finalizer: "Used to package decisions, evidence, and remaining risk into a handoff."
+  };
+  return `${base[stage.pattern.type] ?? "Used for a provider-neutral workflow stage."}${maxIterations}${gate}${verifier}${approval}`.trim();
+}
+
 function stageAnchorId(stageId: string): string {
   return `stage-${stageId.replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
 }
@@ -14927,6 +21553,8 @@ function renderModelImprovementHtml(
       </div>
       ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <form method="get" class="workflow-form">
         <label class="wide">Project path
@@ -14945,15 +21573,18 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams): string {
-  const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null): string {
+  const selectedProject = projectPath?.storageRootUri ?? report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
+  const agentImprovementJsonHref = agentImprovement ? `/api/agent-improvement-report?project=${encodeURIComponent(agentImprovement.projectRootUri)}&limit=${encodeURIComponent(String(agentImprovement.limit))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
   const autonomousApplyMaxRisk = learningSettings?.autonomousApplyMaxRisk ?? "medium";
+  const approvalAutopilotEnabled = learningSettings?.approvalAutopilotEnabled ?? false;
+  const approvalAutopilotMaxRisk = learningSettings?.approvalAutopilotMaxRisk ?? "medium";
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, workflowShape, shapeAutoUpdate, autonomousApplyMaxRisk, supervisor)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, supervisor, projectPath)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -14974,6 +21605,9 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       </div>
       ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
+    ${projectPath ? renderDashboardProjectPathResolutionHtml(projectPath) : ""}
     <section class="panel">
       <form method="get" class="workflow-form">
         <label class="wide">Project path
@@ -14989,14 +21623,35 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
         <div class="form-actions"><button type="submit">Inspect</button></div>
       </form>
     </section>
-    ${shapeJsonHref ? `<section class="panel compact-panel"><a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a></section>` : ""}
+    ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
     ${body}
   </main>
 </body>
 </html>`;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, workflowShape: WorkflowShapeOptimizationReport | null, shapeAutoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, supervisor: DashboardSupervisorStatus): string {
+function renderDashboardProjectPathResolutionHtml(projectPath: DashboardProjectPathResolution): string {
+  return `
+    <section class="panel compact-panel">
+      <div class="section-heading">
+        <div>
+          <h2>Project Path Mapping</h2>
+          <span class="muted">Shared storage can keep a project under one host path while this machine uses another local checkout path.</span>
+        </div>
+        <span class="status ${projectPath.localPathExists ? "completed" : "queued"}">${projectPath.localPathExists ? projectPath.source : "not mounted"}</span>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Storage Root</strong>${escapeHtml(projectPath.storageRootUri)}</div>
+        <div><strong>Local Root</strong>${escapeHtml(projectPath.localRootUri)}</div>
+        <div><strong>Mapped</strong>${projectPath.mapped ? "yes" : "no"}</div>
+        <div><strong>Local Path</strong>${projectPath.localPathExists ? "available" : "missing"}</div>
+      </div>
+      <p class="muted">${escapeHtml(projectPath.note)}</p>
+    </section>
+  `;
+}
+
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -15014,10 +21669,11 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
     <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
   `).join("");
-  const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(report.projectDir)} --write`;
-  const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(report.projectDir)} --write`;
-  const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(report.projectDir)} --mode apply-approved`;
-  const shapeCommand = `npm run agentflow -- learning-workflow-shape --project ${shellQuote(report.projectDir)}${workflowShape ? ` --workflow ${shellQuote(workflowShape.workflowId)}` : ""} --write`;
+  const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
+  const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(localProjectDir)} --write`;
+  const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(localProjectDir)} --write`;
+  const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(localProjectDir)} --mode apply-approved`;
+  const shapeCommand = `npm run agentflow -- learning-workflow-shape --project ${shellQuote(localProjectDir)}${workflowShape ? ` --workflow ${shellQuote(workflowShape.workflowId)}` : ""} --write`;
   const list = (items: string[]) => `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
   return `
     <section class="panel">
@@ -15031,13 +21687,14 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       </div>
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
-    ${renderLearningSupervisorTargetHtml(report.projectDir, supervisor)}
+    ${renderLearningSupervisorTargetHtml(localProjectDir, supervisor)}
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local autonomous loop over Agent Workflow-owned learning state.</span></div></div>
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It auto-applies low/medium-risk Agent Workflow-owned local optimization files by default, including project-local tuning overlays. High-risk source, provider, command, network, reusable bundle, and export changes still require approval.</p>
     </section>
-    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, autonomousApplyMaxRisk) : ""}
+    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk) : ""}
+    ${agentImprovement ? renderAgentImprovementHtml(agentImprovement, agentImprovementEval, agentImprovementPromotion) : ""}
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
       <div class="split-grid">
@@ -15060,6 +21717,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       <p class="muted">Generate a saved plan with <code>${escapeHtml(applicationPlanCommand)}</code>. The daemon applies safe local overlay actions automatically and leaves high-risk actions gated.</p>
       <div class="table-wrap"><table><thead><tr><th>Action</th><th>Type</th><th>Gate</th><th>Owned State Only</th><th>Command</th></tr></thead><tbody>${applicationRows || "<tr><td colspan=\"5\">No approved learning proposals selected for application planning.</td></tr>"}</tbody></table></div>
     </section>
+    ${learningActionReceiptHealth ? renderLearningActionReceiptHealthHtml(learningActionReceiptHealth, report.limit, workflowShape?.workflowId ?? "") : ""}
     ${learningActionReceipts ? renderLearningActionReceiptsHtml(learningActionReceipts, report.limit) : ""}
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
@@ -15107,16 +21765,22 @@ function renderLearningSupervisorTargetHtml(projectDir: string, supervisor: Dash
 
 function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, supervisor: DashboardSupervisorStatus): string {
   const age = status.ageMs === null ? "n/a" : formatDuration(Math.max(0, status.ageMs));
-  const statusDetail = status.status === "missing" && supervisor.learningScope !== "all-projects" && supervisor.learningProject && supervisor.learningProject !== status.projectRootUri
-    ? `No heartbeat for this project because the durable supervisor is watching ${supervisor.learningProject}.`
-    : "";
+  const remoteProjectSelected = status.status === "missing" && !status.projectPathExists && supervisor.learningEnabled && supervisor.learningScope === "all-projects";
+  const statusLabel = remoteProjectSelected ? "remote path" : status.status;
+  const statusClass = remoteProjectSelected ? "queued" : status.status === "running" ? "completed" : status.status === "missing" ? "queued" : "failed";
+  const statusDetail = remoteProjectSelected
+    ? `The durable learning daemon is running in all-projects mode, but this selected project path is not mounted on this Mac: ${status.projectRootUri}. Agent Workflow can read its shared run history from storage, but cannot write that project's local heartbeat files until the project is available at a local path.`
+    : status.status === "missing" && supervisor.learningScope !== "all-projects" && supervisor.learningProject && supervisor.learningProject !== status.projectRootUri
+      ? `No heartbeat for this project because the durable supervisor is currently watching ${supervisor.learningProject}.`
+      : "";
   return `
     <div class="meta-grid">
-      <div><strong>Status</strong><span class="status ${status.status === "running" ? "completed" : status.status === "missing" ? "queued" : "failed"}">${escapeHtml(status.status)}</span></div>
+      <div><strong>Status</strong><span class="status ${statusClass}">${escapeHtml(statusLabel)}</span></div>
       <div><strong>Mode</strong>${escapeHtml(status.mode ?? "n/a")}</div>
       <div><strong>Daemon</strong>${escapeHtml(status.daemonId ?? "n/a")}</div>
       <div><strong>PID</strong>${status.pid ?? "none"}</div>
       <div><strong>Process</strong>${status.processAlive ? "alive" : "not running"}</div>
+      <div><strong>Project Path</strong>${status.projectPathExists ? "available locally" : "not mounted here"}</div>
       <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(status.lastHeartbeatAt, "none")}</div>
       <div><strong>Age</strong>${escapeHtml(age)}</div>
       <div><strong>Last Report</strong>${renderDashboardDateTime(status.lastReportAt, "none")}</div>
@@ -15126,8 +21790,31 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
       <div><strong>Application Actions</strong>${formatNumber(status.applicationActions)}</div>
       <div><strong>Auto-applied</strong>${formatNumber(status.autonomousAppliedActions)}</div>
       <div><strong>Auto-apply Risk</strong>${escapeHtml(status.autonomousApplyMaxRisk)}</div>
+      <div><strong>Agent Candidates</strong>${formatNumber(status.agentImprovementCandidates)}</div>
+      <div><strong>Agent Patch Previews</strong>${formatNumber(status.agentImprovementPatchPreviews)}</div>
+      <div><strong>Agent Eval Passes</strong>${formatNumber(status.agentImprovementEvalPasses)}</div>
+      <div><strong>Agent Promotions</strong>${formatNumber(status.agentImprovementPromotions)}</div>
+      <div><strong>Promotion Pending</strong>${formatNumber(status.agentImprovementPromotionPending)}</div>
+      <div><strong>Approval Autopilot</strong>${status.approvalAutopilotEnabled ? "on" : "off"}</div>
+      <div><strong>Approval Risk</strong>${escapeHtml(status.approvalAutopilotMaxRisk)}</div>
+      <div><strong>Approvals Executed</strong>${formatNumber(status.approvalAutopilotExecuted)}</div>
+      <div><strong>Approvals Skipped</strong>${formatNumber(status.approvalAutopilotSkipped)}</div>
+      <div><strong>Backlog Scanned</strong>${formatNumber(status.approvalBacklogScanned)}</div>
+      <div><strong>Backlog Warnings</strong>${formatNumber(status.approvalBacklogWarnings)}</div>
+      <div><strong>Backlog Errors</strong>${formatNumber(status.approvalBacklogErrors)}</div>
       <div><strong>Shape Auto Update</strong>${status.workflowShapeAutoUpdate === false ? "off" : "on"}</div>
       <div><strong>Shape Recommendations</strong>${formatNumber(status.workflowShapeRecommendations ?? 0)}</div>
+      <div><strong>MCP Cleanup</strong>${status.mcpCleanupEnabled ? escapeHtml(status.mcpCleanupMode) : "off"}</div>
+      <div><strong>MCP Stale Age</strong>${formatNumber(status.mcpCleanupStaleMinutes)} min</div>
+      <div><strong>MCP Candidates</strong>${formatNumber(status.mcpCleanupCandidates)}</div>
+      <div><strong>MCP Auto-cleanable</strong>${formatNumber(status.mcpCleanupAutoCleanable)}</div>
+      <div><strong>MCP Terminated</strong>${formatNumber(status.mcpCleanupTerminated)}</div>
+      <div><strong>MCP Warnings</strong>${formatNumber(status.mcpCleanupWarnings)}</div>
+      <div><strong>Last MCP Cleanup</strong>${renderDashboardDateTime(status.lastMcpCleanupAt, "none")}</div>
+      <div><strong>Stale Run Reconcile</strong>${status.staleRunReconcileEnabled ? "on" : "off"}</div>
+      <div><strong>Stale Run Candidates</strong>${formatNumber(status.staleRunReconcileCandidates)}</div>
+      <div><strong>Stale Runs Repaired</strong>${formatNumber(status.staleRunReconciled)}</div>
+      <div><strong>Last Stale Run Check</strong>${renderDashboardDateTime(status.lastStaleRunReconcileAt, "none")}</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(status.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(status.command)}</code></div>
       ${status.lastError ? `<div><strong>Last Error</strong>${escapeHtml(status.lastError)}</div>` : ""}
@@ -15136,7 +21823,7 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
   `;
 }
 
-function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel): string {
+function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk): string {
   const recommendationRows = report.recommendations.map((item) => `
     <tr>
       <td>${escapeHtml(item.id)}<br><span class="muted">${escapeHtml(item.kind)}</span></td>
@@ -15151,6 +21838,7 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
   const fileItems = report.ownedLearningFiles.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join("");
   const settingsButton = "Save optimizer setting";
   const riskOptions = ["low", "medium", "high"].map((risk) => `<option value="${risk}"${autonomousApplyMaxRisk === risk ? " selected" : ""}>${risk}</option>`).join("");
+  const approvalRiskOptions = ["low", "medium", "high"].map((risk) => `<option value="${risk}"${approvalAutopilotMaxRisk === risk ? " selected" : ""}>${risk}</option>`).join("");
   return `
     <section class="panel">
       <div class="section-heading">
@@ -15171,6 +21859,13 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <label>Auto-apply through
           <select name="autonomousApplyMaxRisk">${riskOptions}</select>
         </label>
+        <label class="checkbox-label">
+          <input type="checkbox" name="approvalAutopilotEnabled" value="on" ${approvalAutopilotEnabled ? "checked" : ""}>
+          Approval autopilot approves and executes eligible side effects
+        </label>
+        <label>Approval autopilot through
+          <select name="approvalAutopilotMaxRisk">${approvalRiskOptions}</select>
+        </label>
         <button type="submit" class="secondary">${escapeHtml(settingsButton)}</button>
       </form>
       <div class="metric-grid">
@@ -15185,6 +21880,123 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <div><h3>Owned Files</h3><ul>${fileItems}</ul></div>
       </div>
       <div class="table-wrap"><table><thead><tr><th>ID</th><th>Priority</th><th>Recommendation</th><th>Scope</th><th>Agent Type</th><th>Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"6\">No shape changes recommended yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: AgentImprovementEvalPlan | null, promotionQueue: AgentImprovementPromotionQueue | null): string {
+  const command = `npm run agentflow -- agent-improvement-report --project ${shellQuote(report.projectRootUri)} --write`;
+  const patchCommand = `npm run agentflow -- agent-improvement-patches --project ${shellQuote(report.projectRootUri)} --write`;
+  const evalCommand = `npm run agentflow -- agent-improvement-evals --project ${shellQuote(report.projectRootUri)} --write`;
+  const promotionCommand = `npm run agentflow -- agent-improvement-promotions --project ${shellQuote(report.projectRootUri)} --write`;
+  const patchHref = `/api/agent-improvement-patches?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
+  const evalHref = `/api/agent-improvement-evals?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
+  const promotionHref = `/api/agent-improvement-promotions?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
+  const evalRows = (evalPlan?.evaluations ?? []).slice(0, 12).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.agentId)}<br><span class="muted">${escapeHtml(item.scope)}</span></td>
+      <td><span class="flag ${item.status === "pass" ? "good" : item.status === "warn" ? "queued" : "warn"}">${escapeHtml(item.status)}</span><br><span class="muted">${item.score}/100</span></td>
+      <td>${item.holdoutTasks.length}</td>
+      <td>${item.promotionReady ? "yes" : "no"}</td>
+      <td>${item.autoApplyReady ? "yes" : "no"}</td>
+      <td>${escapeHtml(item.recommendation)}</td>
+    </tr>
+  `).join("");
+  const promotionRows = (promotionQueue?.items ?? []).slice(0, 12).map((item) => `
+    <tr>
+      <td>${escapeHtml(item.agentId)}<br><span class="muted">${escapeHtml(item.id)}</span></td>
+      <td><span class="flag ${item.status === "pending" ? "queued" : item.status === "approved" ? "good" : "warn"}">${escapeHtml(item.status)}</span><br><span class="muted">${item.score}/100</span></td>
+      <td>${escapeHtml(item.scope)}<br><span class="muted">${escapeHtml(item.priority)} / ${escapeHtml(item.riskLevel)}</span></td>
+      <td>${item.approvalRequired ? "yes" : "no"}</td>
+      <td>${item.autoApplyReady ? "yes" : "no"}</td>
+      <td>${escapeHtml(item.recommendation)}</td>
+    </tr>
+  `).join("");
+  const candidateRows = report.candidates.map((candidate) => `
+    <tr>
+      <td>${escapeHtml(candidate.agentId)}<br><span class="muted">${escapeHtml(candidate.displayName)} · ${escapeHtml(candidate.scope)}</span></td>
+      <td><span class="flag ${candidate.priority === "high" ? "warn" : candidate.priority === "medium" ? "queued" : "good"}">${escapeHtml(candidate.priority)}</span><br><span class="muted">${escapeHtml(candidate.riskLevel)} risk</span></td>
+      <td>${escapeHtml(candidate.recommendation)}<br><span class="muted">${escapeHtml(candidate.evidence.join(" "))}</span></td>
+      <td>${candidate.suggestedMutableFields.map((field) => `<code>${escapeHtml(field)}</code>`).join(" ") || "n/a"}</td>
+      <td>${candidate.autoApplyEligible ? "yes" : "approval"}</td>
+    </tr>
+  `).join("");
+  const automatic = report.autonomyBoundary.automatic.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const gated = report.autonomyBoundary.approvalRequired.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
+  const ownedFiles = report.ownedLearningFiles.map((item) => `<li><code>${escapeHtml(item)}</code></li>`).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Agent Definition Improvement</h2>
+          <span class="muted">${report.agentsAnalyzed} agent(s) analyzed · ${report.candidates.length} candidate(s) · local-first research prompts only</span>
+        </div>
+        <a class="button secondary" href="${escapeHtml(evalHref)}">Eval JSON</a>
+        <a class="button secondary" href="${escapeHtml(promotionHref)}">Promotion JSON</a>
+        <a class="button secondary" href="${escapeHtml(patchHref)}">Patch JSON</a>
+        <a class="button secondary" href="/api/agent-improvement-report?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}">JSON</a>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Candidates", report.candidates.length, "agent-card improvements")}
+        ${metricCard("Auto Eligible", report.candidates.filter((item) => item.autoApplyEligible).length, "project-local low/medium only")}
+        ${metricCard("Shared Agents", report.evidenceSummary.sharedAgents, "approval to edit")}
+        ${metricCard("Local Agents", report.evidenceSummary.projectLocalAgents, "may be autonomous")}
+        ${metricCard("Failed Runs", report.evidenceSummary.failedRuns, "evidence window")}
+        ${metricCard("Workflow Refs", report.evidenceSummary.workflowReferences, "stage/subagent slots")}
+        ${metricCard("Eval Pass", evalPlan?.evaluations.filter((item) => item.status === "pass").length ?? 0, "promotion-ready scoring")}
+        ${metricCard("Promotions", promotionQueue?.items.length ?? 0, `${promotionQueue?.items.filter((item) => item.status === "pending").length ?? 0} pending`)}
+      </div>
+      <p class="muted">Refresh owned learning artifacts with <code>${escapeHtml(command)}</code>. Generate exact YAML previews with <code>${escapeHtml(patchCommand)}</code>. Score holdout promotion gates with <code>${escapeHtml(evalCommand)}</code>. Create promotion receipts with <code>${escapeHtml(promotionCommand)}</code>. Promotion into real agent YAML remains controlled by risk, scope, validation, and owner settings.</p>
+      <div class="split-grid">
+        <div><h3>Automatic</h3><ul>${automatic}</ul></div>
+        <div><h3>Requires Approval</h3><ul>${gated}</ul></div>
+      </div>
+      <div class="split-grid">
+        <div><h3>Owned Files</h3><ul>${ownedFiles}</ul></div>
+        <div><h3>Privacy</h3><ul>${report.privacyBoundaries.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Priority</th><th>Recommendation</th><th>Fields</th><th>Apply</th></tr></thead><tbody>${candidateRows || "<tr><td colspan=\"5\">No agent definition improvement candidates found.</td></tr>"}</tbody></table></div>
+      <h3>Holdout Eval Scores</h3>
+      <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Holdout</th><th>Promote</th><th>Auto</th><th>Recommendation</th></tr></thead><tbody>${evalRows || "<tr><td colspan=\"6\">No holdout eval scores generated yet.</td></tr>"}</tbody></table></div>
+      <h3>Promotion Queue</h3>
+      <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Scope</th><th>Approval</th><th>Auto</th><th>Recommendation</th></tr></thead><tbody>${promotionRows || "<tr><td colspan=\"6\">No promotion-ready agent patches queued yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLearningActionReceiptHealthHtml(health: LearningActionReceiptHealth, limit: number, workflowId: string): string {
+  const clean = health.compactableReceiptCount === 0;
+  const statusLabel = clean ? "clean" : "compactable";
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Learning Receipt Health</h2>
+          <span class="muted">Daemon-owned receipt compaction keeps project learning state useful and small.</span>
+        </div>
+        <a class="button secondary" href="/api/learning-action-receipts?project=${encodeURIComponent(health.projectRootUri)}&health=1">Health JSON</a>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Status", statusLabel, health.recommendation)}
+        ${metricCard("Receipts", health.totalReceipts, `planned=${health.counts.planned ?? 0} applied=${health.counts.applied ?? 0}`)}
+        ${metricCard("Superseded", health.counts.superseded ?? 0, "historical audit trail")}
+        ${metricCard("Daemon Open", health.daemonOpenReceipts, `${health.uniqueDaemonOpenReceipts} unique active receipt(s)`)}
+        ${metricCard("Duplicates", health.duplicateDaemonOpenReceipts, "planned/applied daemon repeats")}
+        ${metricCard("Last Backup", health.latestBackupPath ? "present" : "none", health.latestBackupPath ?? "no compaction backup yet")}
+      </div>
+      <form method="post" action="/api/learning-action-receipts" class="inline-action-form">
+        <input type="hidden" name="project" value="${escapeHtml(health.projectRootUri)}">
+        <input type="hidden" name="limit" value="${escapeHtml(String(limit))}">
+        <input type="hidden" name="workflow" value="${escapeHtml(workflowId)}">
+        <input type="hidden" name="action" value="compact">
+        <button type="submit" class="secondary"${clean ? " disabled" : ""}>Compact daemon-owned receipts</button>
+        <span class="muted">Creates local backups before rewriting Agent Workflow-owned receipt files.</span>
+      </form>
+      <div class="meta-grid compact">
+        <div><strong>Updated</strong>${renderDashboardDateTime(health.updatedAt)}</div>
+        <div><strong>Latest Receipt</strong>${renderDashboardDateTime(health.latestReceiptAt, "none")}</div>
+        <div><strong>Latest Backup</strong>${escapeHtml(health.latestBackupPath ?? "none")}</div>
+      </div>
     </section>
   `;
 }
@@ -15225,6 +22037,10 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
     <tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>
   `).join("");
   const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const overlayKindRows = Object.entries(report.tuningOverlay.proposalKinds).map(([kind, count]) => `
+    <tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>
+  `).join("");
+  const overlayIds = report.tuningOverlay.selectedIds.length ? report.tuningOverlay.selectedIds.join(", ") : "none";
   return `
     <section class="panel">
       <div class="metric-grid">
@@ -15237,10 +22053,34 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
       </div>
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
+    ${renderLocalProviderEvidenceHtml(report.localProviderEvidence)}
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Applied Tuning Overlay</h2>
+          <span class="muted">Project-local tuning state written by Agent Workflow.</span>
+        </div>
+        <span class="flag ${report.tuningOverlay.exists ? "good" : report.tuningOverlay.error ? "bad" : "warn"}">${report.tuningOverlay.exists ? "written" : report.tuningOverlay.error ? "error" : "missing"}</span>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Overlay File</strong><code>${escapeHtml(report.tuningOverlay.path)}</code></div>
+        <div><strong>Generated</strong>${renderDashboardDateTime(report.tuningOverlay.generatedAt)}</div>
+        <div><strong>Source Runs</strong>${report.tuningOverlay.sourceRunsAnalyzed === null ? "n/a" : formatNumber(report.tuningOverlay.sourceRunsAnalyzed)}</div>
+        <div><strong>Selected IDs</strong>${formatNumber(report.tuningOverlay.selectedIds.length)}</div>
+        <div><strong>Applied Events</strong>${formatNumber(report.tuningOverlay.appliedEvents)}</div>
+        <div><strong>Latest Applied</strong>${renderDashboardDateTime(report.tuningOverlay.latestAppliedAt)}</div>
+      </div>
+      <p class="muted">Applied here means the project-local overlay file exists and can be read by Agent Workflow. These current proposals are evidence-gathering recommendations unless the proposal kind is a routing, prompt, or context-budget change.</p>
+      <p><code>${escapeHtml(overlayIds)}</code></p>
+      ${report.tuningOverlay.error ? `<p class="error">${escapeHtml(report.tuningOverlay.error)}</p>` : ""}
+      ${report.tuningOverlay.duplicateAppliedEvents > 0 ? `<p class="warning">${formatNumber(report.tuningOverlay.duplicateAppliedEvents)} duplicate applied-history event(s) were detected before compaction.</p>` : ""}
+      <div class="table-wrap"><table><thead><tr><th>Overlay Proposal Kind</th><th>Count</th></tr></thead><tbody>${overlayKindRows || "<tr><td colspan=\"2\">No written overlay proposals.</td></tr>"}</tbody></table></div>
+    </section>
     <section class="panel">
       <h2>Readiness</h2>
       <ul>${report.readiness.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
     </section>
+    ${renderModelImprovementFeedbackCaptureHtml(report)}
     <section class="panel">
       <h2>Proposal Mix</h2>
       <div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposals yet.</td></tr>"}</tbody></table></div>
@@ -15251,13 +22091,363 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
     </section>
     <section class="panel">
       <h2>Tuning Proposals</h2>
-      ${renderTuningProposalsHtml(report.proposals)}
+      ${renderTuningProposalsHtml(report.proposals, report.tuningOverlay)}
     </section>
     <section class="panel">
       <h2>Next Commands</h2>
       <ul>${commandRows}</ul>
     </section>
   `;
+}
+
+function renderLocalProviderEvidenceHtml(evidence: DashboardLocalProviderEvidence): string {
+  const statusClass = evidence.status === "ready" ? "completed" : evidence.status === "not-configured" ? "failed" : "queued";
+  const feedback = `${evidence.localAccepted}/${evidence.localRevised}/${evidence.localRejected}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Provider Evidence</h2>
+          <span class="muted">Cost-saving signal for local/BYO model routes before expanding automatic routing.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(evidence.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Local Stages", evidence.localStageCount, evidence.providerIds.length ? evidence.providerIds.join(", ") : "none yet")}
+        ${metricCard("Hosted Stages", evidence.hostedStageCount, "OpenAI, Bedrock, Kiro, or other non-local providers")}
+        ${metricCard("Avoided Hosted Calls", evidence.estimatedAvoidedHostedCalls, "local/BYO routed stages")}
+        ${metricCard("Fallback Rate", evidence.localFallbackRate === null ? "n/a" : evidence.localFallbackRate, "local/BYO fallback")}
+        ${metricCard("Local Quality", evidence.localAverageQuality === null ? "n/a" : evidence.localAverageQuality, `feedback A/R/R ${feedback}`)}
+        ${metricCard("Local Latency", evidence.localAverageLatencyMs === null ? "n/a" : `${Math.round(evidence.localAverageLatencyMs)}ms`, "weighted average")}
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Configured</strong>${evidence.configured ? "yes" : "no"}</div>
+        <div><strong>Local Providers Seen</strong>${evidence.providerIds.length ? escapeHtml(evidence.providerIds.join(", ")) : "none"}</div>
+        <div><strong>Hosted Quality</strong>${evidence.hostedAverageQuality === null ? "n/a" : evidence.hostedAverageQuality}</div>
+        <div><strong>Hosted Latency</strong>${evidence.hostedAverageLatencyMs === null ? "n/a" : `${Math.round(evidence.hostedAverageLatencyMs)}ms`}</div>
+      </div>
+      <p class="muted">${escapeHtml(evidence.recommendation)}</p>
+    </section>
+  `;
+}
+
+function renderFeedbackInboxHtml(
+  report: DashboardFeedbackInboxReport,
+  projects: DashboardProjectSummary[],
+  params: URLSearchParams
+): string {
+  const selectedProject = report.projectRootUri ?? params.get("project") ?? "";
+  const projectOptions = [
+    `<option value=""${selectedProject ? "" : " selected"}>All registered projects</option>`,
+    ...projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${selectedProject === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`)
+  ].join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Feedback Inbox</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("feedback-inbox")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/">Dashboard</a>
+        <h1>Feedback Inbox</h1>
+        <p class="muted">Review unscored runs across projects and turn them into local learning signal.</p>
+      </div>
+      <div class="actions">
+        <a class="button" href="/feedback-inbox/bulk?${escapeHtml(params.toString())}">Bulk Review</a>
+        <a class="button secondary" href="/api/feedback-inbox?${escapeHtml(params.toString())}">JSON</a>
+      </div>
+    </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
+    <section class="panel">
+      <form method="get" class="workflow-form">
+        <label class="wide">Project<select name="project">${projectOptions}</select></label>
+        <label>Run limit<input name="limit" value="${escapeHtml(String(report.limit))}" inputmode="numeric"></label>
+        <div class="form-actions"><button type="submit">Refresh Inbox</button></div>
+      </form>
+    </section>
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Unreviewed", report.totalTargets, `${report.totalCandidates} recent finished runs scanned`)}
+        ${metricCard("Probably Accept", report.counts.probably_accept, "clean useful runs")}
+        ${metricCard("Probably Revise", report.counts.probably_revise, "useful with caveats")}
+        ${metricCard("Probably Reject", report.counts.probably_reject, "wrong, failed, or low quality")}
+        ${metricCard("Project Scope", report.projectRootUri ? "one" : "all", report.projectRootUri ?? "all registered projects")}
+        ${metricCard("Generated", formatDashboardDateTimeText(report.generatedAt), "local read")}
+      </div>
+    </section>
+    ${renderFeedbackInboxGroupHtml("Probably Accept", "accepted", report.groups.probably_accept)}
+    ${renderFeedbackInboxGroupHtml("Probably Revise", "revised", report.groups.probably_revise)}
+    ${renderFeedbackInboxGroupHtml("Probably Reject", "rejected", report.groups.probably_reject)}
+  </main>
+</body>
+</html>`;
+}
+
+function renderFeedbackInboxGroupHtml(
+  title: string,
+  defaultRating: FeedbackRating,
+  items: DashboardFeedbackInboxItem[]
+): string {
+  const rows = items.map((target) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(target.runId)}">${escapeHtml(target.runId.slice(0, 8))}</a><br><span class="muted">${renderDashboardDateTime(target.startedAt)}</span><div class="row-tools">${renderRunInfoDialog({
+        runId: target.runId,
+        workflowId: target.workflowId,
+        status: target.status,
+        task: target.task,
+        startedAt: target.startedAt,
+        summary: [
+          target.classification.reason,
+          target.summary ? `${target.summary.completedTasks}/${target.summary.totalTasks} stages complete, ${target.summary.failedTasks} failed` : "summary unavailable",
+          target.summary?.recommendedNextAction ?? "next action unavailable"
+        ]
+      })}</div></td>
+      <td>${escapeHtml(target.workflowId)}<br><span class="muted">${escapeHtml(target.classification.reason)}</span></td>
+      <td>
+        <strong>${escapeHtml(target.task)}</strong>
+        ${target.summary ? `<br><span class="muted">${target.summary.completedTasks}/${target.summary.totalTasks} stages complete · ${target.summary.failedTasks} failed · ${escapeHtml(target.summary.recommendedNextAction)}</span>` : ""}
+      </td>
+      <td>${renderFeedbackTargetEvidenceHtml(target)}</td>
+      <td>${renderFeedbackTargetPrimaryActionForm(target, defaultRating)}${renderFeedbackTargetActionForms(target)}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>${escapeHtml(title)}</h2>
+          <span class="muted">${items.length} unreviewed run${items.length === 1 ? "" : "s"}</span>
+        </div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Summary</th><th>Evidence</th><th>Feedback</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No runs in this bucket.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderFeedbackBulkReviewHtml(report: DashboardFeedbackInboxReport, params: URLSearchParams): string {
+  const allItems = [
+    ...report.groups.probably_accept,
+    ...report.groups.probably_revise,
+    ...report.groups.probably_reject
+  ];
+  const rows = allItems.map((item) => {
+    const suggestedRating = feedbackRatingForBucket(item.classification.bucket);
+    return `
+      <tr>
+        <td><input type="checkbox" name="runId" value="${escapeHtml(item.runId)}" checked></td>
+        <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)} · ${renderDashboardDateTime(item.startedAt)}</span><div class="row-tools">${renderRunInfoDialog({
+          runId: item.runId,
+          workflowId: item.workflowId,
+          status: item.status,
+          task: item.task,
+          startedAt: item.startedAt,
+          summary: [
+            item.classification.reason,
+            item.summary ? `${item.summary.completedTasks}/${item.summary.totalTasks} stages complete, ${item.summary.failedTasks} failed` : "summary unavailable",
+            item.summary?.recommendedNextAction ?? "next action unavailable"
+          ]
+        })}</div></td>
+        <td><span class="flag ${suggestedRating === "accepted" ? "good" : suggestedRating === "revised" ? "warn" : "bad"}">${escapeHtml(suggestedRating)}</span><br><span class="muted">${escapeHtml(item.classification.reason)}</span></td>
+        <td>
+          <select name="rating:${escapeHtml(item.runId)}">
+            ${(["accepted", "revised", "rejected"] as const).map((rating) => `<option value="${rating}"${rating === suggestedRating ? " selected" : ""}>${rating}</option>`).join("")}
+          </select>
+        </td>
+        <td><input name="note:${escapeHtml(item.runId)}" value="${escapeHtml(defaultFeedbackNote(item, suggestedRating))}" placeholder="What should future runs learn?"></td>
+        <td>
+          <strong>${escapeHtml(item.task)}</strong>
+          ${item.summary ? `<br><span class="muted">${item.summary.completedTasks}/${item.summary.totalTasks} stages complete · ${item.summary.failedTasks} failed</span>` : ""}
+          ${item.summary?.keyFindings.length ? `<br><span class="muted">${escapeHtml(truncateText(item.summary.keyFindings[0], 180))}</span>` : ""}
+          ${item.summary?.failures.length ? `<br><span class="muted">${escapeHtml(truncateText(item.summary.failures[0], 180))}</span>` : ""}
+        </td>
+      </tr>
+    `;
+  }).join("");
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Bulk Feedback</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("feedback-inbox")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/feedback-inbox?${escapeHtml(params.toString())}">Feedback Inbox</a>
+        <h1>Bulk Feedback Review</h1>
+        <p class="muted">Review suggested feedback ratings, uncheck anything you do not want to record, then submit selected rows.</p>
+      </div>
+    </div>
+    ${renderDashboardFlash(params)}
+    <section class="panel">
+      <div class="metric-grid">
+        ${metricCard("Selected By Default", allItems.length, "uncheck rows to skip")}
+        ${metricCard("Probably Accept", report.counts.probably_accept, "suggested accepted")}
+        ${metricCard("Probably Revise", report.counts.probably_revise, "suggested revised")}
+        ${metricCard("Probably Reject", report.counts.probably_reject, "suggested rejected")}
+        ${metricCard("Project Scope", report.projectRootUri ? "one" : "all", report.projectRootUri ?? "all registered projects")}
+        ${metricCard("Generated", formatDashboardDateTimeText(report.generatedAt), "local read")}
+      </div>
+    </section>
+    <section class="panel">
+      <form method="post" action="/api/feedback-bulk-action" class="bulk-feedback-form">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? "")}">
+        <input type="hidden" name="limit" value="${escapeHtml(String(report.limit))}">
+        <div class="form-actions">
+          <button type="submit"${allItems.length ? "" : " disabled"}>Record Selected Feedback</button>
+          <a class="button secondary" href="/feedback-inbox?${escapeHtml(params.toString())}">Cancel</a>
+        </div>
+        <div class="table-wrap"><table><thead><tr><th>Use</th><th>Run</th><th>Suggestion</th><th>Rating</th><th>Note</th><th>Evidence</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">No unreviewed runs found.</td></tr>"}</tbody></table></div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function feedbackRatingForBucket(bucket: DashboardFeedbackBucket): FeedbackRating {
+  if (bucket === "probably_accept") return "accepted";
+  if (bucket === "probably_reject") return "rejected";
+  return "revised";
+}
+
+function renderModelImprovementFeedbackCaptureHtml(report: DashboardModelImprovementReport): string {
+  const runOptions = report.feedbackTargets.map((target) => `
+    <option value="${escapeHtml(target.runId)}">${escapeHtml(`${target.workflowId} ${target.status} ${target.runId.slice(0, 8)}`)}</option>
+  `).join("");
+  const rows = report.feedbackTargets.map((target) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(target.runId)}">${escapeHtml(target.runId.slice(0, 8))}</a><br><span class="muted">${renderDashboardDateTime(target.startedAt)}</span><div class="row-tools">${renderRunInfoDialog({
+        runId: target.runId,
+        workflowId: target.workflowId,
+        status: target.status,
+        task: target.task,
+        startedAt: target.startedAt,
+        summary: [
+          target.summary ? `${target.summary.completedTasks}/${target.summary.totalTasks} stages complete, ${target.summary.failedTasks} failed` : "summary unavailable",
+          target.summary?.recommendedNextAction ?? "next action unavailable",
+          target.quality ? `quality ${target.quality.averageQuality ?? "n/a"}, ${target.quality.qualityPassCount} pass, ${target.quality.qualityFailCount} review` : "quality unavailable"
+        ]
+      })}</div></td>
+      <td>${escapeHtml(target.workflowId)}<br><span class="status ${escapeHtml(target.status)}">${escapeHtml(target.status)}</span></td>
+      <td>
+        <strong>${escapeHtml(target.task)}</strong>
+        ${target.summary ? `<br><span class="muted">${target.summary.completedTasks}/${target.summary.totalTasks} stages complete · ${target.summary.failedTasks} failed · ${escapeHtml(target.summary.recommendedNextAction)}</span>` : ""}
+      </td>
+      <td>${renderFeedbackTargetEvidenceHtml(target)}</td>
+      <td>${escapeHtml(target.provider ?? "default")}<br><span class="muted">${escapeHtml(target.modelTier ?? "auto tier")}</span></td>
+      <td>${renderFeedbackTargetActionForms(target)}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Feedback Capture</h2>
+          <span class="muted">Turn recent run reviews into local model-improvement evidence.</span>
+        </div>
+        <span class="flag ${report.feedbackTargets.length ? "warn" : "good"}">${report.feedbackTargets.length ? `${report.feedbackTargets.length} need feedback` : "caught up"}</span>
+      </div>
+      <form class="inline-action-form" method="post" action="/api/follow-up">
+        <input type="hidden" name="action" value="feedback">
+        <label>Run
+          <select name="runId">${runOptions || "<option value=\"\">No recent runs need feedback</option>"}</select>
+        </label>
+        <label>Rating
+          <select name="rating">
+            <option value="accepted">accepted</option>
+            <option value="revised">revised</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </label>
+        <label class="wide">Note
+          <input name="note" placeholder="What should future runs learn?">
+        </label>
+        <button type="submit" ${report.feedbackTargets.length ? "" : "disabled"}>Record Feedback</button>
+      </form>
+      <p class="muted">A few good notes are enough to move tuning proposals from generic <code>feedback_needed</code> hints toward concrete routing, prompt, or context-budget recommendations. Use accepted for useful output, revised for mostly useful output that needed correction, and rejected for wrong or wasteful output.</p>
+      <div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Summary</th><th>Evidence</th><th>Route</th><th>Feedback</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">Recent finished runs already have feedback or no finished runs were found.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderFeedbackTargetEvidenceHtml(target: DashboardFeedbackTarget): string {
+  const quality = target.quality
+    ? [
+      `quality ${target.quality.averageQuality ?? "n/a"}`,
+      `${target.quality.qualityPassCount} pass`,
+      `${target.quality.qualityFailCount} review`,
+      `${target.quality.fallbackCount} fallback`,
+      target.quality.averageLatencyMs === null ? "" : `avg ${formatDuration(target.quality.averageLatencyMs)}`
+    ].filter(Boolean).join(" · ")
+    : "quality n/a";
+  const findings = target.summary?.keyFindings.length
+    ? `<strong>Findings</strong><ul>${target.summary.keyFindings.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+  const failures = target.summary?.failures.length
+    ? `<strong>Failures</strong><ul>${target.summary.failures.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "";
+  return `<span class="muted">${escapeHtml(quality)}</span>${findings}${failures}`;
+}
+
+function renderFeedbackTargetActionForms(target: DashboardFeedbackTarget): string {
+  return `
+    <div class="feedback-row-actions">
+      ${feedbackTargetActionForm(target.runId, "accepted", "Accept", defaultFeedbackNote(target, "accepted"))}
+      ${feedbackTargetActionForm(target.runId, "revised", "Revise", defaultFeedbackNote(target, "revised"))}
+      ${feedbackTargetActionForm(target.runId, "rejected", "Reject", defaultFeedbackNote(target, "rejected"))}
+    </div>
+  `;
+}
+
+function renderFeedbackTargetPrimaryActionForm(target: DashboardFeedbackInboxItem, rating: FeedbackRating): string {
+  return `
+    <div class="recommended-feedback">
+      <strong>Recommended</strong>
+      ${feedbackTargetActionForm(target.runId, rating, `Mark ${titleCase(rating)}`, defaultFeedbackNote(target, rating))}
+    </div>
+  `;
+}
+
+function feedbackTargetActionForm(runId: string, rating: FeedbackRating, label: string, note: string): string {
+  return `<form class="feedback-form compact-feedback-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="runId" value="${escapeHtml(runId)}">
+    <input type="hidden" name="action" value="feedback">
+    <input type="hidden" name="rating" value="${escapeHtml(rating)}">
+    <input name="note" value="${escapeHtml(note)}" aria-label="${escapeHtml(label)} feedback note" placeholder="Why?">
+    <button type="submit">${escapeHtml(label)}</button>
+  </form>`;
+}
+
+function defaultFeedbackNote(target: DashboardFeedbackTarget, rating: FeedbackRating): string {
+  if (rating === "rejected") {
+    return target.status === "failed"
+      ? "Failed or not useful enough to repeat."
+      : "Wrong direction or not useful for this task.";
+  }
+  if (rating === "revised") {
+    return "Partly useful, but future runs should adjust scope, evidence, or routing.";
+  }
+  if (target.status === "failed") {
+    return "Useful failure evidence despite the failed run.";
+  }
+  if ((target.quality?.qualityFailCount ?? 0) > 0 || target.summary?.failures.length) {
+    return "Useful result with review-worthy quality or failure evidence.";
+  }
+  if (target.summary?.keyFindings.length) {
+    return "Useful findings for this task.";
+  }
+  return "";
 }
 
 function renderCandidateComparisonsHtml(
@@ -15441,6 +22631,8 @@ function renderGovernanceHtml(report: GovernanceReport, params: URLSearchParams)
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Governance</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("governance")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Multi-project Governance</h1><p class="muted">Read-only project health, policy drift, provider, queue, and remediation inspection.</p></div><a class="button secondary" href="/api/governance?${escapeHtml(params.toString())}">JSON</a></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel"><div class="meta-grid"><div><strong>Healthy</strong>${report.counts.healthy}</div><div><strong>Warning</strong>${report.counts.warning}</div><div><strong>Critical</strong>${report.counts.critical}</div><div><strong>Services</strong>${report.servicesReady ? "ready" : "attention"}</div><div><strong>Definitions</strong>${report.definitionsReady ? "ready" : "attention"}</div><div><strong>Configured Provider</strong>${escapeHtml(report.configuredProvider)}</div></div>
   <form method="get" class="form-grid"><label>Health<select name="health"><option value="all">all</option>${["healthy", "warning", "critical"].map((value) => `<option${params.get("health") === value ? " selected" : ""}>${value}</option>`).join("")}</select></label><label>Provider<select name="provider"><option value="">all</option>${providers.map((value) => `<option${params.get("provider") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><label>Policy profile<select name="policyProfile"><option value="">all</option>${profiles.map((value) => `<option${params.get("policyProfile") === value ? " selected" : ""}>${escapeHtml(value)}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Filter</button></div></form></section>
   <section class="panel"><div class="table-wrap"><table><thead><tr><th>Project</th><th>Health</th><th>Policy</th><th>Provider</th><th>Runs</th><th>Context</th><th>Recommended action</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No projects match these filters.</td></tr>'}</tbody></table></div></section></main></body></html>`;
@@ -15485,6 +22677,7 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
     "artifact_archive",
     "artifact_restore",
     "artifact_prune",
+    "object_mirror",
     "deployment",
     "autonomy",
     ...Object.keys(report.actionCounts)
@@ -15526,6 +22719,7 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
     <div class="form-actions"><button type="submit">Filter</button></div>
   </form>`;
   const exportForm = `<form method="post" action="/api/role-audit-export" class="inline-form">
+    ${dashboardReturnInput("/roles", params)}
     <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? "")}">
     <input type="hidden" name="role" value="${escapeHtml(report.filters.role ?? "")}">
     <input type="hidden" name="status" value="${escapeHtml(report.filters.status)}">
@@ -15536,6 +22730,8 @@ function renderRolesHtml(report: DashboardRoleGovernanceReport, projects: Dashbo
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Roles</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("roles")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Roles & Decisions</h1><p class="muted">Read-only team role configuration and recent approval decisions by recorded actor role.</p></div><div class="actions"><a class="button secondary" href="/api/roles?${escapeHtml(params.toString())}">JSON</a>${exportForm}</div></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Projects</strong>${report.projects.length}</div><div><strong>Recent approvals</strong>${report.recentApprovals.length}</div><div><strong>Recorded roles</strong>${report.decisionsByRole.length}</div><div><strong>Pending approvals</strong>${report.statusCounts.pending ?? 0}</div></div></section>
   ${renderRecentRoleAuditExportsHtml(report.recentRoleAuditExports, report.projectRootUri)}
   <section class="panel"><div class="section-heading"><div><h2>Configured Roles</h2><span class="muted">Project-local roles from .agent-workflow/project.yaml, falling back to stored config when the path is unavailable.</span></div></div><div class="table-wrap"><table><thead><tr><th>Role</th><th>Project</th><th>Mode</th><th>Capabilities</th></tr></thead><tbody>${roleRows || '<tr><td colspan="4">No project roles found.</td></tr>'}</tbody></table></div></section>
@@ -15570,6 +22766,78 @@ function roleAuditViewerHref(project: string | null, fileName: string): string {
   const query = new URLSearchParams({ file: fileName });
   if (project) query.set("project", project);
   return `/role-audit?${query.toString()}`;
+}
+
+function renderSharedStatePlaneProofPanel(proof: SharedStatePlaneProof): string {
+  const statusClass = proof.status === "ready" ? "completed" : proof.status === "blocked" ? "failed" : "queued";
+  const checkRows = proof.checks.map((check) => `
+    <tr>
+      <td>${escapeHtml(check.label)}</td>
+      <td><span class="status ${check.status === "pass" ? "completed" : check.status === "fail" ? "failed" : "queued"}">${escapeHtml(check.status)}</span></td>
+      <td>${escapeHtml(check.detail)}</td>
+    </tr>
+  `).join("");
+  const actions = proof.recommendedActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>Shared State Plane</h2>
+        <span class="muted">One verdict for Hulk/shared storage, post-merge proof, offline fallback, object parity, and server controls.</span>
+      </div>
+      <span class="status ${statusClass}">${escapeHtml(proof.status)}</span>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("State Plane", proof.status, proof.summary)}
+      ${metricCard("Shared Host", proof.sharedHost ?? "not configured", "configured durable storage target")}
+      ${metricCard("Local Fallback", proof.localFallbackCanStayStopped ? "can stay stopped" : "keep available", "based on shared health and sync queue")}
+      ${metricCard("Open Items", proof.recommendedActions.length, "operator follow-up")}
+    </div>
+    <p class="muted">Generated ${renderDashboardDateTime(proof.generatedAt)}. ${escapeHtml(proof.summary)}</p>
+    <div class="table-wrap"><table><thead><tr><th>Proof</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div>
+    ${actions ? `<details class="governance-details" open><summary>Recommended Actions</summary><ul>${actions}</ul></details>` : `<p class="muted">No state-plane follow-up actions are currently recommended.</p>`}
+  </section>`;
+}
+
+function renderPrimaryStatePlaneOperatorPanel(
+  mergeEvidence: StorageMergeEvidenceListing,
+  offlineFallback: OfflineFallbackReport,
+  runtimeMonitor: RuntimeMonitorReport
+): string {
+  const primaryReady = mergeEvidence.safePrimaryStatePlane && offlineFallback.currentServicesReachable;
+  const statusClass = primaryReady ? "completed" : "queued";
+  const sharedHost = runtimeMonitor.storageHost ?? runtimeMonitor.hulk.host ?? "not configured";
+  const pendingOfflineItems = offlineFallback.queue.items.filter((item) => item.status === "pending").length;
+  const warningChecks = mergeEvidence.switchOverProof.checks.filter((check) => check.status === "warn");
+  const warningRows = warningChecks.map((check) => `<li><strong>${escapeHtml(check.label)}</strong>: ${escapeHtml(check.detail)}</li>`).join("");
+  const commandRows = [
+    "docker compose -f infra/docker-compose.yml stop postgres redis minio",
+    "npm run doctor",
+    "npm run storage-merge-evidence",
+    "npm run offline-fallback"
+  ].map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const summary = primaryReady
+    ? "Hulk/shared storage is the primary state plane. Local Docker storage should stay stopped unless shared storage is unavailable."
+    : "Shared storage is not fully proven as the primary state plane yet; review the checks below before switching clients.";
+  return `<section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>Primary State Plane</h2>
+        <span class="muted">Operator note for which storage plane Agent Workflow should use day to day.</span>
+      </div>
+      <span class="status ${statusClass}">${primaryReady ? "shared primary" : "needs review"}</span>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Primary", primaryReady ? "Hulk" : "not proven", summary)}
+      ${metricCard("Shared Host", sharedHost, offlineFallback.currentServicesReachable ? "reachable" : "not reachable")}
+      ${metricCard("Local Storage", offlineFallback.localServicesReachable ? "running" : "stopped", primaryReady ? "fallback-only while Hulk is online" : "fallback may be needed")}
+      ${metricCard("Offline Queue", pendingOfflineItems, "pending local fallback items")}
+      ${metricCard("Proof", mergeEvidence.switchOverProof.status, `${mergeEvidence.conflictClassification.criticalRows} critical conflict row(s)`)}
+      ${metricCard("Warnings", warningChecks.length, "visible audit/refresh items")}
+    </div>
+    <p>${escapeHtml(summary)}</p>
+    ${warningRows ? `<details class="governance-details" open><summary>Visible Non-Blocking Warnings</summary><ul>${warningRows}</ul></details>` : '<p class="muted">No non-blocking switch-over warnings are currently reported.</p>'}
+    <details class="governance-details"><summary>Operator Commands</summary><ul>${commandRows}</ul></details>
+  </section>`;
 }
 
 function renderDashboardRoleAuditView(result: DashboardRoleAuditViewResult): string {
@@ -15610,6 +22878,8 @@ function renderBackupRestoreHtml(report: BackupRestoreReport, projects: Dashboar
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Backup Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("backup-report")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Backup Readiness</h1><p class="muted">Read-only local enterprise storage inventory and restore-drill posture. This page does not create backups, restore data, or mutate storage.</p></div><a class="button secondary" href="/api/backup-report?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
   <section class="panel"><div class="metric-grid">
     ${metricCard("Status", report.restoreDrill.status, "restore-drill readiness")}
@@ -15633,8 +22903,52 @@ function renderPostMergeEvidencePanel(evidence: StorageMergeEvidenceListing): st
   const manifest = evidence.latestManifest;
   const importResult = evidence.latestImport;
   const backup = evidence.latestBackup;
+  const objectProof = evidence.latestObjectProof;
+  const projectDecisions = evidence.latestProjectDecisions;
+  const projectMappingByRoot = new Map((manifest?.projectMappings ?? []).map((mapping) => [mapping.rootUri, mapping]));
   const backupFiles = backup?.files.map((file) => `<li><code>${escapeHtml(file.name)}</code> ${escapeHtml(formatBytes(file.sizeBytes))}</li>`).join("") ?? "";
   const warningRows = evidence.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("");
+  const proofRows = evidence.switchOverProof.checks.map((check) => `<tr><td>${escapeHtml(check.label)}</td><td><span class="status ${check.status === "pass" ? "completed" : check.status === "fail" ? "failed" : "queued"}">${escapeHtml(check.status)}</span></td><td>${escapeHtml(check.detail)}</td></tr>`).join("");
+  const conflictRows = evidence.conflictClassification.rows.map((row) => {
+    const decisionForms = row.class === "canonical-project-conflict" && row.conflictRows > 0
+      ? row.sampleConflictKeys.slice(0, 5).map((rootUri) => {
+          const mapping = projectMappingByRoot.get(rootUri);
+          return `<form method="post" action="/api/storage-project-decision" class="inline-form compact-form">
+            ${dashboardReturnInput("/server-readiness", new URLSearchParams())}
+            <input type="hidden" name="rootUri" value="${escapeHtml(rootUri)}">
+            <input type="hidden" name="sourceProjectId" value="${escapeHtml(mapping?.sourceProjectId ?? "")}">
+            <input type="hidden" name="targetProjectId" value="${escapeHtml(mapping?.targetProjectId ?? "")}">
+            <input type="hidden" name="action" value="preserve-target-project">
+            <input type="hidden" name="out" value="${escapeHtml(evidence.directory)}">
+            <input name="note" value="Reviewed source/target metadata; shared target is canonical." aria-label="Decision note for ${escapeHtml(rootUri)}">
+            <button type="submit">Preserve Target</button>
+          </form>`;
+        }).join("")
+      : "";
+    return `<tr>
+    <td>${escapeHtml(row.table)}<br><span class="muted">${escapeHtml(row.class)}</span></td>
+    <td><span class="status ${row.severity === "critical" ? "failed" : row.severity === "warning" ? "queued" : "completed"}">${escapeHtml(row.severity)}</span></td>
+    <td>${formatNumber(row.conflictRows)}</td>
+    <td>${row.sampleConflictKeys.slice(0, 3).map((sample) => `<code>${escapeHtml(truncateText(sample, 92))}</code>`).join("<br>") || "<span class=\"muted\">No sampled conflict keys.</span>"}</td>
+    <td>${escapeHtml(row.resolution)}${row.reviewedDecision ? `<br><span class="muted">${escapeHtml(row.reviewedDecision)}</span>` : ""}${decisionForms}</td>
+  </tr>`;
+  }).join("");
+  const sampleRows = (manifest?.tables ?? [])
+    .filter((table) => ["workflow_runs", "artifacts", "action_approvals", "action_receipts", "memory_items", "project_files", "project_index_state", "projects"].includes(table.table))
+    .map((table) => {
+      const samples = table.sampleConflictKeys.length
+        ? table.sampleConflictKeys
+        : table.sampleExistingKeys.length
+          ? table.sampleExistingKeys
+          : table.sampleSourceKeys;
+      return `<tr>
+        <td>${escapeHtml(table.table)}</td>
+        <td>${formatNumber(table.sourceRows)}</td>
+        <td>${formatNumber(table.insertRows)} / ${formatNumber(table.conflictRows)}</td>
+        <td>${samples.slice(0, 3).map((sample) => `<code>${escapeHtml(truncateText(sample, 92))}</code>`).join("<br>") || "<span class=\"muted\">Regenerate the merge manifest to capture row samples.</span>"}</td>
+      </tr>`;
+    }).join("");
+  const commandRows = evidence.switchOverProof.recommendedCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   return `<section class="panel">
     <div class="section-heading">
       <div><h2>Post-Merge Evidence</h2><span class="muted">Local operator proof for using shared storage as the primary state plane.</span></div>
@@ -15645,20 +22959,35 @@ function renderPostMergeEvidencePanel(evidence: StorageMergeEvidenceListing): st
       ${metricCard("Source-Only Rows", manifest ? manifest.sourceOnlyRows : "unknown", "remaining rows from last manifest")}
       ${metricCard("Last Import", importResult ? importResult.status : "none", importResult ? `${importResult.mode}, ${formatNumber(importResult.affectedRows)} affected` : "no persisted import result")}
       ${metricCard("Backup", backup ? "present" : "missing", backup ? `${backup.files.length} file(s)` : "source and target backups not found")}
+      ${metricCard("Object Proof", objectProof ? objectProof.status : "missing", objectProof ? `${objectProof.bucketParityStatus ?? "bucket not checked"}, ${formatNumber(objectProof.missingObjects)} missing refs` : "run object-artifact-proof --write")}
+      ${metricCard("Project Decisions", projectDecisions ? projectDecisions.decisions.length : 0, projectDecisions ? `latest ${renderDashboardDateTime(projectDecisions.generatedAt)}` : "none recorded")}
     </div>
+    <div class="table-wrap"><table><thead><tr><th>Switch-Over Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${proofRows}</tbody></table></div>
+    <details class="governance-details" open><summary>Conflict Classification</summary>
+      <div class="meta-grid compact">
+        <div><strong>Critical</strong>${formatNumber(evidence.conflictClassification.criticalRows)}<br><span class="muted">must resolve before primary proof</span></div>
+        <div><strong>Refreshable</strong>${formatNumber(evidence.conflictClassification.derivedRows)}<br><span class="muted">derived project index/cache rows</span></div>
+        <div><strong>Reviewed</strong>${formatNumber(projectDecisions?.decisions.length ?? 0)}<br><span class="muted">local project decisions</span></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Table</th><th>Severity</th><th>Rows</th><th>Samples</th><th>Resolution</th></tr></thead><tbody>${conflictRows || "<tr><td colspan=\"5\">No conflicts remain in the latest manifest.</td></tr>"}</tbody></table></div>
+    </details>
+    <details class="governance-details" open><summary>Sampled Historical Evidence</summary><div class="table-wrap"><table><thead><tr><th>Table</th><th>Source Rows</th><th>Insert / Conflict</th><th>Representative Keys</th></tr></thead><tbody>${sampleRows || "<tr><td colspan=\"4\">No manifest table samples found.</td></tr>"}</tbody></table></div></details>
     <div class="meta-grid compact">
       <div><strong>Manifest</strong>${manifest ? `${renderDashboardDateTime(manifest.generatedAt)}<br><code>${escapeHtml(manifest.jsonPath)}</code>` : "none"}</div>
-      <div><strong>Conflicts</strong>${manifest ? `${formatNumber(manifest.conflictRows)}<br><span class="muted">${formatNumber(manifest.projectIdRewriteRows)} project-id rewrites tracked</span>` : "unknown"}</div>
+      <div><strong>Conflicts</strong>${manifest ? `${formatNumber(manifest.conflictRows)}<br><span class="muted">${formatNumber(manifest.projectIdRewriteRows)} project-id rewrites, ${formatNumber(manifest.legacyReadabilityWarnings)} legacy warnings</span>` : "unknown"}</div>
       <div><strong>Import Result</strong>${importResult ? `${renderDashboardDateTime(importResult.generatedAt)}<br><code>${escapeHtml(importResult.jsonPath)}</code>` : "none"}</div>
       <div><strong>Backup Path</strong>${backup ? `${renderDashboardDateTime(backup.generatedAt)}<br><code>${escapeHtml(backup.path)}</code>` : "none"}</div>
+      <div><strong>Object Proof</strong>${objectProof ? `${renderDashboardDateTime(objectProof.generatedAt)}<br><code>${escapeHtml(objectProof.jsonPath)}</code>` : "none"}</div>
+      <div><strong>Project Decisions</strong>${projectDecisions ? `${renderDashboardDateTime(projectDecisions.generatedAt)}<br><code>${escapeHtml(projectDecisions.jsonPath)}</code>` : "none"}</div>
     </div>
+    <details class="governance-details"><summary>Recommended Commands</summary><ul>${commandRows}</ul></details>
     ${backupFiles ? `<details class="governance-details"><summary>Backup Files</summary><ul>${backupFiles}</ul></details>` : ""}
     ${warningRows ? `<details class="governance-details" open><summary>Evidence Notes</summary><ul>${warningRows}</ul></details>` : ""}
     <p class="muted">Current state: <span class="status ${statusClass}">${evidence.safePrimaryStatePlane ? "ready" : "attention"}</span>.</p>
   </section>`;
 }
 
-function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
+function renderOfflineFallbackPanel(report: OfflineFallbackReport, params: URLSearchParams = new URLSearchParams()): string {
   const statusClass = report.mode === "shared-online" || report.mode === "local-fallback-ready" ? "completed" : report.mode === "offline-blocked" ? "failed" : "queued";
   const currentRows = report.currentServices.map((service) => `<tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>`).join("");
   const localRows = report.localServices.map((service) => `<tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>`).join("");
@@ -15673,7 +23002,7 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
     <td>${escapeHtml(item.action)}<br><span class="muted">${renderDashboardDateTime(item.createdAt)}</span></td>
     <td>${item.projectRootUri ? `<code>${escapeHtml(item.projectRootUri)}</code>` : "all/local"}${item.runId ? `<br><span class="muted">run ${escapeHtml(item.runId)}</span>` : ""}</td>
     <td>${escapeHtml(item.note || "")}</td>
-    <td><form method="post" action="/api/offline-fallback-action"><input type="hidden" name="action" value="mark-synced"><input type="hidden" name="itemId" value="${escapeHtml(item.id)}"><button type="submit">Mark Synced</button></form></td>
+    <td><form method="post" action="/api/offline-fallback-action">${dashboardReturnInput("/server-readiness", params)}<input type="hidden" name="action" value="mark-synced"><input type="hidden" name="itemId" value="${escapeHtml(item.id)}"><button type="submit">Mark Synced</button></form></td>
   </tr>`).join("");
   return `<section class="panel">
     <div class="section-heading">
@@ -15685,22 +23014,24 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
       ${metricCard("Shared", report.currentServicesReachable ? "online" : "offline", "current configured storage")}
       ${metricCard("Local Fallback", report.localServicesReachable ? "ready" : "stopped", "localhost Docker services")}
       ${metricCard("Sync Queue", pendingItems.length, "pending local fallback items")}
-      ${metricCard("Scheduler", report.scheduler.status, report.scheduler.nextRunAfter ? `next ${renderDashboardDateTime(report.scheduler.nextRunAfter)}` : "daemon dry-run check")}
+      ${metricCard("Scheduler", report.scheduler.status, `${report.scheduler.mode}; ${report.scheduler.nextRunAfter ? `next ${renderDashboardDateTime(report.scheduler.nextRunAfter)}` : "daemon check"}`)}
     </div>
     <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current fallback status: <span class="status ${statusClass}">${escapeHtml(report.mode)}</span>.</p>
     <div class="meta-grid compact">
-      <div><strong>Scheduler Status</strong>${escapeHtml(report.scheduler.status)}<br><span class="muted">${escapeHtml(report.scheduler.message)}</span></div>
+      <div><strong>Scheduler Status</strong>${escapeHtml(report.scheduler.status)}<br><span class="muted">${escapeHtml(report.scheduler.mode)} mode. ${escapeHtml(report.scheduler.message)}</span></div>
       <div><strong>Last Scheduler Run</strong>${report.scheduler.lastRunAt ? renderDashboardDateTime(report.scheduler.lastRunAt) : "none"}</div>
       <div><strong>Next Scheduler Run</strong>${report.scheduler.nextRunAfter ? renderDashboardDateTime(report.scheduler.nextRunAfter) : "n/a"}</div>
       <div><strong>Last Receipt</strong>${report.scheduler.lastResultPath ? `<code>${escapeHtml(report.scheduler.lastResultPath)}</code>` : "none"}</div>
     </div>
     <div class="split-grid">
       <form class="inline-form" method="post" action="/api/offline-fallback-action">
+        ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="action" value="start-local">
         <input name="note" value="Start localhost fallback services if Hulk/shared storage is down." aria-label="Fallback note">
         <button type="submit">Record Local Fallback</button>
       </form>
       <form class="inline-form" method="post" action="/api/offline-fallback-action">
+        ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="action" value="sync-back">
         <input name="note" value="Merge local fallback rows back into shared storage when Hulk returns." aria-label="Sync note">
         <button type="submit">Record Sync Needed</button>
@@ -15708,10 +23039,12 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport): string {
     </div>
     <div class="split-grid">
       <form class="inline-form" method="post" action="/api/offline-sync-action">
+        ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="out" value=".agent-workflow/migrations">
         <button type="submit">Prepare Sync Dry Run</button>
       </form>
       <form class="inline-form" method="post" action="/api/offline-sync-action">
+        ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="out" value=".agent-workflow/migrations">
         <label class="check-row"><input type="checkbox" name="execute" required> Execute insert-only sync into shared storage</label>
         <button type="submit">Execute Sync</button>
@@ -15747,6 +23080,18 @@ function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, param
   const bucketStatusClass = bucket?.status === "verified" ? "completed" : bucket?.status === "missing" ? "failed" : "queued";
   const missingRows = bucket?.sampledMissingKeys.map((key) => `<li><code>${escapeHtml(key)}</code></li>`).join("") ?? "";
   const mirrorRows = bucket?.mirrorPlan.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("") ?? "";
+  const queueMirrorForm = bucket?.status === "missing" && bucket.missingInTarget > 0 ? `
+    <form method="post" action="/api/object-mirror-approval" class="inline-form compact-form">
+      ${dashboardReturnInput("/server-readiness", params)}
+      <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? rootDir)}">
+      <input type="hidden" name="objectLimit" value="${escapeHtml(String(report.limit))}">
+      <input type="hidden" name="sourceEndpoint" value="${escapeHtml(bucket.sourceEndpoint)}">
+      <input type="hidden" name="sourceBucket" value="${escapeHtml(bucket.sourceBucket)}">
+      <input type="hidden" name="targetEndpoint" value="${escapeHtml(bucket.targetEndpoint)}">
+      <input type="hidden" name="targetBucket" value="${escapeHtml(bucket.targetBucket)}">
+      <label>Actor role<input name="actorRole" value="operator"></label>
+      <button type="submit">Queue Mirror Approval</button>
+    </form>` : "";
   return `<section class="panel">
     <div class="section-heading">
       <div><h2>Object Artifact Proof</h2><span class="muted">Read-only proof for object-backed artifact references after storage merge.</span></div>
@@ -15777,16 +23122,100 @@ function renderObjectArtifactProofPanel(report: ObjectArtifactProofReport, param
       <div><strong>Source Bucket</strong>${escapeHtml(bucket.sourceEndpoint)}<br>${escapeHtml(bucket.sourceBucket)} (${formatNumber(bucket.sourceObjects)} object(s))</div>
       <div><strong>Target Bucket</strong>${escapeHtml(bucket.targetEndpoint)}<br>${escapeHtml(bucket.targetBucket)} (${formatNumber(bucket.targetObjects)} object(s))</div>
       <div><strong>Delta</strong>${formatNumber(bucket.missingInTarget)} missing<br><span class="muted">${formatNumber(bucket.extraInTarget)} extra in target</span></div>
+      <div><strong>Verifier</strong><span class="status ${bucket.verifier === "unavailable" ? "queued" : "completed"}">${escapeHtml(bucket.verifier)}</span></div>
     </div>
     ${missingRows ? `<details class="governance-details" open><summary>Sample Missing Keys</summary><ul>${missingRows}</ul></details>` : ""}
-    <details class="governance-details"><summary>Dry-Run Mirror Plan</summary><ul>${mirrorRows}</ul></details>` : ""}
+    <details class="governance-details"><summary>Dry-Run Mirror Plan</summary><ul>${mirrorRows}</ul></details>
+    ${queueMirrorForm}` : ""}
     ${warnings ? `<details class="governance-details" open><summary>Warnings</summary><ul>${warnings}</ul></details>` : ""}
     ${recommendations ? `<details class="governance-details"><summary>Recommendations</summary><ul>${recommendations}</ul></details>` : ""}
     <div class="table-wrap"><table><thead><tr><th>Status</th><th>Object Key</th><th>Artifact</th><th>Detail</th></tr></thead><tbody>${sampleRows || '<tr><td colspan="4">No object-backed artifact references found in inspected rows.</td></tr>'}</tbody></table></div>
   </section>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderServerMutationControlsPanel(report: ServerMutationControlReport): string {
+  const statusClass = report.status === "ready" ? "completed" : report.status === "blocked" ? "failed" : "queued";
+  const endpointRows = report.endpoints.map((endpoint) => {
+    const endpointStatusClass = endpoint.status === "ready" ? "completed" : endpoint.status === "blocked" ? "failed" : "queued";
+    const missingControls = endpoint.missingControls.length
+      ? endpoint.missingControls.map((control) => `<code>${escapeHtml(control)}</code>`).join(" ")
+      : '<span class="muted">none</span>';
+    return `
+    <tr>
+      <td>${escapeHtml(endpoint.name)}<br><code>${escapeHtml(`${endpoint.method} ${endpoint.path}`)}</code></td>
+      <td><span class="status ${endpointStatusClass}">${escapeHtml(endpoint.status)}</span><br><span class="muted">${escapeHtml(endpoint.exposure)}</span></td>
+      <td>${endpoint.remoteEligible ? "yes" : "local-only"}<br><span class="muted">${endpoint.dryRunDefault ? "dry-run default" : "executes when submitted"}</span></td>
+      <td>${escapeHtml(endpoint.executionGate)}</td>
+      <td>${endpoint.roleCapability ? `<code>${escapeHtml(endpoint.roleCapability)}</code>` : '<span class="muted">n/a</span>'}</td>
+      <td>${endpoint.receipt ? `<code>${escapeHtml(endpoint.receipt)}</code>` : '<span class="muted">n/a</span>'}</td>
+      <td>${missingControls}</td>
+    </tr>`;
+  }).join("");
+  const actionRows = report.recommendedActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+  return `<section class="panel"><div class="section-heading"><div><h2>Mutation Controls</h2><span class="muted">Read-only audit of server-mode and local operator mutation surfaces.</span></div><a class="button secondary" href="/api/server-mutation-controls">JSON</a></div>
+  <div class="metric-grid">
+    ${metricCard("Controls", report.status, "remote mutation posture")}
+    ${metricCard("Remote Mutations", report.summary.remoteMutationEndpoints, `${report.summary.readyRemoteMutations} ready`)}
+    ${metricCard("Blocked", report.summary.blockedRemoteMutations, "remote mutations gated")}
+    ${metricCard("Local Actions", report.summary.localOnlyMutations, "dashboard/operator only")}
+    ${metricCard("Body Limit", `${report.mode.requestBodyMaxBytes} bytes`, "remote JSON mutation")}
+    ${metricCard("Rate Limit", report.mode.rateLimitPerMinute <= 0 ? "off" : `${report.mode.rateLimitPerMinute}/min`, "per actor/IP")}
+  </div>
+  <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p>
+  <div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Status</th><th>Exposure</th><th>Execution Gate</th><th>Role</th><th>Receipt</th><th>Missing Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div>
+  ${actionRows ? `<details class="governance-details"><summary>Recommended Actions</summary><ul>${actionRows}</ul></details>` : ""}
+  </section>`;
+}
+
+function renderServerAuthHardeningPanel(report: ServerAuthHardeningReport): string {
+  const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
+  const checkRows = report.checks.map((check) => `
+    <tr>
+      <td>${escapeHtml(check.label)}</td>
+      <td><span class="status ${check.status === "pass" ? "completed" : check.status === "fail" ? "failed" : "queued"}">${escapeHtml(check.status)}</span></td>
+      <td>${escapeHtml(check.detail)}</td>
+    </tr>
+  `).join("");
+  const actionRows = report.recommendedActions.map((action) => `<li>${escapeHtml(action)}</li>`).join("");
+  return `<section class="panel"><div class="section-heading"><div><h2>Auth Hardening</h2><span class="muted">Operator checklist before Agent Workflow is exposed as a shared server surface.</span></div><span class="status ${statusClass}">${escapeHtml(report.status)}</span></div>
+  <div class="metric-grid">
+    ${metricCard("Ready", report.readyControls, "controls passing")}
+    ${metricCard("Warnings", report.warningControls, "review before shared use")}
+    ${metricCard("Blocked", report.failingControls, "must fix first")}
+    ${metricCard("Posture", report.status, "server auth")}
+  </div>
+  <p class="muted">${escapeHtml(report.summary)}</p>
+  <div class="table-wrap"><table><thead><tr><th>Control</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div>
+  ${actionRows ? `<details class="governance-details" open><summary>Recommended Actions</summary><ul>${actionRows}</ul></details>` : ""}
+  </section>`;
+}
+
+function renderServerRequestAuditPanel(report: ServerRequestAuditReport): string {
+  const rows = report.events.slice(0, 25).map((event) => `
+    <tr>
+      <td>${renderDashboardDateTime(event.generatedAt)}<br><code>${escapeHtml(event.requestId ?? "n/a")}</code></td>
+      <td><span class="status ${event.status === "queued" || event.status === "ready" ? "completed" : event.status === "blocked" || event.status === "rejected" ? "failed" : "queued"}">${escapeHtml(event.status)}</span><br><span class="muted">${event.dryRun ? "dry-run" : "executed"}</span></td>
+      <td><code>${escapeHtml(event.method)} ${escapeHtml(event.path)}</code><br><span class="muted">${event.projectId ? `project ${escapeHtml(event.projectId)}` : "project n/a"}</span></td>
+      <td>${escapeHtml(event.workflowId ?? "n/a")}<br><span class="muted">task ${escapeHtml(event.taskHash ?? "n/a")} (${event.taskBytes} bytes)</span></td>
+      <td>${escapeHtml(event.auth.method)}<br><span class="status ${event.auth.accepted ? "completed" : "failed"}">${event.auth.accepted ? "accepted" : escapeHtml(event.auth.errorCode ?? "rejected")}</span></td>
+      <td>${event.rateLimit.accepted === null ? "n/a" : `<span class="status ${event.rateLimit.accepted ? "completed" : "failed"}">${event.rateLimit.accepted ? "accepted" : "limited"}</span>`}<br><span class="muted">${event.rateLimit.remaining === null ? "" : `${event.rateLimit.remaining} remaining`}</span></td>
+      <td>${event.queuedRunId ? `<a href="/run?id=${encodeURIComponent(event.queuedRunId)}">${escapeHtml(event.queuedRunId.slice(0, 8))}</a>` : "none"}<br><span class="muted">${event.reusedRun === null ? "" : event.reusedRun ? "reused" : "new"}</span></td>
+    </tr>
+  `).join("");
+  return `<section class="panel"><div class="section-heading"><div><h2>Remote Request Audit</h2><span class="muted">Redacted JSONL evidence for governed server queue requests. No task text, tokens, credentials, local roots, actor names, IPs, origins, or user agents are stored raw.</span></div><a class="button secondary" href="/api/server-request-log">JSON</a></div>
+  <div class="metric-grid">
+    ${metricCard("Events", report.totalRead, "redacted request records")}
+    ${metricCard("Queued", report.queued, "workflow requests")}
+    ${metricCard("Blocked", report.blocked, "blocked or rejected")}
+    ${metricCard("Dry Runs", report.dryRuns, "preview-only requests")}
+    ${metricCard("Rate Limited", report.rateLimited, "request decisions")}
+    ${metricCard("Invalid Lines", report.invalidLines, "skipped while reading")}
+  </div>
+  <div class="meta-grid compact"><div><strong>Log Path</strong><code>${escapeHtml(report.logPath)}</code></div><div><strong>Latest</strong>${report.latestAt ? renderDashboardDateTime(report.latestAt) : "none"}</div><div><strong>Status Counts</strong>${escapeHtml(formatInlineCounts(report.statusCounts) || "none")}</div><div><strong>Auth Counts</strong>${escapeHtml(formatInlineCounts(report.authCounts) || "none")}</div></div>
+  <div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Endpoint</th><th>Workflow</th><th>Auth</th><th>Rate Limit</th><th>Run</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No governed server request audit events found.</td></tr>'}</tbody></table></div></section>`;
+}
+
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -15842,7 +23271,11 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("server-readiness")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="100.78.183.30"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  ${renderPrimaryStatePlaneOperatorPanel(mergeEvidence, offlineFallback, runtimeMonitor)}
+  ${renderSharedStatePlaneProofPanel(statePlaneProof)}
   <section class="panel"><div class="metric-grid">
     ${metricCard("Status", report.status, "server-mode readiness")}
     ${metricCard("Mode", report.mode.enabled ? "enabled" : "local-only", report.mode.networkExposed ? "network-exposed bind" : "loopback bind")}
@@ -15853,9 +23286,13 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   </div><p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p></section>
   <section class="panel"><h2>Readiness Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div></section>
   <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
+  ${renderServerAuthHardeningPanel(report.authHardening)}
+  ${renderServerMutationControlsPanel(mutationControls)}
+  ${renderServerRequestAuditPanel(requestAudit)}
   <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+  ${renderRuntimeMonitorPanel(runtimeMonitor, params)}
   <section class="panel"><div class="section-heading"><div><h2>Shared Storage Verification</h2><span class="muted">Read-only migration proof. This does not copy, restore, delete, or mutate storage.</span></div><a class="button secondary" href="/api/storage-verify?${escapeHtml(storageParams.toString())}">JSON</a></div>
   <div class="metric-grid">
     ${metricCard("Storage", storageVerification.status, "durable state comparison")}
@@ -15868,7 +23305,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
   <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
   ${renderPostMergeEvidencePanel(mergeEvidence)}
-  ${renderOfflineFallbackPanel(offlineFallback)}
+  ${renderOfflineFallbackPanel(offlineFallback, params)}
   ${renderObjectArtifactProofPanel(objectProof, params)}
   <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
   <div class="metric-grid">
@@ -15912,6 +23349,7 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
     </tr>`).join("") ?? "";
   const pruneNotes = report.prunePlan?.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("") ?? "";
   const renderQueueApprovalForm = (action: ArtifactLifecycleAction) => report.projectRootUri ? `<form class="inline-form" method="post" action="/api/artifact-lifecycle-action">
+    ${dashboardReturnInput("/artifact-lifecycle", params)}
     <input type="hidden" name="action" value="queue-${escapeHtml(action)}-approvals">
     <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
     <input type="hidden" name="kind" value="${escapeHtml(report.artifactKind ?? "")}">
@@ -15948,6 +23386,8 @@ function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: 
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Artifact Lifecycle</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("artifact-lifecycle")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Artifact Lifecycle</h1><p class="muted">Read-only storage inventory for run artifacts. This page does not prune, archive, or delete anything.</p></div><a class="button secondary" href="/api/artifact-lifecycle?${escapeHtml(params.toString())}">JSON</a></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel">${filters}<div class="meta-grid"><div><strong>Artifacts</strong>${report.totalArtifacts}</div><div><strong>Estimated JSON</strong>${escapeHtml(formatBytes(report.estimatedBytes))}</div><div><strong>Kinds</strong>${Object.keys(report.byKind).length}</div><div><strong>Projects</strong>${Object.keys(report.byProject).length}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Retention Policy</h2><span class="muted">Project-local defaults from .agent-workflow/project.yaml. Empty filter fields use this policy; filled fields become preview-only overrides.</span></div></div><div class="meta-grid"><div><strong>Source</strong>${escapeHtml(report.retentionPolicy.source)}</div><div><strong>Retention</strong>${report.retentionPolicy.retentionDays} days</div><div><strong>Minimum size</strong>${escapeHtml(formatBytes(report.retentionPolicy.minPruneBytes))}</div><div><strong>Audit artifacts</strong>${report.retentionPolicy.retainAuditArtifacts ? "retained by default" : "eligible by policy"}</div><div><strong>Legal hold</strong>${report.retentionPolicy.legalHold ? "enabled" : "off"}</div><div><strong>Approval</strong>${report.retentionPolicy.requireApprovalForPrune ? "required" : "project policy allows approval-free preview"}</div><div><strong>Archive execution</strong>${report.retentionPolicy.allowArchiveExecution ? "enabled" : "disabled"}</div><div><strong>Restore execution</strong>${report.retentionPolicy.allowRestoreExecution ? "enabled" : "disabled"}</div><div><strong>Prune execution</strong>${report.retentionPolicy.allowPruneExecution ? "enabled" : "disabled"}</div></div></section>
   <section class="panel"><div class="section-heading"><div><h2>Lifecycle Hints</h2><span class="muted">Hints are conservative and non-destructive. Future prune plans should cite exact ids and require approval.</span></div></div><ul>${hintRows || "<li>No lifecycle concerns found in the inspected artifact window.</li>"}</ul></section>
@@ -16077,6 +23517,8 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Bundle Trust</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("bundles")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Workflow Bundle Readiness</h1><p class="muted">Read-only trust, compatibility, migration, and contract-test visibility. A signature never expands project execution permissions.</p></div><a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a></div>
+  ${renderDashboardFlash(params)}
+  ${renderDashboardActionHistory()}
   <section class="panel"><form method="get" class="workflow-form"><label class="wide">Project path<input name="project" value="${escapeHtml(projectValue)}" placeholder="/path/to/project"></label><label>Trust policy<select name="policy">${["allow", "warn", "require"].map((policy) => `<option value="${policy}"${verification.policy === policy ? " selected" : ""}>${policy}</option>`).join("")}</select></label><div class="form-actions"><button type="submit">Inspect</button></div></form><p class="muted">Leave project path blank to inspect shared bundle readiness without project adoption state.</p></section>
   ${errorBlock}
   <section class="panel"><div class="metric-grid">
@@ -16099,7 +23541,18 @@ function renderBundleTrustHtml(readiness: DashboardBundleReadiness, params: URLS
   <section class="panel"><h2>Trust policy</h2><p>Set <code>AGENTFLOW_BUNDLE_TRUST_POLICY</code> to <code>allow</code>, <code>warn</code>, or <code>require</code>. Use the CLI to add public signer keys; private signing keys are never stored by Agent Workflow.</p></section></main></body></html>`;
 }
 
-function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
+function renderProjectsHtml(projects: DashboardProjectSummary[], identities: DashboardProjectIdentityGroup[], aliasMergePlan: DashboardProjectAliasMergePlan): string {
+  const identityRows = identities.map((identity) => `
+    <tr>
+      <td><a href="/project?root=${encodeURIComponent(identity.primaryRootUri)}">${escapeHtml(identity.canonicalName)}</a><br><span class="muted">${escapeHtml(identity.canonicalRootUri)}</span></td>
+      <td><span class="status ${identity.localPathExists ? "completed" : "queued"}">${identity.localPathExists ? "local" : "remote only"}</span><br><span class="muted">${escapeHtml(identity.source)}</span></td>
+      <td>${formatNumber(identity.projects.length)}<br><span class="muted">${identity.aliases.map((alias) => escapeHtml(alias.rootUri)).join("<br>")}</span></td>
+      <td>${formatNumber(identity.totalRuns)}<br><span class="muted">${formatNumber(identity.activeRuns)} active / ${formatNumber(identity.failedRuns)} failed</span></td>
+      <td>${formatNumber(identity.totalIndexedFiles)}</td>
+      <td>${formatNumber(identity.totalMemoryItems)}</td>
+      <td>${renderDashboardDateTime(identity.lastRunAt, "none")}</td>
+    </tr>
+  `).join("");
   const rows = projects.map((project) => `
     <tr>
       <td><a href="/project?root=${encodeURIComponent(project.rootUri)}">${escapeHtml(project.name)}</a><br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
@@ -16111,6 +23564,17 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
       <td>${renderDashboardDateTime(project.lastIndexedAt, "not indexed")}</td>
     </tr>
   `).join("");
+  const aliasMergeRows = aliasMergePlan.groups.slice(0, 12).map((group) => `
+    <tr>
+      <td><strong>${escapeHtml(group.target.name)}</strong><br><span class="muted">${escapeHtml(group.canonicalRootUri)}</span></td>
+      <td><span class="flag ${group.risk === "high" ? "bad" : group.risk === "medium" ? "warn" : "good"}">${escapeHtml(group.risk)}</span></td>
+      <td>${escapeHtml(group.target.rootUri)}<br><code>${escapeHtml(group.target.id)}</code></td>
+      <td>${group.sources.map((source) => `${escapeHtml(source.rootUri)}<br><code>${escapeHtml(source.id)}</code>`).join("<br>")}</td>
+      <td>${formatNumber(group.impactedRows.workflowRuns)} runs<br><span class="muted">${formatNumber(group.impactedRows.projectFiles)} files / ${formatNumber(group.impactedRows.memoryItems)} memory / ${formatNumber(group.impactedRows.activeRuns)} active</span></td>
+      <td>${group.conflictWarnings.map((warning) => `<span class="muted">${escapeHtml(warning)}</span>`).join("<br>") || '<span class="muted">No conflicts predicted from summary data.</span>'}</td>
+    </tr>
+  `).join("");
+  const aliasMergeSummary = aliasMergePlan.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
 
   return `<!doctype html>
 <html>
@@ -16128,10 +23592,54 @@ function renderProjectsHtml(projects: DashboardProjectSummary[]): string {
         <a href="/">Dashboard</a>
         <h1>Projects</h1>
       </div>
-      <a class="button secondary" href="/api/projects">JSON</a>
+      <div class="button-row">
+        <a class="button secondary" href="/api/project-alias-merge-plan">Alias Merge JSON</a>
+        <a class="button secondary" href="/api/project-identities">Identity JSON</a>
+        <a class="button secondary" href="/api/projects">Projects JSON</a>
+      </div>
     </div>
     <section class="panel">
-      <h2>Known Projects</h2>
+      <div class="section-heading">
+        <div>
+          <h2>Project Identities</h2>
+          <span class="muted">Canonical local identity groups for shared storage paths, mounted paths, and host-specific aliases.</span>
+        </div>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Identities", identities.length, "logical projects")}
+        ${metricCard("Registered Paths", projects.length, "stored project roots")}
+        ${metricCard("Aliased", identities.filter((identity) => identity.projects.length > 1).length, "multi-path identities")}
+        ${metricCard("Remote Only", identities.filter((identity) => !identity.localPathExists).length, "not mounted here")}
+      </div>
+      <table>
+        <thead><tr><th>Identity</th><th>Local</th><th>Aliases</th><th>Runs</th><th>Indexed</th><th>Memory</th><th>Last Run</th></tr></thead>
+        <tbody>${identityRows || "<tr><td colspan=\"7\">No project identities found.</td></tr>"}</tbody>
+      </table>
+    </section>
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Alias Merge Plan</h2>
+          <span class="muted">Dry-run consolidation plan for duplicate project rows created by host path aliases.</span>
+        </div>
+        <a class="button secondary" href="/api/project-alias-merge-plan">JSON</a>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Candidates", aliasMergePlan.candidateCount, "identity groups")}
+        ${metricCard("Source Rows", aliasMergePlan.sourceProjectCount, "would move into canonical targets")}
+        ${metricCard("Dry Run", aliasMergePlan.dryRun ? "yes" : "no", "no database writes")}
+        ${metricCard("High Risk", aliasMergePlan.groups.filter((group) => group.risk === "high").length, "must resolve before execution")}
+      </div>
+      <ul>${aliasMergeSummary}</ul>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Identity</th><th>Risk</th><th>Target</th><th>Source Aliases</th><th>Impact</th><th>Warnings</th></tr></thead>
+        <tbody>${aliasMergeRows || '<tr><td colspan="6">No alias merge candidates found.</td></tr>'}</tbody>
+      </table></div>
+      ${aliasMergePlan.groups.length > 12 ? `<p class="muted">${formatNumber(aliasMergePlan.groups.length - 12)} additional merge candidate(s) are available in JSON.</p>` : ""}
+      <p class="muted">Execution remains intentionally separate: first create a backup, run storage verification, clear active source runs, and generate an auditable mapping receipt.</p>
+    </section>
+    <section class="panel">
+      <h2>Registered Project Rows</h2>
       <table>
         <thead><tr><th>Project</th><th>Profile</th><th>Indexed</th><th>Memory</th><th>Runs</th><th>Last Run</th><th>Last Indexed</th></tr></thead>
         <tbody>${rows || "<tr><td colspan=\"7\">No projects found. Run onboarding or index a project first.</td></tr>"}</tbody>
@@ -16187,6 +23695,8 @@ function renderAgentsHtml(report: DashboardAgentsReport, projects: DashboardProj
       </div>
       <a class="button secondary" href="/api/agents?${escapeHtml(jsonParams.toString())}">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <form method="get" class="workflow-form">
         <label class="wide">Project
@@ -16245,6 +23755,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
       <td>
         ${candidate.initialized ? `
           <form method="post" action="/api/discovery-adopt" class="inline-form compact-form">
+            ${dashboardReturnInput("/discovery", params)}
             ${hiddenDiscoveryFields}
             <input type="hidden" name="paths" value="${escapeHtml(candidate.rootUri)}">
             <input type="hidden" name="index" value="on">
@@ -16253,6 +23764,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
           </form>
         ` : `
           <form method="post" action="/api/discovery-adopt" class="inline-form compact-form">
+            ${dashboardReturnInput("/discovery", params)}
             ${hiddenDiscoveryFields}
             <input type="hidden" name="paths" value="${escapeHtml(candidate.rootUri)}">
             <input type="hidden" name="initialize" value="on">
@@ -16289,6 +23801,8 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
       </div>
       <a class="button secondary" href="/api/discovery?${escapeHtml(jsonParams.toString())}">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <form method="get" class="workflow-form">
         <label class="wide">Roots
@@ -16323,6 +23837,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
         </div>
       </div>
       <form method="post" action="/api/discovery-adopt" class="workflow-form">
+        ${dashboardReturnInput("/discovery", params)}
         ${hiddenDiscoveryFields}
         <input type="hidden" name="all" value="on">
         <label>Max files per project
@@ -16347,7 +23862,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
 </html>`;
 }
 
-function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
+function renderProjectDetailHtml(detail: DashboardProjectDetail, params: URLSearchParams = new URLSearchParams()): string {
   const project = detail.project;
   const contextRows = detail.contextFiles.map((file) => `
     <details class="artifact" ${file.exists ? "" : ""}>
@@ -16399,6 +23914,8 @@ function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
       </div>
       <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(project.rootUri)}">Preference JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <div class="meta-grid">
         <div><strong>Initialized</strong>${detail.initialized ? "yes" : "no"}</div>
@@ -16414,7 +23931,7 @@ function renderProjectDetailHtml(detail: DashboardProjectDetail): string {
     <section class="panel">
       <h2>Project Actions</h2>
       <div class="actions">
-        ${projectIndexForm(project.rootUri)}
+        ${projectIndexForm(project.rootUri, dashboardPagePath("/project", params))}
         ${projectActionForm(project.rootUri, "mira-ux-pass", "UX Pass")}
         ${projectActionForm(project.rootUri, "pr-review", "Review")}
         ${projectActionForm(project.rootUri, "production-readiness", "Production Readiness")}
@@ -16473,6 +23990,7 @@ function renderRunDetailHtml(input: {
       <pre>${escapeHtml(JSON.stringify(artifact.content, null, 2))}</pre>
     </details>
   `).join("");
+  const decisionExplanations = buildRunDecisionExplanations(input.run, input.qualityReport, input.summary);
 
   return `<!doctype html>
 <html>
@@ -16529,6 +24047,7 @@ function renderRunDetailHtml(input: {
       <h2>Summary</h2>
       ${summaryBlock}
     </section>
+    ${renderRunDecisionExplanationsHtml(decisionExplanations)}
     <section class="panel">
       <h2>Cost & Quality</h2>
       ${input.qualityReport ? renderCostQualityHtml(input.qualityReport) : "<p>No routing data available.</p>"}
@@ -16566,6 +24085,120 @@ function renderRunDetailHtml(input: {
 </html>`;
 }
 
+type RunDecisionExplanation = {
+  title: string;
+  status: "good" | "warn" | "bad";
+  detail: string;
+  evidence: string[];
+};
+
+function buildRunDecisionExplanations(
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
+  qualityReport: CostQualityReport | null,
+  summary: RunSummary | null
+): RunDecisionExplanation[] {
+  const workflowEvidence = [
+    `Workflow id: ${run.workflowId}`,
+    `Policy profile: ${run.policyProfile}`,
+    `Autonomy: ${run.autonomy}`,
+    summary?.recommendedNextAction ? `Recommended next action: ${summary.recommendedNextAction}` : ""
+  ].filter(Boolean);
+  const explanations: RunDecisionExplanation[] = [
+    {
+      title: "Workflow Selection",
+      status: "good",
+      detail: workflowSelectionExplanation(run, summary),
+      evidence: workflowEvidence
+    }
+  ];
+
+  if (!qualityReport || qualityReport.stages.length === 0) {
+    explanations.push({
+      title: "Model Routing",
+      status: "warn",
+      detail: "No model_route receipts were found yet, so the dashboard cannot explain provider, tier, or fallback selection for this run.",
+      evidence: ["Process at least one model-routed stage, then reopen this run."]
+    });
+    return explanations;
+  }
+
+  const tierChanges = qualityReport.stages.filter((stage) => stage.modelTier !== stage.requestedModelTier);
+  const fallbacks = qualityReport.stages.filter((stage) => stage.fallbackUsed);
+  const providerMix = formatInlineCounts(qualityReport.providerMix) || "unknown";
+  const tierMix = formatInlineCounts(qualityReport.modelTierMix) || "unknown";
+  explanations.push({
+    title: "Model Tier Selection",
+    status: tierChanges.length ? "warn" : "good",
+    detail: tierChanges.length
+      ? `${tierChanges.length} stage(s) changed tier after routing evidence was considered.`
+      : "Stages used their requested model tiers.",
+    evidence: [
+      `Tier mix: ${tierMix}`,
+      ...tierChanges.slice(0, 4).map((stage) => `${stage.stageId}: requested ${stage.requestedModelTier}, used ${stage.modelTier}`)
+    ]
+  });
+  explanations.push({
+    title: "Provider Selection",
+    status: qualityReport.providerMix.mock ? "warn" : "good",
+    detail: `Provider routing used ${providerMix}. ${qualityReport.estimatedByoSavingsStages} stage(s) are estimated local/BYO savings opportunities.`,
+    evidence: qualityReport.stages.slice(0, 6).map((stage) =>
+      `${stage.stageId}: ${stage.providerId}${stage.model ? ` / ${stage.model}` : ""} (${stage.estimatedCostTier})${stage.routeReason ? ` - ${stage.routeReason}` : ""}`
+    )
+  });
+  explanations.push({
+    title: "Fallback Behavior",
+    status: fallbacks.length ? "warn" : "good",
+    detail: fallbacks.length
+      ? `${fallbacks.length} fallback stage(s) ran because the primary output did not pass the local quality threshold.`
+      : "No fallback provider was used for this run.",
+    evidence: fallbacks.length
+      ? fallbacks.slice(0, 5).map((stage) => `${stage.stageId}: ${stage.providerId} -> ${stage.fallbackProviderId ?? "fallback"}; quality ${stage.qualityScore ?? "n/a"}`)
+      : [`Fallback count: ${qualityReport.fallbackCount}`]
+  });
+  return explanations;
+}
+
+function workflowSelectionExplanation(run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>, summary: RunSummary | null): string {
+  if (run.evaluationMetadata?.kind === "stage_fix_suggestion") {
+    return "This run was created from a focused graph-stage fix action, so it used the debug workflow shape instead of a broad feature workflow.";
+  }
+  if (run.evaluationMetadata?.kind === "stage_fix_verification") {
+    return "This run verifies a previously suggested stage fix and is tagged for before/after workflow graph health comparison.";
+  }
+  if (/debug|failure|fix/i.test(run.workflowId)) {
+    return "The run used a failure/debug workflow, usually selected when the task or source run points at broken checks, errors, or failed stages.";
+  }
+  if (/review|readiness|ship|release/i.test(run.workflowId)) {
+    return "The run used a verifier-heavy workflow, usually selected for review, release, production, or launch-risk work.";
+  }
+  if (/build|feature|implement/i.test(run.workflowId)) {
+    return "The run used the planner-executor feature workflow, usually selected when the task asks Agent Workflow to build, change, or implement something.";
+  }
+  if (summary?.recommendedNextAction) {
+    return `The run used ${run.workflowId}; the current evidence suggests: ${summary.recommendedNextAction}`;
+  }
+  return `The run used ${run.workflowId}. Open the workflow graph to inspect its pattern metadata, agents, gates, and stage order.`;
+}
+
+function renderRunDecisionExplanationsHtml(explanations: RunDecisionExplanation[]): string {
+  const cards = explanations.map((item) => `
+    <article class="decision-card ${item.status}">
+      <strong>${escapeHtml(item.title)}</strong>
+      <p>${escapeHtml(item.detail)}</p>
+      <ul>${item.evidence.map((evidence) => `<li>${escapeHtml(evidence)}</li>`).join("")}</ul>
+    </article>
+  `).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div>
+        <h2>Why This Ran This Way</h2>
+        <span class="muted">Evidence-backed explanations for workflow choice, model tier, provider routing, and fallback behavior.</span>
+      </div>
+    </div>
+    <div class="decision-grid">${cards}</div>
+  </section>`;
+}
+
 type DashboardInfo = {
   app: {
     name: string;
@@ -16584,6 +24217,12 @@ type DashboardInfo = {
     canSelectModel: boolean;
     availableModels: string[];
     availableModelsError?: string;
+    tierModels?: Array<{
+      tier: string;
+      model: string;
+      source: "env" | "catalog" | "unavailable";
+    }>;
+    catalogHint?: string;
     autoRoutes?: Array<{
       tier: string;
       providerId: string;
@@ -16601,6 +24240,11 @@ type DashboardInfo = {
       awsProfile?: string;
       awsRegion?: string;
       details: string[];
+      tierModels?: Array<{
+        tier: string;
+        model: string;
+        source: "env" | "catalog" | "unavailable";
+      }>;
     }>;
     routingConfig: {
       provider: string;
@@ -16610,6 +24254,7 @@ type DashboardInfo = {
       reasoningProvider: string;
       fallbackProvider: string;
       qualityThreshold: string;
+      modelPolicy: string;
     };
   };
   services: Array<{
@@ -16636,7 +24281,47 @@ type DashboardInfo = {
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
   launchAgent: DashboardLaunchAgentStatus;
+  runtimeMonitor: RuntimeMonitorReport;
   commands: string[];
+};
+
+type DashboardModelCatalogReport = {
+  kind: "agentflow_model_catalog_report";
+  generatedAt: string;
+  selectedProvider: string;
+  modelPolicy: ModelSelectionPolicy;
+  providers: DashboardModelCatalogProvider[];
+};
+
+type DashboardModelCatalogProvider = {
+  providerId: "openai" | "byo" | "openai-compatible" | "bedrock";
+  label: string;
+  configured: boolean;
+  status: "ready" | "missing" | "not configured";
+  catalogSource: string;
+  modelsListed: number;
+  configuredModel: string;
+  modelEnv: string;
+  baseUrl?: string;
+  apiKeyStatus?: string;
+  awsProfile?: string;
+  awsRegion?: string;
+  error?: string;
+  tierSelections: DashboardModelTierExplanation[];
+};
+
+type DashboardModelTierExplanation = {
+  tier: ModelTier;
+  selectedModel: string;
+  source: "env" | "catalog" | "unavailable";
+  configuredModel: string;
+  estimatedCostClass: "low" | "medium" | "high" | "unknown";
+  policyScore: number | null;
+  tierFit: number | null;
+  providerAvailability: "ready" | "missing" | "not configured";
+  overrideSource: string;
+  candidates: Array<CatalogCandidate & { selected: boolean }>;
+  excludedCount: number;
 };
 
 async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
@@ -16652,14 +24337,15 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent, runtimeMonitor] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
-    loadDashboardLaunchAgentStatus()
+    loadDashboardLaunchAgentStatus(),
+    loadRuntimeMonitorReport()
   ]);
 
   return {
@@ -16694,6 +24380,7 @@ async function loadDashboardInfo(dashboardUrl: string): Promise<DashboardInfo> {
     worker,
     supervisor,
     launchAgent,
+    runtimeMonitor,
     commands: [
       "npm run doctor",
       "npm run validate",
@@ -16719,14 +24406,15 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
       adapter = "unavailable";
     }
   }
-  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent] = await Promise.all([
+  const [serviceChecks, agents, workflows, manifest, worker, supervisor, launchAgent, runtimeMonitor] = await Promise.all([
     checkServices(),
     loadAgents(rootDir),
     loadWorkflows(rootDir),
     loadCommittedBundleManifest(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
-    loadDashboardLaunchAgentStatus()
+    loadDashboardLaunchAgentStatus(),
+    loadRuntimeMonitorReport()
   ]);
   return {
     app: {
@@ -16760,6 +24448,7 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
     worker,
     supervisor,
     launchAgent,
+    runtimeMonitor,
     commands: [
       "npm run doctor",
       "npm run validate",
@@ -17083,6 +24772,81 @@ async function processDashboardOfflineSyncAction(form: URLSearchParams): Promise
     };
 }
 
+async function processDashboardStorageProjectDecisionAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const rootUri = form.get("rootUri")?.trim() || "";
+  const action = form.get("action")?.trim() || "";
+  const note = form.get("note")?.trim() || "";
+  if (!rootUri) return { ok: false, error: "Missing project root URI." };
+  if (!["preserve-target-project", "promote-source-project", "manual-project-review"].includes(action)) {
+    return { ok: false, error: "Choose preserve-target-project, promote-source-project, or manual-project-review." };
+  }
+  if (!note) return { ok: false, error: "A short decision note is required." };
+  const result = await writeStorageProjectConflictDecision({
+    outDir: form.get("out")?.trim() || ".agent-workflow/migrations",
+    rootUri,
+    action,
+    sourceProjectId: form.get("sourceProjectId")?.trim() || undefined,
+    targetProjectId: form.get("targetProjectId")?.trim() || undefined,
+    reviewer: form.get("reviewer")?.trim() || process.env.USER || "dashboard",
+    note
+  });
+  return {
+    ok: true,
+    title: "Project decision recorded",
+    output: [
+      `Root: ${rootUri}`,
+      `Action: ${action}`,
+      `Decisions: ${result.decisionCount}`,
+      `Evidence: ${result.jsonPath}`
+    ].join("\n")
+  };
+}
+
+async function processDashboardRuntimeMonitorAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const action = normalizeLookup(form.get("action") ?? "");
+  if (action === "check-mcp") {
+    const report = await loadRuntimeMonitorReport({ checkMcp: true });
+    return report.mcpPipeline.smoke.status === "passed"
+      ? { ok: true, title: "MCP smoke passed", output: formatMcpPipelineStatus(report.mcpPipeline) }
+      : { ok: false, error: formatMcpPipelineStatus(report.mcpPipeline) };
+  }
+  if (action === "reconcile-stale-runs") {
+    const result = await reconcileStaleTerminalWorkflowRuns({
+      execute: true,
+      limit: parseStaleRunReconcileLimit(),
+      actor: "dashboard"
+    });
+    return {
+      ok: true,
+      title: "Stale runs reconciled",
+      output: formatRuntimeStaleRunReconciliationResult(result)
+    };
+  }
+  if (action !== "cleanup-mcp") {
+    return { ok: false, error: "Unknown runtime monitor action." };
+  }
+  if (form.get("confirmed") !== "on") {
+    const preview = await cleanupRuntimeMcpProcesses({ execute: false });
+    return {
+      ok: false,
+      error: [
+        "Confirmation is required before terminating MCP processes.",
+        "",
+        formatRuntimeMcpCleanupResult(preview)
+      ].join("\n")
+    };
+  }
+  const pids = form.getAll("pid").map((value) => Number.parseInt(value, 10)).filter(Number.isFinite);
+  if (!pids.length) {
+    return { ok: false, error: "No MCP cleanup candidates were selected." };
+  }
+  const result = await cleanupRuntimeMcpProcesses({ execute: true, pids });
+  const output = formatRuntimeMcpCleanupResult(result);
+  return result.warnings.length
+    ? { ok: false, error: output }
+    : { ok: true, title: "MCP cleanup completed", output };
+}
+
 async function processDashboardLearningDaemonTarget(input: { project: string; mode: string; scope: string }): Promise<DashboardFollowUpResult> {
   const projectDir = path.resolve(process.cwd(), input.project.trim());
   if (!input.project.trim()) {
@@ -17162,6 +24926,7 @@ function tailText(value: string, maxChars: number): string {
 
 async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLearningDaemonStatus> {
   const heartbeatPath = path.join(projectDir, ".agent-workflow", "learning", "daemon-status.json");
+  const projectPathExists = await pathExists(projectDir);
   try {
     const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<LearningDaemonHeartbeat>;
     const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
@@ -17175,6 +24940,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
     return {
       heartbeatPath,
       configured: true,
+      projectPathExists,
       projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : projectDir,
       daemonId: typeof heartbeat.daemonId === "string" ? heartbeat.daemonId : null,
       mode: heartbeat.mode === "observe" || heartbeat.mode === "propose" || heartbeat.mode === "apply-approved" ? heartbeat.mode : null,
@@ -17193,6 +24959,30 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       applicationActions: typeof heartbeat.applicationActions === "number" ? heartbeat.applicationActions : 0,
       autonomousAppliedActions: typeof heartbeat.autonomousAppliedActions === "number" ? heartbeat.autonomousAppliedActions : 0,
       autonomousApplyMaxRisk: parseLearningRiskLevel(typeof heartbeat.autonomousApplyMaxRisk === "string" ? heartbeat.autonomousApplyMaxRisk : "medium"),
+      agentImprovementCandidates: typeof heartbeat.agentImprovementCandidates === "number" ? heartbeat.agentImprovementCandidates : 0,
+      agentImprovementPatchPreviews: typeof heartbeat.agentImprovementPatchPreviews === "number" ? heartbeat.agentImprovementPatchPreviews : 0,
+      agentImprovementEvalPasses: typeof heartbeat.agentImprovementEvalPasses === "number" ? heartbeat.agentImprovementEvalPasses : 0,
+      agentImprovementPromotions: typeof heartbeat.agentImprovementPromotions === "number" ? heartbeat.agentImprovementPromotions : 0,
+      agentImprovementPromotionPending: typeof heartbeat.agentImprovementPromotionPending === "number" ? heartbeat.agentImprovementPromotionPending : 0,
+      approvalAutopilotEnabled: typeof heartbeat.approvalAutopilotEnabled === "boolean" ? heartbeat.approvalAutopilotEnabled : false,
+      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(typeof heartbeat.approvalAutopilotMaxRisk === "string" ? heartbeat.approvalAutopilotMaxRisk : "medium"),
+      approvalAutopilotExecuted: typeof heartbeat.approvalAutopilotExecuted === "number" ? heartbeat.approvalAutopilotExecuted : 0,
+      approvalAutopilotSkipped: typeof heartbeat.approvalAutopilotSkipped === "number" ? heartbeat.approvalAutopilotSkipped : 0,
+      approvalBacklogWarnings: typeof heartbeat.approvalBacklogWarnings === "number" ? heartbeat.approvalBacklogWarnings : 0,
+      approvalBacklogErrors: typeof heartbeat.approvalBacklogErrors === "number" ? heartbeat.approvalBacklogErrors : 0,
+      approvalBacklogScanned: typeof heartbeat.approvalBacklogScanned === "number" ? heartbeat.approvalBacklogScanned : 0,
+      mcpCleanupEnabled: typeof heartbeat.mcpCleanupEnabled === "boolean" ? heartbeat.mcpCleanupEnabled : false,
+      mcpCleanupMode: heartbeat.mcpCleanupMode === "auto-low-risk" ? "auto-low-risk" : "preview",
+      mcpCleanupStaleMinutes: typeof heartbeat.mcpCleanupStaleMinutes === "number" ? heartbeat.mcpCleanupStaleMinutes : 60,
+      mcpCleanupCandidates: typeof heartbeat.mcpCleanupCandidates === "number" ? heartbeat.mcpCleanupCandidates : 0,
+      mcpCleanupAutoCleanable: typeof heartbeat.mcpCleanupAutoCleanable === "number" ? heartbeat.mcpCleanupAutoCleanable : 0,
+      mcpCleanupTerminated: typeof heartbeat.mcpCleanupTerminated === "number" ? heartbeat.mcpCleanupTerminated : 0,
+      mcpCleanupWarnings: typeof heartbeat.mcpCleanupWarnings === "number" ? heartbeat.mcpCleanupWarnings : 0,
+      lastMcpCleanupAt: typeof heartbeat.lastMcpCleanupAt === "string" ? heartbeat.lastMcpCleanupAt : null,
+      staleRunReconcileEnabled: typeof heartbeat.staleRunReconcileEnabled === "boolean" ? heartbeat.staleRunReconcileEnabled : staleRunReconcileConfig().enabled,
+      staleRunReconcileCandidates: typeof heartbeat.staleRunReconcileCandidates === "number" ? heartbeat.staleRunReconcileCandidates : 0,
+      staleRunReconciled: typeof heartbeat.staleRunReconciled === "number" ? heartbeat.staleRunReconciled : 0,
+      lastStaleRunReconcileAt: typeof heartbeat.lastStaleRunReconcileAt === "string" ? heartbeat.lastStaleRunReconcileAt : null,
       lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
       command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -17200,6 +24990,7 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
     return {
       heartbeatPath,
       configured: false,
+      projectPathExists,
       projectRootUri: projectDir,
       daemonId: null,
       mode: null,
@@ -17218,6 +25009,30 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       applicationActions: 0,
       autonomousAppliedActions: 0,
       autonomousApplyMaxRisk: "medium",
+      agentImprovementCandidates: 0,
+      agentImprovementPatchPreviews: 0,
+      agentImprovementEvalPasses: 0,
+      agentImprovementPromotions: 0,
+      agentImprovementPromotionPending: 0,
+      approvalAutopilotEnabled: false,
+      approvalAutopilotMaxRisk: "medium",
+      approvalAutopilotExecuted: 0,
+      approvalAutopilotSkipped: 0,
+      approvalBacklogWarnings: 0,
+      approvalBacklogErrors: 0,
+      approvalBacklogScanned: 0,
+      mcpCleanupEnabled: false,
+      mcpCleanupMode: "preview",
+      mcpCleanupStaleMinutes: 60,
+      mcpCleanupCandidates: 0,
+      mcpCleanupAutoCleanable: 0,
+      mcpCleanupTerminated: 0,
+      mcpCleanupWarnings: 0,
+      lastMcpCleanupAt: null,
+      staleRunReconcileEnabled: staleRunReconcileConfig().enabled,
+      staleRunReconcileCandidates: 0,
+      staleRunReconciled: 0,
+      lastStaleRunReconcileAt: null,
       lastError: "",
       command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -17239,6 +25054,27 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Application actions: ${status.applicationActions}`,
     `Autonomous applied actions: ${status.autonomousAppliedActions}`,
     `Autonomous apply max risk: ${status.autonomousApplyMaxRisk}`,
+    `Agent improvement candidates: ${status.agentImprovementCandidates}`,
+    `Agent improvement patch previews: ${status.agentImprovementPatchPreviews}`,
+    `Agent improvement eval passes: ${status.agentImprovementEvalPasses}`,
+    `Agent improvement promotions: ${status.agentImprovementPromotions}`,
+    `Agent improvement promotion pending: ${status.agentImprovementPromotionPending}`,
+    `Approval autopilot: ${status.approvalAutopilotEnabled ? "on" : "off"} through ${status.approvalAutopilotMaxRisk}`,
+    `Approval autopilot executed: ${status.approvalAutopilotExecuted}`,
+    `Approval autopilot skipped: ${status.approvalAutopilotSkipped}`,
+    `Approval backlog scanned: ${status.approvalBacklogScanned}`,
+    `Approval backlog warnings: ${status.approvalBacklogWarnings}`,
+    `Approval backlog errors: ${status.approvalBacklogErrors}`,
+    `MCP cleanup: ${status.mcpCleanupEnabled ? status.mcpCleanupMode : "off"} through ${status.mcpCleanupStaleMinutes} minute(s)`,
+    `MCP cleanup candidates: ${status.mcpCleanupCandidates}`,
+    `MCP cleanup auto-cleanable: ${status.mcpCleanupAutoCleanable}`,
+    `MCP cleanup terminated: ${status.mcpCleanupTerminated}`,
+    `MCP cleanup warnings: ${status.mcpCleanupWarnings}`,
+    `Last MCP cleanup: ${status.lastMcpCleanupAt ?? "none"}`,
+    `Stale run reconcile: ${status.staleRunReconcileEnabled ? "on" : "off"}`,
+    `Stale run candidates: ${status.staleRunReconcileCandidates}`,
+    `Stale runs reconciled: ${status.staleRunReconciled}`,
+    `Last stale run reconcile: ${status.lastStaleRunReconcileAt ?? "none"}`,
     status.lastError ? `Last error: ${status.lastError}` : "",
     `Heartbeat file: ${status.heartbeatPath}`,
     `Start command: ${status.command}`
@@ -17305,8 +25141,9 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
   }
 
   if (selected === "openai") {
-    const currentModel = process.env.OPENAI_MODEL || "default";
+    const currentModel = process.env.OPENAI_MODEL || "auto";
     const discovered = await discoverModelIds(() => loadOpenAIModelIds());
+    const tierModels = await loadOpenAITierModelPreview(discovered.models);
     return {
       selected,
       adapter,
@@ -17314,14 +25151,51 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       modelEnv: "OPENAI_MODEL",
       apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_API_KEY),
-      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
       availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "OpenAI model choices are refreshed from the live /v1/models catalog. Use auto to adopt newly available releases without editing Agent Workflow."
+        : "OpenAI model choices will refresh from /v1/models after the API key can list models.",
+      routingConfig: loadRoutingConfig()
+    };
+  }
+  if (selected === "local") {
+    const currentModel = process.env.LOCAL_MODEL_NAME || "auto";
+    const localBaseUrl = process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434/v1";
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(localBaseUrl, process.env.LOCAL_MODEL_API_KEY));
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "compatible",
+      baseModel: currentModel,
+      tierEnvPrefix: "LOCAL_MODEL"
+    });
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "LOCAL_MODEL_NAME",
+      baseUrl: safeDisplayUrl(localBaseUrl),
+      apiKeyConfigured: Boolean(process.env.LOCAL_MODEL_API_KEY),
+      canSelectModel: true,
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
+      availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "Local model choices are refreshed from the localhost /models catalog. Use auto to adopt newly downloaded local models."
+        : "Local model choices will refresh after Ollama, LM Studio, or another localhost runtime exposes /models.",
       routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "byo") {
-    const currentModel = process.env.BYO_MODEL_NAME || undefined;
+    const currentModel = process.env.BYO_MODEL_NAME || "auto";
     const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(process.env.BYO_MODEL_BASE_URL, process.env.BYO_MODEL_API_KEY));
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "compatible",
+      baseModel: currentModel,
+      tierEnvPrefix: "BYO_MODEL"
+    });
     return {
       selected,
       adapter,
@@ -17330,14 +25204,24 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
       apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY),
       canSelectModel: Boolean(process.env.BYO_MODEL_BASE_URL),
-      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
       availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "BYO model choices are refreshed from the endpoint /models catalog. Use auto to adopt newly available local or gateway models."
+        : "BYO model choices will refresh after the endpoint exposes /models.",
       routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "openai-compatible") {
-    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || undefined;
+    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || "auto";
     const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(process.env.OPENAI_COMPATIBLE_BASE_URL, process.env.OPENAI_COMPATIBLE_API_KEY));
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "compatible",
+      baseModel: currentModel,
+      tierEnvPrefix: "OPENAI_COMPATIBLE_MODEL"
+    });
     return {
       selected,
       adapter,
@@ -17346,14 +25230,24 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
       apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
-      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
       availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "OpenAI-compatible model choices are refreshed from the endpoint /models catalog. Use auto to adopt newly available gateway models."
+        : "OpenAI-compatible model choices will refresh after the endpoint exposes /models.",
       routingConfig: loadRoutingConfig()
     };
   }
   if (selected === "bedrock") {
-    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || undefined;
+    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || "auto";
     const discovered = await discoverModelIds(() => loadBedrockModelIds());
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "bedrock",
+      baseModel: currentModel,
+      tierEnvPrefix: "BEDROCK_MODEL"
+    });
     return {
       selected,
       adapter,
@@ -17361,8 +25255,12 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       modelEnv: "BEDROCK_MODEL",
       awsProfile: process.env.AWS_PROFILE || "default",
       canSelectModel: true,
-      availableModels: uniqueSorted([currentModel, ...discovered.models]),
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
       availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "Bedrock model choices are refreshed from ListFoundationModels for your AWS region. Use auto to adopt newly available models without changing Agent Workflow."
+        : "Bedrock model choices will refresh when AWS credentials and region can list foundation models.",
       routingConfig: loadRoutingConfig()
     };
   }
@@ -17377,9 +25275,172 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
   };
 }
 
+async function loadDashboardModelCatalogReport(): Promise<DashboardModelCatalogReport> {
+  const policy = normalizeModelSelectionPolicy(process.env.AGENTFLOW_MODEL_POLICY);
+  const providers = await Promise.all([
+    loadProviderCatalogExplanation({
+      providerId: "openai",
+      label: "OpenAI",
+      configured: Boolean(process.env.OPENAI_API_KEY),
+      catalogProvider: "openai",
+      catalogSource: "OpenAI /v1/models",
+      modelEnv: "OPENAI_MODEL",
+      configuredModel: process.env.OPENAI_MODEL || "auto",
+      apiKeyStatus: process.env.OPENAI_API_KEY ? "configured" : "missing",
+      loadModels: () => loadOpenAIModelIds(),
+      configuredForTier: (tier) => configuredOpenAIModelForTier(tier)
+    }),
+    loadProviderCatalogExplanation({
+      providerId: "byo",
+      label: "BYO / OpenAI-compatible gateway",
+      configured: Boolean(process.env.BYO_MODEL_BASE_URL),
+      catalogProvider: "compatible",
+      catalogSource: `${safeDisplayUrl(process.env.BYO_MODEL_BASE_URL) || "BYO endpoint"}/models`,
+      modelEnv: "BYO_MODEL_NAME",
+      configuredModel: process.env.BYO_MODEL_NAME || "auto",
+      baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
+      apiKeyStatus: process.env.BYO_MODEL_API_KEY ? "configured" : "not required or missing",
+      loadModels: () => loadOpenAICompatibleModelIds(process.env.BYO_MODEL_BASE_URL, process.env.BYO_MODEL_API_KEY),
+      configuredForTier: (tier) => process.env[`BYO_MODEL_${tier.toUpperCase()}`] || process.env.BYO_MODEL_NAME || "auto"
+    }),
+    loadProviderCatalogExplanation({
+      providerId: "openai-compatible",
+      label: "OpenAI-compatible legacy",
+      configured: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      catalogProvider: "compatible",
+      catalogSource: `${safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL) || "OpenAI-compatible endpoint"}/models`,
+      modelEnv: "OPENAI_COMPATIBLE_MODEL",
+      configuredModel: process.env.OPENAI_COMPATIBLE_MODEL || "auto",
+      baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
+      apiKeyStatus: process.env.OPENAI_COMPATIBLE_API_KEY ? "configured" : "not required or missing",
+      loadModels: () => loadOpenAICompatibleModelIds(process.env.OPENAI_COMPATIBLE_BASE_URL, process.env.OPENAI_COMPATIBLE_API_KEY),
+      configuredForTier: (tier) => process.env[`OPENAI_COMPATIBLE_MODEL_${tier.toUpperCase()}`] || process.env.OPENAI_COMPATIBLE_MODEL || "auto"
+    }),
+    loadProviderCatalogExplanation({
+      providerId: "bedrock",
+      label: "AWS Bedrock",
+      configured: hasAwsConfiguration(),
+      catalogProvider: "bedrock",
+      catalogSource: `AWS ListFoundationModels (${process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1"})`,
+      modelEnv: "BEDROCK_MODEL",
+      configuredModel: process.env.BEDROCK_MODEL ?? process.env.BEDROCK_MODEL_ID ?? "auto",
+      apiKeyStatus: awsCredentialStatusLabel(),
+      awsProfile: process.env.AWS_PROFILE || "default",
+      awsRegion: process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1",
+      loadModels: () => loadBedrockModelIds(),
+      configuredForTier: (tier) => process.env[`BEDROCK_MODEL_${tier.toUpperCase()}`] || process.env.BEDROCK_MODEL || process.env.BEDROCK_MODEL_ID || "auto"
+    })
+  ]);
+  return {
+    kind: "agentflow_model_catalog_report",
+    generatedAt: new Date().toISOString(),
+    selectedProvider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
+    modelPolicy: policy,
+    providers
+  };
+}
+
+function fallbackDashboardModelCatalogReport(): DashboardModelCatalogReport {
+  return {
+    kind: "agentflow_model_catalog_report",
+    generatedAt: new Date().toISOString(),
+    selectedProvider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
+    modelPolicy: normalizeModelSelectionPolicy(process.env.AGENTFLOW_MODEL_POLICY),
+    providers: []
+  };
+}
+
+async function loadProviderCatalogExplanation(input: {
+  providerId: DashboardModelCatalogProvider["providerId"];
+  label: string;
+  configured: boolean;
+  catalogProvider: CatalogProviderKind;
+  catalogSource: string;
+  modelEnv: string;
+  configuredModel: string;
+  baseUrl?: string;
+  apiKeyStatus?: string;
+  awsProfile?: string;
+  awsRegion?: string;
+  loadModels: () => Promise<string[]>;
+  configuredForTier: (tier: ModelTier) => string;
+}): Promise<DashboardModelCatalogProvider> {
+  const discovered = input.configured ? await discoverModelIds(input.loadModels) : { models: [] as string[] };
+  const status = !input.configured ? "not configured" : discovered.error ? "missing" : "ready";
+  return {
+    providerId: input.providerId,
+    label: input.label,
+    configured: input.configured,
+    status,
+    catalogSource: input.catalogSource,
+    modelsListed: discovered.models.length,
+    configuredModel: input.configuredModel,
+    modelEnv: input.modelEnv,
+    baseUrl: input.baseUrl,
+    apiKeyStatus: input.apiKeyStatus,
+    awsProfile: input.awsProfile,
+    awsRegion: input.awsRegion,
+    error: discovered.error,
+    tierSelections: (["fast", "standard", "reasoning"] as const).map((tier) =>
+      explainDashboardTierSelection({
+        tier,
+        status,
+        catalogProvider: input.catalogProvider,
+        catalog: discovered.models,
+        configuredModel: input.configuredForTier(tier),
+        modelEnv: input.modelEnv
+      })
+    )
+  };
+}
+
+function explainDashboardTierSelection(input: {
+  tier: ModelTier;
+  status: DashboardModelCatalogProvider["status"];
+  catalogProvider: CatalogProviderKind;
+  catalog: string[];
+  configuredModel: string;
+  modelEnv: string;
+}): DashboardModelTierExplanation {
+  const policy = normalizeModelSelectionPolicy(process.env.AGENTFLOW_MODEL_POLICY);
+  const explanation = explainModelCatalogSelection(input.catalog, input.tier, {
+    provider: input.catalogProvider,
+    policy
+  });
+  const envOverride = input.configuredModel !== "auto";
+  const selectedModel = envOverride ? input.configuredModel : explanation.selectedModel ?? "unavailable";
+  const selectedCandidate = explanation.candidates.find((candidate) => candidate.id === selectedModel);
+  return {
+    tier: input.tier,
+    selectedModel,
+    source: envOverride ? "env" : explanation.selectedModel ? "catalog" : "unavailable",
+    configuredModel: input.configuredModel,
+    estimatedCostClass: estimateCatalogCostClass(selectedModel),
+    policyScore: selectedCandidate?.totalRank ?? null,
+    tierFit: selectedCandidate?.tierRank ?? null,
+    providerAvailability: input.status,
+    overrideSource: envOverride ? `${input.modelEnv}_${input.tier.toUpperCase()} or ${input.modelEnv}` : "auto catalog selection",
+    candidates: explanation.candidates.slice(0, 12).map((candidate) => ({
+      ...candidate,
+      selected: candidate.id === selectedModel
+    })),
+    excludedCount: explanation.candidates.filter((candidate) => !candidate.eligible).length
+  };
+}
+
+function estimateCatalogCostClass(model: string): "low" | "medium" | "high" | "unknown" {
+  const normalized = model.toLowerCase();
+  if (!model || model === "unavailable") return "unknown";
+  if (/luna|mini|nano|lite|small|haiku|flash|speed|instant|8b|7b/u.test(normalized)) return "low";
+  if (/astra|opus|reason|thinking|r1|o\d|405b|large|70b/u.test(normalized)) return "high";
+  if (/terra|sonnet|pro|medium|coder|code|32b|14b/u.test(normalized)) return "medium";
+  return "unknown";
+}
+
 function describeProviderFast(selected: string, adapter: string): DashboardInfo["provider"] {
   const routingConfig = loadRoutingConfig();
   if (selected === "auto") {
+    const openAiConfigured = Boolean(process.env.OPENAI_API_KEY);
     return {
       selected,
       adapter,
@@ -17387,12 +25448,39 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       modelEnv: "AGENTFLOW_PROVIDER_*",
       canSelectModel: false,
       availableModels: [],
-      availableModelsError: "Live provider readiness was skipped for fast page load. Use provider-check for full validation.",
+      availableModelsError: "Live provider readiness was skipped for fast page load. Use provider-check or Providers for full validation.",
+      providerStatuses: [
+        {
+          providerId: "openai",
+          label: "OpenAI",
+          configured: openAiConfigured,
+          status: openAiConfigured ? "ready" : "not configured",
+          model: process.env.OPENAI_MODEL || "auto",
+          apiKeyStatus: openAiConfigured ? "configured" : "missing",
+          details: [openAiConfigured ? "Configured; live tier model catalog is checked on the Providers page." : "OPENAI_API_KEY is not configured."]
+        }
+      ],
+      routingConfig
+    };
+  }
+  if (selected === "local") {
+    const currentModel = process.env.LOCAL_MODEL_NAME || "auto";
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "LOCAL_MODEL_NAME",
+      baseUrl: safeDisplayUrl(process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434/v1"),
+      apiKeyConfigured: Boolean(process.env.LOCAL_MODEL_API_KEY),
+      canSelectModel: true,
+      availableModels: uniqueSorted(["auto", currentModel]),
+      availableModelsError: "Live model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh local tier choices from Ollama, LM Studio, vLLM, or another localhost model catalog.",
       routingConfig
     };
   }
   if (selected === "openai") {
-    const currentModel = process.env.OPENAI_MODEL || "default";
+    const currentModel = process.env.OPENAI_MODEL || "auto";
     return {
       selected,
       adapter,
@@ -17400,13 +25488,14 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       modelEnv: "OPENAI_MODEL",
       apiKeyConfigured: Boolean(process.env.OPENAI_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_API_KEY),
-      availableModels: [currentModel],
+      availableModels: uniqueSorted(["auto", currentModel]),
       availableModelsError: "Live model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh OpenAI tier choices from the live model catalog.",
       routingConfig
     };
   }
   if (selected === "byo") {
-    const currentModel = process.env.BYO_MODEL_NAME || undefined;
+    const currentModel = process.env.BYO_MODEL_NAME || "auto";
     return {
       selected,
       adapter,
@@ -17415,13 +25504,14 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       baseUrl: safeDisplayUrl(process.env.BYO_MODEL_BASE_URL),
       apiKeyConfigured: Boolean(process.env.BYO_MODEL_API_KEY),
       canSelectModel: Boolean(process.env.BYO_MODEL_BASE_URL),
-      availableModels: currentModel ? [currentModel] : [],
+      availableModels: uniqueSorted(["auto", currentModel]),
       availableModelsError: "Live model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh BYO tier choices from the endpoint model catalog.",
       routingConfig
     };
   }
   if (selected === "openai-compatible") {
-    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || undefined;
+    const currentModel = process.env.OPENAI_COMPATIBLE_MODEL || "auto";
     return {
       selected,
       adapter,
@@ -17430,13 +25520,14 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       baseUrl: safeDisplayUrl(process.env.OPENAI_COMPATIBLE_BASE_URL),
       apiKeyConfigured: Boolean(process.env.OPENAI_COMPATIBLE_API_KEY),
       canSelectModel: Boolean(process.env.OPENAI_COMPATIBLE_BASE_URL),
-      availableModels: currentModel ? [currentModel] : [],
+      availableModels: uniqueSorted(["auto", currentModel]),
       availableModelsError: "Live model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh OpenAI-compatible tier choices from the endpoint model catalog.",
       routingConfig
     };
   }
   if (selected === "bedrock") {
-    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || undefined;
+    const currentModel = process.env.BEDROCK_MODEL_ID || process.env.BEDROCK_MODEL || "auto";
     return {
       selected,
       adapter,
@@ -17444,8 +25535,9 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       modelEnv: "BEDROCK_MODEL",
       awsProfile: process.env.AWS_PROFILE || "default",
       canSelectModel: true,
-      availableModels: currentModel ? [currentModel] : [],
+      availableModels: uniqueSorted(["auto", currentModel]),
       availableModelsError: "Live Bedrock model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh Bedrock tier choices from AWS ListFoundationModels.",
       routingConfig
     };
   }
@@ -17463,12 +25555,13 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
 function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "byo,bedrock,openai,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,openai,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
     fallbackProvider: process.env.AGENTFLOW_FALLBACK_PROVIDER ?? "",
-    qualityThreshold: process.env.AGENTFLOW_QUALITY_THRESHOLD ?? "0.62"
+    qualityThreshold: process.env.AGENTFLOW_QUALITY_THRESHOLD ?? "0.62",
+    modelPolicy: normalizeModelSelectionPolicy(process.env.AGENTFLOW_MODEL_POLICY)
   };
 }
 
@@ -17492,8 +25585,15 @@ async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provi
 }
 
 async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
-  const [openai, byo, compatible, bedrock, kiro, mock] = await Promise.all([
+  const [openai, local, byo, compatible, bedrock, kiro, mock] = await Promise.all([
     inspectOpenAIStatus(),
+    inspectOpenAICompatibleStatus({
+      providerId: "local",
+      label: "Local model runtime",
+      baseUrl: process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434/v1",
+      model: process.env.LOCAL_MODEL_NAME,
+      apiKey: process.env.LOCAL_MODEL_API_KEY
+    }),
     inspectOpenAICompatibleStatus({
       providerId: "byo",
       label: "BYO / OpenAI-compatible gateway",
@@ -17508,16 +25608,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       model: process.env.OPENAI_COMPATIBLE_MODEL,
       apiKey: process.env.OPENAI_COMPATIBLE_API_KEY
     }),
-    inspectProviderStatus({
-      providerId: "bedrock",
-      label: "AWS Bedrock",
-      configured: hasAwsConfiguration(),
-      model: process.env.BEDROCK_MODEL ?? process.env.BEDROCK_MODEL_STANDARD ?? process.env.BEDROCK_MODEL_ID,
-      apiKeyStatus: awsCredentialStatusLabel(),
-      awsProfile: process.env.AWS_PROFILE || "default",
-      awsRegion: process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1",
-      alwaysCheck: true
-    }),
+    inspectBedrockStatus(),
     inspectProviderStatus({
       providerId: "kiro",
       label: "Kiro CLI",
@@ -17534,7 +25625,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       details: ["Always available for deterministic local validation."]
     }
   ]);
-  return [openai, byo, compatible, bedrock, kiro, mock];
+  return [openai, local, byo, compatible, bedrock, kiro, mock];
 }
 
 async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
@@ -17545,59 +25636,115 @@ async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provide
       label: "OpenAI",
       configured,
       status: "not configured",
-      model: process.env.OPENAI_MODEL,
+      model: process.env.OPENAI_MODEL || "auto",
       apiKeyStatus: "missing",
       details: ["OPENAI_API_KEY is not configured."]
     };
   }
 
   const discovered = await discoverModelIds(() => loadOpenAIModelIds());
+  const tierModels = await loadOpenAITierModelPreview(discovered.models);
+  const configuredModels = (["fast", "standard", "reasoning"] as const)
+    .map((tier) => configuredOpenAIModelForTier(tier))
+    .filter((model) => model !== "auto");
+  const configuredModelsAvailable = configuredModels.every((model) => discovered.models.includes(model));
   return {
     providerId: "openai",
     label: "OpenAI",
     configured,
-    status: discovered.error ? "missing" : "ready",
-    model: process.env.OPENAI_MODEL || "default",
+    status: discovered.error || !configuredModelsAvailable ? "missing" : "ready",
+    model: process.env.OPENAI_MODEL || "auto",
     apiKeyStatus: "configured",
+    tierModels,
     details: discovered.error
       ? [`Model list check failed: ${discovered.error}`]
-      : [`API key configured. ${discovered.models.length} models listed.`]
+      : !configuredModelsAvailable
+        ? [`Configured OpenAI model not listed: ${configuredModels.filter((model) => !discovered.models.includes(model)).join(", ")}`]
+        : [`API key configured. ${discovered.models.length} models listed. ${formatTierModelPreview(tierModels)}`]
   };
 }
 
 async function inspectOpenAICompatibleStatus(input: {
-  providerId: "byo" | "openai-compatible";
+  providerId: "local" | "byo" | "openai-compatible";
   label: string;
   baseUrl?: string;
   model?: string;
   apiKey?: string;
 }): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
-  const configured = Boolean(input.baseUrl && input.model);
+  const configured = Boolean(input.baseUrl);
   if (!configured) {
     return {
       providerId: input.providerId,
       label: input.label,
       configured,
       status: "not configured",
-      model: input.model,
+      model: input.model || "auto",
       baseUrl: safeDisplayUrl(input.baseUrl),
       apiKeyStatus: input.apiKey ? "configured" : "not required or missing",
-      details: ["Base URL and model name are required before this provider can be routed."]
+      details: ["Base URL is required before this provider can be routed."]
     };
   }
 
   const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(input.baseUrl, input.apiKey));
+  const tierEnvPrefix = input.providerId === "local" ? "LOCAL_MODEL" : input.providerId === "byo" ? "BYO_MODEL" : "OPENAI_COMPATIBLE_MODEL";
+  const baseModel = input.model || "auto";
+  const tierModels = loadGenericTierModelPreview({
+    catalog: discovered.models,
+    provider: "compatible",
+    baseModel,
+    tierEnvPrefix
+  });
+  const configuredModels = (["fast", "standard", "reasoning"] as const)
+    .map((tier) => process.env[`${tierEnvPrefix}_${tier.toUpperCase()}`] || baseModel)
+    .filter((model) => model !== "auto");
+  const configuredModelsAvailable = configuredModels.every((model) => discovered.models.includes(model));
   return {
     providerId: input.providerId,
     label: input.label,
     configured,
-    status: discovered.error ? "missing" : "ready",
-    model: input.model,
+    status: discovered.error || !configuredModelsAvailable ? "missing" : "ready",
+    model: baseModel,
     baseUrl: safeDisplayUrl(input.baseUrl),
     apiKeyStatus: input.apiKey ? "configured" : "not required",
+    tierModels,
     details: discovered.error
       ? [`Model list check failed: ${discovered.error}`]
-      : [`Endpoint reachable. ${discovered.models.length} models listed.`]
+      : !configuredModelsAvailable
+        ? [`Configured model not listed: ${configuredModels.filter((model) => !discovered.models.includes(model)).join(", ")}`]
+        : [`Endpoint reachable. ${discovered.models.length} models listed. ${formatTierModelPreview(tierModels)}`]
+  };
+}
+
+async function inspectBedrockStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
+  const model = process.env.BEDROCK_MODEL ?? process.env.BEDROCK_MODEL_ID ?? "auto";
+  const awsProfile = process.env.AWS_PROFILE || "default";
+  const awsRegion = process.env.BEDROCK_REGION ?? process.env.AWS_REGION ?? "us-east-1";
+  const discovered = await discoverModelIds(() => loadBedrockModelIds());
+  const tierModels = loadGenericTierModelPreview({
+    catalog: discovered.models,
+    provider: "bedrock",
+    baseModel: model,
+    tierEnvPrefix: "BEDROCK_MODEL"
+  });
+  const configuredModels = (["fast", "standard", "reasoning"] as const)
+    .map((tier) => process.env[`BEDROCK_MODEL_${tier.toUpperCase()}`] || model)
+    .filter((item) => item !== "auto");
+  const configuredModelsAvailable = configuredModels.every((item) => discovered.models.includes(item));
+  return {
+    providerId: "bedrock",
+    label: "AWS Bedrock",
+    configured: hasAwsConfiguration(),
+    status: discovered.error || !configuredModelsAvailable ? "missing" : "ready",
+    model,
+    apiKeyStatus: awsCredentialStatusLabel(),
+    awsProfile,
+    awsRegion,
+    tierModels,
+    details: discovered.error
+      ? [`Bedrock model list check failed: ${discovered.error}`]
+      : !configuredModelsAvailable
+        ? [`Configured Bedrock model not listed: ${configuredModels.filter((item) => !discovered.models.includes(item)).join(", ")}`]
+        : [`AWS credential chain can list ${discovered.models.length} foundation models. ${formatTierModelPreview(tierModels)}`]
   };
 }
 
@@ -17686,20 +25833,48 @@ async function discoverModelIds(loader: () => Promise<string[]>): Promise<{ mode
 }
 
 async function loadOpenAIModelIds(): Promise<string[]> {
-  if (!process.env.OPENAI_API_KEY) {
-    return [];
-  }
+  return loadOpenAIModelCatalog();
+}
 
-  const response = await fetch("https://api.openai.com/v1/models", {
-    headers: {
-      authorization: `Bearer ${process.env.OPENAI_API_KEY}`
+async function loadOpenAITierModelPreview(catalog: string[]): Promise<NonNullable<DashboardInfo["provider"]["tierModels"]>> {
+  return Promise.all((["fast", "standard", "reasoning"] as const).map(async (tier) => {
+    const configured = configuredOpenAIModelForTier(tier);
+    if (configured !== "auto") {
+      return { tier, model: configured, source: "env" as const };
     }
+    const model = selectOpenAIModelFromCatalog(catalog, tier);
+    if (model) {
+      return { tier, model, source: "catalog" as const };
+    }
+    try {
+      const resolved = await resolveOpenAIModelForTier(tier);
+      return { tier, model: resolved.model, source: resolved.source };
+    } catch {
+      return { tier, model: "unavailable", source: "unavailable" as const };
+    }
+  }));
+}
+
+function loadGenericTierModelPreview(input: {
+  catalog: string[];
+  provider: "compatible" | "bedrock";
+  baseModel: string;
+  tierEnvPrefix: string;
+}): NonNullable<DashboardInfo["provider"]["tierModels"]> {
+  return (["fast", "standard", "reasoning"] as const).map((tier) => {
+    const configured = process.env[`${input.tierEnvPrefix}_${tier.toUpperCase()}`] || input.baseModel;
+    if (configured !== "auto") {
+      return { tier, model: configured, source: "env" as const };
+    }
+    const model = selectModelFromCatalog(input.catalog, tier, { provider: input.provider });
+    return model
+      ? { tier, model, source: "catalog" as const }
+      : { tier, model: "unavailable", source: "unavailable" as const };
   });
-  if (!response.ok) {
-    throw new Error(`OpenAI models API returned ${response.status}`);
-  }
-  const parsed = await response.json() as { data?: Array<{ id?: string }> };
-  return uniqueSorted(parsed.data?.map((model) => model.id).filter((id): id is string => Boolean(id)) ?? []);
+}
+
+function formatTierModelPreview(tierModels: NonNullable<DashboardInfo["provider"]["tierModels"]>): string {
+  return `Tier models: ${tierModels.map((item) => `${item.tier}=${item.model}${item.source === "catalog" ? " auto" : ""}`).join(", ")}.`;
 }
 
 async function loadOpenAICompatibleModelIds(baseUrl?: string, apiKey?: string): Promise<string[]> {
@@ -17741,6 +25916,9 @@ function modelEnvForProvider(provider: string): string | undefined {
   }
   if (provider === "byo") {
     return "BYO_MODEL_NAME";
+  }
+  if (provider === "local") {
+    return "LOCAL_MODEL_NAME";
   }
   if (provider === "openai-compatible") {
     return "OPENAI_COMPATIBLE_MODEL";
@@ -17789,6 +25967,7 @@ async function updateDashboardRouting(input: {
   reasoningProvider: string;
   fallbackProvider: string;
   qualityThreshold: string;
+  modelPolicy: string;
 }): Promise<DashboardFollowUpResult> {
   const provider = normalizeDashboardProvider(input.provider, { allowBlank: false });
   if (!provider) {
@@ -17804,6 +25983,7 @@ async function updateDashboardRouting(input: {
   const fallbackProvider = normalizeDashboardProvider(input.fallbackProvider, { allowBlank: true });
   const threshold = input.qualityThreshold.trim() || "0.62";
   const parsedThreshold = Number(threshold);
+  const modelPolicy = normalizeModelSelectionPolicy(input.modelPolicy);
 
   if (!fastProvider || !standardProvider || !reasoningProvider || fallbackProvider === undefined) {
     return { ok: false, error: "One or more routing providers are unsupported." };
@@ -17815,12 +25995,13 @@ async function updateDashboardRouting(input: {
   const updates: Record<string, string> = {
     DEFAULT_MODEL_PROVIDER: provider,
     AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "byo,bedrock,openai,openai-compatible,kiro",
+    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,openai,openai-compatible,kiro",
     AGENTFLOW_PROVIDER_FAST: fastProvider,
     AGENTFLOW_PROVIDER_STANDARD: standardProvider,
     AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
     AGENTFLOW_FALLBACK_PROVIDER: fallbackProvider,
-    AGENTFLOW_QUALITY_THRESHOLD: String(parsedThreshold)
+    AGENTFLOW_QUALITY_THRESHOLD: String(parsedThreshold),
+    AGENTFLOW_MODEL_POLICY: modelPolicy
   };
 
   const envPath = configuredEnvPath;
@@ -17840,6 +26021,7 @@ async function updateDashboardRouting(input: {
       `AGENTFLOW_PROVIDER_REASONING=${updates.AGENTFLOW_PROVIDER_REASONING}`,
       `AGENTFLOW_FALLBACK_PROVIDER=${updates.AGENTFLOW_FALLBACK_PROVIDER || "none"}`,
       `AGENTFLOW_QUALITY_THRESHOLD=${updates.AGENTFLOW_QUALITY_THRESHOLD}`,
+      `AGENTFLOW_MODEL_POLICY=${updates.AGENTFLOW_MODEL_POLICY}`,
       "New workflow tasks will use this routing. Already-running workers should be restarted if they need the updated environment.",
       "Open: /providers"
     ].join("\n")
@@ -17872,7 +26054,7 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
     return "";
   }
   const normalized = normalizeProviderRef(trimmed);
-  const supported = new Set(["auto", "mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"]);
+  const supported = new Set(["auto", "mock", "local", "byo", "openai", "openai-compatible", "bedrock", "kiro"]);
   return supported.has(normalized) ? normalized : undefined;
 }
 
@@ -18293,7 +26475,7 @@ async function processDashboardApprovalAction(input: {
   if (!approvalForGate) {
     return { ok: false, error: "Approval was not found or is no longer pending." };
   }
-  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
   const actorRole = normalizeActorRole(input.actorRole, "approver");
   const gate = evaluateRoleGate(project, actorRole, decision === "approved" ? "can_approve_actions" : "can_reject_actions");
   if (!gate.allowed) {
@@ -18341,7 +26523,7 @@ async function approveAndExecuteAction(input: {
   if (!isExecutableApprovalAction(approvalForGate.actionType)) {
     return { ok: false, error: `Approval action type cannot be executed inline: ${approvalForGate.actionType}` };
   }
-  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
   const approvalGate = evaluateRoleGate(project, input.approveActorRole, "can_approve_actions");
   if (!approvalGate.allowed) {
     return { ok: false, error: approvalGate.message };
@@ -18421,7 +26603,7 @@ async function processDashboardBulkApprovalAction(input: {
       executed.push(`${approvalId}: ${approvalOneLineSummary(approvalForGate)}`);
       continue;
     }
-    const project = await loadProjectConfig(approvalForGate.projectRootUri);
+    const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
     const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
     if (!gate.allowed) {
       skipped.push(`${approvalId}: ${gate.message}`);
@@ -18467,6 +26649,582 @@ async function processDashboardBulkApprovalAction(input: {
   };
 }
 
+async function processDashboardApprovalAutopilotAction(input: {
+  project: string;
+  runId: string;
+  limit: string;
+  maxRisk: string;
+  execute: boolean;
+}): Promise<DashboardFollowUpResult> {
+  const result = await runApprovalAutopilot({
+    projectRootUri: input.project.trim() ? path.resolve(process.cwd(), input.project.trim()) : undefined,
+    runId: input.runId.trim() || undefined,
+    limit: parsePositiveInteger(input.limit || "100", 100),
+    maxRisk: parseApprovalAutopilotRisk(input.maxRisk || process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK),
+    execute: input.execute,
+    actor: "approval-autopilot",
+    actorRole: "approver"
+  });
+  return {
+    ok: true,
+    title: input.execute ? "Approval autopilot executed" : "Approval autopilot preview",
+    output: [
+      formatApprovalAutopilotResult(result),
+      "",
+      input.execute
+        ? "Autopilot approved and executed only eligible items at or below the configured risk threshold."
+        : "Preview only. Re-run with Execute enabled to approve and execute eligible items.",
+      "Open: /approvals"
+    ].join("\n")
+  };
+}
+
+async function processDashboardApprovalTriageAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const action = (form.get("action") ?? "").trim();
+  const confirmed = form.get("confirmed") === "on";
+  const project = (form.get("project") ?? "").trim();
+  const limit = parsePositiveInteger(form.get("limit") ?? "100", 100);
+  if (!confirmed) {
+    return { ok: false, error: "Confirm the selected bulk triage action before changing approval records." };
+  }
+  const report = await buildApprovalBacklogReport({
+    status: undefined,
+    projectRootUri: project ? path.resolve(process.cwd(), project) : undefined,
+    limit,
+    staleMinutes: parsePositiveInteger(form.get("staleMinutes") ?? "60", 60)
+  });
+  const retryMissingTool = action === "retry-missing-tools";
+  const dismissCommandFailures = action === "dismiss-command-failures";
+  const dismissReviewedFailures = action === "dismiss-reviewed-failures";
+  if (!retryMissingTool && !dismissCommandFailures && !dismissReviewedFailures) {
+    return { ok: false, error: `Unsupported approval triage action: ${action || "none"}` };
+  }
+  const categories: ApprovalBacklogCategory[] = retryMissingTool
+    ? ["missing_tool", "resolved_missing_tool"]
+    : dismissReviewedFailures
+      ? ["resolved_missing_tool", "command_failed"]
+      : ["command_failed"];
+  const candidates = report.items
+    .filter((item) => item.status === "failed" && categories.includes(item.category) && isExecutableApprovalAction(item.actionType))
+    .slice(0, limit);
+  if (!candidates.length) {
+    return { ok: true, title: "No matching approval backlog items", output: `No ${retryMissingTool ? "missing-tool" : dismissReviewedFailures ? "reviewable failed" : "command failure"} approval items matched this bulk action.` };
+  }
+  const changed: string[] = [];
+  const failed: string[] = [];
+  for (const item of candidates) {
+    const result = retryMissingTool
+      ? await executeApprovedAction({
+        approvalId: item.approvalId,
+        actor: "dashboard-triage",
+        actorRole: "operator"
+      })
+      : await dismissApprovedAction({
+        approvalId: item.approvalId,
+        actor: "dashboard-triage",
+        actorRole: "operator",
+        note: "Reviewed and dismissed from approval backlog triage."
+      });
+    if (result.ok) {
+      changed.push(`${item.approvalId}: ${approvalOneLineSummaryFromBacklog(item)}`);
+    } else {
+      failed.push(`${item.approvalId}: ${result.error}`);
+    }
+  }
+  const title = retryMissingTool ? "Missing-tool approvals retried" : dismissReviewedFailures ? "Reviewed failures dismissed" : "Command failures dismissed";
+  const output = [
+    `Action: ${retryMissingTool ? "retry missing-tool failures" : dismissReviewedFailures ? "dismiss reviewed/not-actionable failures" : "dismiss reviewed command failures"}`,
+    `Matched: ${candidates.length}`,
+    `Changed: ${changed.length}`,
+    `Failed: ${failed.length}`,
+    "",
+    changed.length ? "Changed:" : "Changed: none",
+    ...changed.map((item) => `- ${item}`),
+    ...(failed.length ? ["", "Failures:", ...failed.map((item) => `- ${item}`)] : []),
+    "",
+    "Receipts were recorded by the underlying approval execution or dismissal path.",
+    "Open: /approvals"
+  ].join("\n");
+  return failed.length
+    ? { ok: false, error: output }
+    : { ok: true, title, output };
+}
+
+function approvalOneLineSummaryFromBacklog(item: ApprovalBacklogItem): string {
+  return `${item.actionType} ${truncateMiddle(item.target, 120)}`;
+}
+
+async function runApprovalAutopilot(input: {
+  projectRootUri?: string;
+  runId?: string;
+  limit: number;
+  maxRisk: ApprovalAutopilotRisk;
+  execute: boolean;
+  actor: string;
+  actorRole: string;
+}): Promise<ApprovalAutopilotResult> {
+  const pendingApprovals = await listActionApprovalsForProjectAliases({
+    status: "pending",
+    runId: input.runId,
+    projectRootUri: input.projectRootUri,
+    limit: input.limit
+  });
+  const approvedApprovals = await listActionApprovalsForProjectAliases({
+    status: "approved",
+    runId: input.runId,
+    projectRootUri: input.projectRootUri,
+    limit: input.limit
+  });
+  const approvals = [...pendingApprovals, ...approvedApprovals]
+    .filter((approval, index, list) => list.findIndex((item) => item.id === approval.id) === index)
+    .filter((approval) => approval.status === "pending" || approval.status === "approved" && isExecutableApprovalAction(approval.actionType) && !approval.executedAt)
+    .slice(0, input.limit);
+  const items: ApprovalAutopilotResult["items"] = [];
+  const generatedAt = new Date().toISOString();
+  for (const approval of approvals) {
+    const project = await loadLocalProjectConfig(approval.projectRootUri);
+    const classification = classifyApprovalAutopilotRisk(approval, project);
+    const unavailableCommand = approval.actionType === "local_command"
+      ? await missingApprovalCommandExecutable(approval)
+      : null;
+    const approvedAgeMinutes = approval.status === "approved" ? approvalAgeMinutes(approval, generatedAt) : null;
+    const staleApprovedFileWrite = approval.status === "approved"
+      && approval.actionType === "file_write"
+      && approvedAgeMinutes !== null
+      && approvedAgeMinutes >= 60;
+    const allowedByThreshold = approvalAutopilotRiskRank(classification.risk) <= approvalAutopilotRiskRank(input.maxRisk);
+    if (!classification.eligible || !allowedByThreshold || staleApprovedFileWrite || unavailableCommand) {
+      items.push({
+        approvalId: approval.id,
+        actionType: approval.actionType,
+        target: approval.target,
+        risk: staleApprovedFileWrite || unavailableCommand ? "high" : classification.risk,
+        status: "skipped",
+        summary: unavailableCommand
+          ? `Command executable is not available on this machine: ${unavailableCommand}`
+          : staleApprovedFileWrite
+          ? "Already-approved file write is stale and needs fresh review before execution."
+          : classification.eligible ? "Above autopilot risk threshold." : "Not eligible for approval autopilot.",
+        reasons: [
+          ...classification.reasons,
+          unavailableCommand ? `command not found: ${unavailableCommand}` : "",
+          staleApprovedFileWrite ? `approved file_write is ${Math.floor(approvedAgeMinutes ?? 0)} minute(s) old` : "",
+          allowedByThreshold ? "" : `risk ${classification.risk} is above max ${input.maxRisk}`
+        ].filter(Boolean)
+      });
+      continue;
+    }
+    if (!input.execute) {
+      items.push({
+        approvalId: approval.id,
+        actionType: approval.actionType,
+        target: approval.target,
+        risk: classification.risk,
+        status: "would_execute",
+        summary: approvalOneLineSummary(approval),
+        reasons: classification.reasons
+      });
+      continue;
+    }
+    const result = approval.status === "approved"
+      ? await executeApprovedAction({
+        approvalId: approval.id,
+        actor: input.actor,
+        actorRole: "operator"
+      })
+      : await approveAndExecuteAction({
+        approvalId: approval.id,
+        actor: input.actor,
+        approveActorRole: input.actorRole,
+        executeActorRole: "operator",
+        note: `Autopilot approved and executed: risk=${classification.risk}, max=${input.maxRisk}.`
+      });
+    items.push({
+      approvalId: approval.id,
+      actionType: approval.actionType,
+      target: approval.target,
+      risk: classification.risk,
+      status: result.ok ? "executed" : "failed",
+      summary: result.ok ? result.title : result.error,
+      reasons: result.ok ? classification.reasons : [...classification.reasons, result.error]
+    });
+  }
+  return {
+    kind: "agentflow_approval_autopilot_result",
+    generatedAt: new Date().toISOString(),
+    mode: input.execute ? "execute" : "dry-run",
+    maxRisk: input.maxRisk,
+    scanned: approvals.length,
+    approved: items.filter((item) => item.status === "would_execute" || item.status === "executed").length,
+    executed: items.filter((item) => item.status === "executed").length,
+    skipped: items.filter((item) => item.status === "skipped" || item.status === "failed").length,
+    items
+  };
+}
+
+async function listActionApprovalsForProjectAliases(input: {
+  status?: string;
+  runId?: string;
+  projectRootUri?: string;
+  limit: number;
+}): Promise<DashboardActionApproval[]> {
+  const rootUris = await resolveStorageRootUrisForLocalProject(input.projectRootUri);
+  if (!rootUris) {
+    return listActionApprovals({
+      status: input.status,
+      runId: input.runId,
+      limit: input.limit
+    });
+  }
+  const rows: DashboardActionApproval[] = [];
+  for (const rootUri of rootUris) {
+    const remaining = Math.max(input.limit - rows.length, 0);
+    if (remaining <= 0) break;
+    rows.push(...await listActionApprovals({
+      status: input.status,
+      runId: input.runId,
+      projectRootUri: rootUri,
+      limit: remaining
+    }));
+  }
+  return rows
+    .filter((approval, index, list) => list.findIndex((item) => item.id === approval.id) === index)
+    .slice(0, input.limit);
+}
+
+async function resolveStorageRootUrisForLocalProject(projectRootUri?: string): Promise<string[] | undefined> {
+  if (!projectRootUri?.trim()) {
+    return undefined;
+  }
+  const requestedResolution = await resolveLocalProjectPath(projectRootUri);
+  const localRootUri = path.resolve(requestedResolution.localRootUri);
+  const rootUris = new Set<string>([
+    requestedResolution.storageRootUri,
+    requestedResolution.localRootUri,
+    path.resolve(process.cwd(), projectRootUri)
+  ]);
+  const summaries = await listProjectStorageSummaries(1000).catch(() => []);
+  for (const summary of summaries) {
+    const resolution = await resolveLocalProjectPath(summary.rootUri);
+    if (path.resolve(resolution.localRootUri) === localRootUri) {
+      rootUris.add(summary.rootUri);
+    }
+  }
+  return [...rootUris];
+}
+
+async function missingApprovalCommandExecutable(approval: DashboardActionApproval): Promise<string | null> {
+  const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
+  const executable = firstCommandToken(commandLine);
+  if (!executable) return "unknown";
+  return await commandAvailable(executable) ? null : executable;
+}
+
+function firstCommandToken(commandLine: string): string | null {
+  const match = /"([^"]*)"|'([^']*)'|[^\s]+/u.exec(commandLine.trim());
+  return match ? match[1] ?? match[2] ?? match[0] : null;
+}
+
+function emptyApprovalAutopilotResult(maxRisk: ApprovalAutopilotRisk): ApprovalAutopilotResult {
+  return {
+    kind: "agentflow_approval_autopilot_result",
+    generatedAt: new Date().toISOString(),
+    mode: "execute",
+    maxRisk,
+    scanned: 0,
+    approved: 0,
+    executed: 0,
+    skipped: 0,
+    items: []
+  };
+}
+
+async function buildApprovalBacklogReport(input: {
+  status?: string;
+  projectRootUri?: string;
+  limit: number;
+  staleMinutes: number;
+}): Promise<ApprovalBacklogReport> {
+  const approvals = await listActionApprovalsForProjectAliases({
+    status: input.status,
+    projectRootUri: input.projectRootUri,
+    limit: input.limit
+  });
+  const generatedAt = new Date().toISOString();
+  const projectConfigs = new Map<string, ProjectConfig | null>();
+  const items: ApprovalBacklogItem[] = [];
+  for (const approval of approvals) {
+    const ageMinutes = approvalAgeMinutes(approval, generatedAt);
+    let severity: ApprovalBacklogSeverity = "info";
+    let reason = "No action needed.";
+    let resolvedMissingTool: string | null = null;
+    if (approval.status === "failed" && !isDismissedApproval(approval)) {
+      severity = "error";
+      reason = approval.decisionNote ? `Execution failed: ${approval.decisionNote}` : "Approval execution failed.";
+      if (/spawn\s+\S+\s+ENOENT|command executable is not available|command not found|ENOENT/iu.test(reason)) {
+        const missingExecutable = await missingApprovalCommandExecutable(approval);
+        if (missingExecutable === null) {
+          resolvedMissingTool = firstCommandToken(stringFromRecord(approval.payload, "commandLine") ?? approval.target) ?? "required tool";
+          severity = "warning";
+          reason = `Earlier execution failed because ${resolvedMissingTool} was missing on PATH. ${resolvedMissingTool} is now available; retry if the approval is still relevant, or dismiss it as historical.`;
+        }
+      }
+    } else if (approval.status === "dismissed" || isDismissedApproval(approval)) {
+      severity = "info";
+      reason = approval.decisionNote ?? "Approval was dismissed without execution.";
+    } else if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType) && !approval.executedAt) {
+      severity = "warning";
+      reason = "Approved executable action has not been executed.";
+    } else if ((approval.status === "pending" || approval.status === "approved") && ageMinutes !== null && ageMinutes >= input.staleMinutes) {
+      severity = "warning";
+      reason = `${approval.status} approval is stale after ${Math.floor(ageMinutes)} minute(s).`;
+    } else if (approval.status === "pending") {
+      reason = "Pending approval is waiting for decision.";
+    }
+
+    let autopilotRisk: ApprovalAutopilotRisk | undefined;
+    let autopilotEligible: boolean | undefined;
+    if (approval.status === "pending") {
+      if (!projectConfigs.has(approval.projectRootUri)) {
+        projectConfigs.set(approval.projectRootUri, await loadLocalProjectConfig(approval.projectRootUri).catch(() => null));
+      }
+      const project = projectConfigs.get(approval.projectRootUri);
+      if (project) {
+        const classification = classifyApprovalAutopilotRisk(approval, project);
+        autopilotRisk = classification.risk;
+        autopilotEligible = classification.eligible;
+        if (classification.eligible && severity === "info") {
+          reason = `Pending approval is eligible for approval autopilot as ${classification.risk} risk.`;
+        } else if (!classification.eligible && severity === "info") {
+          severity = "warning";
+          reason = `Pending approval is not autopilot eligible: ${classification.reasons.join(" ")}`;
+        }
+      } else if (severity === "info") {
+        severity = "warning";
+        reason = "Project config could not be loaded for autopilot classification.";
+      }
+    }
+
+    const triage = classifyApprovalBacklogTriage({
+      status: approval.status,
+      actionType: approval.actionType,
+      target: approval.target,
+      reason,
+      resolvedMissingTool: Boolean(resolvedMissingTool)
+    });
+
+    items.push({
+      approvalId: approval.id,
+      status: approval.status,
+      actionType: approval.actionType,
+      target: approval.target,
+      runId: approval.runId,
+      workflowId: approval.workflowId,
+      stageId: approval.stageId,
+      agentId: approval.agentId,
+      projectRootUri: approval.projectRootUri,
+      createdAt: approval.createdAt,
+      updatedAt: approval.updatedAt,
+      ageMinutes,
+      severity,
+      reason,
+      category: triage.category,
+      nextAction: triage.nextAction,
+      autopilotRisk,
+      autopilotEligible
+    });
+  }
+  return {
+    kind: "agentflow_approval_backlog_report",
+    generatedAt,
+    projectRootUri: input.projectRootUri ?? null,
+    statusFilter: input.status ?? null,
+    staleMinutes: input.staleMinutes,
+    scanned: approvals.length,
+    counts: countStrings(approvals.map((approval) => approval.status)),
+    severityCounts: {
+      info: items.filter((item) => item.severity === "info").length,
+      warning: items.filter((item) => item.severity === "warning").length,
+      error: items.filter((item) => item.severity === "error").length
+    },
+    categoryCounts: countStrings(items.map((item) => item.category)) as Record<ApprovalBacklogCategory, number>,
+    items: items.sort((left, right) => approvalBacklogSeverityRank(right.severity) - approvalBacklogSeverityRank(left.severity) || String(right.updatedAt).localeCompare(String(left.updatedAt)))
+  };
+}
+
+function classifyApprovalBacklogTriage(input: {
+  status: string;
+  actionType: string;
+  target: string;
+  reason: string;
+  resolvedMissingTool?: boolean;
+}): { category: ApprovalBacklogCategory; nextAction: string } {
+  const text = `${input.reason}\n${input.target}`.toLowerCase();
+  if (input.status === "executed" || input.status === "dismissed" || input.status === "rejected") {
+    return {
+      category: "historical_info",
+      nextAction: "No action needed. This row is retained for the approval audit trail."
+    };
+  }
+  if (input.actionType === "deployment" || input.actionType === "autonomy") {
+    return {
+      category: "manual_decision",
+      nextAction: "Decision is recorded. Run any deployment or autonomy-changing action separately under project policy."
+    };
+  }
+  if (input.resolvedMissingTool) {
+    return {
+      category: "resolved_missing_tool",
+      nextAction: "The executable is now on PATH. Retry this approval if it is still useful, or dismiss it as historical."
+    };
+  }
+  if (/spawn\s+\S+\s+enoent|command executable is not available|command not found|enoent/u.test(text)) {
+    const missing = /spawn\s+([^\s]+)\s+enoent/u.exec(text)?.[1]
+      ?? /command not found:\s*([^\s]+)/u.exec(text)?.[1]
+      ?? "required tool";
+    return {
+      category: "missing_tool",
+      nextAction: `Install or expose ${missing} on PATH, then retry the approval action.`
+    };
+  }
+  if (/exited with\s+\d+|approved command failed|execution failed/u.test(text) && input.status === "failed") {
+    return {
+      category: "command_failed",
+      nextAction: "Open the run details, fix the failing command or inputs, then retry or dismiss the reviewed failure."
+    };
+  }
+  if (/stale|out of date/u.test(text)) {
+    return {
+      category: "stale_review",
+      nextAction: "Refresh the run evidence before executing, or dismiss if this approval is no longer relevant."
+    };
+  }
+  if (input.status === "approved" && isExecutableApprovalAction(input.actionType)) {
+    return {
+      category: "ready_to_execute",
+      nextAction: "Execute the approved side effect, run approval autopilot, or dismiss it if it is no longer needed."
+    };
+  }
+  return {
+    category: "needs_review",
+    nextAction: "Review the approval reason and choose approve, execute, reject, or dismiss."
+  };
+}
+
+function approvalAgeMinutes(approval: DashboardActionApproval, nowIso: string): number | null {
+  const reference = approval.status === "approved" ? approval.decidedAt ?? approval.updatedAt : approval.updatedAt ?? approval.createdAt;
+  const now = Date.parse(nowIso);
+  const then = Date.parse(reference);
+  if (!Number.isFinite(now) || !Number.isFinite(then)) return null;
+  return Math.max(0, Math.round((now - then) / 60000));
+}
+
+function isDismissedApproval(approval: Pick<DashboardActionApproval, "decisionNote">): boolean {
+  return /Approved action dismissed without execution:/iu.test(approval.decisionNote ?? "");
+}
+
+function approvalBacklogSeverityRank(severity: ApprovalBacklogSeverity): number {
+  if (severity === "error") return 3;
+  if (severity === "warning") return 2;
+  return 1;
+}
+
+function formatApprovalBacklogReport(report: ApprovalBacklogReport): string {
+  const attentionItems = report.items.filter((item) => item.severity !== "info").slice(0, 25);
+  return [
+    "Approval backlog radar",
+    `Project: ${report.projectRootUri ?? "all"}`,
+    `Scanned: ${report.scanned}`,
+    `Counts: ${formatInlineCounts(report.counts) || "none"}`,
+    `Severity: info=${report.severityCounts.info ?? 0} warning=${report.severityCounts.warning ?? 0} error=${report.severityCounts.error ?? 0}`,
+    "",
+    attentionItems.length ? "Attention items:" : "No warning or error approval backlog items found.",
+    ...attentionItems.map((item) => [
+      `- ${item.severity} ${item.status}: ${item.actionType} ${item.target}`,
+      `  id: ${item.approvalId}`,
+      `  run: ${item.runId} ${item.workflowId}`,
+      `  reason: ${item.reason}`,
+      item.autopilotRisk ? `  autopilot: ${item.autopilotEligible ? "eligible" : "blocked"} / ${item.autopilotRisk}` : ""
+    ].filter(Boolean).join("\n"))
+  ].join("\n");
+}
+
+function classifyApprovalAutopilotRisk(approval: DashboardActionApproval, project: ProjectConfig): { eligible: boolean; risk: ApprovalAutopilotRisk; reasons: string[] } {
+  const reasons: string[] = [];
+  if (!isExecutableApprovalAction(approval.actionType)) {
+    return { eligible: false, risk: "high", reasons: [`${approval.actionType} is not an executable local approval action.`] };
+  }
+  if (approval.actionType === "deployment" || approval.actionType === "autonomy" || approval.actionType === "artifact_prune") {
+    return { eligible: false, risk: "high", reasons: [`${approval.actionType} always requires an explicit human decision.`] };
+  }
+  if (approval.actionType === "artifact_archive" || approval.actionType === "artifact_restore") {
+    return { eligible: true, risk: "medium", reasons: [`${approval.actionType} is non-destructive but still policy rechecked at execution.`] };
+  }
+  if (approval.actionType === "local_command") {
+    const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
+    try {
+      assertCommandAllowed(commandLine, project);
+    } catch (error) {
+      return { eligible: false, risk: "high", reasons: [`Policy recheck failed: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+    const normalized = commandLine.toLowerCase();
+    if (/(\bsudo\b|\brm\b|\bgit\s+(reset|clean|checkout)\b|\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\bdeploy\b|\bpublish\b|\bprisma\s+migrate\b|\bdocker\b|\blaunchctl\b)/u.test(normalized)) {
+      return { eligible: false, risk: "high", reasons: ["Command matched a high-risk autopilot deny pattern."] };
+    }
+    if (/^(npm|pnpm|yarn)\s+(test|run\s+(test|typecheck|lint|validate|check|build)|exec\s+tsc)\b/u.test(normalized)) {
+      return { eligible: true, risk: "low", reasons: ["Policy-allowed verification command."] };
+    }
+    return { eligible: true, risk: "medium", reasons: ["Policy-allowed finite local command."] };
+  }
+  if (approval.actionType === "file_write") {
+    const relativePath = stringFromRecord(approval.payload, "relativePath") ?? approval.target;
+    const bytes = numberFromRecord(approval.payload, "bytes") ?? 0;
+    if (/(^|\/)(\.env|\.env\..*|id_rsa|id_ed25519|secrets?|credentials?|token|key)(\/|$)/iu.test(relativePath)) {
+      return { eligible: false, risk: "high", reasons: ["File path looks secret-bearing or credential-related."] };
+    }
+    if (bytes > project.actions.max_write_bytes) {
+      return { eligible: false, risk: "high", reasons: [`Policy recheck failed: payload is ${bytes} bytes, max is ${project.actions.max_write_bytes}.`] };
+    }
+    try {
+      assertFileWriteAllowed(relativePath, "x".repeat(Math.min(bytes || 1, 1024)), project);
+    } catch (error) {
+      return { eligible: false, risk: "high", reasons: [`Policy recheck failed: ${error instanceof Error ? error.message : String(error)}`] };
+    }
+    if (bytes <= 20_000 && /^(\.agent-workflow\/|docs\/|README\.md$|CHANGELOG\.md$)/u.test(relativePath)) {
+      return { eligible: true, risk: "low", reasons: ["Small policy-allowed docs or Agent Workflow-owned file write."] };
+    }
+    return { eligible: true, risk: "medium", reasons: ["Policy-allowed file write below project byte limits."] };
+  }
+  return { eligible: false, risk: "high", reasons: [`Unsupported autopilot action type: ${approval.actionType}`] };
+}
+
+function approvalAutopilotRiskRank(value: ApprovalAutopilotRisk): number {
+  return value === "low" ? 1 : value === "medium" ? 2 : 3;
+}
+
+function parseApprovalAutopilotRisk(value: string | undefined): ApprovalAutopilotRisk {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "low" || normalized === "medium" || normalized === "high" ? normalized : "medium";
+}
+
+function formatApprovalAutopilotResult(result: ApprovalAutopilotResult): string {
+  return [
+    `Approval autopilot: ${result.mode}`,
+    `Max risk: ${result.maxRisk}`,
+    `Scanned: ${result.scanned}`,
+    `Approved: ${result.approved}`,
+    `Executed: ${result.executed}`,
+    `Skipped: ${result.skipped}`,
+    "",
+    ...result.items.map((item) => [
+      `- ${item.status} ${item.risk}: ${item.actionType} ${item.target}`,
+      `  id: ${item.approvalId}`,
+      `  ${item.summary}`,
+      ...item.reasons.map((reason) => `  - ${reason}`)
+    ].join("\n"))
+  ].join("\n");
+}
+
 async function processDashboardApprovalRuleAction(input: {
   approvalId: string;
   target: string;
@@ -18491,7 +27249,7 @@ async function processDashboardApprovalRuleAction(input: {
     return { ok: false, error: "Always approve rules are only supported for local_command and file_write approvals." };
   }
   const actorRole = normalizeActorRole(input.actorRole, "approver");
-  const project = await loadProjectConfig(approvalForGate.projectRootUri);
+  const project = await loadLocalProjectConfig(approvalForGate.projectRootUri);
   const gate = evaluateRoleGate(project, actorRole, "can_approve_actions");
   if (!gate.allowed) {
     return { ok: false, error: gate.message };
@@ -18745,10 +27503,10 @@ async function dismissApprovedAction(input: {
   if (!approval) {
     return { ok: false, error: `Unknown approval: ${input.approvalId}` };
   }
-  if (approval.status !== "approved" && approval.status !== "failed") {
+  if (approval.status !== "approved" && approval.status !== "failed" && approval.status !== "dismissed") {
     return { ok: false, error: `Approval must be approved or failed before dismissal. Current status: ${approval.status}` };
   }
-  const project = await loadProjectConfig(approval.projectRootUri);
+  const project = await loadLocalProjectConfig(approval.projectRootUri);
   const actorRole = input.actorRole ?? project.team.default_actor_role;
   const executionRoleGate = evaluateRoleGate(project, actorRole, "can_execute_approved_actions");
   if (!executionRoleGate.allowed) {
@@ -18759,7 +27517,7 @@ async function dismissApprovedAction(input: {
     : "Approved action dismissed without execution.";
   const dismissed = await markActionApprovalExecution({
     approvalId: approval.id,
-    status: "failed",
+    status: "dismissed",
     actor: input.actor,
     actorRole,
     summary
@@ -18779,7 +27537,7 @@ async function dismissApprovedAction(input: {
       `Role gate: ${executionRoleGate.message}`,
       summary,
       "Receipt recorded; the action was not executed.",
-      "Open: /approvals?status=failed"
+      "Open: /approvals?status=dismissed"
     ].join("\n")
   };
 }
@@ -18809,7 +27567,7 @@ async function executeApprovedAction(input: {
   if (approval.status !== "approved" && approval.status !== "failed") {
     return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
   }
-  const project = await loadProjectConfig(approval.projectRootUri);
+  const project = await loadLocalProjectConfig(approval.projectRootUri);
   const executionRoleGate = evaluateRoleGate(project, input.actorRole ?? project.team.default_actor_role, "can_execute_approved_actions");
   if (!executionRoleGate.allowed) {
     return { ok: false, error: executionRoleGate.message };
@@ -18840,6 +27598,16 @@ async function executeApprovedAction(input: {
     return executeLifecycleApproval({
       approval,
       project,
+      actor: input.actor,
+      actorRole: input.actorRole,
+      executionRoleGate: executionRoleGate.message,
+      separationGate: separationGate.message
+    });
+  }
+
+  if (approval.actionType === "object_mirror") {
+    return executeObjectMirrorApproval({
+      approval,
       actor: input.actor,
       actorRole: input.actorRole,
       executionRoleGate: executionRoleGate.message,
@@ -18882,9 +27650,10 @@ async function executeApprovedAction(input: {
   try {
     if (approval.actionType === "local_command") {
       const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
+      const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
       const result = await executeAllowedCommand({
         commandLine,
-        cwd: approval.projectRootUri,
+        cwd: localProjectRootUri,
         project
       });
       const summary = [
@@ -18939,10 +27708,11 @@ async function executeApprovedAction(input: {
     }
 
     const fileWrite = await loadApprovedFileWrite(approval);
+    const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
     const result = await executeAllowedFileWrite({
       relativePath: fileWrite.path,
       content: fileWrite.content,
-      cwd: approval.projectRootUri,
+      cwd: localProjectRootUri,
       project
     });
     const summary = [
@@ -19247,6 +28017,11 @@ function stringFromRecord(record: Record<string, unknown>, key: string): string 
   return typeof value === "string" ? value : undefined;
 }
 
+function numberFromRecord(record: Record<string, unknown>, key: string): number | undefined {
+  const value = record[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
 function objectFromRecord(record: Record<string, unknown>, key: string): Record<string, unknown> {
   const value = record[key];
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -19268,7 +28043,154 @@ function safeDisplayUrl(value?: string): string | undefined {
   }
 }
 
-function renderDashboardInfoHtml(info: DashboardInfo): string {
+function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSearchParams = new URLSearchParams()): string {
+  const hulkRows = report.hulk.services.map((service) => `
+    <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
+  `).join("");
+  const localRows = report.localServices.map((service) => `
+    <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
+  `).join("");
+  const portRows = report.ports.map((port) => `
+    <tr><td>${escapeHtml(port.label)}<br><span class="muted">:${port.port}</span></td><td><span class="status ${port.status === "listening" ? "completed" : "queued"}">${escapeHtml(port.status)}</span></td><td>${port.pid ? `pid ${port.pid}` : "none"}</td><td>${escapeHtml(port.command || "")}</td></tr>
+  `).join("");
+  const processRows = report.processes.map((processGroup) => `
+    <tr><td>${escapeHtml(processGroup.role)}</td><td><span class="status ${processGroup.status === "ok" ? "completed" : "queued"}">${escapeHtml(processGroup.status)}</span></td><td>${formatNumber(processGroup.count)}</td><td>${processGroup.pids.map((pid) => `<code>${pid}</code>`).join(" ") || "none"}</td><td>${escapeHtml(processGroup.detail)}</td></tr>
+  `).join("");
+  const cleanupRows = report.mcpCleanup.candidates.map((candidate) => `
+    <label class="bulk-approval-row">
+      <input type="checkbox" name="pid" value="${candidate.pid}" checked>
+      <span><strong>PID ${candidate.pid}</strong> parent ${candidate.parentPid ?? "n/a"} · <span class="flag ${candidate.autoCleanable ? "good" : "queued"}">${candidate.autoCleanable ? "auto-cleanable" : candidate.risk}</span><br><span class="muted">age ${candidate.ageMs === null ? "n/a" : escapeHtml(formatDuration(candidate.ageMs))} · session ${escapeHtml(candidate.sessionKey)}</span><br><span class="muted">${escapeHtml(candidate.reason)}</span><br><code>${escapeHtml(compactDashboardText(candidate.command, 220))}</code></span>
+    </label>
+  `).join("");
+  const staleRunRows = report.staleRuns.candidates.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
+      <td><span class="status queued">${escapeHtml(run.runStatus)}</span> -> <span class="status completed">${escapeHtml(run.recommendedStatus)}</span></td>
+      <td>${formatNumber(run.completedTasks)}/${formatNumber(run.totalTasks)} completed<br><span class="muted">${formatNumber(run.cancelledTasks)} cancelled</span></td>
+      <td>${renderDashboardDateTime(run.startedAt, "n/a")}</td>
+      <td>${escapeHtml(compactDashboardText(run.task, 160))}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
+    </tr>
+  `).join("");
+  const containerRows = report.docker.containers.map((container) => `
+    <tr><td>${escapeHtml(container.name)}</td><td>${escapeHtml(container.image)}</td><td>${escapeHtml(container.ports)}</td></tr>
+  `).join("");
+  const mcpStdioRows = report.mcpPipeline.lastStdioEvents.slice(-6).reverse().map((event) => `
+    <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
+  `).join("");
+  const mcpLauncherRows = report.mcpPipeline.lastLauncherEvents.slice(-6).reverse().map((event) => `
+    <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
+  `).join("");
+  const mcpApprovalRows = report.mcpPipeline.approvalDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
+    <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
+  `).join("");
+  const mcpReloadSteps = report.mcpPipeline.clientReload.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
+  const mcpReloadClass = report.mcpPipeline.clientReload.suspectedStalePipe ? "failed" : report.mcpPipeline.smoke.status === "passed" ? "completed" : "queued";
+  const recommendations = report.recommendations.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>Runtime Monitor</h2><span class="muted">Local process inventory plus Hulk/shared storage and localhost fallback health.</span></div>
+      <a class="button secondary" href="/api/runtime-monitor">JSON</a>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Hulk", report.hulk.reachable ? "online" : "attention", report.hulk.host ?? "not configured")}
+      ${metricCard("Local Fallback", report.localServices.every((service) => service.reachable) ? "ready" : "stopped", "localhost storage services")}
+      ${metricCard("Docker", report.docker.status, report.docker.message)}
+      ${metricCard("MCP Processes", report.processes.find((item) => item.role === "mcp")?.count ?? 0, "active local MCP server processes")}
+      ${metricCard("MCP Pipeline", report.mcpPipeline.status, report.mcpPipeline.smoke.status === "passed" ? `${report.mcpPipeline.smoke.toolCount ?? 0} tools verified` : report.mcpPipeline.smoke.message)}
+      ${metricCard("Stale Runs", report.staleRuns.candidateCount, report.staleRuns.autoReconcile.enabled ? "daemon auto-reconcile on" : "manual reconcile")}
+    </div>
+    <div class="meta-grid compact">
+      <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
+      <div><strong>Shared Host Source</strong>${escapeHtml(report.hulk.source)}</div>
+      <div><strong>Storage Host</strong>${escapeHtml(report.storageHost ?? "not configured")}</div>
+      <div><strong>Docker Detail</strong>${escapeHtml(report.docker.message)}</div>
+    </div>
+    <div class="split-grid">
+      <div><h3>Hulk / Shared Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${hulkRows || '<tr><td colspan="3">No shared storage host configured.</td></tr>'}</tbody></table></div></div>
+      <div><h3>Local Fallback Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${localRows}</tbody></table></div></div>
+    </div>
+    <h3>Local Ports</h3>
+    <div class="table-wrap"><table><thead><tr><th>Port</th><th>Status</th><th>PID</th><th>Command</th></tr></thead><tbody>${portRows}</tbody></table></div>
+    <h3>Agent Workflow Processes</h3>
+    <div class="table-wrap"><table><thead><tr><th>Role</th><th>Status</th><th>Count</th><th>PIDs</th><th>Detail</th></tr></thead><tbody>${processRows}</tbody></table></div>
+    <details class="governance-details"${report.staleRuns.candidateCount ? " open" : ""}>
+      <summary>Reconcile Stale Terminal Runs (${formatNumber(report.staleRuns.candidateCount)} candidate${report.staleRuns.candidateCount === 1 ? "" : "s"})</summary>
+      <p class="muted">Repairs parent workflow runs that still show queued/running even though every child task is already terminal. The daemon can do this automatically because it only updates Agent Workflow run bookkeeping and writes a receipt.</p>
+      <div class="meta-grid compact">
+        <div><strong>Daemon Auto Reconcile</strong>${report.staleRuns.autoReconcile.enabled ? "on" : "off"}</div>
+        <div><strong>Limit</strong>${formatNumber(report.staleRuns.autoReconcile.limit)}</div>
+        <div><strong>Preview CLI</strong><code>${escapeHtml(report.staleRuns.previewCommand)}</code></div>
+        <div><strong>Execute CLI</strong><code>${escapeHtml(report.staleRuns.executeCommand)}</code></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Run</th><th>Status</th><th>Tasks</th><th>Started</th><th>Task</th></tr></thead><tbody>${staleRunRows || '<tr><td colspan="5">No stale terminal workflow runs found.</td></tr>'}</tbody></table></div>
+      ${report.staleRuns.candidateCount ? `<form method="post" action="/api/runtime-monitor-action">
+        ${dashboardReturnInput("/server-readiness", params)}
+        <input type="hidden" name="action" value="reconcile-stale-runs">
+        <button type="submit">Reconcile Stale Runs</button>
+      </form>` : ""}
+    </details>
+    <details class="governance-details"${report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status !== "not-run" ? " open" : ""}>
+      <summary>MCP Pipeline (${escapeHtml(report.mcpPipeline.status)})</summary>
+      <p class="muted">Codex starts Agent Workflow MCP on demand over stdio, so zero active MCP processes can be normal between tool calls. This section checks the plugin launcher path instead.</p>
+      <div class="meta-grid compact">
+        <div><strong>Plugin</strong>${report.mcpPipeline.pluginEnabled ? "enabled" : "disabled"}</div>
+        <div><strong>Launcher</strong>${report.mcpPipeline.launcherExists ? "found" : "missing"}${report.mcpPipeline.launcherExecutable ? " / executable" : ""}</div>
+        <div><strong>Repo</strong>${escapeHtml(report.mcpPipeline.resolvedRepo ?? "not resolved")}</div>
+        <div><strong>Built Server</strong>${report.mcpPipeline.serverBuilt ? "yes" : "no"}</div>
+        <div><strong>Last Spawn</strong>${renderDashboardDateTime(report.mcpPipeline.lastSpawnAt)}</div>
+        <div><strong>Last Exit</strong>${renderDashboardDateTime(report.mcpPipeline.lastExitAt)}${report.mcpPipeline.lastExitCode === null ? "" : ` code ${report.mcpPipeline.lastExitCode}`}</div>
+        <div><strong>Smoke</strong>${escapeHtml(report.mcpPipeline.smoke.status)} · ${escapeHtml(report.mcpPipeline.smoke.message)}</div>
+        <div><strong>Smoke CLI</strong><code>${escapeHtml(report.mcpPipeline.smoke.command)}</code></div>
+        <div><strong>Launcher Log</strong><code>${escapeHtml(report.mcpPipeline.launcherLogPath)}</code></div>
+        <div><strong>Stdio Log</strong><code>${escapeHtml(report.mcpPipeline.stdioLogPath)}</code></div>
+      </div>
+      <div class="callout ${mcpReloadClass}">
+        <strong>Codex / IDE Reload Guidance</strong>
+        <p>${escapeHtml(report.mcpPipeline.clientReload.summary)}</p>
+        <ul>${mcpReloadSteps}</ul>
+      </div>
+      <div class="callout queued">
+        <strong>MCP Approval-Call Diagnostics</strong>
+        <p>${escapeHtml(report.mcpPipeline.approvalDiagnostics.summary)}</p>
+        <p><code>${escapeHtml(report.mcpPipeline.approvalDiagnostics.fallbackCommand)}</code></p>
+      </div>
+      <form method="post" action="/api/runtime-monitor-action">
+        ${dashboardReturnInput("/server-readiness", params)}
+        <input type="hidden" name="action" value="check-mcp">
+        <button type="submit">Run MCP Smoke</button>
+      </form>
+      <div class="split-grid">
+        <div><h3>Launcher Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpLauncherRows || '<tr><td colspan="3">No launcher events recorded.</td></tr>'}</tbody></table></div></div>
+        <div><h3>Stdio Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpStdioRows || '<tr><td colspan="3">No stdio events recorded.</td></tr>'}</tbody></table></div></div>
+      </div>
+      <h3>Approval Call Events</h3>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpApprovalRows || '<tr><td colspan="3">No MCP approval calls recorded in the recent log window.</td></tr>'}</tbody></table></div>
+    </details>
+    <details class="governance-details"${report.mcpCleanup.candidateCount ? " open" : ""}>
+      <summary>Cleanup Stale MCP Sessions (${formatNumber(report.mcpCleanup.candidateCount)} candidate${report.mcpCleanup.candidateCount === 1 ? "" : "s"})</summary>
+      <p class="muted">Preview-only by default. These candidates are limited to Agent Workflow MCP commands from this checkout.</p>
+      <div class="meta-grid compact">
+        <div><strong>Daemon Auto Cleanup</strong>${report.mcpCleanup.autoCleanup.enabled ? escapeHtml(report.mcpCleanup.autoCleanup.mode) : "off"}</div>
+        <div><strong>Stale Threshold</strong>${formatNumber(report.mcpCleanup.autoCleanup.staleMinutes)} min</div>
+        <div><strong>Auto-cleanable</strong>${formatNumber(report.mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length)}</div>
+        <div><strong>Preview CLI</strong><code>${escapeHtml(report.mcpCleanup.previewCommand)}</code></div>
+        <div><strong>Execute CLI</strong><code>${escapeHtml(report.mcpCleanup.executeCommand)}</code></div>
+        <div><strong>Auto Low Risk CLI</strong><code>${escapeHtml(`${report.mcpCleanup.executeCommand} --auto-low-risk`)}</code></div>
+      </div>
+      ${cleanupRows ? `<form class="bulk-approval-form" method="post" action="/api/runtime-monitor-action">
+        ${dashboardReturnInput("/server-readiness", params)}
+        <input type="hidden" name="action" value="cleanup-mcp">
+        <div class="bulk-approval-list">${cleanupRows}</div>
+        <label class="checkbox-row"><input type="checkbox" name="confirmed" required> Confirm terminating the selected Agent Workflow MCP candidate processes</label>
+        <button class="danger" type="submit">Terminate Selected MCP Candidates</button>
+      </form>` : `<p>No Agent Workflow MCP cleanup candidates found.</p>`}
+    </details>
+    ${containerRows ? `<details class="governance-details"><summary>Docker Containers</summary><div class="table-wrap"><table><thead><tr><th>Name</th><th>Image</th><th>Ports</th></tr></thead><tbody>${containerRows}</tbody></table></div></details>` : ""}
+    <ul>${recommendations}</ul>
+  </section>`;
+}
+
+function renderDashboardInfoHtml(info: DashboardInfo, params: URLSearchParams = new URLSearchParams()): string {
   const serviceRows = info.services.map((service) => `
     <tr>
       <td>${escapeHtml(service.name)}</td>
@@ -19303,6 +28225,8 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       </div>
       <a class="button secondary" href="/api/settings">JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel">
       <h2>Runtime</h2>
       <div class="meta-grid">
@@ -19326,13 +28250,14 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
       <h2>Enterprise Services</h2>
       <table><thead><tr><th>Service</th><th>Status</th><th>Message</th><th>Required For</th></tr></thead><tbody>${serviceRows}</tbody></table>
     </section>
+    ${renderRuntimeMonitorPanel(info.runtimeMonitor, params)}
     <section class="panel">
       <h2>Local Supervisor</h2>
       ${renderSupervisorStatusHtml(info.supervisor)}
     </section>
     <section class="panel">
       <h2>macOS LaunchAgent</h2>
-      ${renderLaunchAgentStatusHtml(info.launchAgent)}
+      ${renderLaunchAgentStatusHtml(info.launchAgent, params)}
     </section>
     <section class="panel">
       <h2>Background Worker</h2>
@@ -19364,7 +28289,7 @@ function renderDashboardInfoHtml(info: DashboardInfo): string {
 </html>`;
 }
 
-function renderProvidersHtml(info: DashboardInfo): string {
+function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new URLSearchParams()): string {
   const providerRows = [
     ["Selected", info.provider.selected],
     ["Adapter", info.provider.adapter],
@@ -19383,6 +28308,7 @@ function renderProvidersHtml(info: DashboardInfo): string {
     : `<input name="model" value="${escapeHtml(info.provider.model ?? "")}" placeholder="Model name">`;
   const modelSelector = info.provider.canSelectModel ? `
       <form class="inline-form" method="post" action="/api/model">
+        ${dashboardReturnInput("/providers", params)}
         <input type="hidden" name="provider" value="${escapeHtml(info.provider.selected)}">
         ${modelControl}
         <button type="submit">Use Model</button>
@@ -19392,9 +28318,10 @@ function renderProvidersHtml(info: DashboardInfo): string {
     : info.provider.selected === "auto"
       ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
       : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "openai", "bedrock", "byo", "openai-compatible", "kiro", "mock"];
+  const providerIds = ["auto", "local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "openai", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+  const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
   const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
     const selected = value === selectedValue ? " selected" : "";
     return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(value || blankLabel)}</option>`;
@@ -19407,7 +28334,7 @@ function renderProvidersHtml(info: DashboardInfo): string {
       <td>${escapeHtml(provider.label)}<br><span class="muted">${escapeHtml(provider.providerId)}</span></td>
       <td><span class="status ${provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued"}">${escapeHtml(provider.status)}</span></td>
       <td>${provider.configured ? "yes" : "no"}</td>
-      <td>${escapeHtml(provider.model ?? "not set")}</td>
+      <td>${escapeHtml(provider.model ?? "not set")}${provider.tierModels?.length ? `<br><span class="muted">${escapeHtml(formatTierModelPreview(provider.tierModels))}</span>` : ""}</td>
       <td>${escapeHtml(provider.baseUrl ?? "not used")}</td>
       <td>${escapeHtml(provider.apiKeyStatus ?? "not used")}</td>
       <td>${escapeHtml([provider.awsProfile ? `profile: ${provider.awsProfile}` : "", provider.awsRegion ? `region: ${provider.awsRegion}` : ""].filter(Boolean).join(", ") || "not used")}</td>
@@ -19424,12 +28351,17 @@ function renderProvidersHtml(info: DashboardInfo): string {
   const setupCards = [
     {
       title: "OpenAI",
-      detail: "Best default for high-quality hosted development runs.",
-      command: "OPENAI_API_KEY + OPENAI_MODEL"
+      detail: "Best hosted path for high-quality development runs. Use OPENAI_MODEL=auto to refresh from the live catalog.",
+      command: "OPENAI_API_KEY + OPENAI_MODEL=auto"
+    },
+    {
+      title: "Local Runtime",
+      detail: "Best opt-in path for Ollama, LM Studio, or llama.cpp-compatible localhost models.",
+      command: "DEFAULT_MODEL_PROVIDER=local"
     },
     {
       title: "BYO Gateway",
-      detail: "Best cost-control path for Ollama, vLLM, LM Studio, or an internal OpenAI-compatible endpoint.",
+      detail: "Best path for vLLM, LiteLLM, internal routers, or remote OpenAI-compatible gateways.",
       command: "BYO_MODEL_BASE_URL + BYO_MODEL_NAME"
     },
     {
@@ -19443,6 +28375,9 @@ function renderProvidersHtml(info: DashboardInfo): string {
       command: "DEFAULT_MODEL_PROVIDER=auto"
     }
   ].map((card) => `<div class="provider-setup-card"><strong>${escapeHtml(card.title)}</strong><span>${escapeHtml(card.detail)}</span><code>${escapeHtml(card.command)}</code></div>`).join("");
+  const tierModelRows = info.provider.tierModels?.map((item) => `
+    <tr><td>${escapeHtml(item.tier)}</td><td>${escapeHtml(item.model)}</td><td>${escapeHtml(item.source)}</td></tr>
+  `).join("") ?? "";
 
   return `<!doctype html>
 <html>
@@ -19463,6 +28398,8 @@ function renderProvidersHtml(info: DashboardInfo): string {
       </div>
       <a class="button secondary" href="/api/settings">Settings JSON</a>
     </div>
+    ${renderDashboardFlash(params)}
+    ${renderDashboardActionHistory()}
     <section class="panel provider-hero">
       <div class="provider-current">
         <strong>${escapeHtml(info.provider.selected)}</strong>
@@ -19482,10 +28419,15 @@ function renderProvidersHtml(info: DashboardInfo): string {
           <h2>Selected Provider</h2>
           <span class="muted">Secrets are never displayed. New tasks use saved provider values; already-running workers may need a restart.</span>
         </div>
-        <a class="button secondary" href="/settings">Runtime Settings</a>
+        <div class="actions">
+          <a class="button secondary" href="/model-catalog">Explain Catalog</a>
+          <a class="button secondary" href="/settings">Runtime Settings</a>
+        </div>
       </div>
       <div class="meta-grid">${providerRows}</div>
       ${modelSelector}
+      ${info.provider.catalogHint ? `<p class="muted">${escapeHtml(info.provider.catalogHint)}</p>` : ""}
+      ${tierModelRows ? `<h3>Tier Model Preview</h3><table><thead><tr><th>Tier</th><th>Model</th><th>Source</th></tr></thead><tbody>${tierModelRows}</tbody></table>` : ""}
     </section>
     <section class="panel">
       <div class="section-heading">
@@ -19504,6 +28446,7 @@ function renderProvidersHtml(info: DashboardInfo): string {
         </div>
       </div>
       <form class="routing-form" method="post" action="/api/routing">
+        ${dashboardReturnInput("/providers", params)}
         <label>Provider mode
           <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
         </label>
@@ -19525,8 +28468,12 @@ function renderProvidersHtml(info: DashboardInfo): string {
         <label>Quality threshold
           <input name="qualityThreshold" value="${escapeHtml(info.provider.routingConfig.qualityThreshold)}" inputmode="decimal">
         </label>
+        <label>Model policy
+          <select name="modelPolicy">${optionList(modelPolicyIds, info.provider.routingConfig.modelPolicy)}</select>
+        </label>
         <div class="form-actions"><button type="submit">Save Routing</button></div>
       </form>
+      <p class="muted">Model policy affects catalog-backed auto model selection: best-coding favors code-specialized models, balanced favors capable mid-cost models, lowest-cost favors efficient models, and maximum-reasoning favors the strongest available models.</p>
     </section>
     ${autoRouteRows ? `<section class="panel"><h2>Auto Routing Preview</h2><table><thead><tr><th>Tier</th><th>Provider</th><th>Cost</th><th>Reason</th></tr></thead><tbody>${autoRouteRows}</tbody></table></section>` : ""}
     ${providerStatusRows ? `<section class="panel"><div class="section-heading"><div><h2>Available Provider Status</h2><span class="muted">Use this table to see which model paths have keys, local endpoints, CLI login, or AWS credentials available.</span></div></div><table><thead><tr><th>Provider</th><th>Status</th><th>Configured</th><th>Model</th><th>Base URL</th><th>API Key / Auth</th><th>AWS</th><th>Details</th></tr></thead><tbody>${providerStatusRows}</tbody></table><p class="muted">Secrets are never displayed.</p></section>` : ""}
@@ -19535,9 +28482,109 @@ function renderProvidersHtml(info: DashboardInfo): string {
 </html>`;
 }
 
-function renderTuningProposalsHtml(proposalSet: TuningProposalSet): string {
+function renderModelCatalogHtml(report: DashboardModelCatalogReport): string {
+  const providerCards = report.providers.map((provider) => {
+    const tierRows = provider.tierSelections.map((tier) => `
+      <tr>
+        <td>${escapeHtml(tier.tier)}</td>
+        <td>${escapeHtml(tier.selectedModel)}</td>
+        <td>${escapeHtml(tier.source)}</td>
+        <td>${escapeHtml(tier.estimatedCostClass)}</td>
+        <td>${tier.policyScore ?? "n/a"}</td>
+        <td>${tier.tierFit ?? "n/a"}</td>
+        <td>${escapeHtml(tier.overrideSource)}</td>
+      </tr>
+    `).join("");
+    const candidateRows = provider.tierSelections.flatMap((tier) =>
+      tier.candidates.slice(0, 5).map((candidate) => `
+        <tr>
+          <td>${escapeHtml(tier.tier)}</td>
+          <td>${candidate.selected ? "<strong>" : ""}${escapeHtml(candidate.id)}${candidate.selected ? "</strong>" : ""}${!candidate.eligible ? `<br><span class="muted">${escapeHtml(candidate.excludedReason ?? "excluded")}</span>` : ""}</td>
+          <td>${candidate.eligible ? "yes" : "no"}</td>
+          <td>${candidate.tierRank}</td>
+          <td>${candidate.versionRank}</td>
+          <td>${candidate.sizeRank}</td>
+          <td>${candidate.familyRank}</td>
+          <td>${candidate.totalRank}</td>
+        </tr>
+      `)
+    ).join("");
+    const excluded = provider.tierSelections.reduce((sum, tier) => sum + tier.excludedCount, 0);
+    const statusClass = provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued";
+    return `<section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>${escapeHtml(provider.label)}</h2>
+          <span class="muted">${escapeHtml(provider.providerId)} catalog source: ${escapeHtml(provider.catalogSource)}</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(provider.status)}</span>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Configured</strong>${provider.configured ? "yes" : "no"}</div>
+        <div><strong>Models listed</strong>${formatNumber(provider.modelsListed)}</div>
+        <div><strong>Configured model</strong>${escapeHtml(provider.configuredModel)}</div>
+        <div><strong>Model env</strong>${escapeHtml(provider.modelEnv)}</div>
+        <div><strong>API key / auth</strong>${escapeHtml(provider.apiKeyStatus ?? "not used")}</div>
+        <div><strong>AWS</strong>${escapeHtml([provider.awsProfile ? `profile ${provider.awsProfile}` : "", provider.awsRegion ? `region ${provider.awsRegion}` : ""].filter(Boolean).join(", ") || "not used")}</div>
+        <div><strong>Base URL</strong>${escapeHtml(provider.baseUrl ?? "not used")}</div>
+        <div><strong>Excluded candidates</strong>${formatNumber(excluded)}</div>
+      </div>
+      ${provider.error ? `<p class="warn-box">${escapeHtml(provider.error)}</p>` : ""}
+      <h3>Tier Selection</h3>
+      <table><thead><tr><th>Tier</th><th>Selected model</th><th>Source</th><th>Cost class</th><th>Policy score</th><th>Tier fit</th><th>Override source</th></tr></thead><tbody>${tierRows}</tbody></table>
+      <h3>Top Catalog Candidates</h3>
+      <table><thead><tr><th>Tier</th><th>Model</th><th>Eligible</th><th>Tier</th><th>Version</th><th>Size</th><th>Family</th><th>Total</th></tr></thead><tbody>${candidateRows || "<tr><td colspan=\"8\">No catalog candidates listed.</td></tr>"}</tbody></table>
+    </section>`;
+  }).join("");
+  const ready = report.providers.filter((provider) => provider.status === "ready").length;
+  const totalListed = report.providers.reduce((sum, provider) => sum + provider.modelsListed, 0);
+  return `<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Agent Workflow Model Catalog</title>
+  <style>${dashboardCss()}</style>
+</head>
+<body>
+  ${dashboardNav("model-catalog")}
+  <main>
+    <div class="topbar">
+      <div>
+        <a href="/providers">Providers</a>
+        <h1>Model Catalog</h1>
+        <p class="muted">Live explainability for auto model routing. Catalogs refresh from configured providers, then Agent Workflow scores tier fit, provider availability, policy, and override source.</p>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/api/model-catalog">JSON</a>
+        <a class="button secondary" href="/model-catalog">Refresh</a>
+      </div>
+    </div>
+    <section class="panel">
+      <div class="meta-grid">
+        <div><strong>Selected Provider</strong>${escapeHtml(report.selectedProvider)}</div>
+        <div><strong>Model Policy</strong>${escapeHtml(report.modelPolicy)}</div>
+        <div><strong>Ready Providers</strong>${formatNumber(ready)}</div>
+        <div><strong>Models Listed</strong>${formatNumber(totalListed)}</div>
+        <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
+      </div>
+      <p class="muted">Use this page when auto routing surprises you. Env overrides win immediately; otherwise the catalog scorer chooses the best available model for fast, standard, and reasoning tiers.</p>
+    </section>
+    ${providerCards || "<section class=\"panel\"><p>No provider catalog data available. Refresh or open Providers for live readiness checks.</p></section>"}
+  </main>
+</body>
+</html>`;
+}
+
+function renderTuningProposalsHtml(proposalSet: TuningProposalSet, tuningOverlay?: DashboardTuningOverlayStatus): string {
+  const appliedIds = new Set([
+    ...(tuningOverlay?.selectedIds ?? []),
+    ...(tuningOverlay?.appliedProposalIds ?? [])
+  ]);
+  const activeProposals = proposalSet.proposals.filter((proposal) => !appliedIds.has(proposal.id));
+  const appliedCurrentProposals = proposalSet.proposals.filter((proposal) => appliedIds.has(proposal.id));
   const summary = proposalSet.summary.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const rows = proposalSet.proposals.slice(0, 8).map((proposal) => `
+  const rows = activeProposals.slice(0, 8).map((proposal) => `
     <tr>
       <td>${escapeHtml(proposal.id)}<br><span class="flag ${proposal.priority === "high" ? "bad" : proposal.priority === "medium" ? "warn" : "good"}">${escapeHtml(proposal.priority)}</span></td>
       <td>${escapeHtml(proposal.kind)}</td>
@@ -19546,19 +28593,35 @@ function renderTuningProposalsHtml(proposalSet: TuningProposalSet): string {
       <td>${escapeHtml(proposal.patchHint)}</td>
     </tr>
   `).join("");
+  const appliedRows = appliedCurrentProposals.slice(0, 8).map((proposal) => `
+    <tr>
+      <td>${escapeHtml(proposal.id)}<br><span class="flag good">applied</span></td>
+      <td>${escapeHtml(proposal.kind)}</td>
+      <td>${escapeHtml(proposal.workflowId)}<br><span class="muted">${escapeHtml(proposal.stageId)} / ${escapeHtml(proposal.agentId)}</span></td>
+      <td>${escapeHtml(proposal.recommendation)}</td>
+      <td>${escapeHtml(tuningOverlay?.latestAppliedAt ? `Applied ${formatDashboardDateTimeText(tuningOverlay.latestAppliedAt)}` : "Applied in project-local tuning overlay.")}</td>
+    </tr>
+  `).join("");
+  const appliedNotice = appliedCurrentProposals.length
+    ? `<p class="success">${formatNumber(appliedCurrentProposals.length)} current proposal(s) already have project-local tuning overlay/history and are hidden from the active list.</p>`
+    : tuningOverlay?.exists
+      ? `<p class="muted">A tuning overlay exists, but none of the current proposal ids match its applied ids. New evidence may have generated fresh proposals.</p>`
+      : "";
 
   return `
     <ul>${summary}</ul>
+    ${appliedNotice}
     <form class="inline-form" method="post" action="/api/follow-up">
       <input type="hidden" name="action" value="apply-tuning-dry-run">
       <input type="hidden" name="project" value="${escapeHtml(proposalSet.projectRootUri)}">
-      <input name="ids" value="all" aria-label="Proposal ids">
+      <input name="ids" value="${escapeHtml(activeProposals.length ? "all" : "")}" aria-label="Proposal ids" placeholder="No active proposal ids">
       <button type="submit">Dry Run Apply</button>
     </form>
     <table>
       <thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Patch Hint</th></tr></thead>
-      <tbody>${rows || "<tr><td colspan=\"5\">No tuning proposals yet.</td></tr>"}</tbody>
+      <tbody>${rows || "<tr><td colspan=\"5\">No active unapplied tuning proposals.</td></tr>"}</tbody>
     </table>
+    ${appliedRows ? `<details class="governance-details"><summary>Applied Current Proposals</summary><div class="table-wrap"><table><thead><tr><th>ID</th><th>Kind</th><th>Target</th><th>Recommendation</th><th>Status</th></tr></thead><tbody>${appliedRows}</tbody></table></div></details>` : ""}
   `;
 }
 
@@ -19611,7 +28674,7 @@ function renderCostQualityHtml(report: CostQualityReport): string {
       ${metricCard("Quality", report.averageQuality ?? "n/a", `${report.qualityPassCount} pass / ${report.qualityFailCount} review`)}
       ${metricCard("Fallbacks", report.fallbackCount, "retry count")}
       ${metricCard("Latency", `${report.totalLatencyMs}ms`, `avg ${report.averageLatencyMs ?? "n/a"}ms`)}
-      ${metricCard("BYO Savings", report.estimatedByoSavingsStages, "local or low-cost stages")}
+      ${metricCard("Local/BYO Savings", report.estimatedByoSavingsStages, "local or low-cost stages")}
     </div>
     <div class="meta-grid compact">
       <div><strong>Providers</strong>${escapeHtml(formatInlineCounts(report.providerMix))}</div>
@@ -19667,7 +28730,7 @@ function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
     </div>
     <div class="metric-grid">
       ${metricCard("Runs", summary.runsAnalyzed, `${summary.completedRuns} complete / ${summary.failedRuns} failed / ${summary.queuedRuns + summary.runningRuns} active`)}
-      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} BYO or local-compatible`)}
+      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} local/BYO-compatible`)}
       ${metricCard("Avg Latency", summary.averageLatencyMs === null ? "n/a" : formatDuration(summary.averageLatencyMs), `${formatDuration(summary.totalLatencyMs)} total model latency`)}
       ${metricCard("Avg Run Time", summary.averageRunDurationMs === null ? "n/a" : formatDuration(summary.averageRunDurationMs), "completed runs")}
       ${metricCard("Est. Prompt Tokens", formatNumber(summary.estimatedPromptTokens), "compiled brief x routed stages")}
@@ -19697,10 +28760,16 @@ function renderRunUsageEstimateHtml(estimate: RunUsageEstimate): string {
   `;
 }
 
-function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
+function renderWorkerStatusHtml(worker: DashboardWorkerStatus, options: { compact?: boolean } = {}): string {
   const age = worker.ageMs === null ? "n/a" : formatDuration(Math.max(0, worker.ageMs));
   const extraLanes = worker.lanes.filter((lane) => lane.heartbeatPath !== worker.heartbeatPath);
-  return `
+  const activeLanes = worker.lanes.filter((lane) => lane.status === "running").length;
+  const displayedLanes = [
+    ...worker.lanes.filter((lane) => lane.status === "running"),
+    ...worker.lanes.filter((lane) => lane.status !== "running")
+  ].slice(0, 3);
+  const hiddenLanes = Math.max(0, worker.lanes.length - displayedLanes.length);
+  const detail = `
     <div class="meta-grid">
       <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
       <div><strong>Worker ID</strong>${escapeHtml(worker.workerId ?? "none")}</div>
@@ -19719,8 +28788,21 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus): string {
       <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
     </div>
-    ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${worker.lanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
-    ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry.</p>` : ""}
+    ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(displayedLanes.length)} of ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry${hiddenLanes ? `; ${formatNumber(hiddenLanes)} older inactive lane${hiddenLanes === 1 ? "" : "s"} hidden.` : "."}</p>` : ""}
+  `;
+  if (!options.compact) return detail;
+  return `
+    <div class="worker-summary">
+      <div><strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></strong><span>${escapeHtml(workerStatusDetail(worker))}</span></div>
+      <div><strong>${formatNumber(activeLanes || Number(worker.status === "running"))}</strong><span>active lane${(activeLanes || Number(worker.status === "running")) === 1 ? "" : "s"}</span></div>
+      <div><strong>${worker.claimed} / ${worker.completed} / ${worker.failed}</strong><span>last tick</span></div>
+      <div><strong>${escapeHtml(age)}</strong><span>heartbeat age</span></div>
+    </div>
+    <details class="governance-details compact-details">
+      <summary>Worker details and lanes</summary>
+      ${detail}
+    </details>
   `;
 }
 
@@ -19750,7 +28832,7 @@ function renderSupervisorStatusHtml(supervisor: DashboardSupervisorStatus): stri
   `;
 }
 
-function renderLaunchAgentStatusHtml(launchAgent: DashboardLaunchAgentStatus): string {
+function renderLaunchAgentStatusHtml(launchAgent: DashboardLaunchAgentStatus, params: URLSearchParams = new URLSearchParams()): string {
   const statusClass = launchAgent.status === "running" ? "completed" : launchAgent.status === "missing" || launchAgent.status === "unavailable" ? "queued" : launchAgent.status === "error" ? "failed" : "queued";
   const installDisabled = !launchAgent.supported ? " disabled" : "";
   const uninstallDisabled = !launchAgent.supported || !launchAgent.installed ? " disabled" : "";
@@ -19773,10 +28855,12 @@ function renderLaunchAgentStatusHtml(launchAgent: DashboardLaunchAgentStatus): s
     </div>
     <div class="form-actions">
       <form method="post" action="/api/launchagent-action">
+        ${dashboardReturnInput("/settings", params)}
         <input type="hidden" name="action" value="install">
         <button type="submit"${installDisabled}>Install / Refresh</button>
       </form>
       <form method="post" action="/api/launchagent-action">
+        ${dashboardReturnInput("/settings", params)}
         <input type="hidden" name="action" value="uninstall">
         <button class="secondary" type="submit"${uninstallDisabled}>Uninstall</button>
       </form>
@@ -19809,6 +28893,21 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
   const servicesReady = health.services.every((service) => service.reachable);
   const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
   const providerStatus = health.provider === "mock" ? "mock" : health.provider;
+  const pendingApprovalCount = health.pendingApprovals.length;
+  const executableApprovalCount = health.approvedExecutableApprovals.length;
+  const approvalWorkCount = pendingApprovalCount + executableApprovalCount;
+  const approvalValue = pendingApprovalCount
+    ? `${pendingApprovalCount} pending`
+    : executableApprovalCount
+      ? `${executableApprovalCount} ready`
+      : "clear";
+  const approvalDetail = pendingApprovalCount && executableApprovalCount
+    ? `${pendingApprovalCount} need decision, ${executableApprovalCount} approved action${executableApprovalCount === 1 ? "" : "s"} ready to execute`
+    : pendingApprovalCount
+      ? `${pendingApprovalCount} pending decision${pendingApprovalCount === 1 ? "" : "s"}`
+      : executableApprovalCount
+        ? `${executableApprovalCount} approved side effect${executableApprovalCount === 1 ? "" : "s"} awaiting execution`
+        : "No pending or executable approval work";
   return `
     <div class="health-grid">
       ${healthCard({
@@ -19833,11 +28932,25 @@ function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
         href: "/queue"
       })}
       ${healthCard({
+        label: "Approval Work",
+        status: approvalWorkCount > 0 ? "warn" : "good",
+        value: approvalValue,
+        detail: approvalDetail,
+        href: pendingApprovalCount ? "/approvals?status=pending" : executableApprovalCount ? "/approvals?status=approved" : "/approvals"
+      })}
+      ${healthCard({
         label: "Provider",
         status: providerStatus === "mock" ? "warn" : "good",
         value: providerStatus,
         detail: providerStatus === "mock" ? "Mock is useful for smoke tests, not real agent output" : "Configured for live model execution",
         href: "/providers"
+      })}
+      ${healthCard({
+        label: "MCP",
+        status: health.runtimeMonitor.mcpPipeline.status === "ok" ? "good" : "bad",
+        value: health.runtimeMonitor.mcpPipeline.status,
+        detail: health.runtimeMonitor.mcpPipeline.status === "ok" ? "Codex/IDE launcher is configured for on-demand tools" : "MCP launcher or plugin config needs attention",
+        href: "/server-readiness"
       })}
       ${healthCard({
         label: "Storage",
@@ -19916,74 +29029,174 @@ function healthCard(input: { label: string; status: "good" | "warn" | "bad"; val
   return `<a class="health-card ${input.status}" href="${escapeHtml(input.href)}"><strong>${escapeHtml(input.label)}</strong><span>${escapeHtml(input.value)}</span><small>${escapeHtml(input.detail)}</small></a>`;
 }
 
-function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
+function renderDashboardActionCenterHtml(health: DashboardHomeHealth): string {
+  const items = dashboardActionItems(health);
+  const topItems = items.slice(0, 5);
+  const primary = topItems[0];
+  const severity = primary?.severity ?? "good";
+  const summary = primary
+    ? primary.title
+    : "Ready for the next workflow";
+  const detail = primary
+    ? primary.detail
+    : "Services, worker, queue, approvals, and MCP pipeline are in a good state.";
+  const rows = topItems.map((item) => `
+    <div class="command-item ${item.severity}">
+      <div>
+        <strong>${escapeHtml(item.title)}</strong>
+        <span>${escapeHtml(item.detail)}</span>
+      </div>
+      <a class="button secondary" href="${escapeHtml(item.href)}">${escapeHtml(item.action)}</a>
+    </div>
+  `).join("");
+  const queueActive = health.queue.reduce((sum, item) => sum + item.queuedTasks + item.runningTasks, 0);
+  const projectCount = health.projects.length;
+  return `<section class="panel command-center ${severity}">
+    <div class="section-heading">
+      <div>
+        <h2>Command Center</h2>
+        <span class="muted">Highest-value action items first.</span>
+      </div>
+      <div class="actions">
+        <a class="button secondary" href="/approvals">Approvals</a>
+        <a class="button secondary" href="/queue">Queue</a>
+        <a class="button secondary" href="/server-readiness">Runtime</a>
+      </div>
+    </div>
+    <div class="command-summary">
+      <div><strong>${escapeHtml(summary)}</strong><span>${escapeHtml(detail)}</span></div>
+      <div class="command-facts">
+        <a href="/queue"><strong>${formatNumber(queueActive)}</strong><span>active tasks</span></a>
+        <a href="/approvals"><strong>${formatNumber(health.pendingApprovals.length + health.approvedExecutableApprovals.length)}</strong><span>approval work</span></a>
+        <a href="/projects"><strong>${formatNumber(projectCount)}</strong><span>projects</span></a>
+      </div>
+    </div>
+    ${rows ? `<div class="command-list">${rows}</div>` : ""}
+  </section>`;
+}
+
+function dashboardActionItems(health: DashboardHomeHealth): Array<{ severity: "bad" | "warn" | "good"; title: string; detail: string; href: string; action: string }> {
   const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
   const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
   const failedRuns = health.queue.filter((item) => item.runStatus === "failed");
+  const expiredLeases = health.queue.filter((item) => hasExpiredLease(item));
   const missingServices = health.services.filter((service) => !service.reachable);
-  const items: string[] = [];
-
+  const items: Array<{ severity: "bad" | "warn" | "good"; title: string; detail: string; href: string; action: string }> = [];
+  if (failedRuns.length > 0) {
+    items.push({
+      severity: "bad",
+      title: "Review failed workflow runs",
+      detail: `${failedRuns.length} failed run${failedRuns.length === 1 ? " needs" : "s need"} retry, dismissal, or diagnosis.`,
+      href: "/queue",
+      action: "Open Queue"
+    });
+  }
+  if (health.approvedExecutableApprovals.length > 0) {
+    items.push({
+      severity: "warn",
+      title: "Execute approved actions",
+      detail: `${health.approvedExecutableApprovals.length} approved action${health.approvedExecutableApprovals.length === 1 ? " is" : "s are"} ready to execute.`,
+      href: "/approvals?status=approved",
+      action: "Open Approvals"
+    });
+  }
+  if (health.pendingApprovals.length > 0) {
+    items.push({
+      severity: "warn",
+      title: "Decide pending approvals",
+      detail: `${health.pendingApprovals.length} pending approval${health.pendingApprovals.length === 1 ? "" : "s"} may be blocking requested side effects.`,
+      href: "/approvals?status=pending",
+      action: "Review"
+    });
+  }
+  if (expiredLeases.length > 0) {
+    items.push({
+      severity: "bad",
+      title: "Recover expired worker leases",
+      detail: `${expiredLeases.length} run${expiredLeases.length === 1 ? " has" : "s have"} stale leased stage work.`,
+      href: "/queue",
+      action: "Open Queue"
+    });
+  }
   if (health.worker.status !== "running") {
-    items.push(attentionItem({
+    items.push({
+      severity: "bad",
       title: "Start the background worker",
       detail: workerStatusDetail(health.worker),
       href: "/settings",
-      action: "Open Settings"
-    }));
+      action: "Settings"
+    });
   }
   if (health.supervisor.status !== "running") {
-    items.push(attentionItem({
-      title: "Use one-command local dev",
+    items.push({
+      severity: "warn",
+      title: "Restore the local supervisor",
       detail: supervisorStatusDetail(health.supervisor),
       href: "/settings",
-      action: "Open Settings"
-    }));
+      action: "Settings"
+    });
   }
-  if (failedRuns.length > 0) {
-    items.push(attentionItem({
-      title: "Review failed workflow runs",
-      detail: `${failedRuns.length} failed run${failedRuns.length === 1 ? " is" : "s are"} waiting in the queue.`,
-      href: "/queue",
-      action: "Open Queue"
-    }));
-  }
-  if (queuedTasks + runningTasks > 0) {
-    items.push(attentionItem({
-      title: "Process active queue work",
-      detail: `${queuedTasks} queued and ${runningTasks} running stage task${queuedTasks + runningTasks === 1 ? "" : "s"} are active.`,
-      href: "/queue",
-      action: "Open Queue"
-    }));
-  }
-  if (health.provider === "mock") {
-    items.push(attentionItem({
-      title: "Switch away from mock for real output",
-      detail: "Mock is great for validation, but live development runs need OpenAI, BYO, Bedrock, or another configured provider.",
-      href: "/providers",
-      action: "Open Providers"
-    }));
+  if (health.runtimeMonitor.mcpPipeline.status !== "ok") {
+    items.push({
+      severity: "bad",
+      title: "Fix MCP pipeline",
+      detail: health.runtimeMonitor.mcpPipeline.smoke.message,
+      href: "/server-readiness",
+      action: "Runtime"
+    });
   }
   if (missingServices.length > 0) {
-    items.push(attentionItem({
-      title: "Restore enterprise services",
+    items.push({
+      severity: "bad",
+      title: "Restore storage services",
       detail: missingServices.map((service) => service.endpoint.name).join(", "),
-      href: "/settings",
-      action: "Open Settings"
-    }));
+      href: "/server-readiness",
+      action: "Runtime"
+    });
   }
-  if (health.latestFailedRun) {
-    items.push(attentionItem({
+  if (queuedTasks + runningTasks > 0) {
+    items.push({
+      severity: "warn",
+      title: "Track active workflow work",
+      detail: `${queuedTasks} queued and ${runningTasks} running stage task${queuedTasks + runningTasks === 1 ? "" : "s"}.`,
+      href: "/queue",
+      action: "Open Queue"
+    });
+  }
+  if (health.provider === "mock") {
+    items.push({
+      severity: "warn",
+      title: "Switch provider for real output",
+      detail: "Mock mode is test-only; use OpenAI, BYO, Bedrock, or auto for real agent work.",
+      href: "/providers",
+      action: "Providers"
+    });
+  }
+  if (health.latestFailedRun && failedRuns.length === 0) {
+    items.push({
+      severity: "warn",
       title: "Inspect latest failed run",
       detail: compactDashboardText(`${health.latestFailedRun.workflowId}: ${health.latestFailedRun.task}`, 140),
       href: `/run?id=${encodeURIComponent(health.latestFailedRun.id)}`,
       action: "Open Run"
-    }));
+    });
   }
-
   if (!items.length) {
-    return "<p class=\"muted\">No immediate action needed. The worker, storage, queue, and recent runs look healthy.</p>";
+    items.push({
+      severity: "good",
+      title: "Start the next useful workflow",
+      detail: "The system is healthy. Pick a project and run a review, UX pass, or build workflow.",
+      href: "/projects",
+      action: "Projects"
+    });
   }
-  return `<div class="attention-list">${items.join("")}</div>`;
+  return items;
+}
+
+function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
+  const items = dashboardActionItems(health).filter((item) => item.severity !== "good");
+  if (!items.length) return "<p class=\"muted\">No immediate action needed. The worker, storage, queue, approvals, MCP, and recent runs look healthy.</p>";
+  return `<div class="attention-list">${items.map(attentionItem).join("")}</div>`;
 }
 
 function attentionItem(input: { title: string; detail: string; href: string; action: string }): string {
@@ -20023,60 +29236,156 @@ function supervisorStatusDetail(supervisor: DashboardSupervisorStatus): string {
   return "Supervisor heartbeat is stale. Restart with npm run dev:agentflow.";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "info"): string {
+type DashboardIconName =
+  | "activity"
+  | "agent"
+  | "archive"
+  | "brain"
+  | "check"
+  | "chevrons"
+  | "clipboard"
+  | "database"
+  | "download"
+  | "file"
+  | "gauge"
+  | "git"
+  | "grid"
+  | "history"
+  | "info"
+  | "key"
+  | "layers"
+  | "list"
+  | "message"
+  | "package"
+  | "play"
+  | "plus"
+  | "refresh"
+  | "rocket"
+  | "route"
+  | "search"
+  | "server"
+  | "settings"
+  | "shield"
+  | "sparkles"
+  | "trash"
+  | "users"
+  | "warning"
+  | "x";
+
+function dashboardIcon(name: DashboardIconName, label?: string): string {
+  const paths: Record<DashboardIconName, string> = {
+    activity: '<path d="M3 12h4l3-8 4 16 3-8h4"/>',
+    agent: '<path d="M12 8V4"/><rect x="5" y="8" width="14" height="10" rx="2"/><path d="M8 18v2"/><path d="M16 18v2"/><circle cx="9" cy="13" r="1"/><circle cx="15" cy="13" r="1"/>',
+    archive: '<rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/>',
+    brain: '<path d="M9 4a3 3 0 0 0-3 3v1a4 4 0 0 0 0 8v1a3 3 0 0 0 5 2"/><path d="M15 4a3 3 0 0 1 3 3v1a4 4 0 0 1 0 8v1a3 3 0 0 1-5 2"/><path d="M12 5v14"/><path d="M8 9h2"/><path d="M14 9h2"/><path d="M8 15h2"/><path d="M14 15h2"/>',
+    check: '<path d="m5 12 4 4L19 6"/>',
+    chevrons: '<path d="m7 7 5 5-5 5"/><path d="m13 7 5 5-5 5"/>',
+    clipboard: '<rect x="5" y="4" width="14" height="16" rx="2"/><path d="M9 4.5A2 2 0 0 1 11 3h2a2 2 0 0 1 2 1.5V6H9z"/><path d="M9 12h6"/><path d="M9 16h4"/>',
+    database: '<ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/>',
+    download: '<path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>',
+    file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/>',
+    gauge: '<path d="M4 14a8 8 0 1 1 16 0"/><path d="M12 14l4-4"/><path d="M7 14h.01"/><path d="M17 14h.01"/>',
+    git: '<circle cx="6" cy="6" r="2"/><circle cx="18" cy="18" r="2"/><circle cx="18" cy="6" r="2"/><path d="M8 6h8"/><path d="M8 7.5 16.5 16"/>',
+    grid: '<rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/>',
+    history: '<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/><path d="M12 7v5l3 2"/>',
+    info: '<circle cx="12" cy="12" r="9"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    key: '<circle cx="7.5" cy="14.5" r="3.5"/><path d="M10 12 21 1"/><path d="m16 6 2 2"/><path d="m14 8 2 2"/>',
+    layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>',
+    list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+    message: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8"/><path d="M8 13h5"/>',
+    package: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12 4.5 7.7"/><path d="M12 12v9"/><path d="m12 12 7.5-4.3"/>',
+    play: '<path d="M8 5v14l11-7z"/>',
+    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18.5 2.5v3.3h-3.3"/><path d="M5.5 21.5v-3.3h3.3"/>',
+    rocket: '<path d="M5 15c-1.5 1-2 3-2 6 3 0 5-0.5 6-2"/><path d="M9 15 4 10l6-2 6-6c2 0 4 0 6 2 0 2 0 4-2 6l-6 6z"/><path d="M15 9h.01"/>',
+    route: '<circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M8 19h3a3 3 0 0 0 0-6H9a3 3 0 0 1 0-6h7"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/>',
+    server: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/><path d="M8 7h.01"/><path d="M8 17h.01"/>',
+    settings: '<circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2 3.4-.2-.1a1.7 1.7 0 0 0-2 .3l-.4.2-3.6-2.1-.1-.5a1.7 1.7 0 0 0-1.6-1.2h-.4l-1.9-3.3.2-.4a1.7 1.7 0 0 0 0-2.1l-.2-.4 1.9-3.3h.4a1.7 1.7 0 0 0 1.6-1.2l.1-.5 3.6-2.1.4.2a1.7 1.7 0 0 0 2 .3l.2-.1 2 3.4-.1.1a1.7 1.7 0 0 0-.3 1.9l.2.4v4.2z"/>',
+    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-5"/>',
+    sparkles: '<path d="M12 3 10 9l-6 2 6 2 2 6 2-6 6-2-6-2z"/><path d="M19 3v4"/><path d="M21 5h-4"/><path d="M5 17v3"/><path d="M6.5 18.5h-3"/>',
+    trash: '<path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 15h10l1-15"/><path d="M10 11v6"/><path d="M14 11v6"/>',
+    users: '<path d="M16 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',
+    warning: '<path d="m12 3 10 18H2z"/><path d="M12 9v5"/><path d="M12 17h.01"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>'
+  };
+  const accessible = label ? ` role="img" aria-label="${escapeHtml(label)}"` : ' aria-hidden="true"';
+  return `<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"${accessible}>${paths[name]}</svg>`;
+}
+
+function iconLabel(iconName: DashboardIconName, label: string): string {
+  return `${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span>`;
+}
+
+function iconForMetric(label: string): DashboardIconName {
+  const normalized = label.toLowerCase();
+  if (/fail|error|critical|warning|missing|blocked|attention/u.test(normalized)) return "warning";
+  if (/success|healthy|ready|complete|pass|online|matched|trusted/u.test(normalized)) return "check";
+  if (/run|queue|task|worker|active/u.test(normalized)) return "activity";
+  if (/project|source|file|indexed|artifact|archive|backup/u.test(normalized)) return "file";
+  if (/provider|model|route|routing|tier|catalog/u.test(normalized)) return "route";
+  if (/approval|role|govern|auth|trust|policy/u.test(normalized)) return "shield";
+  if (/server|service|storage|database|redis|minio|hulk|sync/u.test(normalized)) return "server";
+  if (/learning|feedback|eval|proposal|optimizer|comparison/u.test(normalized)) return "brain";
+  return "gauge";
+}
+
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Operate",
       items: [
-        ["dashboard", "/", "Dashboard"],
-        ["queue", "/queue", "Queue"],
-        ["approvals", "/approvals", "Approvals"],
-        ["runs", "/runs", "Runs"]
+        ["dashboard", "/", "Dashboard", "grid"],
+        ["queue", "/queue", "Queue", "list"],
+        ["approvals", "/approvals", "Approvals", "shield"],
+        ["runs", "/runs", "Runs", "activity"]
       ]
     },
     {
       label: "Projects",
       items: [
-        ["projects", "/projects", "Projects"],
-        ["agents", "/agents", "Agents"],
-        ["discovery", "/discovery", "Discovery"],
-        ["workflow-graph", "/workflow-graph", "Graph"],
-        ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts"]
+        ["projects", "/projects", "Projects", "file"],
+        ["agents", "/agents", "Agents", "agent"],
+        ["discovery", "/discovery", "Discovery", "search"],
+        ["workflow-graph", "/workflow-graph", "Graph", "git"],
+        ["artifact-lifecycle", "/artifact-lifecycle", "Artifacts", "archive"]
       ]
     },
     {
       label: "Optimize",
       items: [
-        ["evaluations", "/evaluations", "Evaluations"],
-        ["learning", "/learning", "Learning"],
-        ["model-improvement", "/model-improvement", "Model Improve"],
-        ["candidate-comparisons", "/candidate-comparisons", "Comparisons"]
+        ["evaluations", "/evaluations", "Evaluations", "clipboard"],
+        ["learning", "/learning", "Learning", "brain"],
+        ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
+        ["model-improvement", "/model-improvement", "Model Improve", "sparkles"],
+        ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"]
       ]
     },
     {
       label: "Govern",
       items: [
-        ["governance", "/governance", "Governance"],
-        ["approval-rules", "/approval-rules", "Always Approved"],
-        ["roles", "/roles", "Roles"],
-        ["backup-report", "/backup-report", "Backup"],
-        ["server-readiness", "/server-readiness", "Server"],
-        ["bundles", "/bundles", "Bundles"]
+        ["governance", "/governance", "Governance", "shield"],
+        ["approval-rules", "/approval-rules", "Always Approved", "key"],
+        ["roles", "/roles", "Roles", "users"],
+        ["backup-report", "/backup-report", "Backup", "database"],
+        ["server-readiness", "/server-readiness", "Server", "server"],
+        ["bundles", "/bundles", "Bundles", "package"]
       ]
     },
     {
       label: "Setup",
       items: [
-        ["providers", "/providers", "Providers"],
-        ["info", "/settings", "Settings"]
+        ["providers", "/providers", "Providers", "route"],
+        ["model-catalog", "/model-catalog", "Catalog", "layers"],
+        ["info", "/settings", "Settings", "settings"]
       ]
     }
-  ] as const;
+  ] as const satisfies ReadonlyArray<{ label: string; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
   return `<nav class="side-nav" aria-label="Dashboard navigation">
     <strong>Agent Workflow</strong>
     ${groups.map((group) => {
       const activeGroup = group.items.some(([id]) => id === active);
-      return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" href="${href}">${label}</a>`).join("")}</div>`;
+      return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label, iconName]) => `<a class="${active === id ? "active" : ""}" href="${href}">${iconLabel(iconName, label)}</a>`).join("")}</div>`;
     }).join("")}
   </nav>`;
 }
@@ -20095,8 +29404,8 @@ function renderFeedbackHtml(runId: string, report: CostQualityReport): string {
   `;
 }
 
-function metricCard(label: string, value: string | number, detail: string): string {
-  return `<div class="metric"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
+function metricCard(label: string, value: string | number, detail: string, iconName: DashboardIconName = iconForMetric(label)): string {
+  return `<div class="metric"><strong>${dashboardIcon(iconName)}<span>${escapeHtml(label)}</span></strong><span>${escapeHtml(String(value))}</span><small>${escapeHtml(detail)}</small></div>`;
 }
 
 function formatInlineCounts(counts: Record<string, number>): string {
@@ -20109,7 +29418,7 @@ function titleCase(value: string): string {
 }
 
 function isExecutableApprovalAction(actionType: string): boolean {
-  return actionType === "local_command" || actionType === "file_write" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore";
+  return actionType === "local_command" || actionType === "file_write" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
 }
 
 function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
@@ -20354,6 +29663,27 @@ function approvalApprovedActionForms(approvalId: string): string {
   return `<div class="actions">${approvalExecuteForm(approvalId)}${approvalDismissForm(approvalId)}</div>`;
 }
 
+function approvalFailedActionForms(approvalId: string, note: string): string {
+  return `<div class="actions">
+    <p class="muted">${escapeHtml(truncateText(humanizeApprovalFailureText(note), 220))}</p>
+    <form class="approval-form" method="post" action="/api/approval-action">
+      <input type="hidden" name="approvalId" value="${escapeHtml(approvalId)}">
+      <input type="hidden" name="decision" value="execute">
+      <input type="hidden" name="actorRole" value="operator">
+      <button type="submit">${iconLabel("refresh", "Retry")}</button>
+    </form>
+    ${approvalDismissForm(approvalId)}
+  </div>`;
+}
+
+function humanizeApprovalFailureText(value: string): string {
+  const missing = /spawn\s+([^\s]+)\s+ENOENT/iu.exec(value);
+  if (missing) {
+    return value.replace(missing[0], `${missing[1]} was not found on PATH`);
+  }
+  return value.replace(/ENOENT/giu, "missing executable");
+}
+
 function formatApprovalPayload(payload: Record<string, unknown>): string {
   const hash = typeof payload.payloadHash === "string" ? payload.payloadHash.slice(0, 12) : "unknown";
   const bytes = typeof payload.bytes === "number" ? `, ${formatNumber(payload.bytes)} bytes` : "";
@@ -20427,10 +29757,233 @@ function formatOneDecimal(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
+function dashboardResultRunPath(result: DashboardFollowUpResult, fallbackPath: string): string {
+  return result.ok && result.runId ? `/run?id=${encodeURIComponent(result.runId)}` : fallbackPath;
+}
+
+function respondDashboardAction(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  form: URLSearchParams,
+  result: DashboardFollowUpResult,
+  fallbackPath: string
+): void {
+  const returnPath = dashboardActionReturnPath(request, form, fallbackPath);
+  if (!returnPath) {
+    response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderDashboardActionResult(result));
+    return;
+  }
+
+  const target = new URL(returnPath, "http://localhost");
+  target.searchParams.delete("notice");
+  target.searchParams.delete("error");
+  target.searchParams.delete("actionRun");
+  if (result.ok) {
+    target.searchParams.set("notice", truncateText(result.title || "Action completed", 180));
+    if (result.runId) target.searchParams.set("actionRun", result.runId);
+  } else {
+    target.searchParams.set("error", truncateText(result.error || "Action failed", 240));
+  }
+  response.writeHead(303, { location: `${target.pathname}${target.search}${target.hash}` });
+  response.end();
+}
+
+function dashboardActionReturnPath(request: http.IncomingMessage, form: URLSearchParams, fallbackPath: string): string | null {
+  const explicit = form.get("returnTo")?.trim();
+  const explicitPath = explicit ? safeDashboardReturnPath(explicit) : null;
+  if (explicitPath) return explicitPath;
+
+  const referer = request.headers.referer;
+  const refererPath = typeof referer === "string" ? safeDashboardReturnPath(referer) : null;
+  if (refererPath) return refererPath;
+
+  return safeDashboardReturnPath(fallbackPath);
+}
+
+function safeDashboardReturnPath(value: string): string | null {
+  try {
+    const parsed = new URL(value, "http://localhost");
+    if (parsed.origin !== "http://localhost" && parsed.hostname !== "127.0.0.1" && parsed.hostname !== "localhost") {
+      return null;
+    }
+    if (!parsed.pathname.startsWith("/") || parsed.pathname.startsWith("/api/")) {
+      return null;
+    }
+    return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+  } catch {
+    return null;
+  }
+}
+
+function dashboardPagePath(pathname: string, params?: URLSearchParams): string {
+  const query = params?.toString() ?? "";
+  return `${pathname}${query ? `?${query}` : ""}`;
+}
+
+function dashboardReturnInput(pathname: string, params?: URLSearchParams): string {
+  const pathValue = dashboardPagePath(pathname, params);
+  const safePath = safeDashboardReturnPath(pathValue) ?? pathname;
+  return `<input type="hidden" name="returnTo" value="${escapeHtml(safePath)}">`;
+}
+
+function renderDashboardFlash(params: URLSearchParams): string {
+  const notice = params.get("notice");
+  const error = params.get("error");
+  const actionRun = params.get("actionRun");
+  if (!notice && !error) return "";
+  const message = error ?? notice ?? "";
+  const runLink = actionRun ? `<a class="button secondary" href="/run?id=${encodeURIComponent(actionRun)}">Open Run</a>` : "";
+  const historyEntry = {
+    level: error ? "error" : "success",
+    message,
+    path: "",
+    at: ""
+  };
+  return `<section class="panel flash-panel ${error ? "error" : "success"}">
+    <div>
+      <strong>${dashboardIcon(error ? "warning" : "check")}${error ? "Action needs attention" : "Action complete"}</strong>
+      <span>${escapeHtml(message)}</span>
+    </div>
+    ${runLink}
+  </section>
+  <script>
+    (() => {
+      try {
+        const key = "agentflow.dashboard.actions";
+        const entry = ${JSON.stringify(historyEntry)};
+        entry.path = window.location.pathname;
+        entry.at = new Date().toISOString();
+        const current = JSON.parse(window.localStorage.getItem(key) || "[]");
+        const currentList = Array.isArray(current) ? current : [];
+        const isDuplicate = currentList[0]?.level === entry.level && currentList[0]?.message === entry.message && currentList[0]?.path === entry.path;
+        const now = Date.now();
+        const isFresh = (item) => {
+          const at = Date.parse(String(item?.at || ""));
+          if (!Number.isFinite(at)) return false;
+          const maxAgeMs = item?.level === "error" ? 30 * 60 * 1000 : 10 * 60 * 1000;
+          return now - at <= maxAgeMs;
+        };
+        const next = (isDuplicate ? currentList : [entry, ...currentList]).filter(isFresh).slice(0, 5);
+        window.localStorage.setItem(key, JSON.stringify(next));
+      } catch {}
+    })();
+  </script>`;
+}
+
+function renderDashboardActionHistory(): string {
+  return `<section id="dashboard-action-history" class="panel action-history" hidden>
+    <div class="section-heading">
+      <div>
+        <h2>Recent Dashboard Actions</h2>
+        <span class="muted">Browser-local history for this dashboard.</span>
+      </div>
+      <button type="button" class="secondary compact-button" onclick="window.localStorage.removeItem('agentflow.dashboard.actions'); document.getElementById('dashboard-action-history').hidden = true;">Clear</button>
+    </div>
+    <ul></ul>
+  </section>
+  <script>
+    (() => {
+      try {
+        const normalizeActionMessage = (value) => {
+          const message = String(value || "Action completed");
+          const missing = /spawn\\s+([^\\s]+)\\s+ENOENT/i.exec(message);
+          if (missing) return "Missing " + missing[1] + " on PATH";
+          return message.replace(/ENOENT/g, "missing executable");
+        };
+        const panel = document.getElementById("dashboard-action-history");
+        const list = panel?.querySelector("ul");
+        const actions = JSON.parse(window.localStorage.getItem("agentflow.dashboard.actions") || "[]");
+        if (!panel || !list || !Array.isArray(actions) || !actions.length) return;
+        const now = Date.now();
+        const freshActions = actions.filter((item) => {
+          const at = Date.parse(String(item?.at || ""));
+          if (!Number.isFinite(at)) return false;
+          const maxAgeMs = item?.level === "error" ? 30 * 60 * 1000 : 10 * 60 * 1000;
+          return now - at <= maxAgeMs;
+        }).slice(0, 5);
+        window.localStorage.setItem("agentflow.dashboard.actions", JSON.stringify(freshActions));
+        if (!freshActions.length) return;
+        list.innerHTML = freshActions.map((item) => {
+          const level = item.level === "error" ? "error" : "success";
+          const date = item.at ? new Date(item.at).toLocaleString([], { dateStyle: "medium", timeStyle: "short" }) : "unknown time";
+          const message = normalizeActionMessage(item.message)
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          const path = String(item.path || "/")
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;");
+          const marker = level === "error" ? "!" : "OK";
+          return '<li class="' + level + '"><strong><span aria-hidden="true">' + marker + '</span>' + message + '</strong><span>' + path + ' · ' + date + '</span></li>';
+        }).join("");
+        panel.hidden = false;
+      } catch {}
+    })();
+  </script>`;
+}
+
+function renderRunInfoDialog(input: {
+  idSuffix?: string;
+  runId: string;
+  workflowId?: string;
+  status?: string;
+  projectName?: string;
+  projectRootUri?: string;
+  task?: string;
+  startedAt?: string | null;
+  summary?: string[];
+}): string {
+  const dialogId = `run-info-${[input.runId, input.idSuffix].filter(Boolean).join("-").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
+  const rows = [
+    ["Run", input.runId],
+    ["Status", input.status],
+    ["Workflow", input.workflowId],
+    ["Project", input.projectName],
+    ["Project path", input.projectRootUri],
+    ["Started", input.startedAt ? formatDashboardDateTimeText(input.startedAt) : undefined]
+  ].filter(([, value]) => Boolean(value)).map(([label, value]) => `
+    <div><strong>${escapeHtml(label ?? "")}</strong><span>${escapeHtml(String(value))}</span></div>
+  `).join("");
+  const summary = input.summary?.filter(Boolean).length
+    ? `<ul>${input.summary.filter(Boolean).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+    : "<p class=\"muted\">No compact run summary is available for this row yet.</p>";
+  return `<button type="button" class="secondary compact-button" onclick="document.getElementById('${escapeHtml(dialogId)}').showModal()">${iconLabel("info", "Info")}</button>
+    <dialog class="run-info-dialog" id="${escapeHtml(dialogId)}">
+      <div>
+        <div class="section-heading">
+          <div>
+            <h2>Run Info</h2>
+            <span class="muted">${escapeHtml(input.workflowId ?? "workflow")} · ${escapeHtml(input.runId.slice(0, 8))}</span>
+          </div>
+          <form method="dialog"><button class="secondary" type="submit">${iconLabel("x", "Close")}</button></form>
+        </div>
+        <div class="meta-grid compact">${rows}</div>
+        ${input.task ? `<h3>Task</h3><p>${escapeHtml(input.task)}</p>` : ""}
+        <h3>Summary</h3>
+        ${summary}
+        <div class="dialog-actions">
+          <a class="button" href="/run?id=${encodeURIComponent(input.runId)}">${iconLabel("activity", "Open Full Run")}</a>
+          <form method="dialog"><button class="secondary" type="submit">${iconLabel("check", "Stay Here")}</button></form>
+        </div>
+      </div>
+    </dialog>`;
+}
+
 function renderDashboardActionResult(result: DashboardFollowUpResult): string {
+  const actionLinks = `
+    <div class="actions">
+      <a class="button" href="/approvals?status=pending">Pending Approvals</a>
+      <a class="button secondary" href="/approvals?status=approved">Approved</a>
+      <a class="button secondary" href="/approvals?status=executed">Executed</a>
+      <a class="button secondary" href="/queue">Queue</a>
+      <a class="button secondary" href="/">Dashboard</a>
+    </div>
+  `;
   const body = result.ok
-    ? `<h1>${escapeHtml(result.title)}</h1><pre>${escapeHtml(result.output)}</pre>${result.runId ? `<p><a class="button" href="/run?id=${encodeURIComponent(result.runId)}">Open new run</a></p>` : ""}`
-    : `<h1>Action failed</h1><pre>${escapeHtml(result.error)}</pre>`;
+    ? `<section class="panel action-result success"><h1>${escapeHtml(result.title)}</h1>${renderActionResultSummary(result.output)}<pre>${escapeHtml(result.output)}</pre>${result.runId ? `<p><a class="button" href="/run?id=${encodeURIComponent(result.runId)}">Open run</a></p>` : ""}${actionLinks}</section>`
+    : `<section class="panel action-result failed"><h1>Action failed</h1><pre>${escapeHtml(result.error)}</pre>${actionLinks}</section>`;
   return `<!doctype html>
 <html>
 <head>
@@ -20443,10 +29996,26 @@ function renderDashboardActionResult(result: DashboardFollowUpResult): string {
 </html>`;
 }
 
+function renderActionResultSummary(output: string): string {
+  const summaryRows = output.split(/\r?\n/).map((line) => line.trim()).filter((line) =>
+    /^(Approved|Executed|Skipped|Approval requests|Requeued|Affected runs|Queued stages):\s/u.test(line)
+  ).slice(0, 6);
+  if (!summaryRows.length) {
+    return "";
+  }
+  return `<div class="meta-grid compact">${summaryRows.map((line) => {
+    const [label = "Result", ...rest] = line.split(":");
+    return `<div><strong>${escapeHtml(label)}</strong>${escapeHtml(rest.join(":").trim())}</div>`;
+  }).join("")}</div>`;
+}
+
 function dashboardCss(): string {
   return `
-    main { max-width: 1180px; margin: 0 auto; padding: 32px 20px 32px 216px; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
+    :root { color-scheme: light; --nav-width: 204px; --page-gutter: clamp(16px, 2vw, 32px); --radius: 10px; --surface: #fff; --border: #dfe3eb; --shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 8px 24px rgba(15, 23, 42, .04); }
+    *, *::before, *::after { box-sizing: border-box; }
+    html { min-width: 320px; background: #f7f8fb; }
+    main { width: calc(100% - var(--nav-width)); margin-left: var(--nav-width); padding: 32px var(--page-gutter) 48px; }
+    body { margin: 0; min-width: 320px; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #172033; background: #f7f8fb; }
     h1 { font-size: 28px; margin: 0 0 8px; }
     h2 { font-size: 16px; margin: 0 0 12px; }
     h3 { font-size: 14px; margin: 16px 0 8px; }
@@ -20461,27 +30030,64 @@ function dashboardCss(): string {
     .lifecycle-help { margin-top: 14px; border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
     .lifecycle-help summary { cursor: pointer; font-weight: 700; color: #172033; }
     .lifecycle-help pre { margin-bottom: 0; }
-    .side-nav { position: fixed; inset: 0 auto 0 0; width: 176px; background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 12px; z-index: 10; overflow-y: auto; }
+    .side-nav { position: fixed; inset: 0 auto 0 0; width: var(--nav-width); background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 12px; z-index: 10; overflow-y: auto; }
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 2px; }
     .nav-section { display: grid; gap: 4px; }
     .nav-section span { color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; padding: 0 10px; }
     .nav-section.active-group { border-left: 2px solid #60a5fa; padding-left: 6px; margin-left: -8px; }
     .nav-section.active-group span { color: #bfdbfe; }
-    .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; }
+    .side-nav a { color: #cbd5e1; padding: 9px 10px; border: 1px solid transparent; display: flex; align-items: center; gap: 9px; min-height: 38px; }
+    .side-nav a .icon { color: #94a3b8; }
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
-    .capture-page main { max-width: 1440px; padding: 24px; }
+    .side-nav a:hover .icon, .side-nav a.active .icon { color: #93c5fd; }
+    .capture-page main { width: 100%; max-width: none; margin-left: 0; padding: 24px; }
     .capture-page .panel { break-inside: avoid; }
     .capture-page .capture-hide { display: none !important; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
-    .panel { background: white; border: 1px solid #e2e7f0; padding: 16px; margin-bottom: 16px; }
+    .panel { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: clamp(16px, 1.5vw, 24px); margin-bottom: 18px; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .quick-actions { margin-top: 12px; }
-    .button, button { appearance: none; border: 1px solid #1d4ed8; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease, transform .15s ease; }
+    .row-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+    .button, button { appearance: none; border: 1px solid #1d4ed8; border-radius: 6px; background: #1d4ed8; color: white; padding: 8px 11px; font-size: 14px; font-weight: 600; cursor: pointer; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, color .15s ease, transform .15s ease; display: inline-flex; align-items: center; justify-content: center; gap: 7px; line-height: 1.2; }
     .button:hover, button:hover { background: #1e40af; border-color: #1e40af; box-shadow: 0 1px 3px rgba(29, 78, 216, .22); }
+    .icon { flex: 0 0 auto; width: 16px; height: 16px; color: currentColor; }
+    h1 .icon, h2 .icon, h3 .icon { width: 18px; height: 18px; }
     .button:focus-visible, button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
-    input, select, textarea { border: 1px solid #cbd5e1; padding: 8px 10px; font-size: 14px; min-width: 180px; background: white; font: inherit; }
-    .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
-    .worker-form { display: inline-flex; }
+    .compact-button { padding: 5px 8px; min-height: 28px; font-size: 12px; }
+    .flash-panel { display: flex; justify-content: space-between; align-items: center; gap: 14px; border-left: 4px solid #2563eb; }
+    .flash-panel.success { border-left-color: #16a34a; background: #f0fdf4; }
+    .flash-panel.error { border-left-color: #dc2626; background: #fef2f2; }
+    .flash-panel div { display: grid; gap: 4px; }
+    .flash-panel strong { color: #172033; display: inline-flex; align-items: center; gap: 7px; }
+    .flash-panel span { color: #475569; line-height: 1.4; }
+    .callout { border: 1px solid #bfdbfe; background: #eff6ff; padding: 12px; margin: 12px 0; display: grid; gap: 8px; }
+    .callout strong { color: #172033; }
+    .callout p { margin: 0; color: #475569; }
+    .callout.completed { border-color: #bbf7d0; background: #f0fdf4; }
+    .callout.queued { border-color: #fde68a; background: #fffbeb; }
+    .callout.failed { border-color: #fecaca; background: #fef2f2; }
+    .action-history { padding-top: 14px; padding-bottom: 14px; }
+    .action-history ul { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 8px; padding-left: 0; list-style: none; }
+    .action-history li { border: 1px solid #e2e7f0; background: #f8fafc; padding: 10px; display: grid; gap: 4px; }
+    .action-history li.success { border-color: #bbf7d0; background: #f0fdf4; }
+    .action-history li.error { border-color: #fecaca; background: #fef2f2; }
+    .action-history li strong { font-size: 13px; color: #172033; line-height: 1.3; display: inline-flex; align-items: center; gap: 7px; }
+    .action-history li span { color: #64748b; font-size: 12px; line-height: 1.3; }
+    .run-info-dialog { width: min(720px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 8px; padding: 0; color: #172033; box-shadow: 0 24px 70px rgba(15, 23, 42, .28); }
+    .run-info-dialog::backdrop { background: rgba(15, 23, 42, .42); }
+    .run-info-dialog > div { padding: 20px; }
+    .run-info-dialog p { margin: 0 0 12px; }
+    .run-info-dialog ul { display: grid; gap: 6px; margin-bottom: 14px; }
+    .dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+	    input, select, textarea { border: 1px solid #cbd5e1; border-radius: 6px; padding: 9px 11px; font-size: 14px; min-width: 0; max-width: 100%; background: white; font: inherit; }
+	    .feedback-form { display: flex; gap: 6px; flex-wrap: wrap; }
+	    .feedback-row-actions { display: grid; gap: 8px; min-width: 210px; }
+	    .compact-feedback-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+	    .compact-feedback-form input { min-width: 0; width: 100%; box-sizing: border-box; }
+	    .compact-feedback-form button { white-space: nowrap; }
+	    .recommended-feedback { display: grid; gap: 6px; padding: 8px; margin-bottom: 8px; border: 1px solid #bfdbfe; background: #eff6ff; }
+	    .recommended-feedback strong { font-size: 12px; color: #1d4ed8; text-transform: uppercase; }
+	    .worker-form { display: inline-flex; }
     .dismiss-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
     .dismiss-form input { min-width: 140px; max-width: 190px; }
     .approval-form { display: inline-flex; gap: 6px; flex-wrap: wrap; }
@@ -20506,7 +30112,7 @@ function dashboardCss(): string {
     .inline-action-form { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 10px 0 16px; padding: 10px; border: 1px solid #e2e7f0; background: #f8fafc; }
     .checkbox-label { display: inline-flex; align-items: center; gap: 8px; color: #172033; font-size: 13px; font-weight: 700; }
     .checkbox-label input { min-width: 0; width: auto; }
-    .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; margin: 12px 0; align-items: end; }
+    .routing-form, .workflow-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(210px, 100%), 1fr)); gap: 12px; margin: 12px 0; align-items: end; }
     .routing-form label, .workflow-form label { display: grid; gap: 5px; color: #4b5870; font-size: 12px; font-weight: 700; text-transform: uppercase; }
     .routing-form input, .routing-form select, .workflow-form input, .workflow-form select, .workflow-form textarea { width: 100%; min-width: 0; box-sizing: border-box; color: #172033; font-weight: 400; text-transform: none; }
     .workflow-form .check-row { display: flex; align-items: center; gap: 8px; min-height: 36px; }
@@ -20519,7 +30125,7 @@ function dashboardCss(): string {
     .warn-panel { border-color: #fcd34d; background: #fffbeb; }
     .section-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
     .section-heading div { display: grid; gap: 4px; }
-    .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+    .health-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(170px, 100%), 1fr)); gap: 10px; }
     .health-card { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 5px; color: #172033; background: #fff; min-height: 104px; }
     .health-card strong { font-size: 12px; color: #4b5870; text-transform: uppercase; }
     .health-card span { font-size: 22px; font-weight: 700; }
@@ -20527,8 +30133,29 @@ function dashboardCss(): string {
     .health-card.good { border-color: #bbf7d0; background: #f0fdf4; }
     .health-card.warn { border-color: #fde68a; background: #fffbeb; }
     .health-card.bad { border-color: #fecaca; background: #fef2f2; }
+    .command-center { border-left: 4px solid #2563eb; }
+    .command-center.good { border-left-color: #16a34a; }
+    .command-center.warn { border-left-color: #d97706; }
+    .command-center.bad { border-left-color: #dc2626; }
+    .command-summary { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(260px, .9fr); gap: 14px; align-items: stretch; margin-bottom: 12px; }
+    .command-summary > div:first-child { border: 1px solid #dbe4f0; background: #f8fafc; padding: 14px; display: grid; gap: 6px; align-content: center; }
+    .command-summary strong { color: #172033; font-size: 20px; line-height: 1.2; }
+    .command-summary span { color: #64748b; line-height: 1.4; }
+    .command-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .command-facts a { border: 1px solid #e2e7f0; background: white; padding: 12px; display: grid; gap: 4px; color: #172033; }
+    .command-facts a:hover { border-color: #93c5fd; background: #eff6ff; }
+    .command-facts strong { font-size: 22px; }
+    .command-facts span { font-size: 12px; color: #64748b; }
+    .command-list { display: grid; gap: 8px; }
+    .command-item { display: flex; justify-content: space-between; gap: 12px; align-items: center; border: 1px solid #e2e7f0; background: #fff; padding: 12px; }
+    .command-item div { display: grid; gap: 4px; min-width: 0; }
+    .command-item strong { color: #172033; line-height: 1.3; }
+    .command-item span { color: #64748b; line-height: 1.35; }
+    .command-item.good { border-color: #bbf7d0; background: #f0fdf4; }
+    .command-item.warn { border-color: #fde68a; background: #fffbeb; }
+    .command-item.bad { border-color: #fecaca; background: #fef2f2; }
     .operations-panel { border-color: #cbd5e1; }
-    .ops-strip { display: grid; grid-template-columns: minmax(260px, 1.7fr) repeat(5, minmax(104px, 1fr)); gap: 10px; }
+    .ops-strip { display: grid; grid-template-columns: minmax(220px, 1.7fr) repeat(5, minmax(104px, 1fr)); gap: 10px; }
     .ops-strip > div, .ops-strip > a { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; min-height: 72px; align-content: center; color: #172033; transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .15s ease; }
     .ops-strip > a:hover { border-color: #93c5fd; background: #eff6ff; box-shadow: 0 6px 18px rgba(37, 99, 235, .12); transform: translateY(-1px); }
     .ops-strip strong { color: #172033; font-size: 20px; line-height: 1.15; }
@@ -20541,12 +30168,17 @@ function dashboardCss(): string {
     .ops-action .worker-form { display: flex; flex-wrap: wrap; gap: 6px; }
     .ops-action .worker-form input { min-width: 64px; max-width: 84px; padding: 7px 8px; }
     .ops-action .worker-form button { padding: 7px 9px; }
+    .worker-summary { display: grid; grid-template-columns: minmax(260px, 1.6fr) repeat(3, minmax(120px, 1fr)); gap: 10px; }
+    .worker-summary > div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; align-content: center; min-height: 72px; }
+    .worker-summary strong { color: #172033; font-size: 18px; line-height: 1.2; }
+    .worker-summary span { color: #64748b; font-size: 12px; line-height: 1.35; }
+    .compact-details { margin-top: 12px; }
     .provider-hero { display: grid; grid-template-columns: minmax(240px, 1.15fr) minmax(0, 2fr); gap: 12px; align-items: stretch; }
     .provider-current { border: 1px solid #bfdbfe; background: #eff6ff; padding: 14px; display: grid; gap: 6px; align-content: center; }
     .provider-current strong { color: #1d4ed8; font-size: 28px; line-height: 1.1; }
     .provider-current span { color: #172033; font-weight: 700; }
     .provider-current small { color: #475569; line-height: 1.35; }
-    .provider-readiness { display: grid; grid-template-columns: repeat(4, minmax(110px, 1fr)); gap: 10px; }
+    .provider-readiness { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(140px, 100%), 1fr)); gap: 10px; }
     .provider-readiness div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; align-content: center; }
     .provider-readiness strong { color: #172033; font-size: 20px; line-height: 1.15; }
     .provider-readiness span { color: #64748b; font-size: 12px; line-height: 1.3; }
@@ -20563,14 +30195,44 @@ function dashboardCss(): string {
     .stage-delta-card.good { border-color: #86efac; background: #f0fdf4; }
     .stage-delta-card.warn { border-color: #fde68a; background: #fffbeb; }
     .stage-delta-card.bad { border-color: #fca5a5; background: #fef2f2; }
+    .decision-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(250px, 100%), 1fr)); gap: 12px; }
+    .decision-card { border: 1px solid #dbe4f0; background: #f8fafc; padding: 14px; display: grid; gap: 8px; align-content: start; min-height: 160px; }
+    .decision-card.good { border-color: #bbf7d0; background: #f0fdf4; }
+    .decision-card.warn { border-color: #fde68a; background: #fffbeb; }
+    .decision-card.bad { border-color: #fecaca; background: #fef2f2; }
+    .decision-card strong { color: #172033; font-size: 14px; }
+    .decision-card p { margin: 0; color: #475569; font-size: 13px; line-height: 1.4; }
+    .decision-card ul { display: grid; gap: 5px; color: #334155; font-size: 12px; line-height: 1.35; }
     .attention-list { display: grid; gap: 8px; }
     .attention-item { border: 1px solid #e2e7f0; padding: 12px; display: flex; justify-content: space-between; gap: 12px; align-items: center; background: #fff; }
     .attention-item div { display: grid; gap: 4px; }
     .attention-item span { color: #64748b; font-size: 14px; line-height: 1.4; }
     .metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 12px; }
     .metric { border: 1px solid #e2e7f0; padding: 12px; display: grid; gap: 4px; }
+    .metric strong { display: inline-flex; align-items: center; gap: 7px; color: #4b5870; font-size: 12px; text-transform: uppercase; }
+    .metric strong .icon { width: 15px; height: 15px; color: #2563eb; }
     .metric span { font-size: 22px; font-weight: 700; }
     .metric small, .muted { color: #64748b; }
+    .approval-triage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 12px; }
+    .approval-triage-grid div { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 4px; }
+    .approval-triage-grid strong { color: #172033; font-size: 13px; }
+    .approval-triage-grid span { color: #172033; font-size: 22px; font-weight: 750; line-height: 1.1; }
+    .approval-triage-grid small { color: #64748b; line-height: 1.35; }
+    .approval-triage-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; margin: 0 0 12px; }
+    .approval-triage-actions form { border: 1px solid #dbe4f0; background: #fff; padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: 10px; align-items: center; }
+    .approval-triage-actions .check-row { display: flex; align-items: center; gap: 8px; color: #4b5870; font-size: 13px; font-weight: 700; }
+    .approval-triage-actions .check-row input { width: auto; }
+    .approval-context-panel { border-left: 4px solid #2563eb; }
+    .status-context-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .status-context-grid div { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 5px; }
+    .status-context-grid strong { font-size: 24px; line-height: 1.1; color: #172033; }
+    .status-context-grid span { color: #64748b; line-height: 1.35; }
+    .status-context-grid .good { border-color: #bbf7d0; background: #f0fdf4; }
+    .status-context-grid .warn { border-color: #fde68a; background: #fffbeb; }
+    .status-context-grid .bad { border-color: #fecaca; background: #fef2f2; }
+    .approval-row-history { background: #fbfdff; }
+    .approval-row-history td { color: #475569; }
+    .approval-row-failed { background: #fffaf5; }
     .split-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
     .split-grid > div { border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
     .split-grid h3 { margin-top: 0; }
@@ -20673,7 +30335,35 @@ function dashboardCss(): string {
     .suite-link:hover, .suite-link.active { border-color: #93c5fd; background: #eff6ff; }
     .suite-link span, .suite-link small { color: #64748b; }
     .leader-row { background: #f0fdf4; }
-    .table-wrap { width: 100%; overflow-x: auto; }
+    .table-wrap { width: 100%; max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
+    .mobile-approval-list { display: none; }
+    .approval-filters { align-items: center; }
+    .mobile-approval-card { border: 1px solid #dbe4f0; border-left: 4px solid #f59e0b; border-radius: 10px; background: #fff; padding: 16px; box-shadow: 0 1px 2px rgba(15, 23, 42, .05); }
+    .mobile-approval-card.risk-low { border-left-color: #16a34a; }
+    .mobile-approval-card.risk-high { border-left-color: #dc2626; }
+    .mobile-approval-meta { display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: center; gap: 8px; color: #64748b; font-size: 12px; }
+    .approval-risk { color: #b45309; }
+    .risk-low .approval-risk { color: #15803d; }
+    .risk-high .approval-risk { color: #b91c1c; }
+    .approval-kind { padding: 4px 7px; border-radius: 999px; background: #eef2f7; color: #475569; font-weight: 700; }
+    .approval-age { justify-self: end; white-space: nowrap; }
+    .mobile-approval-context { display: grid; gap: 3px; margin: 14px 0 10px; }
+    .mobile-approval-context strong { font-size: 16px; }
+    .mobile-approval-context span { color: #64748b; font-size: 13px; overflow-wrap: anywhere; }
+    .mobile-approval-target { display: block; width: 100%; padding: 12px; border: 1px solid #dbe4f0; border-radius: 7px; background: #f8fafc; color: #172033; font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .mobile-approval-details { margin-top: 12px; border-top: 1px solid #e2e7f0; border-bottom: 1px solid #e2e7f0; }
+    .mobile-approval-details summary { min-height: 44px; display: flex; align-items: center; color: #1d4ed8; font-weight: 700; cursor: pointer; }
+    .mobile-approval-details dl { display: grid; gap: 10px; margin: 0 0 14px; }
+    .mobile-approval-details dl div { display: grid; gap: 3px; min-width: 0; }
+    .mobile-approval-details dt { color: #64748b; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+    .mobile-approval-details dd { margin: 0; font-size: 13px; line-height: 1.4; overflow-wrap: anywhere; }
+    .mobile-approval-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 14px; }
+    .mobile-approval-actions.two-up { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mobile-approval-actions form, .mobile-approval-actions button { width: 100%; min-width: 0; }
+    .mobile-approval-actions button { min-height: 46px; line-height: 1.2; }
+    .mobile-approval-actions .approval-form input { display: none; }
+    .approval-empty { display: grid; place-items: center; gap: 6px; min-height: 180px; border: 1px dashed #cbd5e1; border-radius: 10px; color: #64748b; text-align: center; }
+    .approval-empty strong { color: #334155; font-size: 16px; }
     .compact { margin-bottom: 12px; }
     .artifact { border: 1px solid #e2e7f0; margin-bottom: 8px; padding: 10px; }
     .artifact summary { cursor: pointer; }
@@ -20682,7 +30372,8 @@ function dashboardCss(): string {
     .warn { background: #fef3c7; color: #92400e; }
     .bad { background: #fee2e2; color: #991b1b; }
     .warn-box { background: #fffbeb; border: 1px solid #fcd34d; color: #92400e; padding: 10px 12px; }
-    .status { display: inline-block; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
+    .status { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-width: 78px; padding: 3px 8px; border-radius: 999px; font-size: 12px; text-align: center; background: #eef2ff; color: #3730a3; }
+    .status::before { content: ""; width: 6px; height: 6px; border-radius: 999px; background: currentColor; opacity: .72; }
     .completed { background: #dcfce7; color: #166534; }
     .failed { background: #fee2e2; color: #991b1b; }
     .cancelled { background: #e5e7eb; color: #374151; }
@@ -20694,8 +30385,14 @@ function dashboardCss(): string {
       .panel { border-color: #d0d7e2; box-shadow: none; }
       a { color: inherit; }
     }
+    @media (max-width: 1180px) {
+      .ops-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .ops-state { grid-column: span 2; }
+      .provider-hero { grid-template-columns: 1fr; }
+    }
     @media (max-width: 820px) {
-      main { padding: 94px 12px 24px; }
+      :root { --nav-width: 0px; }
+      main { width: 100%; margin-left: 0; padding: 94px 12px 24px; }
       .side-nav { right: 0; bottom: auto; width: auto; grid-auto-flow: column; grid-auto-columns: max-content; overflow-x: auto; overflow-y: hidden; padding: 10px 12px; gap: 8px; }
       .side-nav strong { display: none; }
       .nav-section { grid-auto-flow: column; grid-auto-columns: max-content; align-items: center; }
@@ -20715,29 +30412,58 @@ function dashboardCss(): string {
       .compact-segments { min-width: 0; }
       .network-map { min-height: 360px; }
       table { display: block; overflow-x: auto; }
+      .approval-inbox-panel { padding: 14px; }
+      .mobile-approval-list { display: grid; gap: 12px; }
+      .desktop-approval-table { display: none; }
+      .approval-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .approval-filters .button { width: 100%; justify-content: center; text-align: center; }
+      .approval-filters > :not(.filter-open):not(.filter-pending):not(.filter-approved) { display: none; }
+      .approval-intro { max-width: 32rem; }
+    }
+    @media (max-width: 560px) {
+      h1 { font-size: 24px; }
+      .topbar > .button { display: none; }
+      .panel { padding: 14px; border-radius: 8px; }
+      .health-grid, .metric-grid, .meta-grid, .split-grid, .provider-setup-grid, .stage-delta, .segmented-actions, .command-summary, .command-facts, .worker-summary { grid-template-columns: 1fr; }
+      .command-item { align-items: stretch; flex-direction: column; }
+      .actions, .inline-form, .dismiss-form, .approval-form { display: grid; grid-template-columns: 1fr; }
+      .actions > *, .inline-form > *, .dismiss-form > *, .approval-form > * { width: 100%; max-width: none; }
+      .button, button { display: inline-flex; justify-content: center; align-items: center; min-height: 38px; }
+      .ops-strip { grid-template-columns: 1fr; }
+      .ops-state { grid-column: auto; }
+      .provider-readiness { grid-template-columns: 1fr; }
+      .compact-feedback-form { grid-template-columns: 1fr; }
+      .actions.approval-filters { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .approval-filters .button { padding-inline: 6px; }
+      .mobile-approval-actions { grid-template-columns: 1fr; }
+      .mobile-approval-actions.two-up { grid-template-columns: 1fr 1fr; }
+      .mobile-approval-meta { grid-template-columns: auto minmax(0, 1fr); }
+      .approval-age { grid-column: 2; grid-row: 1; }
+      .approval-kind { grid-column: 1 / -1; justify-self: start; }
+      th, td { padding: 9px 10px; }
     }
   `;
 }
 
 function runActionForm(runId: string, action: string, label: string): string {
-  return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${iconLabel("play", label)}</button></form>`;
 }
 
 function workerActionForm(runId: string, mode: "batch" | "watch", label: string): string {
-  return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  return `<form class="worker-form" method="post" action="/api/run-worker"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="mode" value="${escapeHtml(mode)}"><input type="hidden" name="workerLimit" value="6"><input type="hidden" name="workerConcurrency" value="1"><input type="hidden" name="timeoutMs" value="${mode === "watch" ? "60000" : "1000"}"><button type="submit">${iconLabel(mode === "watch" ? "activity" : "play", label)}</button></form>`;
 }
 
 function queueProcessForm(project: string): string {
-  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><input name="workerConcurrency" inputmode="numeric" value="1" aria-label="Worker concurrency"><button type="submit">Process Worker Batch</button></form>`;
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><input name="workerConcurrency" inputmode="numeric" value="1" aria-label="Worker concurrency"><button type="submit">${iconLabel("play", "Process Worker Batch")}</button></form>`;
 }
 
 function queueRecoverExpiredLeasesForm(): string {
-  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">Recover Expired Leases</button></form>`;
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">${iconLabel("refresh", "Recover Expired Leases")}</button></form>`;
 }
 
 function queueItemForms(item: DashboardQueueItem): string {
   const forms = [
-    `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">Open</a>`
+    `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open")}</a>`
   ];
   if (item.runningTasks > 0) {
     forms.push(queueRunActionForm(item.runId, "requeue-running", "Requeue Running"));
@@ -20763,11 +30489,12 @@ function hasExpiredLease(item: DashboardQueueItem): boolean {
 }
 
 function queueRunActionForm(runId: string, action: string, label: string): string {
-  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  const iconName: DashboardIconName = action === "cancel" ? "x" : action.includes("requeue") || action.includes("recover") || action.includes("retry") ? "refresh" : "play";
+  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
 }
 
 function queueDismissRunForm(runId: string): string {
-  return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="dismiss-failed"><input name="reason" aria-label="Dismissal reason" placeholder="Optional reason"><button class="danger" type="submit">Dismiss</button></form>`;
+  return `<form class="dismiss-form" method="post" action="/api/queue-action"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="dismiss-failed"><input name="reason" aria-label="Dismissal reason" placeholder="Optional reason"><button class="danger" type="submit">${iconLabel("trash", "Dismiss")}</button></form>`;
 }
 
 function queueDismissAllForm(): string {
@@ -20776,21 +30503,24 @@ function queueDismissAllForm(): string {
     <label>Project path (optional)<input name="project" placeholder="All projects"></label>
     <label>Reason<input name="reason" placeholder="Bulk-dismissed after review"></label>
     <label class="check-row"><input type="checkbox" name="confirmed" required> I reviewed these failures and want to dismiss them.</label>
-    <button class="danger" type="submit">Dismiss Failed Runs</button>
+    <button class="danger" type="submit">${iconLabel("trash", "Dismiss Failed Runs")}</button>
   </form>`;
 }
 
 function feedbackForm(runId: string, rating: FeedbackRating, label: string): string {
-  return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" placeholder="Optional note"><button type="submit">${escapeHtml(label)}</button></form>`;
+  const iconName: DashboardIconName = rating === "accepted" ? "check" : rating === "rejected" ? "x" : "message";
+  return `<form class="feedback-form" method="post" action="/api/follow-up"><input type="hidden" name="runId" value="${escapeHtml(runId)}"><input type="hidden" name="action" value="feedback"><input type="hidden" name="rating" value="${escapeHtml(rating)}"><input name="note" placeholder="Optional note"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
 }
 
 function presetForm(action: string, label: string, project?: string): string {
   const projectInput = project ? `<input type="hidden" name="project" value="${escapeHtml(project)}">` : "";
-  return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}">${projectInput}<button type="submit">${escapeHtml(label)}</button></form>`;
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="action" value="${escapeHtml(action)}">${projectInput}<button type="submit">${iconLabel("rocket", label)}</button></form>`;
 }
 
 function projectActionForm(project: string, action: string, label: string): string {
-  return `<form method="post" action="/api/follow-up"><input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${escapeHtml(label)}</button></form>`;
+  const returnTo = `/project?root=${encodeURIComponent(project)}`;
+  const iconName: DashboardIconName = action.includes("ux") ? "sparkles" : action.includes("review") ? "clipboard" : action.includes("readiness") ? "shield" : action.includes("context") ? "brain" : "rocket";
+  return `<form method="post" action="/api/follow-up"><input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}"><input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="action" value="${escapeHtml(action)}"><button type="submit">${iconLabel(iconName, label)}</button></form>`;
 }
 
 function promotionNotePlanForm(report: DashboardCandidateComparisonReport): string {
@@ -20817,18 +30547,20 @@ function bundleLifecyclePlanForm(readiness: DashboardBundleReadiness, params: UR
   const targetVersion = params.get("targetVersion")?.trim() || selectedEntry?.latestVersion || "";
   const registry = params.get("registry")?.trim() || readiness.registry.registryPath;
   return `<form class="workflow-form" method="post" action="/api/bundle-lifecycle-plan">
+    ${dashboardReturnInput("/bundles", params)}
     <input type="hidden" name="project" value="${escapeHtml(readiness.projectDir)}">
     <input type="hidden" name="registry" value="${escapeHtml(registry)}">
     <label>Bundle id<input name="bundleId" value="${escapeHtml(bundleId)}"></label>
     <label>Mode<select name="mode"><option value="upgrade">upgrade</option><option value="rollback">rollback</option></select></label>
     <label>Target version<input name="targetVersion" value="${escapeHtml(targetVersion)}" placeholder="latest for upgrade, required for rollback"></label>
     <label class="check-row"><input type="checkbox" name="write"> Write plan file</label>
-    <div class="form-actions"><button type="submit">Generate Plan</button></div>
+    <div class="form-actions"><button type="submit">${iconLabel("clipboard", "Generate Plan")}</button></div>
   </form>`;
 }
 
-function projectIndexForm(project: string): string {
-  return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">Index Project</button></form>`;
+function projectIndexForm(project: string, returnTo = "/projects"): string {
+  const safeReturnTo = safeDashboardReturnPath(returnTo) ?? "/projects";
+  return `<form class="inline-form" method="post" action="/api/project-index"><input type="hidden" name="returnTo" value="${escapeHtml(safeReturnTo)}"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="maxFiles" inputmode="numeric" value="120" aria-label="Max files"><label class="check-row"><input type="checkbox" name="refine"> Refine</label><button type="submit">${iconLabel("search", "Index Project")}</button></form>`;
 }
 
 type DashboardGraphPresetActionResult =
@@ -21002,6 +30734,44 @@ async function readJsonBody(request: http.IncomingMessage, maxBytes = 64_000): P
   const raw = Buffer.concat(chunks).toString("utf8").trim();
   if (!raw) return {};
   return JSON.parse(raw) as unknown;
+}
+
+const serverQueueRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
+
+function serverRequestLimits(): { maxBodyBytes: number; rateLimitPerMinute: number } {
+  return {
+    maxBodyBytes: parsePositiveInteger(process.env.AGENTFLOW_SERVER_MAX_BODY_BYTES ?? "64000", 64_000),
+    rateLimitPerMinute: parsePositiveInteger(process.env.AGENTFLOW_SERVER_RATE_LIMIT_PER_MINUTE ?? "60", 60)
+  };
+}
+
+function checkServerQueueRateLimit(input: {
+  request: http.IncomingMessage;
+  actor: string;
+  limitPerMinute: number;
+}): { ok: boolean; key: string; limit: number; remaining: number; resetAt: string } {
+  const now = Date.now();
+  const windowMs = 60_000;
+  const actorKey = input.actor.trim() || "anonymous";
+  const remote = input.request.socket.remoteAddress ?? "unknown";
+  const key = `${actorKey}@${remote}`;
+  if (input.limitPerMinute <= 0) {
+    return { ok: true, key, limit: input.limitPerMinute, remaining: Number.POSITIVE_INFINITY, resetAt: new Date(now + windowMs).toISOString() };
+  }
+  const current = serverQueueRateBuckets.get(key);
+  const bucket = current && now - current.windowStartMs < windowMs
+    ? current
+    : { windowStartMs: now, count: 0 };
+  bucket.count += 1;
+  serverQueueRateBuckets.set(key, bucket);
+  const remaining = Math.max(input.limitPerMinute - bucket.count, 0);
+  return {
+    ok: bucket.count <= input.limitPerMinute,
+    key,
+    limit: input.limitPerMinute,
+    remaining,
+    resetAt: new Date(bucket.windowStartMs + windowMs).toISOString()
+  };
 }
 
 async function processDashboardBundleLifecyclePlan(input: {
@@ -21202,7 +30972,10 @@ function buildGraphHandoffPayload(input: {
     filters: input.filters,
     workflow: input.report.workflow,
     project: input.report.project,
-    totals: input.report.totals,
+    totals: {
+      ...input.report.totals,
+      patternMix: countBy(input.report.stages.map((stage) => stage.pattern.type))
+    },
     runs: input.report.runs.map((run) => ({
       id: run.id,
       workflowId: run.workflowId,
@@ -21258,6 +31031,7 @@ function formatGraphHandoffMarkdown(payload: GraphHandoffPayload): string {
     `- blocked stages: ${payload.totals.blockedStages}`,
     `- context budget tokens: ${payload.totals.contextBudgetTokens}`,
     `- runs: ${payload.runs.length}`,
+    `- pattern mix: ${Object.entries(payload.totals.patternMix).map(([pattern, count]) => `${pattern}=${count}`).join(", ") || "none"}`,
     "",
     focused,
     "## Stage Health",
@@ -21582,7 +31356,77 @@ async function runDashboardFollowUp(input: {
     });
   }
 
-  return { ok: false, error: `Unknown dashboard action: ${action}` };
+	  return { ok: false, error: `Unknown dashboard action: ${action}` };
+	}
+
+async function processDashboardBulkFeedbackAction(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const runIds = orderedUnique(form.getAll("runId").map((runId) => runId.trim()).filter(Boolean));
+  if (!runIds.length) {
+    return { ok: false, error: "No feedback rows were selected." };
+  }
+
+  const recorded: string[] = [];
+  const failed: string[] = [];
+  for (const runId of runIds) {
+    const result = await recordRunFeedback({
+      runId,
+      rating: form.get(`rating:${runId}`) ?? "",
+      note: form.get(`note:${runId}`) ?? "",
+      source: "dashboard-bulk"
+    });
+    if (result.ok) {
+      recorded.push(`${runId} ${result.rating}`);
+    } else {
+      failed.push(`${runId}: ${result.error}`);
+    }
+  }
+
+  const query = new URLSearchParams({
+    project: form.get("project") ?? "",
+    limit: form.get("limit") ?? "50"
+  });
+  const output = [
+    `Recorded ${recorded.length} feedback item(s).`,
+    failed.length ? `Failed ${failed.length} item(s).` : "",
+    "",
+    "Recorded:",
+    ...(recorded.length ? recorded.map((item) => `- ${item}`) : ["- none"]),
+    ...(failed.length ? ["", "Failures:", ...failed.map((item) => `- ${item}`)] : []),
+    "",
+    `Open: /feedback-inbox?${query.toString()}`
+  ].filter(Boolean).join("\n");
+
+  return failed.length
+    ? { ok: false, error: output }
+    : { ok: true, title: "Bulk Feedback Recorded", output };
+}
+
+async function processDashboardObjectMirrorApproval(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const project = (form.get("project") ?? rootDir).trim() || rootDir;
+  const sourceEndpoint = (form.get("sourceEndpoint") ?? "http://127.0.0.1:19000").trim();
+  const sourceBucket = (form.get("sourceBucket") ?? process.env.OBJECT_STORAGE_BUCKET ?? "agentflow-artifacts").trim();
+  const targetEndpoint = (form.get("targetEndpoint") ?? process.env.OBJECT_STORAGE_ENDPOINT ?? "").trim();
+  const targetBucket = (form.get("targetBucket") ?? process.env.OBJECT_STORAGE_BUCKET ?? "agentflow-artifacts").trim();
+  const report = await buildObjectArtifactProofReport({
+    projectRootUri: project,
+    limit: parsePositiveInteger(form.get("objectLimit") ?? "500", 500),
+    enumerateBuckets: true,
+    verify: false,
+    sourceEndpoint,
+    sourceBucket,
+    targetEndpoint,
+    targetBucket
+  });
+  return queueObjectMirrorApproval({
+    projectPath: project,
+    report,
+    sourceEndpoint,
+    sourceBucket,
+    targetEndpoint,
+    targetBucket,
+    actor: "dashboard",
+    actorRole: normalizeActorRole(form.get("actorRole") ?? "", "operator")
+  });
 }
 
 function printPresetList(): void {
@@ -22111,8 +31955,13 @@ function normalizeProviderRef(value: string): string {
     "byo-model": "byo",
     mock: "mock",
     test: "mock",
-    local: "openai-compatible",
-    ollama: "openai-compatible",
+    local: "local",
+    localhost: "local",
+    ollama: "local",
+    "lm-studio": "local",
+    lmstudio: "local",
+    llama: "local",
+    "llama-cpp": "local",
     "openai-compatible": "openai-compatible",
     "open-ai-compatible": "openai-compatible",
     compatible: "openai-compatible",
@@ -22139,6 +31988,12 @@ function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[n
         agent: agent.id,
         goal: agent.purpose,
         subagents: [],
+        pattern: {
+          type: "single-shot",
+          requires_verifier: false,
+          promotion_gate: "none",
+          stop_conditions: []
+        },
         context: {
           load: ["AGENTS.md", ".agent-workflow/**"],
           max_tokens: agent.context_budget.max_tokens
@@ -22181,6 +32036,7 @@ type DashboardModelImprovementReport = {
   projectDir: string;
   scorecard: PreferenceScorecard;
   proposals: TuningProposalSet;
+  localProviderEvidence: DashboardLocalProviderEvidence;
   evaluationRuns: number;
   latestEvaluationAt: string | null;
   proposalCounts: Record<string, number>;
@@ -22189,7 +32045,100 @@ type DashboardModelImprovementReport = {
   routingProposals: number;
   promotionReady: boolean;
   readiness: string[];
+  tuningOverlay: DashboardTuningOverlayStatus;
+  feedbackTargets: DashboardFeedbackTarget[];
   nextCommands: string[];
+};
+
+type DashboardLocalProviderEvidence = {
+  status: "not-configured" | "needs-runs" | "watch" | "candidate" | "ready";
+  configured: boolean;
+  providerIds: string[];
+  localStageCount: number;
+  hostedStageCount: number;
+  localAccepted: number;
+  localRevised: number;
+  localRejected: number;
+  localFallbackRate: number | null;
+  localAverageLatencyMs: number | null;
+  localAverageQuality: number | null;
+  hostedAverageLatencyMs: number | null;
+  hostedAverageQuality: number | null;
+  estimatedAvoidedHostedCalls: number;
+  recommendation: string;
+};
+
+type TuningOverlayDocument = {
+  kind: "agentflow_tuning_overlay";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceGeneratedAt: string;
+  sourceRunsAnalyzed: number;
+  selectedIds: string[];
+  proposals: TuningProposalSet["proposals"];
+};
+
+type DashboardTuningOverlayStatus = {
+  exists: boolean;
+  path: string;
+  generatedAt: string | null;
+  sourceGeneratedAt: string | null;
+  sourceRunsAnalyzed: number | null;
+  selectedIds: string[];
+  appliedProposalIds: string[];
+  proposalCount: number;
+  proposalKinds: Record<string, number>;
+  latestAppliedAt: string | null;
+  appliedEvents: number;
+  duplicateAppliedEvents: number;
+  error: string | null;
+};
+
+type DashboardFeedbackTarget = {
+  runId: string;
+  workflowId: string;
+  status: string;
+  task: string;
+  startedAt: string;
+  finishedAt: string | null;
+  provider: string | null;
+  modelTier: string | null;
+  summary: {
+    completedTasks: number;
+    failedTasks: number;
+    totalTasks: number;
+    keyFindings: string[];
+    failures: string[];
+    recommendedNextAction: string;
+  } | null;
+  quality: {
+    averageQuality: number | null;
+    qualityPassCount: number;
+    qualityFailCount: number;
+    fallbackCount: number;
+    averageLatencyMs: number | null;
+  } | null;
+};
+
+type DashboardFeedbackBucket = "probably_accept" | "probably_revise" | "probably_reject";
+
+type DashboardFeedbackClassification = {
+  bucket: DashboardFeedbackBucket;
+  reason: string;
+};
+
+type DashboardFeedbackInboxItem = DashboardFeedbackTarget & {
+  classification: DashboardFeedbackClassification;
+};
+
+type DashboardFeedbackInboxReport = {
+  generatedAt: string;
+  projectRootUri: string | null;
+  limit: number;
+  totalCandidates: number;
+  totalTargets: number;
+  counts: Record<DashboardFeedbackBucket, number>;
+  groups: Record<DashboardFeedbackBucket, DashboardFeedbackInboxItem[]>;
 };
 
 type DashboardCandidateComparisonReport = {
@@ -22319,8 +32268,9 @@ async function assessRunStaleInputs(runId: string): Promise<RunStaleInputReport>
   }
 
   const warnings: string[] = [];
+  const localProjectRootUri = await resolveLocalProjectRootUri(details.run.projectRootUri);
   try {
-    const currentConfig = await loadProjectConfig(details.run.projectRootUri);
+    const currentConfig = await loadProjectConfig(localProjectRootUri);
     const currentConfigHash = stableHash(currentConfig);
     if (currentConfigHash !== snapshot.projectConfigHash) {
       warnings.push("Project config changed since the run was queued.");
@@ -22367,7 +32317,7 @@ async function assessRunStaleInputs(runId: string): Promise<RunStaleInputReport>
     if (source.contentHash === "skipped-large-file") {
       continue;
     }
-    const absolutePath = path.join(details.run.projectRootUri, source.sourceUri);
+    const absolutePath = path.join(localProjectRootUri, source.sourceUri);
     try {
       const currentHash = createHash("sha256").update(await fs.readFile(absolutePath)).digest("hex");
       if (currentHash !== source.contentHash) {

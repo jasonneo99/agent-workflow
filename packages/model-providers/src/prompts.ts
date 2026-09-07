@@ -23,6 +23,9 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     `Overall task: ${input.workflowTask}`,
     `Stage: ${input.stageId}`,
     `Stage goal: ${input.stageGoal}`,
+    input.stagePattern
+      ? `Stage pattern: ${input.stagePattern.type}; promotion gate ${input.stagePattern.promotionGate}; verifier ${input.stagePattern.requiresVerifier ? "required" : "not required"}${input.stagePattern.maxIterations ? `; max iterations ${input.stagePattern.maxIterations}` : ""}`
+      : "Stage pattern: executor",
     `Agent: ${input.agentName} (${input.agentId})`,
     "",
     "Agent instructions:",

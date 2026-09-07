@@ -87,12 +87,12 @@ function autoProviderCandidates(modelTier: ModelTier): string[] {
   }
 
   if (modelTier === "fast") {
-    return ["byo", "bedrock", "openai-compatible", "openai", "kiro", "mock"];
+    return ["local", "byo", "bedrock", "openai-compatible", "openai", "kiro", "mock"];
   }
   if (modelTier === "reasoning") {
-    return ["openai", "bedrock", "byo", "openai-compatible", "kiro", "mock"];
+    return ["openai", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
   }
-  return ["byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  return ["local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
 }
 
 function splitProviderList(value?: string): string[] {

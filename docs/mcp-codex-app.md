@@ -25,6 +25,55 @@ startup_timeout_sec = 120
 
 Restart the Codex app after changing MCP configuration.
 
+## Transport Troubleshooting
+
+If Codex reports `Transport closed`, the local Agent Workflow services may
+still be healthy while Codex's private stdio connection to the MCP subprocess is
+gone. Restart the Codex app or the current Codex task to create a fresh MCP
+subprocess.
+
+If this repeats during an approval call, use the CLI fallback for the exact
+approval or run id instead of broad approvals. That preserves the approval
+receipt while avoiding a stale Codex-owned MCP pipe:
+
+```bash
+npm run agentflow -- approvals --status pending --run <run-id>
+npm run agentflow -- approvals --approve-execute <approval-id> --actor "Your Name" --actor-role approver
+```
+
+Then record the recurrence as an MCP transport issue rather than treating it as
+a dashboard, provider, storage, or worker outage.
+
+The MCP server writes best-effort lifecycle breadcrumbs to:
+
+```text
+.agent-workflow/runtime/mcp/stdio.log
+.agent-workflow/runtime/mcp/launcher.log
+```
+
+Those logs record launcher resolution, start, connect, stdin close, stdout
+errors, uncaught exceptions, process exit events, and metadata-only
+`agentflow_approvals` start/result events. Approval diagnostics include action
+type, approval id, run id, project hash, actor hash, exit code, timeout state,
+and output byte counts, but not note text, prompt bodies, provider keys,
+database URLs, storage secrets, or artifacts.
+
+Run an end-to-end launcher smoke check from the repo:
+
+```bash
+npm run runtime-monitor -- --check-mcp
+```
+
+MCP tool output is compacted by default for stdio stability. Set
+`AGENTFLOW_MCP_MAX_OUTPUT_CHARS` only when a client can safely handle larger
+responses; for full logs, rerun the printed CLI fallback command in a terminal.
+
+Open `/server-readiness` in the dashboard for the same MCP Pipeline status and
+the Codex / IDE Reload Guidance callout. Zero active MCP processes is normal
+between Codex tool calls because Codex starts the stdio server on demand. If
+the smoke check passes but Codex still reports `Transport closed`, restart the
+Codex app or task so Codex creates a fresh private stdio subprocess.
+
 ## Tools
 
 - `agentflow_doctor`: check definitions and local enterprise services.
@@ -52,8 +101,9 @@ Restart the Codex app after changing MCP configuration.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.
 - `agentflow_worker`: execute queued stage tasks.
 - `agentflow_status`: inspect recent runs or a specific run.
-- `agentflow_approvals`: list, approve, approve-and-execute, reject, execute, dismiss, or add always-approve rules for agent-requested actions.
+- `agentflow_approvals`: list, approve, approve-and-execute, reject, execute, dismiss, add always-approve rules, or run approval autopilot for agent-requested actions.
 - `agentflow_approval_rules`: list or remove project-local always-approved shell/fswrite rules.
+- `agentflow_approval_backlog`: inspect missed, stale, warning, and failed approval items without changing them.
 - `agentflow_request_approval`: create deployment or autonomy approval requests in the shared inbox.
 - `agentflow_quality_report`: inspect cost mix, routing, fallback use, latency, and quality scores.
 - `agentflow_gate`: evaluate a run against project-local quality, latency, fallback, and cost gates.
@@ -81,6 +131,12 @@ approved action. Call `agentflow_approvals` with `approveAndExecute`, `approve`,
 `reject`, `always` plus `alwaysScope`, `execute`, or `dismiss` after the user
 decides. Prefer `approveAndExecute` for local inline approvals. The workflow may
 still complete other stages while that side effect stays skipped.
+
+For local developer setups that enable approval autopilot, Codex can call
+`agentflow_approvals` with `autoApproveExecute=true` and `maxRisk=medium` to
+approve and execute eligible low/medium pending side effects after Agent
+Workflow rechecks project policy. High-risk actions remain in the approval
+inbox.
 
 ## Examples
 

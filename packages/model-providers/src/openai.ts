@@ -8,11 +8,64 @@ import {
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
+import type { ModelTier } from "./types.js";
+import { selectModelFromCatalog } from "./catalog.js";
+
+const OPENAI_AUTO_MODEL = "auto";
+
+const modelCatalogCache = new Map<string, Promise<string[]>>();
+
+export function configuredOpenAIModelForTier(tier: ModelTier | undefined): string {
+  if (tier) {
+    const tierModel = process.env[`OPENAI_MODEL_${tier.toUpperCase()}`]?.trim();
+    if (tierModel) {
+      return tierModel;
+    }
+  }
+  return process.env.OPENAI_MODEL?.trim() || OPENAI_AUTO_MODEL;
+}
+
+export async function resolveOpenAIModelForTier(tier: ModelTier | undefined): Promise<{ model: string; source: "env" | "catalog" }> {
+  const configured = configuredOpenAIModelForTier(tier);
+  if (configured !== OPENAI_AUTO_MODEL) {
+    return { model: configured, source: "env" };
+  }
+
+  const catalog = await loadOpenAIModelCatalog();
+  const selected = selectOpenAIModelFromCatalog(catalog, tier ?? "standard");
+  if (!selected) {
+    throw new Error("OPENAI_MODEL=auto could not select a model because the OpenAI model catalog was empty or unavailable.");
+  }
+  return { model: selected, source: "catalog" };
+}
+
+export function selectOpenAIModelFromCatalog(modelIds: string[], tier: ModelTier): string | undefined {
+  return selectModelFromCatalog(modelIds, tier, { provider: "openai" });
+}
+
+export async function loadOpenAIModelCatalog(): Promise<string[]> {
+  if (!process.env.OPENAI_API_KEY) {
+    return [];
+  }
+
+  const cacheKey = process.env.OPENAI_API_KEY.slice(-8);
+  let cached = modelCatalogCache.get(cacheKey);
+  if (!cached) {
+    cached = fetchOpenAIModelCatalog();
+    modelCatalogCache.set(cacheKey, cached);
+  }
+  return cached;
+}
+
+async function fetchOpenAIModelCatalog(): Promise<string[]> {
+  const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  const models = await client.models.list();
+  return [...new Set(models.data.map((model) => model.id).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
 
 export class OpenAIProvider implements ModelProvider {
   id = "openai";
   private readonly client: OpenAI;
-  private readonly model: string;
 
   constructor() {
     if (!process.env.OPENAI_API_KEY) {
@@ -22,18 +75,24 @@ export class OpenAIProvider implements ModelProvider {
     this.client = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY
     });
-    this.model = process.env.OPENAI_MODEL ?? "gpt-5.5";
   }
 
   async check(): Promise<{ ready: boolean; details: string[] }> {
     try {
-      const models = await this.client.models.list();
-      const available = models.data.some((model) => model.id === this.model);
+      const modelIds = await loadOpenAIModelCatalog();
+      const tierModels = await Promise.all((["fast", "standard", "reasoning"] as const).map(async (tier) => {
+        const resolved = await resolveOpenAIModelForTier(tier);
+        return `${tier}: ${resolved.model}${resolved.source === "catalog" ? " (auto)" : ""}`;
+      }));
+      const configuredModels = (["fast", "standard", "reasoning"] as const)
+        .map((tier) => configuredOpenAIModelForTier(tier))
+        .filter((model) => model !== OPENAI_AUTO_MODEL);
+      const available = configuredModels.every((model) => modelIds.includes(model));
       return {
         ready: available,
         details: available
-          ? [`OpenAI API reachable`, `Model available: ${this.model}`]
-          : [`OpenAI API reachable`, `Configured model was not listed: ${this.model}`]
+          ? [`OpenAI API reachable`, `Tier models: ${tierModels.join(", ")}`]
+          : [`OpenAI API reachable`, `A configured model was not listed: ${configuredModels.join(", ")}`]
       };
     } catch (error) {
       return { ready: false, details: [`OpenAI provider check failed: ${error instanceof Error ? error.message : String(error)}`] };
@@ -41,7 +100,7 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const model = this.resolveModelForTier(input.modelTier);
+    const { model } = await resolveOpenAIModelForTier(input.modelTier);
     const response = await this.client.responses.create({
       model,
       input: [
@@ -126,8 +185,9 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
+    const { model } = await resolveOpenAIModelForTier("fast");
     const response = await this.client.responses.create({
-      model: this.model,
+      model,
       input: [
         {
           role: "system",
@@ -178,7 +238,7 @@ export class OpenAIProvider implements ModelProvider {
       summary,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model,
         responseId: response.id,
         sourceUri: input.sourceUri,
         refined: true,
@@ -188,10 +248,4 @@ export class OpenAIProvider implements ModelProvider {
     };
   }
 
-  private resolveModelForTier(tier: StageExecutionInput["modelTier"]): string {
-    if (!tier) {
-      return this.model;
-    }
-    return process.env[`OPENAI_MODEL_${tier.toUpperCase()}`] || this.model;
-  }
 }

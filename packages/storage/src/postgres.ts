@@ -555,8 +555,9 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
           const tasks = result.rows.filter((row) => row.runId === runId);
           await client.query(
             `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-             values ($1::uuid, 'workflow-orchestrator', 'expired_worker_lease_requeued', $1::text, $2, $3)`,
+             values ($1::uuid, 'workflow-orchestrator', 'expired_worker_lease_requeued', $2::text, $3, $4)`,
             [
+              runId,
               runId,
               input.reason,
               JSON.stringify({
@@ -579,6 +580,168 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
       throw error;
     }
   });
+}
+
+export interface StaleTerminalWorkflowRun {
+  runId: string;
+  workflowId: string;
+  runStatus: string;
+  task: string;
+  projectRootUri: string;
+  startedAt: string | null;
+  finishedAt: string | null;
+  totalTasks: number;
+  queuedTasks: number;
+  runningTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  cancelledTasks: number;
+  recommendedStatus: "completed" | "cancelled";
+}
+
+export interface StaleRunReconciliationResult {
+  kind: "agentflow_stale_run_reconciliation_result";
+  generatedAt: string;
+  mode: "preview" | "execute";
+  candidates: StaleTerminalWorkflowRun[];
+  reconciled: Array<{
+    runId: string;
+    status: "completed" | "cancelled";
+    updated: boolean;
+  }>;
+}
+
+export async function listStaleTerminalWorkflowRuns(limit = 50): Promise<StaleTerminalWorkflowRun[]> {
+  return withClient(async (client) => {
+    const result = await client.query<Omit<StaleTerminalWorkflowRun, "recommendedStatus">>(
+      `select
+         wr.id::text as "runId",
+         wr.workflow_id as "workflowId",
+         wr.status as "runStatus",
+         wr.task,
+         p.root_uri as "projectRootUri",
+         wr.started_at::text as "startedAt",
+         wr.finished_at::text as "finishedAt",
+         count(wt.*)::int as "totalTasks",
+         count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
+         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status = 'completed')::int as "completedTasks",
+         count(*) filter (where wt.status = 'failed')::int as "failedTasks",
+         count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks"
+       from workflow_runs wr
+       join projects p on p.id = wr.project_id
+       join workflow_tasks wt on wt.run_id = wr.id
+       where wr.status in ('queued', 'running')
+       group by wr.id, p.id
+       having count(*) > 0
+          and count(*) filter (where wt.status in ('queued', 'running', 'failed')) = 0
+       order by wr.started_at asc
+       limit $1`,
+      [limit]
+    );
+    return result.rows.map((row) => ({
+      ...row,
+      recommendedStatus: row.completedTasks > 0 ? "completed" : "cancelled"
+    }));
+  });
+}
+
+export async function reconcileStaleTerminalWorkflowRuns(input: {
+  execute: boolean;
+  limit?: number;
+  actor?: string;
+}): Promise<StaleRunReconciliationResult> {
+  const candidates = await listStaleTerminalWorkflowRuns(input.limit ?? 50);
+  const reconciled: StaleRunReconciliationResult["reconciled"] = [];
+  if (!input.execute) {
+    return {
+      kind: "agentflow_stale_run_reconciliation_result",
+      generatedAt: new Date().toISOString(),
+      mode: "preview",
+      candidates,
+      reconciled
+    };
+  }
+
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      for (const candidate of candidates) {
+        const result = await client.query<{ id: string }>(
+          `update workflow_runs wr
+           set status = $2::text,
+               finished_at = now()
+           where wr.id = $1::uuid
+             and wr.status in ('queued', 'running')
+             and exists (
+               select 1
+               from workflow_tasks any_task
+               where any_task.run_id = wr.id
+             )
+             and not exists (
+               select 1
+               from workflow_tasks active
+               where active.run_id = wr.id
+                 and active.status in ('queued', 'running', 'failed')
+             )
+             and (
+               ($2::text = 'completed' and exists (
+                 select 1
+                 from workflow_tasks completed_task
+                 where completed_task.run_id = wr.id
+                   and completed_task.status = 'completed'
+               ))
+               or
+               ($2::text = 'cancelled' and not exists (
+                 select 1
+                 from workflow_tasks completed_task
+                 where completed_task.run_id = wr.id
+                   and completed_task.status = 'completed'
+               ))
+             )
+           returning wr.id::text`,
+          [candidate.runId, candidate.recommendedStatus]
+        );
+        const updated = (result.rowCount ?? 0) > 0;
+        reconciled.push({
+          runId: candidate.runId,
+          status: candidate.recommendedStatus,
+          updated
+        });
+        if (updated) {
+          await client.query(
+            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+             values ($1::uuid, 'workflow-orchestrator', 'stale_run_reconciled', $2::text, $3, $4)`,
+            [
+              candidate.runId,
+              candidate.runId,
+              `Reconciled stale ${candidate.runStatus} run to ${candidate.recommendedStatus} because all child tasks were terminal.`,
+              JSON.stringify({
+                actor: input.actor ?? "system",
+                previousStatus: candidate.runStatus,
+                newStatus: candidate.recommendedStatus,
+                totalTasks: candidate.totalTasks,
+                completedTasks: candidate.completedTasks,
+                cancelledTasks: candidate.cancelledTasks
+              })
+            ]
+          );
+        }
+      }
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+
+  return {
+    kind: "agentflow_stale_run_reconciliation_result",
+    generatedAt: new Date().toISOString(),
+    mode: "execute",
+    candidates,
+    reconciled
+  };
 }
 
 export async function retryFailedWorkflowRun(runId: string): Promise<number> {
@@ -678,8 +841,9 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
       }
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', $1::text, $2, $3)`,
+         values ($1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', $2::text, $3, $4)`,
         [
+          input.runId,
           input.runId,
           input.reason,
           JSON.stringify({
@@ -736,13 +900,13 @@ export async function dismissFailedWorkflowRun(input: {
         `update workflow_tasks
          set status = 'dismissed',
              finished_at = coalesce(finished_at, now())
-         where run_id = $1 and status in ('queued', 'running', 'failed')`,
+         where run_id = $1::uuid and status in ('queued', 'running', 'failed')`,
         [input.runId]
       );
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, 'workflow-orchestrator', 'failed_run_dismissed', $1::text, $2, $3)`,
-        [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false })]
+         values ($1::uuid, 'workflow-orchestrator', 'failed_run_dismissed', $2::text, $3, $4)`,
+        [input.runId, input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false })]
       );
       await client.query("commit");
       return true;
@@ -1218,6 +1382,7 @@ export interface ClaimedWorkflowTask {
   workflowTask: string;
   stageId: string;
   stageGoal: string;
+  stagePattern: unknown;
   agentId: string;
   agentName: string;
   agentPrompt: string;
@@ -1292,6 +1457,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id
              limit 1
            ), '') as "stageGoal",
+           coalesce((
+             select stage->'pattern'
+             from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') stage
+             where stage->>'id' = wt.stage_id
+             limit 1
+           ), '{}'::jsonb) as "stagePattern",
            wt.agent_id as "agentId",
            a.display_name as "agentName",
            a.definition->>'prompt' as "agentPrompt",
@@ -1382,7 +1553,7 @@ export async function completeWorkflowTask(input: {
              select 1
              from workflow_tasks wt
              where wt.run_id = wr.id
-               and wt.status <> 'completed'
+               and wt.status in ('queued', 'running', 'failed')
            )`,
         [input.runId]
       );
@@ -1837,7 +2008,7 @@ export async function listActionApprovals(input: {
          and ($2::uuid is null or aa.run_id = $2::uuid)
          and ($3::text is null or p.root_uri = $3)
        order by
-         case aa.status when 'pending' then 0 when 'approved' then 1 when 'failed' then 2 when 'executed' then 3 when 'rejected' then 4 else 5 end,
+         case aa.status when 'pending' then 0 when 'approved' then 1 when 'failed' then 2 when 'dismissed' then 3 when 'executed' then 4 when 'rejected' then 5 else 6 end,
          aa.created_at desc
        limit $4`,
       [input.status ?? null, input.runId ?? null, input.projectRootUri ?? null, input.limit ?? 50]
@@ -1924,7 +2095,7 @@ export async function decideActionApproval(input: {
 
 export async function markActionApprovalExecution(input: {
   approvalId: string;
-  status: "executed" | "failed";
+  status: "executed" | "failed" | "dismissed";
   actor: string;
   actorRole?: string;
   summary: string;

@@ -12,6 +12,11 @@ stages:
   - id: execute
     agent: auto-wide-open-executor
     goal: Complete the configured task end to end and write receipts for every action.
+    pattern:
+      type: react
+      max_iterations: 5
+      requires_verifier: true
+      promotion_gate: policy
     context:
       load:
         - project_policy
@@ -19,4 +24,3 @@ stages:
         - tool_permissions
       max_tokens: 8000
     output: wide_open_receipt
-

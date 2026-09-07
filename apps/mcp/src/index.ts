@@ -1,6 +1,9 @@
 #!/usr/bin/env node
+import fsSync from "node:fs";
+import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v3";
@@ -8,7 +11,8 @@ import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.
 
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
-const maxOutputChars = 30_000;
+const mcpLogPath = process.env.AGENTFLOW_MCP_LOG_FILE || path.join(rootDir, ".agent-workflow", "runtime", "mcp", "stdio.log");
+const maxOutputChars = parsePositiveInteger(process.env.AGENTFLOW_MCP_MAX_OUTPUT_CHARS, 12_000);
 const defaultTimeoutMs = 120_000;
 
 type CommandResult = {
@@ -18,6 +22,33 @@ type CommandResult = {
   stderr: string;
   timedOut: boolean;
 };
+
+void appendMcpLog("start", {
+  pid: process.pid,
+  ppid: process.ppid,
+  rootDir,
+  node: process.version
+});
+
+process.stdin.on("end", () => {
+  void appendMcpLog("stdin-end", { pid: process.pid });
+});
+process.stdin.on("close", () => {
+  void appendMcpLog("stdin-close", { pid: process.pid });
+});
+process.stdout.on("error", (error) => {
+  void appendMcpLog("stdout-error", { pid: process.pid, message: error.message });
+});
+process.on("uncaughtException", (error) => {
+  appendMcpLogSyncSafe("uncaught-exception", { pid: process.pid, message: error.message, stack: error.stack });
+  process.exit(1);
+});
+process.on("unhandledRejection", (reason) => {
+  void appendMcpLog("unhandled-rejection", { pid: process.pid, reason: reason instanceof Error ? reason.message : String(reason) });
+});
+process.on("exit", (code) => {
+  void appendMcpLogSyncSafe("exit", { pid: process.pid, code });
+});
 
 const server = new McpServer(
   {
@@ -171,9 +202,9 @@ server.registerTool(
   "agentflow_approvals",
   {
     title: "AgentFlow action approvals",
-    description: "List, approve, approve-and-execute, reject, execute, dismiss stale approved actions, or add always-approve rules for agent-requested actions that require human approval.",
+    description: "List, approve, approve-and-execute, reject, execute, dismiss stale approved actions, add always-approve rules, or run approval autopilot for agent-requested actions.",
     inputSchema: {
-      status: z.enum(["pending", "approved", "executed", "failed", "rejected", "all"]).optional(),
+      status: z.enum(["pending", "approved", "executed", "failed", "dismissed", "rejected", "all"]).optional(),
       run: z.string().optional().describe("Filter by workflow run id."),
       project: z.string().optional().describe("Filter by project directory."),
       approve: z.string().optional().describe("Approval id to approve."),
@@ -182,6 +213,9 @@ server.registerTool(
       execute: z.string().optional().describe("Approval id to execute after it has been approved."),
       dismiss: z.string().optional().describe("Approval id to dismiss without execution when the approved action is stale or no longer needed."),
       always: z.string().optional().describe("Approval id to approve now and add a project-local auto-execute rule for future matching shell/fswrite requests."),
+      autoApproveExecute: z.boolean().optional().describe("Approve pending approvals and execute eligible pending or already-approved approvals at or below maxRisk after policy and risk rechecks."),
+      maxRisk: z.enum(["low", "medium", "high"]).optional().describe("Maximum risk level for autoApproveExecute. Defaults to the local Agent Workflow setting."),
+      dryRun: z.boolean().optional().describe("Preview autoApproveExecute without changing approvals."),
       alwaysScope: z.enum(["exact", "broad", "target"]).optional().describe("Rule scope for always: exact function call, broad function wildcard such as shell prefix * or fswrite*, or explicit target."),
       alwaysTarget: z.string().optional().describe("Explicit stored target pattern when alwaysScope is target."),
       actor: z.string().optional().describe("Person or tool making the decision."),
@@ -190,7 +224,7 @@ server.registerTool(
       json: z.boolean().optional().describe("Return approval JSON.")
     }
   },
-  async ({ status, run, project, approve, approveAndExecute, reject, execute, dismiss, always, alwaysScope, alwaysTarget, actor, note, limit, json }) => {
+  async ({ status, run, project, approve, approveAndExecute, reject, execute, dismiss, always, autoApproveExecute, maxRisk, dryRun, alwaysScope, alwaysTarget, actor, note, limit, json }) => {
     const args = ["approvals", "--status", status ?? "pending"];
     if (run) args.push("--run", run);
     if (project) args.push("--project", project);
@@ -200,13 +234,28 @@ server.registerTool(
     if (execute) args.push("--execute", execute);
     if (dismiss) args.push("--dismiss", dismiss);
     if (always) args.push("--always", always);
+    if (autoApproveExecute) args.push("--auto-approve-execute");
+    if (maxRisk) args.push("--max-risk", maxRisk);
+    if (dryRun) args.push("--dry-run");
     if (alwaysScope) args.push("--always-scope", alwaysScope);
     if (alwaysTarget) args.push("--always-target", alwaysTarget);
     if (actor) args.push("--actor", actor);
     if (note) args.push("--note", note);
     if (limit) args.push("--limit", String(limit));
     if (json) args.push("--json");
-    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+    const startedAt = Date.now();
+    const diagnostic = approvalCallDiagnostic({ status, run, project, approve, approveAndExecute, reject, execute, dismiss, always, autoApproveExecute, maxRisk, dryRun, alwaysScope, alwaysTarget, actor, limit, json });
+    await appendMcpLog("approval-call-start", diagnostic);
+    const result = await runAgentflow(args, { timeoutMs: 60_000 });
+    await appendMcpLog("approval-call-result", {
+      ...diagnostic,
+      durationMs: Date.now() - startedAt,
+      exitCode: result.exitCode,
+      timedOut: result.timedOut,
+      stdoutBytes: Buffer.byteLength(result.stdout, "utf8"),
+      stderrBytes: Buffer.byteLength(result.stderr, "utf8")
+    });
+    return toolResult(result);
   }
 );
 
@@ -226,6 +275,28 @@ server.registerTool(
     const args = ["approval-rules", "--project", project];
     if (remove) args.push("--remove", remove);
     if (actor) args.push("--actor", actor);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_approval_backlog",
+  {
+    title: "AgentFlow approval backlog radar",
+    description: "Surface pending, stale, warning, and failed approval items without changing them.",
+    inputSchema: {
+      project: z.string().optional().describe("Project directory filter."),
+      staleMinutes: z.number().int().positive().max(10080).optional().describe("Age before pending or approved approvals are considered stale."),
+      limit: z.number().int().positive().max(1000).optional(),
+      json: z.boolean().optional().describe("Return backlog JSON.")
+    }
+  },
+  async ({ project, staleMinutes, limit, json }) => {
+    const args = ["approval-backlog"];
+    if (project) args.push("--project", project);
+    if (staleMinutes) args.push("--stale-minutes", String(staleMinutes));
+    if (limit) args.push("--limit", String(limit));
     if (json) args.push("--json");
     return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
   }
@@ -1126,6 +1197,158 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_agent_improvement_report",
+  {
+    title: "AgentFlow agent improvement report",
+    description: "Analyze reusable and project-local agents for local-first definition improvement candidates from role, workflow, run, feedback, cost, and failure evidence.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      agent: z.string().optional().describe("Optional agent id to focus."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write owned agent-improvement report files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return agent improvement report JSON.")
+    }
+  },
+  async ({ project, agent, limit, write, json }) => {
+    const args = ["agent-improvement-report", "--project", project];
+    if (agent) {
+      args.push("--agent", agent);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_agent_improvement_patches",
+  {
+    title: "AgentFlow agent improvement patches",
+    description: "Generate validated YAML patch previews from agent improvement candidates without editing agent definitions.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated candidate ids or agent ids to include, or all."),
+      agent: z.string().optional().describe("Optional agent id to focus."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write owned patch preview files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return patch plan JSON.")
+    }
+  },
+  async ({ project, ids, agent, limit, write, json }) => {
+    const args = ["agent-improvement-patches", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (agent) {
+      args.push("--agent", agent);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_agent_improvement_evals",
+  {
+    title: "AgentFlow agent improvement evals",
+    description: "Score agent improvement patch previews against recent representative holdout tasks and produce promotion pass/fail decisions with rollback evidence.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated patch ids, candidate ids, or agent ids to include, or all."),
+      agent: z.string().optional().describe("Optional agent id to focus."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      write: z.boolean().optional().describe("Write owned eval files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return eval plan JSON.")
+    }
+  },
+  async ({ project, ids, agent, limit, write, json }) => {
+    const args = ["agent-improvement-evals", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (agent) {
+      args.push("--agent", agent);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_agent_improvement_promotions",
+  {
+    title: "AgentFlow agent improvement promotions",
+    description: "Create or decide an auditable promotion queue for eval-passing agent improvement patches, with receipts before agent YAML changes.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to include, or all."),
+      agent: z.string().optional().describe("Optional agent id to focus."),
+      limit: z.number().int().positive().max(100).optional().describe("Number of recent project runs to analyze."),
+      approve: z.string().optional().describe("Comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to approve, or all."),
+      reject: z.string().optional().describe("Comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to reject, or all."),
+      reviewer: z.string().optional().describe("Reviewer or actor name for decision receipts."),
+      note: z.string().optional().describe("Decision note recorded in promotion receipts."),
+      write: z.boolean().optional().describe("Write owned promotion queue files into .agent-workflow/learning."),
+      json: z.boolean().optional().describe("Return promotion queue JSON.")
+    }
+  },
+  async ({ project, ids, agent, limit, approve, reject, reviewer, note, write, json }) => {
+    const args = ["agent-improvement-promotions", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (agent) {
+      args.push("--agent", agent);
+    }
+    if (limit) {
+      args.push("--limit", String(limit));
+    }
+    if (approve) {
+      args.push("--approve", approve);
+    }
+    if (reject) {
+      args.push("--reject", reject);
+    }
+    if (reviewer) {
+      args.push("--reviewer", reviewer);
+    }
+    if (note) {
+      args.push("--note", note);
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_learning_action_receipts",
   {
     title: "AgentFlow learning action receipts",
@@ -1443,7 +1666,17 @@ server.registerTool(
   async () => toolResult(await runCommand("bash", [path.join(rootDir, "scripts", "provider-smoke.sh")], 10 * 60_000))
 );
 
-await server.connect(new StdioServerTransport());
+try {
+  await server.connect(new StdioServerTransport());
+  void appendMcpLog("connected", { pid: process.pid, transport: "stdio" });
+} catch (error) {
+  void appendMcpLog("connect-failed", {
+    pid: process.pid,
+    message: error instanceof Error ? error.message : String(error),
+    stack: error instanceof Error ? error.stack : undefined
+  });
+  throw error;
+}
 
 function addSourceOptions(args: string[], sourceTokenBudget?: number, sourceMaxFiles?: number): void {
   if (sourceTokenBudget) {
@@ -1523,12 +1756,17 @@ function toolResult(result: CommandResult): {
   content: Array<{ type: "text"; text: string }>;
   isError?: boolean;
 } {
+  const stdoutTrimmed = result.stdout.trim();
+  const stderrTrimmed = result.stderr.trim();
   const chunks = [
     `$ ${result.command}`,
-    result.stdout.trim(),
-    result.stderr.trim() ? `stderr\n${result.stderr.trim()}` : "",
+    stdoutTrimmed,
+    stderrTrimmed ? `stderr\n${stderrTrimmed}` : "",
     result.timedOut ? "Timed out." : "",
-    result.exitCode === 0 ? "" : `Exit code: ${result.exitCode ?? "unknown"}`
+    result.exitCode === 0 ? "" : `Exit code: ${result.exitCode ?? "unknown"}`,
+    result.stdout.includes(truncationMarker()) || result.stderr.includes(truncationMarker())
+      ? `Output was compacted for MCP transport stability. For full output, run locally: ${result.command}`
+      : ""
   ].filter(Boolean);
 
   return {
@@ -1541,9 +1779,94 @@ function trimOutput(value: string): string {
   if (value.length <= maxOutputChars) {
     return value;
   }
-  return `${value.slice(0, 2_000)}\n\n[...output truncated...]\n\n${value.slice(-maxOutputChars + 2_000)}`;
+  const headChars = Math.min(2_000, Math.floor(maxOutputChars / 3));
+  const tailChars = Math.max(1_000, maxOutputChars - headChars - truncationMarker().length - 4);
+  return `${value.slice(0, headChars)}\n\n${truncationMarker()}\n\n${value.slice(-tailChars)}`;
+}
+
+function truncationMarker(): string {
+  return "[...output truncated for MCP transport...]";
+}
+
+function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? "", 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function formatCommand(command: string, args: string[]): string {
   return [command, ...args].map((part) => part.includes(" ") ? JSON.stringify(part) : part).join(" ");
+}
+
+function approvalCallDiagnostic(input: {
+  status?: string;
+  run?: string;
+  project?: string;
+  approve?: string;
+  approveAndExecute?: string;
+  reject?: string;
+  execute?: string;
+  dismiss?: string;
+  always?: string;
+  autoApproveExecute?: boolean;
+  maxRisk?: string;
+  dryRun?: boolean;
+  alwaysScope?: string;
+  alwaysTarget?: string;
+  actor?: string;
+  limit?: number;
+  json?: boolean;
+}): Record<string, unknown> {
+  const operation = input.approveAndExecute ? "approve-execute"
+    : input.approve ? "approve"
+      : input.reject ? "reject"
+        : input.execute ? "execute"
+          : input.dismiss ? "dismiss"
+            : input.always ? "always"
+              : input.autoApproveExecute ? "auto-approve-execute"
+                : "list";
+  const approvalId = input.approveAndExecute ?? input.approve ?? input.reject ?? input.execute ?? input.dismiss ?? input.always ?? null;
+  return {
+    pid: process.pid,
+    operation,
+    approvalId,
+    status: input.status ?? "pending",
+    runId: input.run ?? null,
+    projectHash: input.project ? shortHash(input.project) : null,
+    actorHash: input.actor ? shortHash(input.actor) : null,
+    maxRisk: input.maxRisk ?? null,
+    dryRun: Boolean(input.dryRun),
+    alwaysScope: input.alwaysScope ?? null,
+    alwaysTargetHash: input.alwaysTarget ? shortHash(input.alwaysTarget) : null,
+    limit: input.limit ?? null,
+    json: Boolean(input.json)
+  };
+}
+
+function shortHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
+async function appendMcpLog(event: string, data: Record<string, unknown>): Promise<void> {
+  try {
+    await fs.mkdir(path.dirname(mcpLogPath), { recursive: true });
+    await fs.appendFile(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactLogData(data) })}\n`, "utf8");
+  } catch {
+    // MCP uses stdout for the protocol; logging failures must stay silent.
+  }
+}
+
+function appendMcpLogSyncSafe(event: string, data: Record<string, unknown>): void {
+  try {
+    fsSync.mkdirSync(path.dirname(mcpLogPath), { recursive: true });
+    fsSync.appendFileSync(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactLogData(data) })}\n`, "utf8");
+  } catch {
+    // Best-effort process-exit breadcrumb only.
+  }
+}
+
+function redactLogData(data: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(data).map(([key, value]) => [
+    key,
+    /(?:key|token|secret|password|databaseUrl|redisUrl)/i.test(key) ? "[redacted]" : value
+  ]));
 }

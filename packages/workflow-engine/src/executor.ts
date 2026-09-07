@@ -5,14 +5,17 @@ import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-too
 import { providerFromEnv } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
+import type { StageExecutionInput } from "../../model-providers/src/types.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
+import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import {
   claimNextWorkflowTask,
   completeWorkflowTask,
   findRunActionByIdempotencyKey,
   failWorkflowTask,
   recordRunAction,
-  requestActionApproval
+  requestActionApproval,
+  type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 
 export interface WorkerResult {
@@ -55,8 +58,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
     try {
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
+      const localProjectRootUri = (await resolveLocalProjectPath(task.projectRootUri)).localRootUri;
+      const stagePattern = normalizeStagePattern(task.stagePattern);
       const stageInput = {
         ...task,
+        stagePattern,
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
@@ -99,11 +105,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           fallbackProviderId,
           fallbackUsed,
           latencyMs: Date.now() - startedAt,
+          stagePattern,
           quality
         }
       });
 
+      const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);
+      let reactIteration = 0;
       for (const commandLine of output.requestedCommands ?? []) {
+        reactIteration += 1;
         const commandIdempotencyKey = actionIdempotencyKey({
           taskId: task.taskId,
           stageId: task.stageId,
@@ -141,6 +151,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactUri: previousCommand.uri,
             reuseArtifactUri
           });
+          await recordBoundedReactLoopReceipt({
+            task,
+            stagePattern,
+            iteration: reactIteration,
+            totalRequestedActions,
+            actionType: "local_command",
+            target: commandLine,
+            payloadHash: hashText(normalizeActionText(commandLine)),
+            policyDecision: {
+              status: "reused",
+              approvalRequired: false,
+              allowedByPolicy: true,
+              policyProfile: project.execution.policy_profile
+            },
+            resultReceipt: {
+              status: "reused",
+              artifactUri: reuseArtifactUri,
+              originalArtifactUri: previousCommand.uri
+            }
+          });
           continue;
         }
 
@@ -170,6 +200,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               commandLine,
               artifactUri: rejectionArtifactUri,
               error: error instanceof Error ? error.message : String(error)
+            });
+            await recordBoundedReactLoopReceipt({
+              task,
+              stagePattern,
+              iteration: reactIteration,
+              totalRequestedActions,
+              actionType: "local_command",
+              target: commandLine,
+              payloadHash: hashText(normalizeActionText(commandLine)),
+              policyDecision: {
+                status: "rejected",
+                approvalRequired: false,
+                allowedByPolicy: false,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "rejected",
+                artifactUri: rejectionArtifactUri,
+                error: error instanceof Error ? error.message : String(error)
+              }
             });
             continue;
           }
@@ -205,6 +255,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               artifactUri: approval.artifactUri,
               status: approval.status
             });
+            await recordBoundedReactLoopReceipt({
+              task,
+              stagePattern,
+              iteration: reactIteration,
+              totalRequestedActions,
+              actionType: "local_command",
+              target: commandLine,
+              payloadHash: hashText(normalizeActionText(commandLine)),
+              policyDecision: {
+                status: "approval_required",
+                approvalRequired: true,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "approval_pending",
+                approvalId: approval.approvalId,
+                artifactUri: approval.artifactUri
+              }
+            });
             continue;
           }
         }
@@ -213,7 +283,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         try {
           commandResult = await executeAllowedCommand({
             commandLine,
-            cwd: task.projectRootUri,
+            cwd: localProjectRootUri,
             project
           });
         } catch (error) {
@@ -238,6 +308,27 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             commandLine,
             artifactUri: rejectionArtifactUri,
             error: error instanceof Error ? error.message : String(error)
+          });
+          await recordBoundedReactLoopReceipt({
+            task,
+            stagePattern,
+            iteration: reactIteration,
+            totalRequestedActions,
+            actionType: "local_command",
+            target: commandLine,
+            payloadHash: hashText(normalizeActionText(commandLine)),
+            policyDecision: {
+              status: "rejected",
+              approvalRequired: false,
+              allowedByPolicy: false,
+              policyProfile: project.execution.policy_profile,
+              approvalRule: commandApprovalRule ?? undefined
+            },
+            resultReceipt: {
+              status: "rejected",
+              artifactUri: rejectionArtifactUri,
+              error: error instanceof Error ? error.message : String(error)
+            }
           });
           continue;
         }
@@ -268,12 +359,35 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           timedOut: commandResult.timedOut,
           approvalRule: commandApprovalRule ?? undefined
         });
+        await recordBoundedReactLoopReceipt({
+          task,
+          stagePattern,
+          iteration: reactIteration,
+          totalRequestedActions,
+          actionType: "local_command",
+          target: commandResult.commandLine,
+          payloadHash: hashText(normalizeActionText(commandResult.commandLine)),
+          policyDecision: {
+            status: commandApprovalRule ? "auto_approved_by_rule" : "allowed",
+            approvalRequired: false,
+            allowedByPolicy: true,
+            policyProfile: project.execution.policy_profile,
+            approvalRule: commandApprovalRule ?? undefined
+          },
+          resultReceipt: {
+            status: commandResult.exitCode === 0 && !commandResult.timedOut ? "completed" : "failed",
+            artifactUri,
+            exitCode: commandResult.exitCode,
+            timedOut: commandResult.timedOut
+          }
+        });
 
         if (commandResult.exitCode !== 0 || commandResult.timedOut) {
           throw new Error(`Requested command failed: ${commandLine}`);
         }
       }
       for (const fileWrite of output.requestedFileWrites ?? []) {
+        reactIteration += 1;
         const fileWriteIdempotencyKey = actionIdempotencyKey({
           taskId: task.taskId,
           stageId: task.stageId,
@@ -310,6 +424,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactUri: previousWrite.uri,
             reuseArtifactUri
           });
+          await recordBoundedReactLoopReceipt({
+            task,
+            stagePattern,
+            iteration: reactIteration,
+            totalRequestedActions,
+            actionType: "file_write",
+            target: fileWrite.path,
+            payloadHash: hashText(fileWrite.content),
+            policyDecision: {
+              status: "reused",
+              approvalRequired: false,
+              allowedByPolicy: true,
+              policyProfile: project.execution.policy_profile
+            },
+            resultReceipt: {
+              status: "reused",
+              artifactUri: reuseArtifactUri,
+              originalArtifactUri: previousWrite.uri
+            }
+          });
           continue;
         }
 
@@ -339,6 +473,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               path: fileWrite.path,
               artifactUri: rejectionArtifactUri,
               error: error instanceof Error ? error.message : String(error)
+            });
+            await recordBoundedReactLoopReceipt({
+              task,
+              stagePattern,
+              iteration: reactIteration,
+              totalRequestedActions,
+              actionType: "file_write",
+              target: fileWrite.path,
+              payloadHash: hashText(fileWrite.content),
+              policyDecision: {
+                status: "rejected",
+                approvalRequired: false,
+                allowedByPolicy: false,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "rejected",
+                artifactUri: rejectionArtifactUri,
+                error: error instanceof Error ? error.message : String(error)
+              }
             });
             continue;
           }
@@ -376,6 +530,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               artifactUri: approval.artifactUri,
               status: approval.status
             });
+            await recordBoundedReactLoopReceipt({
+              task,
+              stagePattern,
+              iteration: reactIteration,
+              totalRequestedActions,
+              actionType: "file_write",
+              target: fileWrite.path,
+              payloadHash: hashText(fileWrite.content),
+              policyDecision: {
+                status: "approval_required",
+                approvalRequired: true,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "approval_pending",
+                approvalId: approval.approvalId,
+                artifactUri: approval.artifactUri
+              }
+            });
             continue;
           }
         }
@@ -385,7 +559,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           writeResult = await executeAllowedFileWrite({
             relativePath: fileWrite.path,
             content: fileWrite.content,
-            cwd: task.projectRootUri,
+            cwd: localProjectRootUri,
             project
           });
         } catch (error) {
@@ -410,6 +584,27 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             path: fileWrite.path,
             artifactUri: rejectionArtifactUri,
             error: error instanceof Error ? error.message : String(error)
+          });
+          await recordBoundedReactLoopReceipt({
+            task,
+            stagePattern,
+            iteration: reactIteration,
+            totalRequestedActions,
+            actionType: "file_write",
+            target: fileWrite.path,
+            payloadHash: hashText(fileWrite.content),
+            policyDecision: {
+              status: "rejected",
+              approvalRequired: false,
+              allowedByPolicy: false,
+              policyProfile: project.execution.policy_profile,
+              approvalRule: fileWriteApprovalRule ?? undefined
+            },
+            resultReceipt: {
+              status: "rejected",
+              artifactUri: rejectionArtifactUri,
+              error: error instanceof Error ? error.message : String(error)
+            }
           });
           continue;
         }
@@ -440,6 +635,29 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           bytesWritten: writeResult.bytesWritten,
           nextHash: writeResult.nextHash,
           approvalRule: fileWriteApprovalRule ?? undefined
+        });
+        await recordBoundedReactLoopReceipt({
+          task,
+          stagePattern,
+          iteration: reactIteration,
+          totalRequestedActions,
+          actionType: "file_write",
+          target: writeResult.relativePath,
+          payloadHash: hashText(fileWrite.content),
+          policyDecision: {
+            status: fileWriteApprovalRule ? "auto_approved_by_rule" : "allowed",
+            approvalRequired: false,
+            allowedByPolicy: true,
+            policyProfile: project.execution.policy_profile,
+            approvalRule: fileWriteApprovalRule ?? undefined
+          },
+          resultReceipt: {
+            status: "completed",
+            artifactUri,
+            bytesWritten: writeResult.bytesWritten,
+            previousHash: writeResult.previousHash,
+            nextHash: writeResult.nextHash
+          }
         });
       }
       await completeWorkflowTask({
@@ -512,6 +730,119 @@ export function actionIdempotencyKey(input: {
       payloadHash: createHash("sha256").update(payload).digest("hex")
     }))
     .digest("hex");
+}
+
+type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
+
+function normalizeStagePattern(value: unknown): StagePattern {
+  if (!value || typeof value !== "object") {
+    return {
+      type: "executor",
+      requiresVerifier: false,
+      promotionGate: "none",
+      stopConditions: []
+    };
+  }
+  const record = value as Record<string, unknown>;
+  const type = typeof record.type === "string" ? record.type : "executor";
+  const maxIterations = Number.isInteger(record.max_iterations)
+    ? Number(record.max_iterations)
+    : Number.isInteger(record.maxIterations)
+      ? Number(record.maxIterations)
+      : undefined;
+  const promotionGate = typeof record.promotion_gate === "string"
+    ? record.promotion_gate
+    : typeof record.promotionGate === "string"
+      ? record.promotionGate
+      : "none";
+  const requiresVerifier = typeof record.requires_verifier === "boolean"
+    ? record.requires_verifier
+    : typeof record.requiresVerifier === "boolean"
+      ? record.requiresVerifier
+      : false;
+  const rawStopConditions = Array.isArray(record.stop_conditions)
+    ? record.stop_conditions
+    : Array.isArray(record.stopConditions)
+      ? record.stopConditions
+      : [];
+  return {
+    type,
+    maxIterations: maxIterations && maxIterations > 0 ? Math.min(maxIterations, 25) : undefined,
+    requiresVerifier,
+    promotionGate,
+    stopConditions: rawStopConditions.filter((item): item is string => typeof item === "string")
+  };
+}
+
+async function recordBoundedReactLoopReceipt(input: {
+  task: Pick<ClaimedWorkflowTask, "runId" | "taskId" | "workflowId" | "workflowTask" | "stageId" | "stageGoal" | "agentId">;
+  stagePattern: StagePattern;
+  iteration: number;
+  totalRequestedActions: number;
+  actionType: "local_command" | "file_write";
+  target: string;
+  payloadHash: string;
+  policyDecision: Record<string, unknown>;
+  resultReceipt: Record<string, unknown>;
+}): Promise<void> {
+  if (input.stagePattern.type !== "react") return;
+
+  const receipt = buildBoundedReactLoopReceiptContent(input);
+
+  await recordRunAction({
+    runId: input.task.runId,
+    taskId: input.task.taskId,
+    agentId: input.task.agentId,
+    actionType: "react_loop_step",
+    target: `${receipt.workflowId}/${receipt.stageId}#${receipt.iteration}`,
+    summary: `ReAct step ${receipt.iteration}/${receipt.maxIterations}: ${input.actionType} ${input.target} -> ${String(input.resultReceipt.status ?? "recorded")}; stop=${receipt.stopReason}.`,
+    artifactKind: "react_loop_receipt",
+    artifactContent: receipt
+  });
+}
+
+export function buildBoundedReactLoopReceiptContent(input: {
+  task: Pick<ClaimedWorkflowTask, "runId" | "taskId" | "workflowId" | "workflowTask" | "stageId" | "stageGoal" | "agentId">;
+  stagePattern: StagePattern;
+  iteration: number;
+  totalRequestedActions: number;
+  actionType: "local_command" | "file_write";
+  target: string;
+  payloadHash: string;
+  policyDecision: Record<string, unknown>;
+  resultReceipt: Record<string, unknown>;
+}): Record<string, unknown> {
+  const maxIterations = input.stagePattern.maxIterations ?? Math.max(input.totalRequestedActions, 1);
+  const overBudget = input.iteration > maxIterations;
+  const stopReason = overBudget
+    ? "max_iterations_exceeded"
+    : input.iteration >= input.totalRequestedActions
+      ? "provider_returned_no_more_actions"
+      : "next_action_requested";
+
+  return {
+    kind: "agentflow_bounded_react_loop_receipt",
+    workflowId: input.task.workflowId,
+    stageId: input.task.stageId,
+    taskId: input.task.taskId,
+    agentId: input.task.agentId,
+    goal: input.task.stageGoal || input.task.workflowTask,
+    observationSource: "compiled_brief_and_prior_stage_receipts",
+    iteration: input.iteration,
+    maxIterations,
+    overBudget,
+    actionRequested: {
+      type: input.actionType,
+      target: input.target,
+      payloadHash: input.payloadHash
+    },
+    policyDecision: input.policyDecision,
+    resultReceipt: input.resultReceipt,
+    stopReason,
+    configuredStopConditions: input.stagePattern.stopConditions,
+    promotionGate: input.stagePattern.promotionGate,
+    verifierRequired: input.stagePattern.requiresVerifier
+  };
 }
 
 function normalizeActionText(value: string): string {

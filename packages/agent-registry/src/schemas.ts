@@ -51,6 +51,18 @@ export const workflowSchema = z.object({
     agent: z.string().min(1),
     goal: z.string().min(1),
     subagents: z.array(z.string()).default([]),
+    pattern: z.object({
+      type: z.enum(["single-shot", "planner", "executor", "react", "reflexive", "verifier", "finalizer"]).default("executor"),
+      max_iterations: z.number().int().positive().max(25).optional(),
+      requires_verifier: z.boolean().default(false),
+      promotion_gate: z.enum(["none", "approval", "evaluation", "policy", "release"]).default("none"),
+      stop_conditions: z.array(z.string()).default([])
+    }).default({
+      type: "executor",
+      requires_verifier: false,
+      promotion_gate: "none",
+      stop_conditions: []
+    }),
     context: z.object({
       load: z.array(z.string()).default([]),
       max_tokens: z.number().int().positive().default(4000)

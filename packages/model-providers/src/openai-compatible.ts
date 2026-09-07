@@ -9,6 +9,11 @@ import {
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
+import { selectModelFromCatalog } from "./catalog.js";
+import type { ModelTier } from "./types.js";
+
+const AUTO_MODEL = "auto";
+const compatibleCatalogCache = new Map<string, Promise<string[]>>();
 
 export class OpenAICompatibleProvider implements ModelProvider {
   id = "openai-compatible";
@@ -17,19 +22,18 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly baseURL: string;
   private readonly modelEnv: string;
 
-  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string } = {}) {
+  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string; defaultBaseURL?: string } = {}) {
     this.id = input.id ?? this.id;
-    const baseURL = process.env[input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL"] ?? process.env.OPENAI_COMPATIBLE_BASE_URL;
+    const baseUrlEnv = input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL";
+    const legacyBaseURL = input.baseUrlEnv ? undefined : process.env.OPENAI_COMPATIBLE_BASE_URL;
+    const baseURL = process.env[baseUrlEnv] ?? legacyBaseURL ?? input.defaultBaseURL;
     if (!baseURL) {
-      throw new Error(`${input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL"} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
+      throw new Error(`${baseUrlEnv} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
     }
 
     this.baseURL = baseURL;
     this.modelEnv = input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL";
-    this.model = process.env[this.modelEnv] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? "";
-    if (!this.model) {
-      throw new Error(`${input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL"} is required when DEFAULT_MODEL_PROVIDER=${this.id}`);
-    }
+    this.model = process.env[this.modelEnv] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? AUTO_MODEL;
 
     this.client = new OpenAI({
       apiKey: process.env[input.apiKeyEnv ?? "OPENAI_COMPATIBLE_API_KEY"] || process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",
@@ -39,16 +43,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async check(): Promise<{ ready: boolean; details: string[] }> {
     try {
-      const models = await this.client.models.list();
-      const modelIds = models.data.map((model) => model.id);
-      const hasConfiguredModel = modelIds.includes(this.model);
+      const modelIds = await this.loadModelCatalog();
+      const tierModels = await Promise.all((["fast", "standard", "reasoning"] as const).map(async (tier) => {
+        const resolved = await this.resolveModelForTier(tier);
+        return `${tier}: ${resolved.model}${resolved.source === "catalog" ? " (auto)" : ""}`;
+      }));
+      const configuredModels = (["fast", "standard", "reasoning"] as const)
+        .map((tier) => this.configuredModelForTier(tier))
+        .filter((model) => model !== AUTO_MODEL);
+      const hasConfiguredModel = configuredModels.every((model) => modelIds.includes(model));
       return {
         ready: hasConfiguredModel,
         details: hasConfiguredModel
-          ? [`Endpoint reachable: ${this.baseURL}`, `Model available: ${this.model}`]
+          ? [`Endpoint reachable: ${this.baseURL}`, `Tier models: ${tierModels.join(", ")}`]
           : [
             `Endpoint reachable: ${this.baseURL}`,
-            `Configured model was not listed: ${this.model}`,
+            `Configured model was not listed: ${configuredModels.join(", ")}`,
             modelIds.length ? `Available models: ${modelIds.join(", ")}` : "No models listed by endpoint."
           ]
       };
@@ -63,7 +73,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const model = this.resolveModelForTier(input.modelTier);
+    const { model } = await this.resolveModelForTier(input.modelTier);
     const response = await this.client.chat.completions.create({
       model,
       messages: [
@@ -113,8 +123,9 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
+    const { model } = await this.resolveModelForTier("fast");
     const response = await this.client.chat.completions.create({
-      model: this.model,
+      model,
       messages: [
         {
           role: "system",
@@ -144,7 +155,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
       summary,
       artifact: {
         provider: this.id,
-        model: this.model,
+        model,
         responseId: response.id,
         sourceUri: input.sourceUri,
         refined: true,
@@ -154,12 +165,37 @@ export class OpenAICompatibleProvider implements ModelProvider {
     };
   }
 
-  private resolveModelForTier(tier: StageExecutionInput["modelTier"]): string {
+  private configuredModelForTier(tier: ModelTier | undefined): string {
     if (!tier) {
       return this.model;
     }
     const tierEnv = this.modelEnv.replace(/(?:MODEL|MODEL_NAME)$/u, `MODEL_${tier.toUpperCase()}`);
     return process.env[tierEnv] || this.model;
+  }
+
+  private async resolveModelForTier(tier: ModelTier | undefined): Promise<{ model: string; source: "env" | "catalog" }> {
+    const configured = this.configuredModelForTier(tier);
+    if (configured !== AUTO_MODEL) {
+      return { model: configured, source: "env" };
+    }
+    const catalog = await this.loadModelCatalog();
+    const selected = selectModelFromCatalog(catalog, tier ?? "standard", { provider: "compatible" });
+    if (!selected) {
+      throw new Error(`${this.modelEnv}=auto could not select a model because the endpoint model catalog was empty or unavailable.`);
+    }
+    return { model: selected, source: "catalog" };
+  }
+
+  private async loadModelCatalog(): Promise<string[]> {
+    const cacheKey = `${this.id}:${this.baseURL}:${this.modelEnv}`;
+    let cached = compatibleCatalogCache.get(cacheKey);
+    if (!cached) {
+      cached = this.client.models.list().then((models) =>
+        [...new Set(models.data.map((model) => model.id).filter(Boolean))].sort((a, b) => a.localeCompare(b))
+      );
+      compatibleCatalogCache.set(cacheKey, cached);
+    }
+    return cached;
   }
 }
 
@@ -167,9 +203,6 @@ export function openAICompatibleConfigStatus(): { ready: boolean; details: strin
   const details: string[] = [];
   if (!process.env.OPENAI_COMPATIBLE_BASE_URL) {
     details.push("OPENAI_COMPATIBLE_BASE_URL is missing");
-  }
-  if (!process.env.OPENAI_COMPATIBLE_MODEL && !process.env.OPENAI_MODEL) {
-    details.push("OPENAI_COMPATIBLE_MODEL is missing");
   }
   return {
     ready: details.length === 0,

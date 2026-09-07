@@ -60,8 +60,62 @@ test("storage merge manifest flags row conflicts for review", () => {
   assert.match(formatStorageMergeManifest(manifest), /project-id rewrites=1/);
 });
 
+test("storage merge manifest surfaces legacy definition references without overwriting target definitions", () => {
+  const manifest = buildStorageMergeManifestFromRows({
+    sourceDatabaseUrl: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
+    targetDatabaseUrl: "postgres://agentflow:agentflow@100.78.183.30:15432/agentflow",
+    sourceRows: rows({}),
+    targetRows: rows({}),
+    sourceDefinitions: [
+      definition("agent", "legacy-agent", "hash-a"),
+      definition("agent", "changed-agent", "source-hash"),
+      definition("workflow", "historic-workflow", "workflow-hash")
+    ],
+    targetDefinitions: [
+      definition("agent", "changed-agent", "target-hash")
+    ],
+    sourceDefinitionReferences: [
+      reference("agent", "legacy-agent", 3, ["run-1"], ["plan"]),
+      reference("agent", "changed-agent", 2, ["run-2"], ["verify"]),
+      reference("agent", "vanished-agent", 1, ["run-3"], ["document"]),
+      reference("workflow", "retired-workflow", 1, ["run-4"], [], true),
+      reference("workflow", "historic-workflow", 1, ["run-5"], [], false)
+    ]
+  });
+
+  assert.equal(manifest.status, "attention");
+  assert.deepEqual(
+    manifest.legacyDefinitionReferences.map((item) => `${item.definitionType}:${item.definitionId}:${item.action}`),
+    [
+      "agent:changed-agent:preserve-target-current",
+      "agent:legacy-agent:insert-missing-registry",
+      "agent:vanished-agent:readability-warning",
+      "workflow:historic-workflow:insert-missing-registry"
+    ]
+  );
+  assert.match(manifest.warnings.join("\n"), /target definitions will be preserved/);
+  assert.match(manifest.warnings.join("\n"), /do not resolve/);
+  assert.doesNotMatch(formatStorageMergeManifest(manifest), /retired-workflow/);
+  assert.match(formatStorageMergeManifest(manifest), /Legacy definition references/);
+});
+
 function row(key: string, fingerprint: string, projectRoot?: string, projectId?: string, name?: string) {
   return { key, fingerprint, projectRoot, projectId, name };
+}
+
+function definition(definitionType: "agent" | "workflow", definitionId: string, fingerprint: string) {
+  return { definitionType, definitionId, fingerprint, sourcePath: `${definitionType}s/${definitionId}.yaml` };
+}
+
+function reference(
+  definitionType: "agent" | "workflow",
+  definitionId: string,
+  referenceCount: number,
+  sampleRunIds: string[],
+  sampleStageIds: string[],
+  snapshotAvailable = false
+) {
+  return { definitionType, definitionId, referenceCount, sampleRunIds, sampleStageIds, snapshotAvailable };
 }
 
 function rows(input: Partial<StorageMergeManifestRows>): StorageMergeManifestRows {

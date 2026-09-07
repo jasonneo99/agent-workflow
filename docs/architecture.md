@@ -2,12 +2,30 @@
 
 Portable Agent Workflows is enterprise-first and file-compatible.
 
+For a comparison against common agent design patterns such as single-shot,
+ReAct, planner-executor, reflexive, verifier-gated, and combined production
+agent systems, see [Agent Design Pattern Gap Analysis](agent-design-patterns-gap.md).
+
 ## Source Of Truth
 
 - `agents/**/*.yaml`: reusable specialist and automatic agent cards
 - `workflows/**/*.yaml`: reusable workflow graphs
 - `templates/project`: files copied into a consuming project
 - `.agent-workflow/project.yaml`: project-level autonomy, context, and policy settings
+
+Workflow stages may declare a provider-neutral `pattern` block. Pattern metadata
+classifies each stage as `single-shot`, `planner`, `executor`, `react`,
+`reflexive`, `verifier`, or `finalizer`, with optional iteration limits,
+verifier requirements, promotion gates, and stop conditions. The runtime keeps
+the metadata portable while the graph, dashboard, handoff exports, and learning
+daemon use it to explain workflow shape and identify optimization opportunities.
+
+For `react` stages, worker-requested local commands and file writes also emit
+bounded ReAct loop receipts. These receipts record the stage goal, observation
+source, requested action, policy decision, result artifact or approval id,
+iteration count, configured iteration budget, stop reason, promotion gate, and
+verifier requirement. They are evidence-only by default; policy and approval
+controls remain the authority for whether an action can run.
 
 ## Runtime Path
 
@@ -27,6 +45,7 @@ The `mock` provider gives deterministic local workflow execution. The recommende
 Artifacts are durable JSON records linked to workflow runs and tasks.
 
 - `compiled_brief`: the compiled project/workflow context created at queue time
+- `react_loop_receipt`: per-action evidence for bounded ReAct stages
 - `stage_output`: structured provider output for a completed stage
 
 Inspect them with:

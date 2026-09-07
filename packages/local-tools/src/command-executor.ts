@@ -97,6 +97,7 @@ export async function executeAllowedCommand(input: {
 
 function createProjectCommandEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
+  env.PATH = withDeveloperToolPath(env.PATH);
 
   // Agent Workflow uses DATABASE_URL for its own storage database. Project
   // commands should resolve their database config from the project cwd instead
@@ -104,6 +105,12 @@ function createProjectCommandEnv(): NodeJS.ProcessEnv {
   delete env.DATABASE_URL;
 
   return env;
+}
+
+export function withDeveloperToolPath(currentPath: string | undefined): string {
+  const prefixes = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const existing = (currentPath ?? "").split(":").filter(Boolean);
+  return [...prefixes, ...existing.filter((entry) => !prefixes.includes(entry))].join(":");
 }
 
 function matchesPattern(commandLine: string, pattern: string): boolean {

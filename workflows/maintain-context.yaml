@@ -11,6 +11,9 @@ stages:
   - id: summarize
     agent: auto-memory-summarizer
     goal: Summarize the workflow run into durable reusable memory.
+    pattern:
+      type: reflexive
+      promotion_gate: none
     context:
       load:
         - run_receipts
@@ -20,10 +23,13 @@ stages:
   - id: update-context
     agent: context-curator
     goal: Update project context files with compact decisions and commands.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
     context:
       load:
         - memory_summary
         - project_context
       max_tokens: 4000
     output: context_update
-

@@ -33,6 +33,29 @@
           "agent": { "type": "string", "minLength": 1 },
           "goal": { "type": "string", "minLength": 1 },
           "subagents": { "type": "array", "items": { "type": "string" }, "default": [] },
+          "pattern": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "enum": ["single-shot", "planner", "executor", "react", "reflexive", "verifier", "finalizer"],
+                "default": "executor"
+              },
+              "max_iterations": { "type": "integer", "minimum": 1, "maximum": 25 },
+              "requires_verifier": { "type": "boolean", "default": false },
+              "promotion_gate": {
+                "enum": ["none", "approval", "evaluation", "policy", "release"],
+                "default": "none"
+              },
+              "stop_conditions": { "type": "array", "items": { "type": "string" }, "default": [] }
+            },
+            "default": {
+              "type": "executor",
+              "requires_verifier": false,
+              "promotion_gate": "none",
+              "stop_conditions": []
+            }
+          },
           "context": {
             "type": "object",
             "additionalProperties": false,

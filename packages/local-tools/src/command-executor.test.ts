@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
-import { assertCommandAllowed } from "./command-executor.js";
+import { assertCommandAllowed, withDeveloperToolPath } from "./command-executor.js";
 
 const project = {
   actions: {
@@ -29,4 +29,11 @@ test("worker command policy rejects long-running server commands", () => {
 test("worker command policy allows finite commands from allowlist", () => {
   assert.doesNotThrow(() => assertCommandAllowed("npm test", project));
   assert.doesNotThrow(() => assertCommandAllowed("python3 scripts/check.py", project));
+});
+
+test("worker command environment prepends common developer tool paths", () => {
+  const path = withDeveloperToolPath("/custom/bin:/usr/bin");
+  assert.equal(path.split(":").slice(0, 3).join(":"), "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin");
+  assert.match(path, /\/custom\/bin/);
+  assert.equal(path.split(":").filter((entry) => entry === "/usr/bin").length, 1);
 });

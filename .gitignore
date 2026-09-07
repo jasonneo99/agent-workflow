@@ -12,3 +12,18 @@ exports/
 .agent-workflow/exports/
 .agent-workflow/evaluations/
 .agent-workflow/runtime/
+.agent-workflow/discovery/
+.agent-workflow/learning/
+.agent-workflow/migrations/
+.agent-workflow/offline/
+.agent-workflow/reports/
+.agent-workflow/runs/
+.agent-workflow/tuning/
+templates/**/.agent-workflow/learning/
+templates/**/.agent-workflow/tuning/
+# Files produced when reusable workflows are smoke-tested against the template.
+templates/project/.agent-workflow/plan.md
+templates/project/package-lock.json
+templates/project/src/
+templates/project/test/
+templates/project/docs/

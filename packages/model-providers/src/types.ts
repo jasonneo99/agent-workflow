@@ -13,6 +13,13 @@ export interface StageExecutionInput {
   agentName: string;
   agentPrompt: string;
   stageGoal: string;
+  stagePattern?: {
+    type: string;
+    maxIterations?: number;
+    requiresVerifier: boolean;
+    promotionGate: string;
+    stopConditions: string[];
+  };
   compiledBrief: string;
   modelTier?: ModelTier;
   providerOverride?: string | null;

@@ -5,8 +5,10 @@ import path from "node:path";
 import process from "node:process";
 import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
 const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
@@ -18,6 +20,7 @@ await fs.mkdir(launchAgentsDir, { recursive: true });
 await fs.mkdir(logDir, { recursive: true });
 await fs.writeFile(plistPath, plist(label, nodePath, rootDir, logDir, env), "utf8");
 await launchctl(["bootout", `gui/${process.getuid()}`, plistPath], true);
+await launchctl(["enable", `gui/${process.getuid()}/${label}`], true);
 await launchctl(["bootstrap", `gui/${process.getuid()}`, plistPath], false);
 await launchctl(["enable", `gui/${process.getuid()}/${label}`], true);
 await launchctl(["kickstart", "-k", `gui/${process.getuid()}/${label}`], true);
@@ -33,12 +36,6 @@ function buildLaunchdEnvironment() {
     "HOME",
     "USER",
     "SHELL",
-    "DATABASE_URL",
-    "REDIS_URL",
-    "OBJECT_STORAGE_ENDPOINT",
-    "OBJECT_STORAGE_BUCKET",
-    "OBJECT_STORAGE_ACCESS_KEY",
-    "OBJECT_STORAGE_SECRET_KEY",
     "DEFAULT_MODEL_PROVIDER",
     "OPENAI_MODEL",
     "BYO_MODEL_BASE_URL",
@@ -53,7 +50,12 @@ function buildLaunchdEnvironment() {
     "AGENTFLOW_LEARNING_MODE",
     "AGENTFLOW_LEARNING_INTERVAL_MS",
     "AGENTFLOW_LEARNING_LIMIT",
+    "AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK",
+    "AGENTFLOW_LEARNING_WORKFLOW_SHAPE_AUTO_UPDATE",
+    "AGENTFLOW_APPROVAL_AUTOPILOT",
+    "AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK",
     "AGENTFLOW_DASHBOARD_PORT",
+    "AGENTFLOW_START_LOCAL_STORAGE",
     "AGENTFLOW_WORKER_POOL_PROFILE",
     "AGENTFLOW_WORKER_LIMIT",
     "AGENTFLOW_WORKER_CONCURRENCY",
@@ -61,11 +63,21 @@ function buildLaunchdEnvironment() {
   ];
   const values = {};
   for (const key of keys) {
-    if (process.env[key]) values[key] = process.env[key];
+    if (process.env[key] && !isSensitiveEnvironmentKey(key)) values[key] = process.env[key];
   }
-  values.PATH = values.PATH || "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin";
+  values.PATH = withDeveloperToolPath(values.PATH);
   values.HOME = values.HOME || os.homedir();
   return values;
+}
+
+function withDeveloperToolPath(currentPath) {
+  const prefixes = ["/opt/homebrew/bin", "/opt/homebrew/sbin", "/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+  const existing = String(currentPath || "").split(":").filter(Boolean);
+  return [...prefixes, ...existing.filter((entry) => !prefixes.includes(entry))].join(":");
+}
+
+function isSensitiveEnvironmentKey(key) {
+  return /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|DATABASE_URL|REDIS_URL|OBJECT_STORAGE_ACCESS_KEY|OBJECT_STORAGE_SECRET_KEY)/i.test(key);
 }
 
 function plist(serviceLabel, executable, cwd, logs, environment) {

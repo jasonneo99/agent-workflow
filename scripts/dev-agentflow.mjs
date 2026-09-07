@@ -5,9 +5,11 @@ import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import YAML from "yaml";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
@@ -41,10 +43,15 @@ let ticks = 0;
 
 async function main() {
   await fs.mkdir(runtimeDir, { recursive: true });
-  await writeHeartbeat("starting", "checking docker");
-  await ensureDocker();
-  await writeHeartbeat("starting", "starting services");
-  await run("docker", ["compose", "-f", "infra/docker-compose.yml", "up", "-d"]);
+  if (shouldStartLocalStorageServices()) {
+    await writeHeartbeat("starting", "checking docker");
+    await ensureDocker();
+    await writeHeartbeat("starting", "starting local storage services");
+    await run("docker", ["compose", "-f", "infra/docker-compose.yml", "up", "-d"]);
+  } else {
+    await writeHeartbeat("starting", "using configured shared storage");
+    console.log("Configured storage points at a shared/non-local host; leaving local Docker storage services stopped.");
+  }
   workerLanes = await loadWorkerLanes();
 
   if (once) {
@@ -65,6 +72,27 @@ async function main() {
   }
 }
 
+function shouldStartLocalStorageServices() {
+  if (process.env.AGENTFLOW_START_LOCAL_STORAGE === "1" || process.env.AGENTFLOW_START_LOCAL_STORAGE === "true") {
+    return true;
+  }
+  if (process.env.AGENTFLOW_START_LOCAL_STORAGE === "0" || process.env.AGENTFLOW_START_LOCAL_STORAGE === "false") {
+    return false;
+  }
+  return [process.env.DATABASE_URL, process.env.REDIS_URL, process.env.OBJECT_STORAGE_ENDPOINT]
+    .filter(Boolean)
+    .some((value) => isLocalUrl(value));
+}
+
+function isLocalUrl(value) {
+  try {
+    const host = new URL(value).hostname;
+    return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
+  } catch {
+    return false;
+  }
+}
+
 async function ensureDocker() {
   const info = await run("docker", ["info"], { quiet: true, allowFailure: true });
   if (info.exitCode === 0) {
@@ -79,11 +107,7 @@ async function ensureDocker() {
 }
 
 async function startManagedProcesses() {
-  if (await isPortOpen(dashboardPort)) {
-    console.log(`Dashboard port ${dashboardPort} is already in use; leaving existing dashboard process alone.`);
-  } else {
-    startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
-  }
+  await startDashboardIfNeeded();
   const staleLanes = [];
   for (const lane of workerLanes) {
     if (await isWorkerHeartbeatFresh(lane.heartbeatPath, lane.intervalMs)) {
@@ -115,8 +139,8 @@ async function monitor() {
       children.delete(name);
       if (!stopping) {
         console.log(`${name} exited; restarting.`);
-        if (name === "dashboard" && !(await isPortOpen(dashboardPort))) {
-          startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
+        if (name === "dashboard") {
+          await startDashboardIfNeeded();
         }
         if (name.startsWith("worker:")) {
           const lane = workerLanes.find((item) => `worker:${item.id}` === name);
@@ -130,9 +154,8 @@ async function monitor() {
       }
     }
   }
-  if (!children.has("dashboard") && !(await isPortOpen(dashboardPort))) {
-    console.log("Dashboard port is no longer open; starting dashboard.");
-    startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
+  if (!children.has("dashboard")) {
+    await startDashboardIfNeeded();
   }
   for (const lane of workerLanes) {
     if (!children.has(`worker:${lane.id}`) && !(await isWorkerHeartbeatFresh(lane.heartbeatPath, lane.intervalMs))) {
@@ -145,6 +168,18 @@ async function monitor() {
     startLearningDaemon();
   }
   await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
+}
+
+async function startDashboardIfNeeded() {
+  if (children.has("dashboard")) {
+    return;
+  }
+  if (await isPortOpen(dashboardPort)) {
+    console.log(`Dashboard port ${dashboardPort} is already in use; leaving existing dashboard process alone.`);
+    return;
+  }
+  console.log("Dashboard port is no longer open; starting dashboard.");
+  startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
 }
 
 function startWorker(lane) {
@@ -208,6 +243,16 @@ function startChild(name, npmArgs) {
     stdio: ["ignore", "inherit", "inherit"]
   });
   children.set(name, child);
+  child.once("exit", () => {
+    if (children.get(name) === child) {
+      children.delete(name);
+    }
+  });
+  child.once("error", () => {
+    if (children.get(name) === child) {
+      children.delete(name);
+    }
+  });
 }
 
 async function isWorkerHeartbeatFresh(filePath = workerHeartbeatPath, fallbackIntervalMs = workerIntervalMs) {

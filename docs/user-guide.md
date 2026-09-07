@@ -37,7 +37,7 @@ Use BYO when you want live model execution through a local, hosted, or enterpris
 ```env
 DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
-BYO_MODEL_NAME=llama3.1
+BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=not-required
 ```
 
@@ -46,7 +46,7 @@ Use OpenAI only when you intentionally want direct OpenAI API execution:
 ```env
 DEFAULT_MODEL_PROVIDER=openai
 OPENAI_API_KEY=...
-OPENAI_MODEL=gpt-5.5
+OPENAI_MODEL=auto
 ```
 
 ## 2. Smoke Test
@@ -124,6 +124,7 @@ npm run server-projects -- --json
 npm run server-resolve-project -- --project-id <project-id>
 npm run server-request-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
 npm run server-route-preview -- --project-id <project-id> --workflow review-pr --task "Review the current changes"
+npm run server-approval-preview -- --project-id <project-id> --approval-id <approval-id> --decision approve-and-execute
 ```
 
 The command is read-only. It reports server-mode opt-in state, bind/port, auth
@@ -143,7 +144,13 @@ shape with bearer-token or OIDC-proxy auth. It previews by default and only
 queues when `execute=true`, `AGENTFLOW_SERVER_MODE=1`, and
 `AGENTFLOW_SERVER_ENABLE_QUEUE=1`. Executed queue requests record actor, role,
 auth method, project id, workflow id, and idempotency details as run receipts;
-repeat requests with the same idempotency key reuse the existing run.
+repeat requests with the same idempotency key reuse the existing run. The queue
+endpoint also enforces `AGENTFLOW_SERVER_MAX_BODY_BYTES` and
+`AGENTFLOW_SERVER_RATE_LIMIT_PER_MINUTE` before queueing.
+`server-approval-preview` and `/api/server-approval-preview` provide the same
+dry-run contract for future approval decisions and action execution. They check
+registered project ownership, actor role capability, separation of duties,
+policy recheck posture, auth, and idempotency without mutating approval state.
 
 See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
 copyable end-to-end local smoke test.
@@ -256,13 +263,52 @@ rows are skipped, while source-only historical runs, tasks, receipts,
 approvals, artifacts, memory, and index rows are inserted with project ids
 rewritten through `root_uri` when needed.
 
+Post-merge evidence classifies the conflicts that remain after an insert-only
+merge. `projects` conflicts are critical because an operator must choose the
+canonical project record before shared storage is considered proven primary.
+`project_files` and `project_index_state` conflicts are refreshable index/cache
+evidence; regenerate project indexes on shared storage after switch-over rather
+than overwriting durable history.
+`action_approvals` conflicts are warnings when source-only approvals are gone
+and matching durable run, task, receipt, artifact, and memory evidence has no
+conflicts. In that case shared storage preserves the target approval lifecycle
+state and still surfaces the drift for audit.
+
 Inspect post-merge evidence:
+
+```bash
+npm run agentflow -- storage-project-conflicts \
+  --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
+  --target-database-url "$DATABASE_URL"
+```
+
+Use `storage-project-conflicts` when the evidence report shows critical
+`projects` conflicts. It is read-only and produces a compact source/target
+comparison plus a decision-record template.
+
+After review, record the decision as local migration evidence:
+
+```bash
+npm run agentflow -- storage-project-decision \
+  --root /path/to/project \
+  --action preserve-target-project \
+  --source-project-id <source-id> \
+  --target-project-id <target-id> \
+  --note "Reviewed source/target metadata; shared target is canonical."
+```
 
 ```bash
 npm run storage-merge-evidence
 npm run object-artifact-proof
 npm run object-artifact-proof -- --enumerate-buckets
 ```
+
+`object-artifact-proof -- --verify` and `--enumerate-buckets` use local MinIO
+Client (`mc`) when present and fall back to Docker `minio/mc` when Docker is
+available. The report prints the verifier mode so switch-over evidence is
+auditable even on machines without a local `mc` install.
+`npm run bootstrap-storage` uses the same path to ensure the configured object
+bucket exists.
 
 Inspect fallback posture:
 
@@ -277,6 +323,11 @@ localhost storage URLs, run offline work, and sync back with the same merge
 manifest/import flow when shared storage returns. Background auto-sync is a
 future enhancement; today the sync path is explicit and auditable.
 
+The Server Readiness dashboard includes a Primary State Plane panel for this
+operator view. It summarizes whether Hulk/shared storage is the primary state
+plane, whether localhost storage is fallback-only, how many offline sync items
+are pending, and which warning rows are informational rather than blockers.
+
 You can also record the fallback lifecycle so the dashboard keeps an operator
 queue:
 
@@ -286,8 +337,14 @@ npm run offline-fallback -- --record offline-run --project /path/to/project --ru
 npm run offline-fallback -- --record sync-back --note "Ready to merge back into shared storage"
 npm run offline-sync
 npm run offline-sync -- --scheduler-check
+npm run offline-sync -- --scheduler-check --scheduler-execute
 npm run offline-sync -- --execute
 ```
+
+For a supervised local install, `learning-daemon --offline-sync-execute` or
+`AGENTFLOW_OFFLINE_SYNC_AUTO_EXECUTE=1` lets the daemon run the same insert-only
+sync when both localhost fallback storage and shared storage are reachable. The
+dashboard shows whether the scheduler is in `dry-run` or `execute` mode.
 
 After a migration copy, compare durable source and target state:
 
@@ -494,8 +551,8 @@ Use `review-pr` for reviewing local changes, PR-like work, or risk-sensitive are
 
 ## 7. Preview Workflow Graphs
 
-Before queueing work, inspect the workflow graph, agents, subagents, context
-budgets, approval points, and selected policy profile:
+Before queueing work, inspect the workflow graph, stage patterns, agents,
+subagents, context budgets, approval points, and selected policy profile:
 
 ```bash
 npm run agentflow -- workflow-graph \
@@ -517,8 +574,14 @@ you run the workflow.
 The local dashboard exposes the same inspection surface at
 `/workflow-graph?workflow=build-feature&project=/path/to/project`. Use it when
 you want a browser-readable graph of workflow stages, primary agents, subagents,
-context budgets, approval points, and policy fit before spending live model
-tokens. Add `&view=mind-map` to switch the dashboard visualization to a
+context budgets, approval points, pattern metadata, and policy fit before
+spending live model tokens. Stage patterns classify work as single-shot,
+planner, executor, ReAct, reflexive, verifier, or finalizer behavior, with
+promotion gates where a stage feeds approval, evaluation, policy, or release
+decisions. ReAct stages emit `react_loop_receipt` artifacts when they request
+local commands or file writes, recording the observation source, action request,
+policy decision, result receipt, iteration budget, and stop reason. Add
+`&view=mind-map` to switch the dashboard visualization to a
 presentation-friendly agent connection map, or `&view=network` for a high-
 contrast neural-web SVG map. Network Map defaults to a horizontal developer
 layout, and its orientation buttons can switch to `orientation=radial` for a
@@ -546,8 +609,9 @@ to queue the original workflow as a tagged verification run for before/after
 stage-health comparison. The focused panel summarizes that comparison with
 after-signal, completed-rate, failed-rate, and active-rate delta cards. Use
 **Export Handoff** to save a Markdown and JSON snapshot of the selected graph
-URL, filters, totals, run list, focused-stage deltas, and stage-health summary
-under `.agent-workflow/exports/graphs/`. The dashboard also shows a Recent Graph
+URL, filters, totals, pattern mix, run list, focused-stage deltas, and
+stage-health summary under `.agent-workflow/exports/graphs/`. The dashboard also
+shows a Recent Graph
 Handoffs panel with prior project-local exports, their saved graph URLs, and the
 Markdown/JSON paths for reopening or sharing a graph state during review. Click
 **View** beside an export to inspect the saved Markdown handoff directly in the
@@ -851,9 +915,12 @@ Start the recommended local developer supervisor:
 npm run dev:agentflow
 ```
 
-This starts Docker services, starts the dashboard when port `17888` is free,
-starts the background worker, starts the local learning daemon, and writes a
-supervisor heartbeat to `.agent-workflow/runtime/supervisor-heartbeat.json`.
+This starts the dashboard when port `17888` is free, starts the background
+worker, starts the local learning daemon, and writes a supervisor heartbeat to
+`.agent-workflow/runtime/supervisor-heartbeat.json`. Local Docker storage starts
+only when configured storage URLs are localhost. If you are pointed at shared
+storage, such as Hulk over Tailscale, local storage stays stopped unless you set
+`AGENTFLOW_START_LOCAL_STORAGE=1`.
 
 Stop the supervised dashboard, worker, and learning daemon:
 
@@ -861,7 +928,8 @@ Stop the supervised dashboard, worker, and learning daemon:
 npm run dev:agentflow:stop
 ```
 
-This leaves Docker services running so future local workflow runs start quickly.
+This leaves Docker services alone. If local Docker storage is running and you do
+not need localhost fallback, stop it with `docker compose -f infra/docker-compose.yml stop`.
 
 On macOS, install Agent Workflow as a durable per-user LaunchAgent when you want
 it to start at login and restart after crashes or terminal closes:
@@ -870,9 +938,12 @@ it to start at login and restart after crashes or terminal closes:
 npm run dev:agentflow:launchd:install
 ```
 
-The LaunchAgent runs the same `dev:agentflow` supervisor, so it manages Docker
-services, the dashboard, worker lanes, and the learning daemon. Logs are written
-under `.agent-workflow/runtime/launchd/`. Uninstall it with:
+The LaunchAgent runs the same `dev:agentflow` supervisor, so it manages the
+dashboard, worker lanes, learning daemon, and local Docker storage only when the
+configured storage URLs are localhost or `AGENTFLOW_START_LOCAL_STORAGE=1`.
+The LaunchAgent intentionally does not embed `.env` secrets in its plist; the
+supervisor reads `.env` from the repo at runtime. Launch logs are written under
+`.agent-workflow/runtime/launchd/`. Uninstall it with:
 
 ```bash
 npm run dev:agentflow:launchd:uninstall
@@ -882,6 +953,18 @@ The Settings page shows the LaunchAgent label, plist path, PID, launch run
 count, and log links. Use **Install / Refresh** after changing `.env`,
 upgrading Agent Workflow, or changing the durable project. Use **Uninstall** to
 return to terminal-only supervision.
+
+When shared storage contains runs created on another host, keep local project
+actions pointed at the checkout on the current machine with a project path map:
+
+```bash
+AGENTFLOW_PROJECT_PATH_MAP=/home/jasonmiller/Projects=/Users/jasonmiller/Projects
+```
+
+Agent Workflow also auto-detects the common `/home/<user>` to `/Users/<user>`
+case when the mapped checkout exists. The stored `root_uri` is preserved for
+audit history; only local config reads, approved command cwd, approved file
+writes, and stale-input checks use the resolved local path.
 
 The Learning page is project-scoped. A selected project can show historical
 learning evidence while its daemon status says `missing` if the durable
@@ -1029,7 +1112,9 @@ Dashboard and JSON endpoints:
 /api/server-project?projectId=<project-id>
 /api/server-request-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
 /api/server-route-preview?projectId=<project-id>&workflow=<workflow-id>&task=<task>
+/api/server-approval-preview?projectId=<project-id>&approvalId=<approval-id>&decision=<decision>
 /api/server-queue
+/api/server-request-log
 /api/role-audit-export
 /role-audit?file=<snapshot.md>
 /api/queue
@@ -1038,6 +1123,12 @@ Dashboard and JSON endpoints:
 /api/run?id=<run-id>
 /api/quality?id=<run-id>
 ```
+
+`/api/server-request-log` and `agentflow server-request-log` show redacted
+append-only audit events for governed `/api/server-queue` requests. They keep
+request status, auth outcome, rate-limit decision, project id, workflow id, and
+run id evidence while hashing task text, actor, idempotency key, local root,
+client address, origin, and user-agent values.
 
 Run detail pages:
 
@@ -1067,16 +1158,43 @@ The Settings page shows safe local runtime details: selected provider summary, e
 The Server page shows the same read-only server-mode readiness report as the
 CLI. It is useful before experimenting with shared team operation because it
 calls out loopback versus network binding, auth posture, registered projects,
-role enforcement, endpoint classes, storage reachability, and safe next
-commands.
+role enforcement, endpoint classes, auth-hardening blockers, storage
+reachability, and safe next commands.
 
 The dashboard home page and Settings page include Local Supervisor and Background Worker status. Settings also includes macOS LaunchAgent status when running on macOS. If the LaunchAgent is missing, use **Install / Refresh** or run `npm run dev:agentflow:launchd:install`. If the supervisor says `missing`, `stopped`, or `stale`, run `npm run dev:agentflow` from the Agent Workflow repo. If only the worker is stale and you are in manual mode, run `npm run worker:daemon`. If a previous worker was interrupted while a stage was running, open `/queue` and use Requeue Running before processing again.
 
-When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
+MCP clients use a separate stdio subprocess. If Codex, VS Code, Cursor, or
+another client reports `Transport closed`, restart that client or task to create
+a fresh MCP subprocess after checking Agent Workflow's side of the pipe. Run
+`npm run runtime-monitor -- --check-mcp`, or open `/server-readiness` and use
+the MCP Pipeline smoke action. Check `.agent-workflow/runtime/mcp/stdio.log` and
+`.agent-workflow/runtime/mcp/launcher.log` for lifecycle breadcrumbs such as
+launcher resolution, start, connect, stdin close, stdout error, and exit. These
+logs are metadata-only and avoid `.env` values, provider keys, database URLs,
+storage secrets, prompt bodies, and artifacts.
+
+When the transport closes during an approval decision, prefer a narrow CLI
+fallback scoped to the exact run or approval id:
+
+```bash
+npm run agentflow -- approvals --status pending --run <run-id>
+npm run agentflow -- approvals --approve-execute <approval-id> --actor "Your Name" --actor-role approver
+```
+
+This keeps the workflow receipt trail intact while avoiding a stale
+client-owned stdio connection.
+
+When the active provider exposes a models endpoint, the Info page also lists available models and lets you update the active model without editing `.env` manually. The selector writes the provider-specific model variable, such as `OPENAI_MODEL`, `LOCAL_MODEL_NAME`, `BYO_MODEL_NAME`, `OPENAI_COMPATIBLE_MODEL`, or `BEDROCK_MODEL`. For OpenAI, `OPENAI_MODEL=auto` refreshes the live model catalog and chooses tier models automatically; exact `OPENAI_MODEL_*` values are only needed for pinned reproducible runs. Local runtimes use `LOCAL_MODEL_BASE_URL` and default to `http://localhost:11434/v1` for Ollama-compatible OpenAI endpoints. Model changes apply to new workflow tasks; restart long-running workers if they were already active.
 
 The Providers page gives model/provider controls their own workspace. Use it to inspect the selected provider, update selectable model names, and tune provider routing by tier. It renders from local config first so the dashboard stays fast; run `npm run provider-check` when you want full live provider validation.
 
 ![Providers and model routing](assets/screenshots/dashboard-providers.png)
+
+Open `/model-catalog` when you want to see why `auto` chose a model. It
+refreshes live catalogs from configured providers and shows provider readiness,
+model counts, tier selections, override source, estimated cost class, policy
+score, tier fit, and top candidate rankings. Use `/api/model-catalog` for the
+same data as JSON.
 
 If `DEFAULT_MODEL_PROVIDER=auto`, the Info page shows an auto routing preview for `fast`, `standard`, and `reasoning` stages. It also shows an available-provider status table with safe details for each provider: whether required config exists, whether an API key or auth path is configured, the selected model, base URL, AWS profile/region, and readiness details. The preview uses the same readiness checks as worker execution, including AWS Bedrock checks, so Bedrock appears in the route only when AWS credentials are currently usable.
 
@@ -1184,6 +1302,8 @@ npm run agentflow -- approvals
 npm run agentflow -- approvals --status all
 npm run agentflow -- approvals --approve <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
 npm run agentflow -- approvals --approve-execute <approval-id> --actor "Your Name" --actor-role approver --note "Looks safe"
+npm run agentflow -- approvals --auto-approve-execute --max-risk medium
+npm run agentflow -- approvals --auto-approve-execute --max-risk medium --dry-run
 npm run agentflow -- approvals --always <approval-id> --always-scope exact --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --always <approval-id> --always-scope broad --actor "Your Name" --actor-role approver
 npm run agentflow -- approvals --execute <approval-id> --actor "Your Name" --actor-role operator
@@ -1234,6 +1354,42 @@ npm run agentflow -- request-approval \
 ```
 
 Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
+
+For local developer setups that want more autonomy, approval autopilot can scan
+pending approvals and already-approved unexecuted actions, then approve and
+execute eligible low/medium local side effects:
+
+```env
+AGENTFLOW_APPROVAL_AUTOPILOT=on
+AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK=medium
+```
+
+When `AGENTFLOW_APPROVAL_AUTOPILOT=on`, the learning daemon runs the same
+approval autopilot sweep on every `apply-approved` tick. Use
+`AGENTFLOW_APPROVAL_AUTOPILOT=off` or the dashboard Learning settings when you
+want observe-first approval review instead.
+
+Autopilot still rechecks project policy, role gates, executable action type,
+blocked command/path patterns, file byte limits, and secret-looking paths before
+anything runs. Deployment decisions, autonomy changes, destructive prune,
+provider/server/network commands, blocked policy actions, and high-risk items
+remain human-gated. Already-approved stale file writes are also held for fresh
+review so an old approval cannot overwrite newer docs or source.
+
+Use the backlog radar when approvals look stuck or the dashboard shows warning
+states:
+
+```bash
+npm run agentflow -- approval-backlog --project /path/to/project
+npm run agentflow -- approval-backlog --status pending
+npm run agentflow -- approval-backlog --status failed
+npm run agentflow -- approval-backlog --stale-minutes 30 --json
+```
+
+The report includes pending, approved-but-not-executed, failed, stale, and
+autopilot-blocked items. Pass `--status` to inspect the same status bucket as
+the dashboard tab. The learning daemon writes the same warning/error counts into
+its heartbeat so the Learning page can surface missed approval work.
 
 The dashboard Approvals page can add these rules from a pending approval. It
 shows function-style choices because agents request tool/function side effects,
@@ -1467,6 +1623,17 @@ npm run agentflow -- feedback --run <run-id> --rating rejected --note "Wrong fil
 
 The dashboard run page also includes Accept, Mark Revised, and Reject buttons. Feedback is stored as a normal receipt/artifact and as compact project memory, so future routing and personalization can use it without adding project-local prompt bloat.
 
+Use the feedback inbox when you want to review recent unscored runs across one project or every registered project:
+
+```bash
+npm run agentflow -- feedback-inbox --limit 50
+npm run agentflow -- feedback-inbox --project /path/to/project --limit 50
+```
+
+The dashboard page `/feedback-inbox` groups unreviewed runs into probably accept, probably revise, and probably reject buckets. Each row includes task summary, stage completion, quality/fallback/latency signals, key findings, failures, recommended next action, and per-row feedback controls. These buckets are suggestions only; the stored learning signal is still the feedback rating and note you choose.
+
+Use **Bulk Review** from `/feedback-inbox` to review suggested ratings and notes in one table. Rows are checked by default so you can quickly submit the obvious items, but you can uncheck any row, change its rating, or edit its note before recording feedback.
+
 Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report. Compiled briefs also include approved project-local tuning notes from `.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and `routing-preferences.md` with a small context cap.
 
 ## 18. Preference Scorecard
@@ -1572,7 +1739,11 @@ Without `--write`, the command is a dry run and prints the files it would create
 
 Use `queue-tuning-approvals` to stage recommendations for review, `tuning-approvals` to approve or reject selected proposal ids, `generate-tuning-patches` to create reviewable patch-plan files, and `apply-tuning-patches` to write project-local tuning notes that future compiled briefs will read. Use `apply-tuning-proposals --approved` only when you also want overlay files for external tools or manual review.
 
-The dashboard tuning panel includes a Dry Run Apply button. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
+The dashboard Model Improve page includes an Applied Tuning Overlay panel. It shows whether `.agent-workflow/tuning/proposals.json` exists, when it was generated, which proposal ids were selected, and the proposal-kind mix. "Applied" in this panel means Agent Workflow wrote project-local tuning state for future tools to inspect. If the selected proposals are `feedback_needed`, no prompt, routing, or model-tier behavior has changed yet; Agent Workflow is preserving the signal that more approved feedback or evaluation evidence is needed before changing behavior.
+
+The same page also includes a Feedback Capture panel. It lists recent completed or failed runs that do not have feedback yet, then lets you record accepted, revised, or rejected feedback with one short note. Each target includes the task, stage completion count, quality/fallback/latency signals, key findings, failures, and recommended next action so the feedback is based on evidence instead of a bare run id. Use the selector at the top for a deliberate single feedback entry, or use the per-row Accept, Revise, and Reject controls when the evidence makes the decision obvious. This uses the same `feedback` recorder as the CLI and MCP tool, so dashboard feedback immediately contributes to preference scorecards, tuning proposals, workflow-shape recommendations, and local learning daemon evidence.
+
+The dashboard tuning panel includes a Dry Run Apply button. The learning daemon can also write safe project-local tuning overlays automatically when autonomous local mode is enabled. The MCP tools `agentflow_queue_tuning_approvals`, `agentflow_tuning_approvals`, `agentflow_generate_tuning_patches`, `agentflow_apply_tuning_patches`, and `agentflow_apply_tuning_proposals` expose the same behavior for Codex, VS Code, Cursor, or any MCP-capable client.
 
 ## 23. Local Learning Report
 
@@ -1604,6 +1775,18 @@ npm run agentflow -- learning-action-receipts --project /path/to/project
 npm run agentflow -- learning-action-receipts --project /path/to/project --reject learn-action-001 --actor "Your Name" --note "Not worth doing"
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature
 npm run agentflow -- learning-workflow-shape --project /path/to/project --workflow build-feature --write
+npm run agentflow -- agent-improvement-report --project /path/to/project
+npm run agentflow -- agent-improvement-report --project /path/to/project --write
+npm run agentflow -- agent-improvement-report --project /path/to/project --agent ux-reviewer --json
+npm run agentflow -- agent-improvement-patches --project /path/to/project
+npm run agentflow -- agent-improvement-patches --project /path/to/project --write
+npm run agentflow -- agent-improvement-patches --project /path/to/project --ids ux-reviewer --json
+npm run agentflow -- agent-improvement-evals --project /path/to/project
+npm run agentflow -- agent-improvement-evals --project /path/to/project --write
+npm run agentflow -- agent-improvement-evals --project /path/to/project --ids ux-reviewer --json
+npm run agentflow -- agent-improvement-promotions --project /path/to/project
+npm run agentflow -- agent-improvement-promotions --project /path/to/project --write
+npm run agentflow -- agent-improvement-promotions --project /path/to/project --approve promotion-patch-agent-ux-reviewer-improvement --reviewer "Your Name" --note "Approved after holdout eval review"
 ```
 
 The daemon defaults to `apply-approved`, which autonomously refreshes
@@ -1624,6 +1807,10 @@ http://127.0.0.1:17888/api/learning-daemon-status?project=/path/to/project
 http://127.0.0.1:17888/api/learning-application-plan?project=/path/to/project
 http://127.0.0.1:17888/api/learning-action-receipts?project=/path/to/project
 http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&workflow=build-feature
+http://127.0.0.1:17888/api/agent-improvement-report?project=/path/to/project
+http://127.0.0.1:17888/api/agent-improvement-patches?project=/path/to/project
+http://127.0.0.1:17888/api/agent-improvement-evals?project=/path/to/project
+http://127.0.0.1:17888/api/agent-improvement-promotions?project=/path/to/project
 ```
 
 `learning-proposals --write` creates local review files only under
@@ -1641,6 +1828,16 @@ http://127.0.0.1:17888/api/learning-workflow-shape?project=/path/to/project&work
 - `action-receipts.md`
 - `workflow-shape-proposals.json`
 - `stage-recommendations.md`
+- `agent-improvement-report.json`
+- `agent-improvement-recommendations.md`
+- `agent-improvement-patches.json`
+- `agent-improvement-patches.md`
+- `agent-improvement-evals.json`
+- `agent-improvement-evals.md`
+- `agent-improvement-promotions.json`
+- `agent-improvement-promotions.md`
+- `agent-improvement-promotion-receipts.json`
+- `agent-improvement-promotion-receipts.md`
 - `settings.json`
 
 The workflow shape optimizer looks for repeated failures, expensive or slow
@@ -1651,6 +1848,24 @@ agent types. The dashboard Learning page includes an Autonomous optimizer
 switch. It defaults on, so each daemon tick may refresh only its own
 learning-owned shape recommendation files. Turn it off for approval-first
 review of those recommendations.
+
+The agent definition improvement loop looks at reusable and project-local
+agents by role, workflow usage, failures, feedback, routing/cost data, and eval
+evidence. It recommends safer prompts, clearer capabilities, approval
+boundaries, context-budget changes, and validation expectations. By default it
+only writes Agent Workflow-owned recommendation files under
+`.agent-workflow/learning/`; editing real agent YAML, adding new agent types,
+expanding autonomy, or running web/model research remains approval-gated until
+a later promotion phase. `agent-improvement-patches` creates exact proposed
+YAML, source hashes, schema validation, rollback references, and diff previews
+as learning-owned files without editing agent definitions.
+`agent-improvement-evals` scores those patch previews against recent
+representative tasks and checks schema validity, rollback hash freshness,
+holdout coverage, risk boundaries, and local evidence support before anything
+can become promotion-ready. `agent-improvement-promotions` turns passing evals
+into an auditable promotion queue, preserves prior decisions when source hashes
+still match, marks stale queue items superseded, and records approval/rejection
+receipts before any future agent YAML promotion step.
 
 When `learning-application-plan --write` or the daemon's `apply-approved` mode
 turns approved or auto-approved proposals into local actions, Agent Workflow
@@ -1667,7 +1882,12 @@ heartbeat, and `agentflow_learning_daemon_tick` runs one bounded daemon tick.
 without applying source, provider, command, network, or export changes.
 `agentflow_learning_workflow_shape` exposes the
 workflow shape optimizer through MCP. `agentflow_learning_action_receipts`
-lists or rejects planned learning actions.
+lists or rejects planned learning actions. `agentflow_agent_improvement_report`
+exposes the agent definition improvement report, and
+`agentflow_agent_improvement_patches` exposes the validated YAML patch preview.
+`agentflow_agent_improvement_evals` exposes holdout promotion scoring with
+rollback evidence. `agentflow_agent_improvement_promotions` exposes the
+promotion queue and decision receipts.
 
 The learning flow may mutate local learning state that Agent Workflow created
 and owns: its own files under `.agent-workflow/learning/` today and future
