@@ -83,7 +83,10 @@ export function createExecutorSnapshots(input: {
       requestedHost: registration.host,
       localFallback: registration.local_fallback
     } satisfies Omit<ExecutorSnapshot, "snapshotHash">;
-    snapshots[stage.id] = { ...evidence, snapshotHash: stableHash(evidence) };
+    snapshots[stage.id] = {
+      ...evidence,
+      snapshotHash: executorEvidenceHash(evidence)
+    };
   }
   return snapshots;
 }
@@ -127,7 +130,9 @@ export function assertSnapshot(snapshot: ExecutorSnapshot): void {
   if (!Number.isInteger(snapshot.timeoutMs) || snapshot.timeoutMs < 1 || snapshot.timeoutMs > 3_600_000) throw new Error("Executor timeout is outside the registered bounds.");
   if (!Number.isInteger(snapshot.maxOutputChars) || snapshot.maxOutputChars < 1 || snapshot.maxOutputChars > 1_000_000) throw new Error("Executor output limit is outside the registered bounds.");
   const { snapshotHash, ...evidence } = snapshot;
-  if (stableHash(evidence) !== snapshotHash) throw new Error("Executor snapshot evidence hash mismatch.");
+  if (executorEvidenceHash(evidence) !== snapshotHash) {
+    throw new Error("Executor snapshot evidence hash mismatch.");
+  }
 }
 
 export function assertExecutorRegistration(snapshot: ExecutorSnapshot, project: ProjectConfig, projectRootUri: string): void {
@@ -182,6 +187,18 @@ function truncate(value: string, limit: number): string {
   return limit <= marker.length ? value.slice(0, limit) : `${value.slice(0, limit - marker.length)}${marker}`;
 }
 
-function stableHash(value: unknown): string {
-  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export function executorEvidenceHash(value: unknown): string {
+  return createHash("sha256")
+    .update(JSON.stringify(canonicalizeJson(value)))
+    .digest("hex");
+}
+
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value as Record<string, unknown>)
+      .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, entry]) => [key, canonicalizeJson(entry)])
+  );
 }
