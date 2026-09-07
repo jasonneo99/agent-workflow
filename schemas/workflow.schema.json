@@ -43,6 +43,15 @@
             "default": { "load": [], "max_tokens": 4000 }
           },
           "approval_required": { "type": "boolean", "default": false },
+          "executor": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["id", "operation"],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "operation": { "enum": ["typecheck", "validate", "test"] }
+            }
+          },
           "output": { "type": "string", "default": "structured_summary" }
         }
       }

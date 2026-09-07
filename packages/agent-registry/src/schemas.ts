@@ -56,6 +56,10 @@ export const workflowSchema = z.object({
       max_tokens: z.number().int().positive().default(4000)
     }).default({ load: [], max_tokens: 4000 }),
     approval_required: z.boolean().default(false),
+    executor: z.object({
+      id: z.string().min(1),
+      operation: z.enum(["typecheck", "validate", "test"])
+    }).optional(),
     output: z.string().default("structured_summary")
   })).min(1)
 });
@@ -125,6 +129,16 @@ const workerPoolSchema = z.object({
   default_profile: z.string().min(1).default("local"),
   profiles: z.record(z.string(), workerPoolProfileSchema).default({})
 }).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
+
+const executorAdapterRegistrationSchema = z.object({
+  type: z.literal("hulk-exact-revision"),
+  projects: z.array(z.string().min(1)).min(1),
+  operations: z.array(z.enum(["typecheck", "validate", "test"])).min(1),
+  host: z.string().min(1).default("hulk"),
+  timeout_ms: z.number().int().positive().max(3_600_000).default(1_800_000),
+  max_output_chars: z.number().int().positive().max(1_000_000).default(20_000),
+  local_fallback: z.enum(["off", "explicit"]).default("off")
+});
 
 const teamRoleSchema = z.object({
   description: z.string().default(""),
@@ -197,8 +211,9 @@ export const projectConfigSchema = z.object({
   execution: z.object({
     policy_profile: z.string().min(1).default("local"),
     policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({}),
+    executor_adapters: z.record(z.string(), executorAdapterRegistrationSchema).optional(),
     worker_pool: workerPoolSchema.optional()
-  }).default({ policy_profile: "local", policy_profiles: {} }),
+  }).default({ policy_profile: "local", policy_profiles: {}, executor_adapters: {} }),
   policies: z.object({
     allow_wide_open: z.boolean().default(false),
     require_approval_for_external_actions: z.boolean().default(true),

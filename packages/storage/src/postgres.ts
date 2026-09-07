@@ -1,7 +1,9 @@
 import pg from "pg";
-import type { AgentCard, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
+import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
+import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
+import { execFileSync } from "node:child_process";
 
 const { Client } = pg;
 
@@ -79,12 +81,14 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS model_tier_override text,
       ADD COLUMN IF NOT EXISTS provider_override text,
       ADD COLUMN IF NOT EXISTS evaluation_metadata jsonb NOT NULL DEFAULT '{}',
-      ADD COLUMN IF NOT EXISTS workflow_snapshot jsonb NOT NULL DEFAULT '{}'
+      ADD COLUMN IF NOT EXISTS workflow_snapshot jsonb NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
       ALTER TABLE workflow_tasks
       ADD COLUMN IF NOT EXISTS worker_id text,
-      ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz
+      ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+      ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -1007,10 +1011,12 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         );
       }
 
+      const taskIds: Record<string, string> = {};
       for (const stage of input.workflow.stages) {
-        await client.query(
+        const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
-           values ($1, $2, $3, 'queued', $4)`,
+           values ($1, $2, $3, 'queued', $4)
+           returning id::text`,
           [
             runId,
             stage.id,
@@ -1018,7 +1024,25 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
             `${runId}:${stage.id}:${stage.agent}`
           ]
         );
+        taskIds[stage.id] = taskResult.rows[0].id;
       }
+      const revision = input.workflow.stages.some((stage) => stage.executor)
+        ? exactGitRevision(input.projectRootUri)
+        : "";
+      const executorSnapshots = revision ? createExecutorSnapshots({
+        project: input.policySnapshot as ProjectConfig,
+        workflow: input.workflow,
+        revision,
+        runId,
+        taskIds
+      }) : {};
+      for (const [stageId, snapshot] of Object.entries(executorSnapshots)) {
+        await client.query(
+          `update workflow_tasks set executor_snapshot = $3 where run_id = $1 and stage_id = $2`,
+          [runId, stageId, JSON.stringify(snapshot)]
+        );
+      }
+      await client.query(`update workflow_runs set executor_snapshot = $2 where id = $1`, [runId, JSON.stringify(executorSnapshots)]);
 
       await client.query("commit");
       return {
@@ -1049,6 +1073,7 @@ export async function replayWorkflowRun(input: {
         projectConfig: Record<string, unknown>;
         workflowId: string;
         workflowSnapshot: WorkflowDefinition | null;
+        executorSnapshot: Record<string, ExecutorSnapshot>;
         workflowDefinition: WorkflowDefinition | null;
         task: string;
         autonomy: string;
@@ -1069,6 +1094,7 @@ export async function replayWorkflowRun(input: {
            p.config as "projectConfig",
            wr.workflow_id as "workflowId",
            nullif(wr.workflow_snapshot, '{}'::jsonb) as "workflowSnapshot",
+           wr.executor_snapshot as "executorSnapshot",
            wf.definition as "workflowDefinition",
            wr.task,
            wr.autonomy,
@@ -1168,10 +1194,12 @@ export async function replayWorkflowRun(input: {
         );
       }
 
+      const taskIds: Record<string, string> = {};
       for (const stage of workflow.stages) {
-        await client.query(
+        const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
-           values ($1, $2, $3, 'queued', $4)`,
+           values ($1, $2, $3, 'queued', $4)
+           returning id::text`,
           [
             runId,
             stage.id,
@@ -1179,7 +1207,20 @@ export async function replayWorkflowRun(input: {
             `${runId}:${stage.id}:${stage.agent}`
           ]
         );
+        taskIds[stage.id] = taskResult.rows[0].id;
       }
+      const sourceRevision = Object.values(sourceRun.executorSnapshot ?? {})[0]?.revision;
+      const replayExecutorSnapshots = sourceRevision ? createExecutorSnapshots({
+        project: sourceRun.policySnapshot as ProjectConfig,
+        workflow,
+        revision: sourceRevision,
+        runId,
+        taskIds
+      }) : {};
+      for (const [stageId, snapshot] of Object.entries(replayExecutorSnapshots)) {
+        await client.query(`update workflow_tasks set executor_snapshot = $3 where run_id = $1 and stage_id = $2`, [runId, stageId, JSON.stringify(snapshot)]);
+      }
+      await client.query(`update workflow_runs set executor_snapshot = $2 where id = $1`, [runId, JSON.stringify(replayExecutorSnapshots)]);
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1, 'workflow-orchestrator', 'workflow_replayed', $2, $3, $4)`,
@@ -1225,6 +1266,7 @@ export interface ClaimedWorkflowTask {
   providerOverride: string | null;
   workerId: string | null;
   leaseExpiresAt: string | null;
+  executorSnapshot?: ExecutorSnapshot | null;
   compiledBrief: string;
   priorReceipts: Array<{
     agentId: string;
@@ -1298,6 +1340,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            wr.provider_override as "providerOverride",
            wt.worker_id as "workerId",
            wt.lease_expires_at::text as "leaseExpiresAt",
+           nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
            coalesce(wr.model_tier_override, a.definition->>'model_tier') as "modelTier"`
         ,
         [workerId, leaseSeconds, projectRootUri]
@@ -1327,6 +1370,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       throw error;
     }
   });
+}
+
+function exactGitRevision(projectRootUri: string): string {
+  const revision = execFileSync("git", ["-C", projectRootUri, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+  if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Remote executor requires an exact 40-character Git revision.");
+  return revision;
 }
 
 export async function completeWorkflowTask(input: {
@@ -1559,6 +1608,7 @@ export interface WorkflowTaskStatus {
   attempts: number;
   startedAt: string | null;
   finishedAt: string | null;
+  executorSnapshot?: ExecutorSnapshot | null;
 }
 
 export interface WorkflowStageHealthStatus {
@@ -2138,6 +2188,7 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          agent_id as "agentId",
          status,
          attempts,
+         nullif(executor_snapshot, '{}'::jsonb) as "executorSnapshot",
          started_at::text as "startedAt",
          finished_at::text as "finishedAt"
        from workflow_tasks

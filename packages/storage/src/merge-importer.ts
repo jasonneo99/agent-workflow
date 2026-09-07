@@ -245,26 +245,26 @@ async function importWorkflowRuns(sourceClient: pg.Client, targetClient: pg.Clie
     const targetProjectId = row.root_uri ? projectIds.get(row.root_uri) : row.project_id;
     inserted += await exec(targetClient, `insert into workflow_runs (
       id, project_id, workflow_id, status, task, autonomy, policy_profile, policy_snapshot, policy_snapshot_hash,
-      model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, compiled_brief_uri, started_at, finished_at
-    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) on conflict do nothing`, [
+      model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, executor_snapshot, compiled_brief_uri, started_at, finished_at
+    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) on conflict do nothing`, [
       row.id, targetProjectId, row.workflow_id, row.status, row.task, row.autonomy, row.policy_profile, row.policy_snapshot, row.policy_snapshot_hash,
-      row.model_tier_override, row.provider_override, row.evaluation_metadata, row.workflow_snapshot, row.compiled_brief_uri, row.started_at, row.finished_at
+      row.model_tier_override, row.provider_override, row.evaluation_metadata, row.workflow_snapshot, row.executor_snapshot, row.compiled_brief_uri, row.started_at, row.finished_at
     ]);
   }
   return inserted;
 }
 
 async function importWorkflowTasks(sourceClient: pg.Client, targetClient: pg.Client): Promise<number> {
-  const rows = (await sourceClient.query(`select id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key, worker_id, lease_expires_at, available_at, started_at, finished_at
+  const rows = (await sourceClient.query(`select id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key, executor_snapshot, worker_id, lease_expires_at, available_at, started_at, finished_at
     from workflow_tasks order by available_at`)).rows;
   let inserted = 0;
   for (const row of rows) {
     inserted += await exec(targetClient, `insert into workflow_tasks (
       id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key,
-      worker_id, lease_expires_at, available_at, started_at, finished_at
-    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) on conflict do nothing`, [
+      executor_snapshot, worker_id, lease_expires_at, available_at, started_at, finished_at
+    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) on conflict do nothing`, [
       row.id, row.run_id, row.stage_id, row.agent_id, row.status, row.input_uri, row.output_uri, row.attempts, row.idempotency_key,
-      row.worker_id, row.lease_expires_at, row.available_at, row.started_at, row.finished_at
+      row.executor_snapshot, row.worker_id, row.lease_expires_at, row.available_at, row.started_at, row.finished_at
     ]);
   }
   return inserted;

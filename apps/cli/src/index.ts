@@ -2146,7 +2146,8 @@ program
       console.log("");
       console.log("Stages");
       for (const task of details.tasks) {
-        console.log(`- ${task.stageId}: ${task.agentId} ${task.status} attempts=${task.attempts}`);
+        const executor = task.executorSnapshot ? ` executor=${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}@${task.executorSnapshot.requestedHost}` : "";
+        console.log(`- ${task.stageId}: ${task.agentId} ${task.status} attempts=${task.attempts}${executor}`);
       }
       console.log("");
       console.log("Receipts");
@@ -16462,7 +16463,7 @@ function renderRunDetailHtml(input: {
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
     : "<p>No summary available.</p>";
   const taskRows = input.tasks.map((task) => `
-    <tr><td>${escapeHtml(task.stageId)}</td><td>${escapeHtml(task.agentId)}</td><td>${escapeHtml(task.status)}</td><td>${task.attempts}</td></tr>
+    <tr><td>${escapeHtml(task.stageId)}</td><td>${escapeHtml(task.agentId)}</td><td>${escapeHtml(task.status)}</td><td>${task.attempts}</td><td>${task.executorSnapshot ? escapeHtml(`${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}@${task.executorSnapshot.requestedHost}`) : "local model"}</td></tr>
   `).join("");
   const receiptRows = input.receipts.map((receipt) => `
     <tr><td>${escapeHtml(receipt.actionType)}</td><td>${escapeHtml(receipt.agentId)}</td><td>${escapeHtml(receipt.summary)}</td></tr>
@@ -16551,7 +16552,7 @@ function renderRunDetailHtml(input: {
     </section>
     <section class="panel">
       <h2>Stages</h2>
-      <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th></tr></thead><tbody>${taskRows}</tbody></table>
+      <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th><th>Executor</th></tr></thead><tbody>${taskRows}</tbody></table>
     </section>
     <section class="panel">
       <h2>Receipts</h2>
