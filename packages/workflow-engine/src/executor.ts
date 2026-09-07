@@ -6,7 +6,7 @@ import { providerFromEnv } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
-import { executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
+import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
 import {
   claimNextWorkflowTask,
   completeWorkflowTask,
@@ -481,8 +481,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
 async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNextWorkflowTask>> & {}, project: ReturnType<typeof projectConfigSchema.parse>): Promise<void> {
   if (!task?.executorSnapshot) throw new Error("Executor stage is missing immutable executor evidence.");
+  if (task.executorSnapshot.registeredProjectRoot !== task.projectRootUri) throw new Error("Executor snapshot project root does not match the registered workflow project.");
+  assertExecutorRegistration(task.executorSnapshot, project, task.projectRootUri);
   const commandLine = operationCommand(task.executorSnapshot.operation);
   assertCommandAllowed(commandLine, project);
+  const approvalTarget = executorApprovalTarget(task.executorSnapshot);
   try {
     const previous = await findRunActionByIdempotencyKey({
       runId: task.runId,
@@ -510,11 +513,48 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
       });
       return;
     }
-    const execution = await executeExecutorSnapshot(task.executorSnapshot, {
-      localFallback: task.executorSnapshot.localFallback === "explicit"
-        ? async () => localFallbackResult(commandLine, task.projectRootUri, project, task.executorSnapshot!.requestedHost)
-        : undefined
+    const gated = await runExecutorApprovalGate({
+      project,
+      target: approvalTarget,
+      approved: false,
+      execute: () => executeExecutorSnapshot(task.executorSnapshot!, {
+        localFallback: task.executorSnapshot!.localFallback === "explicit"
+          ? async () => localFallbackResult(commandLine, task.projectRootUri, project, task.executorSnapshot!.requestedHost)
+          : undefined
+      })
     });
+    if (gated.status === "pending") {
+        const approval = await requestActionApproval({
+          runId: task.runId,
+          taskId: task.taskId,
+          stageId: task.stageId,
+          agentId: task.agentId,
+          actionType: "executor_adapter",
+          target: approvalTarget,
+          rationale: `Policy requires approval before executing ${approvalTarget}.`,
+          policyDecision: {
+            approvalRequired: true,
+            allowedByPolicy: true,
+            policyProfile: project.execution.policy_profile
+          },
+          payload: {
+            snapshot: task.executorSnapshot,
+            commandLine,
+            payloadHash: hashText(JSON.stringify(task.executorSnapshot))
+          },
+          idempotencyKey: task.executorSnapshot.snapshotHash
+        });
+        await completeWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          summary: `Approval pending for ${approvalTarget}.`,
+          artifact: { executor: task.executorSnapshot, actionResults: [{ type: "executor_adapter_approval_pending", approvalId: approval.approvalId, artifactUri: approval.artifactUri, status: approval.status }] }
+        });
+        return;
+    }
+    const executorApprovalRule = gated.approvalRule;
+    const execution = gated.result;
     const artifactUri = await recordRunAction({
       runId: task.runId,
       taskId: task.taskId,
@@ -523,7 +563,7 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
       target: `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}`,
       summary: `${execution.status} on ${execution.executionHost}${execution.fallbackUsed ? " via explicit local fallback" : ""}`,
       artifactKind: "executor_output",
-      artifactContent: { snapshot: task.executorSnapshot, execution },
+      artifactContent: { snapshot: task.executorSnapshot, execution, approvalRule: executorApprovalRule ?? undefined },
       idempotencyKey: task.executorSnapshot.snapshotHash
     });
     if (execution.status !== "passed") throw new Error(`Executor ${task.executorSnapshot.executorId} failed on ${execution.executionHost}.`);
@@ -548,6 +588,23 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
     });
     throw error;
   }
+}
+
+export function executorApprovalTarget(snapshot: { executorId: string; operation: string; requestedHost: string; revision: string; registeredProjectRoot: string }): string {
+  return `${snapshot.executorId}/${snapshot.operation}@${snapshot.requestedHost}#${snapshot.revision}:${snapshot.registeredProjectRoot}`;
+}
+
+export async function runExecutorApprovalGate<T>(input: {
+  project: ReturnType<typeof projectConfigSchema.parse>;
+  target: string;
+  approved: boolean;
+  execute: () => Promise<T>;
+}): Promise<{ status: "pending" } | { status: "executed"; result: T; approvalRule: ActionApprovalRuleMatch | null }> {
+  const approvalRule = input.project.policies.require_approval_for_external_actions
+    ? evaluateActionApprovalRule({ project: input.project, actionType: "executor_adapter", target: input.target })
+    : null;
+  if (input.project.policies.require_approval_for_external_actions && !input.approved && !approvalRule) return { status: "pending" };
+  return { status: "executed", result: await input.execute(), approvalRule };
 }
 
 function operationCommand(operation: ExecutorOperation): string {

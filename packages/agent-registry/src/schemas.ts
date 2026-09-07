@@ -83,7 +83,7 @@ const actionOverridesSchema = z.object({
   approval_rules: z.array(z.object({
     id: z.string().min(1),
     description: z.string().default(""),
-    action_type: z.enum(["local_command", "file_write"]),
+    action_type: z.enum(["local_command", "file_write", "executor_adapter"]),
     target: z.string().min(1),
     effect: z.enum(["auto_execute"]).default("auto_execute"),
     max_bytes: z.number().int().positive().optional()
@@ -134,7 +134,8 @@ const executorAdapterRegistrationSchema = z.object({
   type: z.literal("hulk-exact-revision"),
   projects: z.array(z.string().min(1)).min(1),
   operations: z.array(z.enum(["typecheck", "validate", "test"])).min(1),
-  host: z.string().min(1).default("hulk"),
+  host: z.literal("hulk").default("hulk"),
+  project_root: z.string().min(1),
   timeout_ms: z.number().int().positive().max(3_600_000).default(1_800_000),
   max_output_chars: z.number().int().positive().max(1_000_000).default(20_000),
   local_fallback: z.enum(["off", "explicit"]).default("off")
@@ -265,7 +266,7 @@ export const projectConfigSchema = z.object({
     approval_rules: z.array(z.object({
       id: z.string().min(1),
       description: z.string().default(""),
-      action_type: z.enum(["local_command", "file_write"]),
+      action_type: z.enum(["local_command", "file_write", "executor_adapter"]),
       target: z.string().min(1),
       effect: z.enum(["auto_execute"]).default("auto_execute"),
       max_bytes: z.number().int().positive().optional()

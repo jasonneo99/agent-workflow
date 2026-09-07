@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { projectConfigSchema, workflowSchema } from "../../agent-registry/src/schemas.js";
-import { assertSnapshot, createExecutorSnapshots, executeExecutorSnapshot, type ExecutorResult } from "./index.js";
+import { assertExecutorRegistration, assertSnapshot, createExecutorSnapshots, executeExecutorSnapshot, type ExecutorResult } from "./index.js";
 
 const revision = "a".repeat(40);
 
@@ -18,6 +18,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
           projects: ["agent-workflow"],
           operations: ["typecheck", "validate", "test"],
           host: "hulk",
+          project_root: process.cwd(),
           timeout_ms: 500,
           max_output_chars: 20,
           local_fallback: "off",
@@ -30,7 +31,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
     id: "remote", name: "Remote", description: "test", lead: "test-engineer",
     stages: [{ id: "verify", agent: "test-engineer", goal: "verify", executor: { id: "hulk-exact-revision", operation: "typecheck" } }]
   });
-  return createExecutorSnapshots({ project, workflow, revision, runId: "run-1", taskIds: { verify: "task-1" } }).verify;
+  return createExecutorSnapshots({ project, workflow, revision, runId: "run-1", taskIds: { verify: "task-1" }, projectRootUri: process.cwd() }).verify;
 }
 
 test("immutable executor snapshots bind all envelope fields and have stable idempotency evidence", () => {
@@ -39,6 +40,7 @@ test("immutable executor snapshots bind all envelope fields and have stable idem
   assert.deepEqual(left, right);
   assert.equal(left.executorId, "hulk-exact-revision");
   assert.equal(left.registeredProject, "agent-workflow");
+  assert.equal(left.registeredProjectRoot, process.cwd());
   assert.equal(left.runId, "run-1");
   assert.equal(left.taskId, "task-1");
   assert.equal(left.revision, revision);
@@ -50,11 +52,15 @@ test("immutable executor snapshots bind all envelope fields and have stable idem
 test("snapshot creation rejects unknown adapters, projects, and operations", () => {
   const base = projectConfigSchema.parse({ project: { name: "agent-workflow" } });
   const unknown = workflowSchema.parse({ id: "x", name: "x", description: "x", lead: "x", stages: [{ id: "s", agent: "x", goal: "x", executor: { id: "missing", operation: "test" } }] });
-  assert.throws(() => createExecutorSnapshots({ project: base, workflow: unknown, revision, runId: "r", taskIds: { s: "t" } }), /Unknown executor/);
+  assert.throws(() => createExecutorSnapshots({ project: base, workflow: unknown, revision, runId: "r", taskIds: { s: "t" }, projectRootUri: process.cwd() }), /Unknown executor/);
   assert.throws(() => fixture({ projects: ["another-project"] }), /not registered for project/);
   assert.throws(() => fixture({ operations: ["test"] }), /does not permit operation typecheck/);
+  assert.throws(() => fixture({ host: "loki" }), /Invalid literal value|Invalid input/);
+  assert.throws(() => fixture({ project_root: "relative/path" }), /project_root must be absolute/);
+  assert.throws(() => fixture({ project_root: path.join(process.cwd(), "spoof") }), /not registered for project root/);
   assert.throws(() => assertSnapshot({ ...fixture(), registeredProject: "unknown", snapshotHash: fixture().snapshotHash }), /Unregistered executor project/);
   assert.throws(() => assertSnapshot({ ...fixture(), operation: "deploy" as never }), /Unregistered executor operation/);
+  assert.throws(() => assertSnapshot({ ...fixture(), requestedHost: "loki" }), /Unregistered executor host/);
 });
 
 test("unreachable Hulk fails closed unless explicit local fallback is configured", async () => {
@@ -68,6 +74,16 @@ test("unreachable Hulk fails closed unless explicit local fallback is configured
   assert.equal(fallbackCalls, 1);
   assert.equal(result.fallbackUsed, true);
   assert.notEqual(result.executionHost, "hulk");
+});
+
+test("current registration recheck rejects project-name spoofing and configuration drift", () => {
+  const snapshot = fixture();
+  const valid = projectConfigSchema.parse({ project: { name: "agent-workflow" }, execution: { executor_adapters: { "hulk-exact-revision": { type: "hulk-exact-revision", projects: ["agent-workflow"], operations: ["typecheck"], host: "hulk", project_root: process.cwd() } } } });
+  assert.doesNotThrow(() => assertExecutorRegistration(snapshot, valid, process.cwd()));
+  const spoofedName = projectConfigSchema.parse({ ...valid, project: { name: "spoofed" } });
+  assert.throws(() => assertExecutorRegistration(snapshot, spoofedName, process.cwd()), /Unregistered executor project/);
+  const driftedRoot = projectConfigSchema.parse({ ...valid, execution: { ...valid.execution, executor_adapters: { "hulk-exact-revision": { ...valid.execution.executor_adapters!["hulk-exact-revision"], project_root: path.join(process.cwd(), "other") } } } });
+  assert.throws(() => assertExecutorRegistration(snapshot, driftedRoot, process.cwd()), /Unregistered executor project root/);
 });
 
 test("adapter enforces timeout and bounded output", async () => {

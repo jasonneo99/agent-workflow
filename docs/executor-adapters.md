@@ -30,6 +30,7 @@ execution:
       projects: [agent-workflow]
       operations: [typecheck, validate, test]
       host: hulk
+      project_root: /absolute/path/to/the/registered/agent-workflow-checkout
       timeout_ms: 1800000
       max_output_chars: 20000
       local_fallback: off
@@ -48,7 +49,16 @@ stages:
 ```
 
 The mapped local command must also remain allowed by project action policy.
-Unknown adapter IDs, projects, operations, malformed revisions, or modified
+When `require_approval_for_external_actions` is enabled, the worker writes a
+pending `executor_adapter` approval and does not invoke Hulk. Approval and
+execution use the immutable snapshot hash as the idempotency key. An approval
+rule may auto-execute only an exact target containing the adapter, operation,
+host, revision, and registered root; executor targets do not support wildcard
+matching.
+The required `project_root` binds the registration and immutable snapshot to the
+stored project identity (`projects.root_uri`), so copying the project name into
+a different checkout cannot authorize execution. Unknown adapter IDs, projects,
+roots, operations, hosts, malformed revisions, or modified
 snapshot evidence fail closed.
 
 ## Migration and canary

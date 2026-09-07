@@ -130,12 +130,13 @@
     "executorAdapter": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "projects", "operations"],
+      "required": ["type", "projects", "operations", "project_root"],
       "properties": {
         "type": { "const": "hulk-exact-revision" },
         "projects": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "operations": { "type": "array", "minItems": 1, "items": { "enum": ["typecheck", "validate", "test"] } },
-        "host": { "type": "string", "minLength": 1, "default": "hulk" },
+        "host": { "const": "hulk", "default": "hulk" },
+        "project_root": { "type": "string", "minLength": 1 },
         "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 3600000, "default": 1800000 },
         "max_output_chars": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 20000 },
         "local_fallback": { "enum": ["off", "explicit"], "default": "off" }
@@ -244,7 +245,7 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "description": { "type": "string", "default": "" },
-        "action_type": { "enum": ["local_command", "file_write"] },
+        "action_type": { "enum": ["local_command", "file_write", "executor_adapter"] },
         "target": { "type": "string", "minLength": 1 },
         "effect": { "enum": ["auto_execute"], "default": "auto_execute" },
         "max_bytes": { "type": "integer", "minimum": 1 }

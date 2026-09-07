@@ -10,6 +10,7 @@ export type ExecutorOperation = typeof EXECUTOR_OPERATIONS[number];
 export interface ExecutorEnvelope {
   executorId: string;
   registeredProject: string;
+  registeredProjectRoot: string;
   operation: ExecutorOperation;
   revision: string;
   runId: string;
@@ -45,6 +46,7 @@ export function createExecutorSnapshots(input: {
   revision: string;
   runId: string;
   taskIds: Record<string, string>;
+  projectRootUri: string;
 }): Record<string, ExecutorSnapshot> {
   if (!/^[0-9a-f]{40}$/.test(input.revision)) throw new Error("Executor revision must be a full lowercase Git commit ID.");
   const snapshots: Record<string, ExecutorSnapshot> = {};
@@ -56,6 +58,12 @@ export function createExecutorSnapshots(input: {
     if (!registration.projects.includes(input.project.project.name)) {
       throw new Error(`Executor ${stage.executor.id} is not registered for project ${input.project.project.name}.`);
     }
+    if (!path.isAbsolute(registration.project_root)) throw new Error(`Executor ${stage.executor.id} project_root must be absolute.`);
+    const registeredProjectRoot = path.resolve(registration.project_root);
+    const requestedProjectRoot = path.resolve(input.projectRootUri);
+    if (registeredProjectRoot !== requestedProjectRoot) {
+      throw new Error(`Executor ${stage.executor.id} is not registered for project root ${requestedProjectRoot}.`);
+    }
     if (!registration.operations.includes(stage.executor.operation)) {
       throw new Error(`Executor ${stage.executor.id} does not permit operation ${stage.executor.operation}.`);
     }
@@ -65,6 +73,7 @@ export function createExecutorSnapshots(input: {
       executorId: stage.executor.id,
       adapterType: registration.type,
       registeredProject: input.project.project.name,
+      registeredProjectRoot,
       operation: stage.executor.operation,
       revision: input.revision,
       runId: input.runId,
@@ -111,12 +120,25 @@ export function assertSnapshot(snapshot: ExecutorSnapshot): void {
     throw new Error(`Unknown executor adapter: ${snapshot.executorId}`);
   }
   if (snapshot.registeredProject !== "agent-workflow") throw new Error(`Unregistered executor project: ${snapshot.registeredProject}`);
+  if (!path.isAbsolute(snapshot.registeredProjectRoot)) throw new Error("Executor project root must be absolute.");
+  if (snapshot.requestedHost !== "hulk") throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
   if (!EXECUTOR_OPERATIONS.includes(snapshot.operation)) throw new Error(`Unregistered executor operation: ${snapshot.operation}`);
   if (!/^[0-9a-f]{40}$/.test(snapshot.revision)) throw new Error("Executor revision must be a full lowercase Git commit ID.");
   if (!Number.isInteger(snapshot.timeoutMs) || snapshot.timeoutMs < 1 || snapshot.timeoutMs > 3_600_000) throw new Error("Executor timeout is outside the registered bounds.");
   if (!Number.isInteger(snapshot.maxOutputChars) || snapshot.maxOutputChars < 1 || snapshot.maxOutputChars > 1_000_000) throw new Error("Executor output limit is outside the registered bounds.");
   const { snapshotHash, ...evidence } = snapshot;
   if (stableHash(evidence) !== snapshotHash) throw new Error("Executor snapshot evidence hash mismatch.");
+}
+
+export function assertExecutorRegistration(snapshot: ExecutorSnapshot, project: ProjectConfig, projectRootUri: string): void {
+  const registration = project.execution.executor_adapters?.[snapshot.executorId];
+  if (!registration || registration.type !== snapshot.adapterType) throw new Error(`Unknown executor adapter: ${snapshot.executorId}`);
+  if (registration.host !== "hulk" || snapshot.requestedHost !== registration.host) throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
+  if (!registration.projects.includes(snapshot.registeredProject) || snapshot.registeredProject !== project.project.name) throw new Error(`Unregistered executor project: ${snapshot.registeredProject}`);
+  if (!registration.operations.includes(snapshot.operation)) throw new Error(`Unregistered executor operation: ${snapshot.operation}`);
+  if (!path.isAbsolute(registration.project_root) || path.resolve(registration.project_root) !== path.resolve(projectRootUri) || snapshot.registeredProjectRoot !== path.resolve(projectRootUri)) {
+    throw new Error(`Unregistered executor project root: ${snapshot.registeredProjectRoot}`);
+  }
 }
 
 async function spawnBounded(executable: string, argv: string[], timeoutMs: number, maxOutputChars: number) {

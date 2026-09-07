@@ -15,7 +15,7 @@ export interface PolicyDecision {
 export interface ActionApprovalRuleMatch {
   id: string;
   description: string;
-  actionType: "local_command" | "file_write";
+  actionType: "local_command" | "file_write" | "executor_adapter";
   target: string;
   effect: "auto_execute";
   reasons: string[];
@@ -146,15 +146,16 @@ export function evaluateAgentAutonomy(agent: AgentCard, project: ProjectConfig):
 
 export function evaluateActionApprovalRule(input: {
   project: ProjectConfig;
-  actionType: "local_command" | "file_write";
+  actionType: "local_command" | "file_write" | "executor_adapter";
   target: string;
   bytes?: number;
 }): ActionApprovalRuleMatch | null {
-  const target = input.actionType === "local_command" ? normalizeCommand(input.target) : normalizePath(input.target);
+  const target = input.actionType === "local_command" ? normalizeCommand(input.target) : input.actionType === "file_write" ? normalizePath(input.target) : input.target.trim();
   for (const rule of input.project.actions.approval_rules) {
     if (rule.action_type !== input.actionType) continue;
     if (input.actionType === "local_command" && !matchesCommandPattern(target, rule.target)) continue;
     if (input.actionType === "file_write" && !matchesGlob(target, rule.target)) continue;
+    if (input.actionType === "executor_adapter" && target !== rule.target.trim()) continue;
     if (rule.max_bytes !== undefined && input.bytes !== undefined && input.bytes > rule.max_bytes) continue;
 
     const reasons = [`matched approval rule ${rule.id}`];

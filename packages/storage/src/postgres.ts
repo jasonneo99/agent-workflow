@@ -1034,7 +1034,8 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         workflow: input.workflow,
         revision,
         runId,
-        taskIds
+        taskIds,
+        projectRootUri: input.projectRootUri
       }) : {};
       for (const [stageId, snapshot] of Object.entries(executorSnapshots)) {
         await client.query(
@@ -1215,7 +1216,8 @@ export async function replayWorkflowRun(input: {
         workflow,
         revision: sourceRevision,
         runId,
-        taskIds
+        taskIds,
+        projectRootUri: sourceRun.projectRootUri
       }) : {};
       for (const [stageId, snapshot] of Object.entries(replayExecutorSnapshots)) {
         await client.query(`update workflow_tasks set executor_snapshot = $3 where run_id = $1 and stage_id = $2`, [runId, stageId, JSON.stringify(snapshot)]);

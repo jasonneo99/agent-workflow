@@ -31,7 +31,7 @@ import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceRepor
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
-import { executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
+import { assertCommandAllowed, executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
 import { defaultServiceEndpoints } from "../../../packages/storage/src/config.js";
@@ -98,7 +98,8 @@ import {
   upsertProjectIndexState,
   upsertProjectFiles
 } from "../../../packages/storage/src/postgres.js";
-import { runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
+import { executorApprovalTarget, runExecutorApprovalGate, runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
+import { assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot, type ExecutorResult, type ExecutorSnapshot } from "../../../packages/executor-adapters/src/index.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
@@ -2278,8 +2279,8 @@ program
         process.exitCode = 1;
         return;
       }
-      if (approvalForRule.actionType !== "local_command" && approvalForRule.actionType !== "file_write") {
-        console.error("Always approve rules are only supported for shell and fswrite approvals.");
+      if (approvalForRule.actionType !== "local_command" && approvalForRule.actionType !== "file_write" && approvalForRule.actionType !== "executor_adapter") {
+        console.error("Always approve rules are only supported for shell, fswrite, and executor adapter approvals.");
         process.exitCode = 1;
         return;
       }
@@ -2383,9 +2384,9 @@ program
         if (isExecutableApprovalAction(approval.actionType)) {
           console.log(`  Approve + execute: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver`);
         }
-        if (approval.actionType === "local_command" || approval.actionType === "file_write") {
+        if (approval.actionType === "local_command" || approval.actionType === "file_write" || approval.actionType === "executor_adapter") {
           console.log(`  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver`);
-          console.log(`  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver`);
+          if (approval.actionType !== "executor_adapter") console.log(`  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver`);
         }
       }
       if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType)) {
@@ -4783,7 +4784,7 @@ type DashboardApprovalRuleSummary = {
   configPath: string;
   id: string;
   description: string;
-  actionType: "local_command" | "file_write";
+  actionType: "local_command" | "file_write" | "executor_adapter";
   target: string;
   functionLabel: string;
   effect: "auto_execute";
@@ -11223,7 +11224,7 @@ async function writeLearningAutonomousApplicationResult(projectDir: string, resu
 
 async function appendProjectApprovalRule(input: {
   projectRootUri: string;
-  actionType: "local_command" | "file_write";
+  actionType: "local_command" | "file_write" | "executor_adapter";
   target: string;
   description: string;
   payload: Record<string, unknown>;
@@ -11338,7 +11339,7 @@ async function removeProjectApprovalRule(input: {
   };
   projectConfigSchema.parse(next);
   await fs.writeFile(configPath, YAML.stringify(next), "utf8");
-  const actionType = rule.action_type === "local_command" || rule.action_type === "file_write" ? rule.action_type : "local_command";
+  const actionType = rule.action_type === "local_command" || rule.action_type === "file_write" || rule.action_type === "executor_adapter" ? rule.action_type : "local_command";
   const target = typeof rule.target === "string" ? rule.target : "";
   return {
     ok: true,
@@ -11660,7 +11661,7 @@ function formatRunSummary(summary: RunSummary): string {
         `  id: ${approval.id}`,
         `  requested by: ${approval.stageId} (${approval.agentId})`,
         `  CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
-        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+        approval.actionType === "local_command" || approval.actionType === "file_write" || approval.actionType === "executor_adapter" ? `  Always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
         approval.actionType === "local_command" || approval.actionType === "file_write" ? `  Always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
         approval.executable ? `  Execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
         `  MCP/Codex: ask the user to choose approve, reject, always exact, always broad, or execute; then call agentflow_approvals with the matching field and id.`
@@ -18488,8 +18489,8 @@ async function processDashboardApprovalRuleAction(input: {
   if (!approvalForGate) {
     return { ok: false, error: "Approval was not found or is no longer pending." };
   }
-  if (approvalForGate.actionType !== "local_command" && approvalForGate.actionType !== "file_write") {
-    return { ok: false, error: "Always approve rules are only supported for local_command and file_write approvals." };
+  if (approvalForGate.actionType !== "local_command" && approvalForGate.actionType !== "file_write" && approvalForGate.actionType !== "executor_adapter") {
+    return { ok: false, error: "Always approve rules are only supported for local_command, file_write, and executor_adapter approvals." };
   }
   const actorRole = normalizeActorRole(input.actorRole, "approver");
   const project = await loadProjectConfig(approvalForGate.projectRootUri);
@@ -18848,7 +18849,7 @@ async function executeApprovedAction(input: {
     });
   }
 
-  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : "";
+  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : "";
   if (!artifactKind) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
@@ -18881,6 +18882,37 @@ async function executeApprovedAction(input: {
   }
 
   try {
+    if (approval.actionType === "executor_adapter") {
+      const snapshot = approval.payload.snapshot as ExecutorSnapshot | undefined;
+      if (!snapshot) throw new Error("Approved executor action is missing its immutable snapshot.");
+      assertSnapshot(snapshot);
+      if (snapshot.registeredProjectRoot !== approval.projectRootUri) throw new Error("Approved executor snapshot project root does not match the registered project.");
+      assertExecutorRegistration(snapshot, project, approval.projectRootUri);
+      if (approval.target !== executorApprovalTarget(snapshot)) throw new Error("Approved executor target does not match its immutable snapshot.");
+      const commandLine = snapshot.operation === "typecheck" ? "npm run typecheck" : snapshot.operation === "validate" ? "npm run validate" : "npm test";
+      assertCommandAllowed(commandLine, project);
+      const gated = await runExecutorApprovalGate({ project, target: approval.target, approved: true, execute: () => executeExecutorSnapshot(snapshot, {
+          localFallback: snapshot.localFallback === "explicit"
+            ? async (): Promise<ExecutorResult> => {
+                const result = await executeAllowedCommand({ commandLine, cwd: approval.projectRootUri, project });
+                return { ...result, status: result.exitCode === 0 && !result.timedOut ? "passed" : "failed", requestedHost: snapshot.requestedHost, executionHost: "local", fallbackUsed: true, artifactReference: null };
+              }
+            : undefined
+        }) });
+      if (gated.status !== "executed") throw new Error("Approved executor action remained pending.");
+      const execution = gated.result;
+      const summary = `${execution.status} on ${execution.executionHost}${execution.fallbackUsed ? " via explicit local fallback" : ""}`;
+      const artifactUri = await recordRunAction({
+        runId: approval.runId, taskId: approval.taskId, agentId: approval.agentId,
+        actionType: "executor_adapter", target: approval.target, summary, artifactKind: "executor_output",
+        artifactContent: { snapshot, execution, executedFromApprovalId: approval.id }, idempotencyKey: approval.idempotencyKey
+      });
+      const passed = execution.status === "passed";
+      await markActionApprovalExecution({ approvalId: approval.id, status: passed ? "executed" : "failed", actor: input.actor, actorRole: input.actorRole, summary, artifactUri });
+      return passed
+        ? { ok: true, title: "Approved executor action executed", runId: approval.runId, output: `Approval: ${approval.id}\n${summary}\nArtifact: ${artifactUri}` }
+        : { ok: false, error: `Approved executor action failed. ${summary}` };
+    }
     if (approval.actionType === "local_command") {
       const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
       const result = await executeAllowedCommand({
@@ -20110,7 +20142,7 @@ function titleCase(value: string): string {
 }
 
 function isExecutableApprovalAction(actionType: string): boolean {
-  return actionType === "local_command" || actionType === "file_write" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore";
+  return actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore";
 }
 
 function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {
@@ -20214,7 +20246,7 @@ async function formatPendingApprovalNotice(runId: string, projectRootUri?: strin
         `  requested by: ${approval.stageId} (${approval.agentId})`,
         `  approve in CLI: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
         executable ? `  approve and execute in CLI: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver` : "",
-        approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+        approval.actionType === "local_command" || approval.actionType === "file_write" || approval.actionType === "executor_adapter" ? `  always exact in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
         approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad in CLI: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
         executable ? `  execute after approval: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
         `  approve in dashboard: /approvals?run=${encodeURIComponent(runId)}`,
@@ -20246,7 +20278,7 @@ async function formatPendingApprovalInboxNotice(projectRootUri?: string): Promis
       `  id: ${approval.id}`,
       `  approve: npm run agentflow -- approvals --approve ${approval.id} --actor "Your Name" --actor-role approver`,
       executable ? `  approve and execute: npm run agentflow -- approvals --approve-execute ${approval.id} --actor "Your Name" --actor-role approver` : "",
-      approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
+      approval.actionType === "local_command" || approval.actionType === "file_write" || approval.actionType === "executor_adapter" ? `  always exact: npm run agentflow -- approvals --always ${approval.id} --always-scope exact --actor "Your Name" --actor-role approver` : "",
       approval.actionType === "local_command" || approval.actionType === "file_write" ? `  always broad: npm run agentflow -- approvals --always ${approval.id} --always-scope broad --actor "Your Name" --actor-role approver` : "",
       executable ? `  execute: npm run agentflow -- approvals --execute ${approval.id} --actor "Your Name" --actor-role operator` : "",
       "  MCP/Codex: ask the user to choose approve and execute, approve only, reject, always exact, always broad, execute, or dismiss; then call agentflow_approvals with the matching field and id."
@@ -20262,6 +20294,7 @@ function approvalRuleExactTarget(approval: Awaited<ReturnType<typeof listActionA
   if (approval.actionType === "file_write" && typeof approval.payload.relativePath === "string") {
     return normalizeApprovalRulePath(approval.payload.relativePath);
   }
+  if (approval.actionType === "executor_adapter") return approval.target.trim();
   return approval.actionType === "local_command"
     ? normalizeApprovalRuleCommand(approval.target)
     : normalizeApprovalRulePath(approval.target);
