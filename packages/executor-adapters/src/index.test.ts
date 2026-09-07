@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { projectConfigSchema, workflowSchema } from "../../agent-registry/src/schemas.js";
-import { assertExecutorRegistration, assertSnapshot, createExecutorSnapshots, executeExecutorSnapshot, type ExecutorResult } from "./index.js";
+import {
+  assertExecutorRegistration,
+  assertSnapshot,
+  createExecutorSnapshots,
+  executeExecutorSnapshot,
+  executorEvidenceHash,
+  type ExecutorResult,
+  type ExecutorSnapshot
+} from "./index.js";
 
 const revision = "a".repeat(40);
 
@@ -47,6 +55,20 @@ test("immutable executor snapshots bind all envelope fields and have stable idem
   assert.equal(left.timeoutMs, 500);
   assert.equal(left.maxOutputChars, 20);
   assert.throws(() => assertSnapshot({ ...left, taskId: "changed" }), /hash mismatch/);
+});
+
+test("snapshot evidence survives PostgreSQL jsonb key reordering", () => {
+  const snapshot = fixture();
+  const reordered = Object.fromEntries(
+    Object.entries(snapshot).reverse()
+  ) as unknown as ExecutorSnapshot;
+  assert.doesNotThrow(() => assertSnapshot(reordered));
+});
+
+test("executor evidence hashing recursively canonicalizes object keys", () => {
+  const left = { outer: { beta: 2, alpha: 1 }, list: [{ delta: 4, gamma: 3 }] };
+  const right = { list: [{ gamma: 3, delta: 4 }], outer: { alpha: 1, beta: 2 } };
+  assert.equal(executorEvidenceHash(left), executorEvidenceHash(right));
 });
 
 test("snapshot creation rejects unknown adapters, projects, and operations", () => {

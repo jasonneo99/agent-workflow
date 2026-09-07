@@ -13,3 +13,6 @@
 - Executor-adapter authority is bound to the exact `hulk` host and the registered
   absolute project root, not only the user-editable project name. Remote stages
   use the external-action approval inbox and exact-only recurring approval rules.
+- Executor snapshot hashes use recursively key-sorted canonical JSON. PostgreSQL
+  `jsonb` may reorder object keys during persistence, so ordinary
+  `JSON.stringify` insertion order cannot be part of immutable evidence identity.
