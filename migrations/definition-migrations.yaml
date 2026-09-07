@@ -36,3 +36,22 @@ migrations:
     validation:
       - agentflow bundle-compat
       - agentflow bundle-upgrade-preview --project /path/to/project
+  - id: core-0.2.4-executor-adapters
+    from: 0.2.4
+    to: next
+    summary: Add opt-in, immutable exact-revision executor adapter bindings.
+    definition_changes:
+      - Project execution config may register fixed executor adapters.
+      - Workflow stages may bind a registered executor id and allowlisted operation.
+      - Run and task storage retain immutable executor evidence and actual execution-host receipts.
+    upgrade_steps:
+      - Run agentflow migrate-storage to add executor snapshot columns.
+      - Register hulk-exact-revision only on the Heimdall Agent Workflow project configuration.
+      - Bind and canary typecheck, validate, then test stages one at a time.
+    rollback_steps:
+      - Remove workflow-stage executor bindings and the project executor_adapters registration.
+      - Existing snapshot columns may remain unused for historical audit evidence.
+    validation:
+      - agentflow validate
+      - npm run typecheck
+      - npm test

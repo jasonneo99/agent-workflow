@@ -196,3 +196,14 @@ test("approval rules do not match writes above their byte cap", () => {
   });
   assert.equal(fileRule, null);
 });
+
+test("executor approval rules match only the exact adapter target", () => {
+  const target = `hulk-exact-revision/typecheck@hulk#${"a".repeat(40)}:/registered/root`;
+  const executorProject = projectConfigSchema.parse({
+    ...project,
+    actions: { ...project.actions, approval_rules: [{ id: "remote-typecheck", action_type: "executor_adapter", target, effect: "auto_execute" }] }
+  });
+  assert.equal(evaluateActionApprovalRule({ project: executorProject, actionType: "executor_adapter", target })?.id, "remote-typecheck");
+  assert.equal(evaluateActionApprovalRule({ project: executorProject, actionType: "executor_adapter", target: target.replace("typecheck", "test") }), null);
+  assert.equal(evaluateActionApprovalRule({ project: executorProject, actionType: "executor_adapter", target: `${target}/*` }), null);
+});

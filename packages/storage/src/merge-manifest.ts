@@ -845,7 +845,7 @@ const tableQueries: Record<StorageMergeTableName, string> = {
   `,
   workflow_runs: `
     select wr.id::text as key,
-      md5(wr.id::text || ':' || coalesce(p.root_uri, '') || ':' || wr.workflow_id || ':' || wr.status || ':' || wr.task || ':' || wr.autonomy || ':' || wr.policy_profile || ':' || wr.policy_snapshot_hash) as fingerprint,
+      md5(wr.id::text || ':' || coalesce(p.root_uri, '') || ':' || wr.workflow_id || ':' || wr.status || ':' || wr.task || ':' || wr.autonomy || ':' || wr.policy_profile || ':' || wr.policy_snapshot_hash || ':' || wr.executor_snapshot::text) as fingerprint,
       p.root_uri as project_root,
       wr.project_id::text as project_id
     from workflow_runs wr
@@ -853,7 +853,7 @@ const tableQueries: Record<StorageMergeTableName, string> = {
   `,
   workflow_tasks: `
     select wt.id::text as key,
-      md5(wt.id::text || ':' || wt.run_id::text || ':' || wt.stage_id || ':' || wt.agent_id || ':' || wt.status || ':' || wt.attempts::text || ':' || wt.idempotency_key) as fingerprint,
+      md5(wt.id::text || ':' || wt.run_id::text || ':' || wt.stage_id || ':' || wt.agent_id || ':' || wt.status || ':' || wt.attempts::text || ':' || wt.idempotency_key || ':' || wt.executor_snapshot::text) as fingerprint,
       p.root_uri as project_root,
       wr.project_id::text as project_id
     from workflow_tasks wt

@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   provider_override text,
   evaluation_metadata jsonb NOT NULL DEFAULT '{}',
   workflow_snapshot jsonb NOT NULL DEFAULT '{}',
+  executor_snapshot jsonb NOT NULL DEFAULT '{}',
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz
@@ -82,6 +83,7 @@ CREATE TABLE IF NOT EXISTS workflow_tasks (
   output_uri text,
   attempts integer NOT NULL DEFAULT 0,
   idempotency_key text NOT NULL,
+  executor_snapshot jsonb NOT NULL DEFAULT '{}',
   worker_id text,
   lease_expires_at timestamptz,
   available_at timestamptz NOT NULL DEFAULT now(),

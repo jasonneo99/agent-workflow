@@ -5,3 +5,11 @@
 - Reusable agent and workflow behavior should stay in `agents/` and `workflows/`; project-specific preferences should stay in `.agent-workflow/` or target-project `AGENTS.md`.
 - Local run exports under `.agent-workflow/exports/` are ignored and should not be committed unless explicitly scrubbed and moved into `docs/examples/`.
 - Keep the open-source project focused on local developer workflow optimization and model portability. Tellara-specific agent-engine learnings may inform abstractions, but proprietary product behavior stays out of this repo.
+- Remote stage execution uses first-class immutable executor-adapter snapshots,
+  never prompt hints or generated shell commands. The initial
+  `hulk-exact-revision` adapter is opt-in, restricted to the registered
+  Agent Workflow project and typecheck/validate/test, fails closed by default,
+  and records explicit fallback plus the host that actually executed a stage.
+- Executor-adapter authority is bound to the exact `hulk` host and the registered
+  absolute project root, not only the user-editable project name. Remote stages
+  use the external-action approval inbox and exact-only recurring approval rules.

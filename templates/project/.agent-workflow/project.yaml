@@ -38,6 +38,9 @@ storage:
 execution:
   policy_profile: local
   policy_profiles: {}
+  # Remote executors are opt-in. Register a fixed adapter here, then bind an
+  # individual workflow stage with executor: { id, operation }.
+  executor_adapters: {}
   worker_pool:
     worker_id: local-dev
     limit: 6
