@@ -151,6 +151,24 @@ endpoint also enforces `AGENTFLOW_SERVER_MAX_BODY_BYTES` and
 dry-run contract for future approval decisions and action execution. They check
 registered project ownership, actor role capability, separation of duties,
 policy recheck posture, auth, and idempotency without mutating approval state.
+`server-approval-action` and `POST /api/server-approval-action` validate the
+future remote approval/action endpoint contract with the same checks plus
+request limits and rate limiting. The endpoint is mutation-disabled in this
+release, so it records dry-run evidence but does not approve, reject, execute,
+dismiss, or add always-approved rules.
+
+`server-approval-action-plan` and `/api/server-approval-action-plan` show the
+per-decision receipt, idempotency replay, and rollback-evidence checklist that
+must be implemented before `AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1` can
+mutate approval state. Use it when deciding whether a server-mode approval
+client is ready to move beyond preview-only behavior.
+
+`server-approval-action-test-adapter` and
+`/api/server-approval-action-test-adapter` exercise the same contract with
+fixture approvals in memory. They prove duplicate idempotency-key replay returns
+the original receipt shape and does not run a simulated side effect twice.
+Nothing live is approved, executed, dismissed, written, or sent over the
+network.
 
 See [Governed Server Mode](server-mode.md#local-verification-walkthrough) for a
 copyable end-to-end local smoke test.
@@ -941,6 +959,10 @@ npm run dev:agentflow:launchd:install
 The LaunchAgent runs the same `dev:agentflow` supervisor, so it manages the
 dashboard, worker lanes, learning daemon, and local Docker storage only when the
 configured storage URLs are localhost or `AGENTFLOW_START_LOCAL_STORAGE=1`.
+Its plist invokes a repository-owned wrapper through macOS `/bin/zsh`; that
+wrapper resolves the current stable `node` executable on every start instead of
+pinning a versioned Homebrew Cellar path. Refreshing after an upgrade therefore
+does not depend on the previous Node installation remaining present.
 The LaunchAgent intentionally does not embed `.env` secrets in its plist; the
 supervisor reads `.env` from the repo at runtime. Launch logs are written under
 `.agent-workflow/runtime/launchd/`. Uninstall it with:
@@ -948,6 +970,22 @@ supervisor reads `.env` from the repo at runtime. Launch logs are written under
 ```bash
 npm run dev:agentflow:launchd:uninstall
 ```
+
+Keep local inference in a separate failure domain. After Ollama is installed,
+create its dedicated Agent Workflow LaunchAgent with:
+
+```bash
+npm run local-model:launchd:install
+npm run local-model:status -- --json
+```
+
+The wrapper resolves the current stable Homebrew Ollama symlink each time it
+starts, avoiding a versioned Cellar path after upgrades. It binds only to the
+loopback host configured by `LOCAL_MODEL_BASE_URL`, logs under
+`.agent-workflow/runtime/local-model/`, and remains isolated from the main
+dashboard, workers, and learning-daemon supervisor. Refresh it after changing
+the endpoint. `npm run local-model:launchd:uninstall` removes the service but
+leaves downloaded models intact.
 
 The Settings page shows the LaunchAgent label, plist path, PID, launch run
 count, and log links. Use **Install / Refresh** after changing `.env`,
@@ -1789,15 +1827,23 @@ npm run agentflow -- agent-improvement-evals --project /path/to/project --ids ux
 npm run agentflow -- agent-improvement-promotions --project /path/to/project
 npm run agentflow -- agent-improvement-promotions --project /path/to/project --write
 npm run agentflow -- agent-improvement-promotions --project /path/to/project --approve promotion-patch-agent-ux-reviewer-improvement --reviewer "Your Name" --note "Approved after holdout eval review"
+npm run agentflow -- agent-improvement-apply --project /path/to/project
+npm run agentflow -- agent-improvement-apply --project /path/to/project --max-risk medium --write
+npm run agentflow -- agent-improvement-apply --project /path/to/project --project-local-auto-ready --write
 ```
 
 The daemon defaults to `apply-approved`, which autonomously refreshes
 Agent Workflow-owned learning reports, proposal state, workflow-shape
 recommendation files, application-plan files, and low/medium-risk
-project-local optimization overlays. Use `--mode observe` for read-mostly
-behavior or `--mode propose` for proposal/inbox generation without application
-plans. The dashboard setting **Auto-apply through** defaults to `medium`; set it
-to `low` for stricter review or `high` only if you want maximum local autonomy.
+project-local optimization overlays. It also applies holdout-passing
+project-local agent YAML promotions when the source hash, rollback evidence,
+schema validation, auto-apply readiness, and configured risk threshold all pass.
+Use `--mode observe` for read-mostly behavior or `--mode propose` for
+proposal/inbox generation without application plans. The dashboard setting
+**Auto-apply through** defaults to `medium`; set it to `low` for stricter review
+or `high` only if you want maximum local autonomy. Turn off **Auto-apply passing
+project-local agent-card improvements** to keep agent YAML promotion
+review-first while the daemon continues refreshing recommendation files.
 
 In the dashboard, open:
 
@@ -1867,7 +1913,11 @@ holdout coverage, risk boundaries, and local evidence support before anything
 can become promotion-ready. `agent-improvement-promotions` turns passing evals
 into an auditable promotion queue, preserves prior decisions when source hashes
 still match, marks stale queue items superseded, and records approval/rejection
-receipts before any future agent YAML promotion step.
+receipts. `agent-improvement-apply` is the separate YAML write step: it applies
+approved promotions only when rollback hashes, schema validation, scope, and
+the configured risk threshold all pass. The daemon's autonomous apply path is
+narrower: it can apply only project-local, auto-apply-ready promotion items that
+do not require approval. Shared agent cards still require explicit owner action.
 
 When `learning-application-plan --write` or the daemon's `apply-approved` mode
 turns approved or auto-approved proposals into local actions, Agent Workflow
@@ -1889,14 +1939,17 @@ exposes the agent definition improvement report, and
 `agentflow_agent_improvement_patches` exposes the validated YAML patch preview.
 `agentflow_agent_improvement_evals` exposes holdout promotion scoring with
 rollback evidence. `agentflow_agent_improvement_promotions` exposes the
-promotion queue and decision receipts.
+promotion queue and decision receipts. `agentflow_agent_improvement_apply`
+applies approved YAML promotions with source-hash checks and rollback receipts.
 
 The learning flow may mutate local learning state that Agent Workflow created
 and owns: its own files under `.agent-workflow/learning/` today and future
-Agent Workflow-created `learning_*` database rows. It does not tune agents,
-change provider settings, export private data, run commands, apply patches, or
-edit source without approval. Those actions remain approval-gated by design. See
-[Local Learning Daemon](local-learning-daemon.md).
+Agent Workflow-created `learning_*` database rows. In `apply-approved` mode it
+can also apply project-local, risk-bounded, auto-ready agent YAML promotions
+after holdout, hash, rollback, and schema checks. Provider changes,
+private-data export, commands, source edits outside owned project-local agent
+cards, shared reusable-definition changes, and risky agent changes remain
+approval-gated by design. See [Local Learning Daemon](local-learning-daemon.md).
 
 ## 24. Model Improvement Workflow
 
@@ -1924,19 +1977,193 @@ provider dataset-plan files:
 npm run agentflow -- model-improvement-plan --project /path/to/project
 npm run agentflow -- model-improvement-plan --project /path/to/project --write
 npm run agentflow -- candidate-comparison-plan --project /path/to/project
+npm run agentflow -- local-holdout-comparison --project /path/to/project
+npm run agentflow -- local-holdout-results --project /path/to/project
+npm run agentflow -- local-holdout-promote --project /path/to/project --approved
+npm run agentflow -- local-llm-benchmarks --project /path/to/project
+npm run agentflow -- local-llm-cache-trends --project /path/to/project --write
+npm run agentflow -- local-llm-checklist --project /path/to/project
+npm run agentflow -- local-llm-cost-ledger --project /path/to/project --write
+npm run agentflow -- local-llm-setup-guide --project /path/to/project
+npm run agentflow -- local-llm-download-recommendations --project /path/to/project
+npm run agentflow -- local-llm-install-plan --project /path/to/project --write
+npm run agentflow -- local-llm-inventory --project /path/to/project
+npm run agentflow -- local-llm-prune-plan --project /path/to/project --write
+npm run agentflow -- local-llm-routing-recommendations --project /path/to/project --write
+npm run agentflow -- local-llm-routing-note-plan --project /path/to/project --write
+npm run agentflow -- apply-local-llm-routing-note-plan --project /path/to/project --approved --write
+npm run agentflow -- local-llm-smoke --project /path/to/project
 npm run agentflow -- promotion-note-plan --project /path/to/project
 ```
 
 The dry run prints the plan. With `--write`, files are written only under
 `.agent-workflow/model-improvement/` for model-improvement plans, and under
 `.agent-workflow/model-improvement/` plus `.agent-workflow/evaluations/` for
-candidate comparison plans.
+candidate comparison plans. `local-holdout-comparison` is the local LLM path:
+it defaults to a hosted `openai/standard` baseline and a `local/fast` candidate
+so project owners can collect holdout evidence before expanding local routing
+beyond low-risk read-only developer stages.
 
 Open `/candidate-comparisons?project=/path/to/project` in the dashboard to
-inspect the written comparison plan, suite files, baseline/candidate providers,
-evaluation outcomes, quality and latency deltas, gate readiness, and promotion
-recommendations without running models. After a promotion note plan is written,
-the same page shows the review file status and markdown preview.
+generate a local holdout plan, inspect the written comparison plan, suite files,
+baseline/candidate providers, evaluation outcomes, quality and latency deltas,
+gate readiness, and promotion recommendations without running models. After a
+comparison evals run, use **Capture Holdout Results** to write
+`.agent-workflow/model-improvement/local-holdout-results.json` and `.md` as
+project-local promotion evidence. If the captured decision is eligible for
+review, **Approve Low-Risk Local Routing** writes a reviewed
+`.agent-workflow/tuning/local-routing-threshold.json` plus
+`.agent-workflow/tuning/routing-preferences.md`. Future adaptive or auto-routed
+fast stages can use that compiled project-local note to prefer the local model
+only when the recorded holdout thresholds still pass. The promotion records
+minimum evidence suites, minimum quality delta, maximum latency regression, and
+fallback boundaries alongside the evidence that satisfied them. Route receipts
+explain when local was selected or skipped, and hosted fallback remains the
+boundary for high-risk, policy, secret, command, and production work. After a
+promotion note plan is written, the same page shows the review file status and
+markdown preview.
+
+Both `/model-improvement` and `/candidate-comparisons` show **Local Holdout
+Routing** after this loop starts. That panel summarizes whether results and
+promotion files exist, whether the project is approved for low-risk local
+routing, which suites provided evidence, recent local-vs-hosted route volume,
+and the current local fallback rate.
+
+Those pages also include **Local Route Decision Drilldown**, which explains
+each recent route group in operator terms: local selected, local skipped,
+hosted fallback, or hosted selected. It combines the stage, agent, provider,
+quality, latency, fallback count, holdout threshold summary, and next action so
+you can see why a stage did or did not use the cheaper local path. Each row has
+quick feedback actions so you can mark that routing decision as helpful,
+costly, or neutral without leaving the page. Agent Workflow stores that signal
+locally under `.agent-workflow/model-improvement/route-decision-feedback.*`.
+Savings-aware local routing recommendations use the same feedback so repeated
+costly decisions can block expansion or recommend retreat, while repeated
+helpful decisions can strengthen low-risk local trial candidates.
+
+The `/learning` dashboard also summarizes those route-feedback signals. This
+lets the daemon treat repeated costly or helpful route decisions as learning
+evidence alongside run history, failures, evaluation coverage, and tuning
+proposal outcomes.
+
+When route feedback repeats, `learning-proposals` creates low-risk
+`route_feedback` proposals. These do not change live provider settings. They
+tell the learning loop to refresh savings-aware routing recommendations and
+prepare project-local routing-note plans only when evidence still supports the
+change.
+
+In `apply-approved` mode, the learning daemon can refresh the local routing
+recommendation files directly from approved route-feedback proposals. That
+writer updates Agent Workflow-owned model-improvement artifacts only; provider
+settings, shared workflows, reusable agents, and project source still stay out
+of the autonomous path.
+
+The same pages also show **Route Receipt Trends**. This groups recent
+`model_route` receipts by workflow, stage, agent, provider, tier, and route
+class, so you can see whether local was selected, skipped because the endpoint
+was unavailable, or replaced by hosted fallback before changing broader routing
+defaults.
+
+Use **Local LLM Setup Checklist** on `/model-improvement` when setup feels
+ambiguous. It combines provider readiness, `/v1/models` catalog visibility,
+selected tier models, auto-routing config, low-risk promotion status, and the
+first local route receipt into one pass/warning/fail report. It also shows
+local smoke history, including first true local success, latest skipped/fallback
+or failure reason, and the next routing or model-download fix. From that panel,
+use **Run Low-Risk Local Route Smoke** to queue one safe `provider-smoke`
+fast-tier stage and create normal route receipt evidence without choosing a
+separate workflow command.
+
+Use **Guided Local Model Setup** on the same page, or run
+`local-llm-setup-guide`, to detect Ollama, LM Studio, vLLM, llama.cpp server,
+and any configured `LOCAL_MODEL_BASE_URL`. With `--write`, it writes a
+project-local setup report under `.agent-workflow/model-improvement/`. With
+`--approved --write`, it writes the additional local routing note only if the
+checklist has a reachable local catalog, selected tier models, visible automatic
+routing, and at least one true local-selected smoke receipt.
+
+Use **Local Model Download Recommendations** on `/model-improvement`, or run
+`local-llm-download-recommendations`, when you want concrete local model
+downloads. It looks at detected hardware, local runtime catalog, recent task
+mix, smoke history, and cost-savings goals, then writes only
+`.agent-workflow/model-improvement/local-llm-download-recommendations.*` when
+you pass `--write`. It stays advisory: downloading models, editing `.env`, and
+changing shared provider defaults remain explicit operator actions.
+
+Use **Local Model Installation Plan**, or run `local-llm-install-plan --write`,
+to convert those recommendations into reviewed runtime-specific commands. The
+plan writes `.md`, `.json`, and `.sh` files under
+`.agent-workflow/model-improvement/` with download, verify, and benchmark
+commands plus disk/risk notes. Agent Workflow does not run the download script
+or edit provider settings for you.
+
+Use **Local Model Disk Inventory**, or run `local-llm-inventory --write`,
+before downloading more models. It checks common Ollama, LM Studio, Hugging
+Face, vLLM, and llama.cpp cache roots, shows storage pressure, links installed
+model evidence to recent route and benchmark receipts, and flags stale
+unrecommended cache entries for prune review. It never deletes files.
+
+Use **Local Model Prune Plan**, or run `local-llm-prune-plan --write`, after
+inventory finds stale unrecommended cache entries. The plan writes reviewed
+`.md`, `.json`, and `.sh` cleanup files under
+`.agent-workflow/model-improvement/` with exact cache paths, reclaim estimates,
+risk notes, and manual commands. Agent Workflow does not execute the cleanup
+commands or delete local model files.
+
+Use **Local Model Cache Trends**, or run `local-llm-cache-trends --write`, to
+append a compact aggregate snapshot after model installs, prune reviews,
+benchmarks, or routing changes. The trend file tracks cache size, free disk,
+model count, prune candidates, reclaim estimates, and local-vs-hosted route
+counts over time without storing model file contents, prompt text, or secrets.
+
+Use **Local Model Cost Ledger**, or run `local-llm-cost-ledger --write`, to
+estimate whether local routing is actually saving money for a project. It
+combines local-selected route counts, hosted fallback counts, benchmark latency,
+and model cache storage into a compact savings trend. The result is an estimate,
+not a provider invoice; set `AGENTFLOW_COST_LEDGER_*` environment variables to
+match your current provider and storage assumptions.
+
+Use **Savings-Aware Local Routing**, or run
+`local-llm-routing-recommendations --write`, to translate the local evidence
+into expand, hold, or retreat recommendations per workflow stage and agent. The
+report considers quality, fallback rate, latency, cache pressure, and estimated
+savings. It writes advisory files only and does not change provider settings or
+routing notes by itself.
+
+Use `local-llm-routing-note-plan --write` after that when you want reviewable
+project-local routing note plans. It selects expand and retreat recommendations,
+writes `.agent-workflow/tuning/local-routing-note-plan.*`, and keeps shared
+provider defaults, reusable workflows, reusable agents, and project source
+unchanged.
+
+Use `apply-local-llm-routing-note-plan --approved --write` only after reviewing
+that plan. It appends selected notes to
+`.agent-workflow/tuning/routing-preferences.md`, records before/after hashes in
+`.agent-workflow/tuning/local-routing-note-application.*`, and skips notes that
+were already applied.
+
+The `/model-improvement` dashboard shows **Applied Local Routing Notes** after
+that step, including applied/skipped note ids, active note markers, before/after
+hashes, rollback text, and a compact preview of
+`.agent-workflow/tuning/routing-preferences.md`.
+
+The same page shows **Model Routing Decision Timeline**, a compact operator view
+that connects each recommendation to its note-plan state, applied receipt, route
+quality, fallback rate, and estimated savings.
+
+Use **Routing Decision Snapshots**, or run
+`local-llm-routing-decision-snapshot --write`, to persist compact timeline
+history. The snapshot log compares the latest routing decision state with the
+previous persisted state, tracks added/removed/changed items, and records the
+net savings delta without storing prompt text, model outputs, API keys, or
+project source.
+
+Use **Local Benchmark Receipts** on `/model-improvement`, or run
+`local-llm-benchmarks`, after at least one recommended model is installed. The
+default mode writes the tiny benchmark plan; `--execute --write` calls only the
+local OpenAI-compatible endpoint, records latency and simple rubric scores, and
+writes `.agent-workflow/model-improvement/local-llm-benchmark-receipts.*` as
+promotion evidence before smoke routing is expanded.
 
 ![Candidate comparisons dashboard](assets/screenshots/dashboard-candidate-comparisons.png)
 

@@ -9,16 +9,16 @@ import dotenv from "dotenv";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
+dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
 const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
 const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
 const logDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
-const nodePath = process.execPath;
 const env = buildLaunchdEnvironment();
 
 await fs.mkdir(launchAgentsDir, { recursive: true });
 await fs.mkdir(logDir, { recursive: true });
-await fs.writeFile(plistPath, plist(label, nodePath, rootDir, logDir, env), "utf8");
+await fs.writeFile(plistPath, plist(label, rootDir, logDir, env), "utf8");
 await launchctl(["bootout", `gui/${process.getuid()}`, plistPath], true);
 await launchctl(["enable", `gui/${process.getuid()}/${label}`], true);
 await launchctl(["bootstrap", `gui/${process.getuid()}`, plistPath], false);
@@ -38,6 +38,12 @@ function buildLaunchdEnvironment() {
     "SHELL",
     "DEFAULT_MODEL_PROVIDER",
     "OPENAI_MODEL",
+    "LOCAL_MODEL_BASE_URL",
+    "LOCAL_MODEL_NAME",
+    "LOCAL_MODEL_FAST",
+    "LOCAL_MODEL_STANDARD",
+    "LOCAL_MODEL_REASONING",
+    "AGENTFLOW_AUTO_PROVIDERS",
     "BYO_MODEL_BASE_URL",
     "BYO_MODEL_NAME",
     "AWS_PROFILE",
@@ -80,7 +86,7 @@ function isSensitiveEnvironmentKey(key) {
   return /(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD|DATABASE_URL|REDIS_URL|OBJECT_STORAGE_ACCESS_KEY|OBJECT_STORAGE_SECRET_KEY)/i.test(key);
 }
 
-function plist(serviceLabel, executable, cwd, logs, environment) {
+function plist(serviceLabel, cwd, logs, environment) {
   const envXml = Object.entries(environment)
     .map(([key, value]) => `      <key>${escapeXml(key)}</key>\n      <string>${escapeXml(value)}</string>`)
     .join("\n");
@@ -93,8 +99,8 @@ function plist(serviceLabel, executable, cwd, logs, environment) {
   <string>${escapeXml(serviceLabel)}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${escapeXml(executable)}</string>
-    <string>${escapeXml(path.join(cwd, "scripts", "dev-agentflow.mjs"))}</string>
+    <string>/bin/zsh</string>
+    <string>${escapeXml(path.join(cwd, "scripts", "run-agent-workflow-supervisor.sh"))}</string>
   </array>
   <key>WorkingDirectory</key>
   <string>${escapeXml(cwd)}</string>

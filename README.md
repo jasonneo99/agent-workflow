@@ -114,7 +114,7 @@ OPENAI_API_KEY=sk-...
 OPENAI_MODEL=auto
 ```
 
-For a fresh install, local and BYO providers can be configured either through `npm run setup` or by manually adding the `LOCAL_*` or `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and shows the model selected from its catalog.
+For a fresh install, local and BYO providers can be configured either through `npm run setup` or by manually adding the `LOCAL_*` or `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and shows the model selected from its catalog. Use `npm run agentflow -- local-llm-checklist -p .` when you also want proof that local routing is visible to Agent Workflow, has produced a low-risk route receipt, and has useful smoke-run history for the next model download or routing fix.
 
 ## Model Tier Routing
 
@@ -229,6 +229,9 @@ npm run agentflow -- artifact-lifecycle -p . # Inspect read-only artifact invent
 npm run agentflow -- artifact-lifecycle -p . --prune-plan # Preview exact artifact prune candidates without deleting anything
 npm run agentflow -- server-mutation-controls # Audit server-mode mutation auth, role, idempotency, gates, and receipts
 npm run agentflow -- server-approval-preview --project-id <project-id> --approval-id <approval-id> --decision approve-and-execute # Preview remote approval/action controls without mutation
+npm run agentflow -- server-approval-action-plan # Inspect the receipt/idempotency plan before remote approval mutations
+npm run agentflow -- server-approval-action-test-adapter # Prove approval/action replay receipts with fixture data and no live side effects
+npm run agentflow -- server-approval-action --project-id <project-id> --approval-id <approval-id> --decision approve-and-execute --idempotency-key <key> # Validate locally; HTTP mutation remains gated off by default
 npm run agentflow -- request-approval -p . --type deployment --target production --rationale "Ready to ship" # Queue a deployment approval
 npm run agentflow -- gate -r <id> -p . # Enforce project-local quality/cost gates
 npm run agentflow -- observe -r <id> --json # Export OpenTelemetry-style spans and metrics
@@ -243,6 +246,22 @@ npm run agentflow -- queue-tuning-approvals -p . --ids all # Dry-run approval qu
 npm run agentflow -- tuning-approvals -p . --approve tune-001 # Approve a queued item
 npm run agentflow -- generate-tuning-patches -p . # Dry-run reviewable patch-plan files
 npm run agentflow -- model-improvement-plan -p . # Dry-run scrubbed eval/dataset plan files
+npm run agentflow -- local-holdout-comparison -p . # Compare local LLM routing against a hosted baseline before promotion
+npm run agentflow -- local-holdout-results -p . # Capture local-vs-hosted promotion evidence
+npm run agentflow -- local-holdout-promote -p . --approved # Dry-run reviewed low-risk local routing preference
+npm run agentflow -- local-llm-benchmarks -p . # Prepare tiny local-only benchmark receipts for installed candidates
+npm run agentflow -- local-llm-cache-trends -p . --write # Append compact local model cache and routing trend history
+npm run agentflow -- local-llm-checklist -p . # Verify local endpoint, catalog selection, routing visibility, and first low-risk local receipt
+npm run agentflow -- local-llm-cost-ledger -p . --write # Append configurable local-vs-hosted savings estimates
+npm run agentflow -- local-llm-setup-guide -p . # Detect local runtimes and write safe project-local setup guidance
+npm run agentflow -- local-llm-download-recommendations -p . # Recommend local model downloads from hardware, task mix, and runtime catalog
+npm run agentflow -- local-llm-install-plan -p . --write # Write reviewed local model download and verification commands
+npm run agentflow -- local-llm-inventory -p . # Inspect local model cache size, last-used evidence, and prune candidates
+npm run agentflow -- local-llm-prune-plan -p . --write # Write reviewed local model cache cleanup commands without deleting anything
+npm run agentflow -- local-llm-routing-recommendations -p . --write # Recommend local routing expand, hold, or retreat decisions
+npm run agentflow -- local-llm-routing-note-plan -p . --write # Write reviewed project-local routing-note plans from expand/retreat recommendations
+npm run agentflow -- apply-local-llm-routing-note-plan -p . --approved --write # Append reviewed local routing notes with rollback receipts
+npm run agentflow -- local-llm-smoke -p . # Run one safe fast-tier provider-smoke stage to create route receipt evidence
 npm run agentflow -- agent-improvement-report -p . --write # Refresh local agent-card improvement recommendations
 npm run agentflow -- agent-improvement-patches -p . --write # Generate validated agent-card YAML patch previews
 npm run agentflow -- agent-improvement-evals -p . --write # Score agent-card patches against holdout run evidence

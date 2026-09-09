@@ -19,113 +19,113 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "04a8bdae3d4357d22e3ab0694e6349bdcca80b38641effe2ec432cfd02a20369"
+    "value": "7b01dc80c379e36cd9f94bf505c1abe27700cbaa9912d0ba1dd780b0aefc0366"
   },
   "agents": [
     {
       "id": "auto-ci-triage",
       "path": "agents/automatic/auto-ci-triage.yaml",
-      "checksum": "770c9d9616fe092158cae2940f73c3493608011b075b04486d1413433c32773e"
+      "checksum": "36611893488aa329d2d69c8c9735ee625f858dc25143df1c3e7c14f2c6310213"
     },
     {
       "id": "auto-docs-update",
       "path": "agents/automatic/auto-docs-update.yaml",
-      "checksum": "b750256074a5115f5fdeb6293404f4b11f2737fb610c2dfc7564ba0fc4aedef1"
+      "checksum": "00fdeb992bf814f82df3f6c4955b6da93fa0e5a821683c83b463fedb3804902e"
     },
     {
       "id": "auto-memory-summarizer",
       "path": "agents/automatic/auto-memory-summarizer.yaml",
-      "checksum": "5deff1459051335b754fce1f6241cefab7eeb63869dc52ef5376b09a5bc0aa11"
+      "checksum": "fa9bcc3b5e6d8ce425cfdd8e4e73c03f8e84328109804b832be1cdd9918e1fd2"
     },
     {
       "id": "auto-release-check",
       "path": "agents/automatic/auto-release-check.yaml",
-      "checksum": "12e634ca59d3cd0972b9044896cf3c01049a51a5be077e958bbc981636cf3fe5"
+      "checksum": "f66a973dd2854b559e52dcf7558d4eb07e265a339263c2c1742fc33bb7389a1d"
     },
     {
       "id": "auto-test-runner",
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "2fe44446154162004bd060337f098ff0b0044b02e63051ca695b332cb454ec2d"
+      "checksum": "5191852d63ad84b367958792ebdcc6fb164ceb72c44ad78394cdf7d78ad44bf0"
     },
     {
       "id": "auto-wide-open-executor",
       "path": "agents/automatic/auto-wide-open-executor.yaml",
-      "checksum": "e2edff0198c163d99ace208af8ed0ff2bfb70c7e2738dcb4d3b424a4cacd2135"
+      "checksum": "bf5c96d108befa0ec4e1333ceac02b137b712c34efecacacff564bac60a5bb93"
     },
     {
       "id": "context-curator",
       "path": "agents/core/context-curator.yaml",
-      "checksum": "129567a35806f71f3b558df67108cb4693d671538fbd70b34b98798669a7bcc3"
+      "checksum": "77787da0106fe19c89179f729d69a5005b69deaa9eabef4e7632c4a67e031f94"
     },
     {
       "id": "task-triager",
       "path": "agents/core/task-triager.yaml",
-      "checksum": "26f3e966ad6fa201ea7ddf8694719b45dfeeb2658c70aee79d1244e678c14943"
+      "checksum": "a34ace7353b010f20edddfe720c517aeefac199cd3c6b22a73ba9f63705633c8"
     },
     {
       "id": "workflow-orchestrator",
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "82bb0b89c6c60b5030d1b3099e178c9a41712da6f6406b1cd2b7ae64ee5bf819"
+      "checksum": "f478b36cc6f4bde614202ffb1d925a81f366a1cbb08df6951aeea09bfbc548e5"
     },
     {
       "id": "backend-engineer",
       "path": "agents/development/backend-engineer.yaml",
-      "checksum": "b9f74128981c843c0294e8d716e5afea9dc326808285e1d251a198cb4a428d86"
+      "checksum": "0df53d64340aba9e6f492fc5021e3efb7052a4b9794a5dbe1001c1699d585967"
     },
     {
       "id": "ci-debugger",
       "path": "agents/development/ci-debugger.yaml",
-      "checksum": "af59e2d48b84c7daa8eac5c94bea018385819978865d5c7441a037c7cad0292b"
+      "checksum": "588c41095edfccf30e15a9f7674a34ee5542f0378c92f9fcf52a1d27e1c91c5e"
     },
     {
       "id": "database-engineer",
       "path": "agents/development/database-engineer.yaml",
-      "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
+      "checksum": "70bc48d50aec2eec19b017f1208318a26d867bb3b1e3332935dbc2b696ac56da"
     },
     {
       "id": "eval-curator",
       "path": "agents/development/eval-curator.yaml",
-      "checksum": "720b638e6977c1313e5ad5de0f96968d9a491632cdce478b6fae3c37aa15759f"
+      "checksum": "767ea8620069ed03031115539e864d724530f0f7d9ef5cb22cd7e9d9cee2dd9f"
     },
     {
       "id": "frontend-engineer",
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
+      "checksum": "20c7a6402cc68f7498f2e4a50533bc31c3eef9f4140620de9735485187824dd0"
     },
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+      "checksum": "08e031b3be5d7072c3fcf63bc325a799d0ed16450d827339dd2a6fdbcd3c1a95"
     },
     {
       "id": "model-improvement-diagnostician",
       "path": "agents/development/model-improvement-diagnostician.yaml",
-      "checksum": "6a891ef3a09cc5d6133e21a189aa5934757c87336c68b76cc99063ef6131bf7e"
+      "checksum": "1fbcd44932f5599b5e7d52077f89898d38c4c73492943b93901efda40641dc13"
     },
     {
       "id": "routing-optimizer",
       "path": "agents/development/routing-optimizer.yaml",
-      "checksum": "0b714f85e2fa5a59b894390e89803cc55dd376ad530efcb03a619fed18a99686"
+      "checksum": "2a598cfa16243d4ff23177070a394ee9f17f9002c83fee05f3d13af294ddebdf"
     },
     {
       "id": "security-reviewer",
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "f08d2c9edf387ac272d93fb2ac3e64c1188c14ef2e1fe566180aa8eaad8f81d5"
+      "checksum": "b36349f7e80b57ffa083880db7a36e033eab2897cc33013d417ac966a62a4653"
     },
     {
       "id": "technical-architect",
       "path": "agents/development/technical-architect.yaml",
-      "checksum": "66fc838085f2fd78b13ff39fc4f1c4282f602cb533a5cc72e0deeefea42aff42"
+      "checksum": "1bc87869ef2688427526c945f5ec18ac5426dad194644f9f4df57d5ef7d20e90"
     },
     {
       "id": "test-engineer",
       "path": "agents/development/test-engineer.yaml",
-      "checksum": "c1ff845d969c61ab093590f0a05a2f5160a0d2de4bd489d10015716b6e2c42b8"
+      "checksum": "af4914fa373d34864bbe13ec614b79720b335fee592824169b06afc027253b5c"
     },
     {
       "id": "docs-maintainer",
       "path": "agents/operations/docs-maintainer.yaml",
-      "checksum": "996423d62d15b1d7691c4de1e4f3b919fb3073b113a2fdc65bfccd604c289255"
+      "checksum": "2d759d6fb8fd38e6b29784491bd9d0d0785d9b6257167b026b6781c3d68965f3"
     },
     {
       "id": "pr-preparer",
@@ -135,17 +135,17 @@
     {
       "id": "release-manager",
       "path": "agents/operations/release-manager.yaml",
-      "checksum": "9e848fd1e6641840c1933a0e0b18a324c9a237c591d96a9c42d3645fe09c9610"
+      "checksum": "b6e24794d5bf511a3b9e1f6155a00fbfa58b77185567212c92c4c1659b34f37e"
     },
     {
       "id": "product-strategist",
       "path": "agents/product/product-strategist.yaml",
-      "checksum": "67ebb74db692a03ba1bec5cb9313e1212496288a703cb1745a20a9b90c14da00"
+      "checksum": "8822d507401e87ab26487f244d7ae68401602a8b11f19ccf257f3e9c81972e52"
     },
     {
       "id": "ux-reviewer",
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "428f21af307cd42e954c10806660034d7d3249c7c4f36cf44a20fcbd1b5b2af0"
+      "checksum": "6c11a524e44eebc8cf381b73cf484a05909038c821a028df3e8a389d0d303906"
     }
   ],
   "workflows": [
@@ -198,87 +198,87 @@
   "files": [
     {
       "path": "agents/automatic/auto-ci-triage.yaml",
-      "checksum": "770c9d9616fe092158cae2940f73c3493608011b075b04486d1413433c32773e"
+      "checksum": "36611893488aa329d2d69c8c9735ee625f858dc25143df1c3e7c14f2c6310213"
     },
     {
       "path": "agents/automatic/auto-docs-update.yaml",
-      "checksum": "b750256074a5115f5fdeb6293404f4b11f2737fb610c2dfc7564ba0fc4aedef1"
+      "checksum": "00fdeb992bf814f82df3f6c4955b6da93fa0e5a821683c83b463fedb3804902e"
     },
     {
       "path": "agents/automatic/auto-memory-summarizer.yaml",
-      "checksum": "5deff1459051335b754fce1f6241cefab7eeb63869dc52ef5376b09a5bc0aa11"
+      "checksum": "fa9bcc3b5e6d8ce425cfdd8e4e73c03f8e84328109804b832be1cdd9918e1fd2"
     },
     {
       "path": "agents/automatic/auto-release-check.yaml",
-      "checksum": "12e634ca59d3cd0972b9044896cf3c01049a51a5be077e958bbc981636cf3fe5"
+      "checksum": "f66a973dd2854b559e52dcf7558d4eb07e265a339263c2c1742fc33bb7389a1d"
     },
     {
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "2fe44446154162004bd060337f098ff0b0044b02e63051ca695b332cb454ec2d"
+      "checksum": "5191852d63ad84b367958792ebdcc6fb164ceb72c44ad78394cdf7d78ad44bf0"
     },
     {
       "path": "agents/automatic/auto-wide-open-executor.yaml",
-      "checksum": "e2edff0198c163d99ace208af8ed0ff2bfb70c7e2738dcb4d3b424a4cacd2135"
+      "checksum": "bf5c96d108befa0ec4e1333ceac02b137b712c34efecacacff564bac60a5bb93"
     },
     {
       "path": "agents/core/context-curator.yaml",
-      "checksum": "129567a35806f71f3b558df67108cb4693d671538fbd70b34b98798669a7bcc3"
+      "checksum": "77787da0106fe19c89179f729d69a5005b69deaa9eabef4e7632c4a67e031f94"
     },
     {
       "path": "agents/core/task-triager.yaml",
-      "checksum": "26f3e966ad6fa201ea7ddf8694719b45dfeeb2658c70aee79d1244e678c14943"
+      "checksum": "a34ace7353b010f20edddfe720c517aeefac199cd3c6b22a73ba9f63705633c8"
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "82bb0b89c6c60b5030d1b3099e178c9a41712da6f6406b1cd2b7ae64ee5bf819"
+      "checksum": "f478b36cc6f4bde614202ffb1d925a81f366a1cbb08df6951aeea09bfbc548e5"
     },
     {
       "path": "agents/development/backend-engineer.yaml",
-      "checksum": "b9f74128981c843c0294e8d716e5afea9dc326808285e1d251a198cb4a428d86"
+      "checksum": "0df53d64340aba9e6f492fc5021e3efb7052a4b9794a5dbe1001c1699d585967"
     },
     {
       "path": "agents/development/ci-debugger.yaml",
-      "checksum": "af59e2d48b84c7daa8eac5c94bea018385819978865d5c7441a037c7cad0292b"
+      "checksum": "588c41095edfccf30e15a9f7674a34ee5542f0378c92f9fcf52a1d27e1c91c5e"
     },
     {
       "path": "agents/development/database-engineer.yaml",
-      "checksum": "1f738db1ce983e376c1421642cd7727d757c4598ef3296a7f41d60342cd8f78d"
+      "checksum": "70bc48d50aec2eec19b017f1208318a26d867bb3b1e3332935dbc2b696ac56da"
     },
     {
       "path": "agents/development/eval-curator.yaml",
-      "checksum": "720b638e6977c1313e5ad5de0f96968d9a491632cdce478b6fae3c37aa15759f"
+      "checksum": "767ea8620069ed03031115539e864d724530f0f7d9ef5cb22cd7e9d9cee2dd9f"
     },
     {
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "f0b92f375d8201bf29801569df5c77ecc1e2ee256ff019aa13de33bcd83f0bc8"
+      "checksum": "20c7a6402cc68f7498f2e4a50533bc31c3eef9f4140620de9735485187824dd0"
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "4be8aba1ec0b4f040d0c7f6359fadd89ee5e55bb8731dd965b8af42f8947ebe5"
+      "checksum": "08e031b3be5d7072c3fcf63bc325a799d0ed16450d827339dd2a6fdbcd3c1a95"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
-      "checksum": "6a891ef3a09cc5d6133e21a189aa5934757c87336c68b76cc99063ef6131bf7e"
+      "checksum": "1fbcd44932f5599b5e7d52077f89898d38c4c73492943b93901efda40641dc13"
     },
     {
       "path": "agents/development/routing-optimizer.yaml",
-      "checksum": "0b714f85e2fa5a59b894390e89803cc55dd376ad530efcb03a619fed18a99686"
+      "checksum": "2a598cfa16243d4ff23177070a394ee9f17f9002c83fee05f3d13af294ddebdf"
     },
     {
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "f08d2c9edf387ac272d93fb2ac3e64c1188c14ef2e1fe566180aa8eaad8f81d5"
+      "checksum": "b36349f7e80b57ffa083880db7a36e033eab2897cc33013d417ac966a62a4653"
     },
     {
       "path": "agents/development/technical-architect.yaml",
-      "checksum": "66fc838085f2fd78b13ff39fc4f1c4282f602cb533a5cc72e0deeefea42aff42"
+      "checksum": "1bc87869ef2688427526c945f5ec18ac5426dad194644f9f4df57d5ef7d20e90"
     },
     {
       "path": "agents/development/test-engineer.yaml",
-      "checksum": "c1ff845d969c61ab093590f0a05a2f5160a0d2de4bd489d10015716b6e2c42b8"
+      "checksum": "af4914fa373d34864bbe13ec614b79720b335fee592824169b06afc027253b5c"
     },
     {
       "path": "agents/operations/docs-maintainer.yaml",
-      "checksum": "996423d62d15b1d7691c4de1e4f3b919fb3073b113a2fdc65bfccd604c289255"
+      "checksum": "2d759d6fb8fd38e6b29784491bd9d0d0785d9b6257167b026b6781c3d68965f3"
     },
     {
       "path": "agents/operations/pr-preparer.yaml",
@@ -286,15 +286,15 @@
     },
     {
       "path": "agents/operations/release-manager.yaml",
-      "checksum": "9e848fd1e6641840c1933a0e0b18a324c9a237c591d96a9c42d3645fe09c9610"
+      "checksum": "b6e24794d5bf511a3b9e1f6155a00fbfa58b77185567212c92c4c1659b34f37e"
     },
     {
       "path": "agents/product/product-strategist.yaml",
-      "checksum": "67ebb74db692a03ba1bec5cb9313e1212496288a703cb1745a20a9b90c14da00"
+      "checksum": "8822d507401e87ab26487f244d7ae68401602a8b11f19ccf257f3e9c81972e52"
     },
     {
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "428f21af307cd42e954c10806660034d7d3249c7c4f36cf44a20fcbd1b5b2af0"
+      "checksum": "6c11a524e44eebc8cf381b73cf484a05909038c821a028df3e8a389d0d303906"
     },
     {
       "path": "workflows/build-feature.yaml",

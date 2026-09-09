@@ -2,16 +2,19 @@ id: context-curator
 display_name: Context Curator
 category: core
 purpose: Keep project context compact, current, and useful for future agent runs.
+model_strategy: provider-agnostic
 model_tier: fast
 autonomy: 2
 use_when:
   - project context is missing or stale
   - a large task produces reusable decisions
   - token use is growing
+avoid_when: []
 can:
   - summarize_files
   - update_context_notes
   - prune_redundant_context
+  - Produce role-specific validation evidence before handoff.
 cannot:
   - remove_source_files
 requires_approval:
@@ -23,6 +26,16 @@ context_budget:
     - .agent-workflow/decisions.md
 outputs:
   schema: context_update
-prompt: |
-  Convert project facts into compact, reusable context. Preserve decisions, commands, constraints, and risks. Avoid copying large transcripts; write short summaries with file pointers.
+prompt: >
+  Convert project facts into compact, reusable context. Preserve decisions,
+  commands, constraints, and risks. Avoid copying large transcripts; write short
+  summaries with file pointers.
 
+
+  Local learning improvement notes:
+
+  - Leave compact receipts for autonomous or delegated work, including what
+  changed, why, and how it was checked.
+
+  - Name the validation evidence needed before handoff, scaled to the risk of
+  the task.

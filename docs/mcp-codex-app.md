@@ -52,11 +52,13 @@ The MCP server writes best-effort lifecycle breadcrumbs to:
 ```
 
 Those logs record launcher resolution, start, connect, stdin close, stdout
-errors, uncaught exceptions, process exit events, and metadata-only
-`agentflow_approvals` start/result events. Approval diagnostics include action
-type, approval id, run id, project hash, actor hash, exit code, timeout state,
-and output byte counts, but not note text, prompt bodies, provider keys,
-database URLs, storage secrets, or artifacts.
+errors, uncaught exceptions, process exit events, metadata-only
+`agentflow_approvals` start/result events, and command spans for MCP-launched
+CLI work. Approval diagnostics include action type, approval id, run id,
+project hash, actor hash, exit code, timeout state, and output byte counts.
+Command spans include operation name, command hash, child PID, timeout, exit
+state, and output byte counts. They do not include command text, note text,
+prompt bodies, provider keys, database URLs, storage secrets, or artifacts.
 
 Run an end-to-end launcher smoke check from the repo:
 
@@ -116,6 +118,7 @@ Codex app or task so Codex creates a fresh private stdio subprocess.
 - `agentflow_generate_tuning_patches`: dry-run or write reviewable patch-plan files from approved tuning proposals.
 - `agentflow_apply_tuning_patches`: dry-run or write project-local tuning notes from reviewed patch-plan items.
 - `agentflow_apply_tuning_proposals`: dry-run or write selected tuning proposals into project-local `.agent-workflow/tuning/` overlays.
+- `agentflow_agent_improvement_apply`: dry-run or apply approved agent YAML promotions with source-hash checks, schema validation, risk thresholds, and rollback receipts.
 - `agentflow_artifacts`: inspect run artifacts.
 - `agentflow_export_run`: export Markdown and JSON run reports, with optional scrubbed sharing mode.
 - `agentflow_provider_check`: check selected model provider.

@@ -135,6 +135,38 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_server_approval_action_plan",
+  {
+    title: "AgentFlow server approval action plan",
+    description: "Read-only per-decision receipt, idempotency replay, and rollback checklist before governed server approval/action mutations can be enabled.",
+    inputSchema: {
+      json: z.boolean().optional().describe("Return machine-readable approval/action execution plan.")
+    }
+  },
+  async ({ json }) => {
+    const args = ["server-approval-action-plan"];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_server_approval_action_test_adapter",
+  {
+    title: "AgentFlow server approval action test adapter",
+    description: "Exercise the governed server approval/action contract against fixture approvals with receipt and idempotency replay proof, without live side effects.",
+    inputSchema: {
+      json: z.boolean().optional().describe("Return machine-readable test-adapter proof.")
+    }
+  },
+  async ({ json }) => {
+    const args = ["server-approval-action-test-adapter"];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_discover_projects",
   {
     title: "AgentFlow discover projects",
@@ -1349,6 +1381,45 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_agent_improvement_apply",
+  {
+    title: "AgentFlow agent improvement apply",
+    description: "Apply approved agent improvement promotions into agent YAML with source-hash checks and rollback receipts.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      ids: z.string().optional().describe("Comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to apply, or all."),
+      maxRisk: z.enum(["low", "medium", "high"]).optional().describe("Maximum approved promotion risk to apply."),
+      actor: z.string().optional().describe("Actor name for application receipts."),
+      note: z.string().optional().describe("Application note recorded in receipts."),
+      write: z.boolean().optional().describe("Write approved YAML changes and application receipts."),
+      json: z.boolean().optional().describe("Return apply result JSON.")
+    }
+  },
+  async ({ project, ids, maxRisk, actor, note, write, json }) => {
+    const args = ["agent-improvement-apply", "--project", project];
+    if (ids) {
+      args.push("--ids", ids);
+    }
+    if (maxRisk) {
+      args.push("--max-risk", maxRisk);
+    }
+    if (actor) {
+      args.push("--actor", actor);
+    }
+    if (note) {
+      args.push("--note", note);
+    }
+    if (write) {
+      args.push("--write");
+    }
+    if (json) {
+      args.push("--json");
+    }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_learning_action_receipts",
   {
     title: "AgentFlow learning action receipts",
@@ -1710,6 +1781,9 @@ async function runNpmScript(args: string[], options: { timeoutMs?: number } = {}
 
 async function runCommand(command: string, args: string[], timeoutMs: number): Promise<CommandResult> {
   return new Promise((resolve) => {
+    const commandText = formatCommand(command, args);
+    const diagnostic = mcpCommandDiagnostic(command, args, timeoutMs);
+    void appendMcpLog("command-start", diagnostic);
     const child = spawn(command, args, {
       cwd: rootDir,
       env: process.env,
@@ -1720,6 +1794,12 @@ async function runCommand(command: string, args: string[], timeoutMs: number): P
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
+      void appendMcpLog("command-timeout", {
+        ...diagnostic,
+        childPid: child.pid,
+        stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+        stderrBytes: Buffer.byteLength(stderr, "utf8")
+      });
       child.kill("SIGTERM");
     }, timeoutMs);
 
@@ -1731,8 +1811,15 @@ async function runCommand(command: string, args: string[], timeoutMs: number): P
     });
     child.on("error", (error) => {
       clearTimeout(timer);
+      void appendMcpLog("command-error", {
+        ...diagnostic,
+        childPid: child.pid,
+        message: error.message,
+        stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+        stderrBytes: Buffer.byteLength(stderr, "utf8")
+      });
       resolve({
-        command: formatCommand(command, args),
+        command: commandText,
         exitCode: 1,
         stdout,
         stderr: trimOutput(`${stderr}\n${error.message}`.trim()),
@@ -1741,8 +1828,16 @@ async function runCommand(command: string, args: string[], timeoutMs: number): P
     });
     child.on("close", (exitCode) => {
       clearTimeout(timer);
+      void appendMcpLog("command-close", {
+        ...diagnostic,
+        childPid: child.pid,
+        exitCode,
+        timedOut,
+        stdoutBytes: Buffer.byteLength(stdout, "utf8"),
+        stderrBytes: Buffer.byteLength(stderr, "utf8")
+      });
       resolve({
-        command: formatCommand(command, args),
+        command: commandText,
         exitCode,
         stdout,
         stderr,
@@ -1750,6 +1845,23 @@ async function runCommand(command: string, args: string[], timeoutMs: number): P
       });
     });
   });
+}
+
+function mcpCommandDiagnostic(command: string, args: string[], timeoutMs: number): Record<string, unknown> {
+  const commandText = formatCommand(command, args);
+  const agentflowSeparator = args.indexOf("--");
+  const agentflowCommand = agentflowSeparator >= 0 && args[agentflowSeparator + 1]
+    ? args[agentflowSeparator + 1]
+    : path.basename(command).startsWith("node") && args[0]?.endsWith("index.js")
+      ? args[1] ?? "unknown"
+      : args[0] ?? "unknown";
+  return {
+    pid: process.pid,
+    operation: agentflowCommand,
+    commandHash: shortHash(commandText),
+    argc: args.length,
+    timeoutMs
+  };
 }
 
 function toolResult(result: CommandResult): {
@@ -1766,6 +1878,9 @@ function toolResult(result: CommandResult): {
     result.exitCode === 0 ? "" : `Exit code: ${result.exitCode ?? "unknown"}`,
     result.stdout.includes(truncationMarker()) || result.stderr.includes(truncationMarker())
       ? `Output was compacted for MCP transport stability. For full output, run locally: ${result.command}`
+      : "",
+    result.exitCode !== 0 || result.timedOut || result.stdout.includes(truncationMarker()) || result.stderr.includes(truncationMarker())
+      ? "MCP recovery: if Codex or your IDE later reports `Transport closed`, run locally: npm run runtime-monitor -- --check-mcp --write-mcp-recovery"
       : ""
   ].filter(Boolean);
 

@@ -2,19 +2,38 @@ id: auto-test-runner
 display_name: Auto Test Runner
 category: automatic
 purpose: Automatically run configured verification after local changes.
+model_strategy: provider-agnostic
 model_tier: fast
 autonomy: 3
 use_when:
   - files changed
   - workflow reaches verification
+avoid_when: []
 can:
   - run_project_test_commands
   - summarize_test_results
   - suggest_next_fix
+cannot: []
 requires_approval:
   - modifying_tests
+context_budget:
+  max_tokens: 2500
+  preferred_sources: []
 outputs:
   schema: automated_verification
-prompt: |
-  Run only configured or clearly relevant tests. Return command, exit code, important output, and likely next step. Avoid flooding the parent context with full logs.
+prompt: >
+  Run only configured or clearly relevant tests. Return command, exit code,
+  important output, and likely next step. Avoid flooding the parent context with
+  full logs.
 
+
+  Local learning improvement notes:
+
+  - Leave compact receipts for autonomous or delegated work, including what
+  changed, why, and how it was checked.
+
+  - Name the validation evidence needed before handoff, scaled to the risk of
+  the task.
+
+  - Stop for approval before destructive, external, provider, privilege, or
+  reusable-definition changes.

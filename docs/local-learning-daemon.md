@@ -216,6 +216,8 @@ It writes Agent Workflow-owned learning artifacts:
 .agent-workflow/learning/agent-improvement-promotions.md
 .agent-workflow/learning/agent-improvement-promotion-receipts.json
 .agent-workflow/learning/agent-improvement-promotion-receipts.md
+.agent-workflow/learning/agent-improvement-apply-receipts.json
+.agent-workflow/learning/agent-improvement-apply-receipts.md
 ```
 
 Run it manually:
@@ -233,13 +235,16 @@ npm run agentflow -- agent-improvement-evals --project /path/to/project --ids ux
 npm run agentflow -- agent-improvement-promotions --project /path/to/project
 npm run agentflow -- agent-improvement-promotions --project /path/to/project --write
 npm run agentflow -- agent-improvement-promotions --project /path/to/project --approve promotion-patch-agent-ux-reviewer-improvement --reviewer "Your Name" --note "Approved after holdout eval review"
+npm run agentflow -- agent-improvement-apply --project /path/to/project
+npm run agentflow -- agent-improvement-apply --project /path/to/project --max-risk medium --write
 ```
 
 The same report is available in the dashboard on `/learning` and through MCP as
 `agentflow_agent_improvement_report`. Patch previews are available as
 `agentflow_agent_improvement_patches`. Holdout promotion scoring is available
 as `agentflow_agent_improvement_evals`. Promotion queue decisions and receipts
-are available as `agentflow_agent_improvement_promotions`.
+are available as `agentflow_agent_improvement_promotions`. Approved promotion
+application is available as `agentflow_agent_improvement_apply`.
 
 The report recommends improvements to fields such as `prompt`, `can`,
 `requires_approval`, `context_budget`, and `outputs`. Examples include adding
@@ -256,12 +261,28 @@ Safe autonomy for this loop:
 - It must not include private source, logs, prompts, feedback, eval cases, or
   customer data in research prompts without explicit approval.
 
+Agent YAML application is intentionally a separate step after promotion
+scoring. `agent-improvement-apply` applies approved patch previews only when
+the source hash still matches the rollback evidence, the proposed YAML validates
+against the agent-card schema, and the promotion risk is within the selected
+threshold. Dry-run mode is the default. `--write` updates the YAML and records
+apply receipts.
+
+The daemon may run this application step in `apply-approved` mode for
+project-local promotions that are holdout-passing, auto-apply-ready, still
+source-hash-current, and within the configured autonomy risk threshold. This is
+controlled by `agentImprovementProjectLocalAutoApply` in
+`.agent-workflow/learning/settings.json` or
+`AGENTFLOW_AGENT_IMPROVEMENT_PROJECT_LOCAL_AUTO_APPLY=off`. Manual
+`agent-improvement-apply --write` remains the explicit path for approved shared
+agent YAML promotions. The daemon still stops or skips when the source hash
+changed, schema validation fails, the item is not project-local auto-ready, or
+the risk exceeds the configured threshold.
+
 Approval remains required before the daemon:
 
-- edits `agents/**/*.yaml`
-- edits project-local `.agent-workflow/agents/*.yaml`
-- adds new reusable agent types
-- expands tool permissions or autonomy
+- applies shared, unapproved, or high-risk agent YAML promotions
+- expands tool permissions or autonomy beyond the configured threshold
 - weakens safety boundaries
 - promotes a candidate into a signed/released bundle
 
@@ -273,11 +294,8 @@ Holdout eval scoring compares patch previews against recent representative run
 evidence before promotion. It checks schema validity, rollback source hashes,
 minimum holdout task coverage, risk boundaries, and whether local feedback,
 failure, or routing evidence supports the patch. The output marks each patch
-`pass`, `warn`, or `fail`, then separates manual promotion readiness from
-future owner-enabled project-local auto-apply readiness.
-
-The next phase should add promotion receipts and an owner setting that can
-auto-apply only low-risk project-local agent-card edits.
+`pass`, `warn`, or `fail`, then separates promotion readiness from apply
+eligibility.
 
 ## Storage Model
 
@@ -399,6 +417,14 @@ Add a **Learning** dashboard area with:
 - Latest learning report.
 - Repeated failure patterns.
 - Cost and latency savings opportunities.
+- Route feedback signals from model-improvement drilldowns, including costly
+  and helpful route groups the daemon can use to prioritize routing proposals.
+- Low-risk learning proposals generated from repeated costly or helpful route
+  feedback, pointing to routing recommendation refreshes before any provider or
+  workflow setting changes are considered.
+- A direct autonomous writer for approved route-feedback learning proposals that
+  refreshes `.agent-workflow/model-improvement/local-llm-routing-recommendations.*`
+  without shelling out, editing provider settings, or changing workflow YAML.
 - Routing recommendations.
 - Workflow-shape recommendations for adding, removing, splitting, collapsing,
   or gating stages.
@@ -437,6 +463,8 @@ agentflow learning-action-receipts --project /path/to/project --compact
 agentflow learning-action-receipts --project /path/to/project --reject learn-action-001 --actor "Your Name"
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature
 agentflow learning-workflow-shape --project /path/to/project --workflow build-feature --write
+agentflow agent-improvement-apply --project /path/to/project
+agentflow agent-improvement-apply --project /path/to/project --max-risk medium --write
 ```
 
 `--all-projects` iterates the local project registry and writes each project's
@@ -478,6 +506,7 @@ Expose the same concepts to Codex, VS Code, Cursor, and other MCP clients:
 - `agentflow_learning_workflow_shape`
 - `agentflow_learning_apply`
 - `agentflow_learning_research_notes`
+- `agentflow_agent_improvement_apply`
 
 MCP tools should default to read-only or dry-run output unless the project
 policy and approval state allow writes.

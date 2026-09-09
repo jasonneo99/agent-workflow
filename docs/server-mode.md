@@ -559,13 +559,22 @@ actor/IP in the current process. Set it to a positive value for shared use; a
 future multi-node server can replace this in-memory guard with a shared Redis
 limiter.
 
-`/api/server-approval-preview` is the matching dry-run contract for future
-remote approval decisions and action execution. It accepts `projectId`,
-`approvalId`, `decision`, `actor`, `actorRole`, and `idempotencyKey`, validates
-them against registered project ids, role gates, separation-of-duties policy,
-and approval policy rechecks, and records a redacted request-audit event. It is
-preview-only; local dashboard forms, CLI approvals, and MCP approvals remain the
-only mutation paths until a dedicated remote approval endpoint is reviewed.
+`/api/server-approval-preview` is the matching dry-run preview for future
+remote approval decisions and action execution. `/api/server-approval-action`
+accepts the same governed endpoint contract with `projectId`, `approvalId`,
+`decision`, `actor`, `actorRole`, and a client-provided `idempotencyKey`. It
+validates registered project ids, role gates, separation-of-duties policy,
+approval policy rechecks, auth, body limits, and per-actor/IP rate limits, then
+records a redacted request-audit event.
+
+The approval/action endpoint is mutation-disabled by default. To permit a live
+request, enable both `AGENTFLOW_SERVER_MODE=1` and
+`AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1`, configure server authentication,
+and supply a client idempotency key. The endpoint reuses the local approval
+executors, rechecks roles, separation of duties, project policy, and approval
+ownership, and records a request-bound durable result receipt. Replaying the
+same key returns the stored result without executing the action again; reusing
+the key with a different envelope is rejected.
 
 Server queue requests also write a redacted append-only audit event:
 
@@ -920,6 +929,56 @@ id, a known workflow, a role with request capability, and a client-provided
 idempotency key. Executed queue requests record actor, role, auth method,
 project id, workflow id, and idempotency details as run receipts. Repeat
 requests with the same idempotency key reuse the existing run.
+
+Validate the governed approval/action endpoint contract (the CLI remains non-mutating)
+approval state:
+
+```bash
+curl -fsS -X POST http://127.0.0.1:17888/api/server-approval-action \
+  -H "content-type: application/json" \
+  -H "authorization: Bearer $AGENTFLOW_SERVER_TOKEN" \
+  --data '{
+    "projectId": "'$PROJECT_ID'",
+    "approvalId": "'$APPROVAL_ID'",
+    "decision": "approve-and-execute",
+    "actor": "local-smoke",
+    "actorRole": "approver",
+    "idempotencyKey": "local-smoke-approval-001"
+  }'
+```
+
+Expected result today: `blocked` with `dryRun: true` and a `Mutation` check
+explaining that mutation is gated off by default. That is intentional; it lets
+clients prove auth, roles, idempotency, request limits, audit logging, and
+policy rechecks before remote approval state changes are enabled.
+
+Inspect the implementation plan required before approval/action mutation can be
+enabled:
+
+```bash
+npm run agentflow -- server-approval-action-plan
+curl -fsS http://127.0.0.1:17888/api/server-approval-action-plan
+```
+
+The plan breaks down each decision (`approve`, `reject`, `execute`,
+`approve-and-execute`, `dismiss`, and `always-approve`) by required receipt
+kinds, duplicate-idempotency replay behavior, rollback evidence, and missing
+controls. `AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1` activates mutation only
+when durable receipts, idempotency-result reuse, policy recheck evidence, and
+rollback evidence are available and all request gates pass.
+
+Exercise the same contract against fixture approvals with no live side effects:
+
+```bash
+npm run agentflow -- server-approval-action-test-adapter
+curl -fsS http://127.0.0.1:17888/api/server-approval-action-test-adapter
+```
+
+Expected result: `pass`. The test adapter runs every decision path twice with
+the same fixture idempotency key, verifies that replay returns the same receipt
+shape, and confirms execution-like paths simulate exactly one side effect while
+replay performs none. This is evidence for the contract, not permission to
+enable live remote approval mutation.
 
 Verify that path-shaped input is rejected:
 

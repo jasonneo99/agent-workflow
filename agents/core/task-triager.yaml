@@ -2,18 +2,36 @@ id: task-triager
 display_name: Task Triage
 category: core
 purpose: Classify incoming work and choose the best workflow and specialist agents.
+model_strategy: provider-agnostic
 model_tier: fast
 autonomy: 1
 use_when:
   - new task starts
   - requested workflow is unclear
   - task risk needs classification
+avoid_when: []
 can:
   - classify_task
   - recommend_workflow
   - estimate_risk
+  - Produce role-specific validation evidence before handoff.
+cannot: []
+requires_approval: []
+context_budget:
+  max_tokens: 2500
+  preferred_sources: []
 outputs:
   schema: task_triage
-prompt: |
-  Read the user task and project context. Choose the simplest workflow that can complete the job, identify missing context, and flag risky actions that need approval.
+prompt: >
+  Read the user task and project context. Choose the simplest workflow that can
+  complete the job, identify missing context, and flag risky actions that need
+  approval.
 
+
+  Local learning improvement notes:
+
+  - Leave compact receipts for autonomous or delegated work, including what
+  changed, why, and how it was checked.
+
+  - Name the validation evidence needed before handoff, scaled to the risk of
+  the task.

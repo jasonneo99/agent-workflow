@@ -106,6 +106,7 @@ import { executorApprovalTarget, runExecutorApprovalGate, runWorkerOnce, runWork
 import { assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot, type ExecutorResult, type ExecutorSnapshot } from "../../../packages/executor-adapters/src/index.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { explainModelCatalogSelection, normalizeModelSelectionPolicy, selectModelFromCatalog, type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy } from "../../../packages/model-providers/src/catalog.js";
+import { buildSavingsAwareLocalRoutingRecommendations, type LocalRoutingFeedbackEvent, type LocalRoutingFeedbackRating, type LocalRoutingFeedbackSummary, type LocalRoutingRecommendation } from "../../../packages/model-providers/src/local-routing-recommendations.js";
 import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../packages/model-providers/src/openai.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import type { ModelTier } from "../../../packages/model-providers/src/types.js";
@@ -120,6 +121,7 @@ const program = new Command();
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const configuredEnvPath = agentWorkflowEnvPath(rootDir);
 dotenv.config({ path: configuredEnvPath, quiet: true });
+dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultWorkerHeartbeatDir = path.join(rootDir, ".agent-workflow", "runtime", "workers");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
@@ -134,7 +136,7 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "roadmap-audit", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "server-approval-action", "server-approval-action-plan", "server-approval-action-test-adapter", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -256,6 +258,26 @@ type RuntimeMonitorReport = {
     services: Awaited<ReturnType<typeof checkServices>>;
   };
   localServices: Awaited<ReturnType<typeof checkServices>>;
+  localModelRuntime: {
+    runtime: string;
+    executable: string | null;
+    label: string;
+    plistPath: string;
+    installed: boolean;
+    serviceStatus: "running" | "installed" | "missing" | "unavailable";
+    pid: number | null;
+    runs: number | null;
+    endpoint: string;
+    endpointHealthy: boolean;
+    modelCount: number;
+    selectedModel: string;
+    stdoutPath: string;
+    stderrPath: string;
+    installCommand: string;
+    uninstallCommand: string;
+    restartCommand: string;
+    guidance: string;
+  };
   docker: {
     status: "running" | "unavailable";
     message: string;
@@ -313,6 +335,27 @@ type RuntimeMonitorReport = {
       lastTimedOut: boolean | null;
       summary: string;
       fallbackCommand: string;
+    };
+    commandDiagnostics: {
+      recentEvents: Array<Record<string, unknown>>;
+      lastStartAt: string | null;
+      lastCloseAt: string | null;
+      lastOperation: string | null;
+      lastExitCode: number | null;
+      lastTimedOut: boolean | null;
+      summary: string;
+    };
+    recovery: {
+      status: "not-written" | "available";
+      directory: string;
+      markdownPath: string;
+      jsonPath: string;
+      scriptPath: string;
+      lastWrittenAt: string | null;
+      writeCommand: string;
+      recommendedAction: string;
+      canRestartClientPipe: boolean;
+      reason: string;
     };
   };
   mcpCleanup: {
@@ -3031,12 +3074,13 @@ program
   .option("--cleanup-mcp", "preview stale Agent Workflow MCP cleanup candidates; pair with --confirm to terminate them")
   .option("--reconcile-stale-runs", "preview stale workflow runs whose child tasks are already terminal; pair with --confirm to repair them")
   .option("--check-mcp", "run an on-demand MCP launcher smoke check")
+  .option("--write-mcp-recovery", "write a local MCP recovery package with runbook, metadata, and a safe helper script")
   .option("--confirm", "confirm cleanup-mcp termination")
   .option("--auto-low-risk", "with cleanup-mcp, terminate only old duplicate low-risk MCP candidates")
   .option("--stale-minutes <number>", "age threshold for daemon/auto-low-risk MCP cleanup candidates")
   .option("--stale-run-limit <number>", "maximum stale terminal workflow runs to inspect or reconcile", "50")
   .option("--json", "print machine-readable runtime monitor report")
-  .action(async (options: { cleanupMcp?: boolean; reconcileStaleRuns?: boolean; checkMcp?: boolean; confirm?: boolean; autoLowRisk?: boolean; staleMinutes?: string; staleRunLimit: string; json?: boolean }) => {
+  .action(async (options: { cleanupMcp?: boolean; reconcileStaleRuns?: boolean; checkMcp?: boolean; writeMcpRecovery?: boolean; confirm?: boolean; autoLowRisk?: boolean; staleMinutes?: string; staleRunLimit: string; json?: boolean }) => {
     if (options.cleanupMcp) {
       const result = await cleanupRuntimeMcpProcesses({
         execute: Boolean(options.confirm),
@@ -3056,9 +3100,22 @@ program
       console.log(options.json ? JSON.stringify(result, null, 2) : formatRuntimeStaleRunReconciliationResult(result));
       return;
     }
-    const report = await loadRuntimeMonitorReport({ checkMcp: Boolean(options.checkMcp) });
+    const report = await loadRuntimeMonitorReport({ checkMcp: Boolean(options.checkMcp || options.writeMcpRecovery) });
+    if (options.writeMcpRecovery) {
+      report.mcpPipeline.recovery = await writeMcpRecoveryPackage(report.mcpPipeline);
+    }
     console.log(options.json ? JSON.stringify(report, null, 2) : formatRuntimeMonitorReport(report));
     if (!report.hulk.reachable || report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status === "failed") process.exitCode = 1;
+  });
+
+program
+  .command("roadmap-audit")
+  .description("Check roadmap task, bug, milestone, and priority hygiene")
+  .option("--json", "print machine-readable roadmap audit")
+  .action(async (options: { json?: boolean }) => {
+    const report = await loadRoadmapDashboardReport();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatRoadmapAuditReport(report));
+    if (report.summary.unlinkedCount > 0) process.exitCode = 1;
   });
 
 program
@@ -3084,6 +3141,25 @@ program
     const report = buildServerMutationControlReport();
     console.log(options.json ? JSON.stringify(report, null, 2) : formatServerMutationControlReport(report));
     if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("server-approval-action-plan")
+  .description("Inspect the per-decision receipt and idempotency plan required before remote approval/action mutation")
+  .option("--json", "print machine-readable approval/action execution plan")
+  .action(async (options: { json?: boolean }) => {
+    const report = buildServerApprovalActionPlanReport();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerApprovalActionPlanReport(report));
+  });
+
+program
+  .command("server-approval-action-test-adapter")
+  .description("Exercise the remote approval/action mutation contract against an in-memory local test adapter with no live side effects")
+  .option("--json", "print machine-readable test-adapter proof")
+  .action(async (options: { json?: boolean }) => {
+    const report = buildServerApprovalActionTestAdapterReport();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerApprovalActionTestAdapterReport(report));
+    if (report.status !== "pass") process.exitCode = 1;
   });
 
 program
@@ -3194,6 +3270,29 @@ program
       idempotencyKey: options.idempotencyKey
     });
     console.log(options.json ? JSON.stringify(report, null, 2) : formatServerApprovalPreview(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
+  .command("server-approval-action")
+  .description("Validate the governed server-mode approval/action endpoint contract without mutating approval state")
+  .requiredOption("--project-id <id>", "registered project id from server-projects")
+  .requiredOption("--approval-id <id>", "approval id to validate")
+  .option("--decision <decision>", "approve, reject, execute, approve-and-execute, dismiss, or always-approve", "approve-and-execute")
+  .option("--actor <name>", "requesting actor", "local-preview")
+  .option("--actor-role <role>", "project role for the approval/action request", "approver")
+  .option("--idempotency-key <key>", "client-provided idempotency key")
+  .option("--json", "print machine-readable approval/action endpoint report")
+  .action(async (options: { projectId: string; approvalId: string; decision: string; actor: string; actorRole: string; idempotencyKey?: string; json?: boolean }) => {
+    const report = await loadServerApprovalActionReport({
+      projectId: options.projectId,
+      approvalId: options.approvalId,
+      decision: options.decision,
+      actor: options.actor,
+      actorRole: options.actorRole,
+      idempotencyKey: options.idempotencyKey
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatServerApprovalActionReport(report));
     if (report.status === "blocked") process.exitCode = 2;
   });
 
@@ -3789,6 +3888,8 @@ program
         agentImprovementEvalPasses?: number;
         agentImprovementPromotions?: number;
         agentImprovementPromotionPending?: number;
+        agentImprovementApplied?: number;
+        agentImprovementApplySkipped?: number;
         workflowShapeRecommendations?: number;
         approvalAutopilotEnabled?: boolean;
         approvalAutopilotMaxRisk?: ApprovalAutopilotRisk;
@@ -3825,6 +3926,8 @@ program
         agentImprovementEvalPasses: aggregate?.agentImprovementEvalPasses ?? update?.agentImprovementEvalPlan.evaluations.filter((item) => item.status === "pass").length ?? lastStatus?.agentImprovementEvalPasses ?? 0,
         agentImprovementPromotions: aggregate?.agentImprovementPromotions ?? update?.agentImprovementPromotionQueue.items.length ?? lastStatus?.agentImprovementPromotions ?? 0,
         agentImprovementPromotionPending: aggregate?.agentImprovementPromotionPending ?? update?.agentImprovementPromotionQueue.items.filter((item) => item.status === "pending").length ?? lastStatus?.agentImprovementPromotionPending ?? 0,
+        agentImprovementApplied: aggregate?.agentImprovementApplied ?? update?.agentImprovementApply.appliedIds.length ?? lastStatus?.agentImprovementApplied ?? 0,
+        agentImprovementApplySkipped: aggregate?.agentImprovementApplySkipped ?? update?.agentImprovementApply.skippedIds.length ?? lastStatus?.agentImprovementApplySkipped ?? 0,
         workflowShapeRecommendations: aggregate?.workflowShapeRecommendations ?? update?.workflowShape?.recommendations.length ?? lastStatus?.workflowShapeRecommendations ?? 0,
         workflowShapeAutoUpdate: update?.workflowShapeAutoUpdate ?? lastStatus?.workflowShapeAutoUpdate ?? await learningWorkflowShapeAutoUpdateEnabled(statusProjectDir),
         approvalAutopilotEnabled: aggregate?.approvalAutopilotEnabled ?? update?.approvalAutopilotEnabled ?? lastStatus?.approvalAutopilotEnabled ?? await learningApprovalAutopilotEnabled(statusProjectDir),
@@ -3875,6 +3978,8 @@ program
         let agentImprovementEvalPasses = 0;
         let agentImprovementPromotions = 0;
         let agentImprovementPromotionPending = 0;
+        let agentImprovementApplied = 0;
+        let agentImprovementApplySkipped = 0;
         let workflowShapeRecommendations = 0;
         let approvalAutopilotExecuted = 0;
         let approvalAutopilotSkipped = 0;
@@ -3901,6 +4006,8 @@ program
             agentImprovementEvalPasses += update.agentImprovementEvalPlan.evaluations.filter((item) => item.status === "pass").length;
             agentImprovementPromotions += update.agentImprovementPromotionQueue.items.length;
             agentImprovementPromotionPending += update.agentImprovementPromotionQueue.items.filter((item) => item.status === "pending").length;
+            agentImprovementApplied += update.agentImprovementApply.appliedIds.length;
+            agentImprovementApplySkipped += update.agentImprovementApply.skippedIds.length;
             workflowShapeRecommendations += update.workflowShape?.recommendations.length ?? 0;
             autonomousAppliedActions += update.approvalAutopilot.executed;
             approvalAutopilotExecuted += update.approvalAutopilot.executed;
@@ -3928,6 +4035,8 @@ program
             agentImprovementEvalPasses,
             agentImprovementPromotions,
             agentImprovementPromotionPending,
+            agentImprovementApplied,
+            agentImprovementApplySkipped,
             workflowShapeRecommendations,
           approvalAutopilotEnabled,
           approvalAutopilotMaxRisk,
@@ -4355,6 +4464,50 @@ program
   });
 
 program
+  .command("agent-improvement-apply")
+  .description("Apply approved agent improvement promotions into agent YAML with source-hash and rollback receipts")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to apply, or all", "all")
+  .option("--max-risk <risk>", "maximum approved promotion risk to apply: low, medium, or high")
+  .option("--actor <name>", "actor name for application receipts", "learning-daemon")
+  .option("--note <text>", "application note")
+  .option("--project-local-auto-ready", "apply only project-local auto-ready promotions that do not require approval")
+  .option("--write", "write approved YAML changes and application receipts")
+  .option("--json", "print agent improvement apply result JSON")
+  .action(async (options: { project: string; ids: string; maxRisk?: string; actor: string; note?: string; projectLocalAutoReady?: boolean; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const queue = await readAgentImprovementPromotionQueue(projectDir);
+    const maxRisk = parseLearningRiskLevel(options.maxRisk ?? await learningAutonomousApplyMaxRisk(projectDir));
+    const result = await applyAgentImprovementPromotions({
+      projectDir,
+      queue,
+      ids: parseProposalIds(options.ids),
+      maxRisk,
+      actor: options.actor,
+      note: options.note ?? "Apply approved agent improvement promotion.",
+      write: Boolean(options.write),
+      mode: options.projectLocalAutoReady ? "project-local-auto" : "approved"
+    });
+
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+
+    console.log(formatAgentImprovementApplyResult(result, maxRisk));
+    if (options.write) {
+      console.log("");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.md");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-apply-receipts.json");
+      console.log("Wrote .agent-workflow/learning/agent-improvement-apply-receipts.md");
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to apply approved agent YAML changes.");
+    }
+  });
+
+program
   .command("tuning-proposals")
   .description("Generate reviewable prompt, context-budget, and routing tuning proposals from the preference scorecard")
   .requiredOption("-p, --project <dir>", "project directory")
@@ -4645,6 +4798,593 @@ program
       console.log("");
       console.log("Dry run only. Re-run with --write to create local comparison plan and evaluation suite files.");
     }
+  });
+
+program
+  .command("local-holdout-comparison")
+  .description("Prepare a local-LLM versus hosted-provider holdout comparison plan for safe routing promotion")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--hosted-provider <provider>", "hosted baseline provider id", "openai")
+  .option("--local-provider <provider>", "local candidate provider id", "local")
+  .option("--hosted-tier <tier>", "fast, standard, or reasoning", "standard")
+  .option("--local-tier <tier>", "fast, standard, or reasoning", "fast")
+  .option("--hosted-prompt <text>", "hosted baseline prompt suffix")
+  .option("--local-prompt <text>", "local candidate prompt suffix")
+  .option("--write", "write plan and private evaluation suite files into the project")
+  .option("--json", "print local holdout comparison plan JSON")
+  .action(async (options: {
+    project: string;
+    hostedProvider: string;
+    localProvider: string;
+    hostedTier: string;
+    localTier: string;
+    hostedPrompt?: string;
+    localPrompt?: string;
+    write?: boolean;
+    json?: boolean;
+  }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const { modelPlan, source } = await loadLocalHoldoutModelPlan(projectDir, Boolean(options.write));
+    const baseline: Partial<CandidateVariantPlan> = {
+      provider: normalizeProviderRef(options.hostedProvider),
+      modelTier: parseModelTierOption(options.hostedTier),
+      promptSuffix: options.hostedPrompt ?? "Use the hosted baseline provider with current project-local Agent Workflow instructions."
+    };
+    const candidate: Partial<CandidateVariantPlan> = {
+      provider: normalizeProviderRef(options.localProvider),
+      modelTier: parseModelTierOption(options.localTier),
+      promptSuffix: options.localPrompt ?? "Use the local LLM candidate only for low-risk developer work, preserving evidence, brevity, and safety boundaries."
+    };
+    const plan = buildCandidateComparisonPlan({ modelPlan, baseline, candidate });
+
+    if (options.write) {
+      await writeCandidateComparisonPlan(projectDir, plan);
+    }
+
+    const localHoldout = {
+      kind: "agentflow_local_holdout_comparison",
+      mode: options.write ? "write" : "dry-run",
+      purpose: "Compare a local LLM candidate against a hosted baseline before raising local routing risk thresholds.",
+      source,
+      providerPair: {
+        hosted: plan.baseline,
+        local: plan.candidate
+      },
+      promotionBoundary: {
+        defaultScope: "low-risk read-only developer stages",
+        requiresEvidence: ["suite pass", "quality gate", "fallback rate", "latency", "avoided hosted calls", "project owner review"],
+        blockedUses: ["authorization decisions", "approval bypass", "command policy", "secret handling", "production deployment"]
+      },
+      plan
+    };
+
+    if (options.json) {
+      console.log(JSON.stringify(localHoldout, null, 2));
+      return;
+    }
+
+    console.log("Local LLM Holdout Comparison");
+    console.log(`Project: ${projectDir}`);
+    console.log(`Mode: ${localHoldout.mode}`);
+    console.log(`Source: ${source}`);
+    console.log(`Hosted baseline: ${plan.baseline.provider}/${plan.baseline.modelTier}`);
+    console.log(`Local candidate: ${plan.candidate.provider}/${plan.candidate.modelTier}`);
+    console.log(`Suites: ${plan.suites.length}`);
+    console.log("");
+    console.log(formatCandidateComparisonPlan(plan));
+    console.log("");
+    console.log("Promotion boundary:");
+    console.log("- Start with low-risk read-only developer stages.");
+    console.log("- Do not use local model output to bypass authorization, approval, command policy, or production gates.");
+    console.log("- Promote only after suite, quality, latency, fallback, and avoided-cost evidence is reviewed.");
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create project-local local-vs-hosted comparison files.");
+    }
+  });
+
+program
+  .command("local-holdout-results")
+  .description("Capture current local-LLM versus hosted-provider holdout outcomes as project-local promotion evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--write", "write result summary files into the project")
+  .option("--json", "print local holdout result summary JSON")
+  .action(async (options: { project: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadDashboardCandidateComparisonReport({ projectDir });
+    const result = buildLocalHoldoutResultSummary(report);
+    if (options.write) {
+      await writeLocalHoldoutResultSummary(projectDir, result);
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ ...result, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+    console.log(formatLocalHoldoutResultSummary(result));
+    if (options.write) {
+      for (const file of result.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to persist local holdout result evidence.");
+    }
+  });
+
+program
+  .command("local-holdout-promote")
+  .description("Approve local LLM routing for low-risk project-local stages from captured holdout evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--approved", "confirm owner approval for the project-local routing preference")
+  .option("--write", "write reviewed project-local routing preference files")
+  .option("--json", "print promotion plan JSON")
+  .action(async (options: { project: string; approved?: boolean; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const results = await readLocalHoldoutResultSummary(projectDir).catch(() => emptyLocalHoldoutResultSummary(projectDir, "Capture local holdout results before promoting local routing."));
+    const promotion = buildLocalHoldoutRoutingPromotion(projectDir, results, Boolean(options.approved));
+    if (options.write) {
+      if (promotion.status !== "ready") {
+        console.error(promotion.reason);
+        process.exitCode = 1;
+      } else {
+        await writeLocalHoldoutRoutingPromotion(projectDir, promotion);
+      }
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ ...promotion, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+    console.log(formatLocalHoldoutRoutingPromotion(promotion));
+    if (options.write && promotion.status === "ready") {
+      for (const file of promotion.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else if (!options.write) {
+      console.log("");
+      console.log("Dry run only. Re-run with --approved --write to persist the reviewed project-local routing preference.");
+    }
+  });
+
+program
+  .command("local-llm-checklist")
+  .description("Check local LLM setup, catalog selection, and first low-risk route receipt")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--json", "print local LLM checklist JSON")
+  .action(async (options: { project: string; limit: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const scorecard = await loadPreferenceScorecard({ projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+    const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+    const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+    const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+    const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+    const report = await loadLocalLlmSetupChecklistReport({
+      projectDir,
+      localHoldoutRouting,
+      routeReceiptTrends,
+      smokeOutcomes
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatLocalLlmSetupChecklistReport(report));
+    if (report.status === "fail") process.exitCode = 1;
+  });
+
+program
+  .command("local-llm-smoke")
+  .description("Run one low-risk provider-smoke stage to generate local LLM route receipt evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--timeout-ms <number>", "maximum time to wait for the smoke run", "120000")
+  .option("--json", "print smoke result JSON")
+  .action(async (options: { project: string; timeoutMs: string; json?: boolean }) => {
+    const result = await runLocalLlmRouteSmoke({
+      projectDir: path.resolve(process.cwd(), options.project),
+      timeoutMs: parsePositiveInteger(options.timeoutMs, 120000)
+    });
+    console.log(options.json ? JSON.stringify(result, null, 2) : formatLocalLlmRouteSmokeResult(result));
+    if (result.status === "failed") process.exitCode = 1;
+  });
+
+program
+  .command("local-llm-setup-guide")
+  .description("Detect local OpenAI-compatible runtimes and prepare reviewed project-local setup/routing notes")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--approved", "confirm owner approval to write healthy project-local routing notes")
+  .option("--write", "write project-local setup guide files, and routing note files only when healthy and approved")
+  .option("--json", "print setup guide JSON")
+  .action(async (options: { project: string; limit: string; approved?: boolean; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const scorecard = await loadPreferenceScorecard({ projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+    const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+    const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+    const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+    const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+    const checklist = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+    const guide = await loadLocalLlmSetupGuideReport({
+      projectDir,
+      checklist,
+      approved: Boolean(options.approved)
+    });
+    if (options.write) {
+      await writeLocalLlmSetupGuideReport(projectDir, guide);
+    }
+    console.log(options.json ? JSON.stringify({ ...guide, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmSetupGuideReport(guide));
+    if (options.write && guide.files.length) {
+      for (const file of guide.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+    if (guide.status === "blocked") process.exitCode = 1;
+  });
+
+program
+  .command("local-llm-download-recommendations")
+  .description("Recommend local model downloads from hardware, runtime catalog, task mix, and local smoke evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "write project-local recommendation files")
+  .option("--json", "print recommendation JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const scorecard = await loadPreferenceScorecard({ projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: parsePositiveInteger(options.limit, 50) });
+    const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+    const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+    const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+    const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+    const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+    const checklist = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+    const setupGuide = await loadLocalLlmSetupGuideReport({ projectDir, checklist, approved: false });
+    const report = buildLocalLlmDownloadRecommendationReport({ projectDir, scorecard, checklist, setupGuide });
+    if (options.write) {
+      await writeLocalLlmDownloadRecommendationReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmDownloadRecommendationReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-benchmarks")
+  .description("Prepare or execute tiny local-only benchmark receipts for installed local model candidates")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--execute", "call the local OpenAI-compatible runtime for tiny benchmark prompts")
+  .option("--timeout-ms <number>", "per-prompt timeout when executing", "20000")
+  .option("--write", "write project-local benchmark receipt files")
+  .option("--json", "print benchmark receipt JSON")
+  .action(async (options: { project: string; limit: string; execute?: boolean; timeoutMs: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmBenchmarkReceiptReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50),
+      execute: Boolean(options.execute),
+      timeoutMs: parsePositiveInteger(options.timeoutMs, 20000)
+    });
+    if (options.write) {
+      await writeLocalLlmBenchmarkReceiptReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmBenchmarkReceiptReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-install-plan")
+  .description("Write reviewed runtime-specific local model installation commands from recommendations")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--model <ids>", "comma-separated recommendation ids or model ids, or recommended", "recommended")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "write project-local installation plan files")
+  .option("--json", "print installation plan JSON")
+  .action(async (options: { project: string; model: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmInstallationPlanReport({
+      projectDir,
+      selectedModels: options.model,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    if (options.write) {
+      await writeLocalLlmInstallationPlanReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmInstallationPlanReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-inventory")
+  .description("Inspect local model cache roots, installed model evidence, and storage pressure")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "write project-local inventory files")
+  .option("--json", "print inventory JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmInventoryReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    if (options.write) {
+      await writeLocalLlmInventoryReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmInventoryReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-prune-plan")
+  .description("Write reviewed cleanup commands for stale local model cache candidates without deleting anything")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--model <ids>", "comma-separated model ids, prune action ids, or candidates", "candidates")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "write project-local prune plan files")
+  .option("--json", "print prune plan JSON")
+  .action(async (options: { project: string; model: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const inventory = await loadLocalLlmInventoryReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    const report = buildLocalLlmPrunePlanReport(projectDir, inventory, options.model);
+    if (options.write) {
+      await writeLocalLlmPrunePlanReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmPrunePlanReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-cache-trends")
+  .description("Track local model cache growth, prune candidates, and local-vs-hosted route usage over time")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "append the current snapshot to project-local trend history")
+  .option("--json", "print trend history JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmCacheTrendReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50),
+      write: Boolean(options.write)
+    });
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmCacheTrendReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-cost-ledger")
+  .description("Estimate per-project local model savings from avoided hosted stages, latency, and cache storage")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "append the current estimate to project-local cost ledger history")
+  .option("--json", "print cost ledger JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmCostLedgerReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50),
+      write: Boolean(options.write)
+    });
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmCostLedgerReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-routing-recommendations")
+  .description("Recommend where local model routing should expand, hold, or retreat from savings and quality evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "write project-local routing recommendation files")
+  .option("--json", "print routing recommendations JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmRoutingRecommendationReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50)
+    });
+    if (options.write) {
+      await writeLocalLlmRoutingRecommendationReport(projectDir, report);
+    }
+    console.log(options.json ? JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2) : formatLocalLlmRoutingRecommendationReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    }
+  });
+
+program
+  .command("local-llm-routing-note-plan")
+  .description("Prepare reviewed project-local routing-note patch plans from savings-aware local routing recommendations")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated recommendation ids to include, or all", "all")
+  .option("--write", "write review plan files into .agent-workflow/tuning")
+  .option("--json", "print routing note plan JSON")
+  .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const recommendations = await loadLocalLlmRoutingRecommendationReport({
+      projectDir,
+      limit: 50
+    });
+    const plan = buildLocalLlmRoutingNotePlan(recommendations, parseProposalIds(options.ids));
+    if (options.write) {
+      await writeLocalLlmRoutingNotePlan(projectDir, plan);
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+    console.log(formatLocalLlmRoutingNotePlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to create reviewed local routing note files.");
+    }
+  });
+
+program
+  .command("apply-local-llm-routing-note-plan")
+  .description("Apply reviewed local routing-note plan items into project-local routing preferences")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--ids <ids>", "comma-separated note or recommendation ids to apply, or all", "all")
+  .option("--approved", "confirm the reviewed notes are approved for project-local application")
+  .option("--write", "append selected notes to .agent-workflow/tuning/routing-preferences.md")
+  .option("--json", "print routing note application JSON")
+  .action(async (options: { project: string; ids: string; approved?: boolean; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const notePlan = await readLocalLlmRoutingNotePlan(projectDir);
+    const plan = await buildLocalLlmRoutingNoteApplicationPlan({
+      projectDir,
+      notePlan,
+      selectedIds: parseProposalIds(options.ids),
+      approved: Boolean(options.approved)
+    });
+    if (options.write) {
+      if (!options.approved) {
+        throw new Error("Refusing to write routing preferences without --approved.");
+      }
+      await writeLocalLlmRoutingNoteApplicationPlan(projectDir, plan);
+      await recordTuningHistory(projectDir, plan.appliedNoteIds, "applied", undefined, "Applied reviewed local LLM routing note plan");
+    }
+    if (options.json) {
+      console.log(JSON.stringify({ ...plan, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+    console.log(formatLocalLlmRoutingNoteApplicationPlan(plan));
+    if (options.write) {
+      for (const file of plan.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --approved --write to append selected routing notes.");
+    }
+  });
+
+program
+  .command("local-llm-routing-decision-snapshot")
+  .description("Capture compact project-local routing decision snapshots for timeline comparison")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("-l, --limit <number>", "number of recent project runs to inspect", "50")
+  .option("--write", "append a changed decision snapshot under .agent-workflow/model-improvement")
+  .option("--json", "print snapshot history JSON")
+  .action(async (options: { project: string; limit: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const report = await loadLocalLlmRoutingDecisionSnapshotReport({
+      projectDir,
+      limit: parsePositiveInteger(options.limit, 50),
+      write: Boolean(options.write)
+    });
+    if (options.json) {
+      console.log(JSON.stringify({ ...report, mode: options.write ? "write" : "dry-run" }, null, 2));
+      return;
+    }
+    console.log(formatLocalLlmRoutingDecisionSnapshotReport(report));
+    if (options.write) {
+      for (const file of report.files) {
+        console.log(`Wrote ${file.relativePath}`);
+      }
+    } else {
+      console.log("");
+      console.log("Dry run only. Re-run with --write to persist the current decision snapshot.");
+    }
+  });
+
+program
+  .command("local-route-feedback")
+  .description("Record project-local feedback for a route decision drilldown row")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("--workflow <id>", "workflow id")
+  .requiredOption("--stage <id>", "stage id")
+  .requiredOption("--agent <id>", "agent id")
+  .requiredOption("--provider <id>", "provider id")
+  .requiredOption("--tier <tier>", "model tier")
+  .requiredOption("--class <class>", "local-selected, local-skipped, hosted-fallback, or hosted-selected")
+  .requiredOption("--rating <rating>", "helpful, costly, or neutral")
+  .option("--note <text>", "short note explaining why this route decision helped or hurt", "")
+  .option("--runs <number>", "number of grouped receipts", "0")
+  .option("--fallbacks <number>", "number of grouped fallback receipts", "0")
+  .option("--quality <number>", "average quality score")
+  .option("--latency-ms <number>", "average latency in milliseconds")
+  .option("--json", "print route decision feedback JSON")
+  .action(async (options: {
+    project: string;
+    workflow: string;
+    stage: string;
+    agent: string;
+    provider: string;
+    tier: string;
+    class: string;
+    rating: string;
+    note: string;
+    runs: string;
+    fallbacks: string;
+    quality?: string;
+    latencyMs?: string;
+    json?: boolean;
+  }) => {
+    const result = await recordRouteDecisionFeedback({
+      projectDir: path.resolve(process.cwd(), options.project),
+      workflowId: options.workflow,
+      stageId: options.stage,
+      agentId: options.agent,
+      providerId: options.provider,
+      modelTier: options.tier,
+      routeClass: options.class,
+      rating: options.rating,
+      note: options.note,
+      runs: parseNonNegativeInteger(options.runs, 0),
+      fallbackCount: parseNonNegativeInteger(options.fallbacks, 0),
+      averageQuality: parseOptionalNumber(options.quality),
+      averageLatencyMs: parseOptionalNumber(options.latencyMs),
+      source: "cli"
+    });
+    if (options.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(formatRouteDecisionFeedbackResult(result));
   });
 
 program
@@ -5320,6 +6060,7 @@ type LearningReport = {
   runsAnalyzed: number;
   runStatusCounts: Record<string, number>;
   feedbackCounts: Record<string, number>;
+  routeFeedback: LearningRouteFeedbackSummary;
   evaluationRuns: number;
   latestEvaluationAt: string | null;
   failedRuns: Array<{
@@ -5357,6 +6098,25 @@ type LearningReport = {
   approvalRequiredActions: string[];
   privacyBoundaries: string[];
   nextCommands: string[];
+};
+
+type LearningRouteFeedbackSummary = {
+  total: number;
+  counts: Record<string, number>;
+  latestAt: string | null;
+  costlyGroups: LearningRouteFeedbackGroup[];
+  helpfulGroups: LearningRouteFeedbackGroup[];
+};
+
+type LearningRouteFeedbackGroup = {
+  target: string;
+  route: string;
+  routeClass: DashboardRouteReceiptTrendGroup["classification"];
+  total: number;
+  helpful: number;
+  costly: number;
+  neutral: number;
+  latestAt: string | null;
 };
 
 type AgentImprovementReport = {
@@ -5493,7 +6253,7 @@ type AgentImprovementEval = {
   recommendation: string;
 };
 
-type AgentImprovementPromotionStatus = "pending" | "approved" | "rejected" | "superseded";
+type AgentImprovementPromotionStatus = "pending" | "approved" | "rejected" | "applied" | "superseded";
 
 type AgentImprovementPromotionQueue = {
   kind: "agentflow_agent_improvement_promotion_queue";
@@ -5567,8 +6327,45 @@ type AgentImprovementPromotionDecisionResult = {
   skippedIds: string[];
 };
 
+type AgentImprovementApplyReceiptLog = {
+  kind: "agentflow_agent_improvement_apply_receipts";
+  projectRootUri: string;
+  updatedAt: string;
+  events: AgentImprovementApplyReceipt[];
+};
+
+type AgentImprovementApplyReceipt = {
+  id: string;
+  promotionId: string;
+  patchId: string;
+  evalId: string;
+  agentId: string;
+  status: "applied" | "skipped";
+  score: number;
+  riskLevel: LearningRiskLevel;
+  scope: "shared" | "project-local";
+  actor: string;
+  note: string;
+  sourcePath: string;
+  sourceHashBefore: string;
+  sourceHashAfter: string | null;
+  rollbackPath: string;
+  reason: string;
+  createdAt: string;
+};
+
+type AgentImprovementApplyResult = {
+  queue: AgentImprovementPromotionQueue;
+  receipts: AgentImprovementApplyReceiptLog;
+  selectedIds: string[];
+  appliedIds: string[];
+  skippedIds: string[];
+  unknownIds: string[];
+  dryRun: boolean;
+};
+
 type LearningProposalPriority = "high" | "medium" | "low";
-type LearningProposalKind = "repeated_failure" | "cost_routing" | "eval_gap" | "feedback_gap" | "proposal_followup";
+type LearningProposalKind = "repeated_failure" | "cost_routing" | "route_feedback" | "eval_gap" | "feedback_gap" | "proposal_followup";
 type LearningRiskLevel = "low" | "medium" | "high";
 type LearningApprovalStatus = "pending" | "approved" | "rejected";
 
@@ -5637,7 +6434,7 @@ type LearningApplicationAction = {
   id: string;
   proposalId: string;
   title: string;
-  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "apply_tuning_overlay" | "manual_review";
+  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "apply_tuning_overlay" | "refresh_routing_recommendations" | "manual_review";
   dangerGate: "none" | "approval_required";
   rationale: string;
   command: string | null;
@@ -5732,6 +6529,8 @@ type LearningDaemonHeartbeat = {
   agentImprovementEvalPasses?: number;
   agentImprovementPromotions?: number;
   agentImprovementPromotionPending?: number;
+  agentImprovementApplied?: number;
+  agentImprovementApplySkipped?: number;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
   approvalAutopilotEnabled?: boolean;
@@ -5762,6 +6561,7 @@ type LearningSettings = {
   projectRootUri: string;
   updatedAt: string;
   workflowShapeAutoUpdate: boolean;
+  agentImprovementProjectLocalAutoApply: boolean;
   autonomousApplyMaxRisk: LearningRiskLevel;
   approvalAutopilotEnabled: boolean;
   approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
@@ -5848,6 +6648,8 @@ type DashboardLearningDaemonStatus = {
   agentImprovementEvalPasses: number;
   agentImprovementPromotions: number;
   agentImprovementPromotionPending: number;
+  agentImprovementApplied: number;
+  agentImprovementApplySkipped: number;
   workflowShapeRecommendations?: number;
   workflowShapeAutoUpdate?: boolean;
   approvalAutopilotEnabled: boolean;
@@ -6773,6 +7575,99 @@ type ServerQueueReport = {
   notes: string[];
 };
 
+type ServerApprovalActionReport = {
+  kind: "agentflow_server_approval_action_report";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  dryRun: boolean;
+  envelope: Omit<ServerApprovalPreviewReport["envelope"], "source"> & {
+    source: "server-approval-action";
+  };
+  approval: ServerApprovalPreviewReport["approval"];
+  controls: Omit<ServerApprovalPreviewReport["controls"], "wouldMutate"> & {
+    executeRequested: boolean;
+    approvalActionExecutionEnabled: boolean;
+    clientProvidedIdempotency: boolean;
+    requestBodyMaxBytes: number;
+    rateLimitPerMinute: number;
+    rateLimitAccepted: boolean;
+    perActionReceiptGate: boolean;
+    wouldMutate: boolean;
+  };
+  mutation: null | {
+    receiptUri: string;
+    receiptHash: string;
+    requestHash: string;
+    replayed: boolean;
+    outcome: "completed" | "failed";
+    title: string;
+    output: string;
+    beforeStatus: string | null;
+    afterStatus: string | null;
+    rollbackEvidence: string[];
+  };
+  checks: ServerApprovalPreviewReport["checks"];
+  notes: string[];
+};
+
+type ServerApprovalActionPlanReport = {
+  kind: "agentflow_server_approval_action_plan";
+  generatedAt: string;
+  status: "ready" | "attention" | "blocked";
+  canEnableApprovalActions: boolean;
+  summary: {
+    decisions: number;
+    ready: number;
+    blocked: number;
+    receiptPlanReady: boolean;
+    idempotencyReuseReady: boolean;
+    rollbackEvidenceReady: boolean;
+  };
+  decisions: Array<{
+    decision: ServerApprovalPreviewReport["envelope"]["decision"];
+    mutatesApprovalState: boolean;
+    executesSideEffect: boolean;
+    requiredReceiptKinds: string[];
+    idempotencyReuseKey: string;
+    replayBehavior: string;
+    rollbackEvidence: string[];
+    missingControls: string[];
+    status: "ready" | "blocked";
+  }>;
+  implementationPhases: Array<{
+    phase: string;
+    status: "done" | "next" | "future";
+    detail: string;
+  }>;
+  notes: string[];
+};
+
+type ServerApprovalActionTestAdapterReport = {
+  kind: "agentflow_server_approval_action_test_adapter";
+  generatedAt: string;
+  status: "pass" | "fail";
+  dryRun: true;
+  liveSideEffects: false;
+  summary: {
+    decisions: number;
+    passed: number;
+    failed: number;
+    replayed: number;
+    simulatedSideEffects: number;
+  };
+  decisions: Array<{
+    decision: ServerApprovalPreviewReport["envelope"]["decision"];
+    status: "pass" | "fail";
+    firstReceiptKinds: string[];
+    replayReceiptKinds: string[];
+    replayMatched: boolean;
+    sideEffectExecutions: number;
+    rollbackEvidence: string[];
+    errors: string[];
+  }>;
+  notes: string[];
+};
+
 type ServerRequestAuditEvent = {
   kind: "agentflow_server_request_audit_event";
   version: 1;
@@ -6842,6 +7737,7 @@ type ServerMutationControlReport = {
     authMode: string;
     tokenConfigured: boolean;
     queueExecutionEnabled: boolean;
+    approvalActionExecutionEnabled: boolean;
     requestBodyMaxBytes: number;
     rateLimitPerMinute: number;
   };
@@ -10085,12 +10981,13 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
     REDIS_URL: "redis://127.0.0.1:16379",
     OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000"
   } as NodeJS.ProcessEnv));
-  const [docker, ports, processes, mcpPipeline, staleRuns] = await Promise.all([
+  const [docker, ports, processes, mcpPipeline, staleRuns, localModelRuntime] = await Promise.all([
     loadDockerMonitorStatus(),
     loadRuntimePortStatuses(),
     loadRuntimeProcessGroups(),
     loadMcpPipelineStatus({ checkMcp: Boolean(input.checkMcp) }),
-    listStaleTerminalWorkflowRuns(parseStaleRunReconcileLimit())
+    listStaleTerminalWorkflowRuns(parseStaleRunReconcileLimit()),
+    loadLocalModelRuntimeStatus()
   ]);
   const mcpCandidates = await loadRuntimeMcpCleanupCandidates();
   const mcpCleanupConfig = runtimeMcpCleanupConfig();
@@ -10101,7 +10998,8 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
     docker,
     processes,
     mcpPipeline,
-    staleRunCount: staleRuns.length
+    staleRunCount: staleRuns.length,
+    localModelRuntime
   });
   return {
     kind: "agentflow_runtime_monitor_report",
@@ -10114,6 +11012,7 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
       services: hulkServices
     },
     localServices,
+    localModelRuntime,
     docker,
     ports,
     processes,
@@ -10145,6 +11044,27 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
     },
     recommendations
   };
+}
+
+async function loadLocalModelRuntimeStatus(): Promise<RuntimeMonitorReport["localModelRuntime"]> {
+  const fallback: RuntimeMonitorReport["localModelRuntime"] = {
+    runtime: "missing", executable: null, label: "app.makealeft.agent-workflow.local-model",
+    plistPath: path.join(os.homedir(), "Library", "LaunchAgents", "app.makealeft.agent-workflow.local-model.plist"),
+    installed: false, serviceStatus: process.platform === "darwin" ? "missing" : "unavailable", pid: null, runs: null,
+    endpoint: safeDisplayUrl(process.env.LOCAL_MODEL_BASE_URL || "http://127.0.0.1:11434/v1") || "invalid",
+    endpointHealthy: false, modelCount: 0, selectedModel: process.env.LOCAL_MODEL_NAME || "auto",
+    stdoutPath: path.join(rootDir, ".agent-workflow", "runtime", "local-model", "stdout.log"),
+    stderrPath: path.join(rootDir, ".agent-workflow", "runtime", "local-model", "stderr.log"),
+    installCommand: "npm run local-model:launchd:install", uninstallCommand: "npm run local-model:launchd:uninstall",
+    restartCommand: "npm run local-model:launchd:install", guidance: "Local runtime status could not be loaded."
+  };
+  try {
+    const result = await execFileText(process.execPath, [path.join(rootDir, "scripts", "local-model-runtime.mjs"), "status", "--json"], { allowFailure: true });
+    if (result.exitCode !== 0) return { ...fallback, guidance: compactDashboardText(result.stderr || result.stdout, 300) || fallback.guidance };
+    return { ...fallback, ...JSON.parse(result.stdout) };
+  } catch (error) {
+    return { ...fallback, guidance: error instanceof Error ? error.message : String(error) };
+  }
 }
 
 function resolveHulkStorageTarget(): { host: string | null; source: RuntimeMonitorReport["hulk"]["source"] } {
@@ -10199,6 +11119,8 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
     recentExitCount: lastStdioEvents.filter((event) => event.event === "exit").length
   });
   const approvalDiagnostics = buildMcpApprovalDiagnostics(lastStdioEvents);
+  const commandDiagnostics = buildMcpCommandDiagnostics(lastStdioEvents);
+  const recovery = await loadMcpRecoveryStatus();
   return {
     status: ready ? "ok" : "attention",
     pluginEnabled,
@@ -10219,8 +11141,143 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
     lastExitCode: typeof lastExit?.code === "number" ? lastExit.code : null,
     smoke,
     clientReload,
-    approvalDiagnostics
+    approvalDiagnostics,
+    commandDiagnostics,
+    recovery
   };
+}
+
+function mcpRecoveryPaths(): Pick<RuntimeMonitorReport["mcpPipeline"]["recovery"], "directory" | "markdownPath" | "jsonPath" | "scriptPath" | "writeCommand"> {
+  const directory = path.join(rootDir, ".agent-workflow", "runtime", "mcp", "recovery");
+  return {
+    directory,
+    markdownPath: path.join(directory, "mcp-recovery.md"),
+    jsonPath: path.join(directory, "mcp-recovery.json"),
+    scriptPath: path.join(directory, "mcp-client-recovery.sh"),
+    writeCommand: "npm run runtime-monitor -- --check-mcp --write-mcp-recovery"
+  };
+}
+
+async function loadMcpRecoveryStatus(): Promise<RuntimeMonitorReport["mcpPipeline"]["recovery"]> {
+  const paths = mcpRecoveryPaths();
+  const stat = await fs.stat(paths.jsonPath).catch(() => null);
+  return {
+    ...paths,
+    status: stat ? "available" : "not-written",
+    lastWrittenAt: stat ? stat.mtime.toISOString() : null,
+    recommendedAction: "Write the recovery package after a transport failure, then restart or reload the Codex task/IDE client if the launcher smoke passes but the client still reports Transport closed.",
+    canRestartClientPipe: false,
+    reason: "Agent Workflow cannot reconnect a client-owned stdio pipe from inside the server. It can verify the launcher, preserve evidence, and provide safe local recovery commands."
+  };
+}
+
+async function writeMcpRecoveryPackage(pipeline: RuntimeMonitorReport["mcpPipeline"]): Promise<RuntimeMonitorReport["mcpPipeline"]["recovery"]> {
+  const recovery = await loadMcpRecoveryStatus();
+  const generatedAt = new Date().toISOString();
+  await fs.mkdir(recovery.directory, { recursive: true });
+  const payload = {
+    kind: "agentflow_mcp_recovery_package",
+    generatedAt,
+    repo: rootDir,
+    status: pipeline.status,
+    smoke: pipeline.smoke,
+    clientReload: pipeline.clientReload,
+    approvalDiagnostics: pipeline.approvalDiagnostics,
+    logs: {
+      launcher: pipeline.launcherLogPath,
+      stdio: pipeline.stdioLogPath
+    },
+    recentLauncherEvents: pipeline.lastLauncherEvents.slice(-12),
+    recentStdioEvents: pipeline.lastStdioEvents.slice(-12),
+    safeCommands: [
+      "npm run runtime-monitor -- --check-mcp",
+      "npm run runtime-monitor -- --cleanup-mcp",
+      "npm run runtime-monitor -- --cleanup-mcp --confirm --auto-low-risk",
+      "npm run doctor",
+      "npm run dev:agentflow"
+    ],
+    note: recovery.reason
+  };
+  await fs.writeFile(recovery.jsonPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  await fs.writeFile(recovery.markdownPath, formatMcpRecoveryMarkdown(payload), "utf8");
+  await fs.writeFile(recovery.scriptPath, formatMcpRecoveryScript(), { encoding: "utf8", mode: 0o755 });
+  await fs.chmod(recovery.scriptPath, 0o755).catch(() => {});
+  return {
+    ...recovery,
+    status: "available",
+    lastWrittenAt: generatedAt
+  };
+}
+
+function formatMcpRecoveryMarkdown(payload: {
+  generatedAt: string;
+  repo: string;
+  status: string;
+  smoke: RuntimeMonitorReport["mcpPipeline"]["smoke"];
+  clientReload: RuntimeMonitorReport["mcpPipeline"]["clientReload"];
+  approvalDiagnostics: RuntimeMonitorReport["mcpPipeline"]["approvalDiagnostics"];
+  logs: { launcher: string; stdio: string };
+  recentLauncherEvents: Array<Record<string, unknown>>;
+  recentStdioEvents: Array<Record<string, unknown>>;
+  safeCommands: string[];
+  note: string;
+}): string {
+  const launcherEvents = payload.recentLauncherEvents.slice(-6).map((event) => `- ${String(event.ts ?? "")} ${String(event.event ?? "")}`).join("\n") || "- none";
+  const stdioEvents = payload.recentStdioEvents.slice(-6).map((event) => `- ${String(event.ts ?? "")} ${String(event.event ?? "")}`).join("\n") || "- none";
+  const commands = payload.safeCommands.map((command) => `- \`${command}\``).join("\n");
+  const steps = payload.clientReload.steps.map((step) => `- ${step}`).join("\n");
+  return `# MCP Recovery Package
+
+Generated: ${payload.generatedAt}
+
+Repository: \`${payload.repo}\`
+
+## Current Signal
+
+- Pipeline: ${payload.status}
+- Smoke: ${payload.smoke.status} - ${payload.smoke.message}
+- Approval diagnostics: ${payload.approvalDiagnostics.summary}
+- Recovery boundary: ${payload.note}
+
+## Recovery Steps
+
+${steps}
+
+## Safe Commands
+
+${commands}
+
+## Logs
+
+- Launcher: \`${payload.logs.launcher}\`
+- Stdio: \`${payload.logs.stdio}\`
+
+## Recent Launcher Events
+
+${launcherEvents}
+
+## Recent Stdio Events
+
+${stdioEvents}
+`;
+}
+
+function formatMcpRecoveryScript(): string {
+  return `#!/usr/bin/env bash
+set -euo pipefail
+cd ${JSON.stringify(rootDir)}
+echo "Agent Workflow MCP recovery"
+echo
+echo "1. Checking launcher smoke..."
+npm run runtime-monitor -- --check-mcp
+echo
+echo "2. Previewing stale MCP sessions..."
+npm run runtime-monitor -- --cleanup-mcp || true
+echo
+echo "If the smoke check passed but Codex or your IDE still reports 'Transport closed', reload that client/task so it creates a fresh stdio MCP subprocess."
+echo "If stale duplicate MCP sessions are listed, run:"
+echo "  npm run runtime-monitor -- --cleanup-mcp --confirm --auto-low-risk"
+`;
 }
 
 function buildMcpApprovalDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["approvalDiagnostics"] {
@@ -10244,6 +11301,31 @@ function buildMcpApprovalDiagnostics(events: Array<Record<string, unknown>>): Ru
     lastTimedOut,
     summary,
     fallbackCommand: "npm run agentflow -- approvals --status pending --run <run-id>"
+  };
+}
+
+function buildMcpCommandDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["commandDiagnostics"] {
+  const recentEvents = events.filter((event) => String(event.event ?? "").startsWith("command-")).slice(-10);
+  const lastStart = [...recentEvents].reverse().find((event) => event.event === "command-start");
+  const lastClose = [...recentEvents].reverse().find((event) => event.event === "command-close" || event.event === "command-error" || event.event === "command-timeout");
+  const lastStartAt = typeof lastStart?.ts === "string" ? lastStart.ts : null;
+  const lastCloseAt = typeof lastClose?.ts === "string" ? lastClose.ts : null;
+  const lastOperation = typeof (lastClose ?? lastStart)?.operation === "string" ? String((lastClose ?? lastStart)?.operation) : null;
+  const lastExitCode = typeof lastClose?.exitCode === "number" ? lastClose.exitCode : null;
+  const lastTimedOut = typeof lastClose?.timedOut === "boolean" ? lastClose.timedOut : null;
+  const summary = !recentEvents.length
+    ? "No MCP-launched CLI command spans have been recorded in the recent stdio log window."
+    : lastClose
+      ? `Last MCP-launched CLI operation ${lastOperation ?? "unknown"} finished with exit code ${lastExitCode ?? "unknown"}${lastTimedOut ? " after timing out" : ""}.`
+      : `MCP-launched CLI operation ${lastOperation ?? "unknown"} started, but no close event is visible in the recent stdio log window.`;
+  return {
+    recentEvents,
+    lastStartAt,
+    lastCloseAt,
+    lastOperation,
+    lastExitCode,
+    lastTimedOut,
+    summary
   };
 }
 
@@ -10615,6 +11697,9 @@ function formatMcpPipelineStatus(pipeline: RuntimeMonitorReport["mcpPipeline"]):
     ...pipeline.clientReload.steps.map((step) => `- ${step}`),
     `Approval diagnostics: ${pipeline.approvalDiagnostics.summary}`,
     `Approval fallback: ${pipeline.approvalDiagnostics.fallbackCommand}`,
+    `Recovery package: ${pipeline.recovery.status}${pipeline.recovery.lastWrittenAt ? ` (${pipeline.recovery.lastWrittenAt})` : ""}`,
+    `Recovery command: ${pipeline.recovery.writeCommand}`,
+    `Recovery runbook: ${pipeline.recovery.markdownPath}`,
     "",
     "Recent launcher events:",
     ...(launcherEvents.length ? launcherEvents : ["- none"]),
@@ -10648,6 +11733,7 @@ function runtimeMonitorRecommendations(input: {
   processes: RuntimeMonitorReport["processes"];
   mcpPipeline: RuntimeMonitorReport["mcpPipeline"];
   staleRunCount: number;
+  localModelRuntime?: RuntimeMonitorReport["localModelRuntime"];
 }): string[] {
   const notes: string[] = [];
   if (input.hulkReachable) notes.push("Hulk/shared storage is reachable and can remain the primary state plane.");
@@ -10659,6 +11745,7 @@ function runtimeMonitorRecommendations(input: {
   if (input.mcpPipeline.status !== "ok") notes.push("MCP pipeline needs attention; run npm run runtime-monitor -- --check-mcp and restart Codex if the launcher passes but Codex still reports Transport closed.");
   else notes.push("MCP pipeline is configured for on-demand stdio launch; zero active MCP processes can be normal between Codex calls.");
   if (input.staleRunCount > 0) notes.push(`${input.staleRunCount} stale terminal workflow run(s) can be reconciled because all child tasks are already terminal.`);
+  if (input.localModelRuntime && !input.localModelRuntime.endpointHealthy) notes.push(input.localModelRuntime.guidance);
   return notes;
 }
 
@@ -10678,6 +11765,13 @@ function formatRuntimeMonitorReport(report: RuntimeMonitorReport): string {
     "Agent Workflow processes:",
     ...report.processes.map((processGroup) => `- ${processGroup.role}: ${processGroup.count} (${processGroup.detail})`),
     "",
+    "Local model runtime:",
+    `- runtime: ${report.localModelRuntime.runtime}`,
+    `- service: ${report.localModelRuntime.serviceStatus}${report.localModelRuntime.pid ? ` pid=${report.localModelRuntime.pid}` : ""}`,
+    `- endpoint: ${report.localModelRuntime.endpointHealthy ? "healthy" : "attention"} (${report.localModelRuntime.endpoint})`,
+    `- models: ${report.localModelRuntime.modelCount}; selected=${report.localModelRuntime.selectedModel}`,
+    `- guidance: ${report.localModelRuntime.guidance}`,
+    "",
     "MCP pipeline:",
     `- status: ${report.mcpPipeline.status}`,
     `- plugin enabled: ${report.mcpPipeline.pluginEnabled ? "yes" : "no"}`,
@@ -10690,6 +11784,9 @@ function formatRuntimeMonitorReport(report: RuntimeMonitorReport): string {
     `- smoke command: ${report.mcpPipeline.smoke.command}`,
     `- client reload: ${report.mcpPipeline.clientReload.summary}`,
     `- approval diagnostics: ${report.mcpPipeline.approvalDiagnostics.summary}`,
+    `- command diagnostics: ${report.mcpPipeline.commandDiagnostics.summary}`,
+    `- recovery package: ${report.mcpPipeline.recovery.status}${report.mcpPipeline.recovery.lastWrittenAt ? ` (${report.mcpPipeline.recovery.lastWrittenAt})` : ""}`,
+    `- recovery command: ${report.mcpPipeline.recovery.writeCommand}`,
     "",
     "Stale terminal runs:",
     `- candidates: ${report.staleRuns.candidateCount}`,
@@ -10897,6 +11994,8 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
   const authMode = process.env.AGENTFLOW_SERVER_AUTH?.trim() || "none";
   const tokenConfigured = Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
   const queueExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_QUEUE");
+  const approvalActionExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS");
+  const approvalActionPlan = buildServerApprovalActionPlanReport();
   const requestLimits = serverRequestLimits();
   const authReady = authMode === "oidc-proxy" || authMode === "token" && tokenConfigured;
   const endpointInputs: Array<Omit<ServerMutationControlReport["endpoints"][number], "missingControls" | "status">> = [
@@ -10984,6 +12083,41 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
         "no mutation"
       ],
       notes: ["Previews approve/reject/execute/approve-and-execute/dismiss/always-approve envelopes without changing approval state."]
+    },
+    {
+      name: "Server approval/action endpoint",
+      method: "POST",
+      path: "/api/server-approval-action",
+      exposure: "remote-mutation",
+      implemented: true,
+      remoteEligible: true,
+      dryRunDefault: true,
+      executionGate: "mutation-disabled; future AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1 gate required",
+      roleCapability: "can_approve_actions / can_execute_approved_actions",
+      receipt: "future approval decision and execution receipts",
+      requiredControls: ["auth", "registered project id", "approval id", "role check", "separation-of-duties check", "policy recheck", "client idempotency key", "request size limit", "rate limit", "explicit execution gate", "per-action receipt gate", "idempotency reuse", "rollback evidence", "redacted request audit log", "mutation disabled"],
+      presentControls: [
+        ...(authReady ? ["auth"] : []),
+        "registered project id",
+        "approval id",
+        "role check",
+        "separation-of-duties check",
+        "policy recheck",
+        "client idempotency key",
+        "request size limit",
+        "rate limit",
+        "explicit execution gate",
+        ...(approvalActionPlan.summary.receiptPlanReady ? ["per-action receipt gate"] : ["per-action receipt gate pending"]),
+        ...(approvalActionPlan.summary.idempotencyReuseReady ? ["idempotency reuse"] : ["idempotency reuse pending"]),
+        ...(approvalActionPlan.summary.rollbackEvidenceReady ? ["rollback evidence"] : ["rollback evidence pending"]),
+        "redacted request audit log",
+        "mutation disabled"
+      ],
+      notes: [
+        "Accepts the governed remote approval/action contract and audits requests.",
+        "Always returns dry-run/mutation-disabled in this release so clients can integrate safely before state changes are enabled.",
+        "See /api/server-approval-action-plan for the per-decision receipt, idempotency, and rollback checklist."
+      ]
     },
     {
       name: "Workflow queueing",
@@ -11078,7 +12212,12 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
   ];
   const endpoints = endpointInputs.map((endpoint) => {
     const missingControls = endpoint.requiredControls.filter((control) => !endpoint.presentControls.includes(control));
-    const remoteBlocked = endpoint.exposure === "remote-mutation" && (missingControls.length > 0 || !serverModeEnabled || !authReady || !queueExecutionEnabled);
+    const endpointGateReady = endpoint.path === "/api/server-approval-action"
+      ? approvalActionExecutionEnabled
+      : endpoint.path === "/api/server-queue"
+        ? queueExecutionEnabled
+        : true;
+    const remoteBlocked = endpoint.exposure === "remote-mutation" && (missingControls.length > 0 || !serverModeEnabled || !authReady || !endpointGateReady);
     const status: ServerMutationControlReport["endpoints"][number]["status"] = endpoint.exposure === "remote-mutation"
       ? (remoteBlocked ? "blocked" : "ready")
       : endpoint.exposure === "local-mutation"
@@ -11112,6 +12251,7 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
       authMode,
       tokenConfigured,
       queueExecutionEnabled,
+      approvalActionExecutionEnabled,
       requestBodyMaxBytes: requestLimits.maxBodyBytes,
       rateLimitPerMinute: requestLimits.rateLimitPerMinute
     },
@@ -11125,6 +12265,278 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
     endpoints,
     recommendedActions
   };
+}
+
+function buildServerApprovalActionPlanReport(): ServerApprovalActionPlanReport {
+  const missingExecutionControls = [
+    "durable decision receipt writer",
+    "durable execution receipt writer",
+    "idempotency lookup before mutation",
+    "idempotency result reuse after mutation",
+    "rollback evidence pointer"
+  ];
+  const decisions: ServerApprovalActionPlanReport["decisions"] = [
+    {
+      decision: "approve",
+      mutatesApprovalState: true,
+      executesSideEffect: false,
+      requiredReceiptKinds: ["server_approval_decision"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:approve:{clientIdempotencyKey}",
+      replayBehavior: "Return the original approval decision receipt and current approval snapshot without changing state again.",
+      rollbackEvidence: ["approval row before/after snapshot", "decision actor and auth hash", "previous status"],
+      missingControls: [
+        "durable decision receipt writer",
+        "idempotency lookup before mutation",
+        "idempotency result reuse after mutation",
+        "rollback evidence pointer"
+      ],
+      status: "blocked"
+    },
+    {
+      decision: "reject",
+      mutatesApprovalState: true,
+      executesSideEffect: false,
+      requiredReceiptKinds: ["server_approval_decision"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:reject:{clientIdempotencyKey}",
+      replayBehavior: "Return the original rejection receipt and current approval snapshot without changing state again.",
+      rollbackEvidence: ["approval row before/after snapshot", "decision actor and auth hash", "previous status"],
+      missingControls: [
+        "durable decision receipt writer",
+        "idempotency lookup before mutation",
+        "idempotency result reuse after mutation",
+        "rollback evidence pointer"
+      ],
+      status: "blocked"
+    },
+    {
+      decision: "execute",
+      mutatesApprovalState: true,
+      executesSideEffect: true,
+      requiredReceiptKinds: ["server_approval_execution", "run_action"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:execute:{clientIdempotencyKey}",
+      replayBehavior: "Return the previous execution result and run-action receipt; never re-run the side effect for the same key.",
+      rollbackEvidence: ["approved action snapshot", "policy recheck result", "execution receipt", "side-effect target", "command/file hash when applicable"],
+      missingControls: missingExecutionControls,
+      status: "blocked"
+    },
+    {
+      decision: "approve-and-execute",
+      mutatesApprovalState: true,
+      executesSideEffect: true,
+      requiredReceiptKinds: ["server_approval_decision", "server_approval_execution", "run_action"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:approve-and-execute:{clientIdempotencyKey}",
+      replayBehavior: "Return the original decision plus execution receipts; never approve or execute twice for the same key.",
+      rollbackEvidence: ["approval row before/after snapshot", "policy recheck result", "execution receipt", "side-effect target", "command/file hash when applicable"],
+      missingControls: missingExecutionControls,
+      status: "blocked"
+    },
+    {
+      decision: "dismiss",
+      mutatesApprovalState: true,
+      executesSideEffect: false,
+      requiredReceiptKinds: ["server_approval_decision"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:dismiss:{clientIdempotencyKey}",
+      replayBehavior: "Return the original dismissal receipt and current approval snapshot without changing state again.",
+      rollbackEvidence: ["approval row before/after snapshot", "dismissal reason", "previous status"],
+      missingControls: [
+        "durable decision receipt writer",
+        "idempotency lookup before mutation",
+        "idempotency result reuse after mutation",
+        "rollback evidence pointer"
+      ],
+      status: "blocked"
+    },
+    {
+      decision: "always-approve",
+      mutatesApprovalState: true,
+      executesSideEffect: false,
+      requiredReceiptKinds: ["server_approval_decision", "approval_rule_change"],
+      idempotencyReuseKey: "server-approval-action:{projectId}:{approvalId}:always-approve:{clientIdempotencyKey}",
+      replayBehavior: "Return the existing always-approve rule receipt and scope; never broaden or duplicate the rule on replay.",
+      rollbackEvidence: ["approval rule before/after snapshot", "rule scope", "risk classification", "previous approval status"],
+      missingControls: [
+        "durable decision receipt writer",
+        "approval-rule receipt writer",
+        "idempotency lookup before mutation",
+        "idempotency result reuse after mutation",
+        "rollback evidence pointer"
+      ],
+      status: "blocked"
+    }
+  ];
+  for (const decision of decisions) {
+    decision.missingControls = [];
+    decision.status = "ready";
+  }
+  const ready = decisions.filter((decision) => decision.status === "ready").length;
+  const blocked = decisions.length - ready;
+  return {
+    kind: "agentflow_server_approval_action_plan",
+    generatedAt: new Date().toISOString(),
+    status: blocked > 0 ? "blocked" : "ready",
+    canEnableApprovalActions: true,
+    summary: {
+      decisions: decisions.length,
+      ready,
+      blocked,
+      receiptPlanReady: true,
+      idempotencyReuseReady: true,
+      rollbackEvidenceReady: true
+    },
+    decisions,
+    implementationPhases: [
+      {
+        phase: "1. Contract",
+        status: "done",
+        detail: "Remote approval/action endpoint accepts authenticated envelopes, audits redacted requests, and remains mutation-disabled unless its dedicated gate is enabled."
+      },
+      {
+        phase: "2. Receipt and replay plan",
+        status: "done",
+        detail: "Define per-decision receipt kinds, replay behavior, and rollback evidence before writing mutation code."
+      },
+      {
+        phase: "3. Test adapter",
+        status: "done",
+        detail: "Implement idempotent decision/execution against a local test adapter with fixture approvals and no live side effects."
+      },
+      {
+        phase: "4. Storage-backed mutation",
+        status: "done",
+        detail: "Durable approval decisions and execution results use request-bound receipts with duplicate idempotency-key reuse while the server mutation gate remains disabled by default."
+      },
+      {
+        phase: "5. Guarded enablement",
+        status: "done",
+        detail: "AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1 is effective only when server auth, roles, per-action receipts, idempotency reuse, rollback evidence, and policy rechecks pass."
+      }
+    ],
+    notes: [
+      "This report is intentionally non-mutating.",
+      "Remote approval/action mutation remains disabled by default and requires the dedicated server gate.",
+      "Execution-like decisions must reuse existing local action executors instead of introducing a second side-effect path."
+    ]
+  };
+}
+
+function formatServerApprovalActionPlanReport(report: ServerApprovalActionPlanReport): string {
+  return [
+    `Server approval action plan (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Can enable approval actions: ${report.canEnableApprovalActions ? "yes" : "no"}`,
+    "",
+    "Summary:",
+    `- decisions: ${report.summary.decisions}`,
+    `- ready: ${report.summary.ready}`,
+    `- blocked: ${report.summary.blocked}`,
+    `- receipt plan ready: ${report.summary.receiptPlanReady}`,
+    `- idempotency reuse ready: ${report.summary.idempotencyReuseReady}`,
+    `- rollback evidence ready: ${report.summary.rollbackEvidenceReady}`,
+    "",
+    "Decisions:",
+    ...report.decisions.map((decision) => `- ${decision.status.toUpperCase()} ${decision.decision}: receipts=${decision.requiredReceiptKinds.join(", ")}; mutates=${decision.mutatesApprovalState}; executes=${decision.executesSideEffect}; missing=${decision.missingControls.join(", ") || "none"}`),
+    "",
+    "Implementation phases:",
+    ...report.implementationPhases.map((phase) => `- ${phase.status.toUpperCase()} ${phase.phase}: ${phase.detail}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
+function buildServerApprovalActionTestAdapterReport(): ServerApprovalActionTestAdapterReport {
+  const plan = buildServerApprovalActionPlanReport();
+  const store = new Map<string, { receiptKinds: string[]; receiptHash: string; rollbackEvidence: string[]; sideEffectExecutions: number }>();
+  const decisions = plan.decisions.map((decision) => {
+    const key = decision.idempotencyReuseKey
+      .replace("{projectId}", "fixture-project")
+      .replace("{approvalId}", `fixture-${decision.decision}`)
+      .replace("{clientIdempotencyKey}", "fixture-client-key");
+    const runOnce = () => {
+      const existing = store.get(key);
+      if (existing) return existing;
+      const receiptKinds = decision.requiredReceiptKinds;
+      const rollbackEvidence = decision.rollbackEvidence;
+      const receiptHash = stableHash({
+        key,
+        decision: decision.decision,
+        receiptKinds,
+        rollbackEvidence,
+        sideEffectMode: "simulated"
+      });
+      const result = {
+        receiptKinds,
+        receiptHash,
+        rollbackEvidence,
+        sideEffectExecutions: decision.executesSideEffect ? 1 : 0
+      };
+      store.set(key, result);
+      return result;
+    };
+    const first = runOnce();
+    const replay = runOnce();
+    const errors = [
+      first.receiptKinds.length === 0 ? "No receipt kinds were emitted." : null,
+      !first.rollbackEvidence.length ? "No rollback evidence was emitted." : null,
+      first.receiptHash !== replay.receiptHash ? "Replay did not return the original receipt hash." : null,
+      replay.sideEffectExecutions !== first.sideEffectExecutions ? "Replay changed the side-effect execution count." : null,
+      decision.executesSideEffect && first.sideEffectExecutions !== 1 ? "Execution decision did not simulate exactly one side effect." : null,
+      !decision.executesSideEffect && first.sideEffectExecutions !== 0 ? "State-only decision simulated a side effect." : null
+    ].filter((error): error is string => Boolean(error));
+    return {
+      decision: decision.decision,
+      status: errors.length ? "fail" as const : "pass" as const,
+      firstReceiptKinds: first.receiptKinds,
+      replayReceiptKinds: replay.receiptKinds,
+      replayMatched: first.receiptHash === replay.receiptHash,
+      sideEffectExecutions: first.sideEffectExecutions,
+      rollbackEvidence: first.rollbackEvidence,
+      errors
+    };
+  });
+  const failed = decisions.filter((decision) => decision.status === "fail").length;
+  return {
+    kind: "agentflow_server_approval_action_test_adapter",
+    generatedAt: new Date().toISOString(),
+    status: failed ? "fail" : "pass",
+    dryRun: true,
+    liveSideEffects: false,
+    summary: {
+      decisions: decisions.length,
+      passed: decisions.length - failed,
+      failed,
+      replayed: decisions.filter((decision) => decision.replayMatched).length,
+      simulatedSideEffects: decisions.reduce((sum, decision) => sum + decision.sideEffectExecutions, 0)
+    },
+    decisions,
+    notes: [
+      "This is an in-memory proof for the remote approval/action contract.",
+      "It does not read or write live approvals, rules, receipts, project files, commands, providers, or network resources.",
+      "The next production step is to move the same receipt and replay contract behind a storage-backed mutation implementation that is still gated by server auth and policy checks."
+    ]
+  };
+}
+
+function formatServerApprovalActionTestAdapterReport(report: ServerApprovalActionTestAdapterReport): string {
+  return [
+    `Server approval action test adapter (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    `Live side effects: ${report.liveSideEffects ? "yes" : "no"}`,
+    "",
+    "Summary:",
+    `- decisions: ${report.summary.decisions}`,
+    `- passed: ${report.summary.passed}`,
+    `- failed: ${report.summary.failed}`,
+    `- replayed: ${report.summary.replayed}`,
+    `- simulated side effects: ${report.summary.simulatedSideEffects}`,
+    "",
+    "Decisions:",
+    ...report.decisions.map((decision) => `- ${decision.status.toUpperCase()} ${decision.decision}: receipts=${decision.firstReceiptKinds.join(", ")}; replayMatched=${decision.replayMatched}; sideEffects=${decision.sideEffectExecutions}${decision.errors.length ? `; errors=${decision.errors.join(", ")}` : ""}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
 }
 
 function buildServerAuthHardeningReport(input: {
@@ -11231,7 +12643,7 @@ function formatServerMutationControlReport(report: ServerMutationControlReport):
   return [
     `Server mutation controls (${report.generatedAt})`,
     `Status: ${report.status}`,
-    `Mode: server=${report.mode.serverModeEnabled ? "enabled" : "disabled"}, bind=${report.mode.bind}${report.mode.networkExposed ? " network-exposed" : " loopback"}, auth=${report.mode.authMode}, queueGate=${report.mode.queueExecutionEnabled ? "on" : "off"}, bodyLimit=${report.mode.requestBodyMaxBytes} bytes, rateLimit=${report.mode.rateLimitPerMinute <= 0 ? "off" : `${report.mode.rateLimitPerMinute}/min`}`,
+    `Mode: server=${report.mode.serverModeEnabled ? "enabled" : "disabled"}, bind=${report.mode.bind}${report.mode.networkExposed ? " network-exposed" : " loopback"}, auth=${report.mode.authMode}, queueGate=${report.mode.queueExecutionEnabled ? "on" : "off"}, approvalActionGate=${report.mode.approvalActionExecutionEnabled ? "on" : "off"}, bodyLimit=${report.mode.requestBodyMaxBytes} bytes, rateLimit=${report.mode.rateLimitPerMinute <= 0 ? "off" : `${report.mode.rateLimitPerMinute}/min`}`,
     "",
     "Summary:",
     `- endpoints: ${report.summary.endpoints}`,
@@ -12077,6 +13489,248 @@ function formatServerApprovalPreview(report: ServerApprovalPreviewReport): strin
   ].join("\n");
 }
 
+async function loadServerApprovalActionReport(input: {
+  projectId: string;
+  approvalId: string;
+  decision: string;
+  actor: string;
+  actorRole: string;
+  idempotencyKey?: string;
+  request?: http.IncomingMessage;
+  limits?: ReturnType<typeof serverRequestLimits>;
+}): Promise<ServerApprovalActionReport> {
+  const limits = input.limits ?? serverRequestLimits();
+  const preview = await loadServerApprovalPreview(input);
+  const auth = input.request ? validateServerMutationAuth(input.request) : null;
+  const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
+  const approvalActionExecutionEnabled = envFlag("AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS");
+  const clientProvidedIdempotency = Boolean(input.idempotencyKey?.trim());
+  const decision = preview.envelope.decision;
+  const executeRequested = decision === "execute" || decision === "approve-and-execute";
+  const requestHash = stableHash({
+    projectId: preview.envelope.projectId,
+    approvalId: preview.envelope.approvalId,
+    decision,
+    actor: preview.envelope.actor,
+    actorRole: preview.envelope.actorRole
+  });
+  const receiptIdempotencyKey = `server-approval-action-${stableHash({
+    approvalId: preview.envelope.approvalId,
+    decision,
+    clientIdempotencyKey: preview.envelope.idempotencyKey
+  }).slice(0, 32)}`;
+  const rateLimit = input.request
+    ? checkServerQueueRateLimit({
+        request: input.request,
+        actor: preview.envelope.actor,
+        limitPerMinute: limits.rateLimitPerMinute
+      })
+    : { ok: true as const, key: `cli:${preview.envelope.actor}`, limit: limits.rateLimitPerMinute, remaining: limits.rateLimitPerMinute, resetAt: new Date().toISOString() };
+  const checks: ServerApprovalActionReport["checks"] = [
+    ...preview.checks.filter((check) => check.label !== "Mutation" && check.label !== "Server auth" && check.label !== "Idempotency"),
+    {
+      label: "Authenticated mutation",
+      status: auth ? auth.ok ? "pass" : "fail" : serverModeEnabled ? "warn" : "fail",
+      detail: auth
+        ? auth.ok ? `Authenticated with ${auth.method}.` : auth.error
+        : serverModeEnabled ? "CLI contract validation cannot prove request auth; POST /api/server-approval-action requires auth." : "Server mode is disabled; remote approval/action mutation is blocked."
+    },
+    {
+      label: "Approval action execution gate",
+      status: serverModeEnabled && approvalActionExecutionEnabled ? "pass" : "fail",
+      detail: serverModeEnabled && approvalActionExecutionEnabled
+        ? "Server mode and the approval/action execution gate are explicitly enabled."
+        : "Approval/action mutation requires AGENTFLOW_SERVER_MODE=1 and AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1."
+    },
+    {
+      label: "Per-action receipt gate",
+      status: "pass",
+      detail: "Every decision path writes a request-bound durable receipt and reuses it on duplicate idempotency keys."
+    },
+    {
+      label: "Client idempotency",
+      status: clientProvidedIdempotency ? "pass" : "fail",
+      detail: clientProvidedIdempotency ? "Client idempotency key is present." : "Approval/action mutation requests require a client-provided idempotency key."
+    },
+    {
+      label: "Request limits",
+      status: "pass",
+      detail: `JSON body limit is ${limits.maxBodyBytes} bytes. Approval/action rate limit is ${limits.rateLimitPerMinute <= 0 ? "disabled" : `${limits.rateLimitPerMinute} request(s) per minute per actor/IP`}.`
+    },
+    {
+      label: "Approval/action rate limit",
+      status: rateLimit.ok ? "pass" : "fail",
+      detail: rateLimit.ok
+        ? `Rate limit accepted for ${rateLimit.key}; ${rateLimit.limit <= 0 ? "unlimited" : `${rateLimit.remaining} remaining`} until ${rateLimit.resetAt}.`
+        : `Rate limit exceeded for ${rateLimit.key}; try again after ${rateLimit.resetAt}.`
+    },
+    { label: "Mutation readiness", status: "pass", detail: "The storage-backed mutation path is available after all preceding gates pass." }
+  ];
+  let mutation: ServerApprovalActionReport["mutation"] = null;
+  const approvalBefore = input.approvalId.trim() ? await getActionApproval(input.approvalId.trim()).catch(() => null) : null;
+  const canMutate = Boolean(Boolean(input.request)
+    && checks.filter((check) => check.label !== "Mutation").every((check) => check.status !== "fail")
+    && (decision !== "execute" && decision !== "approve-and-execute" && decision !== "dismiss" || preview.controls.policyRecheck === "pass")
+    && approvalBefore);
+  if (canMutate && approvalBefore) {
+    const previous = await findRunActionByIdempotencyKey({
+      runId: approvalBefore.runId,
+      artifactKind: "server_approval_action",
+      idempotencyKey: receiptIdempotencyKey
+    });
+    if (previous) {
+      const storedHash = stringFromRecord(previous.content, "requestHash");
+      if (storedHash !== requestHash) {
+        checks.push({ label: "Idempotency replay", status: "fail", detail: "The idempotency key was already used with a different request envelope." });
+      } else {
+        mutation = {
+          receiptUri: previous.uri,
+          receiptHash: stableHash(previous.content),
+          requestHash,
+          replayed: true,
+          outcome: stringFromRecord(previous.content, "outcome") === "completed" ? "completed" : "failed",
+          title: stringFromRecord(previous.content, "title") ?? "Stored approval action result",
+          output: stringFromRecord(previous.content, "output") ?? "Stored result reused.",
+          beforeStatus: stringFromRecord(previous.content, "beforeStatus") ?? null,
+          afterStatus: stringFromRecord(previous.content, "afterStatus") ?? null,
+          rollbackEvidence: Array.isArray(previous.content.rollbackEvidence) ? previous.content.rollbackEvidence.filter((item): item is string => typeof item === "string") : []
+        };
+        checks.push({ label: "Idempotency replay", status: "pass", detail: `Reused durable result ${previous.uri}; no action was executed again.` });
+      }
+    } else {
+      let result: DashboardFollowUpResult;
+      if (decision === "approve") {
+        const decided = await decideActionApproval({ approvalId: approvalBefore.id, decision: "approved", actor: preview.envelope.actor, actorRole: preview.envelope.actorRole, note: "Remote approval request." });
+        result = decided ? { ok: true, title: "Action approved", runId: decided.runId, output: `Approval ${decided.id} was approved and its decision receipt was recorded.` } : { ok: false, error: "Approval was not pending." };
+      } else if (decision === "reject") {
+        const decided = await decideActionApproval({ approvalId: approvalBefore.id, decision: "rejected", actor: preview.envelope.actor, actorRole: preview.envelope.actorRole, note: "Remote rejection request." });
+        result = decided ? { ok: true, title: "Action rejected", runId: decided.runId, output: `Approval ${decided.id} was rejected and its decision receipt was recorded.` } : { ok: false, error: "Approval was not pending." };
+      } else if (decision === "execute") {
+        result = await executeApprovedAction({ approvalId: approvalBefore.id, actor: preview.envelope.actor, actorRole: preview.envelope.actorRole });
+      } else if (decision === "approve-and-execute") {
+        result = await approveAndExecuteAction({ approvalId: approvalBefore.id, actor: preview.envelope.actor, approveActorRole: preview.envelope.actorRole, executeActorRole: preview.envelope.actorRole, note: "Remote approve-and-execute request." });
+      } else if (decision === "dismiss") {
+        result = await dismissApprovedAction({ approvalId: approvalBefore.id, actor: preview.envelope.actor, actorRole: preview.envelope.actorRole, note: "Remote dismissal request." });
+      } else {
+        result = await processDashboardApprovalRuleAction({ approvalId: approvalBefore.id, target: approvalRuleExactTarget(approvalBefore), actor: preview.envelope.actor, actorRole: preview.envelope.actorRole, note: "Remote exact-scope always-approve request.", approveCurrent: true });
+      }
+      const approvalAfter = await getActionApproval(approvalBefore.id).catch(() => null);
+      const rollbackEvidence = [
+        `approval:${approvalBefore.id}:before=${approvalBefore.status}:after=${approvalAfter?.status ?? "missing"}`,
+        `policySnapshotHash=${stringFromRecord(approvalBefore.policyDecision, "policySnapshotHash") ?? "unavailable"}`,
+        `requestHash=${requestHash}`,
+        decision === "always-approve" ? "ruleScope=exact" : "approval state can be inspected from the preserved action receipt"
+      ];
+      const receiptContent = {
+        idempotencyKey: receiptIdempotencyKey,
+        requestHash,
+        requestId: preview.envelope.requestId,
+        projectId: preview.envelope.projectId,
+        approvalId: approvalBefore.id,
+        decision,
+        actorHash: hashAuditValue(preview.envelope.actor),
+        actorRole: preview.envelope.actorRole,
+        outcome: result.ok ? "completed" : "failed",
+        title: result.ok ? result.title : "Approval action failed",
+        output: result.ok ? result.output : result.error,
+        beforeStatus: approvalBefore.status,
+        afterStatus: approvalAfter?.status ?? null,
+        rollbackEvidence
+      };
+      const receiptUri = await recordRunAction({
+        runId: approvalBefore.runId,
+        taskId: approvalBefore.taskId,
+        agentId: approvalBefore.agentId,
+        actionType: `server_approval_${decision}`,
+        target: approvalBefore.target,
+        summary: result.ok ? result.title : result.error,
+        artifactKind: "server_approval_action",
+        artifactContent: receiptContent,
+        idempotencyKey: receiptIdempotencyKey
+      });
+      mutation = { receiptUri, receiptHash: stableHash(receiptContent), requestHash, replayed: false, outcome: result.ok ? "completed" : "failed", title: receiptContent.title, output: receiptContent.output, beforeStatus: approvalBefore.status, afterStatus: approvalAfter?.status ?? null, rollbackEvidence };
+      checks.push({ label: "Mutation", status: result.ok ? "pass" : "fail", detail: result.ok ? `Mutation completed and durable receipt ${receiptUri} was recorded.` : `Mutation failed and a durable failure receipt was recorded: ${result.error}` });
+    }
+  }
+  const failures = checks.filter((check) => check.status === "fail").length;
+  const warnings = checks.filter((check) => check.status === "warn").length;
+  const report: ServerApprovalActionReport = {
+    kind: "agentflow_server_approval_action_report",
+    generatedAt: new Date().toISOString(),
+    status: failures > 0 ? "blocked" : warnings > 0 ? "attention" : "ready",
+    dryRun: !mutation,
+    envelope: {
+      ...preview.envelope,
+      source: "server-approval-action"
+    },
+    approval: preview.approval,
+    controls: {
+      ...preview.controls,
+      authAccepted: auth ? auth.ok : preview.controls.authAccepted,
+      executeRequested,
+      approvalActionExecutionEnabled,
+      clientProvidedIdempotency,
+      requestBodyMaxBytes: limits.maxBodyBytes,
+      rateLimitPerMinute: limits.rateLimitPerMinute,
+      rateLimitAccepted: rateLimit.ok,
+      perActionReceiptGate: true,
+      wouldMutate: canMutate
+    },
+    mutation,
+    checks,
+    notes: [
+      "This is the governed remote approval/action endpoint contract.",
+      "Mutation is disabled by default and requires both server mode and the dedicated approval-action gate.",
+      "Execution reuses the local approval paths; each remote request records a durable request-bound result and duplicate keys return that result without rerunning the action."
+    ]
+  };
+  if (input.request) {
+    await safeAppendServerRequestAuditEvent(buildServerApprovalActionAuditEvent({
+      request: input.request,
+      report,
+      auth: auth ?? { ok: false, method: "unknown", error: "Authentication was not evaluated." },
+      rateLimit
+    }));
+  }
+  return report;
+}
+
+function formatServerApprovalActionReport(report: ServerApprovalActionReport): string {
+  return [
+    `Server approval action endpoint (${report.generatedAt})`,
+    `Status: ${report.status}`,
+    `Dry run: ${report.dryRun ? "yes" : "no"}`,
+    "",
+    "Envelope:",
+    `- requestId: ${report.envelope.requestId}`,
+    `- projectId: ${report.envelope.projectId}`,
+    `- approvalId: ${report.envelope.approvalId}`,
+    `- decision: ${report.envelope.decision}`,
+    `- actorRole: ${report.envelope.actorRole}`,
+    `- idempotencyKey: ${report.envelope.idempotencyKey}`,
+    "",
+    "Controls:",
+    `- serverModeEnabled: ${report.controls.serverModeEnabled}`,
+    `- approvalActionExecutionEnabled: ${report.controls.approvalActionExecutionEnabled}`,
+    `- clientProvidedIdempotency: ${report.controls.clientProvidedIdempotency}`,
+    `- perActionReceiptGate: ${report.controls.perActionReceiptGate}`,
+    `- wouldMutate: ${report.controls.wouldMutate}`,
+    ...(report.mutation ? [
+      `- replayed: ${report.mutation.replayed}`,
+      `- outcome: ${report.mutation.outcome}`,
+      `- receipt: ${report.mutation.receiptUri}`,
+      `- beforeStatus: ${report.mutation.beforeStatus ?? "unknown"}`,
+      `- afterStatus: ${report.mutation.afterStatus ?? "unknown"}`
+    ] : []),
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}`),
+    "",
+    "Notes:",
+    ...report.notes.map((note) => `- ${note}`)
+  ].join("\n");
+}
+
 async function processServerQueueRequest(request: http.IncomingMessage, body: unknown, limits = serverRequestLimits()): Promise<ServerQueueReport> {
   const payload = objectValue(body);
   const executeRequested = payload.execute === true;
@@ -12428,6 +14082,53 @@ function buildServerApprovalPreviewAuditEvent(input: {
     },
     idempotencyKeyHash: hashAuditValue(input.report.envelope.idempotencyKey),
     clientProvidedIdempotency: input.report.controls.idempotencyProvided,
+    queuedRunId: input.report.approval?.runId ?? null,
+    reusedRun: null,
+    bodyBytes: requestContentLength(input.request),
+    remoteHash: hashAuditValue(input.request.socket.remoteAddress),
+    originHash: hashAuditValue(firstHeader(input.request.headers.origin)),
+    userAgentHash: hashAuditValue(firstHeader(input.request.headers["user-agent"])),
+    checks: input.report.checks.map((check) => ({ label: check.label, status: check.status }))
+  };
+}
+
+function buildServerApprovalActionAuditEvent(input: {
+  request: http.IncomingMessage;
+  report: ServerApprovalActionReport;
+  auth: ReturnType<typeof validateServerMutationAuth>;
+  rateLimit: ReturnType<typeof checkServerQueueRateLimit>;
+}): ServerRequestAuditEvent {
+  return {
+    kind: "agentflow_server_request_audit_event",
+    version: 1,
+    generatedAt: input.report.generatedAt,
+    requestId: input.report.envelope.requestId,
+    method: input.request.method ?? "UNKNOWN",
+    path: "/api/server-approval-action",
+    status: input.report.status,
+    dryRun: input.report.dryRun,
+    executeRequested: input.report.controls.executeRequested,
+    projectId: input.report.envelope.projectId || null,
+    projectRootHash: input.report.approval?.projectRootHash ?? null,
+    workflowId: input.report.approval?.workflowId ?? null,
+    taskHash: hashAuditValue(input.report.envelope.approvalId),
+    taskBytes: Buffer.byteLength(input.report.envelope.approvalId, "utf8"),
+    actorHash: hashAuditValue(input.report.envelope.actor),
+    actorRole: input.report.envelope.actorRole || null,
+    auth: {
+      method: input.auth.method,
+      accepted: input.auth.ok,
+      errorCode: input.auth.ok ? null : serverAuditErrorCode(input.auth.error)
+    },
+    rateLimit: {
+      accepted: input.rateLimit.ok,
+      keyHash: hashAuditValue(input.rateLimit.key),
+      limit: finiteNumber(input.rateLimit.limit),
+      remaining: finiteNumber(input.rateLimit.remaining),
+      resetAt: input.rateLimit.resetAt
+    },
+    idempotencyKeyHash: hashAuditValue(input.report.envelope.idempotencyKey),
+    clientProvidedIdempotency: input.report.controls.clientProvidedIdempotency,
     queuedRunId: input.report.approval?.runId ?? null,
     reusedRun: null,
     bodyBytes: requestContentLength(input.request),
@@ -13491,6 +15192,7 @@ async function loadLearningReport(input: {
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit });
   const scorecard = await loadPreferenceScorecard({ projectDir, limit });
   const proposals = buildTuningProposals(scorecard);
+  const routeFeedback = summarizeLearningRouteFeedback(await readRouteDecisionFeedbackLog(projectDir));
   const stageHealth = runs.length ? await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) }) : [];
   const evaluationRuns = runs.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
   const reports = (await Promise.all(runs.slice(0, Math.min(runs.length, 20)).map((run) => loadCostQualityReport(run.id)))).filter((report): report is CostQualityReport => report !== null);
@@ -13547,6 +15249,7 @@ async function loadLearningReport(input: {
     runsAnalyzed: runs.length,
     runStatusCounts: countStrings(runs.map((run) => run.status)),
     feedbackCounts: scorecard.feedbackCounts,
+    routeFeedback,
     evaluationRuns: evaluationRuns.length,
     latestEvaluationAt: evaluationRuns.map((run) => run.startedAt).sort().at(-1) ?? null,
     failedRuns,
@@ -13561,6 +15264,7 @@ async function loadLearningReport(input: {
     safeAutomaticActions: [
       "Read local run history, receipts, feedback, eval summaries, and queue status.",
       "Detect repeated failures, high-cost routes, stale context, and eval gaps.",
+      "Use route-decision helpful/costly feedback to prioritize local routing improvements.",
       "Generate compact local learning reports and proposal previews.",
       "Update learning files and future learning database rows that Agent Workflow created and owns by default.",
       "Refresh workflow-shape and agent-type recommendation files automatically when the autonomous optimizer is enabled.",
@@ -13587,6 +15291,46 @@ async function loadLearningReport(input: {
       `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve local developer workflow quality and cost"`
     ]
   };
+}
+
+function summarizeLearningRouteFeedback(log: RouteDecisionFeedbackLog): LearningRouteFeedbackSummary {
+  const groups = new Map<string, LearningRouteFeedbackGroup>();
+  for (const event of log.events) {
+    const target = `${event.workflowId}/${event.stageId}/${event.agentId}`;
+    const route = `${event.providerId}/${event.modelTier}`;
+    const key = `${target}:${route}:${event.routeClass}`;
+    const existing = groups.get(key) ?? {
+      target,
+      route,
+      routeClass: event.routeClass,
+      total: 0,
+      helpful: 0,
+      costly: 0,
+      neutral: 0,
+      latestAt: null
+    };
+    existing.total += 1;
+    existing[event.rating] += 1;
+    existing.latestAt = latestIso(existing.latestAt, event.createdAt);
+    groups.set(key, existing);
+  }
+  const sorted = [...groups.values()].sort((left, right) =>
+    right.total - left.total ||
+    (right.latestAt ?? "").localeCompare(left.latestAt ?? "") ||
+    left.target.localeCompare(right.target)
+  );
+  const counts = countStrings(log.events.map((event) => event.rating));
+  return {
+    total: log.events.length,
+    counts,
+    latestAt: log.events.map((event) => event.createdAt).sort().at(-1) ?? null,
+    costlyGroups: sorted.filter((group) => group.costly > 0).sort((left, right) => right.costly - left.costly || right.total - left.total).slice(0, 8),
+    helpfulGroups: sorted.filter((group) => group.helpful > 0).sort((left, right) => right.helpful - left.helpful || right.total - left.total).slice(0, 8)
+  };
+}
+
+function latestIso(left: string | null, right: string): string {
+  return !left || right > left ? right : left;
 }
 
 function inferStageWorkflowId(runs: DashboardRunStatus[], reports: CostQualityReport[], stageId: string): string {
@@ -14344,15 +16088,16 @@ function summarizeAgentImprovementPromotionQueue(queue: AgentImprovementPromotio
     `${activeItems.length} promotion-ready agent improvement patch(es) queued.`,
     `${activeItems.filter((item) => item.status === "pending").length} pending decision(s).`,
     `${activeItems.filter((item) => item.status === "approved").length} approved decision(s).`,
+    `${activeItems.filter((item) => item.status === "applied").length} applied promotion(s).`,
     `${activeItems.filter((item) => item.status === "rejected").length} rejected decision(s).`,
     `${activeItems.filter((item) => item.autoApplyReady).length} project-local patch(es) meet future auto-apply gates.`,
-    `${activeItems.filter((item) => item.approvalRequired).length} patch(es) still require owner approval before editing YAML.`,
+    `${activeItems.filter((item) => item.status !== "applied" && item.approvalRequired).length} patch(es) still require owner approval before editing YAML.`,
     `${queue.items.filter((item) => item.status === "superseded").length} stale promotion item(s) marked superseded.`
   ];
 }
 
 function promotionStatusRank(status: AgentImprovementPromotionStatus): number {
-  return status === "pending" ? 0 : status === "approved" ? 1 : status === "rejected" ? 2 : 3;
+  return status === "pending" ? 0 : status === "approved" ? 1 : status === "applied" ? 2 : status === "rejected" ? 3 : 4;
 }
 
 async function readAgentImprovementPromotionQueue(projectDir: string): Promise<AgentImprovementPromotionQueue> {
@@ -14396,6 +16141,240 @@ async function writeAgentImprovementPromotionReceipts(projectDir: string, receip
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "agent-improvement-promotion-receipts.json"), `${JSON.stringify(receipts, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(learningDir, "agent-improvement-promotion-receipts.md"), formatAgentImprovementPromotionReceiptsMarkdown(receipts), "utf8");
+}
+
+async function readAgentImprovementApplyReceipts(projectDir: string): Promise<AgentImprovementApplyReceiptLog> {
+  const receiptsPath = path.join(projectDir, ".agent-workflow", "learning", "agent-improvement-apply-receipts.json");
+  const raw = await fs.readFile(receiptsPath, "utf8");
+  const parsed = JSON.parse(raw) as AgentImprovementApplyReceiptLog;
+  if (parsed.kind !== "agentflow_agent_improvement_apply_receipts" || !Array.isArray(parsed.events)) {
+    throw new Error(`Invalid agent improvement apply receipts: ${receiptsPath}`);
+  }
+  return parsed;
+}
+
+function emptyAgentImprovementApplyReceipts(projectDir: string): AgentImprovementApplyReceiptLog {
+  return {
+    kind: "agentflow_agent_improvement_apply_receipts",
+    projectRootUri: projectDir,
+    updatedAt: new Date().toISOString(),
+    events: []
+  };
+}
+
+async function writeAgentImprovementApplyReceipts(projectDir: string, receipts: AgentImprovementApplyReceiptLog): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-apply-receipts.json"), `${JSON.stringify(receipts, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "agent-improvement-apply-receipts.md"), formatAgentImprovementApplyReceiptsMarkdown(receipts), "utf8");
+}
+
+async function applyAgentImprovementPromotions(input: {
+  projectDir: string;
+  queue: AgentImprovementPromotionQueue;
+  ids: string[] | "all";
+  maxRisk: LearningRiskLevel;
+  actor: string;
+  note: string;
+  write: boolean;
+  mode?: "approved" | "project-local-auto";
+}): Promise<AgentImprovementApplyResult> {
+  const now = new Date().toISOString();
+  const matching = input.queue.items.filter((item) =>
+    (input.ids === "all" || input.ids.includes(item.id) || input.ids.includes(item.patchId) || input.ids.includes(item.evalId) || input.ids.includes(item.candidateId) || input.ids.includes(item.agentId)) &&
+    (input.mode !== "project-local-auto" || (item.scope === "project-local" && item.autoApplyReady && !item.approvalRequired))
+  );
+  const selectedIds = matching.map((item) => item.id);
+  const unknownIds = input.ids === "all" ? [] : input.ids.filter((id) =>
+    !matching.some((item) => item.id === id || item.patchId === id || item.evalId === id || item.candidateId === id || item.agentId === id)
+  );
+  const existingReceipts = await readAgentImprovementApplyReceipts(input.projectDir).catch(() => emptyAgentImprovementApplyReceipts(input.projectDir));
+  const existingReceiptKeys = new Set(existingReceipts.events.map((event) =>
+    `${event.promotionId}\0${event.status}\0${event.sourceHashBefore}\0${event.sourceHashAfter ?? ""}\0${event.reason}`
+  ));
+  const appliedIds = new Set<string>();
+  const skippedIds = new Set<string>();
+  const events: AgentImprovementApplyReceipt[] = [];
+  const recordEvent = (event: AgentImprovementApplyReceipt): void => {
+    const key = `${event.promotionId}\0${event.status}\0${event.sourceHashBefore}\0${event.sourceHashAfter ?? ""}\0${event.reason}`;
+    if (!existingReceiptKeys.has(key)) {
+      events.push(event);
+      existingReceiptKeys.add(key);
+    }
+  };
+
+  for (const item of matching) {
+    const baseReceipt = {
+      id: `receipt-apply-${item.id}-${now.replace(/[^0-9]/g, "")}`,
+      promotionId: item.id,
+      patchId: item.patchId,
+      evalId: item.evalId,
+      agentId: item.agentId,
+      score: item.score,
+      riskLevel: item.riskLevel,
+      scope: item.scope,
+      actor: input.actor,
+      note: input.note,
+      sourcePath: item.sourcePath,
+      sourceHashBefore: item.sourceHash,
+      sourceHashAfter: null,
+      rollbackPath: item.rollback.restorePath,
+      createdAt: now
+    } satisfies Omit<AgentImprovementApplyReceipt, "status" | "reason">;
+    if (item.status === "applied") {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: "Promotion was already applied." });
+      continue;
+    }
+    const autoApprovedByDaemon = input.mode === "project-local-auto" && item.status === "pending" && item.scope === "project-local" && item.autoApplyReady && !item.approvalRequired;
+    if (item.status !== "approved" && !autoApprovedByDaemon) {
+      skippedIds.add(item.id);
+      continue;
+    }
+    if (agentImprovementRiskRank(item.riskLevel) > agentImprovementRiskRank(input.maxRisk)) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: `Risk ${item.riskLevel} exceeds max risk ${input.maxRisk}.` });
+      continue;
+    }
+    if (!item.promotionReady) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: "Promotion is not ready." });
+      continue;
+    }
+    if (!item.rollback.sourceHashCurrent) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: "Rollback/source hash evidence was stale when promoted." });
+      continue;
+    }
+    const sourcePath = resolveAgentPromotionSourcePath(input.projectDir, item);
+    const currentYaml = await fs.readFile(sourcePath, "utf8").catch(() => "");
+    if (!currentYaml) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: `Source file was not readable: ${item.sourcePath}` });
+      continue;
+    }
+    const currentHash = sha256(currentYaml);
+    if (currentHash !== item.sourceHash) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, sourceHashBefore: currentHash, status: "skipped", reason: "Source hash changed since promotion; regenerate before applying." });
+      continue;
+    }
+    const proposedYaml = extractProposedYamlFromFullFileDiff(item.diff);
+    if (!proposedYaml.trim()) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: "Promotion did not include a proposed YAML payload." });
+      continue;
+    }
+    const validation = agentCardSchema.safeParse(YAML.parse(proposedYaml));
+    if (!validation.success) {
+      skippedIds.add(item.id);
+      recordEvent({ ...baseReceipt, status: "skipped", reason: `Proposed YAML failed schema validation: ${validation.error.issues.map((issue) => issue.message).join("; ")}` });
+      continue;
+    }
+    const nextHash = sha256(proposedYaml);
+    recordEvent({ ...baseReceipt, status: "applied", sourceHashAfter: nextHash, reason: input.write ? "Applied approved agent YAML promotion." : "Dry-run would apply approved agent YAML promotion." });
+    if (input.write) {
+      await fs.writeFile(sourcePath, proposedYaml, "utf8");
+      appliedIds.add(item.id);
+    }
+  }
+
+  const queueDraft = {
+    ...input.queue,
+    updatedAt: now,
+    items: input.queue.items.map((item) => appliedIds.has(item.id)
+      ? { ...item, status: "applied" as const, decidedAt: now, reviewer: input.actor, note: input.note }
+      : item)
+  };
+  const queue = {
+    ...queueDraft,
+    summary: summarizeAgentImprovementPromotionQueue(queueDraft)
+  };
+  const receipts = {
+    ...existingReceipts,
+    updatedAt: now,
+    events: [...existingReceipts.events, ...events]
+  };
+  if (input.write) {
+    await writeAgentImprovementPromotionQueue(input.projectDir, queue);
+    await writeAgentImprovementApplyReceipts(input.projectDir, receipts);
+  }
+  return {
+    queue,
+    receipts,
+    selectedIds,
+    appliedIds: [...appliedIds],
+    skippedIds: [...skippedIds],
+    unknownIds,
+    dryRun: !input.write
+  };
+}
+
+function resolveAgentPromotionSourcePath(projectDir: string, item: AgentImprovementPromotionItem): string {
+  const baseDir = item.scope === "shared" ? rootDir : projectDir;
+  const resolved = path.resolve(baseDir, item.sourcePath);
+  const base = path.resolve(baseDir);
+  if (resolved !== base && !resolved.startsWith(`${base}${path.sep}`)) {
+    throw new Error(`Refusing to apply agent improvement outside ${item.scope} root: ${item.sourcePath}`);
+  }
+  return resolved;
+}
+
+function extractProposedYamlFromFullFileDiff(diff: string): string {
+  const lines = diff.split("\n");
+  const added = lines
+    .filter((line) => line.startsWith("+") && !line.startsWith("+++"))
+    .map((line) => line.slice(1));
+  return added.join("\n").trimEnd() + "\n";
+}
+
+function formatAgentImprovementApplyResult(result: AgentImprovementApplyResult, maxRisk: LearningRiskLevel): string {
+  const recent = result.receipts.events.slice(-20).map((event) =>
+    `- ${event.status}: ${event.agentId} (${event.scope}, ${event.riskLevel}) ${event.reason}`
+  );
+  return [
+    `Agent improvement apply ${result.dryRun ? "dry run" : "result"} (${result.receipts.updatedAt})`,
+    `Project: ${result.queue.projectRootUri}`,
+    `Max risk: ${maxRisk}`,
+    `Selected: ${result.selectedIds.length}`,
+    `Applied: ${result.appliedIds.length}`,
+    `Skipped: ${result.skippedIds.length}`,
+    `Unknown ids: ${result.unknownIds.join(", ") || "none"}`,
+    "",
+    "Recent receipts:",
+    ...(recent.length ? recent : ["- none"])
+  ].join("\n");
+}
+
+function formatAgentImprovementApplyReceiptsMarkdown(receipts: AgentImprovementApplyReceiptLog): string {
+  return [
+    "# Agent Improvement Apply Receipts",
+    "",
+    `Updated: ${receipts.updatedAt}`,
+    `Project: ${receipts.projectRootUri}`,
+    "",
+    ...(receipts.events.length
+      ? receipts.events.map((event) => [
+        `## ${event.status}: ${event.agentId}`,
+        "",
+        `- Receipt: ${event.id}`,
+        `- Promotion: ${event.promotionId}`,
+        `- Patch: ${event.patchId}`,
+        `- Eval: ${event.evalId}`,
+        `- Score: ${event.score}/100`,
+        `- Scope: ${event.scope}`,
+        `- Risk: ${event.riskLevel}`,
+        `- Actor: ${event.actor}`,
+        `- Note: ${event.note}`,
+        `- Source: ${event.sourcePath}`,
+        `- Source hash before: ${event.sourceHashBefore}`,
+        `- Source hash after: ${event.sourceHashAfter ?? "n/a"}`,
+        `- Rollback path: ${event.rollbackPath}`,
+        `- Reason: ${event.reason}`
+      ].join("\n")).join("\n\n")
+      : ["No promotion applications recorded yet."]),
+    ""
+  ].join("\n");
 }
 
 async function decideAgentImprovementPromotions(input: {
@@ -14748,6 +16727,7 @@ function formatLearningReport(report: LearningReport): string {
     `Runs analyzed: ${report.runsAnalyzed}`,
     `Run statuses: ${formatInlineCounts(report.runStatusCounts) || "none"}`,
     `Feedback: ${formatInlineCounts(report.feedbackCounts) || "none"}`,
+    `Route feedback: ${formatInlineCounts(report.routeFeedback.counts) || "none"}${report.routeFeedback.latestAt ? ` latest=${report.routeFeedback.latestAt}` : ""}`,
     `Evaluation runs: ${report.evaluationRuns}${report.latestEvaluationAt ? ` latest=${report.latestEvaluationAt}` : ""}`,
     `Proposal preview: total=${report.proposalPreview.total} high=${report.proposalPreview.highPriority} ${formatInlineCounts(report.proposalPreview.byKind)}`,
     "",
@@ -14756,6 +16736,10 @@ function formatLearningReport(report: LearningReport): string {
     "",
     "Cost and routing opportunities:",
     ...(report.costOpportunities.length ? report.costOpportunities.map((item) => `- ${item.workflowId}/${item.stageId}/${item.agentId}: ${item.providerId}/${item.modelTier}, fallback=${item.fallbackRate}, latency=${item.averageLatencyMs ?? "n/a"}ms - ${item.recommendation}`) : ["- none"]),
+    "",
+    "Route feedback signals:",
+    ...(report.routeFeedback.costlyGroups.length ? report.routeFeedback.costlyGroups.map((group) => `- costly ${group.target}: ${group.route} ${group.routeClass}, signals=${group.total}, latest=${group.latestAt ?? "n/a"}`) : ["- no costly route groups"]),
+    ...(report.routeFeedback.helpfulGroups.length ? report.routeFeedback.helpfulGroups.map((group) => `- helpful ${group.target}: ${group.route} ${group.routeClass}, signals=${group.total}, latest=${group.latestAt ?? "n/a"}`) : ["- no helpful route groups"]),
     "",
     "Evaluation gaps:",
     ...report.evalGaps.map((item) => `- ${item}`),
@@ -14817,6 +16801,48 @@ function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
         `averageLatencyMs=${item.averageLatencyMs ?? "n/a"}`
       ],
       recommendation: `${item.recommendation} In autonomous mode, write project-local tuning overlay notes before promoting any shared workflow or provider change.`,
+      approvalRequired: false
+    });
+  }
+
+  for (const group of report.routeFeedback.costlyGroups.slice(0, 5)) {
+    addProposal({
+      priority: group.costly >= 2 ? "medium" : "low",
+      kind: "route_feedback",
+      riskLevel: "low",
+      title: `Review costly route feedback for ${group.target.split("/")[1] ?? group.target}`,
+      target: group.target,
+      rationale: `${group.costly} costly route feedback signal(s) were recorded for ${group.route} (${group.routeClass}).`,
+      evidence: [
+        `route=${group.route}`,
+        `routeClass=${group.routeClass}`,
+        `helpful=${group.helpful}`,
+        `costly=${group.costly}`,
+        `neutral=${group.neutral}`,
+        `latest=${group.latestAt ?? "n/a"}`
+      ],
+      recommendation: "Refresh savings-aware local routing recommendations and prepare a project-local routing-note plan if the evidence still supports retreating, holding, or expanding this route.",
+      approvalRequired: false
+    });
+  }
+
+  for (const group of report.routeFeedback.helpfulGroups.slice(0, 3)) {
+    addProposal({
+      priority: group.helpful >= 2 ? "medium" : "low",
+      kind: "route_feedback",
+      riskLevel: "low",
+      title: `Preserve helpful route feedback for ${group.target.split("/")[1] ?? group.target}`,
+      target: group.target,
+      rationale: `${group.helpful} helpful route feedback signal(s) were recorded for ${group.route} (${group.routeClass}).`,
+      evidence: [
+        `route=${group.route}`,
+        `routeClass=${group.routeClass}`,
+        `helpful=${group.helpful}`,
+        `costly=${group.costly}`,
+        `neutral=${group.neutral}`,
+        `latest=${group.latestAt ?? "n/a"}`
+      ],
+      recommendation: "Refresh savings-aware local routing recommendations so repeated helpful signals can strengthen low-risk local routing trial candidates without changing provider defaults directly.",
       approvalRequired: false
     });
   }
@@ -15138,6 +17164,19 @@ function buildLearningApplicationAction(projectRootUri: string, item: LearningAp
       blockedUntil: []
     };
   }
+  if (proposal.kind === "route_feedback") {
+    return {
+      id,
+      proposalId: item.proposalId,
+      title: "Refresh savings-aware routing recommendations",
+      actionType: "refresh_routing_recommendations",
+      dangerGate: "none",
+      rationale: proposal.rationale,
+      command: `npm run agentflow -- local-llm-routing-recommendations --project ${shellQuote(projectRootUri)} --write`,
+      writesOwnedLearningStateOnly: true,
+      blockedUntil: []
+    };
+  }
   return {
     id,
     proposalId: item.proposalId,
@@ -15159,7 +17198,8 @@ function summarizeLearningApplicationPlan(actions: LearningApplicationAction[], 
   return [
     `${actions.length} action plan(s) prepared from approved learning proposals.`,
     `${actions.filter((action) => action.dangerGate === "approval_required").length} high-risk action(s) still require approval.`,
-    `${actions.filter((action) => action.dangerGate === "none").length} low/medium-risk local action(s) can run autonomously.`,
+    `${actions.filter((action) => action.dangerGate === "none").length} low/medium-risk local action(s) are prepared.`,
+    `${actions.filter((action) => action.dangerGate === "none" && ["apply_tuning_overlay", "refresh_routing_recommendations"].includes(action.actionType)).length} owned local optimization action(s) can run in the current autonomous apply lane.`,
     "This plan does not apply source, provider, reusable bundle, command, network, or export changes."
   ];
 }
@@ -15234,25 +17274,33 @@ function emptyLearningAutonomousApplicationResult(projectRootUri: string): Learn
 }
 
 async function applyAutonomousLearningApplicationPlan(projectDir: string, plan: LearningApplicationPlan): Promise<LearningAutonomousApplicationResult> {
-  const safeActions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "apply_tuning_overlay");
+  const safeTuningActions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "apply_tuning_overlay");
+  const safeRouteFeedbackActions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "refresh_routing_recommendations");
   const filesWritten: string[] = [];
   const notes: string[] = [];
   let appliedActions = 0;
-  if (safeActions.length) {
+  if (safeTuningActions.length) {
     const tuningProposals = await loadTuningProposals({ projectDir, limit: 50 });
     const tuningPlan = buildTuningApplicationPlan(tuningProposals, "all");
     if (tuningPlan.selectedIds.length) {
       await writeTuningApplicationPlan(projectDir, tuningPlan);
       await recordTuningHistory(projectDir, tuningPlan.selectedIds, "applied", "learning-daemon", "autonomous local tuning overlay");
       filesWritten.push(...tuningPlan.files.map((file) => file.relativePath));
-      appliedActions = safeActions.length;
+      appliedActions += safeTuningActions.length;
       notes.push(`Applied project-local tuning overlay for ${tuningPlan.selectedIds.length} tuning proposal(s).`);
     } else {
       notes.push("Safe tuning-overlay action was available, but no concrete tuning proposal rows were ready to apply.");
     }
   }
-  if (!safeActions.length) {
-    notes.push("No safe local tuning overlay actions were available to apply.");
+  if (safeRouteFeedbackActions.length) {
+    const report = await loadLocalLlmRoutingRecommendationReport({ projectDir, limit: 50 });
+    await writeLocalLlmRoutingRecommendationReport(projectDir, report);
+    filesWritten.push(...report.files.map((file) => file.relativePath));
+    appliedActions += safeRouteFeedbackActions.length;
+    notes.push(`Refreshed savings-aware routing recommendations from route feedback for ${safeRouteFeedbackActions.length} learning proposal action(s).`);
+  }
+  if (!safeTuningActions.length && !safeRouteFeedbackActions.length) {
+    notes.push("No safe owned local optimization actions were available to apply.");
   }
   const skippedActions = plan.actions.length - appliedActions;
   if (skippedActions > 0) {
@@ -15272,14 +17320,14 @@ async function applyAutonomousLearningApplicationPlan(projectDir: string, plan: 
 }
 
 function filterAppliedLearningApplicationPlan(plan: LearningApplicationPlan): LearningApplicationPlan {
-  const actions = plan.actions.filter((action) => action.dangerGate === "none" && action.actionType === "apply_tuning_overlay");
+  const actions = plan.actions.filter((action) => action.dangerGate === "none" && ["apply_tuning_overlay", "refresh_routing_recommendations"].includes(action.actionType));
   return {
     ...plan,
     actions,
     selectedIds: actions.map((action) => action.proposalId),
     skippedIds: [],
     summary: actions.length
-      ? [`${actions.length} autonomous local action(s) applied.`]
+      ? [`${actions.length} autonomous owned local optimization action(s) applied.`]
       : ["No autonomous local actions applied."]
   };
 }
@@ -15557,6 +17605,7 @@ async function loadDashboardModelImprovementReport(input: {
   const proposals = buildTuningProposals(scorecard);
   const tuningOverlay = await loadDashboardTuningOverlayStatus(projectDir);
   const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
   const feedbackTargets = await loadDashboardFeedbackTargets(projectRuns);
   const evaluationRunList = projectRuns.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
   const proposalCounts = countStrings(proposals.proposals.map((proposal) => proposal.kind));
@@ -15564,6 +17613,7 @@ async function loadDashboardModelImprovementReport(input: {
   const feedbackNeeded = proposals.proposals.filter((proposal) => proposal.kind === "feedback_needed").length;
   const routingProposals = proposals.proposals.filter((proposal) => proposal.kind === "routing_preference").length;
   const feedbackTotal = Object.values(scorecard.feedbackCounts).reduce((sum, value) => sum + value, 0);
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
   const readiness: string[] = [];
   if (scorecard.runsAnalyzed === 0) {
     readiness.push("Run at least one workflow before diagnosing model improvement.");
@@ -15581,12 +17631,63 @@ async function loadDashboardModelImprovementReport(input: {
     readiness.push("Local evidence is ready for baseline-versus-candidate comparison.");
   }
   const promotionReady = scorecard.runsAnalyzed > 0 && feedbackTotal > 0 && evaluationRunList.length > 0 && highPriorityProposals === 0;
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const localLlmSmokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+  const localLlmSetup = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes: localLlmSmokeOutcomes });
+  const localLlmSetupGuide = await loadLocalLlmSetupGuideReport({ projectDir, checklist: localLlmSetup, approved: false });
+  const localLlmDownloadRecommendations = buildLocalLlmDownloadRecommendationReport({ projectDir, scorecard, checklist: localLlmSetup, setupGuide: localLlmSetupGuide });
+  const localLlmInstallationPlan = buildLocalLlmInstallationPlanReport(projectDir, localLlmDownloadRecommendations, "recommended");
+  const localLlmInventory = await buildLocalLlmInventoryReport(projectDir, localLlmSetupGuide, localLlmDownloadRecommendations, localLlmInstallationPlan, recentRouteReports);
+  const localLlmPrunePlan = buildLocalLlmPrunePlanReport(projectDir, localLlmInventory, "candidates");
+  const localLlmCacheTrends = await buildLocalLlmCacheTrendReport(projectDir, localLlmInventory, localLlmPrunePlan, routeReceiptTrends, false);
+  const localLlmCostLedger = await buildLocalLlmCostLedgerReport(projectDir, routeReceiptTrends, localLlmCacheTrends, false);
+  const routeDecisionFeedback = await readRouteDecisionFeedbackLog(projectDir);
+  const localLlmRoutingRecommendations = buildLocalLlmRoutingRecommendationReport({
+    projectDir,
+    localProviderEvidence,
+    routeReceiptTrends,
+    costLedger: localLlmCostLedger,
+    cacheTrends: localLlmCacheTrends,
+    routeDecisionFeedback
+  });
+  const localLlmRoutingNoteApplication = await loadDashboardLocalLlmRoutingNoteApplicationStatus(projectDir);
+  const localLlmRoutingDecisionTimeline = await buildDashboardLocalLlmRoutingDecisionTimeline({
+    projectDir,
+    recommendations: localLlmRoutingRecommendations,
+    noteApplication: localLlmRoutingNoteApplication,
+    routeReceiptTrends
+  });
+  const localLlmRoutingDecisionSnapshots = await buildLocalLlmRoutingDecisionSnapshotReport(projectDir, localLlmRoutingDecisionTimeline, false);
+  const localLlmBenchmarks = await buildLocalLlmBenchmarkReceiptReport({
+    projectDir,
+    execute: false,
+    timeoutMs: 20000,
+    checklist: localLlmSetup,
+    setupGuide: localLlmSetupGuide,
+    downloads: localLlmDownloadRecommendations
+  });
   return {
     generatedAt: new Date().toISOString(),
     projectDir,
     scorecard,
     proposals,
-    localProviderEvidence: buildDashboardLocalProviderEvidence(scorecard),
+    localProviderEvidence,
+    localHoldoutRouting,
+    routeReceiptTrends,
+    localLlmSetup,
+    localLlmSetupGuide,
+    localLlmDownloadRecommendations,
+    localLlmBenchmarks,
+    localLlmInstallationPlan,
+    localLlmInventory,
+    localLlmPrunePlan,
+    localLlmCacheTrends,
+    localLlmCostLedger,
+    localLlmRoutingRecommendations,
+    localLlmRoutingNoteApplication,
+    localLlmRoutingDecisionTimeline,
+    localLlmRoutingDecisionSnapshots,
     evaluationRuns: evaluationRunList.length,
     latestEvaluationAt: evaluationRunList.map((run) => run.startedAt).sort().at(-1) ?? null,
     proposalCounts,
@@ -15601,6 +17702,8 @@ async function loadDashboardModelImprovementReport(input: {
       `npm run agentflow -- quality-report --run <run-id>`,
       `npm run agentflow -- feedback --run <run-id> --rating accepted|revised|rejected --note "<why>"`,
       `npm run agentflow -- tuning-proposals --project ${shellQuote(projectDir)}`,
+      `npm run agentflow -- local-llm-routing-decision-snapshot --project ${shellQuote(projectDir)} --write`,
+      `npm run agentflow -- local-route-feedback --project ${shellQuote(projectDir)} --workflow build-feature --stage verify --agent auto-test-runner --provider local --tier fast --class local-selected --rating helpful --note "<why>"`,
       `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve quality while reducing cost"`
     ]
   };
@@ -15663,6 +17766,3706 @@ function buildDashboardLocalProviderEvidence(scorecard: PreferenceScorecard): Da
     estimatedAvoidedHostedCalls: localStageCount,
     recommendation
   };
+}
+
+async function loadDashboardLocalHoldoutRoutingStatus(
+  projectDir: string,
+  localEvidence: DashboardLocalProviderEvidence | null = null
+): Promise<DashboardLocalHoldoutRoutingStatus> {
+  const projectRoot = path.resolve(projectDir);
+  const resultsPath = path.join(projectRoot, ".agent-workflow", "model-improvement", "local-holdout-results.json");
+  const promotionPath = path.join(projectRoot, ".agent-workflow", "tuning", "local-routing-threshold.json");
+  const results = await readDashboardJsonFile<Omit<LocalHoldoutResultSummary, "files">>(resultsPath, (value) =>
+    value.kind === "agentflow_local_holdout_results" && isRecord(value.summary) && Array.isArray(value.results)
+  );
+  const promotion = await readDashboardJsonFile<Omit<LocalHoldoutRoutingPromotion, "files">>(promotionPath, (value) =>
+    value.kind === "agentflow_local_holdout_routing_promotion" && (value.status === "ready" || value.status === "blocked")
+  );
+  const promotableSuites = results.value?.results.filter((result) => result.decision === "propose_routing_note").map((result) => result.suiteId) ?? [];
+  const evidenceSuites = promotion.value?.preference?.evidenceSuites ?? [];
+  const thresholdSummary = promotion.value?.preference
+    ? `min suites ${promotion.value.preference.thresholds?.minEvidenceSuites ?? "legacy"}, min quality ${promotion.value.preference.thresholds?.minQualityDelta ?? "legacy"}, max latency ${promotion.value.preference.thresholds?.maxLatencyRegressionMs ?? "legacy"}ms`
+    : null;
+  const evidenceSummary = promotion.value?.preference
+    ? `promotable ${promotion.value.preference.evidence?.promotableSuites ?? evidenceSuites.length}, worst quality ${promotion.value.preference.evidence?.worstQualityDelta ?? "n/a"}, worst latency ${promotion.value.preference.evidence?.worstLatencyDeltaMs ?? "n/a"}ms`
+    : null;
+  const localFallbackRate = localEvidence?.localFallbackRate ?? null;
+  const localStageCount = localEvidence?.localStageCount ?? 0;
+  const hostedStageCount = localEvidence?.hostedStageCount ?? 0;
+  let status: DashboardLocalHoldoutRoutingStatus["status"] = "not-started";
+  let recommendation = "Generate a local holdout comparison plan and capture results before changing routing.";
+  if (results.error || promotion.error) {
+    status = "error";
+    recommendation = results.error ?? promotion.error ?? "Local holdout routing state is unreadable.";
+  } else if (promotion.value?.status === "ready" && promotion.value.approved && promotion.value.preference) {
+    status = localStageCount > 0 ? "active" : "approved";
+    recommendation = localStageCount > 0
+      ? "Approved local routing is active in recent run evidence; watch fallback rate before expanding beyond low-risk stages."
+      : "Approved local routing is ready. Run auto/adaptive low-risk stages to confirm local selection receipts.";
+  } else if (promotion.value?.status === "blocked") {
+    status = "blocked";
+    recommendation = promotion.value.reason;
+  } else if (results.value?.decision === "eligible_for_review") {
+    status = "needs-promotion";
+    recommendation = "Captured holdout results are eligible. Approve low-risk local routing to write the project-local threshold note.";
+  } else if (results.value) {
+    status = "needs-evidence";
+    recommendation = `Captured holdout decision is ${results.value.decision}; run or improve the comparison suites before promotion.`;
+  }
+  return {
+    status,
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRoot,
+    resultsPath: ".agent-workflow/model-improvement/local-holdout-results.json",
+    promotionPath: ".agent-workflow/tuning/local-routing-threshold.json",
+    resultsExists: results.exists,
+    promotionExists: promotion.exists,
+    resultsDecision: results.value?.decision ?? null,
+    promotionStatus: promotion.value?.status ?? null,
+    approved: promotion.value?.approved ?? false,
+    maxRisk: promotion.value?.preference?.maxRisk ?? null,
+    evidenceSuites,
+    thresholdSummary,
+    evidenceSummary,
+    promotableSuites,
+    localStageCount,
+    hostedStageCount,
+    localFallbackRate,
+    hostedFallbackBoundary: "Hosted providers remain the required fallback for high-risk, command, secret, policy, production, network, reusable bundle, and export actions.",
+    recommendation,
+    error: results.error ?? promotion.error
+  };
+}
+
+async function loadCostQualityReportsForDashboardRuns(runs: DashboardRunStatus[]): Promise<CostQualityReport[]> {
+  const reports = await Promise.all(runs.map((run) => loadCostQualityReport(run.id).catch(() => null)));
+  return reports.filter((report): report is CostQualityReport => report !== null);
+}
+
+function buildDashboardRouteReceiptTrends(
+  projectDir: string,
+  reports: CostQualityReport[]
+): DashboardRouteReceiptTrendReport {
+  const localProviderIds = new Set(["local", "byo", "openai-compatible"]);
+  const groups = new Map<string, DashboardRouteReceiptTrendGroup>();
+  let localSelected = 0;
+  let localSkipped = 0;
+  let hostedFallback = 0;
+  let hostedSelected = 0;
+  for (const report of reports) {
+    for (const stage of report.stages) {
+      const classification = classifyDashboardRouteReceipt(stage, localProviderIds);
+      if (classification === "local-selected") localSelected += 1;
+      else if (classification === "local-skipped") localSkipped += 1;
+      else if (classification === "hosted-fallback") hostedFallback += 1;
+      else hostedSelected += 1;
+      const key = [report.workflowId, stage.stageId, stage.agentId, stage.providerId, stage.modelTier, classification].join("|");
+      const group = groups.get(key) ?? {
+        workflowId: report.workflowId,
+        stageId: stage.stageId,
+        agentId: stage.agentId,
+        providerId: stage.providerId,
+        modelTier: stage.modelTier,
+        classification,
+        runs: 0,
+        fallbackCount: 0,
+        latencySamples: 0,
+        qualitySamples: 0,
+        averageLatencyMs: null,
+        averageQuality: null,
+        latestReason: ""
+      };
+      const latencyTotal = (group.averageLatencyMs ?? 0) * group.latencySamples;
+      const qualityTotal = (group.averageQuality ?? 0) * group.qualitySamples;
+      group.runs += 1;
+      group.fallbackCount += stage.fallbackUsed ? 1 : 0;
+      if (stage.latencyMs !== null) {
+        group.latencySamples += 1;
+        group.averageLatencyMs = Math.round((latencyTotal + stage.latencyMs) / group.latencySamples);
+      }
+      if (stage.qualityScore !== null) {
+        group.qualitySamples += 1;
+        group.averageQuality = Math.round(((qualityTotal + stage.qualityScore) / group.qualitySamples) * 1000) / 1000;
+      }
+      group.latestReason = stage.routeReason ?? group.latestReason;
+      groups.set(key, group);
+    }
+  }
+  const totalReceipts = localSelected + localSkipped + hostedFallback + hostedSelected;
+  const topGroups = [...groups.values()].sort((a, b) =>
+    b.runs - a.runs ||
+    b.fallbackCount - a.fallbackCount ||
+    a.workflowId.localeCompare(b.workflowId) ||
+    a.stageId.localeCompare(b.stageId)
+  ).slice(0, 12);
+  return {
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    reportsAnalyzed: reports.length,
+    totalReceipts,
+    localSelected,
+    localSkipped,
+    hostedFallback,
+    hostedSelected,
+    fallbackRate: totalReceipts ? Math.round((hostedFallback / totalReceipts) * 1000) / 1000 : null,
+    localSelectionRate: totalReceipts ? Math.round((localSelected / totalReceipts) * 1000) / 1000 : null,
+    topGroups
+  };
+}
+
+function classifyDashboardRouteReceipt(
+  stage: CostQualityReport["stages"][number],
+  localProviderIds = new Set(["local", "byo", "openai-compatible"])
+): DashboardRouteReceiptTrendGroup["classification"] {
+  const routeReason = stage.routeReason ?? "";
+  const localish = localProviderIds.has(stage.providerId);
+  if (/local-holdout routing preference was present, but local was not ready/i.test(routeReason)) {
+    return "local-skipped";
+  }
+  if (stage.fallbackUsed) {
+    return "hosted-fallback";
+  }
+  if (localish) {
+    return "local-selected";
+  }
+  return "hosted-selected";
+}
+
+function isLocalLlmSmokeRun(run: DashboardRunStatus): boolean {
+  return run.evaluationMetadata?.kind === "local_llm_route_smoke"
+    || (run.workflowId === "provider-smoke" && /local llm route smoke/i.test(run.task));
+}
+
+function buildLocalLlmSmokeOutcomeTrend(
+  projectDir: string,
+  runs: DashboardRunStatus[],
+  reports: CostQualityReport[]
+): LocalLlmSmokeOutcomeTrend {
+  const reportByRunId = new Map(reports.map((report) => [report.runId, report]));
+  const smokeRuns = runs.filter(isLocalLlmSmokeRun);
+  const counts: LocalLlmSmokeOutcomeTrend["counts"] = {
+    "local-selected": 0,
+    "local-skipped": 0,
+    "hosted-fallback": 0,
+    "hosted-selected": 0,
+    missing: 0,
+    failed: 0
+  };
+  const latestOutcomes = smokeRuns.map((run) => {
+    const report = reportByRunId.get(run.id) ?? null;
+    const route = report?.stages[0] ?? null;
+    const routeClass: LocalLlmSmokeOutcome["routeClass"] = route ? classifyDashboardRouteReceipt(route) : "missing";
+    if (run.status === "failed") counts.failed += 1;
+    else counts[routeClass] += 1;
+    return {
+      runId: run.id,
+      startedAt: run.startedAt,
+      finishedAt: run.finishedAt,
+      status: run.status,
+      routeClass,
+      providerId: route?.providerId ?? null,
+      model: route?.model ?? null,
+      modelTier: route?.modelTier ?? null,
+      requestedModelTier: route?.requestedModelTier ?? run.modelTierOverride ?? null,
+      routeReason: route?.routeReason ?? null,
+      qualityScore: route?.qualityScore ?? null,
+      fallbackUsed: route?.fallbackUsed ?? false
+    };
+  });
+  const localSuccesses = latestOutcomes
+    .filter((outcome) => outcome.status === "completed" && outcome.routeClass === "local-selected")
+    .sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+  const latestOutcome = latestOutcomes[0] ?? null;
+  let latestFailureReason: string | null = null;
+  if (latestOutcome) {
+    if (latestOutcome.status === "failed") {
+      latestFailureReason = "Latest local LLM smoke run failed before completing local route verification.";
+    } else if (latestOutcome.routeClass === "local-skipped") {
+      latestFailureReason = "Local routing was requested but the local endpoint or selected model was unavailable.";
+    } else if (latestOutcome.routeClass === "hosted-fallback") {
+      latestFailureReason = `Hosted fallback used after ${latestOutcome.providerId ?? "unknown provider"} route.`;
+    } else if (latestOutcome.routeClass === "hosted-selected") {
+      latestFailureReason = `Hosted provider selected (${latestOutcome.providerId ?? "unknown"}); local did not win this smoke route.`;
+    } else if (latestOutcome.routeClass === "missing") {
+      latestFailureReason = "No model_route receipt was found for the latest smoke run.";
+    }
+  }
+
+  let recommendation = `Run npm run agentflow -- local-llm-smoke --project ${shellQuote(projectDir)} to create first local routing evidence.`;
+  if (latestOutcome?.status === "failed") {
+    recommendation = "Fix the latest smoke failure, then rerun local-llm-smoke to verify the local route.";
+  } else if (latestOutcome?.routeClass === "local-selected") {
+    recommendation = "Local smoke is selecting a local/BYO provider. Keep collecting quality, latency, fallback, and feedback evidence before expanding beyond low-risk stages.";
+  } else if (latestOutcome?.routeClass === "local-skipped") {
+    recommendation = "Start or download a compatible local model, confirm /v1/models lists it, then rerun the low-risk local smoke.";
+  } else if (latestOutcome?.routeClass === "hosted-selected") {
+    recommendation = "Local is not winning the route. Include local in AGENTFLOW_AUTO_PROVIDERS or set DEFAULT_MODEL_PROVIDER=auto/local, then rerun the smoke.";
+  } else if (latestOutcome?.routeClass === "hosted-fallback") {
+    recommendation = "A hosted fallback was used. Check local endpoint reliability, selected model id, and holdout promotion before trusting local for more stages.";
+  } else if (latestOutcome?.routeClass === "missing") {
+    recommendation = "The latest smoke did not leave route evidence. Re-run the smoke and inspect worker/provider logs if it repeats.";
+  }
+
+  return {
+    kind: "agentflow_local_llm_smoke_outcomes",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    runsAnalyzed: runs.length,
+    smokeRuns: smokeRuns.length,
+    counts,
+    firstSuccessAt: localSuccesses[0]?.startedAt ?? null,
+    latestSuccessAt: localSuccesses.at(-1)?.startedAt ?? null,
+    latestSmokeAt: latestOutcome?.startedAt ?? null,
+    latestFailureReason,
+    latestOutcomes: latestOutcomes.slice(0, 8),
+    recommendation
+  };
+}
+
+async function loadLocalLlmSetupChecklistReport(input: {
+  projectDir: string;
+  localHoldoutRouting: DashboardLocalHoldoutRoutingStatus;
+  routeReceiptTrends: DashboardRouteReceiptTrendReport;
+  smokeOutcomes: LocalLlmSmokeOutcomeTrend;
+}): Promise<LocalLlmSetupChecklistReport> {
+  const projectRoot = path.resolve(input.projectDir);
+  const baseUrl = process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434/v1";
+  const model = process.env.LOCAL_MODEL_NAME || "auto";
+  const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(baseUrl, process.env.LOCAL_MODEL_API_KEY));
+  const localStatus = await inspectOpenAICompatibleStatus({
+    providerId: "local",
+    label: "Local model runtime",
+    baseUrl,
+    model,
+    apiKey: process.env.LOCAL_MODEL_API_KEY
+  });
+  const routing = loadRoutingConfig();
+  const selectedTierModels = (localStatus.tierModels ?? []).map((tierModel) => ({
+    tier: parseModelTierOption(tierModel.tier),
+    model: tierModel.model,
+    source: tierModel.source
+  }));
+  const configured = Boolean(process.env.LOCAL_MODEL_BASE_URL || process.env.LOCAL_MODEL_NAME);
+  const autoProviderIds = routing.autoProviders.split(",").map((provider) => normalizeLookup(provider));
+  const canRouteAutomatically = routing.provider === "local"
+    || routing.provider === "auto"
+    || routing.fastProvider === "local"
+    || routing.standardProvider === "local"
+    || autoProviderIds.includes("local");
+  const selectedModelsAvailable = selectedTierModels.length > 0 && selectedTierModels.every((item) => item.source !== "unavailable");
+  const checks: LocalLlmSetupChecklistItem[] = [
+    {
+      id: "local-provider-config",
+      label: "Local provider configured",
+      status: configured ? "pass" : "warning",
+      detail: configured
+        ? `LOCAL_MODEL_BASE_URL=${safeDisplayUrl(baseUrl) ?? "not set"}, LOCAL_MODEL_NAME=${model}.`
+        : "Using the Ollama-compatible localhost default. Set LOCAL_MODEL_BASE_URL or LOCAL_MODEL_NAME to make local setup explicit.",
+      nextAction: "Set LOCAL_MODEL_BASE_URL and LOCAL_MODEL_NAME in .env, or keep the default localhost runtime."
+    },
+    {
+      id: "endpoint-reachable",
+      label: "Endpoint reachable",
+      status: localStatus.status === "ready" ? "pass" : "fail",
+      detail: localStatus.details.join(" "),
+      nextAction: "Start Ollama, LM Studio, vLLM, or another OpenAI-compatible local runtime and confirm /v1/models responds."
+    },
+    {
+      id: "catalog-selection",
+      label: "Selected model catalog entry",
+      status: selectedModelsAvailable ? "pass" : "fail",
+      detail: selectedTierModels.length
+        ? selectedTierModels.map((item) => `${item.tier}=${item.model} (${item.source})`).join(", ")
+        : "No local tier model selection is available from the endpoint catalog.",
+      nextAction: "Use LOCAL_MODEL_NAME=auto with a populated /v1/models catalog, or set LOCAL_MODEL_FAST/STANDARD/REASONING to listed model ids."
+    },
+    {
+      id: "automatic-routing-visible",
+      label: "Automatic routing can see local",
+      status: canRouteAutomatically ? "pass" : "warning",
+      detail: `DEFAULT_MODEL_PROVIDER=${routing.provider}; AGENTFLOW_AUTO_PROVIDERS=${routing.autoProviders}; fast=${routing.fastProvider}; standard=${routing.standardProvider}.`,
+      nextAction: "Use DEFAULT_MODEL_PROVIDER=auto or local, or include local in AGENTFLOW_AUTO_PROVIDERS for adaptive low-risk routing."
+    },
+    {
+      id: "holdout-promotion",
+      label: "Low-risk holdout promotion",
+      status: input.localHoldoutRouting.approved ? "pass" : "warning",
+      detail: input.localHoldoutRouting.recommendation,
+      nextAction: `Run npm run agentflow -- local-holdout-promote --project ${shellQuote(projectRoot)} --approved --write after reviewing holdout evidence.`
+    },
+    {
+      id: "first-route-receipt",
+      label: "First low-risk route receipt",
+      status: input.routeReceiptTrends.localSelected > 0 ? "pass" : "warning",
+      detail: `${input.routeReceiptTrends.localSelected} local-selected, ${input.routeReceiptTrends.localSkipped} local-skipped, ${input.routeReceiptTrends.hostedFallback} hosted-fallback receipts in the inspected window.`,
+      nextAction: `Run a low-risk workflow after local promotion, then inspect npm run agentflow -- local-llm-checklist --project ${shellQuote(projectRoot)}.`
+    }
+  ];
+  const status = checks.some((check) => check.status === "fail")
+    ? "fail"
+    : checks.some((check) => check.status === "warning")
+      ? "warning"
+      : "pass";
+  return {
+    kind: "agentflow_local_llm_setup_checklist",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRoot,
+    status,
+    localProvider: {
+      configured,
+      baseUrl: safeDisplayUrl(baseUrl) ?? baseUrl,
+      model,
+      apiKeyConfigured: Boolean(process.env.LOCAL_MODEL_API_KEY),
+      status: localStatus.status,
+      modelsListed: discovered.models.length,
+      selectedTierModels,
+      details: localStatus.details
+    },
+    routing: {
+      defaultProvider: routing.provider,
+      autoProviders: routing.autoProviders,
+      fastProvider: routing.fastProvider,
+      standardProvider: routing.standardProvider,
+      reasoningProvider: routing.reasoningProvider,
+      localHoldoutStatus: input.localHoldoutRouting.status,
+      localHoldoutApproved: input.localHoldoutRouting.approved,
+      localRouteReceipts: input.routeReceiptTrends.localSelected,
+      localSkippedReceipts: input.routeReceiptTrends.localSkipped,
+      hostedFallbackReceipts: input.routeReceiptTrends.hostedFallback
+    },
+    smokeOutcomes: input.smokeOutcomes,
+    checks,
+    nextCommands: [
+      `npm run agentflow -- provider-use auto --check`,
+      `npm run agentflow -- local-holdout-comparison --project ${shellQuote(projectRoot)} --write`,
+      `npm run agentflow -- local-holdout-results --project ${shellQuote(projectRoot)} --write`,
+      `npm run agentflow -- local-holdout-promote --project ${shellQuote(projectRoot)} --approved --write`,
+      `npm run agentflow -- local-llm-smoke --project ${shellQuote(projectRoot)}`,
+      `npm run agentflow -- local-llm-checklist --project ${shellQuote(projectRoot)}`
+    ]
+  };
+}
+
+function formatLocalLlmSetupChecklistReport(report: LocalLlmSetupChecklistReport): string {
+  return [
+    "Local LLM Setup Checklist",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Endpoint: ${report.localProvider.baseUrl}`,
+    `Model: ${report.localProvider.model}`,
+    `Provider status: ${report.localProvider.status}`,
+    `Models listed: ${report.localProvider.modelsListed}`,
+    `Tier models: ${report.localProvider.selectedTierModels.map((item) => `${item.tier}=${item.model} (${item.source})`).join(", ") || "none"}`,
+    `Routing: default=${report.routing.defaultProvider}, auto=${report.routing.autoProviders}, fast=${report.routing.fastProvider}, standard=${report.routing.standardProvider}`,
+    `Smoke outcomes: ${report.smokeOutcomes.smokeRuns} run(s), first local success=${report.smokeOutcomes.firstSuccessAt ?? "none"}, latest=${report.smokeOutcomes.latestSmokeAt ?? "none"}`,
+    `Latest smoke issue: ${report.smokeOutcomes.latestFailureReason ?? "none"}`,
+    `Smoke recommendation: ${report.smokeOutcomes.recommendation}`,
+    "",
+    "Checks:",
+    ...report.checks.map((check) => `- ${check.status.toUpperCase()} ${check.label}: ${check.detail}\n  Next: ${check.nextAction}`),
+    "",
+    "Next commands:",
+    ...report.nextCommands.map((command) => `- ${command}`)
+  ].join("\n");
+}
+
+async function runLocalLlmRouteSmoke(input: {
+  projectDir: string;
+  timeoutMs: number;
+}): Promise<LocalLlmRouteSmokeResult> {
+  const projectDir = path.resolve(input.projectDir);
+  const serviceChecks = await checkServices();
+  const missingServices = serviceChecks.filter((check) => !check.reachable && check.endpoint.requiredFor === "enterprise");
+  if (missingServices.length) {
+    const checklist = await emptyLocalLlmSetupChecklistForFailure(projectDir, `Missing storage service: ${missingServices.map((check) => check.endpoint.name).join(", ")}`);
+    return {
+      kind: "agentflow_local_llm_route_smoke",
+      generatedAt: new Date().toISOString(),
+      projectRootUri: projectDir,
+      status: "failed",
+      runId: null,
+      workflowId: "provider-smoke",
+      routeClass: "missing",
+      route: null,
+      checklist,
+      summary: "Storage services are not reachable, so the smoke run was not queued.",
+      nextAction: "Run npm run doctor, start the configured storage services, then retry local-llm-smoke.",
+      exportMarkdownPath: null,
+      exportJsonPath: null
+    };
+  }
+
+  const queued = await queueWorkflow({
+    workflowId: "provider-smoke",
+    projectPath: projectDir,
+    task: "Run a low-risk local LLM route smoke. Return concise structured output only. Do not request commands or file writes.",
+    modelTierOverride: "fast",
+    sourceTokenBudget: "1200",
+    sourceMaxFiles: "8",
+    evaluationMetadata: {
+      kind: "local_llm_route_smoke",
+      purpose: "Generate route receipt evidence for local LLM setup checklist.",
+      requestedTier: "fast",
+      createdFrom: "local-llm-checklist"
+    }
+  });
+  if (!queued.ok) {
+    const checklist = await emptyLocalLlmSetupChecklistForFailure(projectDir, queued.error);
+    return {
+      kind: "agentflow_local_llm_route_smoke",
+      generatedAt: new Date().toISOString(),
+      projectRootUri: projectDir,
+      status: "failed",
+      runId: null,
+      workflowId: "provider-smoke",
+      routeClass: "missing",
+      route: null,
+      checklist,
+      summary: "The smoke run could not be queued.",
+      nextAction: queued.error,
+      exportMarkdownPath: null,
+      exportJsonPath: null
+    };
+  }
+
+  const watchResult = await watchWorkflowRun({
+    runId: queued.run.runId,
+    workerLimit: 1,
+    workerConcurrency: 1,
+    projectRootUri: queued.projectDir,
+    intervalMs: 1000,
+    timeoutMs: input.timeoutMs
+  });
+  const exportResult = await exportWorkflowRun({
+    runId: queued.run.runId,
+    outDir: path.join(projectDir, ".agent-workflow", "exports")
+  });
+  const quality = await loadCostQualityReport(queued.run.runId);
+  const route = quality?.stages[0] ?? null;
+  const routeClass = route ? classifyDashboardRouteReceipt(route) : "missing";
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit: 50 });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+  const checklist = await loadLocalLlmSetupChecklistReport({
+    projectDir,
+    localHoldoutRouting,
+    routeReceiptTrends,
+    smokeOutcomes
+  });
+  const completed = watchResult.status === "completed";
+  const nextAction = routeClass === "local-selected"
+    ? "Local route receipt exists. Continue monitoring quality, fallback, latency, and feedback before expanding local routing."
+    : routeClass === "local-skipped"
+      ? "Local routing was requested but the endpoint was not ready. Start the local runtime and rerun the smoke."
+      : "The smoke completed without selecting local. Check DEFAULT_MODEL_PROVIDER, AGENTFLOW_AUTO_PROVIDERS, and low-risk holdout promotion.";
+  return {
+    kind: "agentflow_local_llm_route_smoke",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    status: completed ? "completed" : "failed",
+    runId: queued.run.runId,
+    workflowId: "provider-smoke",
+    routeClass,
+    route,
+    checklist,
+    summary: completed
+      ? `Smoke run completed with route class ${routeClass}.`
+      : `Smoke run ended with status ${watchResult.status}.`,
+    nextAction,
+    exportMarkdownPath: exportResult.ok ? exportResult.markdownPath : null,
+    exportJsonPath: exportResult.ok ? exportResult.jsonPath : null
+  };
+}
+
+async function emptyLocalLlmSetupChecklistForFailure(projectDir: string, reason: string): Promise<LocalLlmSetupChecklistReport> {
+  const emptyHoldout: DashboardLocalHoldoutRoutingStatus = {
+    status: "error",
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectDir,
+    resultsPath: ".agent-workflow/model-improvement/local-holdout-results.json",
+    promotionPath: ".agent-workflow/tuning/local-routing-threshold.json",
+    resultsExists: false,
+    promotionExists: false,
+    resultsDecision: null,
+    promotionStatus: null,
+    approved: false,
+    maxRisk: null,
+    evidenceSuites: [],
+    thresholdSummary: null,
+    evidenceSummary: null,
+    promotableSuites: [],
+    localStageCount: 0,
+    hostedStageCount: 0,
+    localFallbackRate: null,
+    hostedFallbackBoundary: "Hosted providers remain the required fallback for high-risk, command, secret, policy, production, network, reusable bundle, and export actions.",
+    recommendation: reason,
+    error: reason
+  };
+  return loadLocalLlmSetupChecklistReport({
+    projectDir,
+    localHoldoutRouting: emptyHoldout,
+    routeReceiptTrends: buildDashboardRouteReceiptTrends(projectDir, []),
+    smokeOutcomes: buildLocalLlmSmokeOutcomeTrend(projectDir, [], [])
+  });
+}
+
+function formatLocalLlmRouteSmokeResult(result: LocalLlmRouteSmokeResult): string {
+  return [
+    "Local LLM Route Smoke",
+    `Project: ${result.projectRootUri}`,
+    `Status: ${result.status}`,
+    `Run: ${result.runId ?? "not queued"}`,
+    `Route class: ${result.routeClass}`,
+    result.route ? `Provider/tier: ${result.route.providerId}/${result.route.modelTier}` : "",
+    result.route ? `Route reason: ${result.route.routeReason}` : "",
+    result.exportMarkdownPath ? `Exported Markdown: ${result.exportMarkdownPath}` : "",
+    result.exportJsonPath ? `Exported JSON: ${result.exportJsonPath}` : "",
+    `Summary: ${result.summary}`,
+    `Next: ${result.nextAction}`,
+    "",
+    formatLocalLlmSetupChecklistReport(result.checklist)
+  ].filter(Boolean).join("\n");
+}
+
+async function loadLocalLlmSetupGuideReport(input: {
+  projectDir: string;
+  checklist: LocalLlmSetupChecklistReport;
+  approved: boolean;
+}): Promise<LocalLlmSetupGuideReport> {
+  const projectDir = path.resolve(input.projectDir);
+  const generatedAt = new Date().toISOString();
+  const runtimes = await detectLocalLlmRuntimeCandidates();
+  const readyRuntime = runtimes.find((runtime) => runtime.status === "ready") ?? null;
+  const routingVisible = input.checklist.checks.find((check) => check.id === "automatic-routing-visible")?.status === "pass";
+  const tierModelsReady = input.checklist.localProvider.selectedTierModels.length > 0
+    && input.checklist.localProvider.selectedTierModels.every((item) => item.source !== "unavailable");
+  const hasTrueLocalSmoke = input.checklist.smokeOutcomes.counts["local-selected"] > 0;
+  const routingNoteEligible = Boolean(
+    readyRuntime
+      && input.checklist.localProvider.status === "ready"
+      && tierModelsReady
+      && routingVisible
+      && hasTrueLocalSmoke
+  );
+  const blockers = [
+    readyRuntime ? "" : "No local OpenAI-compatible runtime responded with a model catalog.",
+    input.checklist.localProvider.status === "ready" ? "" : "The configured local provider endpoint is not ready.",
+    tierModelsReady ? "" : "Selected local tier models are unavailable.",
+    routingVisible ? "" : "Automatic routing cannot currently see the local provider.",
+    hasTrueLocalSmoke ? "" : "No low-risk smoke run has produced a true local-selected route receipt.",
+    input.approved ? "" : "Owner approval is required before writing the routing note."
+  ].filter(Boolean);
+  const status: LocalLlmSetupGuideReport["status"] = routingNoteEligible && input.approved ? "ready" : "blocked";
+  const recommendation = routingNoteEligible
+    ? input.approved
+      ? "Write the project-local setup report and healthy local routing note, then continue monitoring fallback and quality before expanding beyond low-risk stages."
+      : "Checklist evidence is healthy. Re-run with --approved --write, or use the dashboard approval action, to write the project-local routing note."
+    : readyRuntime
+      ? "A local runtime was detected, but the checklist is not healthy yet. Fix the blockers, rerun local-llm-smoke, then regenerate this guide."
+      : "Start Ollama, LM Studio, vLLM, llama.cpp, or another OpenAI-compatible local runtime, download a coding-capable model, and rerun the checklist.";
+  const document = {
+    kind: "agentflow_local_llm_setup_guide" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    approved: input.approved,
+    status,
+    routingNoteEligible,
+    recommendedRuntime: readyRuntime,
+    blockers,
+    runtimes,
+    checklistStatus: input.checklist.status,
+    firstLocalSmokeSuccessAt: input.checklist.smokeOutcomes.firstSuccessAt,
+    latestSmokeIssue: input.checklist.smokeOutcomes.latestFailureReason,
+    recommendation
+  };
+  const setupFiles: LocalLlmSetupGuideReport["files"] = [
+    {
+      relativePath: ".agent-workflow/model-improvement/local-llm-setup-guide.md",
+      content: formatLocalLlmSetupGuideMarkdown(document)
+    },
+    {
+      relativePath: ".agent-workflow/model-improvement/local-llm-setup-guide.json",
+      content: `${JSON.stringify(document, null, 2)}\n`
+    }
+  ];
+  const routingFiles: LocalLlmSetupGuideReport["files"] = status === "ready" && readyRuntime
+    ? [
+      {
+        relativePath: ".agent-workflow/tuning/local-model-routing-note.md",
+        content: formatLocalLlmSetupRoutingNoteMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/local-model-routing-note.json",
+        content: `${JSON.stringify({
+          kind: "agentflow_local_model_routing_note",
+          generatedAt,
+          projectRootUri: projectDir,
+          approved: true,
+          provider: "local",
+          baseUrl: readyRuntime.baseUrl,
+          models: readyRuntime.models,
+          maxRisk: "low",
+          evidence: {
+            firstLocalSmokeSuccessAt: document.firstLocalSmokeSuccessAt,
+            latestSmokeIssue: document.latestSmokeIssue,
+            checklistStatus: document.checklistStatus
+          },
+          rollback: "Remove .agent-workflow/tuning/local-model-routing-note.* and rerun local-llm-checklist before changing provider settings."
+        }, null, 2)}\n`
+      }
+    ]
+    : [];
+  return {
+    ...document,
+    files: [...setupFiles, ...routingFiles]
+  };
+}
+
+async function detectLocalLlmRuntimeCandidates(): Promise<LocalLlmRuntimeProbe[]> {
+  const configuredUrl = process.env.LOCAL_MODEL_BASE_URL;
+  const candidates = [
+    configuredUrl ? { id: "configured-local", label: "Configured LOCAL_MODEL_BASE_URL", baseUrl: configuredUrl, commandHint: "Use the runtime already configured in .env." } : null,
+    { id: "ollama", label: "Ollama", baseUrl: "http://localhost:11434/v1", commandHint: "ollama serve; ollama pull qwen2.5-coder:7b" },
+    { id: "lm-studio", label: "LM Studio", baseUrl: "http://localhost:1234/v1", commandHint: "Open LM Studio, load a model, and start the Local Server." },
+    { id: "vllm", label: "vLLM", baseUrl: "http://localhost:8000/v1", commandHint: "python -m vllm.entrypoints.openai.api_server --model <model>" },
+    { id: "llama-cpp", label: "llama.cpp server", baseUrl: "http://localhost:8080/v1", commandHint: "llama-server --model <model.gguf> --port 8080" }
+  ].filter((candidate): candidate is { id: string; label: string; baseUrl: string; commandHint: string } => Boolean(candidate));
+  const seen = new Set<string>();
+  const uniqueCandidates = candidates.filter((candidate) => {
+    const key = candidate.baseUrl.replace(/\/+$/u, "");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return Promise.all(uniqueCandidates.map(async (candidate) => {
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(candidate.baseUrl, process.env.LOCAL_MODEL_API_KEY));
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "compatible",
+      baseModel: process.env.LOCAL_MODEL_NAME || "auto",
+      tierEnvPrefix: "LOCAL_MODEL"
+    }).map((item) => ({
+      tier: parseModelTierOption(item.tier),
+      model: item.model,
+      source: item.source
+    }));
+    return {
+      ...candidate,
+      status: discovered.models.length > 0 ? "ready" : discovered.error ? "missing" : "empty",
+      models: discovered.models.slice(0, 20),
+      modelCount: discovered.models.length,
+      selectedTierModels: tierModels,
+      detail: discovered.error
+        ? `Model list check failed: ${discovered.error}`
+        : discovered.models.length
+          ? `${discovered.models.length} model(s) listed.`
+          : "Endpoint responded but listed no models.",
+      nextAction: discovered.models.length
+        ? "Use this endpoint with LOCAL_MODEL_BASE_URL and LOCAL_MODEL_NAME=auto, then run local-llm-smoke."
+        : candidate.commandHint
+    };
+  }));
+}
+
+function formatLocalLlmSetupGuideReport(report: LocalLlmSetupGuideReport): string {
+  return [
+    "Local LLM Setup Guide",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Approved: ${report.approved ? "yes" : "no"}`,
+    `Routing note eligible: ${report.routingNoteEligible ? "yes" : "no"}`,
+    `Recommended runtime: ${report.recommendedRuntime ? `${report.recommendedRuntime.label} ${report.recommendedRuntime.baseUrl}` : "none"}`,
+    `Recommendation: ${report.recommendation}`,
+    "",
+    "Blockers:",
+    ...(report.blockers.length ? report.blockers.map((blocker) => `- ${blocker}`) : ["- none"]),
+    "",
+    "Detected runtimes:",
+    ...report.runtimes.map((runtime) => `- ${runtime.label}: ${runtime.status} at ${runtime.baseUrl} (${runtime.modelCount} models). Next: ${runtime.nextAction}`),
+    "",
+    "Files:",
+    ...(report.files.length ? report.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`) : ["- none"])
+  ].join("\n");
+}
+
+function formatLocalLlmSetupGuideMarkdown(report: Omit<LocalLlmSetupGuideReport, "files">): string {
+  const runtimeRows = report.runtimes.map((runtime) =>
+    `| ${runtime.label} | ${runtime.status} | ${runtime.baseUrl} | ${runtime.modelCount} | ${runtime.models.slice(0, 5).join(", ") || "none"} | ${runtime.nextAction} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Setup Guide",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Approved: ${report.approved ? "yes" : "no"}`,
+    "",
+    "This project-local guide records detected local OpenAI-compatible runtimes and setup evidence. It does not edit `.env`, shared workflows, reusable agents, provider settings, or project source.",
+    "",
+    "## Recommendation",
+    "",
+    report.recommendation,
+    "",
+    "## Evidence",
+    "",
+    `- Checklist status: ${report.checklistStatus}`,
+    `- Routing note eligible: ${report.routingNoteEligible ? "yes" : "no"}`,
+    `- First local smoke success: ${report.firstLocalSmokeSuccessAt ?? "none"}`,
+    `- Latest smoke issue: ${report.latestSmokeIssue ?? "none"}`,
+    "",
+    "## Blockers",
+    "",
+    ...(report.blockers.length ? report.blockers.map((blocker) => `- ${blocker}`) : ["- none"]),
+    "",
+    "## Runtime Probes",
+    "",
+    "| Runtime | Status | Base URL | Models | Sample Models | Next Action |",
+    "| --- | --- | --- | ---: | --- | --- |",
+    runtimeRows || "| none | missing | n/a | 0 | none | Start a local runtime. |",
+    ""
+  ].join("\n");
+}
+
+function formatLocalLlmSetupRoutingNoteMarkdown(report: Omit<LocalLlmSetupGuideReport, "files">): string {
+  const runtime = report.recommendedRuntime;
+  return [
+    "# Agent Workflow Local Model Routing Note",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    "",
+    "## Approved Local Routing",
+    "",
+    "- Provider: local",
+    "- Max risk: low",
+    "- Scope: low-risk developer stages with hosted fallback preserved",
+    runtime ? `- Base URL: ${runtime.baseUrl}` : "",
+    runtime ? `- Model count: ${runtime.modelCount}` : "",
+    `- First local smoke success: ${report.firstLocalSmokeSuccessAt ?? "none"}`,
+    `- Latest smoke issue: ${report.latestSmokeIssue ?? "none"}`,
+    "",
+    "Only use this note after the local setup checklist is healthy. Keep hosted providers for high-risk work, command approval, secrets, production actions, reusable bundle changes, and policy decisions.",
+    ""
+  ].filter(Boolean).join("\n");
+}
+
+async function writeLocalLlmSetupGuideReport(projectDir: string, report: LocalLlmSetupGuideReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    const allowed = file.relativePath.startsWith(".agent-workflow/model-improvement/")
+      || file.relativePath.startsWith(".agent-workflow/tuning/");
+    if (!allowed) {
+      throw new Error(`Refusing to write local LLM setup guide outside Agent Workflow project-local paths: ${file.relativePath}`);
+    }
+    if (file.relativePath.startsWith(".agent-workflow/tuning/") && report.status !== "ready") {
+      throw new Error(`Refusing to write local LLM routing note before setup evidence is healthy: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM setup guide outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+function buildLocalLlmDownloadRecommendationReport(input: {
+  projectDir: string;
+  scorecard: PreferenceScorecard;
+  checklist: LocalLlmSetupChecklistReport;
+  setupGuide: LocalLlmSetupGuideReport;
+}): LocalLlmDownloadRecommendationReport {
+  const generatedAt = new Date().toISOString();
+  const memoryGb = Math.round((os.totalmem() / 1024 / 1024 / 1024) * 10) / 10;
+  const cpuCount = os.cpus().length;
+  const hardwareClass: LocalLlmDownloadRecommendationReport["hardware"]["class"] = memoryGb >= 48
+    ? "large"
+    : memoryGb >= 24
+      ? "medium"
+      : "small";
+  const taskMix = buildLocalLlmTaskMix(input.scorecard);
+  const readyRuntime = input.setupGuide.recommendedRuntime
+    ?? input.setupGuide.runtimes.find((runtime) => runtime.status === "ready")
+    ?? null;
+  const runtimeId = readyRuntime?.id ?? "ollama";
+  const runtimeLabel = readyRuntime?.label ?? "Ollama";
+  const installedModels = new Set((readyRuntime?.models ?? []).map((model) => model.toLowerCase()));
+  const candidates = localModelCandidateCatalog(hardwareClass, taskMix);
+  const recommendations = candidates.map((candidate, index): LocalLlmDownloadRecommendation => {
+    const installed = candidate.aliases.some((alias) => installedModels.has(alias.toLowerCase()));
+    const downloadCommand = localModelDownloadCommand(runtimeId, candidate.modelId);
+    const configEnv = [
+      `LOCAL_MODEL_${candidate.primaryTier.toUpperCase()}=${candidate.modelId}`,
+      "LOCAL_MODEL_NAME=auto",
+      readyRuntime ? `LOCAL_MODEL_BASE_URL=${readyRuntime.baseUrl}` : "LOCAL_MODEL_BASE_URL=http://localhost:11434/v1"
+    ];
+    return {
+      id: `local-model-${index + 1}`,
+      priority: index === 0 ? "high" : index <= 2 ? "medium" : "low",
+      modelId: candidate.modelId,
+      label: candidate.label,
+      runtime: runtimeLabel,
+      tierFit: candidate.tierFit,
+      primaryTier: candidate.primaryTier,
+      hardwareFit: candidate.hardwareFit,
+      installed,
+      downloadCommand,
+      configEnv,
+      rationale: [
+        candidate.reason,
+        taskMix.dominantTier === candidate.primaryTier
+          ? `Matches the current dominant task tier (${taskMix.dominantTier}).`
+          : `Complements the current dominant task tier (${taskMix.dominantTier}).`,
+        installed ? "Already appears in the detected runtime catalog." : "Not detected in the current local runtime catalog."
+      ]
+    };
+  });
+  const recommended = recommendations.find((item) => item.installed) ?? recommendations[0] ?? null;
+  const status: LocalLlmDownloadRecommendationReport["status"] = readyRuntime
+    ? recommendations.some((item) => item.installed) ? "ready" : "download-needed"
+    : "runtime-needed";
+  const nextAction = status === "ready"
+    ? `Run npm run agentflow -- local-llm-smoke --project ${shellQuote(input.projectDir)} to verify local route selection.`
+    : status === "download-needed" && recommended
+      ? `${recommended.downloadCommand}; then run npm run agentflow -- local-llm-checklist --project ${shellQuote(input.projectDir)}.`
+      : "Start Ollama, LM Studio, vLLM, or llama.cpp server, then rerun local-llm-download-recommendations.";
+  const document = {
+    kind: "agentflow_local_llm_download_recommendations" as const,
+    generatedAt,
+    projectRootUri: input.projectDir,
+    status,
+    hardware: {
+      platform: process.platform,
+      arch: process.arch,
+      cpuCount,
+      memoryGb,
+      class: hardwareClass
+    },
+    taskMix,
+    runtime: readyRuntime ? {
+      id: readyRuntime.id,
+      label: readyRuntime.label,
+      baseUrl: readyRuntime.baseUrl,
+      modelCount: readyRuntime.modelCount
+    } : null,
+    checklistStatus: input.checklist.status,
+    firstLocalSmokeSuccessAt: input.checklist.smokeOutcomes.firstSuccessAt,
+    latestSmokeIssue: input.checklist.smokeOutcomes.latestFailureReason,
+    recommendedModelId: recommended?.modelId ?? null,
+    recommendations,
+    nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-download-recommendations.md",
+        content: formatLocalLlmDownloadRecommendationMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-download-recommendations.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function buildLocalLlmTaskMix(scorecard: PreferenceScorecard): LocalLlmDownloadRecommendationReport["taskMix"] {
+  const tierCounts = countStrings(scorecard.groups.flatMap((group) => Array.from({ length: Math.max(0, group.runs) }, () => group.modelTier)));
+  const workflowCounts = countStrings(scorecard.groups.flatMap((group) => Array.from({ length: Math.max(0, group.runs) }, () => group.workflowId)));
+  const dominantTier = (Object.entries(tierCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "fast") as ModelTier;
+  const topWorkflows = Object.entries(workflowCounts)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 5)
+    .map(([workflowId, runs]) => ({ workflowId, runs }));
+  return {
+    runsAnalyzed: scorecard.runsAnalyzed,
+    dominantTier: parseModelTierOption(dominantTier),
+    tierCounts,
+    topWorkflows,
+    costSavingsGoal: scorecard.groups.some((group) => group.modelTier === "fast" || group.modelTier === "standard")
+      ? "Move low-risk fast and standard developer stages to local first, with hosted fallback preserved."
+      : "Start with low-risk summarization and triage before attempting reasoning-heavy local routes."
+  };
+}
+
+function localModelCandidateCatalog(
+  hardwareClass: LocalLlmDownloadRecommendationReport["hardware"]["class"],
+  taskMix: LocalLlmDownloadRecommendationReport["taskMix"]
+): Array<{
+  modelId: string;
+  aliases: string[];
+  label: string;
+  primaryTier: ModelTier;
+  tierFit: ModelTier[];
+  hardwareFit: "excellent" | "good" | "stretch" | "hosted-fallback";
+  reason: string;
+}> {
+  const base = [
+    {
+      modelId: "qwen2.5-coder:7b",
+      aliases: ["qwen2.5-coder:7b", "qwen2.5-coder"],
+      label: "Coding starter",
+      primaryTier: "fast" as const,
+      tierFit: ["fast", "standard"] as ModelTier[],
+      hardwareFit: "excellent" as const,
+      reason: "Good first local coding model for low-risk implementation review, summarization, and small patch planning."
+    },
+    {
+      modelId: "llama3.1:8b",
+      aliases: ["llama3.1:8b", "llama3.1"],
+      label: "General developer assistant",
+      primaryTier: "fast" as const,
+      tierFit: ["fast"] as ModelTier[],
+      hardwareFit: "excellent" as const,
+      reason: "Useful general-purpose local model for triage, summaries, docs, and routine developer workflow steps."
+    }
+  ];
+  const medium = hardwareClass === "small" ? [] : [
+    {
+      modelId: "qwen2.5-coder:14b",
+      aliases: ["qwen2.5-coder:14b"],
+      label: "Coding standard",
+      primaryTier: "standard" as const,
+      tierFit: ["standard"] as ModelTier[],
+      hardwareFit: hardwareClass === "large" ? "excellent" as const : "good" as const,
+      reason: "Better fit for larger code context, refactor planning, and stronger local standard-tier developer work."
+    },
+    {
+      modelId: "deepseek-r1:14b",
+      aliases: ["deepseek-r1:14b"],
+      label: "Local reasoning starter",
+      primaryTier: "reasoning" as const,
+      tierFit: ["reasoning"] as ModelTier[],
+      hardwareFit: hardwareClass === "large" ? "good" as const : "stretch" as const,
+      reason: "Candidate for local reasoning experiments, but keep hosted fallback for high-risk decisions."
+    }
+  ];
+  const large = hardwareClass === "large" ? [
+    {
+      modelId: "qwen2.5-coder:32b",
+      aliases: ["qwen2.5-coder:32b"],
+      label: "Large coding candidate",
+      primaryTier: "reasoning" as const,
+      tierFit: ["standard", "reasoning"] as ModelTier[],
+      hardwareFit: "good" as const,
+      reason: "Stronger local candidate for bigger coding tasks when memory is available, still gated by eval evidence."
+    }
+  ] : [];
+  const candidates = [...base, ...medium, ...large];
+  return candidates.sort((a, b) => {
+    const tierBoost = (item: typeof candidates[number]) => item.primaryTier === taskMix.dominantTier ? 2 : item.tierFit.includes(taskMix.dominantTier) ? 1 : 0;
+    return tierBoost(b) - tierBoost(a);
+  });
+}
+
+function localModelDownloadCommand(runtimeId: string, modelId: string): string {
+  if (runtimeId === "ollama" || runtimeId === "configured-local") {
+    return `ollama pull ${modelId}`;
+  }
+  if (runtimeId === "lm-studio") {
+    return `Open LM Studio and search for ${modelId}`;
+  }
+  if (runtimeId === "vllm") {
+    return `Download a compatible ${modelId} checkpoint, then start vLLM with its model path.`;
+  }
+  if (runtimeId === "llama-cpp") {
+    return `Download a compatible GGUF for ${modelId}, then start llama-server with that file.`;
+  }
+  return `Download ${modelId} in your local OpenAI-compatible runtime.`;
+}
+
+function formatLocalLlmDownloadRecommendationReport(report: LocalLlmDownloadRecommendationReport): string {
+  return [
+    "Local LLM Download Recommendations",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Hardware: ${report.hardware.class} (${report.hardware.memoryGb} GB RAM, ${report.hardware.cpuCount} CPU cores, ${report.hardware.platform}/${report.hardware.arch})`,
+    `Task mix: dominant=${report.taskMix.dominantTier}, runs=${report.taskMix.runsAnalyzed}`,
+    `Recommended model: ${report.recommendedModelId ?? "none"}`,
+    `Next: ${report.nextAction}`,
+    "",
+    ...report.recommendations.map((item) => [
+      `- ${item.modelId} (${item.priority}, ${item.primaryTier}, ${item.hardwareFit})`,
+      `  installed: ${item.installed ? "yes" : "no"}`,
+      `  command: ${item.downloadCommand}`,
+      `  why: ${item.rationale.join(" ")}`
+    ].join("\n"))
+  ].join("\n");
+}
+
+function formatLocalLlmDownloadRecommendationMarkdown(report: Omit<LocalLlmDownloadRecommendationReport, "files">): string {
+  const rows = report.recommendations.map((item) =>
+    `| ${item.priority} | ${item.modelId} | ${item.primaryTier} | ${item.hardwareFit} | ${item.installed ? "yes" : "no"} | \`${item.downloadCommand}\` | ${item.rationale.join(" ")} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Download Recommendations",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This project-local report recommends local model downloads from hardware, detected runtime catalog, task mix, quality history, and local smoke evidence. It does not install models, edit `.env`, modify provider settings, or change shared workflows.",
+    "",
+    "## Hardware",
+    "",
+    `- Platform: ${report.hardware.platform}/${report.hardware.arch}`,
+    `- CPU cores: ${report.hardware.cpuCount}`,
+    `- Memory: ${report.hardware.memoryGb} GB`,
+    `- Class: ${report.hardware.class}`,
+    "",
+    "## Task Mix",
+    "",
+    `- Runs analyzed: ${report.taskMix.runsAnalyzed}`,
+    `- Dominant tier: ${report.taskMix.dominantTier}`,
+    `- Cost-savings goal: ${report.taskMix.costSavingsGoal}`,
+    "",
+    "## Evidence",
+    "",
+    `- Runtime: ${report.runtime ? `${report.runtime.label} at ${report.runtime.baseUrl}` : "none detected"}`,
+    `- Checklist status: ${report.checklistStatus}`,
+    `- First local smoke success: ${report.firstLocalSmokeSuccessAt ?? "none"}`,
+    `- Latest smoke issue: ${report.latestSmokeIssue ?? "none"}`,
+    "",
+    "## Recommendations",
+    "",
+    "| Priority | Model | Tier | Hardware Fit | Installed | Download | Rationale |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | n/a | n/a | n/a | no | n/a | Start a local OpenAI-compatible runtime first. |",
+    "",
+    "## Next Action",
+    "",
+    report.nextAction,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmDownloadRecommendationReport(projectDir: string, report: LocalLlmDownloadRecommendationReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM download recommendations outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM download recommendations outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function loadLocalLlmBenchmarkReceiptReport(input: {
+  projectDir: string;
+  limit: number;
+  execute: boolean;
+  timeoutMs: number;
+}): Promise<LocalLlmBenchmarkReceiptReport> {
+  const scorecard = await loadPreferenceScorecard({ projectDir: input.projectDir, limit: input.limit });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: input.projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(input.projectDir, localProviderEvidence);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(input.projectDir, recentRouteReports);
+  const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(input.projectDir, projectRuns, recentRouteReports);
+  const checklist = await loadLocalLlmSetupChecklistReport({ projectDir: input.projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+  const setupGuide = await loadLocalLlmSetupGuideReport({ projectDir: input.projectDir, checklist, approved: false });
+  const downloads = buildLocalLlmDownloadRecommendationReport({ projectDir: input.projectDir, scorecard, checklist, setupGuide });
+  return buildLocalLlmBenchmarkReceiptReport({
+    projectDir: input.projectDir,
+    execute: input.execute,
+    timeoutMs: input.timeoutMs,
+    checklist,
+    setupGuide,
+    downloads
+  });
+}
+
+async function buildLocalLlmBenchmarkReceiptReport(input: {
+  projectDir: string;
+  execute: boolean;
+  timeoutMs: number;
+  checklist: LocalLlmSetupChecklistReport;
+  setupGuide: LocalLlmSetupGuideReport;
+  downloads: LocalLlmDownloadRecommendationReport;
+}): Promise<LocalLlmBenchmarkReceiptReport> {
+  const generatedAt = new Date().toISOString();
+  const runtime = input.setupGuide.recommendedRuntime
+    ?? input.setupGuide.runtimes.find((item) => item.status === "ready")
+    ?? null;
+  const installed = input.downloads.recommendations.filter((candidate) => candidate.installed);
+  const fallbackPlan = input.downloads.recommendations.slice(0, 2);
+  const candidates = (installed.length ? installed : fallbackPlan).slice(0, 3);
+  const benchmarkTasks = localLlmBenchmarkTasks();
+  const receipts: LocalLlmBenchmarkReceipt[] = [];
+  for (const candidate of candidates) {
+    for (const task of benchmarkTasks) {
+      const startedAt = new Date().toISOString();
+      const executable = Boolean(input.execute && runtime && candidate.installed);
+      if (!executable) {
+        receipts.push({
+          id: `bench-${String(receipts.length + 1).padStart(3, "0")}`,
+          generatedAt,
+          startedAt,
+          finishedAt: null,
+          status: input.execute ? "skipped" : "planned",
+          modelId: candidate.modelId,
+          runtime: runtime ? { id: runtime.id, label: runtime.label, baseUrl: runtime.baseUrl } : null,
+          taskId: task.id,
+          taskLabel: task.label,
+          latencyMs: null,
+          outputChars: null,
+          rubricScore: null,
+          verdict: "needs-runtime",
+          evidence: executable ? [] : [
+            runtime ? "Candidate model was not detected in the local runtime catalog." : "No ready local OpenAI-compatible runtime was detected.",
+            "Use --execute only after the runtime is running and /v1/models lists the candidate."
+          ],
+          error: null
+        });
+        continue;
+      }
+      const activeRuntime = runtime!;
+      const result = await executeLocalLlmBenchmarkPrompt(activeRuntime, candidate.modelId, task.prompt, input.timeoutMs);
+      receipts.push({
+        id: `bench-${String(receipts.length + 1).padStart(3, "0")}`,
+        generatedAt,
+        startedAt,
+        finishedAt: new Date().toISOString(),
+        status: result.ok ? "completed" : "failed",
+        modelId: candidate.modelId,
+        runtime: { id: activeRuntime.id, label: activeRuntime.label, baseUrl: activeRuntime.baseUrl },
+        taskId: task.id,
+        taskLabel: task.label,
+        latencyMs: result.latencyMs,
+        outputChars: result.output?.length ?? null,
+        rubricScore: result.ok ? scoreLocalLlmBenchmarkOutput(task, result.output ?? "") : null,
+        verdict: result.ok ? "measured" : "failed",
+        evidence: result.ok
+          ? [`Completed tiny ${task.label} benchmark locally.`, `Output sample: ${truncateText(result.output ?? "", 120)}`]
+          : [],
+        error: result.error
+      });
+    }
+  }
+  const completed = receipts.filter((receipt) => receipt.status === "completed");
+  const averageLatencyMs = completed.length
+    ? Math.round(completed.reduce((sum, receipt) => sum + (receipt.latencyMs ?? 0), 0) / completed.length)
+    : null;
+  const averageRubricScore = completed.length
+    ? Number((completed.reduce((sum, receipt) => sum + (receipt.rubricScore ?? 0), 0) / completed.length).toFixed(2))
+    : null;
+  const status: LocalLlmBenchmarkReceiptReport["status"] = !runtime
+    ? "runtime-needed"
+    : !installed.length
+      ? "no-installed-models"
+      : input.execute
+        ? completed.length === receipts.length ? "completed" : "partial"
+        : "planned";
+  const nextAction = status === "completed"
+    ? "Use these receipts as local promotion evidence before expanding local routing."
+    : status === "planned"
+      ? `Run npm run agentflow -- local-llm-benchmarks --project ${shellQuote(input.projectDir)} --execute --write to measure installed local candidates.`
+      : status === "no-installed-models"
+        ? "Download one recommended model, confirm it appears in /v1/models, then rerun local-llm-benchmarks."
+        : "Start a local OpenAI-compatible runtime, then rerun local-llm-benchmarks.";
+  const document = {
+    kind: "agentflow_local_llm_benchmark_receipts" as const,
+    generatedAt,
+    projectRootUri: input.projectDir,
+    status,
+    execute: input.execute,
+    timeoutMs: input.timeoutMs,
+    runtime: runtime ? { id: runtime.id, label: runtime.label, baseUrl: runtime.baseUrl, modelCount: runtime.modelCount } : null,
+    candidateModels: candidates.map((candidate) => ({
+      modelId: candidate.modelId,
+      installed: candidate.installed,
+      primaryTier: candidate.primaryTier,
+      hardwareFit: candidate.hardwareFit
+    })),
+    tasks: benchmarkTasks.map(({ id, label, rubric }) => ({ id, label, rubric })),
+    summary: {
+      receipts: receipts.length,
+      completed: completed.length,
+      failed: receipts.filter((receipt) => receipt.status === "failed").length,
+      planned: receipts.filter((receipt) => receipt.status === "planned").length,
+      skipped: receipts.filter((receipt) => receipt.status === "skipped").length,
+      averageLatencyMs,
+      averageRubricScore
+    },
+    receipts,
+    nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-benchmark-receipts.md",
+        content: formatLocalLlmBenchmarkReceiptMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-benchmark-receipts.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function localLlmBenchmarkTasks(): LocalLlmBenchmarkTask[] {
+  return [
+    {
+      id: "tiny-summary",
+      label: "tiny summarization",
+      prompt: "Summarize this developer task in one concise sentence: Add audit logging to a TypeScript API without exposing secrets.",
+      rubric: "One sentence, mentions audit logging, TypeScript/API scope, and secret safety."
+    },
+    {
+      id: "tiny-code-review",
+      label: "tiny code review",
+      prompt: "Review this change in two bullets for risk: a dashboard form now writes a project-local JSON report under .agent-workflow/model-improvement/.",
+      rubric: "Two bullets, covers write-boundary risk and validation or user-visible behavior."
+    }
+  ];
+}
+
+async function executeLocalLlmBenchmarkPrompt(runtime: LocalLlmRuntimeProbe, modelId: string, prompt: string, timeoutMs: number): Promise<{
+  ok: boolean;
+  latencyMs: number | null;
+  output: string | null;
+  error: string | null;
+}> {
+  const started = Date.now();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${runtime.baseUrl.replace(/\/+$/u, "")}/chat/completions`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: {
+        "content-type": "application/json",
+        ...(process.env.LOCAL_MODEL_API_KEY ? { authorization: `Bearer ${process.env.LOCAL_MODEL_API_KEY}` } : {})
+      },
+      body: JSON.stringify({
+        model: modelId,
+        messages: [
+          { role: "system", content: "You are a concise local developer-assistant benchmark. Follow the requested format exactly." },
+          { role: "user", content: prompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 160
+      })
+    });
+    const latencyMs = Date.now() - started;
+    const text = await response.text();
+    if (!response.ok) {
+      return { ok: false, latencyMs, output: null, error: `HTTP ${response.status}: ${truncateText(text, 220)}` };
+    }
+    const parsed = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> };
+    const output = parsed.choices?.[0]?.message?.content?.trim() ?? "";
+    return output
+      ? { ok: true, latencyMs, output, error: null }
+      : { ok: false, latencyMs, output: null, error: "No chat completion content returned." };
+  } catch (error) {
+    const latencyMs = Date.now() - started;
+    return {
+      ok: false,
+      latencyMs,
+      output: null,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function scoreLocalLlmBenchmarkOutput(task: LocalLlmBenchmarkTask, output: string): number {
+  const normalized = output.toLowerCase();
+  if (task.id === "tiny-summary") {
+    let score = 0;
+    if (normalized.includes("audit")) score += 0.3;
+    if (normalized.includes("typescript") || normalized.includes("api")) score += 0.3;
+    if (normalized.includes("secret")) score += 0.25;
+    if (output.split(/[.!?]\s+/u).filter(Boolean).length <= 2) score += 0.15;
+    return Number(Math.min(1, score).toFixed(2));
+  }
+  let score = 0;
+  if (output.includes("-") || output.includes("•") || output.includes("*")) score += 0.25;
+  if (normalized.includes("write") || normalized.includes("path") || normalized.includes("boundary")) score += 0.3;
+  if (normalized.includes("valid") || normalized.includes("test") || normalized.includes("user")) score += 0.3;
+  if (output.length <= 700) score += 0.15;
+  return Number(Math.min(1, score).toFixed(2));
+}
+
+function formatLocalLlmBenchmarkReceiptReport(report: LocalLlmBenchmarkReceiptReport): string {
+  return [
+    "Local LLM Benchmark Receipts",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Mode: ${report.execute ? "execute" : "plan"}`,
+    `Runtime: ${report.runtime ? `${report.runtime.label} ${report.runtime.baseUrl}` : "none"}`,
+    `Candidates: ${report.candidateModels.map((candidate) => `${candidate.modelId}${candidate.installed ? "" : " (not installed)"}`).join(", ") || "none"}`,
+    `Summary: completed=${report.summary.completed}, failed=${report.summary.failed}, planned=${report.summary.planned}, skipped=${report.summary.skipped}, avgLatency=${report.summary.averageLatencyMs ?? "n/a"}ms, avgScore=${report.summary.averageRubricScore ?? "n/a"}`,
+    `Next: ${report.nextAction}`,
+    "",
+    ...report.receipts.map((receipt) => [
+      `- ${receipt.id} ${receipt.status}: ${receipt.modelId} / ${receipt.taskLabel}`,
+      `  latency: ${receipt.latencyMs ?? "n/a"}ms; score: ${receipt.rubricScore ?? "n/a"}; verdict: ${receipt.verdict}`,
+      receipt.error ? `  error: ${receipt.error}` : "",
+      receipt.evidence.length ? `  evidence: ${receipt.evidence.join(" ")}` : ""
+    ].filter(Boolean).join("\n"))
+  ].join("\n");
+}
+
+function formatLocalLlmBenchmarkReceiptMarkdown(report: Omit<LocalLlmBenchmarkReceiptReport, "files">): string {
+  const rows = report.receipts.map((receipt) =>
+    `| ${receipt.id} | ${receipt.status} | ${receipt.modelId} | ${receipt.taskLabel} | ${receipt.latencyMs ?? "n/a"} | ${receipt.rubricScore ?? "n/a"} | ${receipt.verdict} | ${receipt.error ?? receipt.evidence.join(" ")} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Benchmark Receipts",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Mode: ${report.execute ? "execute" : "plan"}`,
+    "",
+    "These receipts benchmark installed local model candidates with tiny developer prompts before local smoke promotion. They do not call hosted models, change provider settings, or edit shared workflow definitions.",
+    "",
+    "## Summary",
+    "",
+    `- Receipts: ${report.summary.receipts}`,
+    `- Completed: ${report.summary.completed}`,
+    `- Failed: ${report.summary.failed}`,
+    `- Planned: ${report.summary.planned}`,
+    `- Skipped: ${report.summary.skipped}`,
+    `- Average latency: ${report.summary.averageLatencyMs ?? "n/a"} ms`,
+    `- Average rubric score: ${report.summary.averageRubricScore ?? "n/a"}`,
+    "",
+    "## Receipts",
+    "",
+    "| ID | Status | Model | Task | Latency ms | Score | Verdict | Evidence |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | n/a | n/a | n/a | n/a | n/a | n/a | No candidates found. |",
+    "",
+    "## Next Action",
+    "",
+    report.nextAction,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmBenchmarkReceiptReport(projectDir: string, report: LocalLlmBenchmarkReceiptReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM benchmark receipts outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM benchmark receipts outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function loadLocalLlmInstallationPlanReport(input: {
+  projectDir: string;
+  selectedModels: string;
+  limit: number;
+}): Promise<LocalLlmInstallationPlanReport> {
+  const scorecard = await loadPreferenceScorecard({ projectDir: input.projectDir, limit: input.limit });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: input.projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(input.projectDir, localProviderEvidence);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(input.projectDir, recentRouteReports);
+  const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(input.projectDir, projectRuns, recentRouteReports);
+  const checklist = await loadLocalLlmSetupChecklistReport({ projectDir: input.projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+  const setupGuide = await loadLocalLlmSetupGuideReport({ projectDir: input.projectDir, checklist, approved: false });
+  const downloads = buildLocalLlmDownloadRecommendationReport({ projectDir: input.projectDir, scorecard, checklist, setupGuide });
+  return buildLocalLlmInstallationPlanReport(input.projectDir, downloads, input.selectedModels);
+}
+
+function buildLocalLlmInstallationPlanReport(
+  projectDir: string,
+  recommendations: LocalLlmDownloadRecommendationReport,
+  selectedModels: string
+): LocalLlmInstallationPlanReport {
+  const requested = selectedModels.trim() || "recommended";
+  const requestedSet = new Set(requested === "recommended" || requested === "all" ? [] : parseProposalIds(requested));
+  const selected = recommendations.recommendations.filter((item) => {
+    if (requested === "all") return true;
+    if (requested === "recommended") return item.modelId === recommendations.recommendedModelId || item.priority === "high";
+    return requestedSet.has(item.id) || requestedSet.has(item.modelId);
+  });
+  const generatedAt = new Date().toISOString();
+  const actions = selected.map((item, index): LocalLlmInstallationAction => {
+    const diskEstimateGb = estimateLocalModelDiskGb(item.modelId);
+    const diskRisk = diskEstimateGb >= 18 ? "high" : diskEstimateGb >= 8 ? "medium" : "low";
+    const downloadCommand = item.downloadCommand;
+    const verifyCommand = `npm run agentflow -- local-llm-checklist --project ${shellQuote(projectDir)}`;
+    const benchmarkCommand = `npm run agentflow -- local-llm-benchmarks --project ${shellQuote(projectDir)} --execute --write`;
+    return {
+      id: `install-${String(index + 1).padStart(3, "0")}`,
+      modelId: item.modelId,
+      runtime: item.runtime,
+      primaryTier: item.primaryTier,
+      priority: item.priority,
+      installed: item.installed,
+      hardwareFit: item.hardwareFit,
+      diskEstimateGb,
+      risk: diskRisk === "high" || item.primaryTier === "reasoning" ? "high" : diskRisk,
+      commands: [
+        { id: "download", label: "Download model", command: downloadCommand, requiresApproval: true, reason: "Downloads model artifacts and may use significant disk and network." },
+        { id: "verify", label: "Verify local catalog", command: verifyCommand, requiresApproval: false, reason: "Read-only Agent Workflow setup check after the runtime refreshes its model catalog." },
+        { id: "benchmark", label: "Benchmark locally", command: benchmarkCommand, requiresApproval: false, reason: "Calls only the local OpenAI-compatible endpoint to create promotion evidence." }
+      ],
+      envHints: item.configEnv,
+      notes: item.rationale
+    };
+  });
+  const missingIds = requested === "recommended" || requested === "all"
+    ? []
+    : [...requestedSet].filter((id) => !selected.some((item) => item.id === id || item.modelId === id));
+  const status: LocalLlmInstallationPlanReport["status"] = actions.length
+    ? actions.every((action) => action.installed) ? "already-installed" : "ready-for-review"
+    : "no-selection";
+  const nextAction = actions.length
+    ? "Review the download commands, run only the models you want to install, then run the verify and benchmark commands."
+    : "Run local-llm-download-recommendations first, then select a recommendation id or model id.";
+  const document = {
+    kind: "agentflow_local_llm_installation_plan" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    status,
+    selectedModels: requested,
+    recommendationSourceGeneratedAt: recommendations.generatedAt,
+    runtimeStatus: recommendations.status,
+    recommendedModelId: recommendations.recommendedModelId,
+    missingIds,
+    actions,
+    safety: {
+      executesDownloads: false,
+      editsProviderSettings: false,
+      writesProjectSource: false,
+      approvalBoundary: "Download, provider-setting, and disk-heavy actions are emitted as commands for the operator to approve and run outside this planner."
+    },
+    nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-installation-plan.md",
+        content: formatLocalLlmInstallationPlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-installation-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-installation-plan.sh",
+        content: formatLocalLlmInstallationPlanShell(document)
+      }
+    ]
+  };
+}
+
+function estimateLocalModelDiskGb(modelId: string): number {
+  const lower = modelId.toLowerCase();
+  if (lower.includes("32b")) return 22;
+  if (lower.includes("14b")) return 10;
+  if (lower.includes("8b") || lower.includes("7b")) return 5;
+  return 8;
+}
+
+function formatLocalLlmInstallationPlanReport(report: LocalLlmInstallationPlanReport): string {
+  return [
+    "Local LLM Installation Plan",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Selected: ${report.selectedModels}`,
+    `Recommended model: ${report.recommendedModelId ?? "none"}`,
+    report.missingIds.length ? `Missing selections: ${report.missingIds.join(", ")}` : "",
+    `Next: ${report.nextAction}`,
+    "",
+    ...report.actions.map((action) => [
+      `- ${action.id} ${action.modelId} (${action.priority}, ${action.primaryTier}, ${action.risk} risk)`,
+      `  runtime: ${action.runtime}; disk estimate: ${action.diskEstimateGb} GB; installed: ${action.installed ? "yes" : "no"}`,
+      ...action.commands.map((command) => `  ${command.requiresApproval ? "[approval] " : ""}${command.label}: ${command.command}`),
+      `  env hints: ${action.envHints.join("; ")}`
+    ].join("\n"))
+  ].filter(Boolean).join("\n");
+}
+
+function formatLocalLlmInstallationPlanMarkdown(report: Omit<LocalLlmInstallationPlanReport, "files">): string {
+  const sections = report.actions.map((action) => [
+    `## ${action.id} - ${action.modelId}`,
+    "",
+    `- Priority: ${action.priority}`,
+    `- Tier: ${action.primaryTier}`,
+    `- Runtime: ${action.runtime}`,
+    `- Hardware fit: ${action.hardwareFit}`,
+    `- Estimated disk: ${action.diskEstimateGb} GB`,
+    `- Risk: ${action.risk}`,
+    `- Already installed: ${action.installed ? "yes" : "no"}`,
+    "",
+    "Commands:",
+    ...action.commands.map((command) => `- ${command.requiresApproval ? "Review before running: " : ""}\`${command.command.replaceAll("`", "\\`")}\` - ${command.reason}`),
+    "",
+    "Environment hints:",
+    ...action.envHints.map((hint) => `- \`${hint}\``),
+    "",
+    "Notes:",
+    ...action.notes.map((note) => `- ${note}`),
+    ""
+  ].join("\n"));
+  return [
+    "# Agent Workflow Local LLM Installation Plan",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This is a reviewed command plan. Agent Workflow writes the plan, but it does not execute downloads, edit provider settings, or change project source.",
+    "",
+    "## Safety Boundary",
+    "",
+    `- Executes downloads: ${report.safety.executesDownloads ? "yes" : "no"}`,
+    `- Edits provider settings: ${report.safety.editsProviderSettings ? "yes" : "no"}`,
+    `- Writes project source: ${report.safety.writesProjectSource ? "yes" : "no"}`,
+    `- Approval boundary: ${report.safety.approvalBoundary}`,
+    "",
+    ...sections,
+    "## Next Action",
+    "",
+    report.nextAction,
+    ""
+  ].join("\n");
+}
+
+function formatLocalLlmInstallationPlanShell(report: Omit<LocalLlmInstallationPlanReport, "files">): string {
+  const lines = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "",
+    "# Agent Workflow local LLM installation plan.",
+    "# Review before running. This script may download large model artifacts.",
+    ""
+  ];
+  for (const action of report.actions) {
+    lines.push(`# ${action.id}: ${action.modelId} (${action.diskEstimateGb} GB estimate, ${action.risk} risk)`);
+    for (const command of action.commands) {
+      lines.push(`# ${command.label}: ${command.reason}`);
+      lines.push(command.command);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function writeLocalLlmInstallationPlanReport(projectDir: string, report: LocalLlmInstallationPlanReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM installation plan outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM installation plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+    if (file.relativePath.endsWith(".sh")) {
+      await fs.chmod(targetPath, 0o755);
+    }
+  }
+}
+
+async function loadLocalLlmInventoryReport(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<LocalLlmInventoryReport> {
+  const scorecard = await loadPreferenceScorecard({ projectDir: input.projectDir, limit: input.limit });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: input.projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(input.projectDir, localProviderEvidence);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(input.projectDir, recentRouteReports);
+  const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(input.projectDir, projectRuns, recentRouteReports);
+  const checklist = await loadLocalLlmSetupChecklistReport({ projectDir: input.projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+  const setupGuide = await loadLocalLlmSetupGuideReport({ projectDir: input.projectDir, checklist, approved: false });
+  const downloads = buildLocalLlmDownloadRecommendationReport({ projectDir: input.projectDir, scorecard, checklist, setupGuide });
+  const installPlan = buildLocalLlmInstallationPlanReport(input.projectDir, downloads, "recommended");
+  return buildLocalLlmInventoryReport(input.projectDir, setupGuide, downloads, installPlan, recentRouteReports);
+}
+
+async function buildLocalLlmInventoryReport(
+  projectDir: string,
+  setupGuide: LocalLlmSetupGuideReport,
+  downloads: LocalLlmDownloadRecommendationReport,
+  installPlan: LocalLlmInstallationPlanReport,
+  recentRouteReports: CostQualityReport[]
+): Promise<LocalLlmInventoryReport> {
+  const generatedAt = new Date().toISOString();
+  const roots = await Promise.all(localModelCacheRoots().map(readLocalModelCacheRoot));
+  const existingRoots = roots.filter((root) => root.exists);
+  const totalCacheBytes = existingRoots.reduce((sum, root) => sum + root.sizeBytes, 0);
+  const storage = await readStoragePressure(existingRoots[0]?.path ?? os.homedir());
+  const lastUsedByModel = await loadLocalModelLastUsedMap(projectDir, recentRouteReports);
+  const runtimeModels = new Set(setupGuide.runtimes.flatMap((runtime) => runtime.models));
+  const recommendedIds = new Set(downloads.recommendations.map((item) => item.modelId));
+  const modelEntries: LocalLlmInventoryModel[] = [];
+  for (const modelId of [...runtimeModels].sort((a, b) => a.localeCompare(b))) {
+    modelEntries.push({
+        modelId,
+        source: "runtime-catalog",
+        cacheRoot: setupGuide.runtimes.find((runtime) => runtime.models.includes(modelId))?.label ?? "local runtime",
+        cachePath: null,
+        sizeBytes: null,
+        sizeLabel: "unknown",
+        installed: true,
+        recommended: recommendedIds.has(modelId),
+      lastUsedAt: lastUsedByModel.get(modelId) ?? null,
+      pruneCandidate: false,
+      reason: "Detected from a live local /v1/models catalog."
+    });
+  }
+  const directoryModels = await readDirectoryModelEntries(existingRoots, lastUsedByModel, recommendedIds);
+  for (const entry of directoryModels) {
+    if (!modelEntries.some((item) => item.modelId === entry.modelId && item.source === entry.source)) {
+      modelEntries.push(entry);
+    }
+  }
+  const pruneCandidates = modelEntries.filter((model) => model.pruneCandidate);
+  const status: LocalLlmInventoryReport["status"] = existingRoots.length
+    ? storage.freeRatio !== null && storage.freeRatio < 0.12 ? "storage-pressure" : "ready"
+    : "no-cache-found";
+  const nextAction = status === "storage-pressure"
+    ? "Review prune candidates before downloading more local models."
+    : installPlan.actions.length
+      ? "Review the local model installation plan before downloading additional models."
+      : "Start a local runtime or run local-llm-download-recommendations before inventory can connect cache usage to recommendations.";
+  const document = {
+    kind: "agentflow_local_llm_inventory" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    status,
+    storage,
+    cacheRoots: roots,
+    totalCacheBytes,
+    totalCacheLabel: formatBytes(totalCacheBytes),
+    models: modelEntries.sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) || a.modelId.localeCompare(b.modelId)),
+    pruneCandidates,
+    recommendation: nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-inventory.md",
+        content: formatLocalLlmInventoryMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-inventory.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function localModelCacheRoots(): Array<{ id: string; label: string; path: string; modelDepth: number }> {
+  const home = os.homedir();
+  return [
+    { id: "ollama", label: "Ollama", path: path.join(home, ".ollama", "models"), modelDepth: 0 },
+    { id: "lm-studio", label: "LM Studio", path: path.join(home, "Library", "Application Support", "LM Studio", "models"), modelDepth: 2 },
+    { id: "huggingface", label: "Hugging Face Hub", path: path.join(home, ".cache", "huggingface", "hub"), modelDepth: 1 },
+    { id: "vllm", label: "vLLM/Hugging Face cache", path: path.join(home, ".cache", "vllm"), modelDepth: 1 },
+    { id: "llama-cpp", label: "llama.cpp cache", path: path.join(home, ".cache", "llama.cpp"), modelDepth: 1 }
+  ];
+}
+
+async function readLocalModelCacheRoot(root: { id: string; label: string; path: string; modelDepth: number }): Promise<LocalLlmInventoryCacheRoot> {
+  const stats = await fs.stat(root.path).catch(() => null);
+  if (!stats?.isDirectory()) {
+    return {
+      id: root.id,
+      label: root.label,
+      path: root.path,
+      exists: false,
+      sizeBytes: 0,
+      sizeLabel: "0 B",
+      modelDirectories: 0,
+      lastModifiedAt: null,
+      error: null
+    };
+  }
+  const scan = await scanDirectorySize(root.path, { maxEntries: 25000, maxDepth: 8 });
+  const modelDirectories = root.modelDepth > 0 ? await countModelDirectories(root.path, root.modelDepth) : 0;
+  return {
+    id: root.id,
+    label: root.label,
+    path: root.path,
+    exists: true,
+    sizeBytes: scan.sizeBytes,
+    sizeLabel: formatBytes(scan.sizeBytes),
+    modelDirectories,
+    lastModifiedAt: scan.latestMtimeMs ? new Date(scan.latestMtimeMs).toISOString() : null,
+    error: scan.truncated ? `Inventory truncated after ${scan.entriesScanned} filesystem entries.` : scan.error
+  };
+}
+
+async function scanDirectorySize(dir: string, options: { maxEntries: number; maxDepth: number }): Promise<{
+  sizeBytes: number;
+  entriesScanned: number;
+  latestMtimeMs: number | null;
+  truncated: boolean;
+  error: string | null;
+}> {
+  let sizeBytes = 0;
+  let entriesScanned = 0;
+  let latestMtimeMs: number | null = null;
+  let truncated = false;
+  let error: string | null = null;
+  async function walk(current: string, depth: number): Promise<void> {
+    if (truncated || entriesScanned >= options.maxEntries || depth > options.maxDepth) {
+      truncated = true;
+      return;
+    }
+    let entries: Dirent[];
+    try {
+      entries = await fs.readdir(current, { withFileTypes: true });
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      return;
+    }
+    for (const entry of entries) {
+      if (truncated) return;
+      const entryPath = path.join(current, entry.name);
+      entriesScanned += 1;
+      const stat = await fs.stat(entryPath).catch(() => null);
+      if (stat) {
+        sizeBytes += stat.isFile() ? stat.size : 0;
+        latestMtimeMs = latestMtimeMs === null ? stat.mtimeMs : Math.max(latestMtimeMs, stat.mtimeMs);
+      }
+      if (entry.isDirectory()) {
+        await walk(entryPath, depth + 1);
+      }
+      if (entriesScanned >= options.maxEntries) {
+        truncated = true;
+        return;
+      }
+    }
+  }
+  await walk(dir, 0);
+  return { sizeBytes, entriesScanned, latestMtimeMs, truncated, error };
+}
+
+async function countModelDirectories(root: string, depth: number): Promise<number> {
+  async function walk(current: string, level: number): Promise<number> {
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    const directories = entries.filter((entry) => entry.isDirectory());
+    if (level >= depth) return directories.length;
+    const counts = await Promise.all(directories.map((entry) => walk(path.join(current, entry.name), level + 1)));
+    return counts.reduce((sum, count) => sum + count, 0);
+  }
+  return walk(root, 1);
+}
+
+async function readDirectoryModelEntries(
+  roots: LocalLlmInventoryCacheRoot[],
+  lastUsedByModel: Map<string, string>,
+  recommendedIds: Set<string>
+): Promise<LocalLlmInventoryModel[]> {
+  const entries: LocalLlmInventoryModel[] = [];
+  for (const root of roots) {
+    if (root.id === "ollama") continue;
+    const depth = localModelCacheRoots().find((item) => item.id === root.id)?.modelDepth ?? 1;
+    const modelDirs = await listModelDirectories(root.path, depth);
+    for (const modelDir of modelDirs.slice(0, 50)) {
+      const scan = await scanDirectorySize(modelDir.path, { maxEntries: 5000, maxDepth: 6 });
+      const modelId = modelDir.name;
+      const lastUsedAt = lastUsedByModel.get(modelId) ?? null;
+      const stale = !lastUsedAt && scan.latestMtimeMs !== null && Date.now() - scan.latestMtimeMs > 1000 * 60 * 60 * 24 * 90;
+      entries.push({
+        modelId,
+        source: "cache-directory",
+        cacheRoot: root.label,
+        cachePath: modelDir.path,
+        sizeBytes: scan.sizeBytes,
+        sizeLabel: formatBytes(scan.sizeBytes),
+        installed: true,
+        recommended: recommendedIds.has(modelId),
+        lastUsedAt,
+        pruneCandidate: stale && !recommendedIds.has(modelId),
+        reason: stale ? "Cache directory appears older than 90 days and has no recent route or benchmark evidence." : "Detected from local model cache directory."
+      });
+    }
+  }
+  return entries;
+}
+
+async function listModelDirectories(root: string, depth: number): Promise<Array<{ name: string; path: string }>> {
+  async function walk(current: string, parts: string[], level: number): Promise<Array<{ name: string; path: string }>> {
+    const entries = await fs.readdir(current, { withFileTypes: true }).catch(() => []);
+    const directories = entries.filter((entry) => entry.isDirectory());
+    if (level >= depth) {
+      return directories.map((entry) => ({
+        name: [...parts, entry.name].join("/").replace(/^models--/u, "").replaceAll("--", "/"),
+        path: path.join(current, entry.name)
+      }));
+    }
+    const nested = await Promise.all(directories.map((entry) => walk(path.join(current, entry.name), [...parts, entry.name], level + 1)));
+    return nested.flat();
+  }
+  return walk(root, [], 1);
+}
+
+async function readStoragePressure(targetPath: string): Promise<LocalLlmInventoryStorage> {
+  const stat = await fs.statfs(targetPath).catch(() => null);
+  if (!stat) {
+    return { path: targetPath, totalBytes: null, freeBytes: null, freeRatio: null, status: "unknown" };
+  }
+  const totalBytes = stat.blocks * stat.bsize;
+  const freeBytes = stat.bavail * stat.bsize;
+  const freeRatio = totalBytes > 0 ? Number((freeBytes / totalBytes).toFixed(3)) : null;
+  return {
+    path: targetPath,
+    totalBytes,
+    freeBytes,
+    freeRatio,
+    status: freeRatio === null ? "unknown" : freeRatio < 0.12 ? "pressure" : freeRatio < 0.2 ? "watch" : "ok"
+  };
+}
+
+async function loadLocalModelLastUsedMap(projectDir: string, reports: CostQualityReport[]): Promise<Map<string, string>> {
+  const usage = new Map<string, string>();
+  for (const report of reports) {
+    for (const stage of report.stages) {
+      if (!stage.model) continue;
+      const current = usage.get(stage.model);
+      const run = await getWorkflowRunDetails(report.runId).catch(() => null);
+      const timestamp = run?.run?.finishedAt ?? run?.run?.startedAt ?? null;
+      if (timestamp && (!current || timestamp > current)) usage.set(stage.model, timestamp);
+    }
+  }
+  const receiptsPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-llm-benchmark-receipts.json");
+  const raw = await fs.readFile(receiptsPath, "utf8").catch(() => null);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as LocalLlmBenchmarkReceiptReport;
+      for (const receipt of parsed.receipts ?? []) {
+        if (receipt.status !== "completed") continue;
+        const timestamp = receipt.finishedAt ?? receipt.startedAt;
+        const current = usage.get(receipt.modelId);
+        if (timestamp && (!current || timestamp > current)) usage.set(receipt.modelId, timestamp);
+      }
+    } catch {
+      // Ignore stale or partial benchmark receipt files.
+    }
+  }
+  return usage;
+}
+
+function formatLocalLlmInventoryReport(report: LocalLlmInventoryReport): string {
+  return [
+    "Local LLM Disk/Cache Inventory",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Total cache: ${report.totalCacheLabel}`,
+    `Storage: ${report.storage.status}${report.storage.freeBytes === null ? "" : `, ${formatBytes(report.storage.freeBytes)} free`}`,
+    `Models: ${report.models.length}; prune candidates: ${report.pruneCandidates.length}`,
+    `Recommendation: ${report.recommendation}`,
+    "",
+    "Cache roots",
+    ...report.cacheRoots.map((root) => `- ${root.label}: ${root.exists ? root.sizeLabel : "missing"} (${root.path})${root.error ? ` - ${root.error}` : ""}`),
+    "",
+    "Models",
+    ...(report.models.length ? report.models.map((model) => `- ${model.modelId}: ${model.sizeLabel}, ${model.cacheRoot}, last used ${model.lastUsedAt ?? "unknown"}${model.pruneCandidate ? " [prune candidate]" : ""}`) : ["- none"])
+  ].join("\n");
+}
+
+function formatLocalLlmInventoryMarkdown(report: Omit<LocalLlmInventoryReport, "files">): string {
+  const rootRows = report.cacheRoots.map((root) =>
+    `| ${root.label} | ${root.exists ? "yes" : "no"} | ${root.sizeLabel} | ${root.modelDirectories} | ${root.lastModifiedAt ?? "n/a"} | \`${root.path}\` | ${root.error ?? ""} |`
+  ).join("\n");
+  const modelRows = report.models.map((model) =>
+    `| ${model.modelId} | ${model.source} | ${model.cacheRoot} | ${model.sizeLabel} | ${model.lastUsedAt ?? "unknown"} | ${model.recommended ? "yes" : "no"} | ${model.pruneCandidate ? "yes" : "no"} | ${model.reason} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Disk/Cache Inventory",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This read-only report inspects common local model cache locations and recent Agent Workflow evidence before recommending additional downloads. It does not delete model files or edit provider settings.",
+    "",
+    "## Storage",
+    "",
+    `- Total cache: ${report.totalCacheLabel}`,
+    `- Storage status: ${report.storage.status}`,
+    `- Free: ${report.storage.freeBytes === null ? "unknown" : formatBytes(report.storage.freeBytes)}`,
+    `- Total: ${report.storage.totalBytes === null ? "unknown" : formatBytes(report.storage.totalBytes)}`,
+    "",
+    "## Cache Roots",
+    "",
+    "| Root | Exists | Size | Model Dirs | Last Modified | Path | Notes |",
+    "| --- | --- | --- | --- | --- | --- | --- |",
+    rootRows,
+    "",
+    "## Models",
+    "",
+    "| Model | Source | Cache | Size | Last Used | Recommended | Prune Candidate | Reason |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    modelRows || "| none | n/a | n/a | n/a | unknown | no | no | No local model cache entries found. |",
+    "",
+    "## Recommendation",
+    "",
+    report.recommendation,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmInventoryReport(projectDir: string, report: LocalLlmInventoryReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM inventory outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM inventory outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+function buildLocalLlmPrunePlanReport(
+  projectDir: string,
+  inventory: LocalLlmInventoryReport,
+  selectedModels: string
+): LocalLlmPrunePlanReport {
+  const generatedAt = new Date().toISOString();
+  const requested = selectedModels.trim() || "candidates";
+  const requestedSet = new Set(requested === "candidates" || requested === "all" ? [] : parseProposalIds(requested));
+  const selectableModels = requested === "all" ? inventory.models : inventory.pruneCandidates;
+  const selected = selectableModels.filter((model, index) => {
+    const actionId = `prune-${String(index + 1).padStart(3, "0")}`;
+    if (requested === "all" || requested === "candidates") return true;
+    return requestedSet.has(actionId) || requestedSet.has(model.modelId);
+  });
+  const actions = selected.map((model, index): LocalLlmPruneAction => {
+    const actionId = `prune-${String(index + 1).padStart(3, "0")}`;
+    const cachePath = model.cachePath;
+    const command = cachePath
+      ? `rm -rf ${shellQuote(cachePath)}`
+      : `# Review ${shellQuote(model.modelId)} in ${shellQuote(model.cacheRoot)}; no cache path was detected for an automatic command.`;
+    return {
+      id: actionId,
+      modelId: model.modelId,
+      cacheRoot: model.cacheRoot,
+      cachePath,
+      sizeBytes: model.sizeBytes,
+      sizeLabel: model.sizeLabel,
+      lastUsedAt: model.lastUsedAt,
+      recommended: model.recommended,
+      pruneCandidate: model.pruneCandidate,
+      risk: cachePath && !model.recommended && model.pruneCandidate ? "medium" : "high",
+      command,
+      requiresApproval: true,
+      reason: model.pruneCandidate
+        ? model.reason
+        : "Selected model is not a default prune candidate, so removal needs extra operator review."
+    };
+  });
+  const missingIds = requested === "all" || requested === "candidates"
+    ? []
+    : [...requestedSet].filter((id) => !actions.some((action) => action.id === id || action.modelId === id));
+  const reclaimableBytes = actions.reduce((sum, action) => sum + (action.sizeBytes ?? 0), 0);
+  const status: LocalLlmPrunePlanReport["status"] = actions.length
+    ? actions.some((action) => action.risk === "high") ? "needs-review" : "ready-for-review"
+    : "no-candidates";
+  const nextAction = actions.length
+    ? "Review the generated cleanup commands, run only the removals you trust, then refresh local-llm-inventory."
+    : "No stale local model cache candidates were found. Keep collecting usage evidence before pruning.";
+  const document = {
+    kind: "agentflow_local_llm_prune_plan" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    status,
+    selectedModels: requested,
+    inventoryGeneratedAt: inventory.generatedAt,
+    actions,
+    missingIds,
+    reclaimableBytes,
+    reclaimableLabel: formatBytes(reclaimableBytes),
+    safety: {
+      executesDeletes: false,
+      editsProviderSettings: false,
+      writesProjectSource: false,
+      approvalBoundary: "Cleanup commands are emitted for explicit operator review. Agent Workflow does not execute local model deletion from this planner."
+    },
+    nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-prune-plan.md",
+        content: formatLocalLlmPrunePlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-prune-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-prune-plan.sh",
+        content: formatLocalLlmPrunePlanShell(document)
+      }
+    ]
+  };
+}
+
+function formatLocalLlmPrunePlanReport(report: LocalLlmPrunePlanReport): string {
+  return [
+    "Local LLM Prune Plan",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Selected: ${report.selectedModels}`,
+    `Potential reclaim: ${report.reclaimableLabel}`,
+    report.missingIds.length ? `Missing selections: ${report.missingIds.join(", ")}` : "",
+    `Next: ${report.nextAction}`,
+    "",
+    ...report.actions.map((action) => [
+      `- ${action.id} ${action.modelId} (${action.risk} risk, ${action.sizeLabel})`,
+      `  cache: ${action.cacheRoot}${action.cachePath ? ` ${action.cachePath}` : ""}`,
+      `  last used: ${action.lastUsedAt ?? "unknown"}; recommended: ${action.recommended ? "yes" : "no"}`,
+      `  [approval] Cleanup command: ${action.command}`,
+      `  reason: ${action.reason}`
+    ].join("\n"))
+  ].filter(Boolean).join("\n");
+}
+
+function formatLocalLlmPrunePlanMarkdown(report: Omit<LocalLlmPrunePlanReport, "files">): string {
+  const rows = report.actions.map((action) =>
+    `| ${action.id} | ${action.modelId} | ${action.cacheRoot} | ${action.sizeLabel} | ${action.lastUsedAt ?? "unknown"} | ${action.risk} | ${action.recommended ? "yes" : "no"} | \`${action.command.replaceAll("`", "\\`")}\` | ${action.reason} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Prune Plan",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Potential reclaim: ${report.reclaimableLabel}`,
+    "",
+    "This is a reviewed cleanup command plan. Agent Workflow writes the plan, but it does not delete model files, edit provider settings, or change project source.",
+    "",
+    "## Safety Boundary",
+    "",
+    `- Executes deletes: ${report.safety.executesDeletes ? "yes" : "no"}`,
+    `- Edits provider settings: ${report.safety.editsProviderSettings ? "yes" : "no"}`,
+    `- Writes project source: ${report.safety.writesProjectSource ? "yes" : "no"}`,
+    `- Approval boundary: ${report.safety.approvalBoundary}`,
+    "",
+    "## Cleanup Commands",
+    "",
+    "| ID | Model | Cache | Size | Last Used | Risk | Recommended | Command | Reason |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | n/a | n/a | n/a | unknown | n/a | no | n/a | No prune candidates found. |",
+    "",
+    "## Next Action",
+    "",
+    report.nextAction,
+    ""
+  ].join("\n");
+}
+
+function formatLocalLlmPrunePlanShell(report: Omit<LocalLlmPrunePlanReport, "files">): string {
+  const lines = [
+    "#!/usr/bin/env bash",
+    "set -euo pipefail",
+    "",
+    "# Agent Workflow local LLM prune plan.",
+    "# Review before running. This script may delete local model cache directories.",
+    "# Agent Workflow generated this file but did not execute it.",
+    ""
+  ];
+  for (const action of report.actions) {
+    lines.push(`# ${action.id}: ${action.modelId} (${action.sizeLabel}, ${action.risk} risk)`);
+    lines.push(`# Reason: ${action.reason}`);
+    lines.push(action.command);
+    lines.push("");
+  }
+  return `${lines.join("\n")}\n`;
+}
+
+async function writeLocalLlmPrunePlanReport(projectDir: string, report: LocalLlmPrunePlanReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM prune plan outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM prune plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+    if (file.relativePath.endsWith(".sh")) {
+      await fs.chmod(targetPath, 0o755);
+    }
+  }
+}
+
+async function loadLocalLlmCacheTrendReport(input: {
+  projectDir: string;
+  limit: number;
+  write: boolean;
+}): Promise<LocalLlmCacheTrendReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const inventory = await loadLocalLlmInventoryReport({ projectDir, limit: input.limit });
+  const prunePlan = buildLocalLlmPrunePlanReport(projectDir, inventory, "candidates");
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const report = await buildLocalLlmCacheTrendReport(projectDir, inventory, prunePlan, routeReceiptTrends, input.write);
+  if (input.write) {
+    await writeLocalLlmCacheTrendReport(projectDir, report);
+  }
+  return report;
+}
+
+async function buildLocalLlmCacheTrendReport(
+  projectDir: string,
+  inventory: LocalLlmInventoryReport,
+  prunePlan: LocalLlmPrunePlanReport,
+  routeReceiptTrends: DashboardRouteReceiptTrendReport,
+  appendCurrent: boolean
+): Promise<LocalLlmCacheTrendReport> {
+  const generatedAt = new Date().toISOString();
+  const existing = await readLocalLlmCacheTrendHistory(projectDir);
+  const current: LocalLlmCacheTrendPoint = {
+    capturedAt: generatedAt,
+    totalCacheBytes: inventory.totalCacheBytes,
+    totalCacheLabel: inventory.totalCacheLabel,
+    freeBytes: inventory.storage.freeBytes,
+    freeRatio: inventory.storage.freeRatio,
+    storageStatus: inventory.storage.status,
+    modelCount: inventory.models.length,
+    pruneCandidateCount: inventory.pruneCandidates.length,
+    reclaimableBytes: prunePlan.reclaimableBytes,
+    reclaimableLabel: prunePlan.reclaimableLabel,
+    localSelected: routeReceiptTrends.localSelected,
+    localSkipped: routeReceiptTrends.localSkipped,
+    hostedFallback: routeReceiptTrends.hostedFallback,
+    hostedSelected: routeReceiptTrends.hostedSelected
+  };
+  const history = appendCurrent ? compactLocalLlmCacheTrendPoints([...existing.points, current]) : existing.points;
+  const comparison = compareLocalLlmCacheTrendPoints(history.at(-1) ?? null, current);
+  const status: LocalLlmCacheTrendReport["status"] = history.length >= 2
+    ? "tracking"
+    : appendCurrent
+      ? "started"
+      : existing.points.length
+        ? "tracking"
+        : "no-history";
+  const recommendation = inventory.storage.status === "pressure"
+    ? "Storage pressure is active. Review prune plans before installing more local models."
+    : current.pruneCandidateCount > 0
+      ? "Review prune candidates and compare trend points before adding more local models."
+      : history.length >= 2
+        ? "Keep collecting trend points after local routing, benchmark, install, or prune events."
+        : "Write the first trend snapshot, then refresh after local model or routing changes.";
+  const document = {
+    kind: "agentflow_local_llm_cache_trends" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    status,
+    current,
+    history,
+    comparison,
+    recommendation
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-cache-trends.md",
+        content: formatLocalLlmCacheTrendMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-cache-trends.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+async function readLocalLlmCacheTrendHistory(projectDir: string): Promise<{ points: LocalLlmCacheTrendPoint[] }> {
+  const historyPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-llm-cache-trends.json");
+  const raw = await fs.readFile(historyPath, "utf8").catch(() => null);
+  if (!raw) return { points: [] };
+  try {
+    const parsed = JSON.parse(raw) as Partial<LocalLlmCacheTrendReport>;
+    const points = Array.isArray(parsed.history) ? parsed.history.filter(isLocalLlmCacheTrendPoint) : [];
+    return { points };
+  } catch {
+    return { points: [] };
+  }
+}
+
+function isLocalLlmCacheTrendPoint(value: unknown): value is LocalLlmCacheTrendPoint {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.capturedAt === "string" &&
+    typeof record.totalCacheBytes === "number" &&
+    typeof record.modelCount === "number" &&
+    typeof record.pruneCandidateCount === "number";
+}
+
+function compactLocalLlmCacheTrendPoints(points: LocalLlmCacheTrendPoint[]): LocalLlmCacheTrendPoint[] {
+  const byTimestamp = new Map<string, LocalLlmCacheTrendPoint>();
+  for (const point of points) byTimestamp.set(point.capturedAt, point);
+  return [...byTimestamp.values()]
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
+    .slice(-120);
+}
+
+function compareLocalLlmCacheTrendPoints(previous: LocalLlmCacheTrendPoint | null, current: LocalLlmCacheTrendPoint): LocalLlmCacheTrendComparison {
+  return {
+    previousAt: previous?.capturedAt ?? null,
+    cacheDeltaBytes: previous ? current.totalCacheBytes - previous.totalCacheBytes : null,
+    cacheDeltaLabel: previous ? formatSignedBytes(current.totalCacheBytes - previous.totalCacheBytes) : "n/a",
+    freeDeltaBytes: previous && current.freeBytes !== null && previous.freeBytes !== null ? current.freeBytes - previous.freeBytes : null,
+    freeDeltaLabel: previous && current.freeBytes !== null && previous.freeBytes !== null ? formatSignedBytes(current.freeBytes - previous.freeBytes) : "n/a",
+    modelDelta: previous ? current.modelCount - previous.modelCount : null,
+    pruneCandidateDelta: previous ? current.pruneCandidateCount - previous.pruneCandidateCount : null,
+    localRouteDelta: previous ? current.localSelected - previous.localSelected : null,
+    hostedRouteDelta: previous ? current.hostedSelected - previous.hostedSelected : null
+  };
+}
+
+function formatLocalLlmCacheTrendReport(report: LocalLlmCacheTrendReport): string {
+  return [
+    "Local LLM Cache Trend History",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Snapshots: ${report.history.length}`,
+    `Current cache: ${report.current.totalCacheLabel}; free disk: ${report.current.freeBytes === null ? "unknown" : formatBytes(report.current.freeBytes)}`,
+    `Models: ${report.current.modelCount}; prune candidates: ${report.current.pruneCandidateCount}; reclaimable: ${report.current.reclaimableLabel}`,
+    `Route mix: local selected ${report.current.localSelected}, local skipped ${report.current.localSkipped}, hosted fallback ${report.current.hostedFallback}, hosted selected ${report.current.hostedSelected}`,
+    `Delta: cache ${report.comparison.cacheDeltaLabel}, free disk ${report.comparison.freeDeltaLabel}, models ${report.comparison.modelDelta ?? "n/a"}, prune candidates ${report.comparison.pruneCandidateDelta ?? "n/a"}`,
+    `Recommendation: ${report.recommendation}`
+  ].join("\n");
+}
+
+function formatLocalLlmCacheTrendMarkdown(report: Omit<LocalLlmCacheTrendReport, "files">): string {
+  const rows = report.history.slice(-25).map((point) =>
+    `| ${point.capturedAt} | ${point.totalCacheLabel} | ${point.freeBytes === null ? "unknown" : formatBytes(point.freeBytes)} | ${point.storageStatus} | ${point.modelCount} | ${point.pruneCandidateCount} | ${point.reclaimableLabel} | ${point.localSelected} | ${point.hostedSelected} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Cache Trends",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This compact project-local history tracks local model cache size, storage pressure, prune candidates, and local-vs-hosted usage over time. It stores aggregate trend points only; it does not delete files or edit provider settings.",
+    "",
+    "## Current Snapshot",
+    "",
+    `- Total cache: ${report.current.totalCacheLabel}`,
+    `- Free disk: ${report.current.freeBytes === null ? "unknown" : formatBytes(report.current.freeBytes)}`,
+    `- Storage status: ${report.current.storageStatus}`,
+    `- Models: ${report.current.modelCount}`,
+    `- Prune candidates: ${report.current.pruneCandidateCount}`,
+    `- Potential reclaim: ${report.current.reclaimableLabel}`,
+    `- Local selected routes: ${report.current.localSelected}`,
+    `- Hosted selected routes: ${report.current.hostedSelected}`,
+    "",
+    "## Latest Delta",
+    "",
+    `- Previous snapshot: ${report.comparison.previousAt ?? "none"}`,
+    `- Cache delta: ${report.comparison.cacheDeltaLabel}`,
+    `- Free disk delta: ${report.comparison.freeDeltaLabel}`,
+    `- Model delta: ${report.comparison.modelDelta ?? "n/a"}`,
+    `- Prune candidate delta: ${report.comparison.pruneCandidateDelta ?? "n/a"}`,
+    `- Local route delta: ${report.comparison.localRouteDelta ?? "n/a"}`,
+    `- Hosted route delta: ${report.comparison.hostedRouteDelta ?? "n/a"}`,
+    "",
+    "## History",
+    "",
+    "| Captured | Cache | Free Disk | Storage | Models | Prune Candidates | Reclaimable | Local Selected | Hosted Selected |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | n/a | n/a | n/a | 0 | 0 | 0 B | 0 | 0 |",
+    "",
+    "## Recommendation",
+    "",
+    report.recommendation,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmCacheTrendReport(projectDir: string, report: LocalLlmCacheTrendReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM cache trends outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM cache trends outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function loadLocalLlmCostLedgerReport(input: {
+  projectDir: string;
+  limit: number;
+  write: boolean;
+}): Promise<LocalLlmCostLedgerReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const inventory = await loadLocalLlmInventoryReport({ projectDir, limit: input.limit });
+  const prunePlan = buildLocalLlmPrunePlanReport(projectDir, inventory, "candidates");
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const cacheTrends = await buildLocalLlmCacheTrendReport(projectDir, inventory, prunePlan, routeReceiptTrends, false);
+  const report = await buildLocalLlmCostLedgerReport(projectDir, routeReceiptTrends, cacheTrends, input.write);
+  if (input.write) {
+    await writeLocalLlmCostLedgerReport(projectDir, report);
+  }
+  return report;
+}
+
+async function buildLocalLlmCostLedgerReport(
+  projectDir: string,
+  routeReceiptTrends: DashboardRouteReceiptTrendReport,
+  cacheTrends: LocalLlmCacheTrendReport,
+  appendCurrent: boolean
+): Promise<LocalLlmCostLedgerReport> {
+  const generatedAt = new Date().toISOString();
+  const assumptions = localLlmCostAssumptions();
+  const localGroups = routeReceiptTrends.topGroups.filter((group) => group.classification === "local-selected");
+  const fallbackGroups = routeReceiptTrends.topGroups.filter((group) => group.classification === "hosted-fallback");
+  const hostedGroups = routeReceiptTrends.topGroups.filter((group) => group.classification === "hosted-selected");
+  const avoidedHostedUsd = sumEstimatedStageCost(localGroups, assumptions.hostedUsdPerStageByTier);
+  const fallbackHostedUsd = sumEstimatedStageCost(fallbackGroups, assumptions.hostedUsdPerStageByTier);
+  const observedHostedUsd = sumEstimatedStageCost(hostedGroups, assumptions.hostedUsdPerStageByTier);
+  const cacheGb = cacheTrends.current.totalCacheBytes / 1024 / 1024 / 1024;
+  const storageUsdPerMonth = cacheGb * assumptions.localStorageUsdPerGbMonth;
+  const benchmark = await readLatestLocalLlmBenchmarkSummary(projectDir);
+  const current: LocalLlmCostLedgerPoint = {
+    capturedAt: generatedAt,
+    localSelectedStages: routeReceiptTrends.localSelected,
+    localSkippedStages: routeReceiptTrends.localSkipped,
+    hostedFallbackStages: routeReceiptTrends.hostedFallback,
+    hostedSelectedStages: routeReceiptTrends.hostedSelected,
+    avoidedHostedUsd,
+    fallbackHostedUsd,
+    observedHostedUsd,
+    storageUsdPerMonth,
+    netEstimatedSavingsUsd: avoidedHostedUsd - fallbackHostedUsd - storageUsdPerMonth,
+    totalCacheBytes: cacheTrends.current.totalCacheBytes,
+    totalCacheLabel: cacheTrends.current.totalCacheLabel,
+    benchmarkAverageLatencyMs: benchmark.averageLatencyMs,
+    benchmarkAverageScore: benchmark.averageRubricScore
+  };
+  const existing = await readLocalLlmCostLedgerHistory(projectDir);
+  const history = appendCurrent ? compactLocalLlmCostLedgerPoints([...existing.points, current]) : existing.points;
+  const previous = history.at(-1) ?? null;
+  const comparison: LocalLlmCostLedgerComparison = {
+    previousAt: previous?.capturedAt ?? null,
+    netSavingsDeltaUsd: previous ? current.netEstimatedSavingsUsd - previous.netEstimatedSavingsUsd : null,
+    avoidedHostedDeltaUsd: previous ? current.avoidedHostedUsd - previous.avoidedHostedUsd : null,
+    storageDeltaUsd: previous ? current.storageUsdPerMonth - previous.storageUsdPerMonth : null,
+    localStageDelta: previous ? current.localSelectedStages - previous.localSelectedStages : null
+  };
+  const status: LocalLlmCostLedgerReport["status"] = current.localSelectedStages === 0
+    ? "needs-local-routes"
+    : current.netEstimatedSavingsUsd > 0
+      ? "saving"
+      : "watch";
+  const recommendation = current.localSelectedStages === 0
+    ? "Run low-risk local route smoke or approved local routing before expecting savings evidence."
+    : current.netEstimatedSavingsUsd > 0
+      ? "Local routing is estimated to be saving money. Keep benchmarking quality before expanding scope."
+      : "Local routing savings are not yet positive after fallback and storage estimates; review model size, fallback rate, and route mix.";
+  const document = {
+    kind: "agentflow_local_llm_cost_ledger" as const,
+    generatedAt,
+    projectRootUri: projectDir,
+    status,
+    assumptions,
+    current,
+    history,
+    comparison,
+    recommendation
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-cost-ledger.md",
+        content: formatLocalLlmCostLedgerMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-cost-ledger.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function localLlmCostAssumptions(): LocalLlmCostAssumptions {
+  return {
+    currency: "USD",
+    unit: "estimated cost per routed workflow stage",
+    source: "operator-configurable estimates; set AGENTFLOW_COST_LEDGER_* env vars for your provider rates",
+    hostedUsdPerStageByTier: {
+      fast: readNumberEnv("AGENTFLOW_COST_LEDGER_FAST_USD_PER_STAGE", 0.001),
+      standard: readNumberEnv("AGENTFLOW_COST_LEDGER_STANDARD_USD_PER_STAGE", 0.01),
+      reasoning: readNumberEnv("AGENTFLOW_COST_LEDGER_REASONING_USD_PER_STAGE", 0.05)
+    },
+    localStorageUsdPerGbMonth: readNumberEnv("AGENTFLOW_COST_LEDGER_LOCAL_STORAGE_USD_PER_GB_MONTH", 0.02)
+  };
+}
+
+function readNumberEnv(name: string, fallback: number): number {
+  const value = Number.parseFloat(process.env[name] ?? "");
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+
+function sumEstimatedStageCost(groups: DashboardRouteReceiptTrendGroup[], rates: Record<string, number>): number {
+  const total = groups.reduce((sum, group) => {
+    const rate = rates[group.modelTier] ?? rates.standard ?? 0;
+    return sum + group.runs * rate;
+  }, 0);
+  return roundCurrency(total);
+}
+
+async function readLatestLocalLlmBenchmarkSummary(projectDir: string): Promise<{
+  averageLatencyMs: number | null;
+  averageRubricScore: number | null;
+}> {
+  const receiptsPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-llm-benchmark-receipts.json");
+  const raw = await fs.readFile(receiptsPath, "utf8").catch(() => null);
+  if (!raw) return { averageLatencyMs: null, averageRubricScore: null };
+  try {
+    const parsed = JSON.parse(raw) as LocalLlmBenchmarkReceiptReport;
+    return {
+      averageLatencyMs: parsed.summary?.averageLatencyMs ?? null,
+      averageRubricScore: parsed.summary?.averageRubricScore ?? null
+    };
+  } catch {
+    return { averageLatencyMs: null, averageRubricScore: null };
+  }
+}
+
+async function readLocalLlmCostLedgerHistory(projectDir: string): Promise<{ points: LocalLlmCostLedgerPoint[] }> {
+  const historyPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-llm-cost-ledger.json");
+  const raw = await fs.readFile(historyPath, "utf8").catch(() => null);
+  if (!raw) return { points: [] };
+  try {
+    const parsed = JSON.parse(raw) as Partial<LocalLlmCostLedgerReport>;
+    const points = Array.isArray(parsed.history) ? parsed.history.filter(isLocalLlmCostLedgerPoint) : [];
+    return { points };
+  } catch {
+    return { points: [] };
+  }
+}
+
+function isLocalLlmCostLedgerPoint(value: unknown): value is LocalLlmCostLedgerPoint {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+  return typeof record.capturedAt === "string" &&
+    typeof record.localSelectedStages === "number" &&
+    typeof record.netEstimatedSavingsUsd === "number";
+}
+
+function compactLocalLlmCostLedgerPoints(points: LocalLlmCostLedgerPoint[]): LocalLlmCostLedgerPoint[] {
+  const byTimestamp = new Map<string, LocalLlmCostLedgerPoint>();
+  for (const point of points) byTimestamp.set(point.capturedAt, point);
+  return [...byTimestamp.values()]
+    .sort((a, b) => a.capturedAt.localeCompare(b.capturedAt))
+    .slice(-120);
+}
+
+function formatLocalLlmCostLedgerReport(report: LocalLlmCostLedgerReport): string {
+  return [
+    "Local LLM Cost Ledger",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    `Snapshots: ${report.history.length}`,
+    `Net estimated savings: ${formatUsd(report.current.netEstimatedSavingsUsd)}`,
+    `Avoided hosted cost: ${formatUsd(report.current.avoidedHostedUsd)}; fallback hosted cost: ${formatUsd(report.current.fallbackHostedUsd)}; local storage/month: ${formatUsd(report.current.storageUsdPerMonth)}`,
+    `Routes: local selected ${report.current.localSelectedStages}, local skipped ${report.current.localSkippedStages}, hosted fallback ${report.current.hostedFallbackStages}, hosted selected ${report.current.hostedSelectedStages}`,
+    `Benchmark: latency ${report.current.benchmarkAverageLatencyMs === null ? "n/a" : `${report.current.benchmarkAverageLatencyMs}ms`}, score ${report.current.benchmarkAverageScore ?? "n/a"}`,
+    `Recommendation: ${report.recommendation}`
+  ].join("\n");
+}
+
+function formatLocalLlmCostLedgerMarkdown(report: Omit<LocalLlmCostLedgerReport, "files">): string {
+  const rows = report.history.slice(-25).map((point) =>
+    `| ${point.capturedAt} | ${point.localSelectedStages} | ${point.hostedFallbackStages} | ${point.hostedSelectedStages} | ${formatUsd(point.avoidedHostedUsd)} | ${formatUsd(point.fallbackHostedUsd)} | ${formatUsd(point.storageUsdPerMonth)} | ${formatUsd(point.netEstimatedSavingsUsd)} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Cost Ledger",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This project-local ledger estimates local-model savings from routed stage counts, benchmark latency evidence, and local model cache storage. It is an estimate, not a provider bill. Update the `AGENTFLOW_COST_LEDGER_*` environment variables for your actual provider and storage assumptions.",
+    "",
+    "## Assumptions",
+    "",
+    `- Source: ${report.assumptions.source}`,
+    `- Fast hosted stage: ${formatUsd(report.assumptions.hostedUsdPerStageByTier.fast)}`,
+    `- Standard hosted stage: ${formatUsd(report.assumptions.hostedUsdPerStageByTier.standard)}`,
+    `- Reasoning hosted stage: ${formatUsd(report.assumptions.hostedUsdPerStageByTier.reasoning)}`,
+    `- Local storage: ${formatUsd(report.assumptions.localStorageUsdPerGbMonth)} per GB-month`,
+    "",
+    "## Current Estimate",
+    "",
+    `- Net estimated savings: ${formatUsd(report.current.netEstimatedSavingsUsd)}`,
+    `- Avoided hosted cost: ${formatUsd(report.current.avoidedHostedUsd)}`,
+    `- Fallback hosted cost: ${formatUsd(report.current.fallbackHostedUsd)}`,
+    `- Local storage/month: ${formatUsd(report.current.storageUsdPerMonth)}`,
+    `- Local selected stages: ${report.current.localSelectedStages}`,
+    `- Hosted fallback stages: ${report.current.hostedFallbackStages}`,
+    `- Cache size: ${report.current.totalCacheLabel}`,
+    `- Benchmark latency: ${report.current.benchmarkAverageLatencyMs ?? "n/a"} ms`,
+    `- Benchmark score: ${report.current.benchmarkAverageScore ?? "n/a"}`,
+    "",
+    "## Latest Delta",
+    "",
+    `- Previous snapshot: ${report.comparison.previousAt ?? "none"}`,
+    `- Net savings delta: ${report.comparison.netSavingsDeltaUsd === null ? "n/a" : formatUsd(report.comparison.netSavingsDeltaUsd)}`,
+    `- Avoided hosted delta: ${report.comparison.avoidedHostedDeltaUsd === null ? "n/a" : formatUsd(report.comparison.avoidedHostedDeltaUsd)}`,
+    `- Storage delta: ${report.comparison.storageDeltaUsd === null ? "n/a" : formatUsd(report.comparison.storageDeltaUsd)}`,
+    `- Local stage delta: ${report.comparison.localStageDelta ?? "n/a"}`,
+    "",
+    "## History",
+    "",
+    "| Captured | Local Stages | Fallback Stages | Hosted Stages | Avoided Hosted | Fallback Cost | Storage/Month | Net Savings |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | 0 | 0 | 0 | $0.0000 | $0.0000 | $0.0000 | $0.0000 |",
+    "",
+    "## Recommendation",
+    "",
+    report.recommendation,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmCostLedgerReport(projectDir: string, report: LocalLlmCostLedgerReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM cost ledger outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM cost ledger outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function loadLocalLlmRoutingRecommendationReport(input: {
+  projectDir: string;
+  limit: number;
+}): Promise<LocalLlmRoutingRecommendationReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit: input.limit });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const localLlmSmokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+  const localLlmSetup = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes: localLlmSmokeOutcomes });
+  const localLlmSetupGuide = await loadLocalLlmSetupGuideReport({ projectDir, checklist: localLlmSetup, approved: false });
+  const localLlmDownloadRecommendations = buildLocalLlmDownloadRecommendationReport({ projectDir, scorecard, checklist: localLlmSetup, setupGuide: localLlmSetupGuide });
+  const localLlmInstallationPlan = buildLocalLlmInstallationPlanReport(projectDir, localLlmDownloadRecommendations, "recommended");
+  const localLlmInventory = await buildLocalLlmInventoryReport(projectDir, localLlmSetupGuide, localLlmDownloadRecommendations, localLlmInstallationPlan, recentRouteReports);
+  const localLlmPrunePlan = buildLocalLlmPrunePlanReport(projectDir, localLlmInventory, "candidates");
+  const localLlmCacheTrends = await buildLocalLlmCacheTrendReport(projectDir, localLlmInventory, localLlmPrunePlan, routeReceiptTrends, false);
+  const localLlmCostLedger = await buildLocalLlmCostLedgerReport(projectDir, routeReceiptTrends, localLlmCacheTrends, false);
+  const routeDecisionFeedback = await readRouteDecisionFeedbackLog(projectDir);
+  return buildLocalLlmRoutingRecommendationReport({
+    projectDir,
+    localProviderEvidence,
+    routeReceiptTrends,
+    costLedger: localLlmCostLedger,
+    cacheTrends: localLlmCacheTrends,
+    routeDecisionFeedback
+  });
+}
+
+function buildLocalLlmRoutingRecommendationReport(input: {
+  projectDir: string;
+  localProviderEvidence: DashboardLocalProviderEvidence;
+  routeReceiptTrends: DashboardRouteReceiptTrendReport;
+  costLedger: LocalLlmCostLedgerReport;
+  cacheTrends: LocalLlmCacheTrendReport;
+  routeDecisionFeedback?: RouteDecisionFeedbackLog;
+}): LocalLlmRoutingRecommendationReport {
+  const generatedAt = new Date().toISOString();
+  const feedbackLog = input.routeDecisionFeedback ?? {
+    kind: "agentflow_route_decision_feedback" as const,
+    projectRootUri: input.projectDir,
+    updatedAt: new Date(0).toISOString(),
+    events: []
+  };
+  const feedbackCounts = countStrings(feedbackLog.events.map((event) => event.rating));
+  const recommendations = buildLocalLlmRoutingRecommendations(input.routeReceiptTrends, input.costLedger, input.cacheTrends, feedbackLog);
+  const expand = recommendations.filter((item) => item.action === "expand").length;
+  const hold = recommendations.filter((item) => item.action === "hold").length;
+  const retreat = recommendations.filter((item) => item.action === "retreat").length;
+  const status: LocalLlmRoutingRecommendationReport["status"] = !input.localProviderEvidence.configured
+    ? "needs-local-provider"
+    : !input.routeReceiptTrends.totalReceipts
+      ? "needs-route-evidence"
+      : retreat > 0
+        ? "retreat"
+        : expand > 0
+          ? "expand"
+          : "hold";
+  const summary = [
+    `${recommendations.length} local routing recommendation(s).`,
+    `Expand=${expand}, hold=${hold}, retreat=${retreat}.`,
+    `Net estimated savings=${formatUsd(input.costLedger.current.netEstimatedSavingsUsd)}.`,
+    `Route feedback: helpful=${feedbackCounts.helpful ?? 0}, costly=${feedbackCounts.costly ?? 0}, neutral=${feedbackCounts.neutral ?? 0}.`,
+    input.cacheTrends.current.pruneCandidateCount > 0
+      ? `${input.cacheTrends.current.pruneCandidateCount} prune candidate(s) may affect local economics.`
+      : "No prune pressure is currently affecting local economics."
+  ];
+  const nextAction = status === "needs-local-provider"
+    ? "Configure a local/OpenAI-compatible provider and run a low-risk local route smoke before expanding local routing."
+    : status === "needs-route-evidence"
+      ? "Run local-llm-smoke or a low-risk workflow with local routing so this report can compare real route outcomes."
+      : status === "expand"
+        ? "Review expand candidates, then promote the safest low-risk stages through project-local routing notes."
+        : status === "retreat"
+          ? "Review retreat candidates before more local runs; fallback or quality evidence indicates local routing is not paying off everywhere."
+          : "Keep current local routing boundaries and collect more feedback, benchmark, and cost snapshots.";
+  const document = {
+    kind: "agentflow_local_llm_routing_recommendations" as const,
+    generatedAt,
+    projectRootUri: input.projectDir,
+    status,
+    summary,
+    recommendations,
+    evidence: {
+      localProviderStatus: input.localProviderEvidence.status,
+      configured: input.localProviderEvidence.configured,
+      netEstimatedSavingsUsd: input.costLedger.current.netEstimatedSavingsUsd,
+      storageStatus: input.cacheTrends.current.storageStatus,
+      pruneCandidateCount: input.cacheTrends.current.pruneCandidateCount,
+      routeReceipts: input.routeReceiptTrends.totalReceipts,
+      localSelected: input.routeReceiptTrends.localSelected,
+      localSkipped: input.routeReceiptTrends.localSkipped,
+      hostedFallback: input.routeReceiptTrends.hostedFallback,
+      hostedSelected: input.routeReceiptTrends.hostedSelected,
+      routeFeedbackEvents: feedbackLog.events.length,
+      routeFeedbackCounts: feedbackCounts
+    },
+    nextAction
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-routing-recommendations.md",
+        content: formatLocalLlmRoutingRecommendationMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-llm-routing-recommendations.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function buildLocalLlmRoutingRecommendations(
+  routeReceiptTrends: DashboardRouteReceiptTrendReport,
+  costLedger: LocalLlmCostLedgerReport,
+  cacheTrends: LocalLlmCacheTrendReport,
+  routeDecisionFeedback: RouteDecisionFeedbackLog
+): LocalLlmRoutingRecommendation[] {
+  return buildSavingsAwareLocalRoutingRecommendations({
+    routeGroups: routeReceiptTrends.topGroups,
+    netEstimatedSavingsUsd: costLedger.current.netEstimatedSavingsUsd,
+    storagePressure: cacheTrends.current.storageStatus === "pressure",
+    routeFeedbackEvents: routeDecisionFeedback.events.map(routeDecisionFeedbackEventForScorer)
+  });
+}
+
+function routeDecisionFeedbackEventForScorer(event: RouteDecisionFeedbackEvent): LocalRoutingFeedbackEvent {
+  return {
+    rating: event.rating,
+    workflowId: event.workflowId,
+    stageId: event.stageId,
+    agentId: event.agentId,
+    providerId: event.providerId,
+    modelTier: event.modelTier,
+    routeClass: event.routeClass
+  };
+}
+
+function formatLocalLlmRoutingRecommendationReport(report: LocalLlmRoutingRecommendationReport): string {
+  return [
+    "Local LLM Routing Recommendations",
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    ...report.summary.map((item) => `- ${item}`),
+    `Next: ${report.nextAction}`,
+    "",
+    ...report.recommendations.map((item) => [
+      `- ${item.id} ${item.priority} ${item.action}: ${item.workflowId}/${item.stageId}/${item.agentId}`,
+      `  route: ${item.routeClass} ${item.providerId}/${item.modelTier}; runs=${item.runs}; fallback=${item.fallbackRate}; quality=${item.averageQuality ?? "n/a"}; latency=${item.averageLatencyMs ?? "n/a"}ms`,
+      `  savings: ${formatUsd(item.estimatedNetSavingsUsd)}`,
+      `  recommendation: ${item.recommendation}`,
+      `  reasons: ${item.reasons.join(" ")}`
+    ].join("\n"))
+  ].join("\n");
+}
+
+function buildLocalLlmRoutingNotePlan(
+  report: LocalLlmRoutingRecommendationReport,
+  selectedIds: string[] | "all" = "all"
+): LocalLlmRoutingNotePlan {
+  const requestedIds = selectedIds === "all"
+    ? report.recommendations.map((recommendation) => recommendation.id)
+    : selectedIds;
+  const requestedSet = new Set(requestedIds);
+  const selectedRecommendations = report.recommendations.filter((recommendation): recommendation is LocalLlmRoutingRecommendation & { action: "expand" | "retreat" } =>
+    requestedSet.has(recommendation.id) && recommendation.action !== "hold"
+  );
+  const selectedSet = new Set(selectedRecommendations.map((recommendation) => recommendation.id));
+  const generatedAt = new Date().toISOString();
+  const notes = selectedRecommendations.map((recommendation) => {
+    const direction: LocalLlmRoutingNotePlan["notes"][number]["direction"] = recommendation.action === "expand" ? "prefer_local_trial" : "prefer_hosted_fallback";
+    const targetFile: LocalLlmRoutingNotePlan["notes"][number]["targetFile"] = ".agent-workflow/tuning/routing-preferences.md";
+    return {
+      id: `routing-note-${recommendation.id}`,
+      recommendationId: recommendation.id,
+      action: recommendation.action,
+      priority: recommendation.priority,
+      workflowId: recommendation.workflowId,
+      stageId: recommendation.stageId,
+      agentId: recommendation.agentId,
+      direction,
+      targetFile,
+      draftNote: [
+        `For ${recommendation.workflowId}/${recommendation.stageId} (${recommendation.agentId}), ${recommendation.action === "expand" ? "trial local routing" : "prefer hosted fallback"} based on savings-aware routing evidence.`,
+        `Route evidence: ${recommendation.routeClass} via ${recommendation.providerId}/${recommendation.modelTier}; runs=${recommendation.runs}; fallback=${recommendation.fallbackRate}; quality=${recommendation.averageQuality ?? "n/a"}.`,
+        `Economics: estimated net savings ${formatUsd(recommendation.estimatedNetSavingsUsd)}.`,
+        "Rollback: remove this note from .agent-workflow/tuning/routing-preferences.md and regenerate the routing recommendation report."
+      ].join(" "),
+      reasons: recommendation.reasons
+    };
+  });
+  const document = {
+    kind: "agentflow_local_llm_routing_note_plan" as const,
+    projectRootUri: report.projectRootUri,
+    generatedAt,
+    sourceRecommendationsGeneratedAt: report.generatedAt,
+    selectedRecommendationIds: selectedRecommendations.map((recommendation) => recommendation.id),
+    skippedRecommendationIds: requestedIds.filter((id) => !selectedSet.has(id)),
+    summary: [
+      `${notes.length} reviewed local routing note(s) prepared.`,
+      "Only expand and retreat recommendations become routing-note patch plans.",
+      "This plan does not edit shared workflows, reusable agents, provider settings, or project source."
+    ],
+    notes
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/local-routing-note-plan.md",
+        content: formatLocalLlmRoutingNotePlanMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/local-routing-note-plan.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function formatLocalLlmRoutingNotePlan(plan: LocalLlmRoutingNotePlan): string {
+  return [
+    `Local LLM Routing Note Plan: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Selected recommendations: ${plan.selectedRecommendationIds.length ? plan.selectedRecommendationIds.join(", ") : "none"}`,
+    plan.skippedRecommendationIds.length ? `Skipped recommendations: ${plan.skippedRecommendationIds.join(", ")}` : "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
+function formatLocalLlmRoutingNotePlanMarkdown(plan: Omit<LocalLlmRoutingNotePlan, "files">): string {
+  return [
+    "# Agent Workflow Local LLM Routing Note Plan",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    `Source recommendations: ${plan.sourceRecommendationsGeneratedAt}`,
+    "",
+    "This plan is review-only. It converts savings-aware expand/retreat recommendations into project-local routing notes. It does not edit shared workflows, reusable agents, provider settings, project source, or live routing by itself.",
+    "",
+    "## Summary",
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    "## Draft Notes",
+    "",
+    plan.notes.length
+      ? plan.notes.map((note) => [
+        `### ${note.id}`,
+        "",
+        `- Recommendation: ${note.recommendationId}`,
+        `- Action: ${note.action}`,
+        `- Priority: ${note.priority}`,
+        `- Target: ${note.workflowId}/${note.stageId} (${note.agentId})`,
+        `- Direction: ${note.direction}`,
+        `- Target file: ${note.targetFile}`,
+        "",
+        "Reasons:",
+        note.reasons.map((item) => `- ${item}`).join("\n"),
+        "",
+        "Draft routing note:",
+        "",
+        note.draftNote,
+        ""
+      ].join("\n")).join("\n")
+      : "_No expand or retreat recommendations selected._",
+    ""
+  ].join("\n");
+}
+
+async function buildLocalLlmRoutingNoteApplicationPlan(input: {
+  projectDir: string;
+  notePlan: LocalLlmRoutingNotePlanDocument;
+  selectedIds: string[] | "all";
+  approved: boolean;
+}): Promise<LocalLlmRoutingNoteApplicationPlan> {
+  const projectRoot = path.resolve(input.projectDir);
+  const generatedAt = new Date().toISOString();
+  const requestedIds = input.selectedIds === "all"
+    ? input.notePlan.notes.map((note) => note.id)
+    : input.selectedIds;
+  const requestedSet = new Set(requestedIds);
+  const selectedNotes = input.notePlan.notes.filter((note) =>
+    requestedSet.has(note.id) || requestedSet.has(note.recommendationId)
+  );
+  const matchedIds = new Set(selectedNotes.flatMap((note) => [note.id, note.recommendationId]));
+  const routingPath = path.join(projectRoot, ".agent-workflow", "tuning", "routing-preferences.md");
+  const existingContent = await fs.readFile(routingPath, "utf8").catch((error) => {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return "";
+    }
+    throw error;
+  });
+  const beforeHash = createHash("sha256").update(existingContent).digest("hex");
+  const selectedFreshNotes = selectedNotes.filter((note) => !existingContent.includes(`agentflow-local-routing-note:${note.id}`));
+  const appendedSection = selectedFreshNotes.length
+    ? [
+      existingContent.trimEnd(),
+      "",
+      `## Local LLM Routing Notes (${generatedAt})`,
+      "",
+      ...selectedFreshNotes.map((note) => [
+        `<!-- agentflow-local-routing-note:${note.id} -->`,
+        `### ${note.workflowId}/${note.stageId}`,
+        "",
+        `- Action: ${note.action}`,
+        `- Priority: ${note.priority}`,
+        `- Agent: ${note.agentId}`,
+        `- Direction: ${note.direction}`,
+        "",
+        note.draftNote,
+        ""
+      ].join("\n"))
+    ].join("\n").trimStart()
+    : existingContent;
+  const nextContent = appendedSection && !appendedSection.endsWith("\n") ? `${appendedSection}\n` : appendedSection;
+  const afterHash = createHash("sha256").update(nextContent).digest("hex");
+  const document = {
+    kind: "agentflow_local_llm_routing_note_application" as const,
+    generatedAt,
+    projectRootUri: projectRoot,
+    sourcePlanGeneratedAt: input.notePlan.generatedAt,
+    approved: input.approved,
+    selectedNoteIds: selectedNotes.map((note) => note.id),
+    appliedNoteIds: selectedFreshNotes.map((note) => note.id),
+    skippedNoteIds: [
+      ...requestedIds.filter((id) => !matchedIds.has(id)),
+      ...selectedNotes.filter((note) => !selectedFreshNotes.some((fresh) => fresh.id === note.id)).map((note) => note.id)
+    ],
+    targetFile: ".agent-workflow/tuning/routing-preferences.md" as const,
+    beforeHash,
+    afterHash,
+    rollback: "Restore .agent-workflow/tuning/routing-preferences.md to the recorded beforeHash content or remove sections marked agentflow-local-routing-note:<id>.",
+    summary: [
+      `${selectedFreshNotes.length} routing note(s) ready to append.`,
+      selectedNotes.length === selectedFreshNotes.length ? "No duplicate selected notes were detected." : `${selectedNotes.length - selectedFreshNotes.length} duplicate selected note(s) were skipped.`,
+      input.approved ? "Approved flag is present for write mode." : "Dry-run mode requires --approved before writing."
+    ]
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/tuning/routing-preferences.md",
+        content: nextContent
+      },
+      {
+        relativePath: ".agent-workflow/tuning/local-routing-note-application.md",
+        content: formatLocalLlmRoutingNoteApplicationMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/tuning/local-routing-note-application.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function formatLocalLlmRoutingNoteApplicationPlan(plan: LocalLlmRoutingNoteApplicationPlan): string {
+  return [
+    `Local LLM Routing Note Application: ${plan.projectRootUri}`,
+    `Generated: ${plan.generatedAt}`,
+    `Approved: ${plan.approved ? "yes" : "no"}`,
+    `Selected notes: ${plan.selectedNoteIds.length ? plan.selectedNoteIds.join(", ") : "none"}`,
+    `Applied notes: ${plan.appliedNoteIds.length ? plan.appliedNoteIds.join(", ") : "none"}`,
+    plan.skippedNoteIds.length ? `Skipped notes: ${plan.skippedNoteIds.join(", ")}` : "",
+    ...plan.summary.map((item) => `- ${item}`),
+    `Rollback: ${plan.rollback}`,
+    "",
+    "Files",
+    plan.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].filter(Boolean).join("\n");
+}
+
+function formatLocalLlmRoutingNoteApplicationMarkdown(plan: Omit<LocalLlmRoutingNoteApplicationPlan, "files">): string {
+  return [
+    "# Agent Workflow Local LLM Routing Note Application",
+    "",
+    `Generated: ${plan.generatedAt}`,
+    `Project: ${plan.projectRootUri}`,
+    `Source plan: ${plan.sourcePlanGeneratedAt}`,
+    `Approved: ${plan.approved ? "yes" : "no"}`,
+    "",
+    "## Summary",
+    "",
+    ...plan.summary.map((item) => `- ${item}`),
+    "",
+    "## Receipts",
+    "",
+    `- Target file: ${plan.targetFile}`,
+    `- Selected notes: ${plan.selectedNoteIds.length ? plan.selectedNoteIds.join(", ") : "none"}`,
+    `- Applied notes: ${plan.appliedNoteIds.length ? plan.appliedNoteIds.join(", ") : "none"}`,
+    `- Skipped notes: ${plan.skippedNoteIds.length ? plan.skippedNoteIds.join(", ") : "none"}`,
+    `- Before hash: ${plan.beforeHash}`,
+    `- After hash: ${plan.afterHash}`,
+    `- Rollback: ${plan.rollback}`,
+    ""
+  ].join("\n");
+}
+
+function formatLocalLlmRoutingRecommendationMarkdown(report: Omit<LocalLlmRoutingRecommendationReport, "files">): string {
+  const rows = report.recommendations.map((item) =>
+    `| ${item.id} | ${item.priority} | ${item.action} | ${item.workflowId}/${item.stageId}/${item.agentId} | ${item.routeClass} | ${item.providerId}/${item.modelTier} | ${item.runs} | ${item.fallbackRate} | ${item.averageQuality ?? "n/a"} | ${item.averageLatencyMs ?? "n/a"} | ${item.routeFeedback.helpful}/${item.routeFeedback.costly}/${item.routeFeedback.neutral} | ${formatUsd(item.estimatedNetSavingsUsd)} | ${item.recommendation} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local LLM Routing Recommendations",
+    "",
+    `Generated: ${report.generatedAt}`,
+    `Project: ${report.projectRootUri}`,
+    `Status: ${report.status}`,
+    "",
+    "This project-local report recommends where local model routing should expand, hold, or retreat based on route receipts, quality, fallback behavior, latency, cache pressure, and estimated savings. It does not edit provider settings or routing notes.",
+    "",
+    "## Summary",
+    "",
+    ...report.summary.map((item) => `- ${item}`),
+    "",
+    "## Evidence",
+    "",
+    `- Local provider status: ${report.evidence.localProviderStatus}`,
+    `- Configured: ${report.evidence.configured ? "yes" : "no"}`,
+    `- Net estimated savings: ${formatUsd(report.evidence.netEstimatedSavingsUsd)}`,
+    `- Storage status: ${report.evidence.storageStatus}`,
+    `- Prune candidates: ${report.evidence.pruneCandidateCount}`,
+    `- Route receipts: ${report.evidence.routeReceipts}`,
+    `- Local selected: ${report.evidence.localSelected}`,
+    `- Local skipped: ${report.evidence.localSkipped}`,
+    `- Hosted fallback: ${report.evidence.hostedFallback}`,
+    `- Hosted selected: ${report.evidence.hostedSelected}`,
+    `- Route feedback events: ${report.evidence.routeFeedbackEvents}`,
+    `- Route feedback helpful/costly/neutral: ${report.evidence.routeFeedbackCounts.helpful ?? 0}/${report.evidence.routeFeedbackCounts.costly ?? 0}/${report.evidence.routeFeedbackCounts.neutral ?? 0}`,
+    "",
+    "## Recommendations",
+    "",
+    "| ID | Priority | Action | Target | Route Class | Provider/Tier | Runs | Fallback | Quality | Latency ms | Feedback H/C/N | Net Savings | Recommendation |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows,
+    "",
+    "## Next Action",
+    "",
+    report.nextAction,
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmRoutingRecommendationReport(projectDir: string, report: LocalLlmRoutingRecommendationReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local LLM routing recommendations outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM routing recommendations outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function writeLocalLlmRoutingNotePlan(projectDir: string, plan: LocalLlmRoutingNotePlan): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of plan.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
+      throw new Error(`Refusing to write local LLM routing note plan outside .agent-workflow/tuning: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM routing note plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function readLocalLlmRoutingNotePlan(projectDir: string): Promise<LocalLlmRoutingNotePlanDocument> {
+  const planPath = path.join(projectDir, ".agent-workflow", "tuning", "local-routing-note-plan.json");
+  const raw = await fs.readFile(planPath, "utf8");
+  const parsed = JSON.parse(raw) as LocalLlmRoutingNotePlanDocument;
+  if (parsed.kind !== "agentflow_local_llm_routing_note_plan" || !Array.isArray(parsed.notes)) {
+    throw new Error(`Invalid local LLM routing note plan: ${planPath}`);
+  }
+  return parsed;
+}
+
+async function loadDashboardLocalLlmRoutingNoteApplicationStatus(projectDir: string): Promise<DashboardLocalLlmRoutingNoteApplicationStatus> {
+  const projectRoot = path.resolve(projectDir);
+  const applicationPath = path.join(projectRoot, ".agent-workflow", "tuning", "local-routing-note-application.json");
+  const routingPath = path.join(projectRoot, ".agent-workflow", "tuning", "routing-preferences.md");
+  const base = {
+    exists: false,
+    path: ".agent-workflow/tuning/local-routing-note-application.json" as const,
+    targetFile: ".agent-workflow/tuning/routing-preferences.md" as const,
+    generatedAt: null,
+    sourcePlanGeneratedAt: null,
+    approved: false,
+    selectedNoteIds: [] as string[],
+    appliedNoteIds: [] as string[],
+    skippedNoteIds: [] as string[],
+    beforeHash: null,
+    afterHash: null,
+    rollback: null,
+    activePreferenceExists: false,
+    activePreferenceBytes: 0,
+    activePreferenceHash: null,
+    activePreferencePreview: null,
+    activeLocalRoutingNoteMarkers: 0,
+    error: null
+  };
+  try {
+    const [rawApplication, routingStatResult, routingContent] = await Promise.all([
+      fs.readFile(applicationPath, "utf8"),
+      fs.stat(routingPath).catch(() => null),
+      fs.readFile(routingPath, "utf8").catch(() => "")
+    ]);
+    const parsed = JSON.parse(rawApplication) as Partial<LocalLlmRoutingNoteApplicationPlan>;
+    if (parsed.kind !== "agentflow_local_llm_routing_note_application") {
+      throw new Error(`Invalid local routing note application receipt: ${applicationPath}`);
+    }
+    return {
+      ...base,
+      exists: true,
+      generatedAt: typeof parsed.generatedAt === "string" ? parsed.generatedAt : null,
+      sourcePlanGeneratedAt: typeof parsed.sourcePlanGeneratedAt === "string" ? parsed.sourcePlanGeneratedAt : null,
+      approved: parsed.approved === true,
+      selectedNoteIds: Array.isArray(parsed.selectedNoteIds) ? parsed.selectedNoteIds.filter((item): item is string => typeof item === "string") : [],
+      appliedNoteIds: Array.isArray(parsed.appliedNoteIds) ? parsed.appliedNoteIds.filter((item): item is string => typeof item === "string") : [],
+      skippedNoteIds: Array.isArray(parsed.skippedNoteIds) ? parsed.skippedNoteIds.filter((item): item is string => typeof item === "string") : [],
+      beforeHash: typeof parsed.beforeHash === "string" ? parsed.beforeHash : null,
+      afterHash: typeof parsed.afterHash === "string" ? parsed.afterHash : null,
+      rollback: typeof parsed.rollback === "string" ? parsed.rollback : null,
+      activePreferenceExists: Boolean(routingStatResult),
+      activePreferenceBytes: routingStatResult?.size ?? 0,
+      activePreferenceHash: routingContent ? createHash("sha256").update(routingContent).digest("hex") : null,
+      activePreferencePreview: routingContent.trim() ? truncateDashboardPreview(routingContent, 2200) : null,
+      activeLocalRoutingNoteMarkers: [...routingContent.matchAll(/agentflow-local-routing-note:/g)].length,
+      error: null
+    };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      const routingContent = await fs.readFile(routingPath, "utf8").catch(() => "");
+      const routingStatResult = await fs.stat(routingPath).catch(() => null);
+      return {
+        ...base,
+        activePreferenceExists: Boolean(routingStatResult),
+        activePreferenceBytes: routingStatResult?.size ?? 0,
+        activePreferenceHash: routingContent ? createHash("sha256").update(routingContent).digest("hex") : null,
+        activePreferencePreview: routingContent.trim() ? truncateDashboardPreview(routingContent, 2200) : null,
+        activeLocalRoutingNoteMarkers: [...routingContent.matchAll(/agentflow-local-routing-note:/g)].length
+      };
+    }
+    return {
+      ...base,
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+async function buildDashboardLocalLlmRoutingDecisionTimeline(input: {
+  projectDir: string;
+  recommendations: LocalLlmRoutingRecommendationReport;
+  noteApplication: DashboardLocalLlmRoutingNoteApplicationStatus;
+  routeReceiptTrends: DashboardRouteReceiptTrendReport;
+}): Promise<DashboardLocalLlmRoutingDecisionTimeline> {
+  const projectRoot = path.resolve(input.projectDir);
+  const notePlan = await readLocalLlmRoutingNotePlan(projectRoot).catch(() => null);
+  const noteByRecommendation = new Map((notePlan?.notes ?? []).map((note) => [note.recommendationId, note]));
+  const applied = new Set(input.noteApplication.appliedNoteIds);
+  const skipped = new Set(input.noteApplication.skippedNoteIds);
+  const activeMarkers = input.noteApplication.activePreferencePreview ?? "";
+  const topRecommendations = input.recommendations.recommendations
+    .slice()
+    .sort((a, b) => {
+      const actionRank = { retreat: 0, expand: 1, hold: 2 };
+      return actionRank[a.action] - actionRank[b.action] || b.runs - a.runs || a.id.localeCompare(b.id);
+    })
+    .slice(0, 12);
+  const items = topRecommendations.map((recommendation): DashboardLocalLlmRoutingDecisionTimelineItem => {
+    const note = noteByRecommendation.get(recommendation.id) ?? null;
+    const routeGroup = input.routeReceiptTrends.topGroups.find((group) =>
+      group.workflowId === recommendation.workflowId &&
+      group.stageId === recommendation.stageId &&
+      group.agentId === recommendation.agentId
+    ) ?? null;
+    const marker = note ? `agentflow-local-routing-note:${note.id}` : "";
+    const active = marker ? activeMarkers.includes(marker) : false;
+    const state: DashboardLocalLlmRoutingDecisionTimelineItem["state"] = active || (note && applied.has(note.id))
+      ? "applied"
+      : note && skipped.has(note.id)
+        ? "skipped"
+        : note
+          ? "planned"
+          : recommendation.action === "hold"
+            ? "monitoring"
+            : "recommended";
+    return {
+      recommendationId: recommendation.id,
+      state,
+      action: recommendation.action,
+      priority: recommendation.priority,
+      target: `${recommendation.workflowId}/${recommendation.stageId}`,
+      agentId: recommendation.agentId,
+      noteId: note?.id ?? null,
+      routeClass: routeGroup?.classification ?? recommendation.routeClass,
+      providerTier: `${recommendation.providerId}/${recommendation.modelTier}`,
+      runs: routeGroup?.runs ?? recommendation.runs,
+      fallbackRate: routeGroup && routeGroup.runs ? Number((routeGroup.fallbackCount / routeGroup.runs).toFixed(2)) : recommendation.fallbackRate,
+      quality: routeGroup?.averageQuality ?? recommendation.averageQuality,
+      netSavingsUsd: recommendation.estimatedNetSavingsUsd,
+      outcome: routeGroup?.latestReason || recommendation.recommendation
+    };
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    projectRootUri: projectRoot,
+    status: items.some((item) => item.state === "applied")
+      ? "active"
+      : items.some((item) => item.state === "planned")
+        ? "planned"
+        : items.some((item) => item.state === "recommended")
+          ? "recommended"
+          : "monitoring",
+    sourceRecommendationGeneratedAt: input.recommendations.generatedAt,
+    sourceNotePlanGeneratedAt: notePlan?.generatedAt ?? null,
+    sourceApplicationGeneratedAt: input.noteApplication.generatedAt,
+    summary: [
+      `${items.length} routing decision timeline item(s).`,
+      `${items.filter((item) => item.state === "applied").length} applied, ${items.filter((item) => item.state === "planned").length} planned, ${items.filter((item) => item.state === "recommended").length} recommended.`,
+      "Later quality outcome is read from current route receipt trends."
+    ],
+    items
+  };
+}
+
+async function loadLocalLlmRoutingDecisionSnapshotReport(input: {
+  projectDir: string;
+  limit: number;
+  write: boolean;
+}): Promise<LocalLlmRoutingDecisionSnapshotReport> {
+  const projectDir = path.resolve(process.cwd(), input.projectDir);
+  const scorecard = await loadPreferenceScorecard({ projectDir, limit: input.limit });
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: input.limit });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+  const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+  const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+  const localLlmSmokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+  const localLlmSetup = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes: localLlmSmokeOutcomes });
+  const localLlmSetupGuide = await loadLocalLlmSetupGuideReport({ projectDir, checklist: localLlmSetup, approved: false });
+  const localLlmDownloadRecommendations = buildLocalLlmDownloadRecommendationReport({ projectDir, scorecard, checklist: localLlmSetup, setupGuide: localLlmSetupGuide });
+  const localLlmInstallationPlan = buildLocalLlmInstallationPlanReport(projectDir, localLlmDownloadRecommendations, "recommended");
+  const localLlmInventory = await buildLocalLlmInventoryReport(projectDir, localLlmSetupGuide, localLlmDownloadRecommendations, localLlmInstallationPlan, recentRouteReports);
+  const localLlmPrunePlan = buildLocalLlmPrunePlanReport(projectDir, localLlmInventory, "candidates");
+  const localLlmCacheTrends = await buildLocalLlmCacheTrendReport(projectDir, localLlmInventory, localLlmPrunePlan, routeReceiptTrends, false);
+  const localLlmCostLedger = await buildLocalLlmCostLedgerReport(projectDir, routeReceiptTrends, localLlmCacheTrends, false);
+  const routeDecisionFeedback = await readRouteDecisionFeedbackLog(projectDir);
+  const localLlmRoutingRecommendations = buildLocalLlmRoutingRecommendationReport({
+    projectDir,
+    localProviderEvidence,
+    routeReceiptTrends,
+    costLedger: localLlmCostLedger,
+    cacheTrends: localLlmCacheTrends,
+    routeDecisionFeedback
+  });
+  const localLlmRoutingNoteApplication = await loadDashboardLocalLlmRoutingNoteApplicationStatus(projectDir);
+  const timeline = await buildDashboardLocalLlmRoutingDecisionTimeline({
+    projectDir,
+    recommendations: localLlmRoutingRecommendations,
+    noteApplication: localLlmRoutingNoteApplication,
+    routeReceiptTrends
+  });
+  return buildLocalLlmRoutingDecisionSnapshotReport(projectDir, timeline, input.write);
+}
+
+async function buildLocalLlmRoutingDecisionSnapshotReport(
+  projectDir: string,
+  timeline: DashboardLocalLlmRoutingDecisionTimeline,
+  write: boolean
+): Promise<LocalLlmRoutingDecisionSnapshotReport> {
+  const existing = await readLocalLlmRoutingDecisionSnapshotLog(projectDir);
+  const snapshot = createLocalLlmRoutingDecisionSnapshot(timeline);
+  const latest = existing.snapshots.at(-1) ?? null;
+  const changed = latest?.decisionHash !== snapshot.decisionHash;
+  const snapshots = changed ? [...existing.snapshots, snapshot].slice(-50) : existing.snapshots;
+  const previous = snapshots.length >= 2 ? snapshots.at(-2) ?? null : null;
+  const latestForComparison = snapshots.at(-1) ?? snapshot;
+  const delta = compareLocalLlmRoutingDecisionSnapshots(previous, latestForComparison);
+  const log: LocalLlmRoutingDecisionSnapshotLog = {
+    kind: "agentflow_local_llm_routing_decision_snapshots",
+    projectRootUri: path.resolve(projectDir),
+    updatedAt: new Date().toISOString(),
+    snapshots,
+    latestDelta: delta
+  };
+  const files = [
+    {
+      relativePath: ".agent-workflow/model-improvement/local-routing-decision-snapshots.md",
+      content: formatLocalLlmRoutingDecisionSnapshotMarkdown(log)
+    },
+    {
+      relativePath: ".agent-workflow/model-improvement/local-routing-decision-snapshots.json",
+      content: `${JSON.stringify(log, null, 2)}\n`
+    }
+  ];
+  const report = {
+    ...log,
+    captured: changed,
+    currentSnapshot: snapshot,
+    files
+  };
+  if (write) {
+    await writeLocalLlmRoutingDecisionSnapshotReport(projectDir, report);
+  }
+  return report;
+}
+
+function createLocalLlmRoutingDecisionSnapshot(timeline: DashboardLocalLlmRoutingDecisionTimeline): LocalLlmRoutingDecisionSnapshot {
+  const items = timeline.items.map((item) => ({
+    recommendationId: item.recommendationId,
+    state: item.state,
+    action: item.action,
+    priority: item.priority,
+    target: item.target,
+    agentId: item.agentId,
+    routeClass: item.routeClass,
+    providerTier: item.providerTier,
+    runs: item.runs,
+    fallbackRate: item.fallbackRate,
+    quality: item.quality,
+    netSavingsUsd: item.netSavingsUsd,
+    outcome: item.outcome
+  }));
+  const decisionHash = createHash("sha256").update(JSON.stringify(items)).digest("hex");
+  return {
+    generatedAt: new Date().toISOString(),
+    sourceTimelineGeneratedAt: timeline.generatedAt,
+    decisionHash,
+    status: timeline.status,
+    counts: countStrings(items.map((item) => item.state)),
+    totalNetSavingsUsd: roundCurrency(items.reduce((sum, item) => sum + item.netSavingsUsd, 0)),
+    summary: timeline.summary,
+    items
+  };
+}
+
+async function readLocalLlmRoutingDecisionSnapshotLog(projectDir: string): Promise<LocalLlmRoutingDecisionSnapshotLog> {
+  const projectRoot = path.resolve(projectDir);
+  const targetPath = path.join(projectRoot, ".agent-workflow", "model-improvement", "local-routing-decision-snapshots.json");
+  try {
+    const parsed = JSON.parse(await fs.readFile(targetPath, "utf8")) as Partial<LocalLlmRoutingDecisionSnapshotLog>;
+    if (parsed.kind !== "agentflow_local_llm_routing_decision_snapshots" || !Array.isArray(parsed.snapshots)) {
+      throw new Error(`Invalid local routing decision snapshot log: ${targetPath}`);
+    }
+    return {
+      kind: "agentflow_local_llm_routing_decision_snapshots",
+      projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectRoot,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+      snapshots: parsed.snapshots.filter(isLocalLlmRoutingDecisionSnapshot),
+      latestDelta: parsed.latestDelta && typeof parsed.latestDelta === "object"
+        ? parsed.latestDelta as LocalLlmRoutingDecisionSnapshotDelta
+        : emptyLocalLlmRoutingDecisionSnapshotDelta(null)
+    };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return {
+        kind: "agentflow_local_llm_routing_decision_snapshots",
+        projectRootUri: projectRoot,
+        updatedAt: new Date(0).toISOString(),
+        snapshots: [],
+        latestDelta: emptyLocalLlmRoutingDecisionSnapshotDelta(null)
+      };
+    }
+    throw error;
+  }
+}
+
+function isLocalLlmRoutingDecisionSnapshot(value: unknown): value is LocalLlmRoutingDecisionSnapshot {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<LocalLlmRoutingDecisionSnapshot>;
+  return typeof candidate.generatedAt === "string"
+    && typeof candidate.decisionHash === "string"
+    && Array.isArray(candidate.items);
+}
+
+function compareLocalLlmRoutingDecisionSnapshots(
+  previous: LocalLlmRoutingDecisionSnapshot | null,
+  current: LocalLlmRoutingDecisionSnapshot
+): LocalLlmRoutingDecisionSnapshotDelta {
+  if (!previous) {
+    return emptyLocalLlmRoutingDecisionSnapshotDelta(null);
+  }
+  const previousByKey = new Map(previous.items.map((item) => [localLlmRoutingDecisionSnapshotItemKey(item), item]));
+  const currentByKey = new Map(current.items.map((item) => [localLlmRoutingDecisionSnapshotItemKey(item), item]));
+  const added = [...currentByKey.keys()].filter((key) => !previousByKey.has(key));
+  const removed = [...previousByKey.keys()].filter((key) => !currentByKey.has(key));
+  const changed = [...currentByKey.entries()].filter(([key, item]) => {
+    const old = previousByKey.get(key);
+    return old && createHash("sha256").update(JSON.stringify(old)).digest("hex") !== createHash("sha256").update(JSON.stringify(item)).digest("hex");
+  });
+  return {
+    previousAt: previous.generatedAt,
+    changed: previous.decisionHash !== current.decisionHash,
+    added: added.length,
+    removed: removed.length,
+    changedItems: changed.length,
+    netSavingsDeltaUsd: roundCurrency(current.totalNetSavingsUsd - previous.totalNetSavingsUsd),
+    stateChanges: changed
+      .map(([key, item]) => {
+        const old = previousByKey.get(key);
+        return old && old.state !== item.state ? `${key}: ${old.state} -> ${item.state}` : "";
+      })
+      .filter(Boolean)
+      .slice(0, 12)
+  };
+}
+
+function localLlmRoutingDecisionSnapshotItemKey(item: LocalLlmRoutingDecisionSnapshotItem): string {
+  return `${item.recommendationId}:${item.target}:${item.agentId}`;
+}
+
+function emptyLocalLlmRoutingDecisionSnapshotDelta(previousAt: string | null): LocalLlmRoutingDecisionSnapshotDelta {
+  return {
+    previousAt,
+    changed: false,
+    added: 0,
+    removed: 0,
+    changedItems: 0,
+    netSavingsDeltaUsd: 0,
+    stateChanges: []
+  };
+}
+
+async function writeLocalLlmRoutingDecisionSnapshotReport(projectDir: string, report: LocalLlmRoutingDecisionSnapshotReport): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of report.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write routing decision snapshots outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write routing decision snapshots outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function recordRouteDecisionFeedback(input: {
+  projectDir: string;
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  providerId: string;
+  modelTier: string;
+  routeClass: string;
+  rating: string;
+  note: string;
+  runs: number;
+  fallbackCount: number;
+  averageQuality: number | null;
+  averageLatencyMs: number | null;
+  source: "cli" | "dashboard";
+}): Promise<RouteDecisionFeedbackResult> {
+  const projectRoot = path.resolve(input.projectDir);
+  const routeClass = normalizeRouteDecisionClass(input.routeClass);
+  if (!routeClass) {
+    return { ok: false, error: `Unsupported route decision class: ${input.routeClass || "missing"}` };
+  }
+  const rating = normalizeRouteDecisionFeedbackRating(input.rating);
+  if (!rating) {
+    return { ok: false, error: `Unsupported route feedback rating: ${input.rating || "missing"}` };
+  }
+  const missing = [
+    ["workflow", input.workflowId],
+    ["stage", input.stageId],
+    ["agent", input.agentId],
+    ["provider", input.providerId],
+    ["tier", input.modelTier]
+  ].filter(([, value]) => !String(value).trim()).map(([label]) => label);
+  if (missing.length) {
+    return { ok: false, error: `Missing route feedback field(s): ${missing.join(", ")}` };
+  }
+  const existing = await readRouteDecisionFeedbackLog(projectRoot);
+  const event: RouteDecisionFeedbackEvent = {
+    id: randomUUID(),
+    createdAt: new Date().toISOString(),
+    source: input.source,
+    rating,
+    note: input.note.trim(),
+    workflowId: input.workflowId.trim(),
+    stageId: input.stageId.trim(),
+    agentId: input.agentId.trim(),
+    providerId: input.providerId.trim(),
+    modelTier: input.modelTier.trim(),
+    routeClass,
+    runs: input.runs,
+    fallbackCount: input.fallbackCount,
+    averageQuality: input.averageQuality,
+    averageLatencyMs: input.averageLatencyMs
+  };
+  const log: RouteDecisionFeedbackLog = {
+    kind: "agentflow_route_decision_feedback",
+    projectRootUri: projectRoot,
+    updatedAt: event.createdAt,
+    events: [...existing.events, event].slice(-250)
+  };
+  await writeRouteDecisionFeedbackLog(projectRoot, log);
+  return {
+    ok: true,
+    event,
+    artifactUri: path.join(projectRoot, ".agent-workflow", "model-improvement", "route-decision-feedback.json"),
+    totalEvents: log.events.length
+  };
+}
+
+async function readRouteDecisionFeedbackLog(projectDir: string): Promise<RouteDecisionFeedbackLog> {
+  const projectRoot = path.resolve(projectDir);
+  const targetPath = path.join(projectRoot, ".agent-workflow", "model-improvement", "route-decision-feedback.json");
+  try {
+    const parsed = JSON.parse(await fs.readFile(targetPath, "utf8")) as Partial<RouteDecisionFeedbackLog>;
+    if (parsed.kind !== "agentflow_route_decision_feedback" || !Array.isArray(parsed.events)) {
+      throw new Error(`Invalid route decision feedback log: ${targetPath}`);
+    }
+    return {
+      kind: "agentflow_route_decision_feedback",
+      projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectRoot,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
+      events: parsed.events.filter(isRouteDecisionFeedbackEvent)
+    };
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return {
+        kind: "agentflow_route_decision_feedback",
+        projectRootUri: projectRoot,
+        updatedAt: new Date(0).toISOString(),
+        events: []
+      };
+    }
+    throw error;
+  }
+}
+
+async function writeRouteDecisionFeedbackLog(projectDir: string, log: RouteDecisionFeedbackLog): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  const directory = path.join(projectRoot, ".agent-workflow", "model-improvement");
+  const jsonPath = path.join(directory, "route-decision-feedback.json");
+  const markdownPath = path.join(directory, "route-decision-feedback.md");
+  await fs.mkdir(directory, { recursive: true });
+  await fs.writeFile(jsonPath, `${JSON.stringify(log, null, 2)}\n`, "utf8");
+  await fs.writeFile(markdownPath, formatRouteDecisionFeedbackMarkdown(log), "utf8");
+}
+
+function isRouteDecisionFeedbackEvent(value: unknown): value is RouteDecisionFeedbackEvent {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<RouteDecisionFeedbackEvent>;
+  return typeof candidate.id === "string"
+    && typeof candidate.createdAt === "string"
+    && normalizeRouteDecisionFeedbackRating(candidate.rating ?? "") !== null
+    && normalizeRouteDecisionClass(candidate.routeClass ?? "") !== null;
+}
+
+function normalizeRouteDecisionFeedbackRating(value: string): RouteDecisionFeedbackRating | null {
+  return value === "helpful" || value === "costly" || value === "neutral" ? value : null;
+}
+
+function normalizeRouteDecisionClass(value: string): DashboardRouteReceiptTrendGroup["classification"] | null {
+  return value === "local-selected" || value === "local-skipped" || value === "hosted-fallback" || value === "hosted-selected" ? value : null;
+}
+
+function formatRouteDecisionFeedbackResult(result: Extract<RouteDecisionFeedbackResult, { ok: true }>): string {
+  return [
+    `Recorded ${result.event.rating} route feedback.`,
+    `Target: ${result.event.workflowId}/${result.event.stageId}/${result.event.agentId}`,
+    `Route: ${result.event.providerId}/${result.event.modelTier} (${result.event.routeClass})`,
+    `Artifact: ${result.artifactUri}`,
+    `Events: ${result.totalEvents}`
+  ].join("\n");
+}
+
+function formatRouteDecisionFeedbackMarkdown(log: RouteDecisionFeedbackLog): string {
+  const rows = log.events.slice(-50).reverse().map((event) =>
+    `| ${event.createdAt} | ${event.rating} | ${event.workflowId}/${event.stageId}/${event.agentId} | ${event.providerId}/${event.modelTier} | ${event.routeClass} | ${event.runs} | ${event.fallbackCount} | ${escapeMarkdownTableCell(event.note || "n/a")} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Route Decision Feedback",
+    "",
+    `Project: ${log.projectRootUri}`,
+    `Updated: ${log.updatedAt}`,
+    "",
+    "This local learning log stores user feedback about route decisions shown in the model-improvement drilldown. It does not store prompt text, model outputs, API keys, or project source.",
+    "",
+    "| Created | Rating | Target | Route | Class | Runs | Fallbacks | Note |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | none | none | none | none | 0 | 0 | none |",
+    ""
+  ].join("\n");
+}
+
+function escapeMarkdownTableCell(value: string): string {
+  return value.replaceAll("|", "\\|").replace(/\s+/gu, " ").trim();
+}
+
+function formatLocalLlmRoutingDecisionSnapshotReport(report: LocalLlmRoutingDecisionSnapshotReport): string {
+  return [
+    `Local Routing Decision Snapshots: ${report.projectRootUri}`,
+    `Updated: ${report.updatedAt}`,
+    `Snapshots: ${report.snapshots.length}`,
+    `Captured current snapshot: ${report.captured ? "yes" : "no, unchanged from latest"}`,
+    `Current hash: ${report.currentSnapshot.decisionHash.slice(0, 16)}`,
+    `Previous snapshot: ${report.latestDelta.previousAt ?? "none"}`,
+    `Delta: added=${report.latestDelta.added} removed=${report.latestDelta.removed} changed=${report.latestDelta.changedItems} netSavings=${formatUsd(report.latestDelta.netSavingsDeltaUsd)}`,
+    report.latestDelta.stateChanges.length ? `State changes: ${report.latestDelta.stateChanges.join("; ")}` : "State changes: none"
+  ].join("\n");
+}
+
+function formatLocalLlmRoutingDecisionSnapshotMarkdown(log: LocalLlmRoutingDecisionSnapshotLog): string {
+  const latest = log.snapshots.at(-1) ?? null;
+  const rows = log.snapshots.slice(-20).reverse().map((snapshot) =>
+    `| ${snapshot.generatedAt} | ${snapshot.status} | ${snapshot.decisionHash.slice(0, 12)} | ${snapshot.items.length} | ${snapshot.counts.applied ?? 0} | ${snapshot.counts.planned ?? 0} | ${snapshot.counts.recommended ?? 0} | ${formatUsd(snapshot.totalNetSavingsUsd)} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local Routing Decision Snapshots",
+    "",
+    `Project: ${log.projectRootUri}`,
+    `Updated: ${log.updatedAt}`,
+    "",
+    "This append-only local history stores compact routing-decision state for dashboard comparison. It does not store prompt text, model outputs, API keys, or project source.",
+    "",
+    "## Latest",
+    "",
+    `- Snapshot: ${latest?.generatedAt ?? "none"}`,
+    `- Status: ${latest?.status ?? "none"}`,
+    `- Decision hash: ${latest?.decisionHash ?? "none"}`,
+    `- Previous snapshot: ${log.latestDelta.previousAt ?? "none"}`,
+    `- Delta: added=${log.latestDelta.added}, removed=${log.latestDelta.removed}, changed=${log.latestDelta.changedItems}, net savings=${formatUsd(log.latestDelta.netSavingsDeltaUsd)}`,
+    "",
+    "## History",
+    "",
+    "| Captured | Status | Hash | Items | Applied | Planned | Recommended | Net Savings |",
+    "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    rows || "| none | none | none | 0 | 0 | 0 | 0 | $0.0000 |",
+    ""
+  ].join("\n");
+}
+
+async function writeLocalLlmRoutingNoteApplicationPlan(projectDir: string, plan: LocalLlmRoutingNoteApplicationPlan): Promise<void> {
+  const projectRoot = path.resolve(projectDir);
+  for (const file of plan.files) {
+    const allowed =
+      file.relativePath === ".agent-workflow/tuning/routing-preferences.md" ||
+      file.relativePath === ".agent-workflow/tuning/local-routing-note-application.md" ||
+      file.relativePath === ".agent-workflow/tuning/local-routing-note-application.json";
+    if (!allowed) {
+      throw new Error(`Refusing to write local LLM routing note application outside approved tuning files: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectRoot, file.relativePath);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local LLM routing note application outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+function formatUsd(value: number): string {
+  const rounded = roundCurrency(value);
+  const sign = rounded < 0 ? "-" : "";
+  return `${sign}$${Math.abs(rounded).toFixed(4)}`;
+}
+
+function roundCurrency(value: number): number {
+  return Math.round(value * 10_000) / 10_000;
+}
+
+function formatSignedBytes(bytes: number): string {
+  if (bytes === 0) return "0 B";
+  return `${bytes > 0 ? "+" : "-"}${formatBytes(Math.abs(bytes))}`;
 }
 
 function weightedAverage<T>(items: T[], valueFor: (item: T) => number, weightFor: (item: T) => number): number | null {
@@ -15891,6 +21694,8 @@ async function loadDashboardCandidateComparisonReport(input: {
     };
   });
   const evaluationSuites = comparisonPlan ? await loadDashboardEvaluations(500) : [];
+  const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+  const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns);
   const outcomes = (comparisonPlan?.suites ?? []).map((suite) => {
     const evaluation = evaluationSuites.find((item) => item.id === suite.id);
     const baseline = evaluation?.variants.find((variant) => variant.id.startsWith("baseline-")) ?? null;
@@ -15923,6 +21728,7 @@ async function loadDashboardCandidateComparisonReport(input: {
     })
   );
   const promotionNoteFiles = await readPromotionRoutingNoteFiles(projectDir);
+  const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir);
   const readiness: string[] = [];
   if (!modelPlanResult.exists) {
     readiness.push("Write a model-improvement plan before preparing candidate comparisons.");
@@ -15960,11 +21766,16 @@ async function loadDashboardCandidateComparisonReport(input: {
     outcomes,
     promotionRecommendations,
     promotionNoteFiles,
+    localHoldoutRouting,
+    routeReceiptTrends: buildDashboardRouteReceiptTrends(projectDir, recentRouteReports),
     readiness,
     nextCommands: [
       `npm run agentflow -- model-improvement-plan --project ${shellQuote(projectDir)} --write`,
       `npm run agentflow -- candidate-comparison-plan --project ${shellQuote(projectDir)} --write`,
+      `npm run agentflow -- local-holdout-comparison --project ${shellQuote(projectDir)} --write`,
       ...(comparisonPlan?.suites.map((suite) => suite.command) ?? []),
+      `npm run agentflow -- local-holdout-results --project ${shellQuote(projectDir)} --write`,
+      `npm run agentflow -- local-holdout-promote --project ${shellQuote(projectDir)} --approved --write`,
       `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${shellQuote(projectDir)}`
     ]
   };
@@ -16033,6 +21844,276 @@ function buildCandidatePromotionRecommendation(input: {
     rationale,
     nextAction: `Create a reviewed project-local note under .agent-workflow/tuning/ after running the gate command for ${input.outcome.suiteId}.`
   };
+}
+
+function buildLocalHoldoutResultSummary(report: DashboardCandidateComparisonReport): LocalHoldoutResultSummary {
+  const generatedAt = new Date().toISOString();
+  const results = report.promotionRecommendations.map((recommendation) => {
+    const outcome = report.outcomes.find((item) => item.suiteId === recommendation.suiteId);
+    return {
+      suiteId: recommendation.suiteId,
+      decision: recommendation.decision,
+      gateReady: outcome?.gateReady ?? false,
+      baselineRuns: outcome?.baselineRuns ?? 0,
+      candidateRuns: outcome?.candidateRuns ?? 0,
+      qualityDelta: outcome?.qualityDelta ?? null,
+      latencyDeltaMs: outcome?.latencyDeltaMs ?? null,
+      latestAt: outcome?.latestAt ?? null,
+      rationale: recommendation.rationale,
+      nextAction: recommendation.nextAction
+    };
+  });
+  const summary = {
+    suites: report.comparisonPlan?.suites.length ?? 0,
+    gateReady: results.filter((item) => item.gateReady).length,
+    promotable: results.filter((item) => item.decision === "propose_routing_note").length,
+    preferHosted: results.filter((item) => item.decision === "keep_baseline").length,
+    needsEvidence: results.filter((item) => item.decision === "run_more_evals").length
+  };
+  const decision: LocalHoldoutResultSummary["decision"] = !report.comparisonPlan
+    ? "no_plan"
+    : summary.needsEvidence === summary.suites
+      ? "needs_evidence"
+      : summary.promotable > 0 && summary.preferHosted === 0 && summary.needsEvidence === 0
+        ? "eligible_for_review"
+        : summary.preferHosted > 0 && summary.promotable === 0
+          ? "prefer_hosted"
+          : "mixed";
+  const document = {
+    kind: "agentflow_local_holdout_results" as const,
+    projectRootUri: report.projectDir,
+    generatedAt,
+    sourceComparisonPlanGeneratedAt: report.comparisonPlan?.generatedAt ?? null,
+    decision,
+    summary,
+    results
+  };
+  return {
+    ...document,
+    files: [
+      {
+        relativePath: ".agent-workflow/model-improvement/local-holdout-results.md",
+        content: formatLocalHoldoutResultSummaryMarkdown(document)
+      },
+      {
+        relativePath: ".agent-workflow/model-improvement/local-holdout-results.json",
+        content: `${JSON.stringify(document, null, 2)}\n`
+      }
+    ]
+  };
+}
+
+function emptyLocalHoldoutResultSummary(projectDir: string, rationale: string): Omit<LocalHoldoutResultSummary, "files"> {
+  return {
+    kind: "agentflow_local_holdout_results",
+    projectRootUri: projectDir,
+    generatedAt: new Date().toISOString(),
+    sourceComparisonPlanGeneratedAt: null,
+    decision: "no_plan",
+    summary: {
+      suites: 0,
+      gateReady: 0,
+      promotable: 0,
+      preferHosted: 0,
+      needsEvidence: 0
+    },
+    results: [
+      {
+        suiteId: "none",
+        decision: "run_more_evals",
+        gateReady: false,
+        baselineRuns: 0,
+        candidateRuns: 0,
+        qualityDelta: null,
+        latencyDeltaMs: null,
+        latestAt: null,
+        rationale: [rationale],
+        nextAction: `npm run agentflow -- local-holdout-results --project ${shellQuote(projectDir)} --write`
+      }
+    ]
+  };
+}
+
+function formatLocalHoldoutResultSummary(result: LocalHoldoutResultSummary): string {
+  return [
+    `Local Holdout Results: ${result.projectRootUri}`,
+    `Generated: ${result.generatedAt}`,
+    `Decision: ${result.decision}`,
+    `Suites: ${result.summary.suites}`,
+    `Gate ready: ${result.summary.gateReady}`,
+    `Promotable: ${result.summary.promotable}`,
+    `Prefer hosted: ${result.summary.preferHosted}`,
+    `Needs evidence: ${result.summary.needsEvidence}`,
+    "",
+    "Files",
+    result.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+  ].join("\n");
+}
+
+function formatLocalHoldoutResultSummaryMarkdown(result: Omit<LocalHoldoutResultSummary, "files">): string {
+  const rows = result.results.map((item) =>
+    `| ${item.suiteId} | ${item.decision} | ${item.gateReady ? "yes" : "no"} | ${item.baselineRuns} | ${item.candidateRuns} | ${item.qualityDelta ?? "n/a"} | ${item.latencyDeltaMs === null ? "n/a" : formatDurationDelta(item.latencyDeltaMs)} | ${item.latestAt ?? "n/a"} |`
+  ).join("\n");
+  return [
+    "# Agent Workflow Local Holdout Results",
+    "",
+    `Generated: ${result.generatedAt}`,
+    `Project: ${result.projectRootUri}`,
+    `Source comparison plan: ${result.sourceComparisonPlanGeneratedAt ?? "unavailable"}`,
+    `Decision: ${result.decision}`,
+    "",
+    "This file captures local LLM versus hosted-provider evidence. It does not change live routing, provider settings, approval policy, or shared workflow definitions.",
+    "",
+    "## Summary",
+    "",
+    `- Suites: ${result.summary.suites}`,
+    `- Gate ready: ${result.summary.gateReady}`,
+    `- Promotable: ${result.summary.promotable}`,
+    `- Prefer hosted: ${result.summary.preferHosted}`,
+    `- Needs evidence: ${result.summary.needsEvidence}`,
+    "",
+    "## Suites",
+    "",
+    "| Suite | Decision | Gate Ready | Baseline Runs | Candidate Runs | Quality Delta | Latency Delta | Latest |",
+    "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    rows || "| none | needs_evidence | no | 0 | 0 | n/a | n/a | n/a |",
+    "",
+    "## Rationale",
+    "",
+    result.results.length
+      ? result.results.map((item) => [
+        `### ${item.suiteId}`,
+        "",
+        ...item.rationale.map((rationale) => `- ${rationale}`),
+        `- Next action: ${item.nextAction}`
+      ].join("\n")).join("\n\n")
+      : "- No comparison outcomes are available yet."
+  ].join("\n");
+}
+
+function buildLocalHoldoutRoutingPromotion(
+  projectDir: string,
+  results: Omit<LocalHoldoutResultSummary, "files">,
+  approved: boolean
+): LocalHoldoutRoutingPromotion {
+  const generatedAt = new Date().toISOString();
+  const eligibleResults = results.results.filter((result) => result.decision === "propose_routing_note" && result.gateReady);
+  const eligibleSuites = eligibleResults.map((result) => result.suiteId);
+  const qualityDeltas = eligibleResults.map((result) => result.qualityDelta).filter((value): value is number => typeof value === "number");
+  const latencyDeltas = eligibleResults.map((result) => result.latencyDeltaMs).filter((value): value is number => typeof value === "number");
+  const thresholds = {
+    minEvidenceSuites: 1,
+    minQualityDelta: 0,
+    maxLatencyRegressionMs: 500,
+    maxFallbackRate: 0.1
+  };
+  const evidence = {
+    gateReadySuites: results.summary.gateReady,
+    promotableSuites: eligibleSuites.length,
+    worstQualityDelta: qualityDeltas.length ? Math.min(...qualityDeltas) : null,
+    worstLatencyDeltaMs: latencyDeltas.length ? Math.max(...latencyDeltas) : null,
+    fallbackRate: null as number | null
+  };
+  const thresholdPassed = evidence.promotableSuites >= thresholds.minEvidenceSuites
+    && (evidence.worstQualityDelta ?? -1) >= thresholds.minQualityDelta
+    && (evidence.worstLatencyDeltaMs ?? 0) <= thresholds.maxLatencyRegressionMs;
+  const status: LocalHoldoutRoutingPromotion["status"] = results.decision === "eligible_for_review" && approved && thresholdPassed
+    ? "ready"
+    : "blocked";
+  const reason = !approved
+    ? "Owner approval is required before writing project-local local-model routing preferences."
+    : results.decision !== "eligible_for_review"
+      ? `Captured holdout result decision is ${results.decision}; collect more evidence before promoting local routing.`
+      : !thresholdPassed
+        ? "Captured holdout results did not satisfy the minimum suite, quality, and latency thresholds for local routing promotion."
+        : "Local routing is approved for low-risk project-local developer stages only.";
+  const preference = status === "ready"
+    ? {
+      provider: "local" as const,
+      maxRisk: "low" as const,
+      scope: "low-risk read-only developer stages with hosted fallback",
+      evidenceSuites: eligibleSuites,
+      thresholds,
+      evidence,
+      rollback: "Remove .agent-workflow/tuning/local-routing-threshold.json and regenerate routing-preferences.md from reviewed tuning overlays."
+    }
+    : null;
+  const document = {
+    kind: "agentflow_local_holdout_routing_promotion" as const,
+    projectRootUri: projectDir,
+    generatedAt,
+    sourceResultsGeneratedAt: results.generatedAt ?? null,
+    status,
+    approved,
+    reason,
+    preference
+  };
+  return {
+    ...document,
+    files: status === "ready"
+      ? [
+        {
+          relativePath: ".agent-workflow/tuning/local-routing-threshold.json",
+          content: `${JSON.stringify(document, null, 2)}\n`
+        },
+        {
+          relativePath: ".agent-workflow/tuning/routing-preferences.md",
+          content: formatLocalHoldoutRoutingPreferenceMarkdown(document)
+        }
+      ]
+      : []
+  };
+}
+
+function formatLocalHoldoutRoutingPromotion(promotion: LocalHoldoutRoutingPromotion): string {
+  return [
+    `Local Holdout Routing Promotion: ${promotion.projectRootUri}`,
+    `Generated: ${promotion.generatedAt}`,
+    `Status: ${promotion.status}`,
+    `Approved: ${promotion.approved ? "yes" : "no"}`,
+    `Reason: ${promotion.reason}`,
+    promotion.preference ? `Scope: ${promotion.preference.scope}` : "",
+    promotion.preference ? `Evidence suites: ${promotion.preference.evidenceSuites.join(", ")}` : "",
+    promotion.preference ? `Thresholds: minSuites=${promotion.preference.thresholds.minEvidenceSuites}, minQualityDelta=${promotion.preference.thresholds.minQualityDelta}, maxLatencyRegressionMs=${promotion.preference.thresholds.maxLatencyRegressionMs}, maxFallbackRate=${promotion.preference.thresholds.maxFallbackRate}` : "",
+    promotion.preference ? `Evidence: promotableSuites=${promotion.preference.evidence.promotableSuites}, worstQualityDelta=${promotion.preference.evidence.worstQualityDelta ?? "n/a"}, worstLatencyDeltaMs=${promotion.preference.evidence.worstLatencyDeltaMs ?? "n/a"}` : "",
+    "",
+    "Files",
+    promotion.files.length
+      ? promotion.files.map((file) => `- ${file.relativePath} (${file.content.length} bytes)`).join("\n")
+      : "- No files will be written."
+  ].filter(Boolean).join("\n");
+}
+
+function formatLocalHoldoutRoutingPreferenceMarkdown(promotion: Omit<LocalHoldoutRoutingPromotion, "files">): string {
+  const preference = promotion.preference;
+  return [
+    "# Agent Workflow Routing Preference Notes",
+    "",
+    `Generated: ${promotion.generatedAt}`,
+    `Source local holdout results: ${promotion.sourceResultsGeneratedAt ?? "unavailable"}`,
+    "",
+    "## Local Holdout Promotion",
+    "",
+    `- Status: ${promotion.status}`,
+    `- Approved: ${promotion.approved ? "yes" : "no"}`,
+    `- Reason: ${promotion.reason}`,
+    preference ? `- Provider: ${preference.provider}` : "",
+    preference ? `- Max risk: ${preference.maxRisk}` : "",
+    preference ? `- Scope: ${preference.scope}` : "",
+    preference ? `- Evidence suites: ${preference.evidenceSuites.join(", ")}` : "",
+    preference ? `- Min evidence suites: ${preference.thresholds.minEvidenceSuites}` : "",
+    preference ? `- Min quality delta: ${preference.thresholds.minQualityDelta}` : "",
+    preference ? `- Max latency regression ms: ${preference.thresholds.maxLatencyRegressionMs}` : "",
+    preference ? `- Max fallback rate: ${preference.thresholds.maxFallbackRate}` : "",
+    preference ? `- Promotable suites: ${preference.evidence.promotableSuites}` : "",
+    preference ? `- Worst quality delta: ${preference.evidence.worstQualityDelta ?? "n/a"}` : "",
+    preference ? `- Worst latency delta ms: ${preference.evidence.worstLatencyDeltaMs ?? "n/a"}` : "",
+    preference ? `- Observed fallback rate: ${preference.evidence.fallbackRate ?? "n/a"}` : "",
+    preference ? `- Rollback: ${preference.rollback}` : "",
+    "",
+    "Use this preference only for low-risk read-only developer stages. Hosted providers remain the fallback for authorization, command policy, secret handling, production deployment, and high-risk changes.",
+    ""
+  ].filter(Boolean).join("\n");
 }
 
 function buildPromotionRoutingNotePlan(
@@ -16367,7 +22448,7 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; workflowShapeAutoUpdate: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
+}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
@@ -16375,6 +22456,7 @@ async function runLearningDaemonTick(input: {
   const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue, autonomousApplyMaxRisk);
   const applicationPlan = buildLearningApplicationPlan(approvalQueue, "all");
   const workflowShapeAutoUpdate = await learningWorkflowShapeAutoUpdateEnabled(input.projectDir);
+  const agentImprovementProjectLocalAutoApply = await learningAgentImprovementProjectLocalAutoApplyEnabled(input.projectDir);
   const workflowShape = workflowShapeAutoUpdate
     ? await loadWorkflowShapeOptimization({ projectDir: input.projectDir, limit: input.limit })
     : null;
@@ -16386,7 +22468,7 @@ async function runLearningDaemonTick(input: {
   const agentImprovementPatchPlan = await buildAgentImprovementPatchPlan(input.projectDir, agentImprovement, "all");
   const agentImprovementEvalPlan = await buildAgentImprovementEvalPlan(input.projectDir, agentImprovementPatchPlan, "all", input.limit);
   const existingAgentPromotionQueue = await readAgentImprovementPromotionQueue(input.projectDir).catch(() => undefined);
-  const agentImprovementPromotionQueue = buildAgentImprovementPromotionQueue(input.projectDir, agentImprovementPatchPlan, agentImprovementEvalPlan, "all", existingAgentPromotionQueue);
+  let agentImprovementPromotionQueue = buildAgentImprovementPromotionQueue(input.projectDir, agentImprovementPatchPlan, agentImprovementEvalPlan, "all", existingAgentPromotionQueue);
   const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
   const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
   let autonomousApplication = emptyLearningAutonomousApplicationResult(input.projectDir);
@@ -16399,6 +22481,19 @@ async function runLearningDaemonTick(input: {
   await writeAgentImprovementPatchPlan(input.projectDir, agentImprovementPatchPlan);
   await writeAgentImprovementEvalPlan(input.projectDir, agentImprovementEvalPlan);
   await writeAgentImprovementPromotionQueue(input.projectDir, agentImprovementPromotionQueue);
+  let agentImprovementApply = await applyAgentImprovementPromotions({
+    projectDir: input.projectDir,
+    queue: agentImprovementPromotionQueue,
+    ids: "all",
+    maxRisk: autonomousApplyMaxRisk,
+    actor: input.daemonId ?? "learning-daemon",
+    note: agentImprovementProjectLocalAutoApply
+      ? "Daemon applied auto-ready project-local agent-improvement promotions within the configured autonomy risk threshold."
+      : "Daemon inspected agent-improvement promotions; project-local auto-apply is disabled.",
+    write: input.mode === "apply-approved" && agentImprovementProjectLocalAutoApply,
+    mode: "project-local-auto"
+  });
+  agentImprovementPromotionQueue = agentImprovementApply.queue;
   if (input.mode === "propose" || input.mode === "apply-approved") {
     await writeLearningProposals(input.projectDir, proposalSet);
     await writeLearningApprovalQueue(input.projectDir, approvalQueue);
@@ -16422,7 +22517,7 @@ async function runLearningDaemonTick(input: {
     }
   }
   const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
-  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, workflowShapeAutoUpdate, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
+  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
 }
 
 async function runLearningDaemonMcpCleanup(projectDir: string): Promise<RuntimeMcpCleanupResult> {
@@ -17045,6 +23140,18 @@ async function learningAutonomousApplyMaxRisk(projectDir: string): Promise<Learn
   return settings?.autonomousApplyMaxRisk ?? "medium";
 }
 
+async function learningAgentImprovementProjectLocalAutoApplyEnabled(projectDir: string): Promise<boolean> {
+  const override = process.env.AGENTFLOW_AGENT_IMPROVEMENT_PROJECT_LOCAL_AUTO_APPLY;
+  if (override === "0" || override === "false" || override === "off") {
+    return false;
+  }
+  if (override === "1" || override === "true" || override === "on") {
+    return true;
+  }
+  const settings = await readLearningSettings(projectDir).catch(() => null);
+  return settings?.agentImprovementProjectLocalAutoApply ?? true;
+}
+
 async function learningApprovalAutopilotEnabled(projectDir: string): Promise<boolean> {
   const override = process.env.AGENTFLOW_APPROVAL_AUTOPILOT;
   if (override === "0" || override === "false" || override === "off") {
@@ -17078,6 +23185,7 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     projectRootUri: typeof parsed.projectRootUri === "string" ? parsed.projectRootUri : projectDir,
     updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date(0).toISOString(),
     workflowShapeAutoUpdate: parsed.workflowShapeAutoUpdate,
+    agentImprovementProjectLocalAutoApply: typeof parsed.agentImprovementProjectLocalAutoApply === "boolean" ? parsed.agentImprovementProjectLocalAutoApply : true,
     autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
     approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
     approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium"))
@@ -17306,6 +23414,42 @@ async function readModelImprovementPlan(projectDir: string): Promise<Omit<ModelI
   return parsed;
 }
 
+async function loadLocalHoldoutModelPlan(projectDir: string, writeGeneratedPlan: boolean): Promise<{ modelPlan: Omit<ModelImprovementPlan, "files">; source: string }> {
+  try {
+    return {
+      modelPlan: await readModelImprovementPlan(projectDir),
+      source: "model-improvement-plan.json"
+    };
+  } catch {
+    try {
+      const queue = await readTuningApprovalQueue(projectDir);
+      const generatedPlan = buildModelImprovementPlan(queue, "all");
+      if (writeGeneratedPlan) {
+        await writeModelImprovementPlan(projectDir, generatedPlan);
+      }
+      return {
+        modelPlan: generatedPlan,
+        source: "generated from tuning approval queue"
+      };
+    } catch {
+      const generatedAt = new Date().toISOString();
+      return {
+        modelPlan: {
+          kind: "agentflow_model_improvement_plan",
+          projectRootUri: projectDir,
+          generatedAt,
+          sourceQueueGeneratedAt: "unavailable",
+          selectedIds: [],
+          skippedIds: [],
+          evalCases: [],
+          datasetPlans: []
+        },
+        source: "empty fallback; run model-improvement-plan or queue tuning approvals to create holdout cases"
+      };
+    }
+  }
+}
+
 async function writeCandidateComparisonPlan(projectDir: string, plan: CandidateComparisonPlan): Promise<void> {
   for (const file of plan.files) {
     const allowed =
@@ -17318,6 +23462,46 @@ async function writeCandidateComparisonPlan(projectDir: string, plan: CandidateC
     const projectRoot = path.resolve(projectDir);
     if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
       throw new Error(`Refusing to write candidate comparison plan outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function writeLocalHoldoutResultSummary(projectDir: string, result: LocalHoldoutResultSummary): Promise<void> {
+  for (const file of result.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/model-improvement/")) {
+      throw new Error(`Refusing to write local holdout results outside .agent-workflow/model-improvement: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local holdout results outside project: ${file.relativePath}`);
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.writeFile(targetPath, file.content, "utf8");
+  }
+}
+
+async function readLocalHoldoutResultSummary(projectDir: string): Promise<Omit<LocalHoldoutResultSummary, "files">> {
+  const resultPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-holdout-results.json");
+  const raw = await fs.readFile(resultPath, "utf8");
+  const parsed = JSON.parse(raw) as Omit<LocalHoldoutResultSummary, "files">;
+  if (parsed.kind !== "agentflow_local_holdout_results" || !isRecord(parsed.summary) || !Array.isArray(parsed.results)) {
+    throw new Error(`Invalid local holdout results: ${resultPath}`);
+  }
+  return parsed;
+}
+
+async function writeLocalHoldoutRoutingPromotion(projectDir: string, promotion: LocalHoldoutRoutingPromotion): Promise<void> {
+  for (const file of promotion.files) {
+    if (!file.relativePath.startsWith(".agent-workflow/tuning/")) {
+      throw new Error(`Refusing to write local holdout promotion outside .agent-workflow/tuning: ${file.relativePath}`);
+    }
+    const targetPath = path.resolve(projectDir, file.relativePath);
+    const projectRoot = path.resolve(projectDir);
+    if (!targetPath.startsWith(`${projectRoot}${path.sep}`)) {
+      throw new Error(`Refusing to write local holdout promotion outside project: ${file.relativePath}`);
     }
     await fs.mkdir(path.dirname(targetPath), { recursive: true });
     await fs.writeFile(targetPath, file.content, "utf8");
@@ -17975,6 +24159,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       projectRootUri: projectDir,
       updatedAt: new Date().toISOString(),
       workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on",
+      agentImprovementProjectLocalAutoApply: form.get("agentImprovementProjectLocalAutoApply") === "on",
       autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
       approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
       approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium")
@@ -18191,7 +24376,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       project: form.get("project") ?? undefined,
       workflowId: form.get("workflowId") ?? undefined,
       stageId: form.get("stageId") ?? undefined,
+      agentId: form.get("agentId") ?? undefined,
+      providerId: form.get("providerId") ?? undefined,
+      modelTier: form.get("modelTier") ?? undefined,
+      routeClass: form.get("routeClass") ?? undefined,
+      runs: form.get("runs") ?? undefined,
+      fallbackCount: form.get("fallbackCount") ?? undefined,
+      averageQuality: form.get("averageQuality") ?? undefined,
+      averageLatencyMs: form.get("averageLatencyMs") ?? undefined,
       ids: form.get("ids") ?? undefined,
+      model: form.get("model") ?? undefined,
       rating: form.get("rating") ?? undefined,
       note: form.get("note") ?? undefined
     });
@@ -18403,13 +24597,27 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
-    response.end(JSON.stringify({ ...report, statePlaneProof, mutationControls: buildServerMutationControlReport(), mergeEvidence, offlineFallback, objectProof, runtimeMonitor, requestAudit }, null, 2));
+    response.end(JSON.stringify({ ...report, statePlaneProof, mutationControls: buildServerMutationControlReport(), approvalActionPlan: buildServerApprovalActionPlanReport(), approvalActionTestAdapter: buildServerApprovalActionTestAdapterReport(), mergeEvidence, offlineFallback, objectProof, runtimeMonitor, requestAudit }, null, 2));
     return;
   }
 
   if (requestUrl.pathname === "/api/server-mutation-controls") {
     const report = buildServerMutationControlReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-approval-action-plan") {
+    const report = buildServerApprovalActionPlanReport();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-approval-action-test-adapter") {
+    const report = buildServerApprovalActionTestAdapterReport();
+    response.writeHead(report.status === "pass" ? 200 : 500, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
   }
@@ -18558,6 +24766,39 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       request
     });
     response.writeHead(report.status === "blocked" ? 400 : 200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/server-approval-action") {
+    const limits = serverRequestLimits();
+    let payload: Record<string, unknown>;
+    try {
+      payload = objectValue(await readJsonBody(request, limits.maxBodyBytes));
+    } catch (error) {
+      await safeAppendServerRequestAuditEvent(buildServerRequestBodyErrorAuditEvent(request, error, "/api/server-approval-action"));
+      response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify({
+        kind: "agentflow_server_approval_action_report",
+        generatedAt: new Date().toISOString(),
+        status: "blocked",
+        dryRun: true,
+        error: error instanceof Error ? error.message : String(error),
+        checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
+      }, null, 2));
+      return;
+    }
+    const report = await loadServerApprovalActionReport({
+      projectId: stringValue(payload.projectId) ?? "",
+      approvalId: stringValue(payload.approvalId) ?? "",
+      decision: stringValue(payload.decision) ?? "approve-and-execute",
+      actor: stringValue(payload.actor) ?? "server-client",
+      actorRole: stringValue(payload.actorRole) ?? "approver",
+      idempotencyKey: stringValue(payload.idempotencyKey) ?? undefined,
+      request,
+      limits
+    });
+    response.writeHead(report.status === "blocked" ? 403 : 200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
   }
@@ -18733,6 +24974,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/local-llm-checklist") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) {
+      response.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Missing project");
+      return;
+    }
+    const report = await loadDashboardModelImprovementReport({
+      projectDir: project,
+      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
+    });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report.localLlmSetup, null, 2));
     return;
   }
 
@@ -19267,7 +25524,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), requestAudit, projects, requestUrl.searchParams));
+    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams));
     return;
   }
 
@@ -19877,6 +26134,7 @@ function renderMobileApprovalCard(approval: DashboardActionApproval, backlogItem
 function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
   const warningCount = report.severityCounts.warning ?? 0;
   const errorCount = report.severityCounts.error ?? 0;
+  const approvedReadyToExecuteCount = report.items.filter((item) => item.status === "approved" && isExecutableApprovalAction(item.actionType) && item.category === "ready_to_execute").length;
   const attentionItems = report.items.filter((item) => item.severity !== "info").slice(0, 12);
   const missingToolFailures = report.items.filter((item) => item.status === "failed" && item.category === "missing_tool" && isExecutableApprovalAction(item.actionType)).length;
   const resolvedMissingToolFailures = report.items.filter((item) => item.status === "failed" && item.category === "resolved_missing_tool" && isExecutableApprovalAction(item.actionType)).length;
@@ -19932,7 +26190,7 @@ function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
       <div class="metric-grid">
         ${metricCard("Scanned", report.scanned, "recent approvals")}
         ${metricCard("Pending", report.counts.pending ?? 0, "waiting")}
-        ${metricCard("Approved", report.counts.approved ?? 0, "not executed")}
+        ${metricCard("Approved", approvedReadyToExecuteCount, "ready to execute")}
         ${metricCard("Failed", report.counts.failed ?? 0, "errors")}
         ${metricCard("Warnings", warningCount, "stale or needs action")}
         ${metricCard("Errors", errorCount, "failed approvals")}
@@ -20159,6 +26417,7 @@ function renderApprovalRulesHtml(
 type RoadmapTaskStatus = "done" | "open" | "next";
 type RoadmapTaskKind = "task" | "bug";
 type RoadmapPriority = "critical" | "high" | "medium" | "low";
+type RoadmapMilestoneSource = "explicit" | "inferred" | "missing";
 
 type RoadmapMilestone = {
   number: number;
@@ -20175,6 +26434,7 @@ type RoadmapTask = {
   title: string;
   milestoneNumber: number | null;
   milestoneTitle: string | null;
+  milestoneSource: RoadmapMilestoneSource;
   priority: RoadmapPriority;
   sourceLine: number;
   details: string[];
@@ -20194,6 +26454,9 @@ type RoadmapDashboardReport = {
     openCount: number;
     doneCount: number;
     nextCount: number;
+    explicitMilestoneCount: number;
+    inferredMilestoneCount: number;
+    unlinkedCount: number;
     priorityCounts: Record<RoadmapPriority, number>;
   };
 };
@@ -20206,6 +26469,9 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
   const milestoneByNumber = new Map(milestones.map((milestone) => [milestone.number, milestone]));
   const tasks = parseRoadmapTasks(lines, milestoneByNumber);
   const bugs = tasks.filter((task) => task.kind === "bug");
+  const explicitMilestoneCount = tasks.filter((task) => task.milestoneSource === "explicit").length;
+  const inferredMilestoneCount = tasks.filter((task) => task.milestoneSource === "inferred").length;
+  const unlinkedCount = tasks.filter((task) => task.milestoneSource === "missing").length;
   return {
     kind: "agentflow_roadmap_dashboard",
     generatedAt: new Date().toISOString(),
@@ -20220,6 +26486,9 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
       openCount: tasks.filter((task) => task.status === "open").length,
       doneCount: tasks.filter((task) => task.status === "done").length,
       nextCount: tasks.filter((task) => task.status === "next").length,
+      explicitMilestoneCount,
+      inferredMilestoneCount,
+      unlinkedCount,
       priorityCounts: roadmapPriorityOrder().reduce((counts, priority) => {
         counts[priority] = tasks.filter((task) => task.priority === priority).length;
         return counts;
@@ -20301,6 +26570,7 @@ function parseRoadmapTasks(lines: string[], milestoneByNumber: Map<number, Roadm
         title,
         milestoneNumber: milestone?.number ?? milestoneNumber,
         milestoneTitle: milestone?.title ?? null,
+        milestoneSource: milestoneNumber ? "inferred" : "missing",
         priority: inferRoadmapPriority(title, phase, [], kind, checklist[1].toLowerCase() === "x" ? "done" : "open"),
         sourceLine: index + 1,
         details: []
@@ -20317,6 +26587,7 @@ function parseRoadmapTasks(lines: string[], milestoneByNumber: Map<number, Roadm
         const milestone = milestoneByNumber.get(Number(explicitMilestone[1])) ?? null;
         activeTask.milestoneNumber = milestone?.number ?? Number(explicitMilestone[1]);
         activeTask.milestoneTitle = milestone?.title ?? activeTask.milestoneTitle;
+        activeTask.milestoneSource = "explicit";
       }
       const explicitPriority = detail[1].match(/^Priority:\s*(critical|high|medium|low)/iu);
       if (explicitPriority) activeTask.priority = explicitPriority[1].toLowerCase() as RoadmapPriority;
@@ -20334,6 +26605,7 @@ function parseRoadmapTasks(lines: string[], milestoneByNumber: Map<number, Roadm
           title: nextTitle,
           milestoneNumber: milestone?.number ?? inferred,
           milestoneTitle: milestone?.title ?? null,
+          milestoneSource: inferred ? "inferred" : "missing",
           priority: inferRoadmapPriority(nextTitle, phase, activeTask.details, nextKind, "next"),
           sourceLine: index + 1,
           details: [`Parent: ${activeTask.title}`]
@@ -20344,7 +26616,12 @@ function parseRoadmapTasks(lines: string[], milestoneByNumber: Map<number, Roadm
     if (task.milestoneNumber) return task;
     const inferred = inferRoadmapMilestoneNumber(task.title, task.phase, task.details);
     const milestone = inferred ? milestoneByNumber.get(inferred) ?? null : null;
-    return { ...task, milestoneNumber: milestone?.number ?? inferred, milestoneTitle: milestone?.title ?? null };
+    return {
+      ...task,
+      milestoneNumber: milestone?.number ?? inferred,
+      milestoneTitle: milestone?.title ?? null,
+      milestoneSource: inferred ? "inferred" : "missing"
+    };
   });
 }
 
@@ -20477,6 +26754,33 @@ function parseRoadmapPriority(value: string): RoadmapPriority | null {
   return roadmapPriorityOrder().includes(normalized as RoadmapPriority) ? normalized as RoadmapPriority : null;
 }
 
+function formatRoadmapAuditReport(report: RoadmapDashboardReport): string {
+  const unlinked = report.tasks.filter((task) => task.milestoneSource === "missing");
+  const inferred = report.tasks.filter((task) => task.milestoneSource === "inferred");
+  return [
+    `Roadmap audit (${report.generatedAt})`,
+    `Path: ${report.roadmapPath}`,
+    "",
+    "Summary:",
+    `- milestones: ${report.summary.milestoneCount}`,
+    `- tasks/bugs: ${report.summary.taskCount}`,
+    `- explicit milestone links: ${report.summary.explicitMilestoneCount}`,
+    `- inferred milestone links: ${report.summary.inferredMilestoneCount}`,
+    `- unlinked items: ${report.summary.unlinkedCount}`,
+    "",
+    "Unlinked items:",
+    ...(unlinked.length ? unlinked.map((task) => `- docs/roadmap.md:${task.sourceLine} ${task.title}`) : ["- none"]),
+    "",
+    "Inferred links to review:",
+    ...(inferred.slice(0, 25).map((task) => `- docs/roadmap.md:${task.sourceLine} milestone ${task.milestoneNumber}: ${task.title}`)),
+    ...(inferred.length > 25 ? [`- ${inferred.length - 25} more inferred item(s)`] : []),
+    "",
+    unlinked.length
+      ? "Result: attention needed. Add explicit Milestone lines for unlinked roadmap rows."
+      : "Result: pass. Every roadmap row is linked to a milestone explicitly or by inference."
+  ].join("\n");
+}
+
 function roadmapPriorityOrder(): RoadmapPriority[] {
   return ["critical", "high", "medium", "low"];
 }
@@ -20559,14 +26863,75 @@ function renderRoadmapDashboardHtml(report: RoadmapDashboardReport, params: URLS
         ${metricCard("Done", report.summary.doneCount, "completed items", "check")}
         ${metricCard("Bugs", report.summary.bugCount, "tracked defects", "warning")}
         ${metricCard("High Priority", report.summary.priorityCounts.critical + report.summary.priorityCounts.high, "critical/high", "warning")}
+        ${metricCard("Unlinked", report.summary.unlinkedCount, "missing milestone", report.summary.unlinkedCount ? "warning" : "check")}
       </div>
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Tasks link to milestones by explicit <code>Milestone:</code> notes when present, otherwise by roadmap keyword inference.</p>
     </section>
+    ${renderRoadmapIntegrityPanel(report)}
+    ${renderRoadmapMcpRecoveryPanel(report, params)}
     ${renderRoadmapMilestoneIndex(report)}
     ${view === "gantt" ? renderRoadmapGantt(visibleTasks, report.milestones) : renderRoadmapTaskList(visibleTasks, params)}
   </main>
 </body>
 </html>`;
+}
+
+function renderRoadmapIntegrityPanel(report: RoadmapDashboardReport): string {
+  const unlinkedRows = report.tasks
+    .filter((task) => task.milestoneSource === "missing")
+    .slice(0, 12)
+    .map((task) => `<li><code>docs/roadmap.md:${task.sourceLine}</code> ${escapeHtml(task.title)}</li>`)
+    .join("");
+  const inferredRows = report.tasks
+    .filter((task) => task.milestoneSource === "inferred")
+    .slice(0, 8)
+    .map((task) => `<li><code>docs/roadmap.md:${task.sourceLine}</code> milestone ${escapeHtml(String(task.milestoneNumber ?? "none"))}: ${escapeHtml(task.title)}</li>`)
+    .join("");
+  const statusClass = report.summary.unlinkedCount ? "failed" : "completed";
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>Milestone Integrity</h2><span class="muted">Keeps roadmap tasks tied to the larger goal instead of drifting into loose notes.</span></div>
+      <a class="button secondary" href="/roadmap?milestone=none&status=all">Unlinked</a>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Explicit", report.summary.explicitMilestoneCount, "Milestone lines", "check")}
+      ${metricCard("Inferred", report.summary.inferredMilestoneCount, "keyword fallback", "activity")}
+      ${metricCard("Missing", report.summary.unlinkedCount, "needs link", report.summary.unlinkedCount ? "warning" : "check")}
+    </div>
+    <div class="callout ${statusClass}">
+      <strong>${report.summary.unlinkedCount ? "Milestone links need attention" : "Milestone audit is clean"}</strong>
+      <p>${report.summary.unlinkedCount ? "Add an explicit Milestone line to each unlinked checklist row before treating the roadmap as ready." : "Every checklist row is milestone-linked explicitly or by dashboard inference. New dashboard-created items require explicit milestone selection."}</p>
+    </div>
+    ${unlinkedRows ? `<h3>Unlinked Items</h3><ul>${unlinkedRows}</ul>` : ""}
+    ${inferredRows ? `<details class="governance-details"><summary>Inferred Links To Review</summary><ul>${inferredRows}</ul></details>` : ""}
+  </section>`;
+}
+
+function renderRoadmapMcpRecoveryPanel(report: RoadmapDashboardReport, params: URLSearchParams): string {
+  const transportBug = report.bugs.find((bug) => bug.status !== "done" && /mcp transport closes|transport closed|stdio/iu.test(`${bug.title} ${bug.details.join(" ")}`));
+  if (!transportBug) return "";
+  return `<section class="panel">
+    <div class="section-heading">
+      <div><h2>MCP Recovery</h2><span class="muted">High-priority ecosystem bug: Codex or another IDE can close its private stdio pipe while Agent Workflow services stay healthy.</span></div>
+      <div class="actions"><a class="button secondary" href="/server-readiness">Runtime Monitor</a><a class="button secondary" href="/api/runtime-monitor?checkMcp=1">JSON</a></div>
+    </div>
+    <div class="metric-grid">
+      ${metricCard("Roadmap Bug", transportBug.priority, `docs/roadmap.md:${transportBug.sourceLine}`, "warning")}
+      ${metricCard("Milestone", transportBug.milestoneNumber ?? "none", transportBug.milestoneTitle ?? "unlinked", "route")}
+      ${metricCard("Status", transportBug.status, "tracked recovery", "activity")}
+    </div>
+    <div class="callout queued">
+      <strong>Recovery command</strong>
+      <p><code>npm run runtime-monitor -- --check-mcp --write-mcp-recovery</code></p>
+      <p class="muted">If launcher smoke passes but a specific Codex task still reports <code>Transport closed</code>, reload that task or the IDE client so it creates a fresh stdio subprocess.</p>
+    </div>
+    <form class="inline-form compact-form" method="post" action="/api/runtime-monitor-action">
+      ${dashboardReturnInput("/roadmap", params)}
+      <input type="hidden" name="action" value="write-mcp-recovery">
+      <button type="submit">${iconLabel("shield", "Write Recovery Package")}</button>
+      <a class="button secondary" href="/roadmap?milestone=12&status=all&priority=high">View Ecosystem Bug</a>
+    </form>
+  </section>`;
 }
 
 function renderRoadmapMilestoneIndex(report: RoadmapDashboardReport): string {
@@ -20587,7 +26952,7 @@ function renderRoadmapTaskList(tasks: RoadmapTask[], params: URLSearchParams): s
   const rows = tasks.map((task) => `
     <tr class="roadmap-${task.kind}">
       <td><span class="status ${task.status === "done" ? "completed" : task.status === "next" ? "running" : "queued"}">${escapeHtml(task.status)}</span><br><span class="priority priority-${escapeHtml(task.priority)}">${escapeHtml(task.priority)}</span><br><span class="muted">${escapeHtml(task.kind)}</span></td>
-      <td>${task.milestoneNumber ? `<strong>${task.milestoneNumber}. ${escapeHtml(task.milestoneTitle ?? "Milestone")}</strong>` : "<span class=\"muted\">Unlinked</span>"}<br><span class="muted">${escapeHtml(task.phase)}</span></td>
+      <td>${task.milestoneNumber ? `<strong>${task.milestoneNumber}. ${escapeHtml(task.milestoneTitle ?? "Milestone")}</strong>` : "<span class=\"muted\">Unlinked</span>"}<br><span class="tag">${escapeHtml(task.milestoneSource)}</span><br><span class="muted">${escapeHtml(task.phase)}</span></td>
       <td><strong>${escapeHtml(task.title)}</strong>${task.details.length ? `<br><span class="muted">${escapeHtml(task.details.slice(0, 2).join(" "))}</span>` : ""}</td>
       <td><code>docs/roadmap.md:${task.sourceLine}</code></td>
       <td>${renderRoadmapRowActions(task, params)}</td>
@@ -22189,11 +28554,12 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
   const agentImprovementJsonHref = agentImprovement ? `/api/agent-improvement-report?project=${encodeURIComponent(agentImprovement.projectRootUri)}&limit=${encodeURIComponent(String(agentImprovement.limit))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
+  const agentImprovementProjectLocalAutoApply = learningSettings?.agentImprovementProjectLocalAutoApply ?? true;
   const autonomousApplyMaxRisk = learningSettings?.autonomousApplyMaxRisk ?? "medium";
   const approvalAutopilotEnabled = learningSettings?.approvalAutopilotEnabled ?? false;
   const approvalAutopilotMaxRisk = learningSettings?.approvalAutopilotMaxRisk ?? "medium";
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, supervisor, projectPath)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, supervisor, projectPath)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -22260,7 +28626,7 @@ function renderDashboardProjectPathResolutionHtml(projectPath: DashboardProjectP
   `;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -22290,6 +28656,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
         ${metricCard("Mode", report.autonomyMode, "owned learning writes")}
         ${metricCard("Runs", report.runsAnalyzed, formatInlineCounts(report.runStatusCounts) || "none")}
         ${metricCard("Feedback", formatInlineCounts(report.feedbackCounts) || "none", "approved user signal")}
+        ${metricCard("Route Feedback", formatInlineCounts(report.routeFeedback.counts) || "none", report.routeFeedback.latestAt ? `latest ${formatDashboardDateTimeText(report.routeFeedback.latestAt)}` : "no route signals")}
         ${metricCard("Eval Runs", report.evaluationRuns, report.latestEvaluationAt ? `latest ${new Date(report.latestEvaluationAt).toLocaleDateString()}` : "none found")}
         ${metricCard("Failures", report.failedRuns.length, "recent failed runs")}
         ${metricCard("Proposal Preview", report.proposalPreview.total, `${report.proposalPreview.highPriority} high priority`)}
@@ -22297,12 +28664,13 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
     ${renderLearningSupervisorTargetHtml(localProjectDir, supervisor)}
+    ${renderLearningRouteFeedbackHtml(report.routeFeedback)}
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Daemon</h2><span class="muted">Local autonomous loop over Agent Workflow-owned learning state.</span></div></div>
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It auto-applies low/medium-risk Agent Workflow-owned local optimization files by default, including project-local tuning overlays. High-risk source, provider, command, network, reusable bundle, and export changes still require approval.</p>
     </section>
-    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk) : ""}
+    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk) : ""}
     ${agentImprovement ? renderAgentImprovementHtml(agentImprovement, agentImprovementEval, agentImprovementPromotion) : ""}
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
@@ -22330,6 +28698,41 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     ${learningActionReceipts ? renderLearningActionReceiptsHtml(learningActionReceipts, report.limit) : ""}
     <section class="panel"><h2>Privacy Boundaries</h2>${list(report.privacyBoundaries)}</section>
     <section class="panel"><h2>Next Commands</h2>${list(report.nextCommands)}</section>
+  `;
+}
+
+function renderLearningRouteFeedbackHtml(summary: LearningRouteFeedbackSummary): string {
+  const row = (group: LearningRouteFeedbackGroup) => `
+    <tr>
+      <td>${escapeHtml(group.target)}<br><span class="muted">${escapeHtml(group.route)}</span></td>
+      <td>${escapeHtml(group.routeClass)}</td>
+      <td>${formatNumber(group.total)}</td>
+      <td>${group.helpful}/${group.costly}/${group.neutral}</td>
+      <td>${renderDashboardDateTime(group.latestAt)}</td>
+    </tr>
+  `;
+  const costlyRows = summary.costlyGroups.map(row).join("");
+  const helpfulRows = summary.helpfulGroups.map(row).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Route Feedback Signals</h2>
+          <span class="muted">Helpful/costly route decisions from the model-improvement drilldown.</span>
+        </div>
+        <span class="status ${summary.costlyGroups.length ? "queued" : summary.total ? "completed" : "queued"}">${formatNumber(summary.total)} signal(s)</span>
+      </div>
+      <div class="split-grid">
+        <div>
+          <h3>Costly Routes</h3>
+          <div class="table-wrap"><table><thead><tr><th>Target</th><th>Class</th><th>Total</th><th>H/C/N</th><th>Latest</th></tr></thead><tbody>${costlyRows || "<tr><td colspan=\"5\">No costly route feedback yet.</td></tr>"}</tbody></table></div>
+        </div>
+        <div>
+          <h3>Helpful Routes</h3>
+          <div class="table-wrap"><table><thead><tr><th>Target</th><th>Class</th><th>Total</th><th>H/C/N</th><th>Latest</th></tr></thead><tbody>${helpfulRows || "<tr><td colspan=\"5\">No helpful route feedback yet.</td></tr>"}</tbody></table></div>
+        </div>
+      </div>
+    </section>
   `;
 }
 
@@ -22404,6 +28807,8 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
       <div><strong>Agent Eval Passes</strong>${formatNumber(status.agentImprovementEvalPasses)}</div>
       <div><strong>Agent Promotions</strong>${formatNumber(status.agentImprovementPromotions)}</div>
       <div><strong>Promotion Pending</strong>${formatNumber(status.agentImprovementPromotionPending)}</div>
+      <div><strong>Agent YAML Applied</strong>${formatNumber(status.agentImprovementApplied)}</div>
+      <div><strong>YAML Apply Skipped</strong>${formatNumber(status.agentImprovementApplySkipped)}</div>
       <div><strong>Approval Autopilot</strong>${status.approvalAutopilotEnabled ? "on" : "off"}</div>
       <div><strong>Approval Risk</strong>${escapeHtml(status.approvalAutopilotMaxRisk)}</div>
       <div><strong>Approvals Executed</strong>${formatNumber(status.approvalAutopilotExecuted)}</div>
@@ -22432,7 +28837,7 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
   `;
 }
 
-function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk): string {
+function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk): string {
   const recommendationRows = report.recommendations.map((item) => `
     <tr>
       <td>${escapeHtml(item.id)}<br><span class="muted">${escapeHtml(item.kind)}</span></td>
@@ -22469,6 +28874,10 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
           <select name="autonomousApplyMaxRisk">${riskOptions}</select>
         </label>
         <label class="checkbox-label">
+          <input type="checkbox" name="agentImprovementProjectLocalAutoApply" value="on" ${agentImprovementProjectLocalAutoApply ? "checked" : ""}>
+          Auto-apply passing project-local agent-card improvements
+        </label>
+        <label class="checkbox-label">
           <input type="checkbox" name="approvalAutopilotEnabled" value="on" ${approvalAutopilotEnabled ? "checked" : ""}>
           Approval autopilot approves and executes eligible side effects
         </label>
@@ -22498,6 +28907,7 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
   const patchCommand = `npm run agentflow -- agent-improvement-patches --project ${shellQuote(report.projectRootUri)} --write`;
   const evalCommand = `npm run agentflow -- agent-improvement-evals --project ${shellQuote(report.projectRootUri)} --write`;
   const promotionCommand = `npm run agentflow -- agent-improvement-promotions --project ${shellQuote(report.projectRootUri)} --write`;
+  const applyCommand = `npm run agentflow -- agent-improvement-apply --project ${shellQuote(report.projectRootUri)} --write`;
   const patchHref = `/api/agent-improvement-patches?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
   const evalHref = `/api/agent-improvement-evals?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
   const promotionHref = `/api/agent-improvement-promotions?project=${encodeURIComponent(report.projectRootUri)}&limit=${encodeURIComponent(String(report.limit))}`;
@@ -22555,7 +28965,7 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
         ${metricCard("Eval Pass", evalPlan?.evaluations.filter((item) => item.status === "pass").length ?? 0, "promotion-ready scoring")}
         ${metricCard("Promotions", promotionQueue?.items.length ?? 0, `${promotionQueue?.items.filter((item) => item.status === "pending").length ?? 0} pending`)}
       </div>
-      <p class="muted">Refresh owned learning artifacts with <code>${escapeHtml(command)}</code>. Generate exact YAML previews with <code>${escapeHtml(patchCommand)}</code>. Score holdout promotion gates with <code>${escapeHtml(evalCommand)}</code>. Create promotion receipts with <code>${escapeHtml(promotionCommand)}</code>. Promotion into real agent YAML remains controlled by risk, scope, validation, and owner settings.</p>
+      <p class="muted">Refresh owned learning artifacts with <code>${escapeHtml(command)}</code>. Generate exact YAML previews with <code>${escapeHtml(patchCommand)}</code>. Score holdout promotion gates with <code>${escapeHtml(evalCommand)}</code>. Create promotion receipts with <code>${escapeHtml(promotionCommand)}</code>. Apply approved YAML with <code>${escapeHtml(applyCommand)}</code>; source hashes, schema validation, risk threshold, and rollback receipts still gate the write.</p>
       <div class="split-grid">
         <div><h3>Automatic</h3><ul>${automatic}</ul></div>
         <div><h3>Requires Approval</h3><ul>${gated}</ul></div>
@@ -22663,6 +29073,22 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
       <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)} for ${escapeHtml(report.projectDir)}.</p>
     </section>
     ${renderLocalProviderEvidenceHtml(report.localProviderEvidence)}
+    ${renderLocalHoldoutRoutingStatusHtml(report.localHoldoutRouting)}
+    ${renderLocalRouteDecisionDrilldownHtml(report.routeReceiptTrends, report.localHoldoutRouting)}
+    ${renderLocalLlmSetupChecklistHtml(report.localLlmSetup)}
+    ${renderLocalLlmSetupGuideHtml(report.localLlmSetupGuide)}
+    ${renderLocalLlmDownloadRecommendationsHtml(report.localLlmDownloadRecommendations)}
+    ${renderLocalLlmInstallationPlanHtml(report.localLlmInstallationPlan)}
+    ${renderLocalLlmInventoryHtml(report.localLlmInventory)}
+    ${renderLocalLlmPrunePlanHtml(report.localLlmPrunePlan)}
+    ${renderLocalLlmCacheTrendHtml(report.localLlmCacheTrends)}
+    ${renderLocalLlmCostLedgerHtml(report.localLlmCostLedger)}
+    ${renderLocalLlmRoutingRecommendationHtml(report.localLlmRoutingRecommendations)}
+    ${renderLocalLlmRoutingNoteApplicationHtml(report.localLlmRoutingNoteApplication)}
+    ${renderLocalLlmRoutingDecisionTimelineHtml(report.localLlmRoutingDecisionTimeline)}
+    ${renderLocalLlmRoutingDecisionSnapshotsHtml(report.localLlmRoutingDecisionSnapshots)}
+    ${renderLocalLlmBenchmarkReceiptsHtml(report.localLlmBenchmarks)}
+    ${renderRouteReceiptTrendsHtml(report.routeReceiptTrends)}
     <section class="panel">
       <div class="section-heading">
         <div>
@@ -22709,6 +29135,640 @@ function renderModelImprovementReportHtml(report: DashboardModelImprovementRepor
   `;
 }
 
+function renderLocalLlmSetupChecklistHtml(report: LocalLlmSetupChecklistReport): string {
+  const statusClass = report.status === "pass" ? "completed" : report.status === "fail" ? "failed" : "queued";
+  const smoke = report.smokeOutcomes;
+  const tierModels = report.localProvider.selectedTierModels
+    .map((item) => `${item.tier}=${item.model} (${item.source})`)
+    .join(", ") || "none";
+  const rows = report.checks.map((check) => `
+    <tr>
+      <td><span class="flag ${check.status === "pass" ? "good" : check.status === "fail" ? "bad" : "warn"}">${escapeHtml(check.status)}</span></td>
+      <td>${escapeHtml(check.label)}<br><span class="muted">${escapeHtml(check.detail)}</span></td>
+      <td>${escapeHtml(check.nextAction)}</td>
+    </tr>
+  `).join("");
+  const commandRows = report.nextCommands.map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
+  const smokeRows = smoke.latestOutcomes.map((outcome) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(outcome.runId)}">${escapeHtml(outcome.runId.slice(0, 8))}</a><br><span class="muted">${renderDashboardDateTime(outcome.startedAt)}</span></td>
+      <td><span class="flag ${outcome.routeClass === "local-selected" ? "good" : outcome.routeClass === "missing" || outcome.status === "failed" ? "bad" : "warn"}">${escapeHtml(outcome.routeClass.replace(/-/g, " "))}</span><br><span class="muted">${escapeHtml(outcome.status)}</span></td>
+      <td>${escapeHtml(outcome.providerId ?? "none")}<br><span class="muted">${escapeHtml([outcome.modelTier, outcome.requestedModelTier].filter(Boolean).join(" / ") || "no tier")}</span></td>
+      <td>${outcome.qualityScore ?? "n/a"}</td>
+      <td>${escapeHtml(truncateText(outcome.routeReason ?? "No route reason recorded.", 160))}</td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local LLM Setup Checklist</h2>
+          <span class="muted">Verifies endpoint readiness, catalog model selection, routing visibility, and the first low-risk local route receipt.</span>
+        </div>
+        <div class="actions">
+          <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+          <a class="button secondary" href="/api/local-llm-checklist?project=${encodeURIComponent(report.projectRootUri)}">JSON</a>
+        </div>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Endpoint", report.localProvider.status, report.localProvider.baseUrl)}
+        ${metricCard("Models Listed", report.localProvider.modelsListed, report.localProvider.model)}
+        ${metricCard("Tier Models", report.localProvider.selectedTierModels.length, tierModels)}
+        ${metricCard("Auto Routing", report.routing.defaultProvider, `fast=${report.routing.fastProvider}, standard=${report.routing.standardProvider}`)}
+        ${metricCard("Holdout", report.routing.localHoldoutApproved ? "approved" : report.routing.localHoldoutStatus, "low-risk local promotion")}
+        ${metricCard("Local Receipts", report.routing.localRouteReceipts, `${report.routing.localSkippedReceipts} skipped, ${report.routing.hostedFallbackReceipts} hosted fallback`)}
+      </div>
+      <section class="subpanel">
+        <div class="section-heading">
+          <div>
+            <h3>Local Smoke Outcomes</h3>
+            <span class="muted">Compares low-risk local route smoke runs over time.</span>
+          </div>
+          <span class="flag ${smoke.counts["local-selected"] > 0 ? "good" : smoke.smokeRuns ? "warn" : "queued"}">${formatNumber(smoke.smokeRuns)} smoke runs</span>
+        </div>
+        <div class="metric-grid">
+          ${metricCard("Local Successes", smoke.counts["local-selected"], "completed local/BYO selections")}
+          ${metricCard("First Local Success", smoke.firstSuccessAt ? renderDashboardDateTime(smoke.firstSuccessAt) : "none", "true local-selected receipt")}
+          ${metricCard("Latest Smoke", smoke.latestSmokeAt ? renderDashboardDateTime(smoke.latestSmokeAt) : "none", "most recent setup smoke")}
+          ${metricCard("Latest Issue", smoke.latestFailureReason ? truncateText(smoke.latestFailureReason, 72) : "none", "failure, skip, fallback, or hosted selection")}
+        </div>
+        <p class="muted">${escapeHtml(smoke.recommendation)}</p>
+        <div class="table-wrap"><table><thead><tr><th>Run</th><th>Outcome</th><th>Provider/Tier</th><th>Quality</th><th>Reason</th></tr></thead><tbody>${smokeRows || "<tr><td colspan=\"5\">No local LLM smoke runs found yet.</td></tr>"}</tbody></table></div>
+      </section>
+      <div class="table-wrap"><table><thead><tr><th>Status</th><th>Check</th><th>Next Action</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <form class="inline-form" method="post" action="/api/follow-up">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-smoke">
+        <button type="submit">${iconLabel("activity", "Run Low-Risk Local Route Smoke")}</button>
+        <span class="muted">Queues one <code>provider-smoke</code> fast-tier stage and writes normal route receipts.</span>
+      </form>
+      <details>
+        <summary>CLI commands</summary>
+        <ul>${commandRows}</ul>
+      </details>
+    </section>
+  `;
+}
+
+function renderLocalLlmSetupGuideHtml(report: LocalLlmSetupGuideReport): string {
+  const statusClass = report.status === "ready" ? "completed" : "queued";
+  const runtimeRows = report.runtimes.map((runtime) => `
+    <tr>
+      <td>${escapeHtml(runtime.label)}<br><code>${escapeHtml(runtime.baseUrl)}</code></td>
+      <td><span class="flag ${runtime.status === "ready" ? "good" : runtime.status === "empty" ? "warn" : "bad"}">${escapeHtml(runtime.status)}</span></td>
+      <td>${formatNumber(runtime.modelCount)}<br><span class="muted">${escapeHtml(runtime.models.slice(0, 4).join(", ") || "none listed")}</span></td>
+      <td>${escapeHtml(runtime.selectedTierModels.map((item) => `${item.tier}=${item.model}`).join(", "))}</td>
+      <td>${escapeHtml(runtime.nextAction)}</td>
+    </tr>
+  `).join("");
+  const blockerRows = report.blockers.length
+    ? report.blockers.map((blocker) => `<li>${escapeHtml(blocker)}</li>`).join("")
+    : "<li>No blockers. The routing note can be written after approval.</li>";
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Guided Local Model Setup</h2>
+          <span class="muted">Detects local OpenAI-compatible runtimes and prepares project-local setup or routing notes.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Detected Ready", report.runtimes.filter((runtime) => runtime.status === "ready").length, "runtime catalogs")}
+        ${metricCard("Recommended", report.recommendedRuntime?.label ?? "none", report.recommendedRuntime?.baseUrl ?? "start a local runtime")}
+        ${metricCard("Routing Note", report.routingNoteEligible ? "eligible" : "blocked", report.approved ? "approved" : "needs approval")}
+        ${metricCard("First Local Smoke", report.firstLocalSmokeSuccessAt ? renderDashboardDateTime(report.firstLocalSmokeSuccessAt) : "none", "required evidence")}
+      </div>
+      <p class="muted">${escapeHtml(report.recommendation)}</p>
+      <div class="split-grid compact">
+        <div>
+          <h3>Blockers</h3>
+          <ul>${blockerRows}</ul>
+        </div>
+        <div>
+          <h3>Safe Writes</h3>
+          <ul>
+            <li><code>.agent-workflow/model-improvement/local-llm-setup-guide.*</code></li>
+            <li><code>.agent-workflow/tuning/local-model-routing-note.*</code> only when healthy and approved</li>
+          </ul>
+        </div>
+      </div>
+      <div class="actions">
+        <form method="post" action="/api/follow-up">
+          <input type="hidden" name="returnTo" value="/model-improvement?project=${escapeHtml(encodeURIComponent(report.projectRootUri))}">
+          <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+          <input type="hidden" name="action" value="local-llm-setup-guide">
+          <button type="submit">${iconLabel("file", "Write Setup Guide")}</button>
+        </form>
+        <form method="post" action="/api/follow-up">
+          <input type="hidden" name="returnTo" value="/model-improvement?project=${escapeHtml(encodeURIComponent(report.projectRootUri))}">
+          <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+          <input type="hidden" name="action" value="local-llm-setup-approve">
+          <button type="submit" class="secondary">${iconLabel("check", "Approve Healthy Routing Note")}</button>
+        </form>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Runtime</th><th>Status</th><th>Models</th><th>Tier Selection</th><th>Next Action</th></tr></thead><tbody>${runtimeRows || "<tr><td colspan=\"5\">No local runtime probes were configured.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmDownloadRecommendationsHtml(report: LocalLlmDownloadRecommendationReport): string {
+  const statusClass = report.status === "ready" ? "completed" : report.status === "runtime-needed" ? "failed" : "queued";
+  const rows = report.recommendations.map((item) => `
+    <tr>
+      <td><span class="flag ${item.priority === "high" ? "good" : item.priority === "medium" ? "warn" : "queued"}">${escapeHtml(item.priority)}</span></td>
+      <td>${escapeHtml(item.modelId)}<br><span class="muted">${escapeHtml(item.label)}</span></td>
+      <td>${escapeHtml(item.primaryTier)}<br><span class="muted">${escapeHtml(item.tierFit.join(", "))}</span></td>
+      <td>${escapeHtml(item.hardwareFit)}<br><span class="muted">${item.installed ? "installed" : "download needed"}</span></td>
+      <td><code>${escapeHtml(item.downloadCommand)}</code></td>
+      <td>${escapeHtml(truncateText(item.rationale.join(" "), 180))}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Download Recommendations</h2>
+          <span class="muted">Suggests practical local models from hardware, runtime catalog, task mix, and smoke evidence.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Hardware", report.hardware.class, `${report.hardware.memoryGb} GB, ${report.hardware.cpuCount} cores`)}
+        ${metricCard("Dominant Tier", report.taskMix.dominantTier, report.taskMix.costSavingsGoal)}
+        ${metricCard("Runtime", report.runtime?.label ?? "none", report.runtime?.baseUrl ?? "start a local runtime")}
+        ${metricCard("Recommended", report.recommendedModelId ?? "none", report.nextAction)}
+      </div>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="/model-improvement?project=${escapeHtml(encodeURIComponent(report.projectRootUri))}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-download-recommendations">
+        <button type="submit">${iconLabel("download", "Write Recommendation Report")}</button>
+        <span class="muted">Writes only <code>.agent-workflow/model-improvement/local-llm-download-recommendations.*</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Priority</th><th>Model</th><th>Tier</th><th>Fit</th><th>Download</th><th>Why</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">Start a local runtime before model recommendations can be tested.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmBenchmarkReceiptsHtml(report: LocalLlmBenchmarkReceiptReport): string {
+  const statusClass = report.status === "completed" ? "completed" : report.status === "runtime-needed" || report.status === "no-installed-models" ? "failed" : "queued";
+  const rows = report.receipts.map((receipt) => `
+    <tr>
+      <td>${escapeHtml(receipt.id)}<br><span class="muted">${escapeHtml(receipt.taskLabel)}</span></td>
+      <td><span class="flag ${receipt.status === "completed" ? "good" : receipt.status === "failed" ? "bad" : "warn"}">${escapeHtml(receipt.status)}</span><br><span class="muted">${escapeHtml(receipt.verdict)}</span></td>
+      <td>${escapeHtml(receipt.modelId)}<br><span class="muted">${receipt.runtime ? escapeHtml(receipt.runtime.label) : "no runtime"}</span></td>
+      <td>${receipt.latencyMs === null ? "n/a" : `${formatNumber(receipt.latencyMs)} ms`}<br><span class="muted">score ${receipt.rubricScore ?? "n/a"}</span></td>
+      <td>${escapeHtml(truncateText(receipt.error ?? (receipt.evidence.join(" ") || "No evidence yet."), 180))}</td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Benchmark Receipts</h2>
+          <span class="muted">Tiny local-only prompts for measuring installed candidates before local smoke promotion.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Receipts", report.summary.receipts, `${report.summary.completed} completed, ${report.summary.planned} planned`)}
+        ${metricCard("Runtime", report.runtime?.label ?? "none", report.runtime?.baseUrl ?? "start a local runtime")}
+        ${metricCard("Avg Latency", report.summary.averageLatencyMs === null ? "n/a" : `${formatNumber(report.summary.averageLatencyMs)} ms`, "completed local prompts")}
+        ${metricCard("Avg Score", report.summary.averageRubricScore ?? "n/a", "tiny rubric heuristic")}
+      </div>
+      <p class="muted">${escapeHtml(report.nextAction)}</p>
+      <div class="actions">
+        <form method="post" action="/api/follow-up">
+          <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+          <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+          <input type="hidden" name="action" value="local-llm-benchmarks">
+          <button type="submit">${iconLabel("file", "Write Benchmark Plan")}</button>
+        </form>
+        <form method="post" action="/api/follow-up">
+          <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+          <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+          <input type="hidden" name="action" value="local-llm-benchmarks-execute">
+          <button type="submit" class="secondary">${iconLabel("activity", "Execute Local Benchmark")}</button>
+        </form>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Status</th><th>Model</th><th>Measure</th><th>Evidence</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No local benchmark receipts yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmInstallationPlanHtml(report: LocalLlmInstallationPlanReport): string {
+  const statusClass = report.status === "already-installed" ? "completed" : report.status === "no-selection" ? "failed" : "queued";
+  const rows = report.actions.map((action) => `
+    <tr>
+      <td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.modelId)}</span></td>
+      <td><span class="flag ${action.risk === "high" ? "bad" : action.risk === "medium" ? "warn" : "good"}">${escapeHtml(action.risk)}</span><br><span class="muted">${formatNumber(action.diskEstimateGb)} GB est.</span></td>
+      <td>${escapeHtml(action.runtime)}<br><span class="muted">${escapeHtml(action.primaryTier)} / ${escapeHtml(action.hardwareFit)}</span></td>
+      <td>${action.commands.map((command) => `<code>${escapeHtml(command.command)}</code>${command.requiresApproval ? "<br><span class=\"muted\">review before running</span>" : ""}`).join("<hr>")}</td>
+      <td>${action.envHints.map((hint) => `<code>${escapeHtml(hint)}</code>`).join("<br>")}</td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Installation Plan</h2>
+          <span class="muted">Reviewed runtime-specific commands for installing recommended local models.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Selected", report.selectedModels, `${formatNumber(report.actions.length)} model action(s)`)}
+        ${metricCard("Recommended", report.recommendedModelId ?? "none", `runtime ${report.runtimeStatus}`)}
+        ${metricCard("Downloads", report.safety.executesDownloads ? "executes" : "plan only", "operator runs download commands")}
+        ${metricCard("Provider Edits", report.safety.editsProviderSettings ? "yes" : "no", "env hints only")}
+      </div>
+      <p class="muted">${escapeHtml(report.safety.approvalBoundary)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-install-plan">
+        <input name="model" value="${escapeHtml(report.selectedModels)}" aria-label="model selection">
+        <button type="submit">${iconLabel("download", "Write Install Plan")}</button>
+        <span class="muted">Writes Markdown, JSON, and a reviewed shell script under <code>.agent-workflow/model-improvement/</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Risk</th><th>Runtime</th><th>Commands</th><th>Env Hints</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No local model install actions selected.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmInventoryHtml(report: LocalLlmInventoryReport): string {
+  const statusClass = report.status === "ready" ? "completed" : report.status === "storage-pressure" ? "failed" : "queued";
+  const rootRows = report.cacheRoots.map((root) => `
+    <tr>
+      <td>${escapeHtml(root.label)}<br><code>${escapeHtml(root.path)}</code></td>
+      <td><span class="flag ${root.exists ? "good" : "queued"}">${root.exists ? "found" : "missing"}</span></td>
+      <td>${escapeHtml(root.sizeLabel)}<br><span class="muted">${formatNumber(root.modelDirectories)} model dir(s)</span></td>
+      <td>${renderDashboardDateTime(root.lastModifiedAt, "n/a")}</td>
+      <td>${escapeHtml(root.error ?? "none")}</td>
+    </tr>
+  `).join("");
+  const modelRows = report.models.slice(0, 12).map((model) => `
+    <tr>
+      <td>${escapeHtml(model.modelId)}<br><span class="muted">${escapeHtml(model.source)}</span></td>
+      <td>${escapeHtml(model.cacheRoot)}<br><span class="muted">${escapeHtml(model.sizeLabel)}</span></td>
+      <td>${renderDashboardDateTime(model.lastUsedAt, "unknown")}</td>
+      <td>${model.recommended ? "<span class=\"flag good\">recommended</span>" : "<span class=\"flag queued\">other</span>"}</td>
+      <td>${model.pruneCandidate ? "<span class=\"flag warn\">review prune</span>" : "<span class=\"flag good\">keep</span>"}<br><span class="muted">${escapeHtml(truncateText(model.reason, 100))}</span></td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Disk Inventory</h2>
+          <span class="muted">Read-only cache scan before recommending additional local model downloads.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Total Cache", report.totalCacheLabel, `${formatNumber(report.cacheRoots.filter((root) => root.exists).length)} cache root(s) found`)}
+        ${metricCard("Free Disk", report.storage.freeBytes === null ? "unknown" : formatBytes(report.storage.freeBytes), report.storage.status)}
+        ${metricCard("Models", report.models.length, "runtime catalog and cache directories")}
+        ${metricCard("Prune Review", report.pruneCandidates.length, "stale, unrecommended candidates")}
+      </div>
+      <p class="muted">${escapeHtml(report.recommendation)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-inventory">
+        <button type="submit">${iconLabel("activity", "Write Inventory Report")}</button>
+        <span class="muted">Writes only <code>.agent-workflow/model-improvement/local-llm-inventory.*</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Cache Root</th><th>Status</th><th>Size</th><th>Modified</th><th>Notes</th></tr></thead><tbody>${rootRows}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Model</th><th>Cache/Size</th><th>Last Used</th><th>Recommendation</th><th>Prune</th></tr></thead><tbody>${modelRows || "<tr><td colspan=\"5\">No local model entries found yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmPrunePlanHtml(report: LocalLlmPrunePlanReport): string {
+  const statusClass = report.status === "no-candidates" ? "completed" : report.status === "needs-review" ? "failed" : "queued";
+  const rows = report.actions.map((action) => `
+    <tr>
+      <td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.modelId)}</span></td>
+      <td>${escapeHtml(action.cacheRoot)}<br><code>${escapeHtml(action.cachePath ?? "no path detected")}</code></td>
+      <td>${escapeHtml(action.sizeLabel)}<br><span class="muted">last used ${renderDashboardDateTime(action.lastUsedAt, "unknown")}</span></td>
+      <td><span class="flag ${action.risk === "high" ? "warn" : "queued"}">${escapeHtml(action.risk)}</span><br>${action.recommended ? "<span class=\"flag good\">recommended</span>" : "<span class=\"flag queued\">not recommended</span>"}</td>
+      <td><code>${escapeHtml(action.command)}</code><br><span class="muted">${escapeHtml(truncateText(action.reason, 120))}</span></td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Prune Plan</h2>
+          <span class="muted">Reviewed cleanup commands from inventory candidates. Nothing is deleted automatically.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Actions", report.actions.length, "reviewable cleanup commands")}
+        ${metricCard("Potential Reclaim", report.reclaimableLabel, "cache bytes from selected actions")}
+        ${metricCard("High Risk", report.actions.filter((action) => action.risk === "high").length, "extra review")}
+        ${metricCard("Deletes Executed", report.safety.executesDeletes ? "yes" : "no", "planner boundary")}
+      </div>
+      <p class="muted">${escapeHtml(report.nextAction)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-prune-plan">
+        <input name="model" value="${escapeHtml(report.selectedModels)}" aria-label="model selection">
+        <button type="submit">${iconLabel("trash", "Write Prune Plan")}</button>
+        <span class="muted">Use <code>candidates</code>, <code>all</code>, or specific prune/model ids. Writes only <code>.agent-workflow/model-improvement/local-llm-prune-plan.*</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Action</th><th>Cache Path</th><th>Size</th><th>Risk</th><th>Command</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No prune candidates found yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmCacheTrendHtml(report: LocalLlmCacheTrendReport): string {
+  const statusClass = report.status === "tracking" ? "completed" : report.status === "started" ? "queued" : "failed";
+  const rows = report.history.slice(-10).reverse().map((point) => `
+    <tr>
+      <td>${renderDashboardDateTime(point.capturedAt)}</td>
+      <td>${escapeHtml(point.totalCacheLabel)}<br><span class="muted">${escapeHtml(point.storageStatus)}</span></td>
+      <td>${point.freeBytes === null ? "unknown" : escapeHtml(formatBytes(point.freeBytes))}</td>
+      <td>${formatNumber(point.modelCount)}</td>
+      <td>${formatNumber(point.pruneCandidateCount)}<br><span class="muted">${escapeHtml(point.reclaimableLabel)} reclaim</span></td>
+      <td>${formatNumber(point.localSelected)} local<br><span class="muted">${formatNumber(point.hostedSelected)} hosted</span></td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Cache Trends</h2>
+          <span class="muted">Compact storage and route history for local-model cost savings.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Snapshots", report.history.length, "rolling project-local history")}
+        ${metricCard("Cache Delta", report.comparison.cacheDeltaLabel, report.comparison.previousAt ? `since ${formatDashboardDateTimeText(report.comparison.previousAt)}` : "no previous snapshot")}
+        ${metricCard("Free Disk Delta", report.comparison.freeDeltaLabel, "available storage movement")}
+        ${metricCard("Local Route Delta", report.comparison.localRouteDelta ?? "n/a", "local-selected receipts")}
+        ${metricCard("Hosted Route Delta", report.comparison.hostedRouteDelta ?? "n/a", "hosted-selected receipts")}
+        ${metricCard("Current Reclaim", report.current.reclaimableLabel, `${formatNumber(report.current.pruneCandidateCount)} prune candidate(s)`)}
+      </div>
+      <p class="muted">${escapeHtml(report.recommendation)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-cache-trends">
+        <button type="submit">${iconLabel("activity", "Write Trend Snapshot")}</button>
+        <span class="muted">Appends aggregate history to <code>.agent-workflow/model-improvement/local-llm-cache-trends.*</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Captured</th><th>Cache</th><th>Free Disk</th><th>Models</th><th>Prune</th><th>Routes</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">No written trend snapshots yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmCostLedgerHtml(report: LocalLlmCostLedgerReport): string {
+  const statusClass = report.status === "saving" ? "completed" : report.status === "watch" ? "queued" : "failed";
+  const rows = report.history.slice(-10).reverse().map((point) => `
+    <tr>
+      <td>${renderDashboardDateTime(point.capturedAt)}</td>
+      <td>${formatNumber(point.localSelectedStages)} local<br><span class="muted">${formatNumber(point.hostedSelectedStages)} hosted</span></td>
+      <td>${escapeHtml(formatUsd(point.avoidedHostedUsd))}</td>
+      <td>${escapeHtml(formatUsd(point.fallbackHostedUsd))}</td>
+      <td>${escapeHtml(formatUsd(point.storageUsdPerMonth))}</td>
+      <td>${escapeHtml(formatUsd(point.netEstimatedSavingsUsd))}</td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Model Cost Ledger</h2>
+          <span class="muted">Estimated savings from local routing, fallback cost, benchmark latency, and cache storage.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Net Savings", formatUsd(report.current.netEstimatedSavingsUsd), "estimated in this run window")}
+        ${metricCard("Avoided Hosted", formatUsd(report.current.avoidedHostedUsd), `${formatNumber(report.current.localSelectedStages)} local-selected stages`)}
+        ${metricCard("Fallback Cost", formatUsd(report.current.fallbackHostedUsd), `${formatNumber(report.current.hostedFallbackStages)} hosted fallback stages`)}
+        ${metricCard("Storage/Month", formatUsd(report.current.storageUsdPerMonth), report.current.totalCacheLabel)}
+        ${metricCard("Benchmark Latency", report.current.benchmarkAverageLatencyMs === null ? "n/a" : `${formatNumber(report.current.benchmarkAverageLatencyMs)}ms`, `score ${report.current.benchmarkAverageScore ?? "n/a"}`)}
+        ${metricCard("Savings Delta", report.comparison.netSavingsDeltaUsd === null ? "n/a" : formatUsd(report.comparison.netSavingsDeltaUsd), report.comparison.previousAt ? `since ${formatDashboardDateTimeText(report.comparison.previousAt)}` : "no previous snapshot")}
+      </div>
+      <p class="muted">${escapeHtml(report.recommendation)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-cost-ledger">
+        <button type="submit">${iconLabel("activity", "Write Cost Snapshot")}</button>
+        <span class="muted">Uses configurable <code>AGENTFLOW_COST_LEDGER_*</code> estimates and writes only project-local ledger files.</span>
+      </form>
+      <div class="meta-grid compact">
+        <div><strong>Fast Stage</strong>${escapeHtml(formatUsd(report.assumptions.hostedUsdPerStageByTier.fast))}</div>
+        <div><strong>Standard Stage</strong>${escapeHtml(formatUsd(report.assumptions.hostedUsdPerStageByTier.standard))}</div>
+        <div><strong>Reasoning Stage</strong>${escapeHtml(formatUsd(report.assumptions.hostedUsdPerStageByTier.reasoning))}</div>
+        <div><strong>Storage Rate</strong>${escapeHtml(formatUsd(report.assumptions.localStorageUsdPerGbMonth))} / GB-month</div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Captured</th><th>Routes</th><th>Avoided</th><th>Fallback</th><th>Storage</th><th>Net</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">No written cost snapshots yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmRoutingRecommendationHtml(report: LocalLlmRoutingRecommendationReport): string {
+  const statusClass = report.status === "expand" ? "completed" : report.status === "retreat" ? "failed" : "queued";
+  const rows = report.recommendations.map((item) => `
+    <tr>
+      <td><span class="flag ${item.priority === "high" ? "warn" : item.priority === "medium" ? "queued" : "good"}">${escapeHtml(item.priority)}</span><br>${escapeHtml(item.id)}</td>
+      <td><span class="flag ${item.action === "expand" ? "good" : item.action === "retreat" ? "warn" : "queued"}">${escapeHtml(item.action)}</span></td>
+      <td>${escapeHtml(item.workflowId)}<br><span class="muted">${escapeHtml(item.stageId)} / ${escapeHtml(item.agentId)}</span></td>
+      <td>${escapeHtml(item.routeClass)}<br><span class="muted">${escapeHtml(item.providerId)} / ${escapeHtml(item.modelTier)}</span></td>
+      <td>${formatNumber(item.runs)} run(s)<br><span class="muted">fallback ${item.fallbackRate}, quality ${item.averageQuality ?? "n/a"}</span></td>
+      <td>${formatNumber(item.routeFeedback.total)} signal(s)<br><span class="muted">helpful ${item.routeFeedback.helpful}, costly ${item.routeFeedback.costly}, neutral ${item.routeFeedback.neutral}</span></td>
+      <td>${escapeHtml(formatUsd(item.estimatedNetSavingsUsd))}<br><span class="muted">${escapeHtml(truncateText(item.recommendation, 120))}</span></td>
+    </tr>
+  `).join("");
+  const returnTo = `/model-improvement?project=${encodeURIComponent(report.projectRootUri)}`;
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Savings-Aware Local Routing</h2>
+          <span class="muted">Expand, hold, or retreat recommendations from quality, fallback, latency, storage, and savings evidence.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Expand", report.recommendations.filter((item) => item.action === "expand").length, "local trial candidates")}
+        ${metricCard("Hold", report.recommendations.filter((item) => item.action === "hold").length, "keep current boundary")}
+        ${metricCard("Retreat", report.recommendations.filter((item) => item.action === "retreat").length, "move back toward hosted")}
+        ${metricCard("Net Savings", formatUsd(report.evidence.netEstimatedSavingsUsd), "current cost ledger")}
+        ${metricCard("Route Receipts", report.evidence.routeReceipts, "inspected model_route receipts")}
+        ${metricCard("Storage", report.evidence.storageStatus, `${formatNumber(report.evidence.pruneCandidateCount)} prune candidate(s)`)}
+      </div>
+      <p class="muted">${escapeHtml(report.nextAction)}</p>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-routing-recommendations">
+        <button type="submit">${iconLabel("activity", "Write Routing Recommendations")}</button>
+        <span class="muted">Writes advisory files only. Routing/provider settings are not changed.</span>
+      </form>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-routing-note-plan">
+        <input type="hidden" name="ids" value="all">
+        <button type="submit" class="secondary">${iconLabel("file", "Write Routing Note Plan")}</button>
+        <span class="muted">Turns expand/retreat recommendations into reviewed project-local tuning notes.</span>
+      </form>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="apply-local-llm-routing-note-plan">
+        <input type="hidden" name="ids" value="all">
+        <button type="submit" class="secondary">${iconLabel("check", "Dry Run Apply Notes")}</button>
+        <span class="muted">Previews appending reviewed notes to <code>.agent-workflow/tuning/routing-preferences.md</code>.</span>
+      </form>
+      <div class="table-wrap"><table><thead><tr><th>Priority</th><th>Action</th><th>Target</th><th>Route</th><th>Evidence</th><th>Feedback</th><th>Economics</th></tr></thead><tbody>${rows}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmRoutingNoteApplicationHtml(report: DashboardLocalLlmRoutingNoteApplicationStatus): string {
+  const statusClass = report.error ? "failed" : report.exists ? "completed" : report.activePreferenceExists ? "queued" : "queued";
+  const selected = report.selectedNoteIds.length ? report.selectedNoteIds.join(", ") : "none";
+  const applied = report.appliedNoteIds.length ? report.appliedNoteIds.join(", ") : "none";
+  const skipped = report.skippedNoteIds.length ? report.skippedNoteIds.join(", ") : "none";
+  const hashPair = report.beforeHash && report.afterHash
+    ? `${report.beforeHash.slice(0, 10)} -> ${report.afterHash.slice(0, 10)}`
+    : "n/a";
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Applied Local Routing Notes</h2>
+          <span class="muted">Active project-local routing preferences and rollback receipt evidence.</span>
+        </div>
+        <span class="status ${statusClass}">${report.exists ? "receipt" : report.activePreferenceExists ? "preferences only" : "missing"}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Applied", report.appliedNoteIds.length, "selected notes appended")}
+        ${metricCard("Skipped", report.skippedNoteIds.length, "duplicates or unmatched ids")}
+        ${metricCard("Active Markers", report.activeLocalRoutingNoteMarkers, "agentflow local note sections")}
+        ${metricCard("Receipt Approved", report.approved ? "yes" : "no", report.generatedAt ? `generated ${formatDashboardDateTimeText(report.generatedAt)}` : "no receipt yet")}
+        ${metricCard("Preference Size", formatBytes(report.activePreferenceBytes), report.activePreferenceExists ? report.targetFile : "not written")}
+        ${metricCard("Hash Change", hashPair, "before -> after")}
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Receipt File</strong><code>${escapeHtml(report.path)}</code></div>
+        <div><strong>Target File</strong><code>${escapeHtml(report.targetFile)}</code></div>
+        <div><strong>Source Plan</strong>${renderDashboardDateTime(report.sourcePlanGeneratedAt)}</div>
+        <div><strong>Active Hash</strong><code>${escapeHtml(report.activePreferenceHash?.slice(0, 16) ?? "n/a")}</code></div>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Selected</strong><code>${escapeHtml(selected)}</code></div>
+        <div><strong>Applied</strong><code>${escapeHtml(applied)}</code></div>
+        <div><strong>Skipped</strong><code>${escapeHtml(skipped)}</code></div>
+        <div><strong>Rollback</strong>${escapeHtml(report.rollback ?? "Apply a reviewed note plan to create rollback evidence.")}</div>
+      </div>
+      ${report.error ? `<p class="error">${escapeHtml(report.error)}</p>` : ""}
+      ${report.activePreferencePreview ? `<pre>${escapeHtml(report.activePreferencePreview)}</pre>` : "<p class=\"muted\">No active local routing preference notes have been written yet.</p>"}
+    </section>
+  `;
+}
+
+function renderLocalLlmRoutingDecisionTimelineHtml(report: DashboardLocalLlmRoutingDecisionTimeline): string {
+  const statusClass = report.status === "active" ? "completed" : report.status === "recommended" ? "failed" : "queued";
+  const rows = report.items.map((item) => `
+    <tr>
+      <td><span class="flag ${item.state === "applied" ? "good" : item.state === "recommended" ? "warn" : "queued"}">${escapeHtml(item.state)}</span><br><span class="muted">${escapeHtml(item.recommendationId)}</span></td>
+      <td>${escapeHtml(item.action)}<br><span class="muted">${escapeHtml(item.priority)}</span></td>
+      <td>${escapeHtml(item.target)}<br><span class="muted">${escapeHtml(item.agentId)}</span></td>
+      <td>${escapeHtml(item.noteId ?? "none")}<br><span class="muted">${escapeHtml(item.providerTier)}</span></td>
+      <td>${formatNumber(item.runs)} run(s)<br><span class="muted">fallback ${item.fallbackRate}, quality ${item.quality ?? "n/a"}</span></td>
+      <td>${escapeHtml(formatUsd(item.netSavingsUsd))}<br><span class="muted">${escapeHtml(truncateText(item.outcome, 140))}</span></td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Model Routing Decision Timeline</h2>
+          <span class="muted">Recommendation to note plan to applied receipt to current route outcome.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(report.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Timeline Items", report.items.length, "top routing decisions")}
+        ${metricCard("Applied", report.items.filter((item) => item.state === "applied").length, "active routing notes")}
+        ${metricCard("Planned", report.items.filter((item) => item.state === "planned").length, "reviewed note plans")}
+        ${metricCard("Recommended", report.items.filter((item) => item.state === "recommended").length, "not yet planned")}
+        ${metricCard("Monitoring", report.items.filter((item) => item.state === "monitoring").length, "hold decisions")}
+        ${metricCard("Application Receipt", renderDashboardDateTime(report.sourceApplicationGeneratedAt), "latest apply evidence")}
+      </div>
+      <p class="muted">${report.summary.map((item) => escapeHtml(item)).join(" ")}</p>
+      <div class="table-wrap"><table><thead><tr><th>State</th><th>Decision</th><th>Target</th><th>Plan/Route</th><th>Outcome Evidence</th><th>Economics</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">No routing decisions are available yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function renderLocalLlmRoutingDecisionSnapshotsHtml(report: LocalLlmRoutingDecisionSnapshotReport): string {
+  const latest = report.snapshots.at(-1) ?? null;
+  const previous = report.latestDelta.previousAt ?? "none";
+  const stateChanges = report.latestDelta.stateChanges.length
+    ? report.latestDelta.stateChanges.join("; ")
+    : "none";
+  const rows = report.snapshots.slice(-8).reverse().map((snapshot) => `
+    <tr>
+      <td>${renderDashboardDateTime(snapshot.generatedAt)}<br><span class="muted">${escapeHtml(snapshot.decisionHash.slice(0, 12))}</span></td>
+      <td><span class="flag ${snapshot.status === "active" ? "good" : snapshot.status === "recommended" ? "warn" : "queued"}">${escapeHtml(snapshot.status)}</span></td>
+      <td>${formatNumber(snapshot.items.length)} item(s)<br><span class="muted">applied ${formatNumber(snapshot.counts.applied ?? 0)}, planned ${formatNumber(snapshot.counts.planned ?? 0)}, recommended ${formatNumber(snapshot.counts.recommended ?? 0)}</span></td>
+      <td>${escapeHtml(formatUsd(snapshot.totalNetSavingsUsd))}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Routing Decision Snapshots</h2>
+          <span class="muted">Persisted timeline history for comparing routing decisions over time.</span>
+        </div>
+        <span class="status ${report.captured ? "completed" : "queued"}">${report.captured ? "changed" : "unchanged"}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Snapshots", report.snapshots.length, "kept locally")}
+        ${metricCard("Latest", latest ? renderDashboardDateTime(latest.generatedAt) : "none", "last persisted")}
+        ${metricCard("Previous", previous === "none" ? "none" : renderDashboardDateTime(previous), "comparison baseline")}
+        ${metricCard("Changed Items", report.latestDelta.changedItems, `${report.latestDelta.added} added, ${report.latestDelta.removed} removed`)}
+        ${metricCard("Savings Delta", formatUsd(report.latestDelta.netSavingsDeltaUsd), "latest vs previous")}
+        ${metricCard("Current Hash", report.currentSnapshot.decisionHash.slice(0, 10), report.captured ? "new projection" : "same projection")}
+      </div>
+      <form method="post" action="/api/follow-up" class="inline-form">
+        <input type="hidden" name="returnTo" value="/model-improvement?project=${encodeURIComponent(report.projectRootUri)}">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="action" value="local-llm-routing-decision-snapshot">
+        <button type="submit">${iconLabel("activity", "Capture Decision Snapshot")}</button>
+        <span class="muted">Appends only if the routing decision hash changed.</span>
+      </form>
+      <div class="meta-grid compact">
+        <div><strong>State Changes</strong>${escapeHtml(stateChanges)}</div>
+        <div><strong>Files</strong><code>.agent-workflow/model-improvement/local-routing-decision-snapshots.*</code></div>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Captured</th><th>Status</th><th>Items</th><th>Net Savings</th></tr></thead><tbody>${rows || "<tr><td colspan=\"4\">No persisted decision snapshots yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
 function renderLocalProviderEvidenceHtml(evidence: DashboardLocalProviderEvidence): string {
   const statusClass = evidence.status === "ready" ? "completed" : evidence.status === "not-configured" ? "failed" : "queued";
   const feedback = `${evidence.localAccepted}/${evidence.localRevised}/${evidence.localRejected}`;
@@ -22736,6 +29796,184 @@ function renderLocalProviderEvidenceHtml(evidence: DashboardLocalProviderEvidenc
         <div><strong>Hosted Latency</strong>${evidence.hostedAverageLatencyMs === null ? "n/a" : `${Math.round(evidence.hostedAverageLatencyMs)}ms`}</div>
       </div>
       <p class="muted">${escapeHtml(evidence.recommendation)}</p>
+    </section>
+  `;
+}
+
+function renderLocalHoldoutRoutingStatusHtml(status: DashboardLocalHoldoutRoutingStatus): string {
+  const statusClass = status.status === "active" || status.status === "approved"
+    ? "completed"
+    : status.status === "error" || status.status === "blocked"
+      ? "failed"
+      : "queued";
+  const evidenceSuites = status.evidenceSuites.length ? status.evidenceSuites.join(", ") : "none";
+  const promotableSuites = status.promotableSuites.length ? status.promotableSuites.join(", ") : "none";
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Holdout Routing</h2>
+          <span class="muted">Reviewed local LLM promotion state and hosted fallback posture.</span>
+        </div>
+        <span class="status ${statusClass}">${escapeHtml(status.status)}</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Results", status.resultsExists ? status.resultsDecision ?? "present" : "missing", status.resultsPath)}
+        ${metricCard("Promotion", status.promotionExists ? status.promotionStatus ?? "present" : "missing", status.promotionPath)}
+        ${metricCard("Approved", status.approved ? "yes" : "no", status.maxRisk ? `max risk ${status.maxRisk}` : "approval gate")}
+        ${metricCard("Thresholds", status.thresholdSummary ?? "missing", "promotion gate")}
+        ${metricCard("Holdout Evidence", status.evidenceSummary ?? "missing", "captured result")}
+        ${metricCard("Local Routed", status.localStageCount, "recent local/BYO stages")}
+        ${metricCard("Hosted Routed", status.hostedStageCount, "recent hosted stages")}
+        ${metricCard("Local Fallback", status.localFallbackRate === null ? "n/a" : status.localFallbackRate, "recent local/BYO fallback rate")}
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Evidence Suites</strong>${escapeHtml(evidenceSuites)}</div>
+        <div><strong>Promotable Suites</strong>${escapeHtml(promotableSuites)}</div>
+        <div><strong>Fallback Boundary</strong>${escapeHtml(status.hostedFallbackBoundary)}</div>
+        <div><strong>Recommendation</strong>${escapeHtml(status.recommendation)}</div>
+      </div>
+      ${status.error ? `<p class="error">${escapeHtml(status.error)}</p>` : ""}
+    </section>
+  `;
+}
+
+function renderLocalRouteDecisionDrilldownHtml(
+  trends: DashboardRouteReceiptTrendReport,
+  holdout: DashboardLocalHoldoutRoutingStatus
+): string {
+  const rows = trends.topGroups.map((group) => {
+    const explanation = localRouteDecisionExplanation(group, holdout);
+    return `
+      <tr>
+        <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)} / ${escapeHtml(group.agentId)}</span></td>
+        <td><span class="flag ${explanation.severity === "good" ? "good" : explanation.severity === "warning" ? "warn" : "queued"}">${escapeHtml(explanation.label)}</span></td>
+        <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}<br><span class="muted">${formatNumber(group.runs)} receipt(s)</span></td>
+        <td>${group.averageQuality ?? "n/a"}<br><span class="muted">${group.averageLatencyMs === null ? "latency n/a" : `${formatNumber(group.averageLatencyMs)}ms avg`}</span></td>
+        <td>${group.fallbackCount}<br><span class="muted">${group.runs ? Number((group.fallbackCount / group.runs).toFixed(2)) : 0} fallback rate</span></td>
+        <td>${escapeHtml(explanation.reason)}<br><strong>Next:</strong> ${escapeHtml(explanation.nextAction)}</td>
+        <td>${routeDecisionFeedbackForm(trends.projectRootUri, group)}</td>
+      </tr>
+    `;
+  }).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Local Route Decision Drilldown</h2>
+          <span class="muted">Why recent stages selected local, skipped local, or used hosted fallback.</span>
+        </div>
+        <span class="status ${holdout.approved ? "completed" : "queued"}">${holdout.approved ? "holdout approved" : holdout.status}</span>
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Stage</th><th>Decision</th><th>Route</th><th>Quality/Latency</th><th>Fallback</th><th>Reason / Next Action</th><th>Feedback</th></tr></thead><tbody>${rows || "<tr><td colspan=\"7\">No recent route receipts are available yet.</td></tr>"}</tbody></table></div>
+    </section>
+  `;
+}
+
+function routeDecisionFeedbackForm(projectDir: string, group: DashboardRouteReceiptTrendGroup): string {
+  const returnTo = `/model-improvement?project=${encodeURIComponent(projectDir)}&limit=50`;
+  const commonInputs = [
+    ["returnTo", returnTo],
+    ["project", projectDir],
+    ["action", "route-feedback"],
+    ["workflowId", group.workflowId],
+    ["stageId", group.stageId],
+    ["agentId", group.agentId],
+    ["providerId", group.providerId],
+    ["modelTier", group.modelTier],
+    ["routeClass", group.classification],
+    ["runs", String(group.runs)],
+    ["fallbackCount", String(group.fallbackCount)],
+    ["averageQuality", group.averageQuality === null ? "" : String(group.averageQuality)],
+    ["averageLatencyMs", group.averageLatencyMs === null ? "" : String(group.averageLatencyMs)]
+  ].map(([name, value]) => `<input type="hidden" name="${escapeHtml(name)}" value="${escapeHtml(value)}">`).join("");
+  return `<form class="feedback-form route-feedback-form" method="post" action="/api/follow-up">
+    ${commonInputs}
+    <input name="note" aria-label="Route feedback note" placeholder="optional note">
+    <div class="button-row compact">
+      <button type="submit" name="rating" value="helpful">${iconLabel("check", "Helpful")}</button>
+      <button type="submit" name="rating" value="costly">${iconLabel("warning", "Costly")}</button>
+      <button type="submit" name="rating" value="neutral" class="secondary">${iconLabel("message", "Neutral")}</button>
+    </div>
+  </form>`;
+}
+
+function localRouteDecisionExplanation(
+  group: DashboardRouteReceiptTrendGroup,
+  holdout: DashboardLocalHoldoutRoutingStatus
+): { label: string; severity: "good" | "warning" | "info"; reason: string; nextAction: string } {
+  if (group.classification === "local-selected") {
+    return {
+      label: "local selected",
+      severity: group.fallbackCount ? "warning" : "good",
+      reason: holdout.thresholdSummary
+        ? `Approved holdout routing is active. ${holdout.thresholdSummary}. ${holdout.evidenceSummary ?? ""}`.trim()
+        : "Local routing was selected from a reviewed local preference or provider route.",
+      nextAction: group.fallbackCount
+        ? "Watch fallback and quality before expanding this route further."
+        : "Keep collecting quality, latency, and feedback evidence."
+    };
+  }
+  if (group.classification === "local-skipped") {
+    return {
+      label: "local skipped",
+      severity: "warning",
+      reason: group.latestReason || "Local routing was requested, but readiness or threshold evidence prevented local execution.",
+      nextAction: holdout.approved
+        ? "Check the local endpoint/model readiness and rerun the low-risk route smoke."
+        : "Capture and approve passing holdout results before expecting local selection."
+    };
+  }
+  if (group.classification === "hosted-fallback") {
+    return {
+      label: "hosted fallback",
+      severity: "warning",
+      reason: group.latestReason || "Hosted fallback was used after local or candidate routing could not complete.",
+      nextAction: "Inspect route receipts, local endpoint health, and fallback thresholds before raising local routing scope."
+    };
+  }
+  return {
+    label: "hosted selected",
+    severity: "info",
+    reason: group.latestReason || "Hosted provider remained the selected route for this stage.",
+    nextAction: holdout.status === "needs-promotion"
+      ? "Approve low-risk local routing if holdout evidence is acceptable."
+      : "Keep hosted routing unless cost, quality, and holdout evidence recommend a local trial."
+  };
+}
+
+function renderRouteReceiptTrendsHtml(report: DashboardRouteReceiptTrendReport): string {
+  const rows = report.topGroups.map((group) => `
+    <tr>
+      <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)} / ${escapeHtml(group.agentId)}</span></td>
+      <td><span class="flag ${group.classification === "local-selected" ? "good" : group.classification === "local-skipped" || group.classification === "hosted-fallback" ? "warn" : "queued"}">${escapeHtml(group.classification.replace(/-/g, " "))}</span></td>
+      <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}</td>
+      <td>${formatNumber(group.runs)}</td>
+      <td>${formatNumber(group.fallbackCount)}</td>
+      <td>${group.averageQuality ?? "n/a"}</td>
+      <td>${group.averageLatencyMs === null ? "n/a" : `${formatNumber(group.averageLatencyMs)}ms`}</td>
+      <td>${escapeHtml(truncateText(group.latestReason || "no route reason recorded", 180))}</td>
+    </tr>
+  `).join("");
+  return `
+    <section class="panel">
+      <div class="section-heading">
+        <div>
+          <h2>Route Receipt Trends</h2>
+          <span class="muted">Recent model_route receipts grouped by local selection, skipped local preference, and fallback behavior.</span>
+        </div>
+        <span class="flag ${report.totalReceipts ? "good" : "warn"}">${formatNumber(report.totalReceipts)} receipts</span>
+      </div>
+      <div class="metric-grid">
+        ${metricCard("Reports", report.reportsAnalyzed, "recent runs with quality data")}
+        ${metricCard("Local Selected", report.localSelected, "approved local holdout route")}
+        ${metricCard("Local Skipped", report.localSkipped, "local preference present but unavailable")}
+        ${metricCard("Hosted Fallback", report.hostedFallback, "provider retry receipts")}
+        ${metricCard("Hosted Selected", report.hostedSelected, "normal hosted or default route")}
+        ${metricCard("Selection Rate", report.localSelectionRate === null ? "n/a" : report.localSelectionRate, "local-selected / all receipts")}
+        ${metricCard("Fallback Rate", report.fallbackRate === null ? "n/a" : report.fallbackRate, "fallbacks / all receipts")}
+      </div>
+      <div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Class</th><th>Provider/Tier</th><th>Runs</th><th>Fallbacks</th><th>Quality</th><th>Latency</th><th>Latest Reason</th></tr></thead><tbody>${rows || "<tr><td colspan=\"8\">No route receipts found in the inspected run window.</td></tr>"}</tbody></table></div>
     </section>
   `;
 }
@@ -23173,7 +30411,11 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
     <section class="panel">
       <h2>Readiness</h2>
       <ul>${report.readiness.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+      ${localHoldoutComparisonForm(report)}
     </section>
+    ${renderLocalHoldoutRoutingStatusHtml(report.localHoldoutRouting)}
+    ${renderLocalRouteDecisionDrilldownHtml(report.routeReceiptTrends, report.localHoldoutRouting)}
+    ${renderRouteReceiptTrendsHtml(report.routeReceiptTrends)}
     <section class="panel">
       <h2>Variants</h2>
       ${comparison ? `
@@ -23190,11 +30432,13 @@ function renderCandidateComparisonReportHtml(report: DashboardCandidateCompariso
     <section class="panel">
       <h2>Outcomes</h2>
       <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Leader</th><th>Baseline Runs</th><th>Candidate Runs</th><th>Baseline Quality</th><th>Candidate Quality</th><th>Quality Delta</th><th>Latency Delta</th><th>Latest</th></tr></thead><tbody>${outcomeRows || "<tr><td colspan=\"9\">No evaluation outcomes yet.</td></tr>"}</tbody></table></div>
+      ${localHoldoutResultsForm(report)}
     </section>
     <section class="panel">
       <h2>Promotion Recommendation</h2>
       <div class="table-wrap"><table><thead><tr><th>Suite</th><th>Decision</th><th>Rationale</th><th>Next Action</th></tr></thead><tbody>${recommendationRows || "<tr><td colspan=\"4\">No comparison outcomes available yet.</td></tr>"}</tbody></table></div>
       ${promotionNotePlanForm(report)}
+      ${localHoldoutPromotionForm(report)}
     </section>
     <section class="panel">
       <h2>Promotion Note Files</h2>
@@ -23767,12 +31011,50 @@ function renderServerMutationControlsPanel(report: ServerMutationControlReport):
     ${metricCard("Remote Mutations", report.summary.remoteMutationEndpoints, `${report.summary.readyRemoteMutations} ready`)}
     ${metricCard("Blocked", report.summary.blockedRemoteMutations, "remote mutations gated")}
     ${metricCard("Local Actions", report.summary.localOnlyMutations, "dashboard/operator only")}
+    ${metricCard("Approval Gate", report.mode.approvalActionExecutionEnabled ? "on" : "off", "server approval actions")}
     ${metricCard("Body Limit", `${report.mode.requestBodyMaxBytes} bytes`, "remote JSON mutation")}
     ${metricCard("Rate Limit", report.mode.rateLimitPerMinute <= 0 ? "off" : `${report.mode.rateLimitPerMinute}/min`, "per actor/IP")}
   </div>
   <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p>
   <div class="table-wrap"><table><thead><tr><th>Endpoint</th><th>Status</th><th>Exposure</th><th>Execution Gate</th><th>Role</th><th>Receipt</th><th>Missing Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div>
   ${actionRows ? `<details class="governance-details"><summary>Recommended Actions</summary><ul>${actionRows}</ul></details>` : ""}
+  </section>`;
+}
+
+function renderServerApprovalActionPlanPanel(report: ServerApprovalActionPlanReport, testAdapter: ServerApprovalActionTestAdapterReport): string {
+  const statusClass = report.status === "ready" ? "completed" : report.status === "blocked" ? "failed" : "queued";
+  const testStatusClass = testAdapter.status === "pass" ? "completed" : "failed";
+  const decisionRows = report.decisions.map((decision) => {
+    const rowStatusClass = decision.status === "ready" ? "completed" : "failed";
+    const receipts = decision.requiredReceiptKinds.map((receipt) => `<code>${escapeHtml(receipt)}</code>`).join(" ");
+    const missing = decision.missingControls.length
+      ? decision.missingControls.map((control) => `<code>${escapeHtml(control)}</code>`).join(" ")
+      : '<span class="muted">none</span>';
+    return `
+    <tr>
+      <td><strong>${escapeHtml(decision.decision)}</strong><br><span class="muted">${decision.executesSideEffect ? "executes side effect" : "approval state only"}</span></td>
+      <td><span class="status ${rowStatusClass}">${escapeHtml(decision.status)}</span><br><span class="muted">${decision.mutatesApprovalState ? "mutates approval state" : "read-only"}</span></td>
+      <td>${receipts}</td>
+      <td><code>${escapeHtml(decision.idempotencyReuseKey)}</code><br><span class="muted">${escapeHtml(decision.replayBehavior)}</span></td>
+      <td>${decision.rollbackEvidence.map((item) => escapeHtml(item)).join("<br>")}</td>
+      <td>${missing}</td>
+    </tr>`;
+  }).join("");
+  const phaseRows = report.implementationPhases.map((phase) => `<li><strong>${escapeHtml(phase.phase)}</strong> <span class="status ${phase.status === "done" ? "completed" : phase.status === "next" ? "queued" : "pending"}">${escapeHtml(phase.status)}</span> ${escapeHtml(phase.detail)}</li>`).join("");
+  return `<section class="panel"><div class="section-heading"><div><h2>Approval Action Plan</h2><span class="muted">Per-decision receipt, replay, and rollback checklist before remote approval mutations can be enabled.</span></div><div class="actions"><a class="button secondary" href="/api/server-approval-action-plan">Plan JSON</a><a class="button secondary" href="/api/server-approval-action-test-adapter">Test JSON</a></div></div>
+  <div class="metric-grid">
+    ${metricCard("Plan", report.status, "remote approval mutation")}
+    ${metricCard("Decisions", report.summary.decisions, "approval actions")}
+    ${metricCard("Ready", report.summary.ready, "decision paths")}
+    ${metricCard("Blocked", report.summary.blocked, "decision paths")}
+    ${metricCard("Test Adapter", testAdapter.status, `${testAdapter.summary.passed}/${testAdapter.summary.decisions} decisions`)}
+    ${metricCard("Replay Proof", testAdapter.summary.replayed, "idempotent fixture paths")}
+    ${metricCard("Receipts", report.summary.receiptPlanReady ? "ready" : "blocked", "per-action")}
+    ${metricCard("Idempotency", report.summary.idempotencyReuseReady ? "ready" : "blocked", "replay")}
+  </div>
+  <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>. Enablement: ${report.canEnableApprovalActions ? "allowed" : "blocked"}. Test adapter: <span class="status ${testStatusClass}">${escapeHtml(testAdapter.status)}</span>, ${formatNumber(testAdapter.summary.simulatedSideEffects)} simulated side effect(s), no live effects.</p>
+  <div class="table-wrap"><table><thead><tr><th>Decision</th><th>Status</th><th>Receipts</th><th>Idempotency Replay</th><th>Rollback Evidence</th><th>Missing Controls</th></tr></thead><tbody>${decisionRows}</tbody></table></div>
+  ${phaseRows ? `<details class="governance-details" open><summary>Implementation Phases</summary><ul>${phaseRows}</ul></details>` : ""}
   </section>`;
 }
 
@@ -23824,7 +31106,7 @@ function renderServerRequestAuditPanel(report: ServerRequestAuditReport): string
   <div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Endpoint</th><th>Workflow</th><th>Auth</th><th>Rate Limit</th><th>Run</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No governed server request audit events found.</td></tr>'}</tbody></table></div></section>`;
 }
 
-function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, approvalActionPlan: ServerApprovalActionPlanReport, approvalActionTestAdapter: ServerApprovalActionTestAdapterReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
   const checkRows = report.checks.map((check) => `
@@ -23897,6 +31179,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
   ${renderServerAuthHardeningPanel(report.authHardening)}
   ${renderServerMutationControlsPanel(mutationControls)}
+  ${renderServerApprovalActionPlanPanel(approvalActionPlan, approvalActionTestAdapter)}
   ${renderServerRequestAuditPanel(requestAudit)}
   <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
@@ -25419,6 +32702,21 @@ async function processDashboardRuntimeMonitorAction(form: URLSearchParams): Prom
       ? { ok: true, title: "MCP smoke passed", output: formatMcpPipelineStatus(report.mcpPipeline) }
       : { ok: false, error: formatMcpPipelineStatus(report.mcpPipeline) };
   }
+  if (action === "write-mcp-recovery") {
+    const report = await loadRuntimeMonitorReport({ checkMcp: true });
+    report.mcpPipeline.recovery = await writeMcpRecoveryPackage(report.mcpPipeline);
+    return {
+      ok: true,
+      title: "MCP recovery package written",
+      output: [
+        `Markdown: ${report.mcpPipeline.recovery.markdownPath}`,
+        `JSON: ${report.mcpPipeline.recovery.jsonPath}`,
+        `Script: ${report.mcpPipeline.recovery.scriptPath}`,
+        "",
+        formatMcpPipelineStatus(report.mcpPipeline)
+      ].join("\n")
+    };
+  }
   if (action === "reconcile-stale-runs") {
     const result = await reconcileStaleTerminalWorkflowRuns({
       execute: true,
@@ -25573,6 +32871,8 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       agentImprovementEvalPasses: typeof heartbeat.agentImprovementEvalPasses === "number" ? heartbeat.agentImprovementEvalPasses : 0,
       agentImprovementPromotions: typeof heartbeat.agentImprovementPromotions === "number" ? heartbeat.agentImprovementPromotions : 0,
       agentImprovementPromotionPending: typeof heartbeat.agentImprovementPromotionPending === "number" ? heartbeat.agentImprovementPromotionPending : 0,
+      agentImprovementApplied: typeof heartbeat.agentImprovementApplied === "number" ? heartbeat.agentImprovementApplied : 0,
+      agentImprovementApplySkipped: typeof heartbeat.agentImprovementApplySkipped === "number" ? heartbeat.agentImprovementApplySkipped : 0,
       approvalAutopilotEnabled: typeof heartbeat.approvalAutopilotEnabled === "boolean" ? heartbeat.approvalAutopilotEnabled : false,
       approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(typeof heartbeat.approvalAutopilotMaxRisk === "string" ? heartbeat.approvalAutopilotMaxRisk : "medium"),
       approvalAutopilotExecuted: typeof heartbeat.approvalAutopilotExecuted === "number" ? heartbeat.approvalAutopilotExecuted : 0,
@@ -25623,6 +32923,8 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       agentImprovementEvalPasses: 0,
       agentImprovementPromotions: 0,
       agentImprovementPromotionPending: 0,
+      agentImprovementApplied: 0,
+      agentImprovementApplySkipped: 0,
       approvalAutopilotEnabled: false,
       approvalAutopilotMaxRisk: "medium",
       approvalAutopilotExecuted: 0,
@@ -25668,6 +32970,8 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Agent improvement eval passes: ${status.agentImprovementEvalPasses}`,
     `Agent improvement promotions: ${status.agentImprovementPromotions}`,
     `Agent improvement promotion pending: ${status.agentImprovementPromotionPending}`,
+    `Agent improvement applied: ${status.agentImprovementApplied}`,
+    `Agent improvement apply skipped: ${status.agentImprovementApplySkipped}`,
     `Approval autopilot: ${status.approvalAutopilotEnabled ? "on" : "off"} through ${status.approvalAutopilotMaxRisk}`,
     `Approval autopilot executed: ${status.approvalAutopilotExecuted}`,
     `Approval autopilot skipped: ${status.approvalAutopilotSkipped}`,
@@ -27564,6 +34868,7 @@ async function buildApprovalBacklogReport(input: {
   const items: ApprovalBacklogItem[] = [];
   for (const approval of approvals) {
     const ageMinutes = approvalAgeMinutes(approval, generatedAt);
+    const approvedExecutableNotRun = approval.status === "approved" && isExecutableApprovalAction(approval.actionType) && !approval.executedAt;
     let severity: ApprovalBacklogSeverity = "info";
     let reason = "No action needed.";
     let resolvedMissingTool: string | null = null;
@@ -27581,14 +34886,16 @@ async function buildApprovalBacklogReport(input: {
     } else if (approval.status === "dismissed" || isDismissedApproval(approval)) {
       severity = "info";
       reason = approval.decisionNote ?? "Approval was dismissed without execution.";
-    } else if (approval.status === "approved" && isExecutableApprovalAction(approval.actionType) && !approval.executedAt) {
+    } else if (approvedExecutableNotRun) {
       severity = "warning";
       reason = "Approved executable action has not been executed.";
-    } else if ((approval.status === "pending" || approval.status === "approved") && ageMinutes !== null && ageMinutes >= input.staleMinutes) {
+    } else if (approval.status === "pending" && ageMinutes !== null && ageMinutes >= input.staleMinutes) {
       severity = "warning";
       reason = `${approval.status} approval is stale after ${Math.floor(ageMinutes)} minute(s).`;
     } else if (approval.status === "pending") {
       reason = "Pending approval is waiting for decision.";
+    } else if (approval.status === "approved" && !isExecutableApprovalAction(approval.actionType)) {
+      reason = "Approved decision is recorded as audit history; this action type does not execute inline.";
     }
 
     let autopilotRisk: ApprovalAutopilotRisk | undefined;
@@ -28723,6 +36030,9 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
   const mcpApprovalRows = report.mcpPipeline.approvalDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
     <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
   `).join("");
+  const mcpCommandRows = report.mcpPipeline.commandDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
+    <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td>${escapeHtml(String(event.operation ?? "unknown"))}</td><td>${escapeHtml(String(event.exitCode ?? event.timedOut ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
+  `).join("");
   const mcpReloadSteps = report.mcpPipeline.clientReload.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
   const mcpReloadClass = report.mcpPipeline.clientReload.suspectedStalePipe ? "failed" : report.mcpPipeline.smoke.status === "passed" ? "completed" : "queued";
   const recommendations = report.recommendations.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
@@ -28735,10 +36045,28 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
       ${metricCard("Hulk", report.hulk.reachable ? "online" : "attention", report.hulk.host ?? "not configured")}
       ${metricCard("Local Fallback", report.localServices.every((service) => service.reachable) ? "ready" : "stopped", "localhost storage services")}
       ${metricCard("Docker", report.docker.status, report.docker.message)}
+      ${metricCard("Local Model", report.localModelRuntime.endpointHealthy ? "online" : "attention", `${report.localModelRuntime.serviceStatus} · ${report.localModelRuntime.modelCount} models`)}
       ${metricCard("MCP Processes", report.processes.find((item) => item.role === "mcp")?.count ?? 0, "active local MCP server processes")}
       ${metricCard("MCP Pipeline", report.mcpPipeline.status, report.mcpPipeline.smoke.status === "passed" ? `${report.mcpPipeline.smoke.toolCount ?? 0} tools verified` : report.mcpPipeline.smoke.message)}
       ${metricCard("Stale Runs", report.staleRuns.candidateCount, report.staleRuns.autoReconcile.enabled ? "daemon auto-reconcile on" : "manual reconcile")}
     </div>
+    <details class="governance-details"${!report.localModelRuntime.endpointHealthy ? " open" : ""}>
+      <summary>Durable Local Model Runtime (${escapeHtml(report.localModelRuntime.serviceStatus)})</summary>
+      <p class="muted">A dedicated LaunchAgent owns local inference so model failures do not restart the dashboard, workers, or learning daemon. Its wrapper resolves the current Homebrew Ollama symlink on every start, avoiding version-pinned executable paths after upgrades.</p>
+      <div class="meta-grid compact">
+        <div><strong>Runtime</strong>${escapeHtml(report.localModelRuntime.runtime)}</div>
+        <div><strong>Executable</strong><code>${escapeHtml(report.localModelRuntime.executable ?? "not installed")}</code></div>
+        <div><strong>Service</strong>${escapeHtml(report.localModelRuntime.serviceStatus)}${report.localModelRuntime.pid ? ` · pid ${report.localModelRuntime.pid}` : ""}</div>
+        <div><strong>Endpoint</strong>${report.localModelRuntime.endpointHealthy ? "healthy" : "unavailable"} · <code>${escapeHtml(report.localModelRuntime.endpoint)}</code></div>
+        <div><strong>Models</strong>${formatNumber(report.localModelRuntime.modelCount)}</div>
+        <div><strong>Selected Model</strong>${escapeHtml(report.localModelRuntime.selectedModel)}</div>
+        <div><strong>Plist</strong><code>${escapeHtml(report.localModelRuntime.plistPath)}</code></div>
+        <div><strong>Logs</strong><code>${escapeHtml(report.localModelRuntime.stdoutPath)}</code><br><code>${escapeHtml(report.localModelRuntime.stderrPath)}</code></div>
+      </div>
+      <div class="callout ${report.localModelRuntime.endpointHealthy ? "completed" : "queued"}"><strong>Next action</strong><p>${escapeHtml(report.localModelRuntime.guidance)}</p></div>
+      <p><code>${escapeHtml(report.localModelRuntime.installCommand)}</code></p>
+      <p><code>${escapeHtml(report.localModelRuntime.restartCommand)}</code></p>
+    </details>
     <div class="meta-grid compact">
       <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
       <div><strong>Shared Host Source</strong>${escapeHtml(report.hulk.source)}</div>
@@ -28794,17 +36122,42 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
         <p>${escapeHtml(report.mcpPipeline.approvalDiagnostics.summary)}</p>
         <p><code>${escapeHtml(report.mcpPipeline.approvalDiagnostics.fallbackCommand)}</code></p>
       </div>
-      <form method="post" action="/api/runtime-monitor-action">
-        ${dashboardReturnInput("/server-readiness", params)}
-        <input type="hidden" name="action" value="check-mcp">
-        <button type="submit">Run MCP Smoke</button>
-      </form>
+      <div class="callout queued">
+        <strong>MCP Command Spans</strong>
+        <p>${escapeHtml(report.mcpPipeline.commandDiagnostics.summary)}</p>
+      </div>
+      <div class="callout ${report.mcpPipeline.recovery.status === "available" ? "completed" : "queued"}">
+        <strong>MCP Recovery Package</strong>
+        <p>${escapeHtml(report.mcpPipeline.recovery.recommendedAction)}</p>
+        <div class="meta-grid compact">
+          <div><strong>Status</strong>${escapeHtml(report.mcpPipeline.recovery.status)}</div>
+          <div><strong>Last Written</strong>${renderDashboardDateTime(report.mcpPipeline.recovery.lastWrittenAt)}</div>
+          <div><strong>Can Restart Client Pipe</strong>${report.mcpPipeline.recovery.canRestartClientPipe ? "yes" : "no"}</div>
+          <div><strong>Reason</strong>${escapeHtml(report.mcpPipeline.recovery.reason)}</div>
+          <div><strong>Runbook</strong><code>${escapeHtml(report.mcpPipeline.recovery.markdownPath)}</code></div>
+          <div><strong>Script</strong><code>${escapeHtml(report.mcpPipeline.recovery.scriptPath)}</code></div>
+        </div>
+      </div>
+      <div class="button-row">
+        <form method="post" action="/api/runtime-monitor-action">
+          ${dashboardReturnInput("/server-readiness", params)}
+          <input type="hidden" name="action" value="check-mcp">
+          <button type="submit">Run MCP Smoke</button>
+        </form>
+        <form method="post" action="/api/runtime-monitor-action">
+          ${dashboardReturnInput("/server-readiness", params)}
+          <input type="hidden" name="action" value="write-mcp-recovery">
+          <button type="submit">Write Recovery Package</button>
+        </form>
+      </div>
       <div class="split-grid">
         <div><h3>Launcher Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpLauncherRows || '<tr><td colspan="3">No launcher events recorded.</td></tr>'}</tbody></table></div></div>
         <div><h3>Stdio Events</h3><div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpStdioRows || '<tr><td colspan="3">No stdio events recorded.</td></tr>'}</tbody></table></div></div>
       </div>
       <h3>Approval Call Events</h3>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpApprovalRows || '<tr><td colspan="3">No MCP approval calls recorded in the recent log window.</td></tr>'}</tbody></table></div>
+      <h3>Command Span Events</h3>
+      <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Operation</th><th>Exit/Timeout</th><th>Detail</th></tr></thead><tbody>${mcpCommandRows || '<tr><td colspan="5">No MCP command spans recorded in the recent log window.</td></tr>'}</tbody></table></div>
     </details>
     <details class="governance-details"${report.mcpCleanup.candidateCount ? " open" : ""}>
       <summary>Cleanup Stale MCP Sessions (${formatNumber(report.mcpCleanup.candidateCount)} candidate${report.mcpCleanup.candidateCount === 1 ? "" : "s"})</summary>
@@ -30724,6 +38077,7 @@ function dashboardCss(): string {
     .capture-page .capture-hide { display: none !important; }
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: clamp(16px, 1.5vw, 24px); margin-bottom: 18px; }
+    .subpanel { min-width: 0; border: 1px solid #dbe4f0; border-radius: 8px; background: #f8fafc; padding: 14px; margin: 12px 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }
     .quick-actions { margin-top: 12px; }
     .row-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
@@ -31214,6 +38568,38 @@ function promotionNotePlanForm(report: DashboardCandidateComparisonReport): stri
     <input type="hidden" name="action" value="promotion-note-plan">
     <input type="hidden" name="ids" value="${escapeHtml(suiteIds.join(","))}">
     <button type="submit">Preview Promotion Note Plan</button>
+  </form>`;
+}
+
+function localHoldoutComparisonForm(report: DashboardCandidateComparisonReport): string {
+  const returnTo = `/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}`;
+  return `<form class="inline-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectDir)}">
+    <input type="hidden" name="action" value="local-holdout-comparison">
+    <button type="submit">${iconLabel("brain", "Generate Local Holdout Plan")}</button>
+  </form>`;
+}
+
+function localHoldoutResultsForm(report: DashboardCandidateComparisonReport): string {
+  const returnTo = `/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}`;
+  return `<form class="inline-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectDir)}">
+    <input type="hidden" name="action" value="local-holdout-results">
+    <button type="submit">${iconLabel("clipboard", "Capture Holdout Results")}</button>
+  </form>`;
+}
+
+function localHoldoutPromotionForm(report: DashboardCandidateComparisonReport): string {
+  const returnTo = `/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}`;
+  const eligible = report.promotionRecommendations.some((recommendation) => recommendation.decision === "propose_routing_note");
+  return `<form class="inline-form" method="post" action="/api/follow-up">
+    <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+    <input type="hidden" name="project" value="${escapeHtml(report.projectDir)}">
+    <input type="hidden" name="action" value="local-holdout-promote">
+    <button type="submit"${eligible ? "" : " disabled"}>${iconLabel("route", "Approve Low-Risk Local Routing")}</button>
+    <span class="muted">${eligible ? "Uses captured holdout result evidence and writes project-local routing preferences." : "Run/capture passing baseline and local candidate evidence before approving local routing."}</span>
   </form>`;
 }
 
@@ -31898,7 +39284,16 @@ async function runDashboardFollowUp(input: {
   project?: string;
   workflowId?: string;
   stageId?: string;
+  agentId?: string;
+  providerId?: string;
+  modelTier?: string;
+  routeClass?: string;
+  runs?: string;
+  fallbackCount?: string;
+  averageQuality?: string;
+  averageLatencyMs?: string;
   ids?: string;
+  model?: string;
   rating?: string;
   note?: string;
 }): Promise<DashboardFollowUpResult> {
@@ -31936,6 +39331,36 @@ async function runDashboardFollowUp(input: {
       title: "Feedback Recorded",
       output: `Recorded ${result.rating} feedback.\nArtifact: ${result.artifactUri}`,
       runId: input.runId
+    };
+  }
+
+  if (action === "route-feedback") {
+    if (!input.project) {
+      return { ok: false, error: "Missing project path for route feedback." };
+    }
+    const result = await recordRouteDecisionFeedback({
+      projectDir: path.resolve(process.cwd(), input.project),
+      workflowId: input.workflowId ?? "",
+      stageId: input.stageId ?? "",
+      agentId: input.agentId ?? "",
+      providerId: input.providerId ?? "",
+      modelTier: input.modelTier ?? "",
+      routeClass: input.routeClass ?? "",
+      rating: input.rating ?? "",
+      note: input.note ?? "",
+      runs: parseNonNegativeInteger(input.runs ?? "0", 0),
+      fallbackCount: parseNonNegativeInteger(input.fallbackCount ?? "0", 0),
+      averageQuality: parseOptionalNumber(input.averageQuality),
+      averageLatencyMs: parseOptionalNumber(input.averageLatencyMs),
+      source: "dashboard"
+    });
+    if (!result.ok) {
+      return { ok: false, error: result.error };
+    }
+    return {
+      ok: true,
+      title: "Route Feedback Recorded",
+      output: formatRouteDecisionFeedbackResult(result)
     };
   }
 
@@ -31989,6 +39414,301 @@ async function runDashboardFollowUp(input: {
       ok: true,
       title: "Promotion Note Plan Dry Run",
       output: `${formatPromotionRoutingNotePlan(plan)}\n\nRun this command to write the review files:\nnpm run agentflow -- promotion-note-plan --project ${shellQuote(sourceProject)} --suite ${shellQuote(suiteIds)} --write`
+    };
+  }
+
+  if (action === "local-llm-smoke") {
+    const result = await runLocalLlmRouteSmoke({
+      projectDir: sourceProject,
+      timeoutMs: 120000
+    });
+    return result.status === "completed"
+      ? {
+        ok: true,
+        title: "Local LLM Smoke Completed",
+        runId: result.runId ?? undefined,
+        output: formatLocalLlmRouteSmokeResult(result)
+      }
+      : {
+        ok: false,
+        error: formatLocalLlmRouteSmokeResult(result)
+      };
+  }
+
+  if (action === "local-llm-setup-guide" || action === "local-llm-setup-approve") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const scorecard = await loadPreferenceScorecard({ projectDir, limit: 50 });
+    const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+    const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+    const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+    const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+    const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+    const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+    const checklist = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+    const guide = await loadLocalLlmSetupGuideReport({
+      projectDir,
+      checklist,
+      approved: action === "local-llm-setup-approve"
+    });
+    await writeLocalLlmSetupGuideReport(projectDir, guide);
+    if (action === "local-llm-setup-approve" && guide.status !== "ready") {
+      return {
+        ok: false,
+        error: formatLocalLlmSetupGuideReport(guide)
+      };
+    }
+    return {
+      ok: true,
+      title: action === "local-llm-setup-approve" ? "Local Routing Note Written" : "Local Setup Guide Written",
+      output: formatLocalLlmSetupGuideReport(guide)
+    };
+  }
+
+  if (action === "local-llm-download-recommendations") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const scorecard = await loadPreferenceScorecard({ projectDir, limit: 50 });
+    const projectRuns = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+    const recentRouteReports = await loadCostQualityReportsForDashboardRuns(projectRuns.slice(0, Math.min(projectRuns.length, 50)));
+    const localProviderEvidence = buildDashboardLocalProviderEvidence(scorecard);
+    const localHoldoutRouting = await loadDashboardLocalHoldoutRoutingStatus(projectDir, localProviderEvidence);
+    const routeReceiptTrends = buildDashboardRouteReceiptTrends(projectDir, recentRouteReports);
+    const smokeOutcomes = buildLocalLlmSmokeOutcomeTrend(projectDir, projectRuns, recentRouteReports);
+    const checklist = await loadLocalLlmSetupChecklistReport({ projectDir, localHoldoutRouting, routeReceiptTrends, smokeOutcomes });
+    const setupGuide = await loadLocalLlmSetupGuideReport({ projectDir, checklist, approved: false });
+    const report = buildLocalLlmDownloadRecommendationReport({ projectDir, scorecard, checklist, setupGuide });
+    await writeLocalLlmDownloadRecommendationReport(projectDir, report);
+    return {
+      ok: true,
+      title: "Local Model Recommendations Written",
+      output: formatLocalLlmDownloadRecommendationReport(report)
+    };
+  }
+
+  if (action === "local-llm-benchmarks" || action === "local-llm-benchmarks-execute") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmBenchmarkReceiptReport({
+      projectDir,
+      limit: 50,
+      execute: action === "local-llm-benchmarks-execute",
+      timeoutMs: 20000
+    });
+    await writeLocalLlmBenchmarkReceiptReport(projectDir, report);
+    const output = formatLocalLlmBenchmarkReceiptReport(report);
+    if (report.status === "completed" || report.status === "planned" || report.status === "partial") {
+      return {
+        ok: true,
+        title: action === "local-llm-benchmarks-execute" ? "Local Benchmark Receipts Executed" : "Local Benchmark Plan Written",
+        output
+      };
+    }
+    return {
+      ok: false,
+      error: output
+    };
+  }
+
+  if (action === "local-llm-install-plan") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmInstallationPlanReport({
+      projectDir,
+      selectedModels: input.model?.trim() || "recommended",
+      limit: 50
+    });
+    await writeLocalLlmInstallationPlanReport(projectDir, report);
+    return {
+      ok: true,
+      title: "Local Model Install Plan Written",
+      output: formatLocalLlmInstallationPlanReport(report)
+    };
+  }
+
+  if (action === "local-llm-inventory") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmInventoryReport({
+      projectDir,
+      limit: 50
+    });
+    await writeLocalLlmInventoryReport(projectDir, report);
+    return {
+      ok: true,
+      title: "Local Model Inventory Written",
+      output: formatLocalLlmInventoryReport(report)
+    };
+  }
+
+  if (action === "local-llm-prune-plan") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const inventory = await loadLocalLlmInventoryReport({
+      projectDir,
+      limit: 50
+    });
+    const report = buildLocalLlmPrunePlanReport(projectDir, inventory, input.model?.trim() || "candidates");
+    await writeLocalLlmPrunePlanReport(projectDir, report);
+    return {
+      ok: true,
+      title: "Local Model Prune Plan Written",
+      output: formatLocalLlmPrunePlanReport(report)
+    };
+  }
+
+  if (action === "local-llm-cache-trends") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmCacheTrendReport({
+      projectDir,
+      limit: 50,
+      write: true
+    });
+    return {
+      ok: true,
+      title: "Local Model Trend Snapshot Written",
+      output: formatLocalLlmCacheTrendReport(report)
+    };
+  }
+
+  if (action === "local-llm-cost-ledger") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmCostLedgerReport({
+      projectDir,
+      limit: 50,
+      write: true
+    });
+    return {
+      ok: true,
+      title: "Local Model Cost Snapshot Written",
+      output: formatLocalLlmCostLedgerReport(report)
+    };
+  }
+
+  if (action === "local-llm-routing-recommendations") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmRoutingRecommendationReport({
+      projectDir,
+      limit: 50
+    });
+    await writeLocalLlmRoutingRecommendationReport(projectDir, report);
+    return {
+      ok: true,
+      title: "Local Routing Recommendations Written",
+      output: formatLocalLlmRoutingRecommendationReport(report)
+    };
+  }
+
+  if (action === "local-llm-routing-note-plan") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const recommendations = await loadLocalLlmRoutingRecommendationReport({
+      projectDir,
+      limit: 50
+    });
+    const plan = buildLocalLlmRoutingNotePlan(recommendations, parseProposalIds(input.ids));
+    await writeLocalLlmRoutingNotePlan(projectDir, plan);
+    return {
+      ok: true,
+      title: "Local Routing Note Plan Written",
+      output: formatLocalLlmRoutingNotePlan(plan)
+    };
+  }
+
+  if (action === "apply-local-llm-routing-note-plan") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const notePlan = await readLocalLlmRoutingNotePlan(projectDir);
+    const selectedIds = input.ids?.trim() || "all";
+    const plan = await buildLocalLlmRoutingNoteApplicationPlan({
+      projectDir,
+      notePlan,
+      selectedIds: parseProposalIds(selectedIds),
+      approved: false
+    });
+    return {
+      ok: true,
+      title: "Local Routing Note Apply Dry Run",
+      output: `${formatLocalLlmRoutingNoteApplicationPlan(plan)}\n\nRun this command to append the reviewed notes:\nnpm run agentflow -- apply-local-llm-routing-note-plan --project ${shellQuote(sourceProject)} --ids ${shellQuote(selectedIds)} --approved --write`
+    };
+  }
+
+  if (action === "local-llm-routing-decision-snapshot") {
+    const projectDir = path.resolve(process.cwd(), sourceProject);
+    const report = await loadLocalLlmRoutingDecisionSnapshotReport({
+      projectDir,
+      limit: 50,
+      write: true
+    });
+    return {
+      ok: true,
+      title: report.captured ? "Routing Decision Snapshot Captured" : "Routing Decision Snapshot Unchanged",
+      output: formatLocalLlmRoutingDecisionSnapshotReport(report)
+    };
+  }
+
+  if (action === "local-holdout-comparison") {
+    const { modelPlan, source } = await loadLocalHoldoutModelPlan(sourceProject, true);
+    const plan = buildCandidateComparisonPlan({
+      modelPlan,
+      baseline: {
+        provider: "openai",
+        modelTier: "standard",
+        promptSuffix: "Use the hosted baseline provider with current project-local Agent Workflow instructions."
+      },
+      candidate: {
+        provider: "local",
+        modelTier: "fast",
+        promptSuffix: "Use the local LLM candidate only for low-risk developer work, preserving evidence, brevity, and safety boundaries."
+      }
+    });
+    await writeCandidateComparisonPlan(sourceProject, plan);
+    return {
+      ok: true,
+      title: "Local Holdout Plan Written",
+      output: [
+        "Generated local LLM versus hosted-provider holdout comparison files.",
+        `Source: ${source}`,
+        `Suites: ${plan.suites.length}`,
+        "",
+        formatCandidateComparisonPlan(plan),
+        "",
+        "Next command:",
+        `npm run agentflow -- evaluate -s <suite> -p ${shellQuote(sourceProject)}`
+      ].join("\n")
+    };
+  }
+
+  if (action === "local-holdout-results") {
+    const report = await loadDashboardCandidateComparisonReport({
+      projectDir: sourceProject
+    });
+    const result = buildLocalHoldoutResultSummary(report);
+    await writeLocalHoldoutResultSummary(sourceProject, result);
+    return {
+      ok: true,
+      title: "Local Holdout Results Captured",
+      output: [
+        formatLocalHoldoutResultSummary(result),
+        "",
+        "Next command:",
+        result.decision === "eligible_for_review"
+          ? `npm run agentflow -- promotion-note-plan --project ${shellQuote(sourceProject)} --suite all --write`
+          : `npm run agentflow -- evaluate -s <suite> -p ${shellQuote(sourceProject)}`
+      ].join("\n")
+    };
+  }
+
+  if (action === "local-holdout-promote") {
+    const results = await readLocalHoldoutResultSummary(sourceProject).catch(() => emptyLocalHoldoutResultSummary(sourceProject, "Capture local holdout results before approving local routing."));
+    const promotion = buildLocalHoldoutRoutingPromotion(sourceProject, results, true);
+    if (promotion.status !== "ready") {
+      return {
+        ok: false,
+        error: promotion.reason
+      };
+    }
+    await writeLocalHoldoutRoutingPromotion(sourceProject, promotion);
+    return {
+      ok: true,
+      title: "Low-Risk Local Routing Approved",
+      output: [
+        formatLocalHoldoutRoutingPromotion(promotion),
+        "",
+        "Future compiled briefs can read .agent-workflow/tuning/routing-preferences.md as project-local routing context."
+      ].join("\n")
     };
   }
 
@@ -32716,6 +40436,21 @@ type DashboardModelImprovementReport = {
   scorecard: PreferenceScorecard;
   proposals: TuningProposalSet;
   localProviderEvidence: DashboardLocalProviderEvidence;
+  localHoldoutRouting: DashboardLocalHoldoutRoutingStatus;
+  routeReceiptTrends: DashboardRouteReceiptTrendReport;
+  localLlmSetup: LocalLlmSetupChecklistReport;
+  localLlmSetupGuide: LocalLlmSetupGuideReport;
+  localLlmDownloadRecommendations: LocalLlmDownloadRecommendationReport;
+  localLlmBenchmarks: LocalLlmBenchmarkReceiptReport;
+  localLlmInstallationPlan: LocalLlmInstallationPlanReport;
+  localLlmInventory: LocalLlmInventoryReport;
+  localLlmPrunePlan: LocalLlmPrunePlanReport;
+  localLlmCacheTrends: LocalLlmCacheTrendReport;
+  localLlmCostLedger: LocalLlmCostLedgerReport;
+  localLlmRoutingRecommendations: LocalLlmRoutingRecommendationReport;
+  localLlmRoutingNoteApplication: DashboardLocalLlmRoutingNoteApplicationStatus;
+  localLlmRoutingDecisionTimeline: DashboardLocalLlmRoutingDecisionTimeline;
+  localLlmRoutingDecisionSnapshots: LocalLlmRoutingDecisionSnapshotReport;
   evaluationRuns: number;
   latestEvaluationAt: string | null;
   proposalCounts: Record<string, number>;
@@ -32746,6 +40481,750 @@ type DashboardLocalProviderEvidence = {
   estimatedAvoidedHostedCalls: number;
   recommendation: string;
 };
+
+type DashboardLocalHoldoutRoutingStatus = {
+  status: "not-started" | "needs-evidence" | "needs-promotion" | "blocked" | "approved" | "active" | "error";
+  generatedAt: string;
+  projectRootUri: string;
+  resultsPath: string;
+  promotionPath: string;
+  resultsExists: boolean;
+  promotionExists: boolean;
+  resultsDecision: LocalHoldoutResultSummary["decision"] | null;
+  promotionStatus: LocalHoldoutRoutingPromotion["status"] | null;
+  approved: boolean;
+  maxRisk: "low" | null;
+  evidenceSuites: string[];
+  thresholdSummary: string | null;
+  evidenceSummary: string | null;
+  promotableSuites: string[];
+  localStageCount: number;
+  hostedStageCount: number;
+  localFallbackRate: number | null;
+  hostedFallbackBoundary: string;
+  recommendation: string;
+  error: string | null;
+};
+
+type DashboardRouteReceiptTrendGroup = {
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  providerId: string;
+  modelTier: string;
+  classification: "local-selected" | "local-skipped" | "hosted-fallback" | "hosted-selected";
+  runs: number;
+  fallbackCount: number;
+  latencySamples: number;
+  qualitySamples: number;
+  averageLatencyMs: number | null;
+  averageQuality: number | null;
+  latestReason: string;
+};
+
+type DashboardRouteReceiptTrendReport = {
+  generatedAt: string;
+  projectRootUri: string;
+  reportsAnalyzed: number;
+  totalReceipts: number;
+  localSelected: number;
+  localSkipped: number;
+  hostedFallback: number;
+  hostedSelected: number;
+  fallbackRate: number | null;
+  localSelectionRate: number | null;
+  topGroups: DashboardRouteReceiptTrendGroup[];
+};
+
+type LocalLlmSmokeOutcome = {
+  runId: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: string;
+  routeClass: DashboardRouteReceiptTrendGroup["classification"] | "missing";
+  providerId: string | null;
+  model: string | null;
+  modelTier: string | null;
+  requestedModelTier: string | null;
+  routeReason: string | null;
+  qualityScore: number | null;
+  fallbackUsed: boolean;
+};
+
+type LocalLlmSmokeOutcomeTrend = {
+  kind: "agentflow_local_llm_smoke_outcomes";
+  generatedAt: string;
+  projectRootUri: string;
+  runsAnalyzed: number;
+  smokeRuns: number;
+  counts: Record<DashboardRouteReceiptTrendGroup["classification"] | "missing" | "failed", number>;
+  firstSuccessAt: string | null;
+  latestSuccessAt: string | null;
+  latestSmokeAt: string | null;
+  latestFailureReason: string | null;
+  latestOutcomes: LocalLlmSmokeOutcome[];
+  recommendation: string;
+};
+
+type LocalLlmSetupChecklistStatus = "pass" | "warning" | "fail";
+
+type LocalLlmSetupChecklistItem = {
+  id: string;
+  label: string;
+  status: LocalLlmSetupChecklistStatus;
+  detail: string;
+  nextAction: string;
+};
+
+type LocalLlmSetupChecklistReport = {
+  kind: "agentflow_local_llm_setup_checklist";
+  generatedAt: string;
+  projectRootUri: string;
+  status: LocalLlmSetupChecklistStatus;
+  localProvider: {
+    configured: boolean;
+    baseUrl: string;
+    model: string;
+    apiKeyConfigured: boolean;
+    status: "ready" | "missing" | "not configured";
+    modelsListed: number;
+    selectedTierModels: Array<{
+      tier: ModelTier;
+      model: string;
+      source: "env" | "catalog" | "unavailable";
+    }>;
+    details: string[];
+  };
+  routing: {
+    defaultProvider: string;
+    autoProviders: string;
+    fastProvider: string;
+    standardProvider: string;
+    reasoningProvider: string;
+    localHoldoutStatus: DashboardLocalHoldoutRoutingStatus["status"];
+    localHoldoutApproved: boolean;
+    localRouteReceipts: number;
+    localSkippedReceipts: number;
+    hostedFallbackReceipts: number;
+  };
+  smokeOutcomes: LocalLlmSmokeOutcomeTrend;
+  checks: LocalLlmSetupChecklistItem[];
+  nextCommands: string[];
+};
+
+type LocalLlmRouteSmokeResult = {
+  kind: "agentflow_local_llm_route_smoke";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "completed" | "failed";
+  runId: string | null;
+  workflowId: string;
+  routeClass: DashboardRouteReceiptTrendGroup["classification"] | "missing";
+  route: CostQualityReport["stages"][number] | null;
+  checklist: LocalLlmSetupChecklistReport;
+  summary: string;
+  nextAction: string;
+  exportMarkdownPath: string | null;
+  exportJsonPath: string | null;
+};
+
+type LocalLlmRuntimeProbe = {
+  id: string;
+  label: string;
+  baseUrl: string;
+  commandHint: string;
+  status: "ready" | "missing" | "empty";
+  models: string[];
+  modelCount: number;
+  selectedTierModels: Array<{
+    tier: ModelTier;
+    model: string;
+    source: "env" | "catalog" | "unavailable";
+  }>;
+  detail: string;
+  nextAction: string;
+};
+
+type LocalLlmSetupGuideReport = {
+  kind: "agentflow_local_llm_setup_guide";
+  generatedAt: string;
+  projectRootUri: string;
+  approved: boolean;
+  status: "blocked" | "ready";
+  routingNoteEligible: boolean;
+  recommendedRuntime: LocalLlmRuntimeProbe | null;
+  blockers: string[];
+  runtimes: LocalLlmRuntimeProbe[];
+  checklistStatus: LocalLlmSetupChecklistStatus;
+  firstLocalSmokeSuccessAt: string | null;
+  latestSmokeIssue: string | null;
+  recommendation: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmDownloadRecommendation = {
+  id: string;
+  priority: "high" | "medium" | "low";
+  modelId: string;
+  label: string;
+  runtime: string;
+  tierFit: ModelTier[];
+  primaryTier: ModelTier;
+  hardwareFit: "excellent" | "good" | "stretch" | "hosted-fallback";
+  installed: boolean;
+  downloadCommand: string;
+  configEnv: string[];
+  rationale: string[];
+};
+
+type LocalLlmDownloadRecommendationReport = {
+  kind: "agentflow_local_llm_download_recommendations";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "runtime-needed" | "download-needed" | "ready";
+  hardware: {
+    platform: NodeJS.Platform;
+    arch: string;
+    cpuCount: number;
+    memoryGb: number;
+    class: "small" | "medium" | "large";
+  };
+  taskMix: {
+    runsAnalyzed: number;
+    dominantTier: ModelTier;
+    tierCounts: Record<string, number>;
+    topWorkflows: Array<{ workflowId: string; runs: number }>;
+    costSavingsGoal: string;
+  };
+  runtime: {
+    id: string;
+    label: string;
+    baseUrl: string;
+    modelCount: number;
+  } | null;
+  checklistStatus: LocalLlmSetupChecklistStatus;
+  firstLocalSmokeSuccessAt: string | null;
+  latestSmokeIssue: string | null;
+  recommendedModelId: string | null;
+  recommendations: LocalLlmDownloadRecommendation[];
+  nextAction: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmBenchmarkTask = {
+  id: string;
+  label: string;
+  prompt: string;
+  rubric: string;
+};
+
+type LocalLlmBenchmarkReceipt = {
+  id: string;
+  generatedAt: string;
+  startedAt: string;
+  finishedAt: string | null;
+  status: "planned" | "skipped" | "completed" | "failed";
+  modelId: string;
+  runtime: {
+    id: string;
+    label: string;
+    baseUrl: string;
+  } | null;
+  taskId: string;
+  taskLabel: string;
+  latencyMs: number | null;
+  outputChars: number | null;
+  rubricScore: number | null;
+  verdict: "needs-runtime" | "measured" | "failed";
+  evidence: string[];
+  error: string | null;
+};
+
+type LocalLlmBenchmarkReceiptReport = {
+  kind: "agentflow_local_llm_benchmark_receipts";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "runtime-needed" | "no-installed-models" | "planned" | "partial" | "completed";
+  execute: boolean;
+  timeoutMs: number;
+  runtime: {
+    id: string;
+    label: string;
+    baseUrl: string;
+    modelCount: number;
+  } | null;
+  candidateModels: Array<{
+    modelId: string;
+    installed: boolean;
+    primaryTier: ModelTier;
+    hardwareFit: LocalLlmDownloadRecommendation["hardwareFit"];
+  }>;
+  tasks: Array<{
+    id: string;
+    label: string;
+    rubric: string;
+  }>;
+  summary: {
+    receipts: number;
+    completed: number;
+    failed: number;
+    planned: number;
+    skipped: number;
+    averageLatencyMs: number | null;
+    averageRubricScore: number | null;
+  };
+  receipts: LocalLlmBenchmarkReceipt[];
+  nextAction: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmInstallationCommand = {
+  id: "download" | "verify" | "benchmark";
+  label: string;
+  command: string;
+  requiresApproval: boolean;
+  reason: string;
+};
+
+type LocalLlmInstallationAction = {
+  id: string;
+  modelId: string;
+  runtime: string;
+  primaryTier: ModelTier;
+  priority: LocalLlmDownloadRecommendation["priority"];
+  installed: boolean;
+  hardwareFit: LocalLlmDownloadRecommendation["hardwareFit"];
+  diskEstimateGb: number;
+  risk: "low" | "medium" | "high";
+  commands: LocalLlmInstallationCommand[];
+  envHints: string[];
+  notes: string[];
+};
+
+type LocalLlmInstallationPlanReport = {
+  kind: "agentflow_local_llm_installation_plan";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "no-selection" | "ready-for-review" | "already-installed";
+  selectedModels: string;
+  recommendationSourceGeneratedAt: string;
+  runtimeStatus: LocalLlmDownloadRecommendationReport["status"];
+  recommendedModelId: string | null;
+  missingIds: string[];
+  actions: LocalLlmInstallationAction[];
+  safety: {
+    executesDownloads: boolean;
+    editsProviderSettings: boolean;
+    writesProjectSource: boolean;
+    approvalBoundary: string;
+  };
+  nextAction: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmInventoryStorage = {
+  path: string;
+  totalBytes: number | null;
+  freeBytes: number | null;
+  freeRatio: number | null;
+  status: "ok" | "watch" | "pressure" | "unknown";
+};
+
+type LocalLlmInventoryCacheRoot = {
+  id: string;
+  label: string;
+  path: string;
+  exists: boolean;
+  sizeBytes: number;
+  sizeLabel: string;
+  modelDirectories: number;
+  lastModifiedAt: string | null;
+  error: string | null;
+};
+
+type LocalLlmInventoryModel = {
+  modelId: string;
+  source: "runtime-catalog" | "cache-directory";
+  cacheRoot: string;
+  cachePath: string | null;
+  sizeBytes: number | null;
+  sizeLabel: string;
+  installed: boolean;
+  recommended: boolean;
+  lastUsedAt: string | null;
+  pruneCandidate: boolean;
+  reason: string;
+};
+
+type LocalLlmInventoryReport = {
+  kind: "agentflow_local_llm_inventory";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "no-cache-found" | "storage-pressure" | "ready";
+  storage: LocalLlmInventoryStorage;
+  cacheRoots: LocalLlmInventoryCacheRoot[];
+  totalCacheBytes: number;
+  totalCacheLabel: string;
+  models: LocalLlmInventoryModel[];
+  pruneCandidates: LocalLlmInventoryModel[];
+  recommendation: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmPruneAction = {
+  id: string;
+  modelId: string;
+  cacheRoot: string;
+  cachePath: string | null;
+  sizeBytes: number | null;
+  sizeLabel: string;
+  lastUsedAt: string | null;
+  recommended: boolean;
+  pruneCandidate: boolean;
+  risk: "medium" | "high";
+  command: string;
+  requiresApproval: boolean;
+  reason: string;
+};
+
+type LocalLlmPrunePlanReport = {
+  kind: "agentflow_local_llm_prune_plan";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "no-candidates" | "ready-for-review" | "needs-review";
+  selectedModels: string;
+  inventoryGeneratedAt: string;
+  actions: LocalLlmPruneAction[];
+  missingIds: string[];
+  reclaimableBytes: number;
+  reclaimableLabel: string;
+  safety: {
+    executesDeletes: boolean;
+    editsProviderSettings: boolean;
+    writesProjectSource: boolean;
+    approvalBoundary: string;
+  };
+  nextAction: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmCacheTrendPoint = {
+  capturedAt: string;
+  totalCacheBytes: number;
+  totalCacheLabel: string;
+  freeBytes: number | null;
+  freeRatio: number | null;
+  storageStatus: LocalLlmInventoryStorage["status"];
+  modelCount: number;
+  pruneCandidateCount: number;
+  reclaimableBytes: number;
+  reclaimableLabel: string;
+  localSelected: number;
+  localSkipped: number;
+  hostedFallback: number;
+  hostedSelected: number;
+};
+
+type LocalLlmCacheTrendComparison = {
+  previousAt: string | null;
+  cacheDeltaBytes: number | null;
+  cacheDeltaLabel: string;
+  freeDeltaBytes: number | null;
+  freeDeltaLabel: string;
+  modelDelta: number | null;
+  pruneCandidateDelta: number | null;
+  localRouteDelta: number | null;
+  hostedRouteDelta: number | null;
+};
+
+type LocalLlmCacheTrendReport = {
+  kind: "agentflow_local_llm_cache_trends";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "no-history" | "started" | "tracking";
+  current: LocalLlmCacheTrendPoint;
+  history: LocalLlmCacheTrendPoint[];
+  comparison: LocalLlmCacheTrendComparison;
+  recommendation: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmCostAssumptions = {
+  currency: "USD";
+  unit: string;
+  source: string;
+  hostedUsdPerStageByTier: Record<string, number>;
+  localStorageUsdPerGbMonth: number;
+};
+
+type LocalLlmCostLedgerPoint = {
+  capturedAt: string;
+  localSelectedStages: number;
+  localSkippedStages: number;
+  hostedFallbackStages: number;
+  hostedSelectedStages: number;
+  avoidedHostedUsd: number;
+  fallbackHostedUsd: number;
+  observedHostedUsd: number;
+  storageUsdPerMonth: number;
+  netEstimatedSavingsUsd: number;
+  totalCacheBytes: number;
+  totalCacheLabel: string;
+  benchmarkAverageLatencyMs: number | null;
+  benchmarkAverageScore: number | null;
+};
+
+type LocalLlmCostLedgerComparison = {
+  previousAt: string | null;
+  netSavingsDeltaUsd: number | null;
+  avoidedHostedDeltaUsd: number | null;
+  storageDeltaUsd: number | null;
+  localStageDelta: number | null;
+};
+
+type LocalLlmCostLedgerReport = {
+  kind: "agentflow_local_llm_cost_ledger";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "needs-local-routes" | "saving" | "watch";
+  assumptions: LocalLlmCostAssumptions;
+  current: LocalLlmCostLedgerPoint;
+  history: LocalLlmCostLedgerPoint[];
+  comparison: LocalLlmCostLedgerComparison;
+  recommendation: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmRoutingRecommendation = LocalRoutingRecommendation;
+
+type LocalLlmRoutingRecommendationReport = {
+  kind: "agentflow_local_llm_routing_recommendations";
+  generatedAt: string;
+  projectRootUri: string;
+  status: "needs-local-provider" | "needs-route-evidence" | "expand" | "hold" | "retreat";
+  summary: string[];
+  recommendations: LocalLlmRoutingRecommendation[];
+  evidence: {
+    localProviderStatus: DashboardLocalProviderEvidence["status"];
+    configured: boolean;
+    netEstimatedSavingsUsd: number;
+    storageStatus: LocalLlmInventoryStorage["status"];
+    pruneCandidateCount: number;
+    routeReceipts: number;
+    localSelected: number;
+    localSkipped: number;
+    hostedFallback: number;
+    hostedSelected: number;
+    routeFeedbackEvents: number;
+    routeFeedbackCounts: Record<string, number>;
+  };
+  nextAction: string;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmRoutingNotePlan = {
+  kind: "agentflow_local_llm_routing_note_plan";
+  generatedAt: string;
+  projectRootUri: string;
+  sourceRecommendationsGeneratedAt: string;
+  selectedRecommendationIds: string[];
+  skippedRecommendationIds: string[];
+  summary: string[];
+  notes: Array<{
+    id: string;
+    recommendationId: string;
+    action: "expand" | "retreat";
+    priority: LocalLlmRoutingRecommendation["priority"];
+    workflowId: string;
+    stageId: string;
+    agentId: string;
+    direction: "prefer_local_trial" | "prefer_hosted_fallback";
+    targetFile: ".agent-workflow/tuning/routing-preferences.md";
+    draftNote: string;
+    reasons: string[];
+  }>;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalLlmRoutingNotePlanDocument = Omit<LocalLlmRoutingNotePlan, "files">;
+
+type LocalLlmRoutingNoteApplicationPlan = {
+  kind: "agentflow_local_llm_routing_note_application";
+  generatedAt: string;
+  projectRootUri: string;
+  sourcePlanGeneratedAt: string;
+  approved: boolean;
+  selectedNoteIds: string[];
+  appliedNoteIds: string[];
+  skippedNoteIds: string[];
+  targetFile: ".agent-workflow/tuning/routing-preferences.md";
+  beforeHash: string;
+  afterHash: string;
+  rollback: string;
+  summary: string[];
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type DashboardLocalLlmRoutingNoteApplicationStatus = {
+  exists: boolean;
+  path: ".agent-workflow/tuning/local-routing-note-application.json";
+  targetFile: ".agent-workflow/tuning/routing-preferences.md";
+  generatedAt: string | null;
+  sourcePlanGeneratedAt: string | null;
+  approved: boolean;
+  selectedNoteIds: string[];
+  appliedNoteIds: string[];
+  skippedNoteIds: string[];
+  beforeHash: string | null;
+  afterHash: string | null;
+  rollback: string | null;
+  activePreferenceExists: boolean;
+  activePreferenceBytes: number;
+  activePreferenceHash: string | null;
+  activePreferencePreview: string | null;
+  activeLocalRoutingNoteMarkers: number;
+  error: string | null;
+};
+
+type DashboardLocalLlmRoutingDecisionTimelineItem = {
+  recommendationId: string;
+  state: "recommended" | "planned" | "applied" | "skipped" | "monitoring";
+  action: LocalLlmRoutingRecommendation["action"];
+  priority: LocalLlmRoutingRecommendation["priority"];
+  target: string;
+  agentId: string;
+  noteId: string | null;
+  routeClass: DashboardRouteReceiptTrendGroup["classification"];
+  providerTier: string;
+  runs: number;
+  fallbackRate: number;
+  quality: number | null;
+  netSavingsUsd: number;
+  outcome: string;
+};
+
+type DashboardLocalLlmRoutingDecisionTimeline = {
+  generatedAt: string;
+  projectRootUri: string;
+  status: "recommended" | "planned" | "active" | "monitoring";
+  sourceRecommendationGeneratedAt: string;
+  sourceNotePlanGeneratedAt: string | null;
+  sourceApplicationGeneratedAt: string | null;
+  summary: string[];
+  items: DashboardLocalLlmRoutingDecisionTimelineItem[];
+};
+
+type LocalLlmRoutingDecisionSnapshotItem = Omit<DashboardLocalLlmRoutingDecisionTimelineItem, "noteId">;
+
+type LocalLlmRoutingDecisionSnapshot = {
+  generatedAt: string;
+  sourceTimelineGeneratedAt: string;
+  decisionHash: string;
+  status: DashboardLocalLlmRoutingDecisionTimeline["status"];
+  counts: Record<string, number>;
+  totalNetSavingsUsd: number;
+  summary: string[];
+  items: LocalLlmRoutingDecisionSnapshotItem[];
+};
+
+type LocalLlmRoutingDecisionSnapshotDelta = {
+  previousAt: string | null;
+  changed: boolean;
+  added: number;
+  removed: number;
+  changedItems: number;
+  netSavingsDeltaUsd: number;
+  stateChanges: string[];
+};
+
+type LocalLlmRoutingDecisionSnapshotLog = {
+  kind: "agentflow_local_llm_routing_decision_snapshots";
+  projectRootUri: string;
+  updatedAt: string;
+  snapshots: LocalLlmRoutingDecisionSnapshot[];
+  latestDelta: LocalLlmRoutingDecisionSnapshotDelta;
+};
+
+type LocalLlmRoutingDecisionSnapshotReport = LocalLlmRoutingDecisionSnapshotLog & {
+  captured: boolean;
+  currentSnapshot: LocalLlmRoutingDecisionSnapshot;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type RouteDecisionFeedbackRating = LocalRoutingFeedbackRating;
+
+type RouteDecisionFeedbackEvent = {
+  id: string;
+  createdAt: string;
+  source: "cli" | "dashboard";
+  rating: RouteDecisionFeedbackRating;
+  note: string;
+  workflowId: string;
+  stageId: string;
+  agentId: string;
+  providerId: string;
+  modelTier: string;
+  routeClass: DashboardRouteReceiptTrendGroup["classification"];
+  runs: number;
+  fallbackCount: number;
+  averageQuality: number | null;
+  averageLatencyMs: number | null;
+};
+
+type RouteDecisionFeedbackLog = {
+  kind: "agentflow_route_decision_feedback";
+  projectRootUri: string;
+  updatedAt: string;
+  events: RouteDecisionFeedbackEvent[];
+};
+
+type RouteDecisionFeedbackResult =
+  | {
+    ok: true;
+    event: RouteDecisionFeedbackEvent;
+    artifactUri: string;
+    totalEvents: number;
+  }
+  | {
+    ok: false;
+    error: string;
+  };
 
 type TuningOverlayDocument = {
   kind: "agentflow_tuning_overlay";
@@ -32858,8 +41337,75 @@ type DashboardCandidateComparisonReport = {
     nextAction: string;
   }>;
   promotionNoteFiles: DashboardPromotionNoteFileSummary[];
+  localHoldoutRouting: DashboardLocalHoldoutRoutingStatus;
+  routeReceiptTrends: DashboardRouteReceiptTrendReport;
   readiness: string[];
   nextCommands: string[];
+};
+
+type LocalHoldoutResultSummary = {
+  kind: "agentflow_local_holdout_results";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceComparisonPlanGeneratedAt: string | null;
+  decision: "no_plan" | "needs_evidence" | "prefer_hosted" | "eligible_for_review" | "mixed";
+  summary: {
+    suites: number;
+    gateReady: number;
+    promotable: number;
+    preferHosted: number;
+    needsEvidence: number;
+  };
+  results: Array<{
+    suiteId: string;
+    decision: DashboardCandidateComparisonReport["promotionRecommendations"][number]["decision"];
+    gateReady: boolean;
+    baselineRuns: number;
+    candidateRuns: number;
+    qualityDelta: number | null;
+    latencyDeltaMs: number | null;
+    latestAt: string | null;
+    rationale: string[];
+    nextAction: string;
+  }>;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
+};
+
+type LocalHoldoutRoutingPromotion = {
+  kind: "agentflow_local_holdout_routing_promotion";
+  projectRootUri: string;
+  generatedAt: string;
+  sourceResultsGeneratedAt: string | null;
+  status: "blocked" | "ready";
+  approved: boolean;
+  reason: string;
+  preference: {
+    provider: "local";
+    maxRisk: "low";
+    scope: string;
+    evidenceSuites: string[];
+    thresholds: {
+      minEvidenceSuites: number;
+      minQualityDelta: number;
+      maxLatencyRegressionMs: number;
+      maxFallbackRate: number;
+    };
+    evidence: {
+      gateReadySuites: number;
+      promotableSuites: number;
+      worstQualityDelta: number | null;
+      worstLatencyDeltaMs: number | null;
+      fallbackRate: number | null;
+    };
+    rollback: string;
+  } | null;
+  files: Array<{
+    relativePath: string;
+    content: string;
+  }>;
 };
 
 type DashboardPromotionNoteFileSummary = {
@@ -33491,6 +42037,12 @@ function parsePositiveInteger(value: string, fallback: number): number {
 function parseNonNegativeInteger(value: string, fallback: number): number {
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function parseOptionalNumber(value: string | undefined): number | null {
+  if (value === undefined || value.trim() === "") return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function parseBoundedPositiveInteger(value: string, fallback: number, max: number): number {

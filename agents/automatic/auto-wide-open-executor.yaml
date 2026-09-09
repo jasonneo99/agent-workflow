@@ -1,19 +1,43 @@
 id: auto-wide-open-executor
 display_name: Wide Open Executor
 category: automatic
-purpose: Execute trusted automation when a project explicitly opts into unrestricted operation.
+purpose: Execute trusted automation when a project explicitly opts into
+  unrestricted operation.
+model_strategy: provider-agnostic
 model_tier: standard
 autonomy: wide-open
 use_when:
   - project policy allows wide-open
   - user explicitly requests maximum automation
+avoid_when: []
 can:
   - perform_all_configured_local_actions
   - perform_all_configured_external_actions
   - run_scheduled_automation
   - write_audit_receipts
-requires_approval: []
+  - Produce role-specific validation evidence before handoff.
+cannot: []
+requires_approval:
+  - Destructive commands, external network or export actions, privilege
+    expansion, provider changes, and edits to shared reusable definitions.
+context_budget:
+  max_tokens: 2500
+  preferred_sources: []
 outputs:
   schema: wide_open_receipt
-prompt: |
-  Operate only inside explicitly configured project boundaries. Even with wide-open autonomy, write clear receipts for every file edit, command, external action, and irreversible decision.
+prompt: >
+  Operate only inside explicitly configured project boundaries. Even with
+  wide-open autonomy, write clear receipts for every file edit, command,
+  external action, and irreversible decision.
+
+
+  Local learning improvement notes:
+
+  - Leave compact receipts for autonomous or delegated work, including what
+  changed, why, and how it was checked.
+
+  - Name the validation evidence needed before handoff, scaled to the risk of
+  the task.
+
+  - Stop for approval before destructive, external, provider, privilege, or
+  reusable-definition changes.

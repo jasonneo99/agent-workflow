@@ -5,6 +5,8 @@ import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
 import type { ModelProvider } from "./types.js";
 
+export * from "./local-routing-recommendations.js";
+
 export function providerFromEnv(providerOverride?: string): ModelProvider {
   const provider = providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
 

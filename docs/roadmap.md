@@ -103,9 +103,10 @@ These milestones organize the detailed roadmap items below:
    - Workstreams: agent-improvement reports, YAML patch previews, holdout eval
      scoring, promotion queues, rollback/source-hash evidence, project-local
      agent cards, and owner-controlled auto-apply.
-   - Current status: recommendations, patches, evals, and promotions exist;
-     next improvement is low-risk project-local auto-apply for passing patches
-     with rollback receipts.
+   - Current status: recommendations, patches, evals, promotions, rollback
+     receipts, and owner-controlled project-local auto-apply exist; next
+     improvement is stronger promotion evidence and review UX before any
+     broader shared-agent or research-driven automation.
 
 8. **Multi-Project / Multi-Machine State Plane**
    - Workstreams: shared storage migration, Hulk/LAN/Tailscale state plane,
@@ -160,6 +161,8 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Preserve workflow shape, statuses, stage outcomes, and artifact metadata for shareable debugging.
 
 - [x] Scrubbed synthetic example fixtures for docs.
+  - Milestone: 11 Release Trust
+  - Priority: low
   - Produce safe synthetic examples for docs.
   - Validate committed examples in CI so private data patterns do not drift into documentation fixtures.
 
@@ -187,7 +190,9 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.
 
-- [x] First-class local model provider and hybrid routing.
+- [x] Local LLM / first-class local model provider and hybrid routing.
+  - Milestone: 5 Model Intelligence Layer
+  - Priority: high
   - Add an explicitly selected local inference provider for runtimes such as
     Ollama or llama.cpp while preserving the existing OpenAI-compatible path.
   - Keep hosted providers, including OpenAI, as the default; local inference is
@@ -210,9 +215,119 @@ Goal: improve quality and cost while keeping personalization auditable and porta
     `/model-improvement` and usage summaries, comparing local/BYO stage volume,
     latency, feedback quality, fallback rate, hosted baselines, and avoided
     hosted calls before expanding local routing beyond low-risk stages.
-  - Next: add a local-vs-hosted holdout comparison runner that can generate
-    promotion evidence for specific stages before project owners raise local
-    routing risk thresholds.
+  - Done: add `local-holdout-comparison` as an explicit local LLM versus hosted
+    baseline comparison runner that reuses private model-improvement eval cases,
+    writes only project-local Agent Workflow comparison files, and documents the
+    promotion boundary before project owners raise local routing risk thresholds.
+  - Done: add a dashboard action on `/candidate-comparisons` that writes the
+    local-vs-hosted holdout comparison plan for a selected project without
+    editing provider settings or shared workflow definitions.
+  - Done: add `local-holdout-results` plus a `/candidate-comparisons`
+    dashboard action to persist local-vs-hosted pass/fail promotion evidence
+    under project-local model-improvement files.
+  - Done: add `local-holdout-promote` and a `/candidate-comparisons` approval
+    control that consumes captured holdout result evidence and writes reviewed
+    project-local low-risk local-routing threshold notes.
+  - Done: feed reviewed low-risk local-routing threshold notes into automatic
+    route selection through compiled project tuning context, with route-reason
+    telemetry when local is selected or skipped.
+  - Done: surface local-holdout routing decisions, promotion status, evidence
+    suites, recent local route volume, and fallback rates in `/model-improvement`
+    and `/candidate-comparisons` trend summaries.
+  - Done: add route-receipt trend aggregation so local-selected, local-skipped,
+    hosted-selected, and hosted-fallback decisions can be compared by workflow,
+    stage, agent, provider, and tier in `/model-improvement` and
+    `/candidate-comparisons`.
+  - Done: add a focused `local-llm-checklist` CLI, `/api/local-llm-checklist`,
+    and `/model-improvement` panel that verify the local model endpoint,
+    selected model catalog entry, routing visibility, holdout promotion state,
+    and first low-risk route receipt.
+  - Done: add `local-llm-smoke` plus a `/model-improvement` checklist action
+    that queues one safe fast-tier `provider-smoke` stage, processes it, exports
+    the run, and reports whether local was selected, skipped, or replaced by
+    hosted routing.
+  - Done: add local smoke outcome evidence to the checklist, JSON API, and
+    `/model-improvement`, including smoke run history, first true local success,
+    latest skipped/fallback/failure reason, and a recommended model download or
+    routing fix.
+  - Done: add `local-llm-setup-guide` plus `/model-improvement` actions that
+    probe configured local, Ollama, LM Studio, vLLM, and llama.cpp-compatible
+    endpoints, write project-local setup evidence, and write reviewed
+    project-local routing notes only after local checklist evidence is healthy.
+  - Done: add model-specific local download recommendations from detected
+    hardware, runtime catalog, task mix, quality history, and cost-savings goals.
+  - Done: add optional measured local benchmark receipts that run tiny
+    summarization and code-review prompts against installed local candidates and
+    compare latency and rubric quality before smoke promotion.
+  - Done: add a local model installation assistant that turns recommendations
+    into reviewed runtime-specific commands while preserving operator approval
+    for downloads, provider setting changes, and disk-heavy actions.
+  - Done: add local model disk/cache inventory so the dashboard can show
+    installed model size, last-used evidence, prune candidates, and storage
+    pressure before recommending more downloads.
+  - Done: add reviewed local model prune plans that convert inventory prune
+    candidates into explicit runtime-specific cleanup commands without deleting
+    anything automatically.
+  - Done: add local model cache trend history so storage growth, prune decisions,
+    and local-vs-hosted usage can be compared over time.
+  - Done: add optional local model cost ledger estimates that combine avoided
+    hosted calls, benchmark latency, and cache storage cost into a per-project
+    savings trend.
+  - Done: add savings-aware local routing recommendations that suggest where
+    local models should expand, hold, or retreat based on quality, fallback,
+    latency, and cost-ledger trend evidence.
+  - Done: add reviewed routing-note patch plans from savings-aware local routing
+    recommendations so approved expand/retreat decisions can update
+    project-local tuning notes without touching shared provider defaults.
+  - Done: add an approval-aware apply step for reviewed local routing-note plans
+    that appends selected notes to `.agent-workflow/tuning/routing-preferences.md`
+    with rollback receipts.
+  - Done: add dashboard visibility for applied local routing-note receipts so
+    operators can see active local-routing preferences, skipped duplicates, and
+    rollback hashes from `/model-improvement`.
+  - Done: add tests for local routing-note plan application, including duplicate
+    skipping, required approval for writes, and dashboard receipt parsing.
+  - Done: add a compact model-routing decision timeline that combines
+    recommendation, note-plan, application receipt, and later quality outcome
+    into one operator view.
+  - Done: add persisted local routing decision snapshots so the timeline can
+    compare decisions over time instead of only the current dashboard projection.
+  - Done: add holdout-backed local-routing promotion thresholds so expanded
+    local routing uses representative task evidence before broader adoption.
+  - Done: add a dashboard drilldown that shows why a local route was selected
+    or skipped for each recent stage, including threshold, readiness, and
+    fallback evidence.
+  - Done: add route-level feedback prompts from the drilldown so users can mark
+    a local-selected, local-skipped, hosted-fallback, or hosted-selected decision
+    as helpful or costly without leaving the dashboard.
+  - Done: feed route-decision feedback into savings-aware routing
+    recommendations so repeated "costly" or "helpful" signals change expand,
+    hold, and retreat suggestions before new routing notes are proposed.
+  - Done: show route-feedback influence directly beside each savings-aware
+    routing recommendation so operators can see which helpful/costly signals
+    changed the recommendation.
+  - Done: add CLI smoke coverage for route-decision feedback recording and
+    project-local learning artifact writes.
+  - Done: add a dedicated macOS local-model LaunchAgent with a stable runtime
+    resolver, loopback-only binding, isolated logs, crash/login restart policy,
+    upgrade-safe refresh commands, and Runtime Monitor visibility. Keep the
+    dashboard, worker lanes, and learning daemon under the existing Agent
+    Workflow supervisor so model-runtime failures remain isolated.
+  - Done: remove versioned Homebrew Node paths from the main macOS LaunchAgent;
+    a stable `/bin/zsh` wrapper now resolves Node at service start so dashboard,
+    worker, and learning-daemon recovery survives Node and package upgrades.
+  - Done: extract savings-aware routing recommendation scoring into a pure
+    library module with unit tests for helpful/costly feedback influence.
+  - Done: feed route-decision feedback summaries into the local learning daemon
+    report so the daemon can prioritize repeated costly routing decisions across
+    projects.
+  - Done: use route-feedback costly and helpful group summaries to generate low-risk
+    learning proposals for routing retreat/expand review across projects.
+  - Done: add a dedicated owned-state writer that refreshes route-feedback
+    recommendation files from approved learning proposals without shelling out
+    or changing provider settings.
+  - Done: add focused tests for autonomous route-feedback recommendation refresh
+    receipts and skipped-action accounting.
 
 - [x] Dashboard run comparison view.
   - Compare runs by workflow, stage, agent, provider, tier, quality, fallback, and feedback.
@@ -230,7 +345,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Goal: continually improve local developer workflows from approved feedback, run history, failures, routing outcomes, evaluation evidence, and optional user-approved research notes.
   - Principle: maximize safe autonomy for observation, reports, scoring, proposal generation, and Agent Workflow-created learning state; require approval for dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, or private-data actions.
   - Done: document the local-first architecture in [Local Learning Daemon](local-learning-daemon.md), then add the read-only `learning-report` CLI, `/learning` dashboard page, and `/api/learning-report` JSON endpoint.
-  - Next: use local learning proposal outcomes to drive daemon-mode design.
+  - Done: use local learning proposal outcomes to drive daemon observe/propose/apply-approved design.
 
 - [x] Local learning proposal inbox.
   - Generate learning proposals from run, feedback, failure, routing, tuning, and eval evidence.
@@ -281,8 +396,9 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Done: add `agent-improvement-patches`, `/api/agent-improvement-patches`, MCP patch previews, schema validation, source hashes, rollback references, and dashboard links for exact YAML patch review without editing agent files.
   - Done: add holdout eval scoring with `agent-improvement-evals`, `/api/agent-improvement-evals`, MCP, daemon refresh, dashboard promotion scores, pass/warn/fail gates, representative task coverage, source-hash rollback evidence, and future auto-apply readiness.
   - Done: add candidate promotion queues and receipts with `agent-improvement-promotions`, `/api/agent-improvement-promotions`, MCP, daemon refresh, dashboard visibility, source-hash preservation, superseded stale items, and approval/rejection receipt files.
-  - Keep reusable `agents/**/*.yaml`, project-local agent definitions, new agent types, tool privileges, broader autonomy, web/model research, and release promotion gated until an explicit owner-controlled auto-promotion apply phase exists.
-  - Next: add an owner-controlled low-risk project-local agent-card auto-apply setting that can promote only passing project-local patches with fresh source hashes and rollback receipts.
+  - Done: add `agent-improvement-apply`, MCP apply wrapper, daemon `apply-approved` integration, dashboard status counters, schema/source-hash checks, and rollback receipts for applying approved agent YAML promotions within the configured risk threshold.
+  - Done: add an owner-controlled project-local agent-card auto-apply setting so the daemon can apply only holdout-passing, auto-ready, source-hash-current project-local YAML promotions within the configured risk threshold.
+  - Keep unapproved or high-risk reusable agent changes, new agent types, tool privileges, broader autonomy, web/model research, and signed/released bundle promotion gated by explicit owner control.
 
 - [x] Local learning proposal-to-action receipts.
   - Record an append-only local history when proposals become application plans, when planned actions are superseded, and when users reject a planned action.
@@ -322,6 +438,8 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Done: add Codex/IDE reload guidance to runtime-monitor CLI output, dashboard Runtime Monitor, MCP docs, and client docs when launcher smoke passes but the client still reports `Transport closed`.
   - Done: add dedicated MCP approval-call diagnostics that correlate `agentflow_approvals` invocations with launcher lifecycle events, stderr/output byte counts, exit status, timeout state, client reload guidance, and CLI fallback receipts without logging secrets or prompt/artifact bodies.
   - Done: compact MCP tool responses by default and include CLI fallback guidance when output is truncated, reducing stdio payload pressure during large approval or review responses.
+  - Done: add a runtime-monitor MCP recovery package that writes metadata-only JSON, a human runbook, and a safe local helper script under `.agent-workflow/runtime/mcp/recovery/`, plus dashboard and CLI actions to regenerate it after transport failures.
+  - Done: add metadata-only MCP command span logging for launched CLI operations, including operation name, command hash, child PID, timeout, exit state, and output byte counts without logging prompt text, command text, secrets, or output bodies.
 
 - [x] Package/install story beyond cloning the repo.
   - Provide a cleaner local install path for users who want the CLI and MCP server.
@@ -330,7 +448,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Done: verify release readiness after recent dashboard and model-improvement improvements with the read-only release checker and dry-run release prep.
   - Done: run the real signed patch release prep for the next package version.
   - Done: publish `0.2.4` through GitHub Actions Trusted Publishing.
-  - Next: continue the distributed worker-pool controls now that installed users can get the latest dashboard and model-improvement work.
+  - Follow-up: distributed worker-pool controls are now tracked under governed server mode and ecosystem fit.
 
 - [x] Multi-project governance.
   - Inspect registered projects, storage health, provider settings, and policy drift.
@@ -531,7 +649,11 @@ foundation is complete.
   - Done: add configurable request-size and per-actor/IP rate-limit controls to `/api/server-queue`, mutation-control reporting, Auth Hardening, docs, and `.env.example`.
   - Done: add audit-friendly remote request logs with redacted request envelopes, rate-limit decisions, auth outcomes, CLI/API inspection, Server Readiness visibility, docs, and `.env.example`.
   - Done: add preview-only authenticated remote approval/action envelopes with registered project ids, approval ownership checks, role gates, idempotency posture, policy rechecks, separation-of-duties checks, redacted request auditing, CLI/API access, and mutation-control matrix visibility before exposing any local approval POST route remotely.
-  - Next: promote the approval/action envelope into a mutation-disabled remote execution endpoint behind explicit server-mode, auth, role-enforcement, idempotency, and per-action receipt gates.
+  - Done: promote the approval/action envelope into a mutation-disabled remote endpoint contract with `server-approval-action`, `POST /api/server-approval-action`, auth checks, role and separation-of-duties checks, policy recheck, client idempotency requirement, request limit, rate limit, redacted audit event, docs, `.env.example`, and mutation-control matrix visibility.
+  - Done: add the per-action receipt, duplicate-idempotency replay, rollback-evidence, CLI/API, dashboard, and docs implementation plan needed before `AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1` can safely mutate approval state.
+  - Done: implement the remote approval/action mutation contract against a local test adapter first, proving decision receipts, execution receipts, duplicate idempotency reuse, and rollback evidence without live side effects.
+  - Done: implement storage-backed remote approval/action mutation behind the disabled-by-default server gate, reusing local approval executors and refusing live side effects unless durable receipts, idempotency replay, policy recheck, and rollback evidence all pass.
+  - Next: add a shared Redis-backed reservation/lease for approval-action idempotency so multiple server processes serialize the same new request before any local executor starts.
 
 - [x] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
@@ -562,10 +684,10 @@ foundation is complete.
   - Done: regenerate shared-storage project indexes for the projects shown in warning samples.
   - Done: publish the shared-primary/fallback operator note on Server Readiness and in the server-mode/user guide docs.
   - Done: finish the offline fallback background sync loop and dashboard reconciliation state, with opt-in daemon execution mode for insert-only sync.
-  - Next: continue the authenticated server-mode hardening work after local/shared storage fallback is proven.
+  - Follow-up: authenticated server-mode hardening continues under governed server mode after local/shared storage fallback proof.
   - Keep destructive or overwrite behavior unavailable unless a future explicit capability flag and backup confirmation are added.
 
-- [ ] Team roles and separation of duties.
+- [x] Team roles and separation of duties.
   - Distinguish operators, approvers, workflow authors, and auditors.
   - Done: add project-local role definitions and record actor roles on approval decisions and execution receipts.
   - Done: add read-only role enforcement previews before blocking actions by role.
@@ -576,7 +698,7 @@ foundation is complete.
   - Done: add exportable local Markdown and JSON role audit snapshots from the filtered CLI report.
   - Done: add dashboard-triggered role audit snapshot exports that preserve the active role filters.
   - Done: add a recent role audit snapshot panel and dashboard-safe Markdown viewer for local audit exports.
-  - Next: review user testing feedback for role audit ergonomics before closing this milestone.
+  - Done: add role-audit smoke coverage for JSON reports and exported Markdown/JSON snapshots, then close the milestone with the current ergonomics accepted.
 
 - [x] Artifact lifecycle governance.
   - [x] Add read-only artifact inventory across registered projects with counts, size estimates, age buckets, artifact kinds, and run associations.
@@ -594,7 +716,7 @@ foundation is complete.
   - [x] Add real archive execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Add real restore execution behind disabled-by-default capability flags and approval rechecks.
   - [x] Require explicit approval and policy recheck for any prune/delete operation against local files or object storage.
-  - Next: see Backup, restore, and disaster-recovery validation.
+  - Follow-up: backup, restore, and disaster-recovery validation now owns recovery proof.
 
 - [x] Dashboard UX pass.
   - [x] Run `ux-reviewer` against the dashboard for developer usability, queue clarity, lifecycle pages, workflow graph readability, and provider/settings discoverability.
@@ -611,13 +733,13 @@ foundation is complete.
   - [x] Run a short visual QA pass on the dashboard home, providers, queue, and workflow graph pages after the latest interaction polish.
   - [x] Add a lightweight built-in dashboard icon set for grouped navigation, metric cards, status feedback, run dialogs, and common action buttons without adding runtime dependencies.
   - [x] Add shared dashboard action helpers so POST-heavy pages can preserve context with `returnTo`, flash feedback, and browser-local recent action history.
-  - Next: see Governed server mode for the next shared-runtime milestone.
+  - Follow-up: governed server mode owns the next shared-runtime milestone.
 
 - [x] Backup, restore, and disaster-recovery validation.
   - [x] Add a read-only backup inventory and restore-drill readiness report for local enterprise storage.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [x] Provide documented recovery procedures and automated restore verification.
-  - Next: see Governed server mode for registered-project routing and shared-runtime readiness.
+  - Follow-up: governed server mode owns registered-project routing and shared-runtime readiness.
 
 ## Roadmap Task And Bug Register
 
@@ -639,13 +761,17 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: open
   - Permanent fix direction: add supervised and reconnectable MCP lifecycle diagnostics, keep stdio payloads compact, record exact launcher exit and stderr evidence, surface recovery actions in Runtime Monitor and Roadmap dashboards, and preserve CLI fallback receipts when the client-owned stdio pipe drops.
   - Current mitigation: Agent Workflow services continue running independently, the CLI fallback can complete local work, and restarting the Codex task/app creates a fresh private MCP subprocess.
+  - Recovery package: `npm run runtime-monitor -- --check-mcp --write-mcp-recovery` writes `.agent-workflow/runtime/mcp/recovery/mcp-recovery.md`, `.agent-workflow/runtime/mcp/recovery/mcp-recovery.json`, and `.agent-workflow/runtime/mcp/recovery/mcp-client-recovery.sh` for repeatable local recovery without secrets or prompt bodies.
+  - Done: surface the recovery package command and Runtime Monitor links directly on the Roadmap dashboard while this bug remains open.
+  - Done: log metadata-only MCP command spans so runtime diagnostics can show whether the stdio pipe closed before, during, or after a launched Agent Workflow CLI operation.
   - Boundary: Agent Workflow can detect, diagnose, record, and guide recovery, but Codex owns the private stdio transport and may still close it outside this repository.
 
-- [ ] Task: link every future roadmap task or bug to a milestone.
+- [x] Task: link every future roadmap task or bug to a milestone.
   - Milestone: 3 Developer Dashboard
   - Priority: high
-  - Status: active convention
+  - Status: implemented
   - Rule: prefer an explicit `Milestone: N` detail line for new cross-cutting register items; the dashboard falls back to keyword inference for older roadmap checklist items.
+  - Done: add roadmap milestone integrity counts, explicit/inferred/missing link status, an unlinked filter, and `roadmap-audit` CLI validation so new work stays connected to the milestone map.
 
 - [x] Task: surface next best prioritized roadmap work on the dashboard home.
   - Milestone: 3 Developer Dashboard

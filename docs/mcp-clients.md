@@ -68,9 +68,10 @@ The `/server-readiness` Runtime Monitor panel shows the same check plus a
 Codex / IDE Reload Guidance callout for the common case where the launcher
 smoke passes but the client still has a stale private pipe.
 It also shows metadata-only approval-call diagnostics for `agentflow_approvals`
-so approval failures can be correlated with launcher lifecycle events and CLI
-fallback receipts without exposing approval notes, prompts, artifacts, or
-secrets.
+and command spans for every MCP-launched CLI operation, so approval failures or
+long-running tool calls can be correlated with launcher lifecycle events and
+CLI fallback receipts without exposing command text, approval notes, prompts,
+artifacts, or secrets.
 MCP responses are compacted by default for stdio stability. Increase
 `AGENTFLOW_MCP_MAX_OUTPUT_CHARS` only for clients that tolerate larger payloads;
 for complete output, run the CLI command printed in the MCP response.

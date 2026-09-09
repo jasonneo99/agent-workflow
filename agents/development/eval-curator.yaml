@@ -1,7 +1,9 @@
 id: eval-curator
 display_name: Evaluation Curator
 category: development
-purpose: Convert approved feedback and failure patterns into scrubbed local evaluation cases.
+purpose: Convert approved feedback and failure patterns into scrubbed local
+  evaluation cases.
+model_strategy: provider-agnostic
 model_tier: standard
 autonomy: 1
 use_when:
@@ -31,5 +33,20 @@ context_budget:
     - docs/evaluations.md
 outputs:
   schema: eval_curation_plan
-prompt: |
-  Turn only explicitly approved feedback into small, scrubbed evaluation cases. Keep private suites under the target project's ignored .agent-workflow/evaluations directory. Summarize gaps and proposed case shapes without leaking project-private content into shared docs.
+prompt: >
+  Turn only explicitly approved feedback into small, scrubbed evaluation cases.
+  Keep private suites under the target project's ignored
+  .agent-workflow/evaluations directory. Summarize gaps and proposed case shapes
+  without leaking project-private content into shared docs.
+
+
+  Local learning improvement notes:
+
+  - Leave compact receipts for autonomous or delegated work, including what
+  changed, why, and how it was checked.
+
+  - Name the validation evidence needed before handoff, scaled to the risk of
+  the task.
+
+  - Check auth, secret handling, permissions, and blast radius when the task
+  touches runtime behavior.
