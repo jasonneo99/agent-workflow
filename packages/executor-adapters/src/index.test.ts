@@ -21,11 +21,11 @@ function fixture(overrides: Record<string, unknown> = {}) {
     project: { name: "agent-workflow" },
     execution: {
       executor_adapters: {
-        "hulk-exact-revision": {
-          type: "hulk-exact-revision",
+        "ssh-exact-revision": {
+          type: "ssh-exact-revision",
           projects: ["agent-workflow"],
           operations: ["typecheck", "validate", "test"],
-          host: "hulk",
+          host: "sharedHost",
           project_root: process.cwd(),
           timeout_ms: 500,
           max_output_chars: 20,
@@ -37,7 +37,7 @@ function fixture(overrides: Record<string, unknown> = {}) {
   });
   const workflow = workflowSchema.parse({
     id: "remote", name: "Remote", description: "test", lead: "test-engineer",
-    stages: [{ id: "verify", agent: "test-engineer", goal: "verify", executor: { id: "hulk-exact-revision", operation: "typecheck" } }]
+    stages: [{ id: "verify", agent: "test-engineer", goal: "verify", executor: { id: "ssh-exact-revision", operation: "typecheck" } }]
   });
   return createExecutorSnapshots({ project, workflow, revision, runId: "run-1", taskIds: { verify: "task-1" }, projectRootUri: process.cwd() }).verify;
 }
@@ -46,7 +46,7 @@ test("immutable executor snapshots bind all envelope fields and have stable idem
   const left = fixture();
   const right = fixture();
   assert.deepEqual(left, right);
-  assert.equal(left.executorId, "hulk-exact-revision");
+  assert.equal(left.executorId, "ssh-exact-revision");
   assert.equal(left.registeredProject, "agent-workflow");
   assert.equal(left.registeredProjectRoot, process.cwd());
   assert.equal(left.runId, "run-1");
@@ -85,28 +85,28 @@ test("snapshot creation rejects unknown adapters, projects, and operations", () 
   assert.throws(() => assertSnapshot({ ...fixture(), requestedHost: "loki" }), /Unregistered executor host/);
 });
 
-test("unreachable Hulk fails closed unless explicit local fallback is configured", async () => {
-  await assert.rejects(() => executeExecutorSnapshot(fixture(), { executable: "/definitely/missing/hulk-executor" }), /ENOENT/);
+test("unreachable shared host fails closed unless explicit local fallback is configured", async () => {
+  await assert.rejects(() => executeExecutorSnapshot(fixture(), { executable: "/definitely/missing/sharedHost-executor" }), /ENOENT/);
   let fallbackCalls = 0;
   const fallback = async (): Promise<ExecutorResult> => {
     fallbackCalls += 1;
-    return { status: "passed", exitCode: 0, signal: null, stdout: "local", stderr: "", durationMs: 1, timedOut: false, requestedHost: "hulk", executionHost: "local", fallbackUsed: true, artifactReference: null };
+    return { status: "passed", exitCode: 0, signal: null, stdout: "local", stderr: "", durationMs: 1, timedOut: false, requestedHost: "sharedHost", executionHost: "local", fallbackUsed: true, artifactReference: null };
   };
-  const result = await executeExecutorSnapshot(fixture({ local_fallback: "explicit" }), { executable: "/definitely/missing/hulk-executor", localFallback: fallback });
+  const result = await executeExecutorSnapshot(fixture({ local_fallback: "explicit" }), { executable: "/definitely/missing/sharedHost-executor", localFallback: fallback });
   assert.equal(fallbackCalls, 1);
   assert.equal(result.fallbackUsed, true);
-  assert.equal(result.requestedHost, "hulk");
+  assert.equal(result.requestedHost, "sharedHost");
   assert.equal(result.executionHost, hostname());
   assert.equal(result.stdout, "local");
 });
 
 test("current registration recheck rejects project-name spoofing and configuration drift", () => {
   const snapshot = fixture();
-  const valid = projectConfigSchema.parse({ project: { name: "agent-workflow" }, execution: { executor_adapters: { "hulk-exact-revision": { type: "hulk-exact-revision", projects: ["agent-workflow"], operations: ["typecheck"], host: "hulk", project_root: process.cwd() } } } });
+  const valid = projectConfigSchema.parse({ project: { name: "agent-workflow" }, execution: { executor_adapters: { "ssh-exact-revision": { type: "ssh-exact-revision", projects: ["agent-workflow"], operations: ["typecheck"], host: "sharedHost", project_root: process.cwd() } } } });
   assert.doesNotThrow(() => assertExecutorRegistration(snapshot, valid, process.cwd()));
   const spoofedName = projectConfigSchema.parse({ ...valid, project: { name: "spoofed" } });
   assert.throws(() => assertExecutorRegistration(snapshot, spoofedName, process.cwd()), /Unregistered executor project/);
-  const driftedRoot = projectConfigSchema.parse({ ...valid, execution: { ...valid.execution, executor_adapters: { "hulk-exact-revision": { ...valid.execution.executor_adapters!["hulk-exact-revision"], project_root: path.join(process.cwd(), "other") } } } });
+  const driftedRoot = projectConfigSchema.parse({ ...valid, execution: { ...valid.execution, executor_adapters: { "ssh-exact-revision": { ...valid.execution.executor_adapters!["ssh-exact-revision"], project_root: path.join(process.cwd(), "other") } } } });
   assert.throws(() => assertExecutorRegistration(snapshot, driftedRoot, process.cwd()), /Unregistered executor project root/);
 });
 
@@ -133,5 +133,5 @@ test("adapter passes only the registered operation and exact revision", async ()
   await chmod(echoArgs, 0o700);
   const result = await executeExecutorSnapshot(fixture({ max_output_chars: 200 }), { executable: echoArgs });
   assert.match(result.stdout, new RegExp(`^2:typecheck:${revision}`));
-  assert.equal(result.artifactReference, "hulk-job://proof-job");
+  assert.equal(result.artifactReference, "sharedHost-job://proof-job");
 });

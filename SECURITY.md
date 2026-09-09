@@ -6,7 +6,7 @@ Please report security issues privately. Do not open a public issue for an unpat
 
 ## Reporting A Vulnerability
 
-Email the maintainer at jasonneo99@gmail.com with:
+Use the repository's private security-advisory reporting channel with:
 
 - a short description of the issue
 - affected version, commit, or install method

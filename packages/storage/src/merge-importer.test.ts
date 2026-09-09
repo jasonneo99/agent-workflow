@@ -30,7 +30,7 @@ test("storage merge import rejects non-manifest json", async () => {
     runStorageMergeImport({
       manifestPath,
       sourceDatabaseUrl: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
-      targetDatabaseUrl: "postgres://agentflow:agentflow@100.78.183.30:15432/agentflow"
+      targetDatabaseUrl: "postgres://agentflow:agentflow@192.0.2.10:15432/agentflow"
     }),
     /Not an Agent Workflow storage merge manifest/
   );
@@ -41,7 +41,7 @@ async function writeManifest(): Promise<string> {
   const manifestPath = path.join(directory, "manifest.json");
   const manifest = buildStorageMergeManifestFromRows({
     sourceDatabaseUrl: "postgres://agentflow:source@127.0.0.1:15432/agentflow",
-    targetDatabaseUrl: "postgres://agentflow:target@100.78.183.30:15432/agentflow",
+    targetDatabaseUrl: "postgres://agentflow:target@192.0.2.10:15432/agentflow",
     sourceRows: rows(),
     targetRows: rows()
   });

@@ -838,7 +838,7 @@ server.registerTool(
   "agentflow_preset",
   {
     title: "AgentFlow preset",
-    description: "Run a named Agent Workflow preset, such as tellara-ux-pass, tellara-pr-review, tellara-test-triage, tellara-maintain-context, or tellara-frontend-pass.",
+    description: "Run a named project-local Agent Workflow preset.",
     inputSchema: {
       preset: z.string().optional().describe("Preset id or alias. Use list to show available presets."),
       project: z.string().optional().describe("Optional project directory override."),

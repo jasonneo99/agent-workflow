@@ -198,7 +198,7 @@ test("approval rules do not match writes above their byte cap", () => {
 });
 
 test("executor approval rules match only the exact adapter target", () => {
-  const target = `hulk-exact-revision/typecheck@hulk#${"a".repeat(40)}:/registered/root`;
+  const target = `ssh-exact-revision/typecheck@sharedHost#${"a".repeat(40)}:/registered/root`;
   const executorProject = projectConfigSchema.parse({
     ...project,
     actions: { ...project.actions, approval_rules: [{ id: "remote-typecheck", action_type: "executor_adapter", target, effect: "auto_execute" }] }

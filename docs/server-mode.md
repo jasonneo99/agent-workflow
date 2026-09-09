@@ -13,7 +13,7 @@ The recommended shared setup has two separate planes:
 - Control plane: Agent Workflow CLI, MCP, dashboard, worker, and future
   authenticated HTTP endpoints.
 - State plane: shared Postgres, Redis, and MinIO running on a trusted
-  LAN/Tailscale host, such as a local machine named Hulk.
+  LAN/Tailscale host, such as a local machine named shared host.
 
 Client machines should not talk directly to the backing services unless they are
 trusted developer machines with explicit environment configuration. Normal IDE
@@ -121,9 +121,9 @@ Server mode should require explicit project registration:
 server:
   enabled: true
   projects:
-    - id: truckoutfittersunlimited
-      root: /Users/jasonmiller/Projects/truckoutfittersunlimited
-      display_name: Truck Outfitters Unlimited
+    - id: project-a
+      root: /Users/example/Projects/project-a
+      display_name: private project
       policy_profile: local
 ```
 
@@ -131,7 +131,7 @@ Remote clients should reference project ids, not raw filesystem paths:
 
 ```json
 {
-  "projectId": "truckoutfittersunlimited",
+  "projectId": "project-a",
   "workflow": "review-pr",
   "task": "Review the current changes"
 }
@@ -286,7 +286,7 @@ Team shared runtime:
 - Reverse proxy with TLS and identity recommended.
 - Registered project roots on the server host.
 - Shared storage host for durable state, for example Postgres, Redis, and MinIO
-  on a LAN/Tailscale machine such as Hulk.
+  on a LAN/Tailscale machine such as shared host.
 - Client machines use connection strings only when intentionally configured as
   trusted operators; otherwise they call MCP stdio or authenticated Agent
   Workflow server endpoints.
@@ -312,13 +312,13 @@ Shared storage host:
 Plan the migration without copying data:
 
 ```bash
-npm run storage-migrate -- --target-host 100.78.183.30
+npm run storage-migrate -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST}
 ```
 
 Write a reviewed operator package:
 
 ```bash
-npm run storage-migrate -- --target-host 100.78.183.30 --write-plan
+npm run storage-migrate -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST} --write-plan
 ```
 
 That writes Markdown, JSON, and a guarded shell script under
@@ -330,7 +330,7 @@ source process dry-run-first and avoids committing secrets into migration files.
 For repeated use, set the shared state-plane host once:
 
 ```bash
-AGENTFLOW_SHARED_STORAGE_HOST=100.78.183.30
+AGENTFLOW_SHARED_STORAGE_HOST=storage.example.internal
 ```
 
 Then `npm run storage-migrate -- --write-plan` infers the target URLs from that
@@ -355,7 +355,7 @@ manifest:
 ```bash
 npm run agentflow -- storage-merge-manifest \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
   --write
 ```
 
@@ -381,7 +381,7 @@ Then prove the reviewed manifest can be imported without writing rows:
 npm run agentflow -- storage-merge-import \
   --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow
 ```
 
 When the dry-run looks correct, the explicit operator command is:
@@ -390,7 +390,7 @@ When the dry-run looks correct, the explicit operator command is:
 npm run agentflow -- storage-merge-import \
   --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
   --execute
 ```
 
@@ -434,7 +434,7 @@ remain visible without preventing shared storage from being treated as the
 primary state plane.
 
 When the Server Readiness page reports the primary state plane as ready, treat
-Hulk/shared storage as the normal Agent Workflow state plane. Local Docker
+shared host/shared storage as the normal Agent Workflow state plane. Local Docker
 Postgres, Redis, and MinIO can stay stopped during normal work and should be
 started only for explicit offline fallback. The Primary State Plane panel keeps
 the operator summary short: shared host reachability, local fallback posture,
@@ -473,7 +473,7 @@ storage ready to be treated as the primary state plane?
 
 The roll-up combines:
 
-- Hulk/shared storage reachability.
+- shared host/shared storage reachability.
 - Whether configured storage points at a shared, non-loopback host.
 - Latest post-merge manifest, import, and backup evidence.
 - Durable Postgres table count and fingerprint parity.
@@ -611,7 +611,7 @@ The runtime monitor checks the configured shared storage host, localhost
 fallback storage ports, Docker availability, common local development ports,
 and Agent Workflow dashboard/worker/learning/MCP processes. When
 `AGENTFLOW_SHARED_STORAGE_HOST` is set, the shared host is labeled as the
-Hulk/state-plane monitor in the dashboard; otherwise Agent Workflow derives the
+shared host/state-plane monitor in the dashboard; otherwise Agent Workflow derives the
 host from configured service URLs. This is read-only monitoring and does not
 start, stop, expose, or mutate services.
 
@@ -630,7 +630,7 @@ npm run runtime-monitor -- --cleanup-mcp --confirm
 ## Project Alias Merge Preview
 
 Shared storage can collect the same project under different host paths, such as
-a Linux path on Hulk and a macOS path on a developer machine. Agent Workflow
+a Linux path on shared host and a macOS path on a developer machine. Agent Workflow
 groups those rows into logical project identities and exposes a dry-run merge
 plan before any consolidation is allowed.
 
@@ -656,8 +656,8 @@ history need backup, de-duplication, and receipts.
 ## Cross-Machine Project Roots
 
 Shared storage intentionally preserves the project root recorded by the host
-that created a run. A project may therefore appear as `/home/jasonmiller/...`
-from Hulk and `/Users/jasonmiller/...` from a Mac. Before reading
+that created a run. A project may therefore appear as `/home/example/...`
+from shared host and `/Users/example/...` from a Mac. Before reading
 `.agent-workflow/project.yaml`, executing approved local commands, writing
 approved local files, or stale-checking selected source files, Agent Workflow
 resolves the stored root to an available checkout on the current machine.
@@ -667,7 +667,7 @@ target checkout exists. For custom mounts or team machines, set an explicit
 prefix map:
 
 ```bash
-AGENTFLOW_PROJECT_PATH_MAP=/home/jasonmiller/Projects=/Users/jasonmiller/Projects
+AGENTFLOW_PROJECT_PATH_MAP=/remote/projects=/local/projects
 ```
 
 This mapping is local runtime behavior only. It does not rewrite historical
@@ -735,13 +735,13 @@ The current fallback mode is operator-driven: start local services, point the
 environment at localhost, run offline work, then sync back through
 `storage-merge-manifest` and `storage-merge-import` when shared storage returns.
 The Server page shows both configured shared-storage health and localhost
-fallback health, plus runtime-monitor evidence for Hulk/shared storage, local
+fallback health, plus runtime-monitor evidence for shared host/shared storage, local
 listeners, Docker, and Agent Workflow background processes.
 
 Record fallback intent and offline runs in the local sync queue:
 
 ```bash
-npm run offline-fallback -- --record start-local --note "Hulk unavailable; use localhost storage"
+npm run offline-fallback -- --record start-local --note "shared host unavailable; use localhost storage"
 npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
 npm run offline-fallback -- --record sync-back --note "Merge localhost rows back to shared storage"
 ```
@@ -779,7 +779,7 @@ before marking fallback queue items synced. Disable daemon checks with
 After a reviewed copy, verify durable state without mutating either side:
 
 ```bash
-npm run storage-verify -- --target-host 100.78.183.30
+npm run storage-verify -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST}
 ```
 
 The verifier compares service reachability plus durable table counts and compact

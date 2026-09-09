@@ -6,7 +6,7 @@ Security work in this repository should strengthen the shared framework without 
 
 ## Reporting Vulnerabilities
 
-Please report vulnerabilities privately by emailing jasonneo99@gmail.com.
+Please report vulnerabilities through the repository's private security-advisory reporting channel.
 
 Do not open a public issue for an unpatched vulnerability. Include the affected version or commit, reproduction steps, expected impact, and any scrubbed logs or exports that help reproduce the issue.
 

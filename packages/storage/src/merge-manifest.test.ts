@@ -6,7 +6,7 @@ test("storage merge manifest maps projects by root_uri and preserves target ids"
   const manifest = buildStorageMergeManifestFromRows({
     generatedAt: "2026-09-03T00:00:00.000Z",
     sourceDatabaseUrl: "postgres://agentflow:source-secret@127.0.0.1:15432/agentflow",
-    targetDatabaseUrl: "postgres://agentflow:target-secret@100.78.183.30:15432/agentflow",
+    targetDatabaseUrl: "postgres://agentflow:target-secret@192.0.2.10:15432/agentflow",
     sourceRows: rows({
       projects: [
         row("/projects/app", "source-app", "/projects/app", "source-project-id", "App"),
@@ -43,7 +43,7 @@ test("storage merge manifest maps projects by root_uri and preserves target ids"
 test("storage merge manifest flags row conflicts for review", () => {
   const manifest = buildStorageMergeManifestFromRows({
     sourceDatabaseUrl: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
-    targetDatabaseUrl: "postgres://agentflow:agentflow@100.78.183.30:15432/agentflow",
+    targetDatabaseUrl: "postgres://agentflow:agentflow@192.0.2.10:15432/agentflow",
     sourceRows: rows({
       projects: [row("/projects/app", "source-app", "/projects/app", "source-project-id", "App")],
       artifacts: [row("db://artifact/one", "source-fingerprint", "/projects/app", "source-project-id")]
@@ -63,7 +63,7 @@ test("storage merge manifest flags row conflicts for review", () => {
 test("storage merge manifest surfaces legacy definition references without overwriting target definitions", () => {
   const manifest = buildStorageMergeManifestFromRows({
     sourceDatabaseUrl: "postgres://agentflow:agentflow@127.0.0.1:15432/agentflow",
-    targetDatabaseUrl: "postgres://agentflow:agentflow@100.78.183.30:15432/agentflow",
+    targetDatabaseUrl: "postgres://agentflow:agentflow@192.0.2.10:15432/agentflow",
     sourceRows: rows({}),
     targetRows: rows({}),
     sourceDefinitions: [

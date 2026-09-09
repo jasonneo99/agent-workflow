@@ -182,13 +182,13 @@ Postgres, Redis, and MinIO.
 Preview the current machine to a shared host without copying data:
 
 ```bash
-npm run storage-migrate -- --target-host 100.78.183.30
+npm run storage-migrate -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST}
 ```
 
 Write a reviewed operator package:
 
 ```bash
-npm run storage-migrate -- --target-host 100.78.183.30 --write-plan
+npm run storage-migrate -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST} --write-plan
 ```
 
 That writes Markdown, JSON, and a guarded shell script under
@@ -199,7 +199,7 @@ script still requires source and target environment variables and exits unless
 You can also set a reusable shared state-plane host in `.env`:
 
 ```bash
-AGENTFLOW_SHARED_STORAGE_HOST=100.78.183.30
+AGENTFLOW_SHARED_STORAGE_HOST=storage.example.internal
 ```
 
 Then run:
@@ -217,9 +217,9 @@ developer ports:
 
 ```bash
 npm run storage-migrate -- \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
-  --target-redis-url redis://100.78.183.30:16379 \
-  --target-object-storage-endpoint http://100.78.183.30:19000 \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
+  --target-redis-url redis://${AGENTFLOW_SHARED_STORAGE_HOST}:16379 \
+  --target-object-storage-endpoint http://${AGENTFLOW_SHARED_STORAGE_HOST}:19000 \
   --target-object-storage-bucket agentflow-artifacts \
   --write-plan
 ```
@@ -246,7 +246,7 @@ manifest:
 ```bash
 npm run agentflow -- storage-merge-manifest \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
   --write
 ```
 
@@ -263,7 +263,7 @@ Dry-run the reviewed manifest before writing:
 npm run agentflow -- storage-merge-import \
   --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow
 ```
 
 After backing up both databases, execute the insert-only merge:
@@ -272,7 +272,7 @@ After backing up both databases, execute the insert-only merge:
 npm run agentflow -- storage-merge-import \
   --manifest .agent-workflow/migrations/storage-merge-manifest-YYYY-MM-DDTHH-MM-SS.json \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
   --execute
 ```
 
@@ -342,7 +342,7 @@ manifest/import flow when shared storage returns. Background auto-sync is a
 future enhancement; today the sync path is explicit and auditable.
 
 The Server Readiness dashboard includes a Primary State Plane panel for this
-operator view. It summarizes whether Hulk/shared storage is the primary state
+operator view. It summarizes whether shared host/shared storage is the primary state
 plane, whether localhost storage is fallback-only, how many offline sync items
 are pending, and which warning rows are informational rather than blockers.
 
@@ -367,8 +367,8 @@ dashboard shows whether the scheduler is in `dry-run` or `execute` mode.
 After a migration copy, compare durable source and target state:
 
 ```bash
-npm run storage-verify -- --target-host 100.78.183.30
-npm run storage-verify -- --target-host 100.78.183.30 --json
+npm run storage-verify -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST}
+npm run storage-verify -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST} --json
 ```
 
 `storage-verify` checks service reachability and compares durable table counts
@@ -430,12 +430,6 @@ Enterprise mode is the default:
 
 ```bash
 npm run init-project -- --project /path/to/project --profile enterprise
-```
-
-Tellara has a dedicated profile:
-
-```bash
-npm run init-project -- --project /Users/jasonmiller/Projects/media-ai-startup --profile tellara
 ```
 
 This installs:
@@ -730,49 +724,26 @@ npm run agentflow -- agent-task project-reviewer \
   --task "Review this implementation against local architecture decisions"
 ```
 
-Run a named preset:
-
-```bash
-npm run agentflow -- preset tellara-ux-pass
-```
-
 List available presets:
 
 ```bash
 npm run agentflow -- preset --list
 ```
 
-Project-specific Tellara presets are available when that profile is useful:
-
-```text
-tellara-ux-pass
-tellara-pr-review
-tellara-test-triage
-tellara-maintain-context
-tellara-frontend-pass
-```
-
-Override the task or project when needed:
-
-```bash
-npm run agentflow -- preset tellara-ux-pass \
-  --task "Do a UX pass focused on the onboarding and command center flows"
-```
-
 Run a natural-language orchestration:
 
 ```bash
 npm run agentflow -- orchestrate \
-  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
-  --task "Review the production site UX, SEO, mobile experience, and launch risks"
+  --project /path/to/project \
+  --task "Review this project and identify release risks"
 ```
 
 Preview the plan before running it:
 
 ```bash
 npm run agentflow -- orchestrate \
-  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
-  --task "Review the production site UX, SEO, mobile experience, and launch risks" \
+  --project /path/to/project \
+  --task "Review this project and identify release risks" \
   --dry-run
 ```
 
@@ -937,7 +908,7 @@ This starts the dashboard when port `17888` is free, starts the background
 worker, starts the local learning daemon, and writes a supervisor heartbeat to
 `.agent-workflow/runtime/supervisor-heartbeat.json`. Local Docker storage starts
 only when configured storage URLs are localhost. If you are pointed at shared
-storage, such as Hulk over Tailscale, local storage stays stopped unless you set
+storage, such as shared host over Tailscale, local storage stays stopped unless you set
 `AGENTFLOW_START_LOCAL_STORAGE=1`.
 
 Stop the supervised dashboard, worker, and learning daemon:
@@ -996,7 +967,7 @@ When shared storage contains runs created on another host, keep local project
 actions pointed at the checkout on the current machine with a project path map:
 
 ```bash
-AGENTFLOW_PROJECT_PATH_MAP=/home/jasonmiller/Projects=/Users/jasonmiller/Projects
+AGENTFLOW_PROJECT_PATH_MAP=/remote/projects=/local/projects
 ```
 
 Agent Workflow also auto-detects the common `/home/<user>` to `/Users/<user>`
@@ -1495,15 +1466,8 @@ Follow-up buttons are local-only actions backed by existing Agent Workflow comma
 - `Frontend Pass`
 - `Maintain Context`
 
-The dashboard home also includes Tellara presets:
-
-- `UX Pass`
-- `PR Review`
-- `Test Triage`
-- `Maintain Context`
-- `Frontend Pass`
-
-These actions still use the project `.agent-workflow/project.yaml` policy and create normal run receipts and artifacts.
+Dashboard actions use the project `.agent-workflow/project.yaml` policy and
+create normal run receipts and artifacts.
 
 ## 12. MCP Prompt Examples
 

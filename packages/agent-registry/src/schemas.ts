@@ -143,10 +143,10 @@ const workerPoolSchema = z.object({
 }).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
 
 const executorAdapterRegistrationSchema = z.object({
-  type: z.literal("hulk-exact-revision"),
+  type: z.literal("ssh-exact-revision"),
   projects: z.array(z.string().min(1)).min(1),
   operations: z.array(z.enum(["typecheck", "validate", "test"])).min(1),
-  host: z.literal("hulk").default("hulk"),
+  host: z.literal("sharedHost").default("sharedHost"),
   project_root: z.string().min(1),
   timeout_ms: z.number().int().positive().max(3_600_000).default(1_800_000),
   max_output_chars: z.number().int().positive().max(1_000_000).default(20_000),

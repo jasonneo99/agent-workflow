@@ -251,7 +251,7 @@ type RuntimeMonitorReport = {
   kind: "agentflow_runtime_monitor_report";
   generatedAt: string;
   storageHost: string | null;
-  hulk: {
+  sharedHost: {
     host: string | null;
     source: "AGENTFLOW_SHARED_STORAGE_HOST" | "configured-endpoints" | "not-configured";
     reachable: boolean;
@@ -1263,7 +1263,7 @@ program
 program
   .command("storage-migrate")
   .description("Plan a dry-run migration from local enterprise storage to a shared LAN/Tailscale storage host")
-  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 100.78.183.30")
+  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 192.0.2.10")
   .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
   .option("--source-redis-url <url>", "source Redis URL; defaults to REDIS_URL")
   .option("--source-object-storage-endpoint <url>", "source MinIO/S3 endpoint; defaults to OBJECT_STORAGE_ENDPOINT")
@@ -1323,7 +1323,7 @@ program
 program
   .command("storage-merge-manifest")
   .description("Build a read-only row-level merge manifest between two Agent Workflow Postgres databases")
-  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 100.78.183.30")
+  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 192.0.2.10")
   .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
   .option("--target-database-url <url>", "target Postgres URL")
   .option("--out <dir>", "manifest output directory", ".agent-workflow/migrations")
@@ -1415,7 +1415,7 @@ program
 program
   .command("storage-project-conflicts")
   .description("Preview source/target project metadata conflicts before treating shared storage as primary")
-  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 100.78.183.30")
+  .option("--target-host <host>", "shared storage host used to infer target Postgres URL, for example 192.0.2.10")
   .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
   .option("--target-database-url <url>", "target Postgres URL")
   .option("--json", "print machine-readable project conflict report")
@@ -1634,7 +1634,7 @@ program
 program
   .command("storage-verify")
   .description("Compare durable Agent Workflow state between a source and target storage plane without mutating either")
-  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 100.78.183.30")
+  .option("--target-host <host>", "shared storage host used to infer target URLs, for example 192.0.2.10")
   .option("--source-database-url <url>", "source Postgres URL; defaults to DATABASE_URL")
   .option("--source-redis-url <url>", "source Redis URL; defaults to REDIS_URL")
   .option("--source-object-storage-endpoint <url>", "source MinIO/S3 endpoint; defaults to OBJECT_STORAGE_ENDPOINT")
@@ -3070,7 +3070,7 @@ program
 
 program
   .command("runtime-monitor")
-  .description("Inspect local Agent Workflow processes, local service listeners, and shared Hulk storage health")
+  .description("Inspect local Agent Workflow processes, local service listeners, and shared shared host storage health")
   .option("--cleanup-mcp", "preview stale Agent Workflow MCP cleanup candidates; pair with --confirm to terminate them")
   .option("--reconcile-stale-runs", "preview stale workflow runs whose child tasks are already terminal; pair with --confirm to repair them")
   .option("--check-mcp", "run an on-demand MCP launcher smoke check")
@@ -3105,7 +3105,7 @@ program
       report.mcpPipeline.recovery = await writeMcpRecoveryPackage(report.mcpPipeline);
     }
     console.log(options.json ? JSON.stringify(report, null, 2) : formatRuntimeMonitorReport(report));
-    if (!report.hulk.reachable || report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status === "failed") process.exitCode = 1;
+    if (!report.sharedHost.reachable || report.mcpPipeline.status !== "ok" || report.mcpPipeline.smoke.status === "failed") process.exitCode = 1;
   });
 
 program
@@ -9568,7 +9568,7 @@ async function runOfflineFallbackSync(input: { outDir: string; execute: boolean;
   const sharedServices = await checkServices();
   if (!targetDatabaseUrl) warnings.push("DATABASE_URL is required for the shared storage target.");
   if (!localServices.every((service) => service.reachable)) warnings.push("Local fallback services are not all reachable; start localhost storage before syncing.");
-  if (!sharedServices.every((service) => service.reachable)) warnings.push("Configured shared storage is not all reachable; wait for Hulk/shared storage to return.");
+  if (!sharedServices.every((service) => service.reachable)) warnings.push("Configured shared storage is not all reachable; wait for shared host/shared storage to return.");
   if (targetDatabaseUrl && canonicalizeDashboardDatabaseUrl(sourceDatabaseUrl) === canonicalizeDashboardDatabaseUrl(targetDatabaseUrl)) {
     warnings.push("Source and target database URLs point at the same database.");
   }
@@ -10650,9 +10650,9 @@ function offlineFallbackCommands(): OfflineFallbackReport["commands"] {
     stopLocal: "docker compose -f infra/docker-compose.yml stop",
     startLocal: "docker compose -f infra/docker-compose.yml up -d",
     useShared: [
-      "DATABASE_URL=postgres://agentflow:agentflow@100.78.183.30:15432/agentflow",
-      "REDIS_URL=redis://100.78.183.30:16379",
-      "OBJECT_STORAGE_ENDPOINT=http://100.78.183.30:19000"
+      "DATABASE_URL=postgres://agentflow:agentflow@192.0.2.10:15432/agentflow",
+      "REDIS_URL=redis://192.0.2.10:16379",
+      "OBJECT_STORAGE_ENDPOINT=http://192.0.2.10:19000"
     ],
     useLocal: [
       "DATABASE_URL=postgres://agentflow:agentflow@localhost:15432/agentflow",
@@ -10780,8 +10780,8 @@ function buildSharedStatePlaneProof(input: {
   runtimeMonitor: RuntimeMonitorReport;
 }): SharedStatePlaneProof {
   const checks: SharedStatePlaneProof["checks"] = [];
-  const sharedReachable = input.runtimeMonitor.hulk.reachable || input.offlineFallback.currentServicesReachable;
-  const sharedConfigured = Boolean(input.runtimeMonitor.storageHost || input.runtimeMonitor.hulk.host);
+  const sharedReachable = input.runtimeMonitor.sharedHost.reachable || input.offlineFallback.currentServicesReachable;
+  const sharedConfigured = Boolean(input.runtimeMonitor.storageHost || input.runtimeMonitor.sharedHost.host);
   const sameSharedStatePlane = input.storageVerification.status === "attention" &&
     input.storageVerification.diffs.every((diff) => diff.status === "match") &&
     input.storageVerification.warnings.some((warning) => warning.includes("source and target database URLs point to the same endpoint")) &&
@@ -10790,15 +10790,15 @@ function buildSharedStatePlaneProof(input: {
     label: "Shared storage host",
     status: sharedConfigured && sharedReachable ? "pass" : sharedConfigured ? "fail" : "warn",
     detail: sharedConfigured
-      ? `${input.runtimeMonitor.storageHost ?? input.runtimeMonitor.hulk.host} is ${sharedReachable ? "reachable" : "not fully reachable"}.`
+      ? `${input.runtimeMonitor.storageHost ?? input.runtimeMonitor.sharedHost.host} is ${sharedReachable ? "reachable" : "not fully reachable"}.`
       : "No shared storage host is configured; this machine is still local-only."
   });
   checks.push({
     label: "Current storage points shared",
-    status: input.runtimeMonitor.hulk.source === "not-configured" ? "warn" : "pass",
-    detail: input.runtimeMonitor.hulk.source === "not-configured"
+    status: input.runtimeMonitor.sharedHost.source === "not-configured" ? "warn" : "pass",
+    detail: input.runtimeMonitor.sharedHost.source === "not-configured"
       ? "Configured storage does not identify a shared/non-loopback state plane."
-      : `Shared state plane inferred from ${input.runtimeMonitor.hulk.source}.`
+      : `Shared state plane inferred from ${input.runtimeMonitor.sharedHost.source}.`
   });
   checks.push({
     label: "Post-merge evidence",
@@ -10884,7 +10884,7 @@ function buildSharedStatePlaneProof(input: {
       : status === "attention"
         ? "Shared storage is usable for local-first development, but some proof or governance checks still need review."
         : "Shared storage should not be treated as primary until blocking checks are resolved.",
-    sharedHost: input.runtimeMonitor.storageHost ?? input.runtimeMonitor.hulk.host,
+    sharedHost: input.runtimeMonitor.storageHost ?? input.runtimeMonitor.sharedHost.host,
     localFallbackCanStayStopped: sharedReachable && pendingOfflineItems === 0,
     checks,
     recommendedActions
@@ -10967,10 +10967,10 @@ function agentWorkflowPluginRoot(): string {
 }
 
 async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Promise<RuntimeMonitorReport> {
-  const hulkTarget = resolveHulkStorageTarget();
-  const hulkServices = hulkTarget.host
+  const sharedHostTarget = resolveSharedHostStorageTarget();
+  const sharedHostServices = sharedHostTarget.host
     ? await checkServices(defaultServiceEndpoints({
-        AGENTFLOW_SHARED_STORAGE_HOST: hulkTarget.host,
+        AGENTFLOW_SHARED_STORAGE_HOST: sharedHostTarget.host,
         AGENTFLOW_POSTGRES_PORT: process.env.AGENTFLOW_POSTGRES_PORT,
         AGENTFLOW_REDIS_PORT: process.env.AGENTFLOW_REDIS_PORT,
         AGENTFLOW_MINIO_PORT: process.env.AGENTFLOW_MINIO_PORT
@@ -10993,7 +10993,7 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
   const mcpCleanupConfig = runtimeMcpCleanupConfig();
   const staleRunConfig = staleRunReconcileConfig();
   const recommendations = runtimeMonitorRecommendations({
-    hulkReachable: hulkServices.length > 0 && hulkServices.every((service) => service.reachable),
+    sharedHostReachable: sharedHostServices.length > 0 && sharedHostServices.every((service) => service.reachable),
     localServicesReachable: localServices.every((service) => service.reachable),
     docker,
     processes,
@@ -11004,12 +11004,12 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
   return {
     kind: "agentflow_runtime_monitor_report",
     generatedAt: new Date().toISOString(),
-    storageHost: hulkTarget.host,
-    hulk: {
-      host: hulkTarget.host,
-      source: hulkTarget.source,
-      reachable: hulkServices.length > 0 && hulkServices.every((service) => service.reachable),
-      services: hulkServices
+    storageHost: sharedHostTarget.host,
+    sharedHost: {
+      host: sharedHostTarget.host,
+      source: sharedHostTarget.source,
+      reachable: sharedHostServices.length > 0 && sharedHostServices.every((service) => service.reachable),
+      services: sharedHostServices
     },
     localServices,
     localModelRuntime,
@@ -11067,7 +11067,7 @@ async function loadLocalModelRuntimeStatus(): Promise<RuntimeMonitorReport["loca
   }
 }
 
-function resolveHulkStorageTarget(): { host: string | null; source: RuntimeMonitorReport["hulk"]["source"] } {
+function resolveSharedHostStorageTarget(): { host: string | null; source: RuntimeMonitorReport["sharedHost"]["source"] } {
   if (process.env.AGENTFLOW_SHARED_STORAGE_HOST?.trim()) {
     return { host: process.env.AGENTFLOW_SHARED_STORAGE_HOST.trim(), source: "AGENTFLOW_SHARED_STORAGE_HOST" };
   }
@@ -11727,7 +11727,7 @@ function runtimeProcessDetail(role: RuntimeMonitorReport["processes"][number]["r
 }
 
 function runtimeMonitorRecommendations(input: {
-  hulkReachable: boolean;
+  sharedHostReachable: boolean;
   localServicesReachable: boolean;
   docker: RuntimeMonitorReport["docker"];
   processes: RuntimeMonitorReport["processes"];
@@ -11736,9 +11736,9 @@ function runtimeMonitorRecommendations(input: {
   localModelRuntime?: RuntimeMonitorReport["localModelRuntime"];
 }): string[] {
   const notes: string[] = [];
-  if (input.hulkReachable) notes.push("Hulk/shared storage is reachable and can remain the primary state plane.");
-  else notes.push("Hulk/shared storage is not fully reachable; use offline fallback before queueing new shared-state work.");
-  if (!input.localServicesReachable) notes.push("Local Postgres/Redis/MinIO fallback services are stopped or incomplete, which is expected while Hulk is healthy.");
+  if (input.sharedHostReachable) notes.push("shared host/shared storage is reachable and can remain the primary state plane.");
+  else notes.push("shared host/shared storage is not fully reachable; use offline fallback before queueing new shared-state work.");
+  if (!input.localServicesReachable) notes.push("Local Postgres/Redis/MinIO fallback services are stopped or incomplete, which is expected while shared host is healthy.");
   if (input.docker.status === "unavailable") notes.push("Docker/Colima is unavailable from this shell, so local fallback containers cannot be inspected here.");
   const mcp = input.processes.find((processGroup) => processGroup.role === "mcp");
   if (mcp && mcp.count > 4) notes.push("Consider restarting Codex or cleaning stale MCP sessions if MCP calls behave inconsistently.");
@@ -11752,12 +11752,12 @@ function runtimeMonitorRecommendations(input: {
 function formatRuntimeMonitorReport(report: RuntimeMonitorReport): string {
   return [
     `Runtime monitor (${report.generatedAt})`,
-    `Hulk/shared host: ${report.hulk.host ?? "not configured"} (${report.hulk.source})`,
-    `Hulk/shared storage: ${report.hulk.reachable ? "reachable" : "attention"}`,
+    `shared host/shared host: ${report.sharedHost.host ?? "not configured"} (${report.sharedHost.source})`,
+    `shared host/shared storage: ${report.sharedHost.reachable ? "reachable" : "attention"}`,
     `Docker: ${report.docker.status} - ${report.docker.message}`,
     "",
-    "Hulk/shared services:",
-    ...(report.hulk.services.length ? report.hulk.services.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`) : ["- No shared storage host configured."]),
+    "shared host/shared services:",
+    ...(report.sharedHost.services.length ? report.sharedHost.services.map((service) => `- ${service.endpoint.name}: ${service.reachable ? "OK" : "MISSING"} (${service.message})`) : ["- No shared storage host configured."]),
     "",
     "Local service listeners:",
     ...report.ports.map((port) => `- ${port.label} :${port.port}: ${port.status}${port.pid ? ` pid=${port.pid} ${port.command}` : ""}`),
@@ -14981,7 +14981,7 @@ function buildProjectAliasMergeWarnings(
   if (target.indexedFiles > 0 && impactedRows.projectFiles > 0) warnings.push("Target and source aliases both have indexed files; execution must de-duplicate source_uri/content_hash rows.");
   if (target.memoryItems > 0 && impactedRows.memoryItems > 0) warnings.push("Target and source aliases both have memory items; execution should preserve provenance and avoid duplicate summaries.");
   if (new Set([target.profile, ...sources.map((source) => source.profile)]).size > 1) warnings.push("Project aliases use different profiles; execution must choose a final profile intentionally.");
-  if (sources.some((source) => source.rootUri.startsWith("/home/")) && target.rootUri.startsWith("/Users/")) warnings.push("Linux and macOS home aliases are present; keep path mapping documented for shared Hulk storage.");
+  if (sources.some((source) => source.rootUri.startsWith("/home/")) && target.rootUri.startsWith("/Users/")) warnings.push("Linux and macOS home aliases are present; keep path mapping documented for shared shared host storage.");
   return warnings;
 }
 
@@ -26738,7 +26738,7 @@ function inferRoadmapMilestoneNumber(title: string, phase: string, details: stri
   if (/signed|trusted|registry|npm|publish|release|backup|restore|disaster|bundle/u.test(haystack)) return 11;
   if (/launchagent|supervisor|worker|run-and-watch|startup|stale process|durable workflow/u.test(haystack)) return 10;
   if (/server mode|authenticated|http|rate limit|remote|request envelope|reverse proxy|tls/u.test(haystack)) return 9;
-  if (/hulk|shared storage|offline|sync|state plane|migration|cross-machine|alias|object storage/u.test(haystack)) return 8;
+  if (/sharedHost|shared storage|offline|sync|state plane|migration|cross-machine|alias|object storage/u.test(haystack)) return 8;
   if (/agent improvement|promotion|holdout|yaml patch|self-improv|agent definition/u.test(haystack)) return 7;
   if (/learning|daemon|proposal|workflow shape|discovery|feedback memory/u.test(haystack)) return 6;
   if (/model|provider|routing|catalog|token|cost|quality|tuning|eval/u.test(haystack)) return 5;
@@ -30635,7 +30635,7 @@ function renderSharedStatePlaneProofPanel(proof: SharedStatePlaneProof): string 
     <div class="section-heading">
       <div>
         <h2>Shared State Plane</h2>
-        <span class="muted">One verdict for Hulk/shared storage, post-merge proof, offline fallback, object parity, and server controls.</span>
+        <span class="muted">One verdict for shared host/shared storage, post-merge proof, offline fallback, object parity, and server controls.</span>
       </div>
       <span class="status ${statusClass}">${escapeHtml(proof.status)}</span>
     </div>
@@ -30658,7 +30658,7 @@ function renderPrimaryStatePlaneOperatorPanel(
 ): string {
   const primaryReady = mergeEvidence.safePrimaryStatePlane && offlineFallback.currentServicesReachable;
   const statusClass = primaryReady ? "completed" : "queued";
-  const sharedHost = runtimeMonitor.storageHost ?? runtimeMonitor.hulk.host ?? "not configured";
+  const sharedHost = runtimeMonitor.storageHost ?? runtimeMonitor.sharedHost.host ?? "not configured";
   const pendingOfflineItems = offlineFallback.queue.items.filter((item) => item.status === "pending").length;
   const warningChecks = mergeEvidence.switchOverProof.checks.filter((check) => check.status === "warn");
   const warningRows = warningChecks.map((check) => `<li><strong>${escapeHtml(check.label)}</strong>: ${escapeHtml(check.detail)}</li>`).join("");
@@ -30669,7 +30669,7 @@ function renderPrimaryStatePlaneOperatorPanel(
     "npm run offline-fallback"
   ].map((command) => `<li><code>${escapeHtml(command)}</code></li>`).join("");
   const summary = primaryReady
-    ? "Hulk/shared storage is the primary state plane. Local Docker storage should stay stopped unless shared storage is unavailable."
+    ? "shared host/shared storage is the primary state plane. Local Docker storage should stay stopped unless shared storage is unavailable."
     : "Shared storage is not fully proven as the primary state plane yet; review the checks below before switching clients.";
   return `<section class="panel">
     <div class="section-heading">
@@ -30680,9 +30680,9 @@ function renderPrimaryStatePlaneOperatorPanel(
       <span class="status ${statusClass}">${primaryReady ? "shared primary" : "needs review"}</span>
     </div>
     <div class="metric-grid">
-      ${metricCard("Primary", primaryReady ? "Hulk" : "not proven", summary)}
+      ${metricCard("Primary", primaryReady ? "shared host" : "not proven", summary)}
       ${metricCard("Shared Host", sharedHost, offlineFallback.currentServicesReachable ? "reachable" : "not reachable")}
-      ${metricCard("Local Storage", offlineFallback.localServicesReachable ? "running" : "stopped", primaryReady ? "fallback-only while Hulk is online" : "fallback may be needed")}
+      ${metricCard("Local Storage", offlineFallback.localServicesReachable ? "running" : "stopped", primaryReady ? "fallback-only while shared host is online" : "fallback may be needed")}
       ${metricCard("Offline Queue", pendingOfflineItems, "pending local fallback items")}
       ${metricCard("Proof", mergeEvidence.switchOverProof.status, `${mergeEvidence.conflictClassification.criticalRows} critical conflict row(s)`)}
       ${metricCard("Warnings", warningChecks.length, "visible audit/refresh items")}
@@ -30880,13 +30880,13 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport, params: URLSe
       <form class="inline-form" method="post" action="/api/offline-fallback-action">
         ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="action" value="start-local">
-        <input name="note" value="Start localhost fallback services if Hulk/shared storage is down." aria-label="Fallback note">
+        <input name="note" value="Start localhost fallback services if shared host/shared storage is down." aria-label="Fallback note">
         <button type="submit">Record Local Fallback</button>
       </form>
       <form class="inline-form" method="post" action="/api/offline-fallback-action">
         ${dashboardReturnInput("/server-readiness", params)}
         <input type="hidden" name="action" value="sync-back">
-        <input name="note" value="Merge local fallback rows back into shared storage when Hulk returns." aria-label="Sync note">
+        <input name="note" value="Merge local fallback rows back into shared storage when shared host returns." aria-label="Sync note">
         <button type="submit">Record Sync Needed</button>
       </form>
     </div>
@@ -31164,7 +31164,7 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
   ${renderDashboardFlash(params)}
   ${renderDashboardActionHistory()}
-  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="100.78.183.30"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="192.0.2.10"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
   ${renderPrimaryStatePlaneOperatorPanel(mergeEvidence, offlineFallback, runtimeMonitor)}
   ${renderSharedStatePlaneProofPanel(statePlaneProof)}
   <section class="panel"><div class="metric-grid">
@@ -35991,7 +35991,7 @@ function safeDisplayUrl(value?: string): string | undefined {
 }
 
 function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSearchParams = new URLSearchParams()): string {
-  const hulkRows = report.hulk.services.map((service) => `
+  const sharedHostRows = report.sharedHost.services.map((service) => `
     <tr><td>${escapeHtml(service.endpoint.name)}</td><td><span class="status ${service.reachable ? "completed" : "failed"}">${service.reachable ? "OK" : "MISSING"}</span></td><td>${escapeHtml(service.message)}</td></tr>
   `).join("");
   const localRows = report.localServices.map((service) => `
@@ -36038,11 +36038,11 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
   const recommendations = report.recommendations.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
   return `<section class="panel">
     <div class="section-heading">
-      <div><h2>Runtime Monitor</h2><span class="muted">Local process inventory plus Hulk/shared storage and localhost fallback health.</span></div>
+      <div><h2>Runtime Monitor</h2><span class="muted">Local process inventory plus shared host/shared storage and localhost fallback health.</span></div>
       <a class="button secondary" href="/api/runtime-monitor">JSON</a>
     </div>
     <div class="metric-grid">
-      ${metricCard("Hulk", report.hulk.reachable ? "online" : "attention", report.hulk.host ?? "not configured")}
+      ${metricCard("shared host", report.sharedHost.reachable ? "online" : "attention", report.sharedHost.host ?? "not configured")}
       ${metricCard("Local Fallback", report.localServices.every((service) => service.reachable) ? "ready" : "stopped", "localhost storage services")}
       ${metricCard("Docker", report.docker.status, report.docker.message)}
       ${metricCard("Local Model", report.localModelRuntime.endpointHealthy ? "online" : "attention", `${report.localModelRuntime.serviceStatus} · ${report.localModelRuntime.modelCount} models`)}
@@ -36069,12 +36069,12 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
     </details>
     <div class="meta-grid compact">
       <div><strong>Generated</strong>${renderDashboardDateTime(report.generatedAt)}</div>
-      <div><strong>Shared Host Source</strong>${escapeHtml(report.hulk.source)}</div>
+      <div><strong>Shared Host Source</strong>${escapeHtml(report.sharedHost.source)}</div>
       <div><strong>Storage Host</strong>${escapeHtml(report.storageHost ?? "not configured")}</div>
       <div><strong>Docker Detail</strong>${escapeHtml(report.docker.message)}</div>
     </div>
     <div class="split-grid">
-      <div><h3>Hulk / Shared Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${hulkRows || '<tr><td colspan="3">No shared storage host configured.</td></tr>'}</tbody></table></div></div>
+      <div><h3>shared host / Shared Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${sharedHostRows || '<tr><td colspan="3">No shared storage host configured.</td></tr>'}</tbody></table></div></div>
       <div><h3>Local Fallback Storage</h3><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${localRows}</tbody></table></div></div>
     </div>
     <h3>Local Ports</h3>
@@ -37355,7 +37355,7 @@ function iconForMetric(label: string): DashboardIconName {
   if (/project|source|file|indexed|artifact|archive|backup/u.test(normalized)) return "file";
   if (/provider|model|route|routing|tier|catalog/u.test(normalized)) return "route";
   if (/approval|role|govern|auth|trust|policy/u.test(normalized)) return "shield";
-  if (/server|service|storage|database|redis|minio|hulk|sync/u.test(normalized)) return "server";
+  if (/server|service|storage|database|redis|minio|sharedHost|sync/u.test(normalized)) return "server";
   if (/learning|feedback|eval|proposal|optimizer|comparison/u.test(normalized)) return "brain";
   return "gauge";
 }

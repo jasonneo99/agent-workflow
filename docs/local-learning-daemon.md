@@ -27,7 +27,7 @@ provider settings, or expose private data.
 
 - Hosted SaaS learning.
 - Production product-agent behavior.
-- Tellara-specific prompts, scoring, customer workflows, schemas, or private
+- private project-specific prompts, scoring, customer workflows, schemas, or private
   policy.
 - Silent edits to reusable agents, workflows, project code, or provider
   settings.
@@ -476,7 +476,7 @@ When shared storage contains project roots from another machine, map those roots
 to local checkouts before writing project-local learning files:
 
 ```bash
-AGENTFLOW_PROJECT_PATH_MAP=/home/jasonmiller/Projects=/Users/jasonmiller/Projects
+AGENTFLOW_PROJECT_PATH_MAP=/home/example/Projects=/Users/example/Projects
 ```
 
 The dashboard also detects the common Linux-home to macOS-home mapping

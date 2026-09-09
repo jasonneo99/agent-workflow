@@ -132,10 +132,10 @@
       "additionalProperties": false,
       "required": ["type", "projects", "operations", "project_root"],
       "properties": {
-        "type": { "const": "hulk-exact-revision" },
+        "type": { "const": "ssh-exact-revision" },
         "projects": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
         "operations": { "type": "array", "minItems": 1, "items": { "enum": ["typecheck", "validate", "test"] } },
-        "host": { "const": "hulk", "default": "hulk" },
+        "host": { "const": "sharedHost", "default": "sharedHost" },
         "project_root": { "type": "string", "minLength": 1 },
         "timeout_ms": { "type": "integer", "minimum": 1, "maximum": 3600000, "default": 1800000 },
         "max_output_chars": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 20000 },

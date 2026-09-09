@@ -22,12 +22,12 @@ test("parses project root aliases from environment-style values", () => {
 });
 
 test("resolves Linux project roots to the current macOS home checkout", async () => {
-  const resolution = await resolveLocalProjectPath("/home/jasonmiller/Projects/fleet-config", {
-    homeDir: "/Users/jasonmiller",
-    exists: (target) => target === "/Users/jasonmiller/Projects/fleet-config"
+  const resolution = await resolveLocalProjectPath("/home/example/Projects/fleet-config", {
+    homeDir: "/Users/example",
+    exists: (target) => target === "/Users/example/Projects/fleet-config"
   });
-  assert.equal(resolution.storageRootUri, "/home/jasonmiller/Projects/fleet-config");
-  assert.equal(resolution.localRootUri, "/Users/jasonmiller/Projects/fleet-config");
+  assert.equal(resolution.storageRootUri, "/home/example/Projects/fleet-config");
+  assert.equal(resolution.localRootUri, "/Users/example/Projects/fleet-config");
   assert.equal(resolution.mapped, true);
   assert.equal(resolution.source, "mac-home");
 });
@@ -35,10 +35,10 @@ test("resolves Linux project roots to the current macOS home checkout", async ()
 test("resolves explicit project root aliases before basename fallback", async () => {
   const resolution = await resolveLocalProjectPath("/mnt/shared/fleet-config", {
     cwd: "/",
-    env: { AGENTFLOW_PROJECT_PATH_MAP: "/mnt/shared=/Users/jasonmiller/Projects" },
-    homeDir: "/Users/jasonmiller",
-    exists: (target) => target === "/Users/jasonmiller/Projects/fleet-config"
+    env: { AGENTFLOW_PROJECT_PATH_MAP: "/mnt/shared=/Users/example/Projects" },
+    homeDir: "/Users/example",
+    exists: (target) => target === "/Users/example/Projects/fleet-config"
   });
-  assert.equal(resolution.localRootUri, "/Users/jasonmiller/Projects/fleet-config");
+  assert.equal(resolution.localRootUri, "/Users/example/Projects/fleet-config");
   assert.equal(resolution.source, "env");
 });

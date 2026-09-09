@@ -46,7 +46,7 @@ migrations:
       - Run and task storage retain immutable executor evidence and actual execution-host receipts.
     upgrade_steps:
       - Run agentflow migrate-storage to add executor snapshot columns.
-      - Register hulk-exact-revision only on the Heimdall Agent Workflow project configuration.
+      - Register ssh-exact-revision only on the a configured remote executor Agent Workflow project configuration.
       - Bind and canary typecheck, validate, then test stages one at a time.
     rollback_steps:
       - Remove workflow-stage executor bindings and the project executor_adapters registration.

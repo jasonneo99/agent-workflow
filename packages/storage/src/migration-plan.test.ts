@@ -12,13 +12,13 @@ test("storage migration plan infers a shared target host and redacts secrets", a
       OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000",
       OBJECT_STORAGE_BUCKET: "agentflow-artifacts"
     },
-    targetHost: "hulk.local",
+    targetHost: "shared-host.example",
     targetEnv: {}
   });
 
-  assert.match(plan.target.databaseUrl, /hulk\.local:15432/);
-  assert.match(plan.target.redisUrl, /hulk\.local:16379/);
-  assert.equal(plan.target.objectStorageEndpoint, "http://hulk.local:19000/");
+  assert.match(plan.target.databaseUrl, /shared-host\.example:15432/);
+  assert.match(plan.target.redisUrl, /shared-host\.example:16379/);
+  assert.equal(plan.target.objectStorageEndpoint, "http://shared-host.example:19000/");
   assert.equal(plan.target.objectStorageBucket, "agentflow-artifacts");
   assert.doesNotMatch(JSON.stringify(plan), /local-secret/);
 });
@@ -44,7 +44,7 @@ test("storage migration merge preview script is non-executable", () => {
 test("storage migration plan can use the shared storage host env fallback", async () => {
   const plan = await buildStorageMigrationPlan({
     sourceEnv: {
-      AGENTFLOW_SHARED_STORAGE_HOST: "100.78.183.30",
+      AGENTFLOW_SHARED_STORAGE_HOST: "192.0.2.10",
       DATABASE_URL: "postgres://agentflow:local-secret@127.0.0.1:15432/agentflow",
       REDIS_URL: "redis://127.0.0.1:16379",
       OBJECT_STORAGE_ENDPOINT: "http://127.0.0.1:19000",
@@ -53,9 +53,9 @@ test("storage migration plan can use the shared storage host env fallback", asyn
     targetEnv: {}
   });
 
-  assert.match(plan.target.databaseUrl, /100\.78\.183\.30:15432/);
-  assert.match(plan.target.redisUrl, /100\.78\.183\.30:16379/);
-  assert.equal(plan.target.objectStorageEndpoint, "http://100.78.183.30:19000/");
+  assert.match(plan.target.databaseUrl, /192\.0\.2\.10:15432/);
+  assert.match(plan.target.redisUrl, /192\.0\.2\.10:16379/);
+  assert.equal(plan.target.objectStorageEndpoint, "http://192.0.2.10:19000/");
 });
 
 test("storage migration plan blocks same source and target endpoints", async () => {
@@ -79,12 +79,12 @@ test("storage migration plan blocks copy into a non-empty target", async () => {
     sourceEnv: localSourceEnv(),
     targetEnv: sharedTargetEnv(),
     sourceChecks: reachableChecks("127.0.0.1"),
-    targetChecks: reachableChecks("100.78.183.30"),
+    targetChecks: reachableChecks("192.0.2.10"),
     verificationReport: verificationReport({
       sourceRows: { projects: 10, workflow_runs: 169, artifacts: 2001 },
       targetRows: { projects: 48, workflow_runs: 18, artifacts: 343 },
-      sourceRoots: ["/Users/jasonmiller/Projects/truckoutfittersunlimited"],
-      targetRoots: ["/Users/jasonmiller/Projects/truckoutfittersunlimited", "/Users/jasonmiller/Projects/media-ai-startup"]
+      sourceRoots: ["/Users/example/Projects/project-a"],
+      targetRoots: ["/Users/example/Projects/project-a", "/Users/example/Projects/project-b"]
     })
   });
 
@@ -99,12 +99,12 @@ test("storage migration merge preview summarizes mismatched local and shared sto
     targetEnv: sharedTargetEnv(),
     mode: "merge-preview",
     sourceChecks: reachableChecks("127.0.0.1"),
-    targetChecks: reachableChecks("100.78.183.30"),
+    targetChecks: reachableChecks("192.0.2.10"),
     verificationReport: verificationReport({
       sourceRows: { projects: 10, workflow_runs: 169, artifacts: 2001, memory_items: 13 },
       targetRows: { projects: 48, workflow_runs: 18, artifacts: 343 },
-      sourceRoots: ["/Users/jasonmiller/Projects/truckoutfittersunlimited"],
-      targetRoots: ["/Users/jasonmiller/Projects/truckoutfittersunlimited", "/Users/jasonmiller/Projects/media-ai-startup"]
+      sourceRoots: ["/Users/example/Projects/project-a"],
+      targetRoots: ["/Users/example/Projects/project-a", "/Users/example/Projects/project-b"]
     })
   });
 
@@ -112,8 +112,8 @@ test("storage migration merge preview summarizes mismatched local and shared sto
   assert.equal(plan.mode, "merge-preview");
   assert.equal(plan.mergePreview?.sourceRows, 2193);
   assert.equal(plan.mergePreview?.targetRows, 409);
-  assert.deepEqual(plan.mergePreview?.overlappingProjectRoots, ["/Users/jasonmiller/Projects/truckoutfittersunlimited"]);
-  assert.deepEqual(plan.mergePreview?.targetOnlyProjectRoots, ["/Users/jasonmiller/Projects/media-ai-startup"]);
+  assert.deepEqual(plan.mergePreview?.overlappingProjectRoots, ["/Users/example/Projects/project-a"]);
+  assert.deepEqual(plan.mergePreview?.targetOnlyProjectRoots, ["/Users/example/Projects/project-b"]);
   assert.match(plan.warnings.join("\n"), /dry-run\/preflight only/);
   assert.match(plan.mergePreview?.recommendations.join("\n") ?? "", /preserve target project ids/);
 });
@@ -129,9 +129,9 @@ function localSourceEnv(): NodeJS.ProcessEnv {
 
 function sharedTargetEnv(): NodeJS.ProcessEnv {
   return {
-    DATABASE_URL: "postgres://agentflow:shared-secret@100.78.183.30:15432/agentflow",
-    REDIS_URL: "redis://100.78.183.30:16379",
-    OBJECT_STORAGE_ENDPOINT: "http://100.78.183.30:19000",
+    DATABASE_URL: "postgres://agentflow:shared-secret@192.0.2.10:15432/agentflow",
+    REDIS_URL: "redis://192.0.2.10:16379",
+    OBJECT_STORAGE_ENDPOINT: "http://192.0.2.10:19000",
     OBJECT_STORAGE_BUCKET: "agentflow-artifacts"
   };
 }
@@ -184,12 +184,12 @@ function verificationReport(input: {
     },
     target: {
       endpoint: {
-        databaseUrl: "postgres://user:redacted@100.78.183.30:15432/agentflow",
-        redisUrl: "redis://100.78.183.30:16379",
-        objectStorageEndpoint: "http://100.78.183.30:19000/",
+        databaseUrl: "postgres://user:redacted@192.0.2.10:15432/agentflow",
+        redisUrl: "redis://192.0.2.10:16379",
+        objectStorageEndpoint: "http://192.0.2.10:19000/",
         objectStorageBucket: "agentflow-artifacts"
       },
-      checks: reachableChecks("100.78.183.30"),
+      checks: reachableChecks("192.0.2.10"),
       tables: targetTables,
       breakdowns: [],
       sampledProjectRoots: input.targetRoots,

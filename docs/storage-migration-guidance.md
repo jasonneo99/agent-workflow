@@ -1,7 +1,7 @@
 # Storage Migration Guidance
 
 ## Overview
-This document outlines the steps and considerations for migrating local agent workflow storage to a shared Hulk storage target.
+This document outlines the steps and considerations for migrating local agent workflow storage to a shared shared host storage target.
 
 ## Key Considerations
 - **Open-source/Local-first**: Ensure all tools and scripts remain open-source and prioritizes local infrastructure.

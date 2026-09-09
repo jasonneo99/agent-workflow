@@ -21,7 +21,7 @@ implementation support, code review, debugging, UX/security passes, evaluation
 evidence, provider comparison, context hygiene, and cost optimization around
 developer workflows. It is not currently a production product-agent runtime.
 
-It should not absorb private product intelligence from Tellara or any other
+It should not absorb private product intelligence from any consuming project or
 product. Domain prompts, customer workflows, scoring heuristics, schemas,
 production policy, and customer-derived learning should remain project-local or
 private.
@@ -109,7 +109,7 @@ These milestones organize the detailed roadmap items below:
      broader shared-agent or research-driven automation.
 
 8. **Multi-Project / Multi-Machine State Plane**
-   - Workstreams: shared storage migration, Hulk/LAN/Tailscale state plane,
+   - Workstreams: shared storage migration, shared host/LAN/Tailscale state plane,
      project alias merge, object artifact proof, offline fallback, background
      sync, cross-machine path mapping, and switch-over evidence.
    - Current status: shared storage can be proven as primary while localhost
@@ -601,7 +601,7 @@ foundation is complete.
 - [ ] Governed server mode.
   - Keep local-only CLI, MCP stdio, dashboard, worker, and storage as the default developer workflow.
   - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
-  - Treat shared storage as the state plane for server mode: a trusted LAN/Tailscale host such as Hulk can run Postgres, Redis, and MinIO while client machines keep using CLI, MCP, and IDE integrations.
+  - Treat shared storage as the state plane for server mode: a trusted LAN/Tailscale host such as shared host can run Postgres, Redis, and MinIO while client machines keep using CLI, MCP, and IDE integrations.
   - Keep the Agent Workflow control plane separate from backing services: clients talk to MCP/CLI or authenticated Agent Workflow HTTP endpoints, not directly to Postgres, Redis, MinIO, or project files.
   - Define auth, project registration, role enforcement, audit receipts, and network binding defaults before exposing workflow execution remotely.
   - Document LAN/shared deployment risks and provide secure defaults that do not expose dev Postgres, Redis, MinIO, or project files accidentally.
@@ -633,18 +633,16 @@ foundation is complete.
   - Done: add full source/target bucket enumeration with missing-key counts, sample deltas, and a dry-run object mirror plan.
   - Done: allow object artifact proof and bucket enumeration to fall back to Docker `minio/mc` when local MinIO Client is not installed, with verifier mode shown in CLI and dashboard output.
   - Done: have `bootstrap-storage` ensure the configured object-storage bucket exists through the same native-or-Docker MinIO verifier path.
-  - Done: add a Shared State Plane proof roll-up on Server Readiness and `/api/server-readiness` that combines Hulk/shared reachability, shared endpoint detection, post-merge evidence, storage parity, object proof, offline sync queue health, local fallback posture, and server controls.
+  - Done: add a Shared State Plane proof roll-up on Server Readiness and `/api/server-readiness` that combines shared host/shared reachability, shared endpoint detection, post-merge evidence, storage parity, object proof, offline sync queue health, local fallback posture, and server controls.
   - Done: add explicit approved object mirror execution for MinIO artifacts, dry-run-first, with approval, role, idempotency, and receipt controls before any real object copy.
   - Done: add a server mutation-control matrix in CLI, JSON API, and Server Readiness that distinguishes remote mutation endpoints from local dashboard operator actions and audits auth, role, idempotency, gates, and receipts.
   - Done: add dedicated MCP approval-call diagnostics that correlate `agentflow_approvals` invocations with launcher lifecycle events, stderr/output byte counts, exit status, timeout state, client reload guidance, and CLI fallback receipts without logging secrets or prompt/artifact bodies.
   - Done: detect missing or changed legacy agent/workflow definitions referenced by historical runs/tasks in the storage merge manifest, preserving current target definitions and surfacing readability warnings instead of overwriting shared bundle definitions blindly.
   - Done: add cross-machine project-root aliasing for local config reads, approved command cwd, approved file writes, stale-input checks, and dashboard readiness when shared storage contains host-specific project roots.
   - Done: classify approval-only lifecycle drift as a non-blocking warning when matching durable run, task, receipt, artifact, and memory evidence is already preserved.
-  - Done: record reviewed preserve-target canonical project decisions for the Tellara and JobSearchOS source/target project conflicts using backup evidence.
   - Done: allow shared-primary proof to pass with visible non-blocking warnings for refreshable index/cache rows and approval lifecycle drift.
-  - Done: regenerate shared-storage project indexes for Agent Workflow, Tellara, JobSearchOS, Truck Outfitters Unlimited, and the template project after the merge.
-  - Done: add a concise Server Readiness operator note showing Hulk/shared storage as the primary state plane, localhost storage as fallback-only, pending offline queue items, and non-blocking warning evidence.
-  - Done: finish the offline fallback background sync loop with opt-in daemon execution for insert-only reconciliation when Hulk and localhost fallback storage are both reachable.
+  - Done: add a concise Server Readiness operator note showing shared host/shared storage as the primary state plane, localhost storage as fallback-only, pending offline queue items, and non-blocking warning evidence.
+  - Done: finish the offline fallback background sync loop with opt-in daemon execution for insert-only reconciliation when shared host and localhost fallback storage are both reachable.
   - Done: add a dedicated Auth Hardening roll-up to Server Readiness and `/api/server-readiness`, summarizing server exposure, auth, origins, project-id routing, role enforcement, and remote mutation gates.
   - Done: add configurable request-size and per-actor/IP rate-limit controls to `/api/server-queue`, mutation-control reporting, Auth Hardening, docs, and `.env.example`.
   - Done: add audit-friendly remote request logs with redacted request envelopes, rate-limit decisions, auth outcomes, CLI/API inspection, Server Readiness visibility, docs, and `.env.example`.
@@ -658,7 +656,7 @@ foundation is complete.
 - [x] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
   - Done: derive shared storage endpoints from configured URLs or explicit host overrides.
-  - Done: add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as Hulk.
+  - Done: add a dry-run-first `storage-migrate` command for moving existing local enterprise storage into a shared LAN/Tailscale storage host such as shared host.
   - Done: write reviewed operator packages with Markdown, JSON, and a guarded shell script that requires explicit execution opt-in.
   - Done: add target count and compact fingerprint verification for projects, workflow runs, tasks, approvals, receipts, artifacts, memory, indexed files, index state, and registry definitions.
   - Done: block copy-empty-target plans when the destination already contains Agent Workflow rows, and direct users to merge preview instead.
@@ -678,9 +676,8 @@ foundation is complete.
   - Done: add a read-only `storage-project-conflicts` resolver preview that compares source/target project metadata, linked row counts, config hashes, and decision-record templates.
   - Done: add an operator decision recorder for canonical project choices so shared-primary proof can reference reviewed conflict decisions without overwriting target rows.
   - Done: add a dashboard action for reviewing and recording project-conflict decisions from Server Readiness.
-  - Done: add cross-machine project-root aliasing so approvals created on Hulk/Linux paths can resolve to this Mac's local project checkout for policy/autopilot checks and local execution cwd, while preserving stored `root_uri` audit history.
+  - Done: add cross-machine project-root aliasing so approvals created on shared host/Linux paths can resolve to this Mac's local project checkout for policy/autopilot checks and local execution cwd, while preserving stored `root_uri` audit history.
   - Done: classify approval-only lifecycle drift as a non-blocking warning when durable outcome rows are preserved, and keep refreshable project index/cache conflicts visible without blocking shared-primary proof.
-  - Done: record reviewed preserve-target decisions for Tellara and JobSearchOS canonical project conflicts.
   - Done: regenerate shared-storage project indexes for the projects shown in warning samples.
   - Done: publish the shared-primary/fallback operator note on Server Readiness and in the server-mode/user guide docs.
   - Done: finish the offline fallback background sync loop and dashboard reconciliation state, with opt-in daemon execution mode for insert-only sync.

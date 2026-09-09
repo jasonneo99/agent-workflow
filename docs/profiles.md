@@ -46,33 +46,6 @@ Check definitions without service checks:
 npm run doctor -- --simple
 ```
 
-## Project-Specific Profiles
-
-Project-specific profiles can prefill policy, context includes/excludes, schedules, and local guardrails for a known project. They are optional; generic projects should use `enterprise` or `simple`.
-
-## Truck Outfitters Unlimited
-
-Truck Outfitters mode is a production-site profile for `/Users/jasonmiller/Projects/truckoutfittersunlimited`.
-
-Initialize the project:
-
-```bash
-npm run init-project -- --project /Users/jasonmiller/Projects/truckoutfittersunlimited --profile truckoutfitters
-```
-
-Preview an orchestration plan:
-
-```bash
-npm run agentflow -- orchestrate \
-  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
-  --task "Review the production site UX, SEO, mobile experience, and launch risks" \
-  --dry-run
-```
-
-Run the orchestration:
-
-```bash
-npm run agentflow -- orchestrate \
-  --project /Users/jasonmiller/Projects/truckoutfittersunlimited \
-  --task "Review the production site UX, SEO, mobile experience, and launch risks"
-```
+Project-specific profiles belong in the consuming project's ignored or private
+configuration. The published package includes only the reusable `enterprise`
+and `simple` profiles.

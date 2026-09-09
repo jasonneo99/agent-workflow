@@ -344,7 +344,6 @@ and MCP tool list independently of the Codex private stdio connection.
 - [Roadmap](docs/roadmap.md): shared-platform direction and next implementation phases
 - [Evaluation Harness](docs/evaluations.md): provider, tier, and prompt comparison suites
 - [Open Source Boundary](docs/open-source-boundary.md): what belongs in the framework versus private product agent engines
-- [Comparison, Gap, And Synergy](docs/comparison-gap-synergy.md): where shared platform IP helps and where product IP should stay private
 - [Autonomy Policy](docs/autonomy.md): automation levels and guardrails
 
 ## Enterprise Storage
@@ -361,10 +360,10 @@ npm run doctor
 To preview a local-to-shared storage move, use read-only migration planning:
 
 ```bash
-npm run storage-migrate -- --target-host 100.78.183.30 --mode merge-preview --write-plan
+npm run storage-migrate -- --target-host ${AGENTFLOW_SHARED_STORAGE_HOST} --mode merge-preview --write-plan
 npm run agentflow -- storage-merge-manifest \
   --source-database-url postgres://agentflow:agentflow@127.0.0.1:15432/agentflow \
-  --target-database-url postgres://agentflow:agentflow@100.78.183.30:15432/agentflow \
+  --target-database-url postgres://agentflow:agentflow@${AGENTFLOW_SHARED_STORAGE_HOST}:15432/agentflow \
   --write
 ```
 
@@ -413,7 +412,7 @@ stale imports, missing backups, or object bucket parity proof remain.
 If shared storage is unavailable, record local fallback work before switching:
 
 ```bash
-npm run offline-fallback -- --record start-local --note "Hulk unavailable; start localhost fallback"
+npm run offline-fallback -- --record start-local --note "shared host unavailable; start localhost fallback"
 npm run offline-fallback -- --record offline-run --project /path/to/project --run-id <run-id>
 npm run offline-fallback -- --record sync-back --note "Merge localhost fallback rows back to shared storage"
 npm run offline-sync

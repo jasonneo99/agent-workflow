@@ -14,7 +14,6 @@ Portable Agent Workflows is a local-first developer workflow kit for reusable ag
 
 - Prefer model-portable provider adapters and BYO model configuration over environment-specific assumptions.
 - Optimize for developer cost savings, compact context, durable receipts, and useful artifacts.
-- Keep open-source Agent Workflow focused on local developer workflows; avoid adding Tellara proprietary product logic.
 - Dashboard and MCP features should make workflows easy to run from Codex, Cursor, VS Code, or a terminal.
 - Keep durable preferences here instead of repeating them in every prompt.
 

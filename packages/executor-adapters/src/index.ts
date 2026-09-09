@@ -20,7 +20,7 @@ export interface ExecutorEnvelope {
 }
 
 export interface ExecutorSnapshot extends ExecutorEnvelope {
-  adapterType: "hulk-exact-revision";
+  adapterType: "ssh-exact-revision";
   requestedHost: string;
   localFallback: "off" | "explicit";
   snapshotHash: string;
@@ -54,7 +54,7 @@ export function createExecutorSnapshots(input: {
     if (!stage.executor) continue;
     const registration = input.project.execution.executor_adapters?.[stage.executor.id];
     if (!registration) throw new Error(`Unknown executor adapter: ${stage.executor.id}`);
-    if (stage.executor.id !== "hulk-exact-revision") throw new Error(`Unknown executor adapter: ${stage.executor.id}`);
+    if (stage.executor.id !== "ssh-exact-revision") throw new Error(`Unknown executor adapter: ${stage.executor.id}`);
     if (!registration.projects.includes(input.project.project.name)) {
       throw new Error(`Executor ${stage.executor.id} is not registered for project ${input.project.project.name}.`);
     }
@@ -99,7 +99,7 @@ export async function executeExecutorSnapshot(
   } = {}
 ): Promise<ExecutorResult> {
   assertSnapshot(snapshot);
-  const executable = options.executable ?? path.join(homedir(), ".local", "bin", "fleet-hulk-agent-workflow-job");
+  const executable = options.executable ?? path.join(homedir(), ".local", "bin", "fleet-sharedHost-agent-workflow-job");
   try {
     const result = await spawnBounded(executable, [snapshot.operation, snapshot.revision], snapshot.timeoutMs, snapshot.maxOutputChars);
     const { stdoutTail, ...bounded } = result;
@@ -119,12 +119,12 @@ export async function executeExecutorSnapshot(
 }
 
 export function assertSnapshot(snapshot: ExecutorSnapshot): void {
-  if (snapshot.adapterType !== "hulk-exact-revision" || snapshot.executorId !== "hulk-exact-revision") {
+  if (snapshot.adapterType !== "ssh-exact-revision" || snapshot.executorId !== "ssh-exact-revision") {
     throw new Error(`Unknown executor adapter: ${snapshot.executorId}`);
   }
   if (snapshot.registeredProject !== "agent-workflow") throw new Error(`Unregistered executor project: ${snapshot.registeredProject}`);
   if (!path.isAbsolute(snapshot.registeredProjectRoot)) throw new Error("Executor project root must be absolute.");
-  if (snapshot.requestedHost !== "hulk") throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
+  if (snapshot.requestedHost !== "sharedHost") throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
   if (!EXECUTOR_OPERATIONS.includes(snapshot.operation)) throw new Error(`Unregistered executor operation: ${snapshot.operation}`);
   if (!/^[0-9a-f]{40}$/.test(snapshot.revision)) throw new Error("Executor revision must be a full lowercase Git commit ID.");
   if (!Number.isInteger(snapshot.timeoutMs) || snapshot.timeoutMs < 1 || snapshot.timeoutMs > 3_600_000) throw new Error("Executor timeout is outside the registered bounds.");
@@ -138,7 +138,7 @@ export function assertSnapshot(snapshot: ExecutorSnapshot): void {
 export function assertExecutorRegistration(snapshot: ExecutorSnapshot, project: ProjectConfig, projectRootUri: string): void {
   const registration = project.execution.executor_adapters?.[snapshot.executorId];
   if (!registration || registration.type !== snapshot.adapterType) throw new Error(`Unknown executor adapter: ${snapshot.executorId}`);
-  if (registration.host !== "hulk" || snapshot.requestedHost !== registration.host) throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
+  if (registration.host !== "sharedHost" || snapshot.requestedHost !== registration.host) throw new Error(`Unregistered executor host: ${snapshot.requestedHost}`);
   if (!registration.projects.includes(snapshot.registeredProject) || snapshot.registeredProject !== project.project.name) throw new Error(`Unregistered executor project: ${snapshot.registeredProject}`);
   if (!registration.operations.includes(snapshot.operation)) throw new Error(`Unregistered executor operation: ${snapshot.operation}`);
   if (!path.isAbsolute(registration.project_root) || path.resolve(registration.project_root) !== path.resolve(projectRootUri) || snapshot.registeredProjectRoot !== path.resolve(projectRootUri)) {
@@ -178,7 +178,7 @@ async function spawnBounded(executable: string, argv: string[], timeoutMs: numbe
 
 function extractArtifactReference(stdout: string): string | null {
   const job = stdout.match(/^job=([^\r\n]+)$/m)?.[1];
-  return job ? `hulk-job://${job}` : null;
+  return job ? `sharedHost-job://${job}` : null;
 }
 
 function truncate(value: string, limit: number): string {

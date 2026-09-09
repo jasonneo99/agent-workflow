@@ -34,7 +34,7 @@ Product-specific agent engines should keep their private intelligence outside th
 When a private project teaches us something useful, generalize the lesson before contributing it here:
 
 - Share the pattern, not the private example.
-- Use neutral names such as `media-platform`, `commerce-site`, or `example-project` instead of customer or product details.
+- Use neutral names such as `project-a`, `project-b`, or `example-project` instead of customer or product details.
 - Convert private prompts into generic agent contracts and output requirements.
 - Replace product-specific scores with observable categories such as quality, fallback rate, latency, cost tier, and feedback rating.
 - Keep screenshots, logs, exports, and tuning overlays out of commits unless they are scrubbed examples.

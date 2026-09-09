@@ -97,7 +97,7 @@ Codex app or task so Codex creates a fresh private stdio subprocess.
 - `agentflow_run_workflow`: run a workflow and process worker stages by default; set `queueOnly=true` only when you want to leave work queued for a separate worker. It incrementally indexes by default unless `skipIndex` is true.
 - `agentflow_run_and_watch`: incrementally index, queue, process, export, and summarize a workflow run; pass `fullIndex` for a clean context refresh.
 - `agentflow_agent_task`: incrementally index, run one specialist agent directly, and export the result.
-- `agentflow_preset`: run a named workflow preset such as `tellara-ux-pass`.
+- `agentflow_preset`: run a named workflow preset such as `project-local-preset`.
 - `agentflow_orchestrate`: route a natural-language task to agents and workflows.
 - `agentflow_summarize_run`: print a decision-ready run summary.
 - `agentflow_schedule`: run due project schedules or dry-run due schedules.

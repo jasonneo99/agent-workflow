@@ -131,7 +131,7 @@ test("bounded ReAct loop receipts mark actions beyond max iterations", () => {
   assert.equal(receipt.stopReason, "max_iterations_exceeded");
 });
 
-const executorTarget = `hulk-exact-revision/typecheck@hulk#${"a".repeat(40)}:/registered/root`;
+const executorTarget = `ssh-exact-revision/typecheck@sharedHost#${"a".repeat(40)}:/registered/root`;
 
 function approvalProject(withRule = false) {
   return projectConfigSchema.parse({

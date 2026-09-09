@@ -24,6 +24,9 @@
   },
   "files": [
     "dist/",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "!dist/**/*.test.js.map",
     "agents/",
     "workflows/",
     "templates/",
@@ -42,7 +45,6 @@
     "scripts/run-agent-workflow-mcp.sh",
     "scripts/uninstall-launchagent.mjs",
     "agent-workflow.bundle.json",
-    "agent-workflow.bundle.sig.json",
     ".env.example",
     "README.md",
     "SECURITY.md",
