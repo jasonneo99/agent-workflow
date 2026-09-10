@@ -14,6 +14,7 @@ const project: ProjectConfig = {
   project: {
     name: "Incremental Test",
     summary: "Project used by indexer tests.",
+    roadmap_path: "ROADMAP.md",
     autonomy: 2,
     default_workflows: ["maintain-context"]
   },

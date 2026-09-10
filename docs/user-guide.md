@@ -421,6 +421,14 @@ Write a tailored `.agent-workflow/project.yaml` and support files:
 npm run onboard-project -- --project /path/to/project --profile enterprise --write
 ```
 
+Onboarding requires a project roadmap. It preserves the configured roadmap or
+the first existing `ROADMAP.md`, `docs/roadmap.md`, or `roadmap.md`. If none
+exists, onboarding creates a blank `ROADMAP.md` starter and records its
+project-relative path as `project.roadmap_path` in
+`.agent-workflow/project.yaml`. The learning daemon examines unchecked roadmap
+tasks and writes advisory next-work suggestions under
+`.agent-workflow/learning/`; it does not start that work automatically.
+
 This writes `AGENTS.md` when missing plus `.agent-workflow/project.yaml`, `context.md`, `commands.md`, `decisions.md`, and `schedules.yaml`. Existing files are skipped unless `--force` is provided.
 It also records `.agent-workflow/bundle-state.json`, which gives future
 `bundle-upgrade-preview` runs a local baseline for migration notes and checksum

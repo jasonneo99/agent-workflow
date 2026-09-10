@@ -13,6 +13,7 @@
       "properties": {
         "name": { "type": "string", "minLength": 1 },
         "summary": { "type": "string", "default": "" },
+        "roadmap_path": { "type": "string", "minLength": 1, "default": "ROADMAP.md" },
         "default_workflows": { "type": "array", "items": { "type": "string" }, "default": [] },
         "autonomy": { "$ref": "#/$defs/autonomy" }
       }

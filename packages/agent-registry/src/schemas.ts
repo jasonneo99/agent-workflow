@@ -195,6 +195,7 @@ export const projectConfigSchema = z.object({
   project: z.object({
     name: z.string().min(1),
     summary: z.string().default(""),
+    roadmap_path: z.string().min(1).default("ROADMAP.md"),
     default_workflows: z.array(z.string()).default([]),
     autonomy: autonomyLevelSchema.default(2)
   }),

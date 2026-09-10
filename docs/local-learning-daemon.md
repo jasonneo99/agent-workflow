@@ -1,5 +1,18 @@
 # Local Learning Daemon
 
+## Roadmap suggestions
+
+Every daemon tick reads the project-relative roadmap configured as
+`project.roadmap_path`. Unchecked Markdown tasks (`- [ ] ...`) become advisory,
+ordered next-work suggestions in:
+
+- `.agent-workflow/learning/roadmap-suggestions.json`
+- `.agent-workflow/learning/roadmap-suggestions.md`
+
+The daemon records the roadmap path, status, open-item count, and suggestion
+count in its heartbeat. It never edits the roadmap or executes a suggested
+item; a user or workflow must explicitly select the work.
+
 The local learning daemon is a proposed Agent Workflow background process that
 continually improves developer workflows from local evidence while keeping
 project data private and human control intact.

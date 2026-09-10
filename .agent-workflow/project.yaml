@@ -5,6 +5,7 @@ project:
     tooling, dashboard controls, enterprise local storage, and project-local
     context so Codex, Cursor, VS Code, Claude Code, and other tools can reuse
     the same development agents without copying large prompts into each repo.
+  roadmap_path: docs/roadmap.md
   default_workflows:
     - build-feature
     - review-pr

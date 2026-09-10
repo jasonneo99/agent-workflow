@@ -7,6 +7,7 @@ Project-specific context lives in `.agent-workflow/`. Reusable agents, workflows
 ## Agent Workflow Rules
 
 - Read `.agent-workflow/project.yaml` before choosing a workflow.
+- Use the configured `project.roadmap_path` as the source of truth for planned project work.
 - Use `.agent-workflow/context.md` for product and architecture context.
 - Use `.agent-workflow/commands.md` for setup, test, build, and release commands.
 - Use `.agent-workflow/decisions.md` for durable project decisions.

@@ -1,6 +1,7 @@
 project:
   name: Example Project
   summary: Replace this with a short description of the project and its users.
+  roadmap_path: ROADMAP.md
   default_workflows:
     - build-feature
     - review-pr

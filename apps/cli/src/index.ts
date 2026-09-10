@@ -113,6 +113,7 @@ import type { ModelTier } from "../../../packages/model-providers/src/types.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
+import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -989,11 +990,17 @@ program
     const projectDir = path.resolve(process.cwd(), options.project);
     const templateDir = path.join(rootDir, "templates", templateNameForProfile(options.profile));
     const hadBundleState = await exists(path.join(projectDir, ".agent-workflow", "bundle-state.json"));
+    const existingRoadmap = await discoverProjectRoadmap(projectDir);
     const result = await copyTemplate(templateDir, projectDir, Boolean(options.force));
+    const roadmap = existingRoadmap.exists
+      ? { relativePath: existingRoadmap.relativePath, created: false }
+      : await ensureProjectRoadmap(projectDir);
+    await ensureConfiguredRoadmapPath(projectDir, roadmap.relativePath);
     const bundleState = await writeProjectBundleState(projectDir, Boolean(options.force) || !hadBundleState);
     console.log(`Initialized ${options.profile} agent workflow files in ${projectDir}`);
     console.log(`Wrote ${result.written}; skipped ${result.skipped}.`);
     console.log(`${bundleState.status === "written" ? "Wrote" : "Skipped"} ${bundleState.relativePath}.`);
+    console.log(`${roadmap.created ? "Created" : "Using"} roadmap ${roadmap.relativePath}.`);
     console.log("");
     console.log("Next steps:");
     console.log(`  npm run index-project -- --project ${projectDir}`);
@@ -3891,6 +3898,8 @@ program
         agentImprovementApplied?: number;
         agentImprovementApplySkipped?: number;
         workflowShapeRecommendations?: number;
+        roadmapOpenItems?: number;
+        roadmapSuggestions?: number;
         approvalAutopilotEnabled?: boolean;
         approvalAutopilotMaxRisk?: ApprovalAutopilotRisk;
         approvalAutopilotExecuted?: number;
@@ -3917,6 +3926,10 @@ program
         limit,
         ticks,
         proposals: aggregate?.proposals ?? update?.proposalSet.proposals.length ?? lastStatus?.proposals ?? 0,
+        roadmapPath: update?.roadmap.roadmapPath ?? lastStatus?.roadmapPath,
+        roadmapStatus: update?.roadmap.status ?? lastStatus?.roadmapStatus,
+        roadmapOpenItems: aggregate?.roadmapOpenItems ?? update?.roadmap.openItems ?? lastStatus?.roadmapOpenItems ?? 0,
+        roadmapSuggestions: aggregate?.roadmapSuggestions ?? update?.roadmap.suggestions.length ?? lastStatus?.roadmapSuggestions ?? 0,
         inboxItems: aggregate?.inboxItems ?? update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
         applicationActions: aggregate?.applicationActions ?? update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
         autonomousAppliedActions: aggregate?.autonomousAppliedActions ?? update?.autonomousApplication.appliedActions ?? lastStatus?.autonomousAppliedActions ?? 0,
@@ -3981,6 +3994,8 @@ program
         let agentImprovementApplied = 0;
         let agentImprovementApplySkipped = 0;
         let workflowShapeRecommendations = 0;
+        let roadmapOpenItems = 0;
+        let roadmapSuggestions = 0;
         let approvalAutopilotExecuted = 0;
         let approvalAutopilotSkipped = 0;
         let approvalBacklogWarnings = 0;
@@ -4009,6 +4024,8 @@ program
             agentImprovementApplied += update.agentImprovementApply.appliedIds.length;
             agentImprovementApplySkipped += update.agentImprovementApply.skippedIds.length;
             workflowShapeRecommendations += update.workflowShape?.recommendations.length ?? 0;
+            roadmapOpenItems += update.roadmap.openItems;
+            roadmapSuggestions += update.roadmap.suggestions.length;
             autonomousAppliedActions += update.approvalAutopilot.executed;
             approvalAutopilotExecuted += update.approvalAutopilot.executed;
             approvalAutopilotSkipped += update.approvalAutopilot.skipped;
@@ -4038,6 +4055,8 @@ program
             agentImprovementApplied,
             agentImprovementApplySkipped,
             workflowShapeRecommendations,
+            roadmapOpenItems,
+            roadmapSuggestions,
           approvalAutopilotEnabled,
           approvalAutopilotMaxRisk,
           approvalAutopilotExecuted,
@@ -4060,7 +4079,7 @@ program
           }
         }
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -6520,6 +6539,10 @@ type LearningDaemonHeartbeat = {
   limit: number;
   ticks: number;
   proposals: number;
+  roadmapPath?: string;
+  roadmapStatus?: RoadmapSuggestionReport["status"];
+  roadmapOpenItems?: number;
+  roadmapSuggestions?: number;
   inboxItems: number;
   applicationActions: number;
   autonomousAppliedActions?: number;
@@ -22448,8 +22471,9 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
-}): Promise<{ report: LearningReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
+  const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir);
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
   const autonomousApplyMaxRisk = await learningAutonomousApplyMaxRisk(input.projectDir);
@@ -22517,7 +22541,30 @@ async function runLearningDaemonTick(input: {
     }
   }
   const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
-  return { report, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
+  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
+}
+
+async function loadAndWriteRoadmapSuggestions(projectDir: string): Promise<RoadmapSuggestionReport> {
+  let roadmapPath: string;
+  try {
+    const config = await loadProjectConfig(projectDir);
+    roadmapPath = config.project.roadmap_path;
+  } catch {
+    roadmapPath = (await discoverProjectRoadmap(projectDir)).relativePath;
+  }
+  const absolutePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: roadmapPath, label: "project.roadmap_path" });
+  let markdown: string | undefined;
+  try {
+    markdown = await fs.readFile(absolutePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  const report = buildRoadmapSuggestionReport({ projectRootUri: projectDir, roadmapPath, markdown });
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  await fs.writeFile(path.join(learningDir, "roadmap-suggestions.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "roadmap-suggestions.md"), `${formatRoadmapSuggestionReport(report)}\n`, "utf8");
+  return report;
 }
 
 async function runLearningDaemonMcpCleanup(projectDir: string): Promise<RuntimeMcpCleanupResult> {
@@ -27287,6 +27334,7 @@ type DashboardGraphHandoffViewResult =
 
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
+  liveStageRuns: DashboardWorkflowStageRun[];
   runScope: "project" | "all-projects";
   runStatusFilter: string;
   runWarnings: string[];
@@ -27322,6 +27370,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   const safeRunLimit = Math.min(Math.max(runLimit, 0), 250);
   const runWarnings: string[] = [];
   let runs: DashboardWorkflowGraphRun[] = [];
+  let liveStageRuns: DashboardWorkflowStageRun[] = [];
   let stageHealth: DashboardWorkflowStageHealth[] = [];
   let focusedStageRuns: DashboardWorkflowStageRun[] = [];
   let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
@@ -27340,6 +27389,10 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
         .slice(0, safeRunLimit)
         .map(dashboardWorkflowGraphRunFromStorage);
       stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
+      const activeRunIds = runs.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id);
+      if (activeRunIds.length) {
+        liveStageRuns = (await Promise.all(report.stages.map((stage) => listWorkflowStageRunsForRuns({ runIds: activeRunIds, stageId: stage.id })))).flat();
+      }
       if (focusedStageId) {
         focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
         focusedStageFixRuns = historyRuns
@@ -27370,7 +27423,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   } catch (error) {
     runWarnings.push(`Graph presets unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { ...report, runs, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
+  return { ...report, runs, liveStageRuns, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
 }
 
 function dashboardWorkflowGraphRunFromStorage(run: Awaited<ReturnType<typeof listWorkflowRuns>>[number]): DashboardWorkflowGraphRun {
@@ -27596,7 +27649,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const visual = view === "mind-map"
     ? `<section class="panel"><h2>Mind Map</h2>${renderWorkflowMindMapHtml(report, filteredStages)}</section>`
     : view === "network"
-      ? `<section class="panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation, (stageId) => workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", stage: stageId }), focusedStageId)}</section>`
+      ? `<section class="panel network-panel"><h2>Network Map</h2>${renderNetworkOrientationActions(orientation, networkHorizontalHref, networkRadialHref)}${renderWorkflowNetworkHtml(report, filteredStages, orientation, (stageId) => workflowGraphDashboardHref(report.workflow.id, projectValue, policyValue, { ...baseHrefOptions, view: "network", stage: stageId }), focusedStageId)}</section>`
       : `<section class="panel"><h2>Connection Graph</h2><div class="graph-flow">${stageCards}</div></section>`;
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
@@ -27906,7 +27959,7 @@ function workflowGraphApiHref(
 }
 
 function renderNetworkOrientationActions(orientation: "horizontal" | "radial", horizontalHref: string, radialHref: string): string {
-  return `<div class="network-toolbar"><div><strong>Network Orientation</strong><span>Horizontal is best for stage progression. Radial web is best for dependency shape.</span></div><div class="segmented-actions compact-segments" role="group" aria-label="Network orientation"><a class="segment ${orientation === "horizontal" ? "active" : ""}" href="${escapeHtml(horizontalHref)}"><strong>Horizontal</strong><span>Layered</span></a><a class="segment ${orientation === "radial" ? "active" : ""}" href="${escapeHtml(radialHref)}"><strong>Radial</strong><span>Web</span></a></div></div>`;
+  return `<div class="network-toolbar"><div><strong>Network Orientation</strong><span>Horizontal is best for stage progression. Radial web is best for dependency shape.</span></div><div class="network-toolbar-actions"><div class="segmented-actions compact-segments" role="group" aria-label="Network orientation"><a class="segment ${orientation === "horizontal" ? "active" : ""}" href="${escapeHtml(horizontalHref)}"><strong>Horizontal</strong><span>Layered</span></a><a class="segment ${orientation === "radial" ? "active" : ""}" href="${escapeHtml(radialHref)}"><strong>Radial</strong><span>Web</span></a></div><button type="button" class="network-fullscreen-toggle secondary compact-button" aria-pressed="false">${dashboardIcon("maximize")}Full screen</button></div></div>`;
 }
 
 function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, project: string, clearStageHref: string): string {
@@ -28312,7 +28365,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     if (!isRadial && node.kind === "run" && node.labelX !== undefined) node.labelX = node.x + node.r + 10;
   });
 
-  const linkSvg = links.map((link) => {
+  const linkSvg = links.map((link, index) => {
     const from = nodeById.get(link.from);
     const to = nodeById.get(link.to);
     if (!from || !to) return "";
@@ -28326,11 +28379,21 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const controlOneY = isRadial ? from.y + (centerY - from.y) * pull : from.y;
     const controlTwoX = isRadial ? to.x + (centerX - to.x) * pull : midX;
     const controlTwoY = isRadial ? to.y + (centerY - to.y) * pull : midY;
-    return `<path${className} d="M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} C ${formatSvgNumber(controlOneX)} ${formatSvgNumber(controlOneY)}, ${formatSvgNumber(controlTwoX)} ${formatSvgNumber(controlTwoY)}, ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}" stroke-width="${link.width}"${dash}></path>`;
+    const pathData = `M ${formatSvgNumber(from.x)} ${formatSvgNumber(from.y)} C ${formatSvgNumber(controlOneX)} ${formatSvgNumber(controlOneY)}, ${formatSvgNumber(controlTwoX)} ${formatSvgNumber(controlTwoY)}, ${formatSvgNumber(to.x)} ${formatSvgNumber(to.y)}`;
+    const delay = formatSvgNumber((index % 9) * 0.34);
+    const duration = formatSvgNumber(2.4 + (index % 5) * 0.22);
+    const animateSignal = link.className !== "outcome" || index % 18 === 0;
+    return `<g class="network-synapse" data-from="${escapeHtml(link.from)}" data-to="${escapeHtml(link.to)}" style="--signal-delay:${delay}s">
+      <path${className} d="${pathData}" stroke-width="${link.width}"${dash}></path>
+      ${animateSignal ? `<path class="network-signal-trail" d="${pathData}" pathLength="1"></path>
+      <circle class="network-packet" r="3.6">
+        <animateMotion dur="${duration}s" begin="${delay}s" repeatCount="indefinite" path="${pathData}"></animateMotion>
+      </circle>` : ""}
+    </g>`;
   }).join("");
   const nodeSvg = [...nodeById.values()].map((node) => {
     const nodeClasses = ["network-node", `network-${node.kind.replace(/\s+/g, "-")}`, node.focused ? "network-focused" : ""].filter(Boolean).join(" ");
-    const body = `<g class="${escapeHtml(nodeClasses)}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
+    const body = `<g class="${escapeHtml(nodeClasses)}" data-node-id="${escapeHtml(node.id)}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
       <title>${escapeHtml(node.title)}</title>
       ${node.kind === "stage" && node.stageHealth ? renderStageHealthRing(node.r, node.stageHealth) : ""}
       <circle r="${node.r}"></circle>
@@ -28388,7 +28451,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         </filter>
       </defs>`;
   return `<div class="network-shell">
-    <svg class="network-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Workflow network map for ${escapeHtml(report.workflow.name)}">
+    <div class="network-canvas-scroll" tabindex="0" aria-label="Scrollable animated workflow canvas">
+    <svg class="network-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Animated workflow network map for ${escapeHtml(report.workflow.name)}">
       ${networkDefs}
       <rect class="network-backdrop" width="${width}" height="${height}" rx="0"></rect>
       <rect class="network-grid" width="${width}" height="${height}" rx="0"></rect>
@@ -28402,9 +28466,147 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       <g class="network-nodes">${nodeSvg}</g>
       <g>${labelSvg}</g>
     </svg>
+    </div>
+    <div class="network-playback" aria-label="Workflow signal playback">
+      <div class="network-playback-actions">
+        <button type="button" class="network-replay secondary compact-button">${dashboardIcon("refresh")}Replay request</button>
+        <button type="button" class="network-pause secondary compact-button" aria-pressed="false">${dashboardIcon("pause")}Pause</button>
+      </div>
+      <div class="network-timeline" aria-live="polite">
+        <span class="network-live-dot"></span>
+        <strong class="network-event-title">Request received</strong>
+        <span class="network-event-detail">Routing through ${formatNumber(stages.length)} workflow stages</span>
+      </div>
+      <div class="network-phases" aria-label="Request progress">
+        <span class="active">Request</span><span>Planning</span><span>Agents</span><span>Verification</span><span>Complete</span>
+      </div>
+    </div>
     <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span><i class="legend-health-completed"></i>stage completed</span><span><i class="legend-health-failed"></i>stage failed</span><span><i class="legend-health-active"></i>stage queued/running</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
     <p class="network-health-summary">${escapeHtml(stageHealthSummary)}</p>
     ${explainer}
+    <script>
+      (() => {
+        const shell = document.currentScript?.closest('.network-shell');
+        const svg = shell?.querySelector('.network-map');
+        const replay = shell?.querySelector('.network-replay');
+        const pause = shell?.querySelector('.network-pause');
+        const panel = shell?.closest('.network-panel');
+        const fullscreen = panel?.querySelector('.network-fullscreen-toggle');
+        const title = shell?.querySelector('.network-event-title');
+        const detail = shell?.querySelector('.network-event-detail');
+        const phases = [...(shell?.querySelectorAll('.network-phases span') || [])];
+        if (!shell || !svg || !replay || !pause || !title || !detail) return;
+        const fullscreenKey = 'agentflow.network.fullscreen';
+        const setFullscreen = (active) => {
+          if (!panel || !fullscreen) return;
+          panel.classList.toggle('is-fullscreen', active);
+          document.body.classList.toggle('network-fullscreen-open', active);
+          fullscreen.setAttribute('aria-pressed', String(active));
+          fullscreen.lastChild.textContent = active ? 'Exit full screen' : 'Full screen';
+          try { window.sessionStorage.setItem(fullscreenKey, active ? '1' : '0'); } catch {}
+        };
+        fullscreen?.addEventListener('click', () => setFullscreen(!panel?.classList.contains('is-fullscreen')));
+        document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && panel?.classList.contains('is-fullscreen')) setFullscreen(false); });
+        try { if (window.sessionStorage.getItem(fullscreenKey) === '1') setFullscreen(true); } catch {}
+        const nodeElements = [...shell.querySelectorAll('[data-node-id]')];
+        const synapses = [...shell.querySelectorAll('.network-synapse')];
+        const initialRunIds = new Set(nodeElements.map((node) => node.dataset.nodeId).filter((id) => id?.startsWith('run:')).map((id) => id.slice(4)));
+        const apiUrl = new URL(window.location.href);
+        apiUrl.pathname = '/api/workflow-graph';
+        apiUrl.searchParams.delete('view');
+        apiUrl.searchParams.delete('orientation');
+        apiUrl.searchParams.delete('capture');
+        let pollTimer = 0;
+        let paused = false;
+        let latestReport = null;
+        const showEvent = (index, heading, message) => {
+          title.textContent = heading;
+          detail.textContent = message;
+          phases.forEach((phase, phaseIndex) => phase.classList.toggle('active', phaseIndex <= index));
+          shell.dataset.phase = String(index);
+        };
+        const setNodeState = (nodeId, state) => {
+          const node = nodeElements.find((item) => item.dataset.nodeId === nodeId);
+          if (!node) return;
+          ['live-firing', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className));
+          if (state) node.classList.add('live-' + state);
+        };
+        const renderLiveReport = (report) => {
+          latestReport = report;
+          shell.classList.add('live-connected');
+          nodeElements.forEach((node) => ['live-firing', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className)));
+          synapses.forEach((synapse) => synapse.classList.remove('live-active', 'live-complete'));
+          const runs = Array.isArray(report?.runs) ? report.runs : [];
+          const activeRun = runs.find((run) => run.status === 'running') || runs.find((run) => run.status === 'queued');
+          const latestRun = activeRun || runs[0];
+          if (activeRun && !initialRunIds.has(activeRun.id)) {
+            window.location.reload();
+            return;
+          }
+          const liveRows = (Array.isArray(report?.liveStageRuns) ? report.liveStageRuns : []).filter((row) => row.runId === activeRun?.id);
+          const stageOrder = new Map((report?.stages || []).map((stage, index) => [stage.id, index]));
+          const currentRow = liveRows.find((row) => row.taskStatus === 'running') || liveRows.find((row) => row.taskStatus === 'queued');
+          liveRows.forEach((row) => {
+            const state = row.taskStatus === 'running' ? 'firing' : row.taskStatus === 'completed' ? 'complete' : row.taskStatus === 'failed' ? 'failed' : row.taskStatus === 'queued' ? 'queued' : '';
+            setNodeState('stage:' + row.stageId, state);
+            setNodeState('agent:' + row.agentId, state);
+          });
+          if (latestRun) setNodeState('run:' + latestRun.id, activeRun ? (activeRun.status === 'running' ? 'firing' : 'queued') : latestRun.status === 'completed' ? 'complete' : latestRun.status === 'failed' ? 'failed' : '');
+          if (activeRun) setNodeState('workflow', 'firing');
+          const activeIds = new Set(activeRun ? ['workflow', 'run:' + activeRun.id] : []);
+          if (currentRow) {
+            activeIds.add('stage:' + currentRow.stageId);
+            activeIds.add('agent:' + currentRow.agentId);
+          }
+          synapses.forEach((synapse) => {
+            const from = synapse.dataset.from;
+            const to = synapse.dataset.to;
+            if (activeIds.has(from) && activeIds.has(to)) synapse.classList.add('live-active');
+            if (liveRows.some((row) => row.taskStatus === 'completed' && ((from === 'stage:' + row.stageId && to === 'agent:' + row.agentId) || (from === 'workflow' && to === 'stage:' + row.stageId)))) synapse.classList.add('live-complete');
+          });
+          if (!latestRun) {
+            showEvent(0, 'Watching for requests', 'No stored runs yet; waiting for workflow activity');
+          } else if (!activeRun) {
+            const complete = latestRun.status === 'completed';
+            showEvent(complete ? 4 : 3, complete ? 'Complete' : 'Latest run ' + latestRun.status, latestRun.task || 'Workflow activity is idle');
+          } else if (!currentRow) {
+            showEvent(0, activeRun.status === 'queued' ? 'Request queued' : 'Request received', activeRun.task || 'Waiting for the first stage');
+          } else {
+            const order = stageOrder.get(currentRow.stageId) ?? 0;
+            const verification = /verify|test|review|security/i.test(currentRow.stageId + ' ' + currentRow.agentId);
+            const phase = verification ? 3 : order <= 1 ? 1 : 2;
+            showEvent(phase, currentRow.taskStatus === 'running' ? currentRow.stageId + ' firing' : currentRow.stageId + ' queued', currentRow.agentId + ' · run ' + activeRun.id.slice(0, 8));
+          }
+        };
+        const poll = async () => {
+          if (paused || document.hidden) return;
+          try {
+            const response = await fetch(apiUrl, { headers: { accept: 'application/json' }, cache: 'no-store' });
+            if (!response.ok) throw new Error('status ' + response.status);
+            renderLiveReport(await response.json());
+          } catch (error) {
+            shell.classList.remove('live-connected');
+            showEvent(0, 'Live feed unavailable', error instanceof Error ? error.message : 'Could not refresh workflow state');
+          }
+        };
+        const replayLatest = () => {
+          svg.setCurrentTime?.(0);
+          if (latestReport) renderLiveReport(latestReport);
+          else void poll();
+        };
+        replay.addEventListener('click', replayLatest);
+        pause.addEventListener('click', () => {
+          paused = !paused;
+          pause.setAttribute('aria-pressed', String(paused));
+          pause.lastChild.textContent = paused ? 'Resume' : 'Pause';
+          if (paused) svg.pauseAnimations?.();
+          else { svg.unpauseAnimations?.(); void poll(); }
+        });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
+        void poll();
+        pollTimer = window.setInterval(() => { void poll(); }, 2000);
+      })();
+    </script>
   </div>`;
 }
 
@@ -37285,8 +37487,10 @@ type DashboardIconName =
   | "key"
   | "layers"
   | "list"
+  | "maximize"
   | "message"
   | "package"
+  | "pause"
   | "play"
   | "plus"
   | "refresh"
@@ -37322,8 +37526,10 @@ function dashboardIcon(name: DashboardIconName, label?: string): string {
     key: '<circle cx="7.5" cy="14.5" r="3.5"/><path d="M10 12 21 1"/><path d="m16 6 2 2"/><path d="m14 8 2 2"/>',
     layers: '<path d="m12 3 9 5-9 5-9-5z"/><path d="m3 12 9 5 9-5"/><path d="m3 16 9 5 9-5"/>',
     list: '<path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/>',
+    maximize: '<path d="M8 3H3v5"/><path d="m3 3 6 6"/><path d="M16 3h5v5"/><path d="m21 3-6 6"/><path d="M8 21H3v-5"/><path d="m3 21 6-6"/><path d="M16 21h5v-5"/><path d="m21 21-6-6"/>',
     message: '<path d="M21 15a4 4 0 0 1-4 4H8l-5 3V7a4 4 0 0 1 4-4h10a4 4 0 0 1 4 4z"/><path d="M8 9h8"/><path d="M8 13h5"/>',
     package: '<path d="m12 3 8 4.5v9L12 21l-8-4.5v-9z"/><path d="M12 12 4.5 7.7"/><path d="M12 12v9"/><path d="m12 12 7.5-4.3"/>',
+    pause: '<path d="M8 5v14"/><path d="M16 5v14"/>',
     play: '<path d="M8 5v14l11-7z"/>',
     plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
     refresh: '<path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18.5 2.5v3.3h-3.3"/><path d="M5.5 21.5v-3.3h3.3"/>',
@@ -38309,8 +38515,20 @@ function dashboardCss(): string {
     .network-toolbar > div:first-child { display: grid; gap: 3px; }
     .network-toolbar strong { color: #172033; font-size: 13px; }
     .network-toolbar span { color: #64748b; font-size: 12px; line-height: 1.3; }
+    .network-toolbar-actions { display: flex; align-items: stretch; gap: 8px; }
+    .network-fullscreen-toggle { min-width: 124px; white-space: nowrap; }
+    body.network-fullscreen-open { overflow: hidden; }
+    .network-panel.is-fullscreen { position: fixed; inset: 0; z-index: 100; margin: 0; padding: 16px; border: 0; border-radius: 0; overflow: hidden; background: #f7f8fb; box-shadow: none; }
+    .network-panel.is-fullscreen > h2 { margin-bottom: 10px; }
+    .network-panel.is-fullscreen .network-toolbar { margin-bottom: 8px; }
+    .network-panel.is-fullscreen .network-shell { height: calc(100vh - 112px); grid-template-rows: minmax(0, 1fr) auto; }
+    .network-panel.is-fullscreen .network-canvas-scroll { min-height: 0; overflow: auto; }
+    .network-panel.is-fullscreen .network-map { width: 100%; height: 100%; min-height: 0; }
+    .network-panel.is-fullscreen .network-legend, .network-panel.is-fullscreen .network-health-summary, .network-panel.is-fullscreen .network-explainer { display: none; }
     .compact-segments { grid-template-columns: repeat(2, minmax(112px, 1fr)); min-width: 250px; }
     .compact-segments .segment { min-height: 44px; padding: 8px 10px; }
+    .network-canvas-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; background: #020617; }
+    .network-canvas-scroll:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
     .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
     .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
     .network-map .network-grid { fill: url(#neuralGrid); }
@@ -38324,6 +38542,21 @@ function dashboardCss(): string {
     .network-links .support.dashed { stroke: #38bdf8; stroke-opacity: 0.50; }
     .network-links .sequence.dashed { stroke: #fbbf24; stroke-opacity: 0.48; }
     .network-links .outcome.dashed { stroke: #bfdbfe; stroke-opacity: 0.34; }
+    .network-signal-trail { fill: none; stroke: #e0f2fe; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: .05 .95; stroke-dashoffset: 1; opacity: .74; filter: url(#neuralGlow); animation: network-signal-run 3.2s linear infinite; animation-delay: var(--signal-delay); }
+    .network-packet { fill: #f8fafc; stroke: #38bdf8; stroke-width: 1.5; filter: url(#neuralGlow); }
+    .network-node circle { transform-box: fill-box; transform-origin: center; animation: network-node-breathe 3.6s ease-in-out infinite; }
+    .network-stage:nth-child(3n + 1) circle, .network-primary-agent:nth-child(3n + 1) circle { animation-delay: .7s; }
+    .network-stage:nth-child(3n + 2) circle, .network-primary-agent:nth-child(3n + 2) circle { animation-delay: 1.4s; }
+    .network-shell.live-connected .network-signal-trail, .network-shell.live-connected .network-packet { opacity: .04; }
+    .network-shell.live-connected .network-synapse.live-active .network-signal-trail, .network-shell.live-connected .network-synapse.live-active .network-packet { opacity: 1; }
+    .network-shell.live-connected .network-synapse.live-active > path:first-child { stroke: #38bdf8; stroke-opacity: .92; filter: url(#neuralGlow); }
+    .network-shell.live-connected .network-synapse.live-complete > path:first-child { stroke: #22c55e; stroke-opacity: .5; }
+    .network-shell.live-connected .network-node circle { animation: none; }
+    .network-shell.live-connected .network-node.live-firing { color: #38bdf8 !important; }
+    .network-shell.live-connected .network-node.live-firing circle { fill: rgba(14,165,233,.2); stroke-width: 6; animation: network-live-node .92s ease-in-out infinite; }
+    .network-shell.live-connected .network-node.live-complete { color: #22c55e !important; }
+    .network-shell.live-connected .network-node.live-failed { color: #ef4444 !important; }
+    .network-shell.live-connected .network-node.live-queued { color: #f59e0b !important; }
     .network-health-ring { transform: rotate(-90deg); transform-origin: center; stroke-width: 4; stroke-linecap: round; filter: url(#neuralGlow); }
     .network-health-ring.completed { stroke: #22c55e; }
     .network-health-ring.failed { stroke: #ef4444; }
@@ -38340,6 +38573,25 @@ function dashboardCss(): string {
     .network-workflow circle { stroke-width: 5; }
     .network-label { fill: #e2e8f0; font-size: 12px; font-weight: 700; }
     .network-layer-label { fill: #93c5fd; font-size: 11px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
+    .network-playback { display: grid; grid-template-columns: auto minmax(230px, 1fr) minmax(360px, auto); align-items: center; gap: 14px; border: 1px solid #dbe4f0; border-top: 0; background: #f8fafc; padding: 11px 12px; }
+    .network-playback-actions { display: flex; gap: 7px; }
+    .network-playback .network-replay, .network-playback .network-pause { min-height: 34px; white-space: nowrap; }
+    .network-timeline { display: grid; grid-template-columns: auto max-content minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+    .network-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #0ea5e9; box-shadow: 0 0 0 5px rgba(14,165,233,.12); animation: network-live-pulse 1.4s ease-in-out infinite; }
+    .network-event-title { color: #172033; }
+    .network-event-detail { min-width: 0; overflow: hidden; color: #64748b; text-overflow: ellipsis; white-space: nowrap; }
+    .network-phases { display: flex; align-items: center; justify-content: flex-end; gap: 0; }
+    .network-phases span { display: inline-flex; align-items: center; color: #94a3b8; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .network-phases span::before { content: ""; width: 7px; height: 7px; margin-right: 5px; border: 1.5px solid currentColor; border-radius: 50%; background: #f8fafc; }
+    .network-phases span:not(:last-child)::after { content: ""; width: clamp(8px, 1.5vw, 24px); height: 1px; margin: 0 7px; background: #cbd5e1; }
+    .network-phases span.active { color: #2563eb; }
+    .network-phases span.active::before { border-color: #2563eb; background: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+    .network-shell[data-phase="1"] .network-live-dot { background: #f59e0b; box-shadow: 0 0 0 5px rgba(245,158,11,.14); }
+    .network-shell[data-phase="4"] .network-live-dot { background: #22c55e; box-shadow: 0 0 0 5px rgba(34,197,94,.14); }
+    @keyframes network-signal-run { to { stroke-dashoffset: 0; } }
+    @keyframes network-node-breathe { 0%, 74%, 100% { transform: scale(1); } 82% { transform: scale(1.12); } }
+    @keyframes network-live-node { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.16); } }
+    @keyframes network-live-pulse { 50% { transform: scale(.72); opacity: .72; } }
     .network-legend { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; color: #dbeafe; background: #0f172a; border: 1px solid #1e3a5f; padding: 8px 10px; font-size: 12px; }
     .network-legend span { display: inline-flex; align-items: center; gap: 6px; }
     .network-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 999px; border: 2px solid #020617; box-shadow: 0 0 0 1px rgba(147,197,253,0.6), 0 0 12px rgba(56,189,248,0.42); }
@@ -38442,8 +38694,12 @@ function dashboardCss(): string {
       .mind-map { grid-template-columns: 1fr; }
       .mind-branches::before, .mind-node::before { display: none; }
       .network-toolbar { display: grid; }
+      .network-toolbar-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
       .compact-segments { min-width: 0; }
       .network-map { min-height: 360px; }
+      .network-canvas-scroll .network-map { width: 760px; max-width: none; min-height: 462px; }
+      .network-playback { grid-template-columns: 1fr; }
+      .network-phases { justify-content: flex-start; overflow-x: auto; padding-bottom: 3px; }
       table { display: block; overflow-x: auto; }
       .approval-inbox-panel { padding: 14px; }
       .mobile-approval-list { display: grid; gap: 12px; }
@@ -38474,6 +38730,15 @@ function dashboardCss(): string {
       .approval-age { grid-column: 2; grid-row: 1; }
       .approval-kind { grid-column: 1 / -1; justify-self: start; }
       th, td { padding: 9px 10px; }
+      .network-playback-actions { display: grid; grid-template-columns: 1fr 1fr; }
+      .network-toolbar-actions { grid-template-columns: 1fr; }
+      .network-fullscreen-toggle { width: 100%; }
+      .network-timeline { grid-template-columns: auto 1fr; }
+      .network-event-detail { grid-column: 2; white-space: normal; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .network-signal-trail, .network-node circle, .network-live-dot { animation: none; }
+      .network-packet { display: none; }
     }
   `;
 }
@@ -42321,6 +42586,8 @@ type OnboardingResult = {
     frameworks: string[];
     languages: string[];
     markers: string[];
+    roadmapPath: string;
+    roadmapExists: boolean;
   };
   recommendations: {
     contextInclude: string[];
@@ -42340,6 +42607,52 @@ type OnboardingResult = {
   skipped?: string[];
 };
 
+const roadmapCandidates = ["ROADMAP.md", "docs/roadmap.md", "roadmap.md"] as const;
+
+async function discoverProjectRoadmap(projectDir: string): Promise<{ relativePath: string; exists: boolean }> {
+  const configPath = path.join(projectDir, ".agent-workflow", "project.yaml");
+  let configuredPath: string | undefined;
+  try {
+    const raw = YAML.parse(await fs.readFile(configPath, "utf8")) as { project?: { roadmap_path?: unknown } };
+    if (typeof raw?.project?.roadmap_path === "string" && raw.project.roadmap_path.trim()) {
+      configuredPath = raw.project.roadmap_path.trim();
+    }
+  } catch {}
+  if (configuredPath) {
+    const absolutePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: configuredPath, label: "roadmap_path" });
+    return { relativePath: configuredPath, exists: await pathIsFile(absolutePath) };
+  }
+  const candidates = [...roadmapCandidates];
+  for (const relativePath of candidates) {
+    const absolutePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath, label: "roadmap_path" });
+    if (await pathIsFile(absolutePath)) return { relativePath, exists: true };
+  }
+  return { relativePath: configuredPath ?? "ROADMAP.md", exists: false };
+}
+
+async function ensureProjectRoadmap(projectDir: string): Promise<{ relativePath: string; created: boolean }> {
+  const roadmap = await discoverProjectRoadmap(projectDir);
+  if (roadmap.exists) return { relativePath: roadmap.relativePath, created: false };
+  const filePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: roadmap.relativePath, label: "roadmap_path" });
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, "# Roadmap\n", { encoding: "utf8", flag: "wx" }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  return { relativePath: roadmap.relativePath, created: true };
+}
+
+async function ensureConfiguredRoadmapPath(projectDir: string, relativePath: string): Promise<boolean> {
+  await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath, label: "roadmap_path" });
+  const configPath = path.join(projectDir, ".agent-workflow", "project.yaml");
+  const raw = YAML.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+  const project = objectValue(raw.project);
+  if (project.roadmap_path === relativePath) return false;
+  project.roadmap_path = relativePath;
+  raw.project = project;
+  await fs.writeFile(configPath, YAML.stringify(raw), "utf8");
+  return true;
+}
+
 async function analyzeProjectForOnboarding(projectDir: string, profile: "enterprise" | "simple"): Promise<OnboardingResult> {
   if (!await exists(projectDir)) {
     throw new Error(`Project directory does not exist: ${projectDir}`);
@@ -42357,6 +42670,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
   const frameworks = detectFrameworks(dependencies, markers);
   const languages = detectLanguages(packageJson, markers);
   const name = stringValue(packageJson?.name) ?? path.basename(projectDir);
+  const roadmap = await discoverProjectRoadmap(projectDir);
   const allowedCommands = recommendCommands(packageScripts, commandPrefix, markers);
   const contextInclude = recommendContextIncludes(markers, frameworks, languages);
   const contextExclude = recommendContextExcludes(frameworks, languages);
@@ -42372,6 +42686,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
     project: {
       name,
       summary: summarizeDetectedProject(frameworks, languages, markers),
+      roadmap_path: roadmap.relativePath,
       default_workflows: defaultWorkflows,
       autonomy: profile === "enterprise" ? 3 : 2
     },
@@ -42510,7 +42825,9 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       packageManager,
       frameworks,
       languages,
-      markers
+      markers,
+      roadmapPath: roadmap.relativePath,
+      roadmapExists: roadmap.exists
     },
     recommendations: {
       contextInclude,
@@ -42530,6 +42847,9 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       valid: true,
       notes: [
         "No files written unless --write is provided.",
+        roadmap.exists
+          ? `Existing roadmap will be preserved at ${roadmap.relativePath}.`
+          : `A blank roadmap will be created at ${roadmap.relativePath} when --write is provided.`,
         "External network commands are blocked by default.",
         "Writes to .env, .git, node_modules, build output, and coverage output are blocked.",
         "Review allowed commands before enabling higher autonomy."
@@ -42541,7 +42861,12 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
 async function writeOnboardingFiles(projectDir: string, result: OnboardingResult, force: boolean): Promise<{ written: string[]; skipped: string[] }> {
   const workflowDir = path.join(projectDir, ".agent-workflow");
   await fs.mkdir(workflowDir, { recursive: true });
+  const roadmapFilePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: result.detected.roadmapPath, label: "roadmap_path" });
   const files = new Map<string, string>([
+    [
+      roadmapFilePath,
+      "# Roadmap"
+    ],
     [
       path.join(projectDir, "AGENTS.md"),
       [
@@ -42552,6 +42877,7 @@ async function writeOnboardingFiles(projectDir: string, result: OnboardingResult
         "## Project Rules",
         "",
         "- Read `.agent-workflow/project.yaml` before choosing a workflow.",
+        `- Use \`${result.detected.roadmapPath}\` as the source of truth for planned project work.`,
         "- Use `.agent-workflow/context.md` for product, user, team, and personalization context.",
         "- Use `.agent-workflow/commands.md` for setup, test, build, and release commands.",
         "- Use `.agent-workflow/decisions.md` for durable project decisions.",
@@ -42631,6 +42957,13 @@ async function writeOnboardingFiles(projectDir: string, result: OnboardingResult
     await fs.mkdir(path.dirname(filePath), { recursive: true });
     await fs.writeFile(filePath, `${content.replace(/\n+$/u, "")}\n`, "utf8");
     written.push(relativePath);
+  }
+  const configUpdated = await ensureConfiguredRoadmapPath(projectDir, result.detected.roadmapPath);
+  const configRelativePath = path.join(".agent-workflow", "project.yaml");
+  if (configUpdated && !written.includes(configRelativePath)) {
+    const skippedIndex = skipped.indexOf(configRelativePath);
+    if (skippedIndex >= 0) skipped.splice(skippedIndex, 1);
+    written.push(configRelativePath);
   }
   const bundleState = await writeProjectBundleState(projectDir, force);
   if (bundleState.status === "written") {
