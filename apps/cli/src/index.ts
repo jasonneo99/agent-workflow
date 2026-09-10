@@ -114,6 +114,7 @@ import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQua
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
+import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -1034,6 +1035,10 @@ program
       const writeResult = await writeOnboardingFiles(projectDir, result, Boolean(options.force));
       result.written = writeResult.written;
       result.skipped = writeResult.skipped;
+      const services = await checkServices();
+      if (services.every((service) => service.reachable)) {
+        await publishRoadmapSnapshotOnly(projectDir);
+      }
     }
 
     if (options.json) {
@@ -7461,6 +7466,16 @@ type ServerProjectResolution = {
   }>;
 };
 
+type ServerRoadmapSnapshotReport = {
+  kind: "agentflow_server_roadmap_snapshot";
+  generatedAt: string;
+  projectId: string;
+  projectName: string | null;
+  status: "current" | "stale" | "missing" | "invalid";
+  snapshot: ServerRoadmapSnapshot | null;
+  reason: string | null;
+};
+
 type ServerRequestPreviewReport = {
   kind: "agentflow_server_request_preview";
   generatedAt: string;
@@ -12856,6 +12871,29 @@ async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Pr
   } catch {
     return null;
   }
+}
+
+async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
+  const projectId = projectIdInput.trim();
+  const generatedAt = new Date().toISOString();
+  const rejectedReason = rejectProjectIdReason(projectId);
+  if (rejectedReason) {
+    return { statusCode: 400, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: null, status: "invalid", snapshot: null, reason: rejectedReason } };
+  }
+  const summary = (await listProjectStorageSummaries(500)).find((project) => project.id === projectId);
+  if (!summary) {
+    return { statusCode: 404, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: null, status: "missing", snapshot: null, reason: "project id is not registered" } };
+  }
+  const state = await getProjectIndexState({ projectId });
+  if (!state || !("roadmapSnapshot" in state.metadata)) {
+    return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: "missing", snapshot: null, reason: "roadmap snapshot has not been published" } };
+  }
+  const parsed = parseRoadmapSnapshot(state.metadata.roadmapSnapshot, projectId);
+  if (!parsed) {
+    return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: "invalid", snapshot: null, reason: "stored roadmap snapshot failed validation" } };
+  }
+  const snapshot = serverRoadmapSnapshot(parsed);
+  return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: snapshot.freshness, snapshot, reason: snapshot.reason } };
 }
 
 function formatServerProjectRegistryReport(report: ServerProjectRegistryReport): string {
@@ -24752,6 +24790,24 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(result.resolved ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-roadmap") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({
+        kind: "agentflow_server_roadmap_snapshot",
+        generatedAt: new Date().toISOString(),
+        status: "invalid",
+        reason: "authenticated server access is required"
+      }, null, 2));
+      return;
+    }
+    const result = await loadServerRoadmapSnapshot(requestUrl.searchParams.get("projectId") ?? "");
+    response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(result.report, null, 2));
     return;
   }
 
@@ -42089,6 +42145,11 @@ async function indexProjectWithStorage(input: {
   for (const file of result.files) {
     storedSourceUris.add(file.sourceUri);
   }
+  const roadmapSnapshot = await buildStoredRoadmapSnapshot({
+    projectId: input.projectId,
+    projectDir: input.projectDir,
+    project: input.project
+  });
   await upsertProjectIndexState({
     projectId: input.projectId,
     headCommit: result.headCommit,
@@ -42102,7 +42163,8 @@ async function indexProjectWithStorage(input: {
       changed: result.changed,
       reused: result.reused,
       truncated: result.truncated,
-      sinceCommit: shouldIncrement ? sinceCommit : null
+      sinceCommit: shouldIncrement ? sinceCommit : null,
+      roadmapSnapshot
     }
   });
   return {
@@ -42118,6 +42180,40 @@ async function indexProjectWithStorage(input: {
     truncated: result.truncated,
     headCommit: result.headCommit
   };
+}
+
+async function buildStoredRoadmapSnapshot(input: {
+  projectId: string;
+  projectDir: string;
+  project: ProjectConfig;
+}): Promise<RoadmapSnapshot> {
+  const source = input.project.project.roadmap_path?.trim() || "docs/roadmap.md";
+  return readRoadmapSnapshotFromProject({
+    projectId: input.projectId,
+    projectName: input.project.project.name,
+    projectRootUri: input.projectDir,
+    source,
+    publishingHost: os.hostname()
+  });
+}
+
+async function publishRoadmapSnapshotOnly(projectDir: string): Promise<void> {
+  const project = await loadProjectConfig(projectDir);
+  const projectId = await upsertProject({
+    name: project.project.name,
+    rootUri: projectDir,
+    profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
+    config: project
+  });
+  const state = await getProjectIndexState({ projectId });
+  const roadmapSnapshot = await buildStoredRoadmapSnapshot({ projectId, projectDir, project });
+  await upsertProjectIndexState({
+    projectId,
+    headCommit: state?.headCommit ?? undefined,
+    indexedFiles: state?.indexedFiles ?? 0,
+    deletedFiles: state?.deletedFiles ?? 0,
+    metadata: { ...(state?.metadata ?? {}), roadmapSnapshot }
+  });
 }
 
 function formatIndexResult(result: {
