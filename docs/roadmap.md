@@ -610,6 +610,7 @@ foundation is complete.
   - Done: add registered-project previews for future server-mode clients that use project ids and hide local roots by default.
   - Done: add project id resolution for future server-mode routing that rejects path-shaped input and resolves only registered project ids.
   - Done: publish bounded, host-safe roadmap snapshots from each registered checkout during onboarding and indexing; retain the latest validated snapshot in shared state and expose authenticated project-id reads with explicit current, stale, missing, and invalid states.
+  - Done: make canonical roadmap snapshots preserve multiline checklist titles, expose accurate captured/returned/truncation metadata and bounded pagination, and publish complete section aggregates for roadmaps larger than the returned item window.
   - Done: add an authenticated request-envelope preview for future remote execution requests before implementing mutation endpoints.
   - Done: add a guarded project-id routing adapter behind the same preview checks, still dry-run-by-default.
   - Done: add an authenticated queueing endpoint with dry-run as the default and real queueing gated by explicit server-mode environment flags.

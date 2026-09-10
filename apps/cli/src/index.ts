@@ -114,7 +114,7 @@ import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQua
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
-import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
+import { paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -12873,7 +12873,7 @@ async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Pr
   }
 }
 
-async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
+async function loadServerRoadmapSnapshot(projectIdInput: string, offset = 0, limit = 100): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
   const projectId = projectIdInput.trim();
   const generatedAt = new Date().toISOString();
   const rejectedReason = rejectProjectIdReason(projectId);
@@ -12892,7 +12892,7 @@ async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ stat
   if (!parsed) {
     return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: "invalid", snapshot: null, reason: "stored roadmap snapshot failed validation" } };
   }
-  const snapshot = serverRoadmapSnapshot(parsed);
+  const snapshot = serverRoadmapSnapshot(paginateRoadmapSnapshot(parsed, offset, limit));
   return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: snapshot.freshness, snapshot, reason: snapshot.reason } };
 }
 
@@ -24805,7 +24805,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       }, null, 2));
       return;
     }
-    const result = await loadServerRoadmapSnapshot(requestUrl.searchParams.get("projectId") ?? "");
+    const result = await loadServerRoadmapSnapshot(
+      requestUrl.searchParams.get("projectId") ?? "",
+      parseNonNegativeInteger(requestUrl.searchParams.get("offset") ?? "0", 0),
+      parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    );
     response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(result.report, null, 2));
     return;
