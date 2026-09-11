@@ -29,6 +29,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
+import { buildHighRiskApprovalInbox, redactApprovalCardText, type HighRiskApprovalInbox } from "../../../packages/governance/src/high-risk-approval-inbox.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
@@ -115,7 +116,7 @@ import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQua
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
-import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
+import { paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -7637,32 +7638,6 @@ type ServerApprovalPreviewReport = {
   notes: string[];
 };
 
-type ServerHighRiskApprovalInboxReport = {
-  kind: "agentflow_server_high_risk_approval_inbox";
-  generatedAt: string;
-  status: "ready" | "empty";
-  readOnly: true;
-  scanned: number;
-  open: number;
-  highRisk: number;
-  items: Array<{
-    approvalId: string;
-    projectId: string | null;
-    projectName: string;
-    workflowId: string;
-    runId: string;
-    approvalStatus: string;
-    actionType: string;
-    target: string;
-    rationale: string;
-    risk: "high";
-    riskReasons: string[];
-    requestedAt: string;
-    dashboardPath: string;
-  }>;
-  notes: string[];
-};
-
 type ServerQueueReport = {
   kind: "agentflow_server_queue_report";
   generatedAt: string;
@@ -13210,7 +13185,7 @@ async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Pr
   }
 }
 
-async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
+async function loadServerRoadmapSnapshot(projectIdInput: string, offset = 0, limit = 100): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
   const projectId = projectIdInput.trim();
   const generatedAt = new Date().toISOString();
   const rejectedReason = rejectProjectIdReason(projectId);
@@ -13229,7 +13204,7 @@ async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ stat
   if (!parsed) {
     return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: "invalid", snapshot: null, reason: "stored roadmap snapshot failed validation" } };
   }
-  const snapshot = serverRoadmapSnapshot(parsed);
+  const snapshot = serverRoadmapSnapshot(paginateRoadmapSnapshot(parsed, offset, limit));
   return { statusCode: 200, report: { kind: "agentflow_server_roadmap_snapshot", generatedAt, projectId, projectName: summary.name, status: snapshot.freshness, snapshot, reason: snapshot.reason } };
 }
 
@@ -13613,21 +13588,14 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
   ].join("\n");
 }
 
-function redactServerApprovalText(value: string, maxLength: number): string {
-  return truncateMiddle(value
-    .replace(/\b(password|passwd|pwd|secret|token|api[_-]?key)\s*=\s*([^\s'"`]+)/giu, "$1=[REDACTED]")
-    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+\/-]+/giu, "$1 [REDACTED]")
-    .replace(/\/(?:Users|home)\/[^\s'"`]+/gu, "[HOST_PATH]"), maxLength);
-}
-
-async function loadServerHighRiskApprovalInbox(limit: number): Promise<ServerHighRiskApprovalInboxReport> {
+async function loadServerHighRiskApprovalInbox(limit: number): Promise<HighRiskApprovalInbox> {
   const boundedLimit = Math.max(1, Math.min(limit, 25));
   const approvals = (await listActionApprovals({ limit: Math.max(100, boundedLimit * 8) }))
     .filter(isOpenApproval);
   const projects = await listProjectStorageSummaries(1000);
   const projectIds = new Map(projects.map((project) => [project.rootUri, project.id]));
   const projectConfigs = new Map<string, ProjectConfig | null>();
-  const items: ServerHighRiskApprovalInboxReport["items"] = [];
+  const items: HighRiskApprovalInbox["items"] = [];
   for (const approval of approvals) {
     if (items.length >= boundedLimit) break;
     if (!projectConfigs.has(approval.projectRootUri)) {
@@ -13646,29 +13614,15 @@ async function loadServerHighRiskApprovalInbox(limit: number): Promise<ServerHig
       runId: approval.runId,
       approvalStatus: approval.status,
       actionType: approval.actionType,
-      target: redactServerApprovalText(approval.target, 240),
-      rationale: redactServerApprovalText(approval.rationale, 360),
+      target: redactApprovalCardText(approval.target, 240),
+      rationale: redactApprovalCardText(approval.rationale, 360),
       risk: "high",
-      riskReasons: classification.reasons.map((reason) => redactServerApprovalText(reason, 240)).slice(0, 5),
+      riskReasons: classification.reasons.map((reason) => redactApprovalCardText(reason, 240)).slice(0, 5),
       requestedAt: approval.createdAt,
       dashboardPath: `/approvals?status=open&run=${encodeURIComponent(approval.runId)}`
     });
   }
-  return {
-    kind: "agentflow_server_high_risk_approval_inbox",
-    generatedAt: new Date().toISOString(),
-    status: items.length ? "ready" : "empty",
-    readOnly: true,
-    scanned: approvals.length,
-    open: approvals.length,
-    highRisk: items.length,
-    items,
-    notes: [
-      "This endpoint is read-only and never approves, rejects, executes, or dismisses an action.",
-      "Targets and rationales are bounded and redact secret-shaped values plus host filesystem paths.",
-      "Use the local Agent Workflow approvals dashboard for the human decision."
-    ]
-  };
+  return buildHighRiskApprovalInbox({ scanned: approvals.length, open: approvals.length, items });
 }
 
 async function loadServerApprovalPreview(input: {
@@ -25378,7 +25332,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       }, null, 2));
       return;
     }
-    const result = await loadServerRoadmapSnapshot(requestUrl.searchParams.get("projectId") ?? "");
+    const result = await loadServerRoadmapSnapshot(
+      requestUrl.searchParams.get("projectId") ?? "",
+      parseNonNegativeInteger(requestUrl.searchParams.get("offset") ?? "0", 0),
+      parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
+    );
     response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(result.report, null, 2));
     return;
