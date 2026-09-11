@@ -28,6 +28,7 @@ import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema,
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
+import { buildHighRiskApprovalInbox, redactApprovalCardText, type HighRiskApprovalInbox } from "../../../packages/governance/src/high-risk-approval-inbox.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
@@ -13276,6 +13277,43 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
   ].join("\n");
 }
 
+async function loadServerHighRiskApprovalInbox(limit: number): Promise<HighRiskApprovalInbox> {
+  const boundedLimit = Math.max(1, Math.min(limit, 25));
+  const approvals = (await listActionApprovals({ limit: Math.max(100, boundedLimit * 8) }))
+    .filter(isOpenApproval);
+  const projects = await listProjectStorageSummaries(1000);
+  const projectIds = new Map(projects.map((project) => [project.rootUri, project.id]));
+  const projectConfigs = new Map<string, ProjectConfig | null>();
+  const items: HighRiskApprovalInbox["items"] = [];
+  for (const approval of approvals) {
+    if (items.length >= boundedLimit) break;
+    if (!projectConfigs.has(approval.projectRootUri)) {
+      projectConfigs.set(approval.projectRootUri, await loadLocalProjectConfig(approval.projectRootUri).catch(() => null));
+    }
+    const project = projectConfigs.get(approval.projectRootUri);
+    const classification = project
+      ? classifyApprovalAutopilotRisk(approval, project)
+      : { eligible: false, risk: "high" as const, reasons: ["Project policy could not be loaded; manual review is required."] };
+    if (classification.risk !== "high") continue;
+    items.push({
+      approvalId: approval.id,
+      projectId: projectIds.get(approval.projectRootUri) ?? null,
+      projectName: approval.projectName,
+      workflowId: approval.workflowId,
+      runId: approval.runId,
+      approvalStatus: approval.status,
+      actionType: approval.actionType,
+      target: redactApprovalCardText(approval.target, 240),
+      rationale: redactApprovalCardText(approval.rationale, 360),
+      risk: "high",
+      riskReasons: classification.reasons.map((reason) => redactApprovalCardText(reason, 240)).slice(0, 5),
+      requestedAt: approval.createdAt,
+      dashboardPath: `/approvals?status=open&run=${encodeURIComponent(approval.runId)}`
+    });
+  }
+  return buildHighRiskApprovalInbox({ scanned: approvals.length, open: approvals.length, items });
+}
+
 async function loadServerApprovalPreview(input: {
   projectId: string;
   approvalId: string;
@@ -24812,6 +24850,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     );
     response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(result.report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-high-risk-approvals") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_high_risk_approval_inbox", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerHighRiskApprovalInbox(parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
