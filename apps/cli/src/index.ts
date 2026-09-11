@@ -28023,12 +28023,72 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   graphPresets: DashboardGraphPreset[];
 };
 
+type DashboardWorkflowGraphDelta = {
+  kind: "workflow-graph-delta";
+  changes: Partial<Pick<DashboardWorkflowGraphReport,
+    | "runs" | "liveStageRuns" | "liveApprovals" | "runWarnings" | "stageHealth"
+    | "focusedStageRuns" | "focusedStageFixRuns" | "focusedStageVerificationRuns"
+    | "recentGraphExports">>;
+};
+
+type DashboardWorkflowGraphStreamEvent = { id: string; event: "workflow-graph" | "workflow-graph-delta"; data: string };
+type DashboardWorkflowGraphStreamChannel = {
+  sequence: number;
+  events: DashboardWorkflowGraphStreamEvent[];
+  report: DashboardWorkflowGraphReport | null;
+  staticHash: string;
+};
+
+const dashboardWorkflowGraphStreamChannels = new Map<string, DashboardWorkflowGraphStreamChannel>();
+const dashboardWorkflowGraphReplayLimit = 100;
+const dashboardWorkflowGraphChannelLimit = 50;
+const dashboardWorkflowGraphDynamicKeys = [
+  "runs", "liveStageRuns", "liveApprovals", "runWarnings", "stageHealth", "focusedStageRuns",
+  "focusedStageFixRuns", "focusedStageVerificationRuns", "recentGraphExports"
+] as const;
+
+function dashboardWorkflowGraphStaticHash(report: DashboardWorkflowGraphReport): string {
+  const copy = { ...report } as Record<string, unknown>;
+  for (const key of dashboardWorkflowGraphDynamicKeys) delete copy[key];
+  return textHash(JSON.stringify(copy));
+}
+
+function dashboardWorkflowGraphDelta(
+  previous: DashboardWorkflowGraphReport,
+  next: DashboardWorkflowGraphReport
+): DashboardWorkflowGraphDelta | null {
+  const changes: DashboardWorkflowGraphDelta["changes"] = {};
+  for (const key of dashboardWorkflowGraphDynamicKeys) {
+    if (JSON.stringify(previous[key]) !== JSON.stringify(next[key])) {
+      (changes as Record<string, unknown>)[key] = next[key];
+    }
+  }
+  return Object.keys(changes).length ? { kind: "workflow-graph-delta", changes } : null;
+}
+
+function appendDashboardWorkflowGraphStreamEvent(
+  channelKey: string,
+  channel: DashboardWorkflowGraphStreamChannel,
+  event: DashboardWorkflowGraphStreamEvent["event"],
+  data: string
+): DashboardWorkflowGraphStreamEvent {
+  const item = { id: `${channelKey}-${++channel.sequence}`, event, data };
+  channel.events.push(item);
+  if (channel.events.length > dashboardWorkflowGraphReplayLimit) channel.events.splice(0, channel.events.length - dashboardWorkflowGraphReplayLimit);
+  return item;
+}
+
+function writeDashboardWorkflowGraphStreamEvent(response: http.ServerResponse, item: DashboardWorkflowGraphStreamEvent): void {
+  response.write(`id: ${item.id}\nevent: ${item.event}\ndata: ${item.data}\n\n`);
+}
+
 async function streamDashboardWorkflowGraph(
   request: http.IncomingMessage,
   response: http.ServerResponse,
   params: URLSearchParams
 ): Promise<void> {
   const boundedParams = new URLSearchParams(params);
+  boundedParams.delete("lastEventId");
   boundedParams.set("runLimit", String(Math.min(parseDashboardRunLimit(params.get("runLimit") ?? "25", 25), 50)));
   response.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -28038,18 +28098,58 @@ async function streamDashboardWorkflowGraph(
   });
   response.flushHeaders?.();
   let closed = false;
-  let lastSnapshotHash = "";
   let lastHeartbeatAt = 0;
+  const channelKey = textHash(boundedParams.toString()).slice(0, 12);
+  let channel = dashboardWorkflowGraphStreamChannels.get(channelKey);
+  if (!channel) {
+    channel = { sequence: 0, events: [], report: null, staticHash: "" };
+    dashboardWorkflowGraphStreamChannels.set(channelKey, channel);
+    if (dashboardWorkflowGraphStreamChannels.size > dashboardWorkflowGraphChannelLimit) {
+      const oldestKey = dashboardWorkflowGraphStreamChannels.keys().next().value;
+      if (oldestKey && oldestKey !== channelKey) dashboardWorkflowGraphStreamChannels.delete(oldestKey);
+    }
+  }
+  const headerCursor = Array.isArray(request.headers["last-event-id"])
+    ? request.headers["last-event-id"][0]
+    : request.headers["last-event-id"];
+  const requestedCursor = headerCursor?.trim() || params.get("lastEventId")?.trim() || "";
+  const cursorIndex = requestedCursor ? channel.events.findIndex((item) => item.id === requestedCursor) : -1;
+  let needsSnapshot = !requestedCursor || cursorIndex < 0;
+  let deliveredId = "";
   request.once("close", () => { closed = true; });
+
+  if (requestedCursor) {
+    if (cursorIndex >= 0) {
+      for (const item of channel.events.slice(cursorIndex + 1)) {
+        writeDashboardWorkflowGraphStreamEvent(response, item);
+        deliveredId = item.id;
+      }
+    }
+  }
+  if (needsSnapshot && channel.report && channel.events.length) {
+    const latestId = channel.events[channel.events.length - 1]!.id;
+    writeDashboardWorkflowGraphStreamEvent(response, { id: latestId, event: "workflow-graph", data: JSON.stringify(channel.report) });
+    deliveredId = latestId;
+    needsSnapshot = false;
+  }
 
   while (!closed && !response.destroyed) {
     try {
       const report = await loadDashboardWorkflowGraph(boundedParams);
-      const payload = JSON.stringify(report);
-      const snapshotHash = textHash(payload);
-      if (snapshotHash !== lastSnapshotHash) {
-        response.write(`id: ${snapshotHash}\nevent: workflow-graph\ndata: ${payload}\n\n`);
-        lastSnapshotHash = snapshotHash;
+      const staticHash = dashboardWorkflowGraphStaticHash(report);
+      let item: DashboardWorkflowGraphStreamEvent | null = null;
+      if (needsSnapshot || !channel.report || staticHash !== channel.staticHash) {
+        item = appendDashboardWorkflowGraphStreamEvent(channelKey, channel, "workflow-graph", JSON.stringify(report));
+        needsSnapshot = false;
+      } else {
+        const delta = dashboardWorkflowGraphDelta(channel.report, report);
+        if (delta) item = appendDashboardWorkflowGraphStreamEvent(channelKey, channel, "workflow-graph-delta", JSON.stringify(delta));
+      }
+      channel.report = report;
+      channel.staticHash = staticHash;
+      if (item && item.id !== deliveredId) {
+        writeDashboardWorkflowGraphStreamEvent(response, item);
+        deliveredId = item.id;
       } else if (Date.now() - lastHeartbeatAt >= 15_000) {
         response.write(`: heartbeat ${new Date().toISOString()}\n\n`);
         lastHeartbeatAt = Date.now();
@@ -29236,6 +29336,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         <span class="network-live-dot"></span>
         <strong class="network-event-title">Request received</strong>
         <span class="network-event-detail">Routing through ${formatNumber(stages.length)} workflow stages</span>
+        <span class="network-transport-status" data-state="connecting">connecting</span>
       </div>
       <div class="network-phases" aria-label="Request progress">
         <span class="active">Request</span><span>Queued</span><span>Running</span><span>Approval</span><span>Verification</span><span>Complete</span>
@@ -29257,6 +29358,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         const fullscreen = panel?.querySelector('.network-fullscreen-toggle');
         const title = shell?.querySelector('.network-event-title');
         const detail = shell?.querySelector('.network-event-detail');
+        const transportStatus = shell?.querySelector('.network-transport-status');
         const phases = [...(shell?.querySelectorAll('.network-phases span') || [])];
         if (!shell || !svg || !demo || !replay || !pause || !speed || !title || !detail) return;
         const fullscreenKey = 'agentflow.network.fullscreen';
@@ -29286,6 +29388,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         let reconnectTimer = 0;
         let reconnectAttempts = 0;
         let streamConnected = false;
+        let lastEventId = '';
         let paused = false;
         let latestReport = null;
         let playbackSpeed = 1;
@@ -29314,6 +29417,12 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           detail.textContent = message;
           phases.forEach((phase, phaseIndex) => phase.classList.toggle('active', phaseIndex <= index));
           shell.dataset.phase = String(index);
+        };
+        const setTransportStatus = (state, label = state) => {
+          shell.dataset.transport = state;
+          if (!transportStatus) return;
+          transportStatus.dataset.state = state;
+          transportStatus.textContent = label;
         };
         const setNodeState = (nodeId, state) => {
           const node = nodeElements.find((item) => item.dataset.nodeId === nodeId);
@@ -29448,8 +29557,10 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
             const response = await fetch(apiUrl, { headers: { accept: 'application/json' }, cache: 'no-store' });
             if (!response.ok) throw new Error('status ' + response.status);
             renderLiveReport(await response.json());
+            if (!streamConnected) setTransportStatus('polling');
           } catch (error) {
             shell.classList.remove('live-connected');
+            setTransportStatus('polling');
             showEvent(0, 'Live feed unavailable', error instanceof Error ? error.message : 'Could not refresh workflow state');
           }
         };
@@ -29457,14 +29568,18 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           window.clearTimeout(reconnectTimer);
           eventSource?.close();
           if (!('EventSource' in window) || document.hidden) return;
-          eventSource = new EventSource(eventsUrl);
+          const reconnectUrl = new URL(eventsUrl);
+          if (lastEventId) reconnectUrl.searchParams.set('lastEventId', lastEventId);
+          setTransportStatus(reconnectAttempts ? 'reconnecting' : 'connecting');
+          eventSource = new EventSource(reconnectUrl);
           eventSource.addEventListener('open', () => {
             streamConnected = true;
             reconnectAttempts = 0;
-            shell.dataset.transport = 'stream';
+            setTransportStatus('live');
           });
           eventSource.addEventListener('workflow-graph', (event) => {
             try {
+              if (event.lastEventId) lastEventId = event.lastEventId;
               const report = JSON.parse(event.data);
               if (paused || demoRunning) latestReport = report;
               else renderLiveReport(report);
@@ -29472,16 +29587,26 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
               streamConnected = false;
             }
           });
+          eventSource.addEventListener('workflow-graph-delta', (event) => {
+            try {
+              if (event.lastEventId) lastEventId = event.lastEventId;
+              const delta = JSON.parse(event.data);
+              if (!latestReport || !delta?.changes) { void poll(); return; }
+              const report = { ...latestReport, ...delta.changes };
+              if (paused || demoRunning) latestReport = report;
+              else renderLiveReport(report);
+            } catch { void poll(); }
+          });
           eventSource.addEventListener('workflow-graph-error', () => {
             streamConnected = false;
-            shell.dataset.transport = 'poll';
+            setTransportStatus('polling');
           });
           eventSource.onerror = () => {
             streamConnected = false;
-            shell.dataset.transport = 'poll';
             eventSource?.close();
             reconnectAttempts += 1;
             const delay = Math.min(30_000, 1_000 * (2 ** Math.min(reconnectAttempts, 5)));
+            setTransportStatus('reconnecting', 'reconnecting · ' + Math.round(delay / 1000) + 's');
             reconnectTimer = window.setTimeout(connectEventStream, delay);
             void poll();
           };
@@ -29505,6 +29630,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           if (document.hidden) {
             streamConnected = false;
             eventSource?.close();
+            setTransportStatus('polling', 'paused');
           } else {
             void poll();
             connectEventStream();
@@ -39492,10 +39618,14 @@ function dashboardCss(): string {
     .network-playback .network-replay, .network-playback .network-pause { min-height: 34px; white-space: nowrap; }
     .network-speed-label { display: flex; align-items: center; gap: 5px; color: #475569; font-size: 11px; font-weight: 700; white-space: nowrap; }
     .network-speed { min-height: 34px; width: 70px; padding: 4px 7px; }
-    .network-timeline { display: grid; grid-template-columns: auto max-content minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+    .network-timeline { display: grid; grid-template-columns: auto max-content minmax(0, 1fr) max-content; align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
     .network-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #0ea5e9; box-shadow: 0 0 0 5px rgba(14,165,233,.12); animation: network-live-pulse 1.4s ease-in-out infinite; }
     .network-event-title { color: #172033; }
     .network-event-detail { min-width: 0; overflow: hidden; color: #64748b; text-overflow: ellipsis; white-space: nowrap; }
+    .network-transport-status { display: inline-flex; align-items: center; border: 1px solid #cbd5e1; border-radius: 999px; padding: 2px 7px; color: #64748b; background: white; font-size: 10px; font-weight: 800; text-transform: uppercase; }
+    .network-transport-status[data-state="live"] { border-color: #86efac; color: #15803d; background: #f0fdf4; }
+    .network-transport-status[data-state="reconnecting"] { border-color: #fde68a; color: #a16207; background: #fffbeb; }
+    .network-transport-status[data-state="polling"] { border-color: #bfdbfe; color: #1d4ed8; background: #eff6ff; }
     .network-phases { display: flex; align-items: center; justify-content: flex-end; gap: 0; }
     .network-phases span { display: inline-flex; align-items: center; color: #94a3b8; font-size: 11px; font-weight: 700; white-space: nowrap; }
     .network-phases span::before { content: ""; width: 7px; height: 7px; margin-right: 5px; border: 1.5px solid currentColor; border-radius: 50%; background: #f8fafc; }
@@ -39658,6 +39788,7 @@ function dashboardCss(): string {
       .network-fullscreen-toggle { width: 100%; }
       .network-timeline { grid-template-columns: auto 1fr; }
       .network-event-detail { grid-column: 2; white-space: normal; }
+      .network-transport-status { grid-column: 2; justify-self: start; }
     }
     @media (prefers-reduced-motion: reduce) {
       .network-signal-trail, .network-node circle, .network-live-dot { animation: none; }
