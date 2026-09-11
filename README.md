@@ -443,6 +443,12 @@ prompt: |
   Your agent instructions here.
 ```
 
+The reusable bundle currently includes 19 workflows. Focused definitions cover
+roadmap curation, CI triage, security audits, product discovery, dependency
+upgrades, data migrations, performance investigations, accessibility reviews,
+incident response, and architecture decisions alongside the core delivery and
+operations workflows. Run `npm run list` to see the current catalog.
+
 ## Adding Workflows
 
 Create a YAML file in `workflows/`:

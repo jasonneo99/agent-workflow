@@ -1,0 +1,49 @@
+id: ci-triage
+name: CI Triage
+description: Classify CI failures, isolate their cause, prepare a focused correction, and verify the affected checks.
+lead: auto-ci-triage
+default_autonomy: 3
+triggers:
+  manual: true
+  events:
+    - ci_failed
+stages:
+  - id: classify
+    agent: auto-ci-triage
+    goal: Classify failing checks and collect the smallest useful evidence for each distinct failure.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - logs
+        - recent_changes
+        - commands
+      max_tokens: 5000
+    output: ci_triage
+  - id: diagnose
+    agent: ci-debugger
+    goal: Reproduce or statically diagnose the highest-impact actionable CI failure.
+    pattern:
+      type: react
+      max_iterations: 3
+      requires_verifier: true
+      promotion_gate: evaluation
+    context:
+      load:
+        - ci_triage
+        - relevant_source_files
+      max_tokens: 6000
+    output: ci_diagnosis
+  - id: verify
+    agent: test-engineer
+    goal: Run focused verification and report whether the failure is resolved or still blocked.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - ci_diagnosis
+        - commands
+      max_tokens: 4000
+    output: ci_verification

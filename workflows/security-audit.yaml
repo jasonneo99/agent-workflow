@@ -1,0 +1,48 @@
+id: security-audit
+name: Security Audit
+description: Perform a scoped security, privacy, secrets, dependency, and deployment-risk assessment with reviewable remediation.
+lead: security-reviewer
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: threat-scope
+    agent: technical-architect
+    goal: Define assets, trust boundaries, entry points, data exposure, and the audit scope.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - project_contract
+        - architecture_docs
+        - config_files
+      max_tokens: 5000
+    output: security_scope
+  - id: audit
+    agent: security-reviewer
+    goal: Identify validated security, privacy, secret-handling, dependency, and deployment findings.
+    pattern:
+      type: verifier
+      requires_verifier: true
+      promotion_gate: policy
+    context:
+      load:
+        - security_scope
+        - relevant_source_files
+        - dependency_files
+      max_tokens: 8000
+    output: security_findings
+  - id: remediation
+    agent: test-engineer
+    goal: Define reproducible verification and regression coverage for each actionable finding.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
+    context:
+      load:
+        - security_findings
+        - commands
+      max_tokens: 4000
+    output: security_remediation_plan

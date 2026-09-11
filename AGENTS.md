@@ -60,6 +60,16 @@ Automatic agents:
 - `build-feature`: plan, implement, verify, document, and package a feature.
 - `review-pr`: review changes for bugs, risks, missing tests, UX, and security.
 - `debug-failure`: reproduce, diagnose, fix, and verify a failure.
+- `ci-triage`: classify CI failures, diagnose the highest-impact issue, and verify the correction.
+- `security-audit`: assess threats, secrets, dependencies, privacy, and remediation evidence.
+- `product-discovery`: frame product problems, review experience needs, and assess feasibility.
+- `roadmap-curation`: review daemon suggestions and insert only approved roadmap items without starting work.
+- `dependency-upgrade`: assess, apply, and verify bounded dependency upgrades.
+- `data-migration`: design, approve, execute, and verify reversible data migrations.
+- `performance-investigation`: baseline, diagnose, optimize, and compare measurable performance.
+- `accessibility-review`: audit accessibility barriers and verify remediation coverage.
+- `incident-response`: triage, contain, verify recovery, and document follow-up work.
+- `architecture-decision`: compare options and record an approved architecture decision.
 - `ship-release`: check readiness and prepare release approval.
 - `maintain-context`: refresh project context and reusable memory.
 - `model-improvement`: diagnose and plan local quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.

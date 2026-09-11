@@ -24,6 +24,9 @@ context_budget:
     - AGENTS.md
     - docs/architecture.md
     - .agent-workflow/decisions.md
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: implementation_plan
 prompt: >

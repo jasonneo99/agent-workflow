@@ -19,7 +19,10 @@ cannot: []
 requires_approval: []
 context_budget:
   max_tokens: 2500
-  preferred_sources: []
+  preferred_sources:
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: task_triage
 prompt: >

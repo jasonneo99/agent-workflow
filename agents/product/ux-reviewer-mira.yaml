@@ -26,6 +26,9 @@ context_budget:
     - AGENTS.md
     - docs/ui-system.md
     - docs/competitive-landscape.md
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: ux_review
 prompt: >

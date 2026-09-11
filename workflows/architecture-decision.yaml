@@ -1,0 +1,54 @@
+id: architecture-decision
+name: Architecture Decision
+description: Compare architectural options and record an evidence-backed, reviewable decision with consequences.
+lead: technical-architect
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: constraints
+    agent: product-strategist
+    goal: Clarify the decision, product constraints, success criteria, non-goals, and reversibility needs.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - project_context
+        - roadmap
+        - recent_decisions
+      max_tokens: 4500
+    output: architecture_constraints
+  - id: compare
+    agent: technical-architect
+    goal: Compare credible options across complexity, security, data, operations, cost, and portability.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    subagents:
+      - backend-engineer
+      - database-engineer
+      - security-reviewer
+    context:
+      load:
+        - architecture_constraints
+        - architecture_docs
+        - relevant_source_files
+      max_tokens: 8000
+    output: architecture_options
+  - id: record
+    agent: docs-maintainer
+    goal: Record the explicitly approved option, rationale, alternatives, consequences, and review trigger as an ADR.
+    pattern:
+      type: finalizer
+      requires_verifier: true
+      promotion_gate: policy
+    approval_required: true
+    context:
+      load:
+        - architecture_options
+        - recent_decisions
+      max_tokens: 4000
+    output: architecture_decision_record

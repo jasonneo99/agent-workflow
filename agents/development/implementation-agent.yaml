@@ -25,6 +25,9 @@ context_budget:
     - AGENTS.md
     - relevant_source_files
     - .agent-workflow/commands.md
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: change_summary
 prompt: >

@@ -10,6 +10,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
+import { createClient } from "redis";
 import YAML from "yaml";
 import {
   byId,
@@ -138,7 +139,7 @@ function envFlagEnabled(value: string | undefined): boolean {
 }
 
 program.hook("preAction", async (_command, actionCommand) => {
-  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "roadmap-audit", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "server-approval-action", "server-approval-action-plan", "server-approval-action-test-adapter", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
+  if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "roadmap-audit", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "server-approval-action", "server-approval-action-plan", "server-approval-action-test-adapter", "jarvis-fleet-contract", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
   const policy = normalizePolicy(process.env.AGENTFLOW_BUNDLE_TRUST_POLICY);
   const verification = await verifyBundle(rootDir, policy);
   if (!verification.allowed) throw new Error(`Bundle trust policy ${policy} rejected ${verification.status}: ${verification.reasons.join(" ")}`);
@@ -345,6 +346,21 @@ type RuntimeMonitorReport = {
       lastOperation: string | null;
       lastExitCode: number | null;
       lastTimedOut: boolean | null;
+      summary: string;
+    };
+    sessionDiagnostics: {
+      counts: { clean: number; crashed: number; incomplete: number; active: number };
+      recentSessions: Array<{
+        pid: number;
+        parentPid: number | null;
+        startedAt: string | null;
+        endedAt: string | null;
+        outcome: "clean" | "crashed" | "incomplete" | "active";
+        exitCode: number | null;
+        commandSpans: number;
+        incompleteCommands: number;
+        lastEvent: string;
+      }>;
       summary: string;
     };
     recovery: {
@@ -1796,7 +1812,7 @@ program
   .command("discover-projects")
   .description("Dry-run local project discovery across governed roots without indexing file contents")
   .option("--roots <list>", "comma-separated roots to scan", path.join(os.homedir(), "Projects"))
-  .option("--max-depth <number>", "maximum directory depth below each root", "5")
+  .option("--max-depth <number>", "maximum directory depth below each root", "1")
   .option("--max-candidates <number>", "maximum candidates to return", "200")
   .option("--spotlight <mode>", "macOS Spotlight mode: auto, on, or off", "auto")
   .option("--write", "write report under .agent-workflow/discovery")
@@ -1827,7 +1843,7 @@ program
   .option("--initialize", "write Agent Workflow project files for selected candidates that are not initialized")
   .option("--index", "register and index selected initialized candidates")
   .option("--profile <profile>", "enterprise or simple", "enterprise")
-  .option("--max-depth <number>", "maximum directory depth below each root", "5")
+  .option("--max-depth <number>", "maximum directory depth below each root", "1")
   .option("--max-candidates <number>", "maximum candidates to return", "200")
   .option("--max-files <number>", "maximum files to index for each selected project", "100")
   .option("--spotlight <mode>", "macOS Spotlight mode: auto, on, or off", "auto")
@@ -3175,6 +3191,16 @@ program
   });
 
 program
+  .command("jarvis-fleet-contract")
+  .description("Inspect the governed Jarvis Voice, Agent Workflow, and Fleet Control integration contract")
+  .option("--json", "print the machine-readable integration contract")
+  .action((options: { json?: boolean }) => {
+    const report = buildJarvisFleetIntegrationContract();
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatJarvisFleetIntegrationContract(report));
+    if (report.status === "blocked") process.exitCode = 2;
+  });
+
+program
   .command("server-request-log")
   .description("Inspect redacted governed server-mode request audit events")
   .option("-l, --limit <number>", "number of recent audit events to show", "50")
@@ -3984,7 +4010,11 @@ program
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
-        const targets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
+        const discoveredTargets = allProjects
+          ? await loadLearningDaemonProjectTargets(projectDir)
+          : [{ projectDir, enabled: true, paused: false, mode, limit }];
+        const targets = discoveredTargets.filter((target) => target.enabled && !target.paused);
+        const skippedTargets = discoveredTargets.filter((target) => !target.enabled || target.paused);
         let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
         let analyzedRuns = 0;
         let proposalCount = 0;
@@ -4011,9 +4041,12 @@ program
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
-        for (const targetProjectDir of targets) {
+        for (const target of targets) {
+          const targetProjectDir = target.projectDir;
           try {
-            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit, daemonId, approvalAutopilotOverride });
+            const targetMode = allProjects ? target.mode : mode;
+            const targetLimit = allProjects ? target.limit : limit;
+            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode: targetMode, limit: targetLimit, daemonId, approvalAutopilotOverride });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
             analyzedRuns += update.report.runsAnalyzed;
@@ -4047,7 +4080,7 @@ program
         }
         mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
         staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
-        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
+        await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
           proposals: proposalCount,
           inboxItems: inboxCount,
           applicationActions,
@@ -4072,6 +4105,14 @@ program
           mcpCleanup,
           staleRunReconciliation
         });
+        await writeLearningDaemonFleetReceipt(projectDir, {
+          daemonId,
+          tick: ticks,
+          discovered: discoveredTargets.length,
+          scheduled: targets.map((target) => ({ projectRootUri: target.projectDir, mode: allProjects ? target.mode : mode, limit: allProjects ? target.limit : limit })),
+          skipped: skippedTargets.map((target) => ({ projectRootUri: target.projectDir, reason: target.paused ? "paused" : "disabled" })),
+          errors: projectErrors
+        });
         if (!options.disableOfflineSync) {
           const offlineSync = await runDaemonOfflineSyncScheduler({
             actor: daemonId,
@@ -4084,7 +4125,7 @@ program
           }
         }
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}/${discoveredTargets.length}, skippedProjects=${skippedTargets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -6434,6 +6475,8 @@ type LearningApprovalItem = {
   decidedAt?: string;
   reviewer?: string;
   note?: string;
+  roadmapAddedAt?: string;
+  roadmapPath?: string;
   proposal: LearningProposal;
 };
 
@@ -6593,6 +6636,18 @@ type LearningSettings = {
   autonomousApplyMaxRisk: LearningRiskLevel;
   approvalAutopilotEnabled: boolean;
   approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
+  daemonEnabled: boolean;
+  daemonPaused: boolean;
+  daemonMode: LearningDaemonMode;
+  daemonRunLimit: number;
+};
+
+type LearningDaemonProjectTarget = {
+  projectDir: string;
+  enabled: boolean;
+  paused: boolean;
+  mode: LearningDaemonMode;
+  limit: number;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -6605,6 +6660,7 @@ type ProjectDiscoveryCandidate = {
   confidence: "high" | "medium" | "low";
   initialized: boolean;
   registered: boolean;
+  managedScope: boolean;
   suggestedCommands: string[];
 };
 
@@ -6716,7 +6772,6 @@ type DashboardHomeHealth = {
   worker: DashboardWorkerStatus;
   supervisor: DashboardSupervisorStatus;
   runtimeMonitor: RuntimeMonitorReport;
-  roadmap: RoadmapDashboardReport;
   queue: DashboardQueueItem[];
   projects: DashboardProjectSummary[];
   services: Awaited<ReturnType<typeof checkServices>>;
@@ -7582,6 +7637,32 @@ type ServerApprovalPreviewReport = {
   notes: string[];
 };
 
+type ServerHighRiskApprovalInboxReport = {
+  kind: "agentflow_server_high_risk_approval_inbox";
+  generatedAt: string;
+  status: "ready" | "empty";
+  readOnly: true;
+  scanned: number;
+  open: number;
+  highRisk: number;
+  items: Array<{
+    approvalId: string;
+    projectId: string | null;
+    projectName: string;
+    workflowId: string;
+    runId: string;
+    approvalStatus: string;
+    actionType: string;
+    target: string;
+    rationale: string;
+    risk: "high";
+    riskReasons: string[];
+    requestedAt: string;
+    dashboardPath: string;
+  }>;
+  notes: string[];
+};
+
 type ServerQueueReport = {
   kind: "agentflow_server_queue_report";
   generatedAt: string;
@@ -7630,6 +7711,7 @@ type ServerApprovalActionReport = {
     rateLimitPerMinute: number;
     rateLimitAccepted: boolean;
     perActionReceiptGate: boolean;
+    sharedReservationAcquired: boolean;
     wouldMutate: boolean;
   };
   mutation: null | {
@@ -7647,6 +7729,61 @@ type ServerApprovalActionReport = {
   checks: ServerApprovalPreviewReport["checks"];
   notes: string[];
 };
+
+type ServerApprovalActionLease = {
+  acquired: boolean;
+  detail: string;
+  release: () => Promise<void>;
+};
+
+async function acquireServerApprovalActionLease(idempotencyKey: string): Promise<ServerApprovalActionLease> {
+  const redisUrl = process.env.REDIS_URL?.trim();
+  if (!redisUrl) {
+    return {
+      acquired: false,
+      detail: "REDIS_URL is required for shared approval-action serialization.",
+      release: async () => undefined
+    };
+  }
+  const client = createClient({ url: redisUrl });
+  client.on("error", () => undefined);
+  const owner = randomUUID();
+  const key = `agentflow:server-approval-action:lease:${stableHash(idempotencyKey)}`;
+  const ttlMs = Math.max(5_000, Math.min(300_000, Number.parseInt(process.env.AGENTFLOW_SERVER_APPROVAL_LEASE_MS ?? "60000", 10) || 60_000));
+  try {
+    await client.connect();
+    const acquired = await client.set(key, owner, { NX: true, PX: ttlMs });
+    if (acquired !== "OK") {
+      await client.quit();
+      return {
+        acquired: false,
+        detail: "Another server process currently owns this approval-action reservation; retry to reuse its durable result.",
+        release: async () => undefined
+      };
+    }
+    return {
+      acquired: true,
+      detail: `Shared Redis reservation acquired for up to ${ttlMs}ms.`,
+      release: async () => {
+        try {
+          await client.eval(
+            "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end",
+            { keys: [key], arguments: [owner] }
+          );
+        } finally {
+          if (client.isOpen) await client.quit();
+        }
+      }
+    };
+  } catch (error) {
+    if (client.isOpen) await client.quit().catch(() => undefined);
+    return {
+      acquired: false,
+      detail: `Shared Redis reservation unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      release: async () => undefined
+    };
+  }
+}
 
 type ServerApprovalActionPlanReport = {
   kind: "agentflow_server_approval_action_plan";
@@ -7678,6 +7815,47 @@ type ServerApprovalActionPlanReport = {
     detail: string;
   }>;
   notes: string[];
+};
+
+type JarvisFleetIntegrationContract = {
+  kind: "agentflow_jarvis_fleet_integration_contract";
+  version: "1.0";
+  generatedAt: string;
+  status: "ready" | "blocked";
+  trustBoundary: string[];
+  operations: Array<{
+    id: "fleet-health" | "high-risk-approvals" | "submit-work" | "approval-action" | "progress";
+    method: "GET" | "POST";
+    path: string;
+    mutates: boolean;
+    role: string;
+    controls: string[];
+    response: string;
+  }>;
+  envelope: {
+    required: string[];
+    forbidden: string[];
+  };
+  readiness: Array<{ label: string; status: ServerReadinessCheckStatus; detail: string }>;
+  rollout: string[];
+};
+
+type ServerDaemonFleetHealthReport = {
+  kind: "agentflow_server_daemon_fleet_health";
+  generatedAt: string;
+  status: "healthy" | "attention";
+  counts: { projects: number; running: number; paused: number; disabled: number; unavailable: number };
+  projects: Array<{
+    projectId: string;
+    name: string;
+    scheduling: "enabled" | "paused" | "disabled";
+    daemonStatus: DashboardLearningDaemonStatus["status"];
+    mode: LearningDaemonMode;
+    runLimit: number;
+    heartbeatAgeMs: number | null;
+    lastHeartbeatAt: string | null;
+    lastError: string | null;
+  }>;
 };
 
 type ServerApprovalActionTestAdapterReport = {
@@ -11125,7 +11303,7 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
     fs.stat(launcherPath).catch(() => null),
     pathExists(path.join(rootDir, "package.json")),
     pathExists(path.join(rootDir, "dist", "apps", "mcp", "src", "index.js")),
-    tailJsonl(stdioLogPath, 12),
+    tailJsonl(stdioLogPath, 80),
     tailJsonl(launcherLogPath, 12)
   ]);
   const pluginEnabled = /\[plugins\."agent-workflow@personal"\][\s\S]*?enabled\s*=\s*true/.test(configText);
@@ -11142,7 +11320,7 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
       };
   if (input.checkMcp) {
     [lastStdioEvents, lastLauncherEvents] = await Promise.all([
-      tailJsonl(stdioLogPath, 12),
+      tailJsonl(stdioLogPath, 80),
       tailJsonl(launcherLogPath, 12)
     ]);
   }
@@ -11158,6 +11336,7 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
   });
   const approvalDiagnostics = buildMcpApprovalDiagnostics(lastStdioEvents);
   const commandDiagnostics = buildMcpCommandDiagnostics(lastStdioEvents);
+  const sessionDiagnostics = buildMcpSessionDiagnostics(lastStdioEvents);
   const recovery = await loadMcpRecoveryStatus();
   return {
     status: ready ? "ok" : "attention",
@@ -11172,7 +11351,7 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
     serverBuilt,
     stdioLogPath,
     launcherLogPath,
-    lastStdioEvents,
+    lastStdioEvents: lastStdioEvents.slice(-12),
     lastLauncherEvents,
     lastSpawnAt: typeof lastSpawn?.ts === "string" ? lastSpawn.ts : null,
     lastExitAt: typeof lastExit?.ts === "string" ? lastExit.ts : null,
@@ -11181,6 +11360,7 @@ async function loadMcpPipelineStatus(input: { checkMcp?: boolean } = {}): Promis
     clientReload,
     approvalDiagnostics,
     commandDiagnostics,
+    sessionDiagnostics,
     recovery
   };
 }
@@ -11221,6 +11401,7 @@ async function writeMcpRecoveryPackage(pipeline: RuntimeMonitorReport["mcpPipeli
     smoke: pipeline.smoke,
     clientReload: pipeline.clientReload,
     approvalDiagnostics: pipeline.approvalDiagnostics,
+    sessionDiagnostics: pipeline.sessionDiagnostics,
     logs: {
       launcher: pipeline.launcherLogPath,
       stdio: pipeline.stdioLogPath
@@ -11254,6 +11435,7 @@ function formatMcpRecoveryMarkdown(payload: {
   smoke: RuntimeMonitorReport["mcpPipeline"]["smoke"];
   clientReload: RuntimeMonitorReport["mcpPipeline"]["clientReload"];
   approvalDiagnostics: RuntimeMonitorReport["mcpPipeline"]["approvalDiagnostics"];
+  sessionDiagnostics: RuntimeMonitorReport["mcpPipeline"]["sessionDiagnostics"];
   logs: { launcher: string; stdio: string };
   recentLauncherEvents: Array<Record<string, unknown>>;
   recentStdioEvents: Array<Record<string, unknown>>;
@@ -11275,6 +11457,7 @@ Repository: \`${payload.repo}\`
 - Pipeline: ${payload.status}
 - Smoke: ${payload.smoke.status} - ${payload.smoke.message}
 - Approval diagnostics: ${payload.approvalDiagnostics.summary}
+- Session diagnostics: ${payload.sessionDiagnostics.summary}
 - Recovery boundary: ${payload.note}
 
 ## Recovery Steps
@@ -11365,6 +11548,56 @@ function buildMcpCommandDiagnostics(events: Array<Record<string, unknown>>): Run
     lastTimedOut,
     summary
   };
+}
+
+function buildMcpSessionDiagnostics(events: Array<Record<string, unknown>>): RuntimeMonitorReport["mcpPipeline"]["sessionDiagnostics"] {
+  const grouped = new Map<number, Array<Record<string, unknown>>>();
+  for (const event of events) {
+    if (typeof event.pid !== "number") continue;
+    const session = grouped.get(event.pid) ?? [];
+    session.push(event);
+    grouped.set(event.pid, session);
+  }
+  const recentSessions = [...grouped.entries()].map(([pid, sessionEvents]) => {
+    const ordered = [...sessionEvents].sort((left, right) => String(left.ts ?? "").localeCompare(String(right.ts ?? "")));
+    const start = ordered.find((event) => event.event === "start");
+    const exit = [...ordered].reverse().find((event) => event.event === "exit");
+    const terminalError = ordered.find((event) => event.event === "uncaught-exception" || event.event === "unhandled-rejection" || event.event === "stdout-error" || event.event === "connect-failed");
+    const clientClosed = ordered.some((event) => event.event === "stdin-end" || event.event === "stdin-close");
+    const commandStarts = ordered.filter((event) => event.event === "command-start").length;
+    const commandCloses = ordered.filter((event) => event.event === "command-close" || event.event === "command-error" || event.event === "command-timeout").length;
+    const exitCode = typeof exit?.code === "number" ? exit.code : null;
+    const outcome = terminalError || exitCode !== null && exitCode !== 0
+      ? "crashed" as const
+      : exit
+        ? commandStarts > commandCloses ? "incomplete" as const : "clean" as const
+        : clientClosed || commandStarts > commandCloses
+          ? "incomplete" as const
+          : "active" as const;
+    return {
+      pid,
+      parentPid: typeof start?.ppid === "number" ? start.ppid : null,
+      startedAt: typeof start?.ts === "string" ? start.ts : null,
+      endedAt: typeof exit?.ts === "string" ? exit.ts : null,
+      outcome,
+      exitCode,
+      commandSpans: commandStarts,
+      incompleteCommands: Math.max(0, commandStarts - commandCloses),
+      lastEvent: String(ordered.at(-1)?.event ?? "unknown")
+    };
+  }).sort((left, right) => String(right.startedAt ?? right.endedAt ?? "").localeCompare(String(left.startedAt ?? left.endedAt ?? ""))).slice(0, 12);
+  const counts = {
+    clean: recentSessions.filter((session) => session.outcome === "clean").length,
+    crashed: recentSessions.filter((session) => session.outcome === "crashed").length,
+    incomplete: recentSessions.filter((session) => session.outcome === "incomplete").length,
+    active: recentSessions.filter((session) => session.outcome === "active").length
+  };
+  const summary = !recentSessions.length
+    ? "No MCP stdio sessions are present in the bounded lifecycle window."
+    : counts.crashed || counts.incomplete
+      ? `${counts.crashed} crashed and ${counts.incomplete} incomplete MCP session(s) need review; ${counts.clean} closed cleanly.`
+      : `${counts.clean} recent MCP session(s) closed cleanly${counts.active ? `; ${counts.active} appear active` : ""}.`;
+  return { counts, recentSessions, summary };
 }
 
 function buildMcpClientReloadGuidance(input: {
@@ -11735,6 +11968,7 @@ function formatMcpPipelineStatus(pipeline: RuntimeMonitorReport["mcpPipeline"]):
     ...pipeline.clientReload.steps.map((step) => `- ${step}`),
     `Approval diagnostics: ${pipeline.approvalDiagnostics.summary}`,
     `Approval fallback: ${pipeline.approvalDiagnostics.fallbackCommand}`,
+    `Session diagnostics: ${pipeline.sessionDiagnostics.summary}`,
     `Recovery package: ${pipeline.recovery.status}${pipeline.recovery.lastWrittenAt ? ` (${pipeline.recovery.lastWrittenAt})` : ""}`,
     `Recovery command: ${pipeline.recovery.writeCommand}`,
     `Recovery runbook: ${pipeline.recovery.markdownPath}`,
@@ -12130,10 +12364,10 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
       implemented: true,
       remoteEligible: true,
       dryRunDefault: true,
-      executionGate: "mutation-disabled; future AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1 gate required",
+      executionGate: "AGENTFLOW_SERVER_MODE=1 and AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1",
       roleCapability: "can_approve_actions / can_execute_approved_actions",
-      receipt: "future approval decision and execution receipts",
-      requiredControls: ["auth", "registered project id", "approval id", "role check", "separation-of-duties check", "policy recheck", "client idempotency key", "request size limit", "rate limit", "explicit execution gate", "per-action receipt gate", "idempotency reuse", "rollback evidence", "redacted request audit log", "mutation disabled"],
+      receipt: "approval decision and execution receipts",
+      requiredControls: ["auth", "registered project id", "approval id", "role check", "separation-of-duties check", "policy recheck", "client idempotency key", "request size limit", "rate limit", "explicit execution gate", "per-action receipt gate", "idempotency reuse", "shared Redis reservation", "rollback evidence", "redacted request audit log"],
       presentControls: [
         ...(authReady ? ["auth"] : []),
         "registered project id",
@@ -12147,14 +12381,14 @@ function buildServerMutationControlReport(): ServerMutationControlReport {
         "explicit execution gate",
         ...(approvalActionPlan.summary.receiptPlanReady ? ["per-action receipt gate"] : ["per-action receipt gate pending"]),
         ...(approvalActionPlan.summary.idempotencyReuseReady ? ["idempotency reuse"] : ["idempotency reuse pending"]),
+        ...(process.env.REDIS_URL?.trim() ? ["shared Redis reservation"] : ["shared Redis reservation pending"]),
         ...(approvalActionPlan.summary.rollbackEvidenceReady ? ["rollback evidence"] : ["rollback evidence pending"]),
-        "redacted request audit log",
-        "mutation disabled"
+        "redacted request audit log"
       ],
       notes: [
         "Accepts the governed remote approval/action contract and audits requests.",
-        "Always returns dry-run/mutation-disabled in this release so clients can integrate safely before state changes are enabled.",
-        "See /api/server-approval-action-plan for the per-decision receipt, idempotency, and rollback checklist."
+        "Mutation remains disabled by default and requires the dedicated server and approval-action gates.",
+        "A Redis reservation serializes each idempotency key across server processes and fails closed if shared coordination is unavailable."
       ]
     },
     {
@@ -12480,6 +12714,109 @@ function formatServerApprovalActionPlanReport(report: ServerApprovalActionPlanRe
     "Notes:",
     ...report.notes.map((note) => `- ${note}`)
   ].join("\n");
+}
+
+function buildJarvisFleetIntegrationContract(): JarvisFleetIntegrationContract {
+  const serverMode = envFlag("AGENTFLOW_SERVER_MODE");
+  const authMode = (process.env.AGENTFLOW_SERVER_AUTH ?? "disabled").trim().toLowerCase();
+  const authConfigured = authMode === "oidc-proxy" || authMode === "token" && Boolean(process.env.AGENTFLOW_SERVER_TOKEN?.trim());
+  const redisConfigured = Boolean(process.env.REDIS_URL?.trim());
+  const readiness: JarvisFleetIntegrationContract["readiness"] = [
+    { label: "Governed server mode", status: serverMode ? "pass" : "warn", detail: serverMode ? "Server mode is enabled." : "Enable only on the trusted Heimdall/Tailscale surface for a live canary." },
+    { label: "Authentication", status: authConfigured ? "pass" : "warn", detail: authConfigured ? `${authMode} authentication is configured.` : "A live Jarvis bridge requires non-disabled auth and an externally provisioned token." },
+    { label: "Shared idempotency", status: redisConfigured ? "pass" : "fail", detail: redisConfigured ? "Redis is configured for cross-process approval reservations." : "REDIS_URL is required before Jarvis may request mutations." },
+    { label: "Project identity", status: "pass", detail: "Requests use registered project IDs; arbitrary filesystem paths are rejected." },
+    { label: "Policy and receipts", status: "pass", detail: "Queue and approval actions recheck project policy and preserve durable receipts." }
+  ];
+  return {
+    kind: "agentflow_jarvis_fleet_integration_contract",
+    version: "1.0",
+    generatedAt: new Date().toISOString(),
+    status: readiness.some((item) => item.status === "fail") ? "blocked" : "ready",
+    trustBoundary: [
+      "Jarvis Voice captures intent and presents bounded status; it does not execute shell commands.",
+      "Jarvis Orchestrator resolves registered projects and Agent Workflow operations on Heimdall.",
+      "Agent Workflow enforces authentication, roles, project policy, idempotency, approval gates, and receipts.",
+      "Fleet Control accepts only separately signed, allowlisted host-action envelopes over the trusted fleet network."
+    ],
+    operations: [
+      { id: "fleet-health", method: "GET", path: "/api/server-daemon-fleet-health", mutates: false, role: "viewer", controls: ["bearer authentication", "registered projects", "bounded response", "no host paths or secrets"], response: "Project daemon scheduling, freshness, mode, limits, and bounded errors." },
+      { id: "high-risk-approvals", method: "GET", path: "/api/server-high-risk-approvals", mutates: false, role: "viewer", controls: ["bearer authentication", "open approvals only", "high-risk classification", "bounded redaction", "no mutation"], response: "Decision-ready approval cards with local dashboard paths." },
+      { id: "submit-work", method: "POST", path: "/api/server-queue", mutates: true, role: "requester", controls: ["registered projectId", "allowlisted workflow", "client idempotencyKey", "queue gate", "policy check", "receipt"], response: "Queued run identity or idempotent replay." },
+      { id: "approval-action", method: "POST", path: "/api/server-approval-action", mutates: true, role: "approver/executor", controls: ["approval ownership", "role gate", "separation of duties", "policy recheck", "Redis lease", "durable receipt"], response: "Decision/execution receipt or fail-closed reason." },
+      { id: "progress", method: "GET", path: "/api/runs", mutates: false, role: "viewer", controls: ["bridge-side project filtering", "bounded pagination", "redaction"], response: "Bounded run progress and final receipt links." }
+    ],
+    envelope: {
+      required: ["version", "requestId", "projectId", "operation", "actor", "actorRole", "idempotencyKey", "requestedAt"],
+      forbidden: ["raw shell command", "arbitrary filesystem path", "credential or secret", "natural-language-to-shell payload", "unbounded output request", "policy override"]
+    },
+    readiness,
+    rollout: [
+      "Expose read-only fleet health through the authenticated Jarvis bridge.",
+      "Canary queue preview with execute=false and verify project identity/redaction.",
+      "Enable one low-risk idempotent queued workflow and verify its receipt plus replay.",
+      "Surface high-risk approvals in Jarvis without auto-deciding them.",
+      "Canary one explicit approval decision, then verify Redis serialization, receipts, and rollback evidence.",
+      "Keep Fleet Control host execution as a separately signed downstream boundary."
+    ]
+  };
+}
+
+function formatJarvisFleetIntegrationContract(report: JarvisFleetIntegrationContract): string {
+  return [
+    `Jarvis / Fleet Management integration contract v${report.version}`,
+    `Status: ${report.status}`,
+    "",
+    "Trust boundary:",
+    ...report.trustBoundary.map((item) => `- ${item}`),
+    "",
+    "Operations:",
+    ...report.operations.map((item) => `- ${item.method} ${item.path} (${item.id}, ${item.role})${item.mutates ? " [mutation]" : " [read-only]"}: ${item.response}`),
+    "",
+    "Readiness:",
+    ...report.readiness.map((item) => `- ${item.status.toUpperCase()} ${item.label}: ${item.detail}`),
+    "",
+    "Rollout:",
+    ...report.rollout.map((item, index) => `${index + 1}. ${item}`)
+  ].join("\n");
+}
+
+async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthReport> {
+  const registry = await loadServerProjectRegistryReport({ limit: 100, includeRoots: true });
+  const projects = await Promise.all(registry.projects.filter((project) => project.rootUri).map(async (project) => {
+    const projectRoot = project.rootUri as string;
+    const [settings, heartbeat] = await Promise.all([
+      readLearningSettings(projectRoot).catch(() => null),
+      loadLearningDaemonStatus(projectRoot)
+    ]);
+    const enabled = settings?.daemonEnabled ?? true;
+    const paused = settings?.daemonPaused ?? false;
+    return {
+      projectId: project.projectId,
+      name: project.name,
+      scheduling: (!enabled ? "disabled" : paused ? "paused" : "enabled") as "enabled" | "paused" | "disabled",
+      daemonStatus: heartbeat.status,
+      mode: settings?.daemonMode ?? heartbeat.mode ?? "apply-approved",
+      runLimit: settings?.daemonRunLimit ?? heartbeat.limit ?? 50,
+      heartbeatAgeMs: heartbeat.ageMs === null ? null : Math.max(0, Math.round(heartbeat.ageMs)),
+      lastHeartbeatAt: heartbeat.lastHeartbeatAt,
+      lastError: heartbeat.lastError ? truncateText(heartbeat.lastError, 240) : null
+    };
+  }));
+  const counts = {
+    projects: projects.length,
+    running: projects.filter((project) => project.daemonStatus === "running").length,
+    paused: projects.filter((project) => project.scheduling === "paused").length,
+    disabled: projects.filter((project) => project.scheduling === "disabled").length,
+    unavailable: projects.filter((project) => project.scheduling === "enabled" && project.daemonStatus !== "running").length
+  };
+  return {
+    kind: "agentflow_server_daemon_fleet_health",
+    generatedAt: new Date().toISOString(),
+    status: counts.unavailable > 0 ? "attention" : "healthy",
+    counts,
+    projects
+  };
 }
 
 function buildServerApprovalActionTestAdapterReport(): ServerApprovalActionTestAdapterReport {
@@ -13276,6 +13613,64 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
   ].join("\n");
 }
 
+function redactServerApprovalText(value: string, maxLength: number): string {
+  return truncateMiddle(value
+    .replace(/\b(password|passwd|pwd|secret|token|api[_-]?key)\s*=\s*([^\s'"`]+)/giu, "$1=[REDACTED]")
+    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+\/-]+/giu, "$1 [REDACTED]")
+    .replace(/\/(?:Users|home)\/[^\s'"`]+/gu, "[HOST_PATH]"), maxLength);
+}
+
+async function loadServerHighRiskApprovalInbox(limit: number): Promise<ServerHighRiskApprovalInboxReport> {
+  const boundedLimit = Math.max(1, Math.min(limit, 25));
+  const approvals = (await listActionApprovals({ limit: Math.max(100, boundedLimit * 8) }))
+    .filter(isOpenApproval);
+  const projects = await listProjectStorageSummaries(1000);
+  const projectIds = new Map(projects.map((project) => [project.rootUri, project.id]));
+  const projectConfigs = new Map<string, ProjectConfig | null>();
+  const items: ServerHighRiskApprovalInboxReport["items"] = [];
+  for (const approval of approvals) {
+    if (items.length >= boundedLimit) break;
+    if (!projectConfigs.has(approval.projectRootUri)) {
+      projectConfigs.set(approval.projectRootUri, await loadLocalProjectConfig(approval.projectRootUri).catch(() => null));
+    }
+    const project = projectConfigs.get(approval.projectRootUri);
+    const classification = project
+      ? classifyApprovalAutopilotRisk(approval, project)
+      : { eligible: false, risk: "high" as const, reasons: ["Project policy could not be loaded; manual review is required."] };
+    if (classification.risk !== "high") continue;
+    items.push({
+      approvalId: approval.id,
+      projectId: projectIds.get(approval.projectRootUri) ?? null,
+      projectName: approval.projectName,
+      workflowId: approval.workflowId,
+      runId: approval.runId,
+      approvalStatus: approval.status,
+      actionType: approval.actionType,
+      target: redactServerApprovalText(approval.target, 240),
+      rationale: redactServerApprovalText(approval.rationale, 360),
+      risk: "high",
+      riskReasons: classification.reasons.map((reason) => redactServerApprovalText(reason, 240)).slice(0, 5),
+      requestedAt: approval.createdAt,
+      dashboardPath: `/approvals?status=open&run=${encodeURIComponent(approval.runId)}`
+    });
+  }
+  return {
+    kind: "agentflow_server_high_risk_approval_inbox",
+    generatedAt: new Date().toISOString(),
+    status: items.length ? "ready" : "empty",
+    readOnly: true,
+    scanned: approvals.length,
+    open: approvals.length,
+    highRisk: items.length,
+    items,
+    notes: [
+      "This endpoint is read-only and never approves, rejects, executes, or dismisses an action.",
+      "Targets and rationales are bounded and redact secret-shaped values plus host filesystem paths.",
+      "Use the local Agent Workflow approvals dashboard for the human decision."
+    ]
+  };
+}
+
 async function loadServerApprovalPreview(input: {
   projectId: string;
   approvalId: string;
@@ -13629,11 +14024,20 @@ async function loadServerApprovalActionReport(input: {
   ];
   let mutation: ServerApprovalActionReport["mutation"] = null;
   const approvalBefore = input.approvalId.trim() ? await getActionApproval(input.approvalId.trim()).catch(() => null) : null;
-  const canMutate = Boolean(Boolean(input.request)
+  const mutationGatesPass = Boolean(Boolean(input.request)
     && checks.filter((check) => check.label !== "Mutation").every((check) => check.status !== "fail")
     && (decision !== "execute" && decision !== "approve-and-execute" && decision !== "dismiss" || preview.controls.policyRecheck === "pass")
     && approvalBefore);
-  if (canMutate && approvalBefore) {
+  const lease = mutationGatesPass
+    ? await acquireServerApprovalActionLease(receiptIdempotencyKey)
+    : { acquired: false, detail: "Shared reservation was not attempted because another mutation gate failed.", release: async () => undefined };
+  checks.push({
+    label: "Shared idempotency reservation",
+    status: mutationGatesPass ? lease.acquired ? "pass" : "fail" : "warn",
+    detail: lease.detail
+  });
+  const canMutate = mutationGatesPass && lease.acquired;
+  if (canMutate && approvalBefore) try {
     const previous = await findRunActionByIdempotencyKey({
       runId: approvalBefore.runId,
       artifactKind: "server_approval_action",
@@ -13712,6 +14116,8 @@ async function loadServerApprovalActionReport(input: {
       mutation = { receiptUri, receiptHash: stableHash(receiptContent), requestHash, replayed: false, outcome: result.ok ? "completed" : "failed", title: receiptContent.title, output: receiptContent.output, beforeStatus: approvalBefore.status, afterStatus: approvalAfter?.status ?? null, rollbackEvidence };
       checks.push({ label: "Mutation", status: result.ok ? "pass" : "fail", detail: result.ok ? `Mutation completed and durable receipt ${receiptUri} was recorded.` : `Mutation failed and a durable failure receipt was recorded: ${result.error}` });
     }
+  } finally {
+    await lease.release();
   }
   const failures = checks.filter((check) => check.status === "fail").length;
   const warnings = checks.filter((check) => check.status === "warn").length;
@@ -13735,6 +14141,7 @@ async function loadServerApprovalActionReport(input: {
       rateLimitPerMinute: limits.rateLimitPerMinute,
       rateLimitAccepted: rateLimit.ok,
       perActionReceiptGate: true,
+      sharedReservationAcquired: lease.acquired,
       wouldMutate: canMutate
     },
     mutation,
@@ -13742,7 +14149,8 @@ async function loadServerApprovalActionReport(input: {
     notes: [
       "This is the governed remote approval/action endpoint contract.",
       "Mutation is disabled by default and requires both server mode and the dedicated approval-action gate.",
-      "Execution reuses the local approval paths; each remote request records a durable request-bound result and duplicate keys return that result without rerunning the action."
+      "Execution reuses the local approval paths; each remote request records a durable request-bound result and duplicate keys return that result without rerunning the action.",
+      "A shared Redis reservation serializes receipt lookup, mutation, and receipt creation across server processes; unavailable or contended coordination fails closed."
     ]
   };
   if (input.request) {
@@ -13775,6 +14183,7 @@ function formatServerApprovalActionReport(report: ServerApprovalActionReport): s
     `- approvalActionExecutionEnabled: ${report.controls.approvalActionExecutionEnabled}`,
     `- clientProvidedIdempotency: ${report.controls.clientProvidedIdempotency}`,
     `- perActionReceiptGate: ${report.controls.perActionReceiptGate}`,
+    `- sharedReservationAcquired: ${report.controls.sharedReservationAcquired}`,
     `- wouldMutate: ${report.controls.wouldMutate}`,
     ...(report.mutation ? [
       `- replayed: ${report.mutation.replayed}`,
@@ -14740,38 +15149,48 @@ async function loadDashboardUsageSummary(runs: DashboardRunStatus[], input: { in
   let mockRunsExcluded = 0;
   let mockStagesExcluded = 0;
 
-  for (const run of runs) {
-    const details = await getWorkflowRunDetails(run.id);
-    if (!details.run) {
-      continue;
-    }
-    const artifacts = await listArtifacts({ runId: run.id });
+  const loadedRuns = await Promise.all(runs.map(async (run) => {
+    const [details, artifacts] = await Promise.all([
+      getWorkflowRunDetails(run.id),
+      listArtifacts({ runId: run.id })
+    ]);
+    if (!details.run) return null;
     const report = buildCostQualityReport({
       run: details.run,
       tasks: details.tasks,
       receipts: details.receipts,
       artifacts
     });
+    return { run: details.run, artifacts, report };
+  }));
+
+  const includedRuns = loadedRuns.filter((loaded): loaded is NonNullable<typeof loaded> => loaded !== null);
+  const runEstimates = await Promise.all(includedRuns.map(async ({ run, artifacts, report }) => {
     const mockStages = report.stages.filter((stage) => stage.providerId === "mock");
     const realStages = report.stages.filter((stage) => stage.providerId !== "mock");
     const mockOnlyRun = report.routedStages > 0 && realStages.length === 0;
     if (!input.includeMock && mockOnlyRun) {
-      mockRunsExcluded += 1;
-      mockStagesExcluded += mockStages.length;
-      continue;
+      return { run, report, mockStages, realStages, mockOnlyRun, estimate: null };
     }
-
-    metricRuns.push(details.run);
-    metricStages.push(...(input.includeMock ? report.stages : realStages));
-    if (!input.includeMock) {
-      mockStagesExcluded += mockStages.length;
-    }
-    estimates.push(await buildRunUsageEstimate({
-      run: details.run,
+    const estimate = await buildRunUsageEstimate({
+      run,
       artifacts,
       routedStages: input.includeMock ? report.routedStages : Math.max(1, realStages.length),
       projectTokenTotals
-    }));
+    });
+    return { run, report, mockStages, realStages, mockOnlyRun, estimate };
+  }));
+
+  for (const loaded of runEstimates) {
+    if (loaded.mockOnlyRun && !input.includeMock) {
+      mockRunsExcluded += 1;
+      mockStagesExcluded += loaded.mockStages.length;
+      continue;
+    }
+    metricRuns.push(loaded.run);
+    metricStages.push(...(input.includeMock ? loaded.report.stages : loaded.realStages));
+    if (!input.includeMock) mockStagesExcluded += loaded.mockStages.length;
+    if (loaded.estimate) estimates.push(loaded.estimate);
   }
 
   const totalLatencyMs = metricStages.reduce((sum, stage) => sum + (stage.latencyMs ?? 0), 0);
@@ -16065,7 +16484,11 @@ function buildAgentImprovementPromotionQueue(
   );
   const items: AgentImprovementPromotionItem[] = selectedEvaluations.flatMap((evaluation) => {
     const patch = patchById.get(evaluation.patchId);
-    if (!patch) {
+    // A candidate can remain statistically interesting after its recommended
+    // YAML has already been applied. Do not recreate an actionable promotion
+    // when regeneration produces no actual change; the previous queue entry
+    // will be retained below as superseded audit history.
+    if (!patch || !patch.unifiedDiff.trim()) {
       return [];
     }
     const id = `promotion-${patch.id}`;
@@ -16994,6 +17417,8 @@ function buildLearningApprovalQueue(
         decidedAt: existing?.decidedAt ?? (status === "approved" && autoApproved ? generatedAt : undefined),
         reviewer: existing?.reviewer ?? (status === "approved" && autoApproved ? "learning-daemon" : undefined),
         note: existing?.note ?? (status === "approved" && autoApproved ? `Autonomous local approval: risk=${proposal.riskLevel}, threshold=${autonomousApplyMaxRisk}.` : undefined),
+        roadmapAddedAt: existing?.roadmapAddedAt,
+        roadmapPath: existing?.roadmapPath,
         proposal
       };
     })
@@ -17843,13 +18268,19 @@ async function loadDashboardLocalHoldoutRoutingStatus(
     value.kind === "agentflow_local_holdout_routing_promotion" && (value.status === "ready" || value.status === "blocked")
   );
   const promotableSuites = results.value?.results.filter((result) => result.decision === "propose_routing_note").map((result) => result.suiteId) ?? [];
-  const evidenceSuites = promotion.value?.preference?.evidenceSuites ?? [];
+  const evidenceSuites = promotion.value?.preference?.evidenceSuites
+    ?? results.value?.results.map((result) => result.suiteId)
+    ?? [];
   const thresholdSummary = promotion.value?.preference
     ? `min suites ${promotion.value.preference.thresholds?.minEvidenceSuites ?? "legacy"}, min quality ${promotion.value.preference.thresholds?.minQualityDelta ?? "legacy"}, max latency ${promotion.value.preference.thresholds?.maxLatencyRegressionMs ?? "legacy"}ms`
-    : null;
+    : results.value
+      ? results.value.decision === "eligible_for_review" ? "met; eligible for promotion review" : `not met; ${results.value.decision.replaceAll("_", " ")}`
+      : null;
   const evidenceSummary = promotion.value?.preference
     ? `promotable ${promotion.value.preference.evidence?.promotableSuites ?? evidenceSuites.length}, worst quality ${promotion.value.preference.evidence?.worstQualityDelta ?? "n/a"}, worst latency ${promotion.value.preference.evidence?.worstLatencyDeltaMs ?? "n/a"}ms`
-    : null;
+    : results.value
+      ? `${results.value.summary.gateReady}/${results.value.summary.suites} suites gate-ready; ${results.value.summary.promotable} promotable`
+      : null;
   const localFallbackRate = localEvidence?.localFallbackRate ?? null;
   const localStageCount = localEvidence?.localStageCount ?? 0;
   const hostedStageCount = localEvidence?.hostedStageCount ?? 0;
@@ -18260,6 +18691,7 @@ async function runLocalLlmRouteSmoke(input: {
     workflowId: "provider-smoke",
     projectPath: projectDir,
     task: "Run a low-risk local LLM route smoke. Return concise structured output only. Do not request commands or file writes.",
+    providerOverride: "local",
     modelTierOverride: "fast",
     sourceTokenBudget: "1200",
     sourceMaxFiles: "8",
@@ -18318,6 +18750,7 @@ async function runLocalLlmRouteSmoke(input: {
     smokeOutcomes
   });
   const completed = watchResult.status === "completed";
+  const localRouteVerified = completed && routeClass === "local-selected";
   const nextAction = routeClass === "local-selected"
     ? "Local route receipt exists. Continue monitoring quality, fallback, latency, and feedback before expanding local routing."
     : routeClass === "local-skipped"
@@ -18327,14 +18760,16 @@ async function runLocalLlmRouteSmoke(input: {
     kind: "agentflow_local_llm_route_smoke",
     generatedAt: new Date().toISOString(),
     projectRootUri: projectDir,
-    status: completed ? "completed" : "failed",
+    status: localRouteVerified ? "completed" : "failed",
     runId: queued.run.runId,
     workflowId: "provider-smoke",
     routeClass,
     route,
     checklist,
-    summary: completed
-      ? `Smoke run completed with route class ${routeClass}.`
+    summary: localRouteVerified
+      ? "Smoke run completed and verified a local provider route."
+      : completed
+        ? `Smoke workflow completed, but local route verification failed with route class ${routeClass}.`
       : `Smoke run ended with status ${watchResult.status}.`,
     nextAction,
     exportMarkdownPath: exportResult.ok ? exportResult.markdownPath : null,
@@ -18797,13 +19232,13 @@ function localModelCandidateCatalog(
       reason: "Better fit for larger code context, refactor planning, and stronger local standard-tier developer work."
     },
     {
-      modelId: "deepseek-r1:14b",
-      aliases: ["deepseek-r1:14b"],
+      modelId: "qwen3:8b",
+      aliases: ["qwen3:8b", "qwen3"],
       label: "Local reasoning starter",
       primaryTier: "reasoning" as const,
       tierFit: ["reasoning"] as ModelTier[],
-      hardwareFit: hardwareClass === "large" ? "good" as const : "stretch" as const,
-      reason: "Candidate for local reasoning experiments, but keep hosted fallback for high-risk decisions."
+      hardwareFit: hardwareClass === "large" ? "excellent" as const : "good" as const,
+      reason: "Controllable reasoning candidate for Apple Silicon; keep hosted fallback for high-risk decisions until it passes local benchmarks."
     }
   ];
   const large = hardwareClass === "large" ? [
@@ -19103,30 +19538,30 @@ async function executeLocalLlmBenchmarkPrompt(runtime: LocalLlmRuntimeProbe, mod
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(`${runtime.baseUrl.replace(/\/+$/u, "")}/chat/completions`, {
+    const runtimeUrl = new URL(runtime.baseUrl);
+    const ollamaNative = runtimeUrl.port === "11434";
+    const messages = [
+      { role: "system", content: "You are a concise local developer-assistant benchmark. Follow the requested format exactly." },
+      { role: "user", content: prompt }
+    ];
+    const response = await fetch(ollamaNative ? `${runtimeUrl.origin}/api/chat` : `${runtime.baseUrl.replace(/\/+$/u, "")}/chat/completions`, {
       method: "POST",
       signal: controller.signal,
       headers: {
         "content-type": "application/json",
         ...(process.env.LOCAL_MODEL_API_KEY ? { authorization: `Bearer ${process.env.LOCAL_MODEL_API_KEY}` } : {})
       },
-      body: JSON.stringify({
-        model: modelId,
-        messages: [
-          { role: "system", content: "You are a concise local developer-assistant benchmark. Follow the requested format exactly." },
-          { role: "user", content: prompt }
-        ],
-        temperature: 0.1,
-        max_tokens: 160
-      })
+      body: JSON.stringify(ollamaNative
+        ? { model: modelId, messages, stream: false, think: false, options: { temperature: 0.1, num_predict: 160 } }
+        : { model: modelId, messages, temperature: 0.1, max_tokens: 160 })
     });
     const latencyMs = Date.now() - started;
     const text = await response.text();
     if (!response.ok) {
       return { ok: false, latencyMs, output: null, error: `HTTP ${response.status}: ${truncateText(text, 220)}` };
     }
-    const parsed = JSON.parse(text) as { choices?: Array<{ message?: { content?: string } }> };
-    const output = parsed.choices?.[0]?.message?.content?.trim() ?? "";
+    const parsed = JSON.parse(text) as { message?: { content?: string }; choices?: Array<{ message?: { content?: string } }> };
+    const output = (ollamaNative ? parsed.message?.content : parsed.choices?.[0]?.message?.content)?.trim() ?? "";
     return output
       ? { ok: true, latencyMs, output, error: null }
       : { ok: false, latencyMs, output: null, error: "No chat completion content returned." };
@@ -19743,7 +20178,7 @@ function formatLocalLlmInventoryReport(report: LocalLlmInventoryReport): string 
     `Recommendation: ${report.recommendation}`,
     "",
     "Cache roots",
-    ...report.cacheRoots.map((root) => `- ${root.label}: ${root.exists ? root.sizeLabel : "missing"} (${root.path})${root.error ? ` - ${root.error}` : ""}`),
+    ...report.cacheRoots.map((root) => `- ${root.label}: ${root.exists ? root.sizeLabel : "not installed (optional)"} (${root.path})${root.error ? ` - ${root.error}` : ""}`),
     "",
     "Models",
     ...(report.models.length ? report.models.map((model) => `- ${model.modelId}: ${model.sizeLabel}, ${model.cacheRoot}, last used ${model.lastUsedAt ?? "unknown"}${model.pruneCandidate ? " [prune candidate]" : ""}`) : ["- none"])
@@ -19752,7 +20187,7 @@ function formatLocalLlmInventoryReport(report: LocalLlmInventoryReport): string 
 
 function formatLocalLlmInventoryMarkdown(report: Omit<LocalLlmInventoryReport, "files">): string {
   const rootRows = report.cacheRoots.map((root) =>
-    `| ${root.label} | ${root.exists ? "yes" : "no"} | ${root.sizeLabel} | ${root.modelDirectories} | ${root.lastModifiedAt ?? "n/a"} | \`${root.path}\` | ${root.error ?? ""} |`
+    `| ${root.label} | ${root.exists ? "found" : "not installed (optional)"} | ${root.sizeLabel} | ${root.modelDirectories} | ${root.lastModifiedAt ?? "n/a"} | \`${root.path}\` | ${root.error ?? (root.exists ? "" : "No action required; this runtime is optional.")} |`
   ).join("\n");
   const modelRows = report.models.map((model) =>
     `| ${model.modelId} | ${model.source} | ${model.cacheRoot} | ${model.sizeLabel} | ${model.lastUsedAt ?? "unknown"} | ${model.recommended ? "yes" : "no"} | ${model.pruneCandidate ? "yes" : "no"} | ${model.reason} |`
@@ -22434,6 +22869,66 @@ async function writeLearningApprovalQueue(projectDir: string, queue: LearningApp
   await fs.writeFile(path.join(learningDir, "approval-inbox.md"), formatLearningApprovalQueueMarkdown(queue), "utf8");
 }
 
+async function approveLearningProposalIntoRoadmap(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+  const requestedProject = form.get("project")?.trim();
+  const proposalId = form.get("proposalId")?.trim();
+  if (!requestedProject || !proposalId) return { ok: false, error: "Project and proposal are required." };
+
+  const projectDir = path.resolve(process.cwd(), requestedProject);
+  const queue = await readLearningApprovalQueue(projectDir).catch(() => null);
+  if (!queue) return { ok: false, error: "No learning proposal inbox exists for this project." };
+  const item = queue.items.find((candidate) => candidate.id === proposalId || candidate.proposalId === proposalId);
+  if (!item) return { ok: false, error: `Learning proposal not found: ${proposalId}` };
+  if (item.roadmapAddedAt) {
+    return { ok: true, title: "Suggestion already in roadmap", output: `${item.proposal.title} is already recorded in ${item.roadmapPath ?? "the roadmap"}.` };
+  }
+
+  let roadmapPath: string;
+  try {
+    roadmapPath = (await loadProjectConfig(projectDir)).project.roadmap_path;
+  } catch {
+    roadmapPath = (await discoverProjectRoadmap(projectDir)).relativePath;
+  }
+  const ensuredRoadmap = await ensureProjectRoadmap(projectDir);
+  roadmapPath = ensuredRoadmap.relativePath;
+  await ensureConfiguredRoadmapPath(projectDir, roadmapPath);
+  const absoluteRoadmapPath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: roadmapPath, label: "project.roadmap_path" });
+  const markdown = await fs.readFile(absoluteRoadmapPath, "utf8");
+  const normalizedTitle = cleanRoadmapTaskTitle(item.proposal.title).replace(/^(task|bug):\s*/iu, "").toLowerCase();
+  const alreadyPresent = markdown.split(/\r?\n/u).some((line) => {
+    const match = line.match(/^\s*[-*+]\s+\[[ x]\]\s+(.+?)\s*$/iu);
+    return match ? cleanRoadmapTaskTitle(match[1]).replace(/^(task|bug):\s*/iu, "").toLowerCase() === normalizedTitle : false;
+  });
+  if (!alreadyPresent) {
+    const block = [
+      `- [ ] ${item.proposal.title}`,
+      `  - Priority: ${item.proposal.priority}`,
+      `  - Source: Learning daemon suggestion ${item.proposalId}`,
+      `  - Rationale: ${cleanRoadmapFormText(item.proposal.rationale)}`,
+      ""
+    ].join("\n");
+    const heading = "## Agent Workflow Suggestions";
+    const nextMarkdown = markdown.includes(heading)
+      ? markdown.replace(heading, `${heading}\n\n${block}`)
+      : `${markdown.trimEnd()}\n\n${heading}\n\n${block}`;
+    await fs.writeFile(absoluteRoadmapPath, nextMarkdown, "utf8");
+  }
+
+  const decidedAt = new Date().toISOString();
+  await writeLearningApprovalQueue(projectDir, {
+    ...queue,
+    generatedAt: decidedAt,
+    items: queue.items.map((candidate) => candidate.id === item.id
+      ? { ...candidate, roadmapAddedAt: decidedAt, roadmapPath }
+      : candidate)
+  });
+  return {
+    ok: true,
+    title: alreadyPresent ? "Suggestion linked to existing roadmap item" : "Suggestion added to roadmap",
+    output: `${item.proposal.title} was ${alreadyPresent ? "matched to an existing item in" : "inserted into"} ${roadmapPath}. No workflow was started.`
+  };
+}
+
 async function readLearningActionReceipts(projectDir: string): Promise<LearningActionReceiptLog> {
   const receiptsPath = path.join(projectDir, ".agent-workflow", "learning", "action-receipts.json");
   const raw = await fs.readFile(receiptsPath, "utf8");
@@ -22751,19 +23246,61 @@ function formatLearningDaemonMcpCleanupReceipt(receipt: {
   ].join("\n");
 }
 
-async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
+async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<LearningDaemonProjectTarget[]> {
   const summaries = await listProjectStorageSummaries(500);
   const candidates = orderedUnique([
     ...summaries.map((summary) => summary.rootUri),
     fallbackProjectDir
   ].map((item) => path.resolve(process.cwd(), item)));
-  const available: string[] = [];
+  const available: LearningDaemonProjectTarget[] = [];
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
-      available.push(candidate);
+      const settings = await readLearningSettings(candidate).catch(() => null);
+      available.push({
+        projectDir: candidate,
+        enabled: settings?.daemonEnabled ?? true,
+        paused: settings?.daemonPaused ?? false,
+        mode: settings?.daemonMode ?? "apply-approved",
+        limit: settings?.daemonRunLimit ?? 50
+      });
     }
   }
-  return available.length ? available : [fallbackProjectDir];
+  return available.length ? available : [{ projectDir: fallbackProjectDir, enabled: true, paused: false, mode: "apply-approved", limit: 50 }];
+}
+
+async function writeLearningDaemonFleetReceipt(projectDir: string, receipt: {
+  daemonId: string;
+  tick: number;
+  discovered: number;
+  scheduled: Array<{ projectRootUri: string; mode: LearningDaemonMode; limit: number }>;
+  skipped: Array<{ projectRootUri: string; reason: "paused" | "disabled" }>;
+  errors: string[];
+}): Promise<void> {
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  const document = {
+    kind: "agentflow_learning_daemon_fleet_receipt",
+    recordedAt: new Date().toISOString(),
+    ...receipt
+  };
+  await fs.writeFile(path.join(learningDir, "daemon-fleet-receipt.json"), `${JSON.stringify(document, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "daemon-fleet-receipt.md"), [
+    "# Learning Daemon Fleet Receipt",
+    "",
+    `Recorded: ${document.recordedAt}`,
+    `Daemon: ${receipt.daemonId}`,
+    `Tick: ${receipt.tick}`,
+    `Projects: ${receipt.scheduled.length} scheduled / ${receipt.discovered} discovered`,
+    "",
+    "## Scheduled",
+    ...(receipt.scheduled.length ? receipt.scheduled.map((item) => `- ${item.projectRootUri}: mode=${item.mode}, limit=${item.limit}`) : ["- none"]),
+    "",
+    "## Skipped",
+    ...(receipt.skipped.length ? receipt.skipped.map((item) => `- ${item.projectRootUri}: ${item.reason}`) : ["- none"]),
+    "",
+    "## Errors",
+    ...(receipt.errors.length ? receipt.errors.map((item) => `- ${item}`) : ["- none"])
+  ].join("\n") + "\n", "utf8");
 }
 
 const discoveryMarkerFiles = [
@@ -22796,7 +23333,17 @@ const discoveryExcludedSegments = [
   ".cargo",
   ".rustup",
   ".venv",
+  ".next",
+  ".turbo",
+  ".codex",
   "node_modules",
+  "vendor",
+  "wp-content",
+  "imports",
+  "templates",
+  "worktrees",
+  "canaries",
+  "coverage",
   "dist",
   "build",
   "target",
@@ -22828,14 +23375,13 @@ async function discoverLocalProjects(input: {
     warnings.push("Spotlight requested, but mdfind is unavailable. Used filesystem discovery only.");
   }
   if (spotlightAvailable) {
-    for (const root of roots) {
-      const candidates = await discoverProjectsWithSpotlight(root, input.maxCandidates).catch((error) => {
-        warnings.push(`Spotlight discovery failed for ${root}: ${error instanceof Error ? error.message : String(error)}`);
-        return [];
-      });
-      for (const candidateRoot of candidates) {
-        await addDiscoveryCandidate(byRoot, candidateRoot, "spotlight", registered);
-      }
+    const candidates = await discoverProjectsWithSpotlight(input.maxCandidates).catch((error) => {
+      warnings.push(`Whole-computer Spotlight discovery failed: ${error instanceof Error ? error.message : String(error)}`);
+      return [];
+    });
+    for (const candidateRoot of candidates) {
+      const managedScope = roots.some((root) => discoveryPathDepth(candidateRoot, root) <= input.maxDepth);
+      await addDiscoveryCandidate(byRoot, candidateRoot, "spotlight", registered, managedScope);
     }
   }
   for (const root of roots) {
@@ -22844,7 +23390,7 @@ async function discoverLocalProjects(input: {
       return [];
     });
     for (const candidateRoot of candidates) {
-      await addDiscoveryCandidate(byRoot, candidateRoot, "filesystem", registered);
+      await addDiscoveryCandidate(byRoot, candidateRoot, "filesystem", registered, true);
     }
   }
   const candidates = [...byRoot.values()]
@@ -22868,25 +23414,22 @@ async function discoverLocalProjects(input: {
       "Review candidates before initializing or indexing.",
       "Initialize a candidate: npm run init-project -- --project <path> --profile enterprise",
       "Index an initialized candidate: npm run index-project -- --project <path> --max-files 100",
-      "For whole-drive discovery on macOS: npm run agentflow -- discover-projects --roots / --spotlight auto --max-depth 6 --write"
+      "Spotlight searches the whole computer; roots and max depth define the safe scope used by --all adoption."
     ]
   };
 }
 
-async function discoverProjectsWithSpotlight(root: string, maxCandidates: number): Promise<string[]> {
-  if (!await pathExists(root)) return [];
+async function discoverProjectsWithSpotlight(maxCandidates: number): Promise<string[]> {
   const markerNames = ["package.json", "pyproject.toml", "Cargo.toml", "go.mod", "AGENTS.md", "pnpm-workspace.yaml", "turbo.json"];
   const roots = new Set<string>();
-  for (const marker of markerNames) {
+  const query = markerNames.map((marker) => `kMDItemFSName == '${marker}'`).join(" || ");
+  const result = await execFileText("mdfind", [query], { allowFailure: true });
+  if (result.exitCode !== 0) return [];
+  for (const filePath of result.stdout.split(/\r?\n/).filter(Boolean)) {
     if (roots.size >= maxCandidates) break;
-    const result = await execFileText("mdfind", ["-onlyin", root, `kMDItemFSName == '${marker}'`], { allowFailure: true });
-    if (result.exitCode !== 0) continue;
-    for (const filePath of result.stdout.split(/\r?\n/).filter(Boolean)) {
-      if (roots.size >= maxCandidates) break;
-      const candidateRoot = path.dirname(filePath);
-      if (!isDiscoveryPathExcluded(candidateRoot, root)) {
-        roots.add(candidateRoot);
-      }
+    const candidateRoot = path.dirname(filePath);
+    if (!isDiscoveryPathExcluded(candidateRoot)) {
+      roots.add(candidateRoot);
     }
   }
   return [...roots];
@@ -22918,7 +23461,7 @@ async function discoverProjectsWithFilesystem(root: string, maxDepth: number, ma
   return [...candidates];
 }
 
-async function addDiscoveryCandidate(byRoot: Map<string, ProjectDiscoveryCandidate>, candidateRoot: string, source: ProjectDiscoveryCandidate["source"], registered: Set<string>): Promise<void> {
+async function addDiscoveryCandidate(byRoot: Map<string, ProjectDiscoveryCandidate>, candidateRoot: string, source: ProjectDiscoveryCandidate["source"], registered: Set<string>, managedScope: boolean): Promise<void> {
   const rootUri = path.resolve(candidateRoot);
   if (isDiscoveryPathExcluded(rootUri)) return;
   const markers = await readDiscoveryMarkers(rootUri);
@@ -22934,6 +23477,7 @@ async function addDiscoveryCandidate(byRoot: Map<string, ProjectDiscoveryCandida
     confidence: discoveryConfidence(markers),
     initialized,
     registered: registered.has(rootUri),
+    managedScope: Boolean(existing?.managedScope || managedScope),
     suggestedCommands: initialized
       ? [`npm run index-project -- --project ${shellQuote(rootUri)} --max-files 100`]
       : [`npm run init-project -- --project ${shellQuote(rootUri)} --profile enterprise`, `npm run index-project -- --project ${shellQuote(rootUri)} --max-files 100`]
@@ -22944,7 +23488,10 @@ async function addDiscoveryCandidate(byRoot: Map<string, ProjectDiscoveryCandida
 async function readDiscoveryMarkers(candidateRoot: string): Promise<string[]> {
   const markers: string[] = [];
   for (const marker of discoveryMarkerFiles) {
-    if (await pathExists(path.join(candidateRoot, marker))) {
+    const markerPath = marker === ".agent-workflow"
+      ? path.join(candidateRoot, marker, "project.yaml")
+      : path.join(candidateRoot, marker);
+    if (await pathExists(markerPath)) {
       markers.push(marker);
     }
   }
@@ -22968,6 +23515,15 @@ function isDiscoveryPathExcluded(candidatePath: string, scanRoot?: string): bool
   const relativePath = resolvedRoot && isPathInside(resolvedPath, resolvedRoot) ? path.relative(resolvedRoot, resolvedPath) : resolvedPath;
   const parts = relativePath.split(path.sep).filter(Boolean);
   return parts.some((part) => discoveryExcludedSegments.includes(part));
+}
+
+function discoveryPathDepth(candidatePath: string, scanRoot: string): number {
+  const relativePath = path.relative(path.resolve(scanRoot), path.resolve(candidatePath));
+  if (!relativePath) return 0;
+  if (relativePath.startsWith(`..${path.sep}`) || relativePath === ".." || path.isAbsolute(relativePath)) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return relativePath.split(path.sep).filter(Boolean).length;
 }
 
 async function commandAvailable(command: string): Promise<boolean> {
@@ -23007,6 +23563,7 @@ function formatDiscoveryReport(report: ProjectDiscoveryReport): string {
       `  - source: ${candidate.source}`,
       `  - initialized: ${candidate.initialized}`,
       `  - registered: ${candidate.registered}`,
+      `  - managed scope: ${candidate.managedScope}`,
       `  - markers: ${candidate.markers.join(", ")}`,
       `  - next: ${candidate.suggestedCommands[0] ?? "review manually"}`
     );
@@ -23043,7 +23600,7 @@ async function adoptDiscoveredProjects(input: {
   });
   warnings.push(...discovered.warnings);
   const selectedPaths = new Set(input.paths.map((item) => path.resolve(process.cwd(), item)));
-  const candidates = discovered.candidates.filter((candidate) => input.all || selectedPaths.has(candidate.rootUri));
+  const candidates = discovered.candidates.filter((candidate) => input.all ? candidate.managedScope : selectedPaths.has(candidate.rootUri));
   const items: ProjectDiscoveryAdoptionItem[] = [];
   let initialized = 0;
   let indexed = 0;
@@ -23273,7 +23830,11 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     agentImprovementProjectLocalAutoApply: typeof parsed.agentImprovementProjectLocalAutoApply === "boolean" ? parsed.agentImprovementProjectLocalAutoApply : true,
     autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
     approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
-    approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium"))
+    approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium")),
+    daemonEnabled: typeof parsed.daemonEnabled === "boolean" ? parsed.daemonEnabled : true,
+    daemonPaused: typeof parsed.daemonPaused === "boolean" ? parsed.daemonPaused : false,
+    daemonMode: parseLearningDaemonMode(String(parsed.daemonMode ?? "apply-approved")),
+    daemonRunLimit: Math.max(1, Math.min(500, typeof parsed.daemonRunLimit === "number" ? parsed.daemonRunLimit : 50))
   };
 }
 
@@ -24239,6 +24800,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       return;
     }
     const projectDir = path.resolve(process.cwd(), project);
+    const existingLearningSettings = await readLearningSettings(projectDir).catch(() => null);
     await writeLearningSettings(projectDir, {
       kind: "agentflow_learning_settings",
       projectRootUri: projectDir,
@@ -24247,7 +24809,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       agentImprovementProjectLocalAutoApply: form.get("agentImprovementProjectLocalAutoApply") === "on",
       autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
       approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
-      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium")
+      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium"),
+      daemonEnabled: form.has("daemonSettingsSubmitted") ? form.get("daemonEnabled") === "on" : existingLearningSettings?.daemonEnabled ?? true,
+      daemonPaused: form.has("daemonSettingsSubmitted") ? form.get("daemonPaused") === "on" : existingLearningSettings?.daemonPaused ?? false,
+      daemonMode: parseLearningDaemonMode(form.get("daemonMode") ?? existingLearningSettings?.daemonMode ?? "apply-approved"),
+      daemonRunLimit: Math.max(1, Math.min(500, parsePositiveInteger(form.get("daemonRunLimit") ?? String(existingLearningSettings?.daemonRunLimit ?? 50), 50)))
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -24485,6 +25051,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-roadmap-item") {
+    const form = await readFormBody(request);
+    const result = await approveLearningProposalIntoRoadmap(form);
+    respondDashboardAction(request, response, form, result, "/learning");
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/roadmap-status") {
     const form = await readFormBody(request);
     const result = await updateRoadmapTaskStatus(form);
@@ -24598,7 +25171,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/api/discovery") {
     const report = await discoverLocalProjects({
       roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
-      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
+      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "1", 1),
       maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
       spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
     });
@@ -24808,6 +25381,39 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await loadServerRoadmapSnapshot(requestUrl.searchParams.get("projectId") ?? "");
     response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(result.report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/jarvis-fleet-contract") {
+    const report = buildJarvisFleetIntegrationContract();
+    response.writeHead(report.status === "blocked" ? 503 : 200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-daemon-fleet-health") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_daemon_fleet_health", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerDaemonFleetHealth();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-high-risk-approvals") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_high_risk_approval_inbox", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerHighRiskApprovalInbox(parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
@@ -25666,7 +26272,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/discovery") {
     const report = await discoverLocalProjects({
       roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
-      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
+      maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "1", 1),
       maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
       spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
     });
@@ -25733,13 +26339,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows, worker, supervisor, runtimeMonitor, roadmap, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
+  const [runs, workflows, worker, supervisor, runtimeMonitor, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
     listWorkflowRuns(25),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
     loadRuntimeMonitorReport(),
-    loadRoadmapDashboardReport(),
     listWorkflowQueue(100),
     listProjectStorageSummaries(100),
     checkServices(),
@@ -25749,7 +26354,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   const includeMock = requestUrl.searchParams.get("includeMock") === "true";
   const usage = await withTimeout(
     loadDashboardUsageSummary(runs.slice(0, 10), { includeMock }),
-    1200,
+    3000,
     () => fallbackDashboardUsageSummary(runs, {
       includeMock,
       note: "Usage metrics timed out, so the dashboard rendered a fast run-status summary. Open run details or refresh for full cost/token estimates."
@@ -25759,7 +26364,6 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     worker,
     supervisor,
     runtimeMonitor,
-    roadmap,
     queue,
     projects,
     services,
@@ -25822,7 +26426,6 @@ function renderDashboardHtml(
       </div>
     </div>
     ${renderDashboardActionCenterHtml(health)}
-    ${renderDashboardRoadmapPriorityHtml(health.roadmap)}
     <section class="panel">
       <h2>System Health</h2>
       ${renderDashboardHealthHtml(health)}
@@ -26550,6 +27153,17 @@ type RoadmapDashboardReport = {
   milestones: RoadmapMilestone[];
   tasks: RoadmapTask[];
   bugs: RoadmapTask[];
+  learningSuggestions: Array<{
+    projectName: string;
+    projectRootUri: string;
+    approvalId: string;
+    proposalId: string;
+    title: string;
+    target: string;
+    recommendation: string;
+    priority: string;
+    riskLevel: string;
+  }>;
   summary: {
     milestoneCount: number;
     taskCount: number;
@@ -26575,6 +27189,24 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
   const explicitMilestoneCount = tasks.filter((task) => task.milestoneSource === "explicit").length;
   const inferredMilestoneCount = tasks.filter((task) => task.milestoneSource === "inferred").length;
   const unlinkedCount = tasks.filter((task) => task.milestoneSource === "missing").length;
+  const projects = await listProjectStorageSummaries(100);
+  const learningSuggestions = (await Promise.all(projects.map(async (project) => {
+    const projectPath = await resolveDashboardProjectPath(project.rootUri).catch(() => null);
+    const queue = await readLearningApprovalQueue(projectPath?.localRootUri ?? project.rootUri).catch(() => null);
+    return (queue?.items ?? [])
+      .filter((item) => item.status === "approved" && !item.roadmapAddedAt)
+      .map((item) => ({
+        projectName: project.name,
+        projectRootUri: projectPath?.localRootUri ?? project.rootUri,
+        approvalId: item.id,
+        proposalId: item.proposalId,
+        title: item.proposal.title,
+        target: item.proposal.target,
+        recommendation: item.proposal.recommendation,
+        priority: item.proposal.priority,
+        riskLevel: item.proposal.riskLevel
+      }));
+  }))).flat();
   return {
     kind: "agentflow_roadmap_dashboard",
     generatedAt: new Date().toISOString(),
@@ -26582,6 +27214,7 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
     milestones,
     tasks,
     bugs,
+    learningSuggestions,
     summary: {
       milestoneCount: milestones.length,
       taskCount: tasks.length,
@@ -26959,6 +27592,7 @@ function renderRoadmapDashboardHtml(report: RoadmapDashboardReport, params: URLS
       </form>
     </section>
     ${renderRoadmapCaptureForm(report, params)}
+    ${renderRoadmapLearningSuggestions(report, params)}
     <section class="panel">
       <div class="metric-grid">
         ${metricCard("Milestones", report.summary.milestoneCount, "goal lanes", "clipboard")}
@@ -26977,6 +27611,25 @@ function renderRoadmapDashboardHtml(report: RoadmapDashboardReport, params: URLS
   </main>
 </body>
 </html>`;
+}
+
+function renderRoadmapLearningSuggestions(report: RoadmapDashboardReport, params: URLSearchParams): string {
+  const rows = report.learningSuggestions.map((item) => `<tr>
+    <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
+    <td>${escapeHtml(item.title)}<br><span class="muted">${escapeHtml(item.proposalId)} · ${escapeHtml(item.target)}</span></td>
+    <td>${escapeHtml(item.priority)} / ${escapeHtml(item.riskLevel)}</td>
+    <td>${escapeHtml(item.recommendation)}</td>
+    <td><form method="post" action="/api/learning-roadmap-item" class="inline-action-form">
+      <input type="hidden" name="project" value="${escapeHtml(item.projectRootUri)}">
+      <input type="hidden" name="proposalId" value="${escapeHtml(item.approvalId)}">
+      <input type="hidden" name="returnTo" value="/roadmap?${escapeHtml(params.toString())}">
+      <button type="submit">Add to roadmap</button>
+    </form></td>
+  </tr>`).join("");
+  return `<section class="panel">
+    <div class="section-heading"><div><h2>Learning Suggestions</h2><span class="muted">Approved learning proposals available for optional roadmap inclusion.</span></div></div>
+    <div class="table-wrap"><table><thead><tr><th>Project</th><th>Suggestion</th><th>Priority/Risk</th><th>Recommendation</th><th>Roadmap</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No learning suggestions are waiting for roadmap review.</td></tr>"}</tbody></table></div>
+  </section>`;
 }
 
 function renderRoadmapIntegrityPanel(report: RoadmapDashboardReport): string {
@@ -27391,6 +28044,7 @@ type DashboardGraphHandoffViewResult =
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   runs: DashboardWorkflowGraphRun[];
   liveStageRuns: DashboardWorkflowStageRun[];
+  liveApprovals: DashboardActionApproval[];
   runScope: "project" | "all-projects";
   runStatusFilter: string;
   runWarnings: string[];
@@ -27408,7 +28062,8 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   const workflows = await loadWorkflows(rootDir);
   const workflowId = params.get("workflow")?.trim() || workflows.find((workflow) => workflow.triggers.manual)?.id || workflows[0]?.id;
   if (!workflowId) throw new Error("No workflow definitions are available.");
-  const workflow = resolveWorkflow(workflows, workflowId);
+  const allWorkflows = workflowId === "all";
+  const workflow = allWorkflows ? buildAllWorkflowsGraphDefinition(workflows) : resolveWorkflow(workflows, workflowId);
   if (!workflow) throw new Error(`Unknown workflow: ${workflowId}`);
   const project = await loadProjectConfig(projectDir);
   const resolvedPolicy = resolveExecutionPolicy(project, params.get("policyProfile")?.trim() || undefined);
@@ -27427,6 +28082,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   const runWarnings: string[] = [];
   let runs: DashboardWorkflowGraphRun[] = [];
   let liveStageRuns: DashboardWorkflowStageRun[] = [];
+  let liveApprovals: DashboardActionApproval[] = [];
   let stageHealth: DashboardWorkflowStageHealth[] = [];
   let focusedStageRuns: DashboardWorkflowStageRun[] = [];
   let focusedStageFixRuns: DashboardWorkflowGraphRun[] = [];
@@ -27439,17 +28095,19 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       const historyRuns = runScope === "all-projects"
         ? await listWorkflowRuns(historyFetchLimit)
         : await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: historyFetchLimit });
+      const includedWorkflowIds = new Set(workflows.map((item) => item.id));
       runs = historyRuns
-        .filter((run) => run.workflowId === workflow.id)
+        .filter((run) => allWorkflows ? includedWorkflowIds.has(run.workflowId) : run.workflowId === workflow.id)
         .filter((run) => dashboardRunMatchesStatus(run.status, runStatusFilter))
         .slice(0, safeRunLimit)
         .map(dashboardWorkflowGraphRunFromStorage);
-      stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
-      const activeRunIds = runs.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id);
-      if (activeRunIds.length) {
+      stageHealth = allWorkflows ? [] : await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
+      const activeRunIds = allWorkflows ? [] : runs.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id);
+      if (!allWorkflows && activeRunIds.length) {
         liveStageRuns = (await Promise.all(report.stages.map((stage) => listWorkflowStageRunsForRuns({ runIds: activeRunIds, stageId: stage.id })))).flat();
+        liveApprovals = (await Promise.all(activeRunIds.map((runId) => listActionApprovals({ runId, limit: 100 })))).flat();
       }
-      if (focusedStageId) {
+      if (!allWorkflows && focusedStageId) {
         focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
         focusedStageFixRuns = historyRuns
           .filter((run) => isFocusedStageFixRun(run, report.workflow.id, focusedStageId))
@@ -27463,7 +28121,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       if (!runs.length) {
         const statusLabel = runStatusFilter === "all" ? "any status" : runStatusFilter;
         const scopeLabel = runScope === "all-projects" ? "all registered projects" : `project ${projectDir}`;
-        runWarnings.push(`No stored ${workflow.id} runs with ${statusLabel} matched ${scopeLabel}. The graph is showing the workflow definition only for this scope.`);
+        runWarnings.push(`No stored ${allWorkflows ? "workflow" : workflow.id} runs with ${statusLabel} matched ${scopeLabel}. The graph is showing the workflow definition only for this scope.`);
       }
     } catch (error) {
       runWarnings.push(`Run history unavailable: ${error instanceof Error ? error.message : String(error)}`);
@@ -27479,7 +28137,25 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   } catch (error) {
     runWarnings.push(`Graph presets unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { ...report, runs, liveStageRuns, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
+  return { ...report, runs, liveStageRuns, liveApprovals, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
+}
+
+function buildAllWorkflowsGraphDefinition(workflows: WorkflowDefinition[]): WorkflowDefinition {
+  const included = workflows.filter((workflow) => workflow.triggers.manual);
+  return {
+    id: "all",
+    name: "All Workflows",
+    description: `Aggregate graph of ${included.length} manually runnable workflow definitions.`,
+    lead: "workflow-orchestrator",
+    default_autonomy: 1,
+    triggers: { manual: true, events: [] },
+    stages: included.flatMap((workflow) => workflow.stages.map((stage) => ({
+      ...stage,
+      id: `${workflow.id}/${stage.id}`,
+      goal: `[${workflow.name}] ${stage.goal}`,
+      output: `${workflow.id}_${stage.output}`
+    })))
+  };
 }
 
 function dashboardWorkflowGraphRunFromStorage(run: Awaited<ReturnType<typeof listWorkflowRuns>>[number]): DashboardWorkflowGraphRun {
@@ -27643,9 +28319,9 @@ async function writeDashboardGraphPresets(projectDir: string, presetFile: Dashbo
 }
 
 function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, workflows: WorkflowDefinition[], params: URLSearchParams): string {
-  const workflowOptions = workflows
+  const workflowOptions = [`<option value="all"${report.workflow.id === "all" ? " selected" : ""}>All workflows</option>`, ...workflows
     .filter((workflow) => workflow.triggers.manual)
-    .map((workflow) => `<option value="${escapeHtml(workflow.id)}"${workflow.id === report.workflow.id ? " selected" : ""}>${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
+    .map((workflow) => `<option value="${escapeHtml(workflow.id)}"${workflow.id === report.workflow.id ? " selected" : ""}>${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)]
     .join("");
   const projectValue = params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project";
   const policyValue = params.get("policyProfile")?.trim() || report.project.policyProfile;
@@ -28235,13 +28911,22 @@ function renderWorkflowMindMapHtml(report: WorkflowGraphReport, stages: Workflow
 function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages: WorkflowGraphReport["stages"], orientation: "horizontal" | "radial", stageHref: (stageId: string) => string, focusedStageId: string): string {
   if (!stages.length) return '<p class="muted">No stages match the selected filters.</p>';
   const isRadial = orientation === "radial";
-  const width = 1120;
-  const height = isRadial ? 760 : 680;
+  const isAggregateRadial = isRadial && report.workflow.id === "all";
+  const width = isAggregateRadial ? 1440 : 1120;
+  const height = isAggregateRadial ? 860 : isRadial ? 760 : 680;
   const centerX = width / 2;
   const centerY = height / 2;
   const stageRadius = 148;
-  const agentRadius = 252;
-  const runRadius = 338;
+  const aggregateStageRadii = [
+    { x: 180, y: 105 },
+    { x: 300, y: 200 },
+    { x: 420, y: 295 }
+  ];
+  const aggregateStagesPerRing = 20;
+  const agentRadius = isAggregateRadial ? 560 : 252;
+  const agentRadiusY = isAggregateRadial ? 365 : agentRadius;
+  const runRadius = isAggregateRadial ? 650 : 338;
+  const runRadiusY = isAggregateRadial ? 400 : runRadius;
   const layerTop = 118;
   const layerBottom = 560;
   const workflowX = 118;
@@ -28263,15 +28948,15 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     queued: "#f59e0b",
     cancelled: "#94a3b8"
   };
-  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; stageHealth?: DashboardWorkflowStageHealth; focused?: boolean };
+  type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; agentId?: string; patternType?: string; stageHealth?: DashboardWorkflowStageHealth; focused?: boolean };
   const nodeById = new Map<string, NetworkNode>();
   const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
   const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
   const stageNodeLabel = (stageId: string): string => truncateMiddle(stageId, 10);
   const stageHealthById = new Map(report.stageHealth.map((health) => [health.stageId, health]));
-  const radialPoint = (angle: number, radius: number): { x: number; y: number } => ({
+  const radialPoint = (angle: number, radius: number, yRadius = radius): { x: number; y: number } => ({
     x: centerX + Math.cos(angle) * radius,
-    y: centerY + Math.sin(angle) * radius
+    y: centerY + Math.sin(angle) * yRadius
   });
   const ringAngle = (index: number, total: number, offset = -Math.PI / 2): number => offset + (Math.PI * 2 * index) / Math.max(total, 1);
   const applyRadialLabel = (node: NetworkNode, angle: number, offset: number): void => {
@@ -28297,8 +28982,15 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
 
   const agentEntries = new Map<string, { id: string; label: string; category: string; stageIds: Set<string>; isPrimary: boolean }>();
   stages.forEach((stage, index) => {
-    const angle = ringAngle(index, stages.length);
-    const point = isRadial ? radialPoint(angle, stageRadius) : { x: stageX, y: distributeLayerY(index, stages.length, layerTop, layerBottom) };
+    const aggregateRingIndex = Math.min(Math.floor(index / aggregateStagesPerRing), aggregateStageRadii.length - 1);
+    const aggregateRingStart = aggregateRingIndex * aggregateStagesPerRing;
+    const aggregateRingSize = Math.min(aggregateStagesPerRing, stages.length - aggregateRingStart);
+    const radialIndex = isAggregateRadial ? index - aggregateRingStart : index;
+    const radialTotal = isAggregateRadial ? aggregateRingSize : stages.length;
+    const angle = ringAngle(radialIndex, radialTotal, -Math.PI / 2 + aggregateRingIndex * 0.12);
+    const aggregateRadius = aggregateStageRadii[aggregateRingIndex];
+    const radialRadius = isAggregateRadial ? aggregateRadius.x : stageRadius;
+    const point = isRadial ? radialPoint(angle, radialRadius, isAggregateRadial ? aggregateRadius.y : radialRadius) : { x: stageX, y: distributeLayerY(index, stages.length, layerTop, layerBottom) };
     const stageNodeId = `stage:${stage.id}`;
     const stageNode: NetworkNode = {
       id: stageNodeId,
@@ -28311,6 +29003,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       kind: "stage",
       href: stageHref(stage.id),
       stageId: stage.id,
+      agentId: stage.agentId,
+      patternType: stage.pattern.type,
       stageHealth: stageHealthById.get(stage.id),
       focused: focusedStageId === stage.id
     };
@@ -28351,7 +29045,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   agents.forEach((agent, index) => {
     const angle = ringAngle(index, agents.length, -Math.PI / 2 + Math.PI / Math.max(agents.length, 8));
     const point = isRadial
-      ? radialPoint(angle, agent.isPrimary ? agentRadius - 18 : agentRadius + 22)
+      ? radialPoint(angle, agent.isPrimary ? agentRadius - 18 : agentRadius + 22, agent.isPrimary ? agentRadiusY - 12 : agentRadiusY + 14)
       : { x: agentX + (agent.isPrimary ? -28 : 34), y: distributeLayerY(index, agents.length, layerTop, layerBottom) };
     const agentNode: NetworkNode = {
       id: `agent:${agent.id}`,
@@ -28377,7 +29071,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   const runs = report.runs.slice(0, 36);
   runs.forEach((run, index) => {
     const angle = ringAngle(index, Math.max(runs.length, 1), -Math.PI / 2 + Math.PI / Math.max(runs.length, 10));
-    const point = isRadial ? radialPoint(angle, runRadius) : { x: runX, y: distributeLayerY(index, Math.max(runs.length, 1), layerTop, layerBottom) };
+    const point = isRadial ? radialPoint(angle, runRadius, runRadiusY) : { x: runX, y: distributeLayerY(index, Math.max(runs.length, 1), layerTop, layerBottom) };
     const active = run.status === "queued" || run.status === "running";
     const runNode: NetworkNode = {
       id: `run:${run.id}`,
@@ -28449,7 +29143,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   }).join("");
   const nodeSvg = [...nodeById.values()].map((node) => {
     const nodeClasses = ["network-node", `network-${node.kind.replace(/\s+/g, "-")}`, node.focused ? "network-focused" : ""].filter(Boolean).join(" ");
-    const body = `<g class="${escapeHtml(nodeClasses)}" data-node-id="${escapeHtml(node.id)}" style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
+    const body = `<g class="${escapeHtml(nodeClasses)}" data-node-id="${escapeHtml(node.id)}"${node.agentId ? ` data-agent-id="${escapeHtml(node.agentId)}"` : ""}${node.patternType ? ` data-pattern-type="${escapeHtml(node.patternType)}"` : ""} style="color:${escapeHtml(node.color)}" transform="translate(${formatSvgNumber(node.x)} ${formatSvgNumber(node.y)})">
       <title>${escapeHtml(node.title)}</title>
       ${node.kind === "stage" && node.stageHealth ? renderStageHealthRing(node.r, node.stageHealth) : ""}
       <circle r="${node.r}"></circle>
@@ -28508,14 +29202,14 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       </defs>`;
   return `<div class="network-shell">
     <div class="network-canvas-scroll" tabindex="0" aria-label="Scrollable animated workflow canvas">
-    <svg class="network-map" viewBox="0 0 ${width} ${height}" role="img" aria-label="Animated workflow network map for ${escapeHtml(report.workflow.name)}">
+    <svg class="network-map${isAggregateRadial ? " network-map-aggregate" : ""}" viewBox="0 0 ${width} ${height}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="Animated workflow network map for ${escapeHtml(report.workflow.name)}">
       ${networkDefs}
       <rect class="network-backdrop" width="${width}" height="${height}" rx="0"></rect>
       <rect class="network-grid" width="${width}" height="${height}" rx="0"></rect>
       ${isRadial ? `<g class="network-rings">
-        <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${stageRadius}"></circle>
-        <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${agentRadius}"></circle>
-        <circle cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" r="${runRadius}"></circle>
+        ${(isAggregateRadial ? aggregateStageRadii : [{ x: stageRadius, y: stageRadius }]).map((radius) => `<ellipse cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" rx="${radius.x}" ry="${radius.y}"></ellipse>`).join("")}
+        <ellipse cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" rx="${agentRadius}" ry="${agentRadiusY}"></ellipse>
+        <ellipse cx="${formatSvgNumber(centerX)}" cy="${formatSvgNumber(centerY)}" rx="${runRadius}" ry="${runRadiusY}"></ellipse>
       </g>` : ""}
       <g>${layerLabels}</g>
       <g class="network-links">${linkSvg}</g>
@@ -28525,8 +29219,12 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     </div>
     <div class="network-playback" aria-label="Workflow signal playback">
       <div class="network-playback-actions">
+        <button type="button" class="network-demo secondary compact-button" aria-pressed="false">${dashboardIcon("sparkles")}Demo cycle</button>
         <button type="button" class="network-replay secondary compact-button">${dashboardIcon("refresh")}Replay request</button>
         <button type="button" class="network-pause secondary compact-button" aria-pressed="false">${dashboardIcon("pause")}Pause</button>
+        <label class="network-speed-label">Speed
+          <select class="network-speed" aria-label="Animation speed"><option value="0.5">0.5×</option><option value="1" selected>1×</option><option value="1.5">1.5×</option><option value="2">2×</option></select>
+        </label>
       </div>
       <div class="network-timeline" aria-live="polite">
         <span class="network-live-dot"></span>
@@ -28534,24 +29232,27 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         <span class="network-event-detail">Routing through ${formatNumber(stages.length)} workflow stages</span>
       </div>
       <div class="network-phases" aria-label="Request progress">
-        <span class="active">Request</span><span>Planning</span><span>Agents</span><span>Verification</span><span>Complete</span>
+        <span class="active">Request</span><span>Queued</span><span>Running</span><span>Approval</span><span>Verification</span><span>Complete</span>
       </div>
     </div>
-    <div class="network-legend">${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span><span><i class="legend-health-completed"></i>stage completed</span><span><i class="legend-health-failed"></i>stage failed</span><span><i class="legend-health-active"></i>stage queued/running</span><span class="legend-note">circle size = incoming requests</span>${runLegend}</div>
+    <div class="network-legend"><strong>Live events</strong><span><i class="legend-event-request"></i>request</span><span><i class="legend-event-queued"></i>queued</span><span><i class="legend-event-agent"></i>agent active</span><span><i class="legend-event-tool"></i>tool/action</span><span><i class="legend-event-approval"></i>approval</span><span><i class="legend-health-completed"></i>completed</span><span><i class="legend-health-failed"></i>failed</span><span class="legend-note">circle size = incoming requests</span></div>
+    <div class="network-legend network-type-legend"><strong>Graph types</strong>${legend}<span><i class="legend-stage"></i>stage</span><span><i class="legend-workflow"></i>workflow</span>${runLegend}</div>
     <p class="network-health-summary">${escapeHtml(stageHealthSummary)}</p>
     ${explainer}
     <script>
       (() => {
         const shell = document.currentScript?.closest('.network-shell');
         const svg = shell?.querySelector('.network-map');
+        const demo = shell?.querySelector('.network-demo');
         const replay = shell?.querySelector('.network-replay');
         const pause = shell?.querySelector('.network-pause');
+        const speed = shell?.querySelector('.network-speed');
         const panel = shell?.closest('.network-panel');
         const fullscreen = panel?.querySelector('.network-fullscreen-toggle');
         const title = shell?.querySelector('.network-event-title');
         const detail = shell?.querySelector('.network-event-detail');
         const phases = [...(shell?.querySelectorAll('.network-phases span') || [])];
-        if (!shell || !svg || !replay || !pause || !title || !detail) return;
+        if (!shell || !svg || !demo || !replay || !pause || !speed || !title || !detail) return;
         const fullscreenKey = 'agentflow.network.fullscreen';
         const setFullscreen = (active) => {
           if (!panel || !fullscreen) return;
@@ -28575,6 +29276,27 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         let pollTimer = 0;
         let paused = false;
         let latestReport = null;
+        let playbackSpeed = 1;
+        let demoRunning = false;
+        let demoIndex = 0;
+        let demoTimer = 0;
+        const speedKey = 'agentflow.network.speed';
+        const setSpeed = (value) => {
+          const multiplier = ['0.5', '1', '1.5', '2'].includes(String(value)) ? Number(value) : 1;
+          playbackSpeed = multiplier;
+          speed.value = String(multiplier);
+          shell.style.setProperty('--network-signal-duration', (3.2 / multiplier) + 's');
+          shell.style.setProperty('--network-node-duration', (3.6 / multiplier) + 's');
+          shell.style.setProperty('--network-live-duration', (.92 / multiplier) + 's');
+          shell.querySelectorAll('animateMotion').forEach((motion) => {
+            const base = Number(motion.dataset.baseDuration || parseFloat(motion.getAttribute('dur') || '3'));
+            motion.dataset.baseDuration = String(base);
+            motion.setAttribute('dur', (base / multiplier) + 's');
+          });
+          try { window.localStorage.setItem(speedKey, String(multiplier)); } catch {}
+        };
+        speed.addEventListener('change', () => setSpeed(speed.value));
+        try { setSpeed(window.localStorage.getItem(speedKey) || '1'); } catch { setSpeed('1'); }
         const showEvent = (index, heading, message) => {
           title.textContent = heading;
           detail.textContent = message;
@@ -28584,14 +29306,77 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         const setNodeState = (nodeId, state) => {
           const node = nodeElements.find((item) => item.dataset.nodeId === nodeId);
           if (!node) return;
-          ['live-firing', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className));
+          ['live-firing', 'live-tool', 'live-approval', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className));
           if (state) node.classList.add('live-' + state);
+        };
+        const clearLiveState = () => {
+          nodeElements.forEach((node) => ['live-firing', 'live-tool', 'live-approval', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className)));
+          synapses.forEach((synapse) => synapse.classList.remove('live-active', 'live-complete'));
+        };
+        const stageNodes = nodeElements.filter((node) => node.dataset.nodeId?.startsWith('stage:'));
+        const stageIdFor = (node) => node?.dataset.nodeId || '';
+        const agentIdFor = (node) => node?.dataset.agentId ? 'agent:' + node.dataset.agentId : '';
+        const activatePath = (stageNode, state, complete = false) => {
+          const stageId = stageIdFor(stageNode);
+          const agentId = agentIdFor(stageNode);
+          setNodeState('workflow', state === 'complete' ? 'complete' : 'firing');
+          setNodeState(stageId, state);
+          if (agentId) setNodeState(agentId, state);
+          synapses.forEach((synapse) => {
+            const onPath = (synapse.dataset.from === 'workflow' && synapse.dataset.to === stageId)
+              || (synapse.dataset.from === stageId && synapse.dataset.to === agentId);
+            if (onPath) synapse.classList.add(complete ? 'live-complete' : 'live-active');
+          });
+        };
+        const toolStage = stageNodes.find((node) => /executor|react/i.test(node.dataset.patternType || '')) || stageNodes[Math.min(1, stageNodes.length - 1)];
+        const approvalStage = stageNodes.find((node) => /approval|release|deploy/i.test(node.dataset.nodeId || '')) || toolStage;
+        const verificationStage = stageNodes.find((node) => /verify|test|review|security/i.test((node.dataset.nodeId || '') + ' ' + (node.dataset.agentId || ''))) || stageNodes[stageNodes.length - 1];
+        const demoSteps = [
+          () => { clearLiveState(); setNodeState('workflow', 'firing'); showEvent(0, 'Request received', 'Demo request entered the workflow'); },
+          () => { clearLiveState(); activatePath(stageNodes[0], 'queued'); showEvent(1, 'Request queued', 'Waiting for the first available specialist'); },
+          () => { clearLiveState(); activatePath(stageNodes[0], 'firing'); showEvent(2, 'Agent firing', (stageNodes[0]?.dataset.agentId || 'Specialist') + ' is processing the request'); },
+          () => { clearLiveState(); activatePath(toolStage, 'tool'); showEvent(2, 'Tool/action firing', (toolStage?.dataset.agentId || 'Agent') + ' is executing a scoped action'); },
+          () => { clearLiveState(); activatePath(approvalStage, 'approval'); showEvent(3, 'Approval required', 'A protected action is waiting for review'); },
+          () => { clearLiveState(); activatePath(verificationStage, 'firing'); showEvent(4, 'Verification running', (verificationStage?.dataset.agentId || 'Verifier') + ' is checking evidence'); },
+          () => { clearLiveState(); stageNodes.forEach((node) => activatePath(node, 'complete', true)); showEvent(5, 'Complete', 'The demo request passed verification and finished'); }
+        ];
+        const scheduleDemo = () => {
+          window.clearTimeout(demoTimer);
+          if (!demoRunning || paused) return;
+          demoTimer = window.setTimeout(() => {
+            demoSteps[demoIndex]?.();
+            demoIndex += 1;
+            if (demoIndex < demoSteps.length) scheduleDemo();
+          }, 1150 / playbackSpeed);
+        };
+        const stopDemo = (restoreLive = true) => {
+          window.clearTimeout(demoTimer);
+          demoRunning = false;
+          demoIndex = 0;
+          shell.classList.remove('demo-running');
+          demo.setAttribute('aria-pressed', 'false');
+          demo.lastChild.textContent = 'Demo cycle';
+          if (restoreLive) void poll();
+        };
+        const startDemo = () => {
+          if (!stageNodes.length) return;
+          window.clearTimeout(demoTimer);
+          demoRunning = true;
+          demoIndex = 1;
+          paused = false;
+          svg.unpauseAnimations?.();
+          pause.setAttribute('aria-pressed', 'false');
+          pause.lastChild.textContent = 'Pause';
+          shell.classList.add('demo-running');
+          demo.setAttribute('aria-pressed', 'true');
+          demo.lastChild.textContent = 'Stop demo';
+          demoSteps[0]();
+          scheduleDemo();
         };
         const renderLiveReport = (report) => {
           latestReport = report;
           shell.classList.add('live-connected');
-          nodeElements.forEach((node) => ['live-firing', 'live-complete', 'live-failed', 'live-queued'].forEach((className) => node.classList.remove(className)));
-          synapses.forEach((synapse) => synapse.classList.remove('live-active', 'live-complete'));
+          clearLiveState();
           const runs = Array.isArray(report?.runs) ? report.runs : [];
           const activeRun = runs.find((run) => run.status === 'running') || runs.find((run) => run.status === 'queued');
           const latestRun = activeRun || runs[0];
@@ -28600,13 +29385,21 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
             return;
           }
           const liveRows = (Array.isArray(report?.liveStageRuns) ? report.liveStageRuns : []).filter((row) => row.runId === activeRun?.id);
+          const approvals = (Array.isArray(report?.liveApprovals) ? report.liveApprovals : []).filter((approval) => approval.runId === activeRun?.id);
+          const pendingApproval = approvals.find((approval) => approval.status === 'pending') || approvals.find((approval) => approval.status === 'approved' && !approval.executedAt);
           const stageOrder = new Map((report?.stages || []).map((stage, index) => [stage.id, index]));
+          const stageKinds = new Map((report?.stages || []).map((stage) => [stage.id, stage.pattern?.type || 'single-shot']));
           const currentRow = liveRows.find((row) => row.taskStatus === 'running') || liveRows.find((row) => row.taskStatus === 'queued');
           liveRows.forEach((row) => {
             const state = row.taskStatus === 'running' ? 'firing' : row.taskStatus === 'completed' ? 'complete' : row.taskStatus === 'failed' ? 'failed' : row.taskStatus === 'queued' ? 'queued' : '';
             setNodeState('stage:' + row.stageId, state);
             setNodeState('agent:' + row.agentId, state);
+            if (row.taskStatus === 'running' && /executor|react/i.test(stageKinds.get(row.stageId) || '')) setNodeState('stage:' + row.stageId, 'tool');
           });
+          if (pendingApproval) {
+            setNodeState('stage:' + pendingApproval.stageId, 'approval');
+            setNodeState('agent:' + pendingApproval.agentId, 'approval');
+          }
           if (latestRun) setNodeState('run:' + latestRun.id, activeRun ? (activeRun.status === 'running' ? 'firing' : 'queued') : latestRun.status === 'completed' ? 'complete' : latestRun.status === 'failed' ? 'failed' : '');
           if (activeRun) setNodeState('workflow', 'firing');
           const activeIds = new Set(activeRun ? ['workflow', 'run:' + activeRun.id] : []);
@@ -28624,18 +29417,21 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
             showEvent(0, 'Watching for requests', 'No stored runs yet; waiting for workflow activity');
           } else if (!activeRun) {
             const complete = latestRun.status === 'completed';
-            showEvent(complete ? 4 : 3, complete ? 'Complete' : 'Latest run ' + latestRun.status, latestRun.task || 'Workflow activity is idle');
+            showEvent(5, complete ? 'Complete' : 'Run ' + latestRun.status, latestRun.task || 'Workflow activity is idle');
           } else if (!currentRow) {
-            showEvent(0, activeRun.status === 'queued' ? 'Request queued' : 'Request received', activeRun.task || 'Waiting for the first stage');
+            showEvent(activeRun.status === 'queued' ? 1 : 0, activeRun.status === 'queued' ? 'Request queued' : 'Request received', activeRun.task || 'Waiting for the first stage');
+          } else if (pendingApproval) {
+            showEvent(3, 'Approval required', pendingApproval.actionType + ' · ' + pendingApproval.stageId);
           } else {
             const order = stageOrder.get(currentRow.stageId) ?? 0;
             const verification = /verify|test|review|security/i.test(currentRow.stageId + ' ' + currentRow.agentId);
-            const phase = verification ? 3 : order <= 1 ? 1 : 2;
-            showEvent(phase, currentRow.taskStatus === 'running' ? currentRow.stageId + ' firing' : currentRow.stageId + ' queued', currentRow.agentId + ' · run ' + activeRun.id.slice(0, 8));
+            const toolAction = /executor|react/i.test(stageKinds.get(currentRow.stageId) || '');
+            const phase = verification ? 4 : currentRow.taskStatus === 'queued' ? 1 : 2;
+            showEvent(phase, currentRow.taskStatus === 'running' ? (toolAction ? 'Tool/action firing' : currentRow.stageId + ' firing') : currentRow.stageId + ' queued', currentRow.agentId + ' · run ' + activeRun.id.slice(0, 8));
           }
         };
         const poll = async () => {
-          if (paused || document.hidden) return;
+          if (paused || demoRunning || document.hidden) return;
           try {
             const response = await fetch(apiUrl, { headers: { accept: 'application/json' }, cache: 'no-store' });
             if (!response.ok) throw new Error('status ' + response.status);
@@ -28647,16 +29443,18 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         };
         const replayLatest = () => {
           svg.setCurrentTime?.(0);
-          if (latestReport) renderLiveReport(latestReport);
+          if (demoRunning) startDemo();
+          else if (latestReport) renderLiveReport(latestReport);
           else void poll();
         };
+        demo.addEventListener('click', () => { if (demoRunning) stopDemo(); else startDemo(); });
         replay.addEventListener('click', replayLatest);
         pause.addEventListener('click', () => {
           paused = !paused;
           pause.setAttribute('aria-pressed', String(paused));
           pause.lastChild.textContent = paused ? 'Resume' : 'Pause';
-          if (paused) svg.pauseAnimations?.();
-          else { svg.unpauseAnimations?.(); void poll(); }
+          if (paused) { svg.pauseAnimations?.(); window.clearTimeout(demoTimer); }
+          else { svg.unpauseAnimations?.(); if (demoRunning) scheduleDemo(); else void poll(); }
         });
         document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
         void poll();
@@ -28805,6 +29603,32 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
+function renderLearningDaemonGovernanceHtml(projectDir: string, settings: LearningSettings | null, defaultLimit: number): string {
+  const enabled = settings?.daemonEnabled ?? true;
+  const paused = settings?.daemonPaused ?? false;
+  const mode = settings?.daemonMode ?? "apply-approved";
+  const limit = settings?.daemonRunLimit ?? defaultLimit;
+  return `<section class="panel compact-panel">
+    <div class="section-heading"><div><h2>Project Daemon Governance</h2><span class="muted">Controls whether and how the all-projects learning daemon schedules this project.</span></div><span class="flag ${enabled && !paused ? "good" : "warn"}">${enabled ? paused ? "paused" : "enabled" : "disabled"}</span></div>
+    <form method="post" action="/api/learning-settings" class="inline-action-form">
+      <input type="hidden" name="project" value="${escapeHtml(projectDir)}">
+      <input type="hidden" name="limit" value="${escapeHtml(String(defaultLimit))}">
+      <input type="hidden" name="daemonSettingsSubmitted" value="yes">
+      <input type="hidden" name="workflowShapeAutoUpdate" value="${settings?.workflowShapeAutoUpdate === false ? "" : "on"}">
+      <input type="hidden" name="agentImprovementProjectLocalAutoApply" value="${settings?.agentImprovementProjectLocalAutoApply === false ? "" : "on"}">
+      <input type="hidden" name="autonomousApplyMaxRisk" value="${escapeHtml(settings?.autonomousApplyMaxRisk ?? "medium")}">
+      <input type="hidden" name="approvalAutopilotEnabled" value="${settings?.approvalAutopilotEnabled ? "on" : ""}">
+      <input type="hidden" name="approvalAutopilotMaxRisk" value="${escapeHtml(settings?.approvalAutopilotMaxRisk ?? "medium")}">
+      <label class="checkbox-label"><input type="checkbox" name="daemonEnabled" value="on" ${enabled ? "checked" : ""}> Schedule this project</label>
+      <label class="checkbox-label"><input type="checkbox" name="daemonPaused" value="on" ${paused ? "checked" : ""}> Pause without disabling</label>
+      <label>Mode<select name="daemonMode">${(["observe", "propose", "apply-approved"] as const).map((item) => `<option value="${item}"${mode === item ? " selected" : ""}>${item}</option>`).join("")}</select></label>
+      <label>Runs per tick<input name="daemonRunLimit" value="${escapeHtml(String(limit))}" inputmode="numeric"></label>
+      <button type="submit" class="secondary">Save daemon policy</button>
+    </form>
+    <p class="muted">The latest fleet scheduling receipt is written to <code>.agent-workflow/learning/daemon-fleet-receipt.*</code>.</p>
+  </section>`;
+}
+
 function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null): string {
   const selectedProject = projectPath?.storageRootUri ?? report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
@@ -28857,6 +29681,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       </form>
     </section>
     ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
+    ${report ? renderLearningDaemonGovernanceHtml(projectPath?.localRootUri ?? report.projectDir, learningSettings, report.limit) : ""}
     ${body}
   </main>
 </body>
@@ -28885,6 +29710,7 @@ function renderDashboardProjectPathResolutionHtml(projectPath: DashboardProjectP
 }
 
 function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
+  const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -28902,7 +29728,6 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
   const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
     <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
   `).join("");
-  const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
   const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(localProjectDir)} --write`;
   const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(localProjectDir)} --write`;
   const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(localProjectDir)} --mode apply-approved`;
@@ -28944,8 +29769,8 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <section class="panel"><h2>Proposal Preview</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposal candidates yet.</td></tr>"}</tbody></table></div></section>
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
-      <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Low/medium-risk items auto-approve in autonomous mode; high-risk items wait here for review.</p>
-      <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
+      <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Roadmap review and additions are handled on the Approvals and Roadmap pages.</p>
+      <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Learning Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel">
       <div class="section-heading"><div><h2>Approved Application Plan</h2><span class="muted">${learningApplicationPlan ? `${learningApplicationPlan.actions.length} planned action(s)` : "No approved application plan yet."}</span></div></div>
@@ -29664,10 +30489,10 @@ function renderLocalLlmInventoryHtml(report: LocalLlmInventoryReport): string {
   const rootRows = report.cacheRoots.map((root) => `
     <tr>
       <td>${escapeHtml(root.label)}<br><code>${escapeHtml(root.path)}</code></td>
-      <td><span class="flag ${root.exists ? "good" : "queued"}">${root.exists ? "found" : "missing"}</span></td>
+      <td><span class="flag ${root.exists ? "good" : "queued"}">${root.exists ? "found" : "not installed"}</span></td>
       <td>${escapeHtml(root.sizeLabel)}<br><span class="muted">${formatNumber(root.modelDirectories)} model dir(s)</span></td>
       <td>${renderDashboardDateTime(root.lastModifiedAt, "n/a")}</td>
-      <td>${escapeHtml(root.error ?? "none")}</td>
+      <td>${escapeHtml(root.error ?? (root.exists ? "none" : "Optional runtime; no action required."))}</td>
     </tr>
   `).join("");
   const modelRows = report.models.slice(0, 12).map((model) => `
@@ -30077,7 +30902,7 @@ function renderLocalHoldoutRoutingStatusHtml(status: DashboardLocalHoldoutRoutin
       </div>
       <div class="metric-grid">
         ${metricCard("Results", status.resultsExists ? status.resultsDecision ?? "present" : "missing", status.resultsPath)}
-        ${metricCard("Promotion", status.promotionExists ? status.promotionStatus ?? "present" : "missing", status.promotionPath)}
+        ${metricCard("Promotion", status.promotionExists ? status.promotionStatus ?? "present" : status.resultsExists ? "not eligible" : "missing", status.promotionPath)}
         ${metricCard("Approved", status.approved ? "yes" : "no", status.maxRisk ? `max risk ${status.maxRisk}` : "approval gate")}
         ${metricCard("Thresholds", status.thresholdSummary ?? "missing", "promotion gate")}
         ${metricCard("Holdout Evidence", status.evidenceSummary ?? "missing", "captured result")}
@@ -31900,6 +32725,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
       <td>${escapeHtml(candidate.source)}</td>
       <td>${candidate.initialized ? "yes" : "no"}</td>
       <td>${candidate.registered ? "yes" : "no"}</td>
+      <td>${candidate.managedScope ? "automatic" : "review only"}</td>
       <td>${escapeHtml(candidate.markers.join(", "))}</td>
       <td>${candidate.suggestedCommands.map((command) => `<code>${escapeHtml(command)}</code>`).join("<br>")}</td>
       <td>
@@ -31969,7 +32795,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
         </label>
         <div class="form-actions"><button type="submit">Discover</button></div>
       </form>
-      <p class="muted">For a whole-drive preview on macOS, use root <code>/</code> with Spotlight <code>auto</code>. Default excludes skip system, cache, dependency, photo library, backup, and private runtime directories.</p>
+      <p class="muted">Spotlight searches the whole computer. Roots and max depth define the safe scope eligible for bulk adoption; results elsewhere remain review-only. Default excludes skip system, cache, dependency, photo library, backup, and private runtime directories.</p>
     </section>
     <section class="panel">
       <div class="metric-grid">
@@ -32004,7 +32830,7 @@ function renderDiscoveryHtml(report: ProjectDiscoveryReport, params: URLSearchPa
     ${warningItems ? `<section class="panel"><h2>Warnings</h2><ul>${warningItems}</ul></section>` : ""}
     <section class="panel">
       <h2>Candidate Projects</h2>
-      <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Markers</th><th>Next Commands</th><th>Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"8\">No candidate projects found.</td></tr>"}</tbody></table></div>
+      <div class="table-wrap"><table><thead><tr><th>Project</th><th>Confidence</th><th>Source</th><th>Initialized</th><th>Registered</th><th>Management</th><th>Markers</th><th>Next Commands</th><th>Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"9\">No candidate projects found.</td></tr>"}</tbody></table></div>
     </section>
     <section class="panel"><h2>Next Commands</h2><ul>${nextItems}</ul></section>
   </main>
@@ -36291,6 +37117,9 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
   const mcpCommandRows = report.mcpPipeline.commandDiagnostics.recentEvents.slice(-6).reverse().map((event) => `
     <tr><td>${escapeHtml(String(event.ts ?? ""))}</td><td>${escapeHtml(String(event.event ?? ""))}</td><td>${escapeHtml(String(event.operation ?? "unknown"))}</td><td>${escapeHtml(String(event.exitCode ?? event.timedOut ?? ""))}</td><td><code>${escapeHtml(JSON.stringify(event))}</code></td></tr>
   `).join("");
+  const mcpSessionRows = report.mcpPipeline.sessionDiagnostics.recentSessions.map((session) => `
+    <tr><td>${session.pid}<br><span class="muted">parent ${session.parentPid ?? "n/a"}</span></td><td><span class="status ${session.outcome === "clean" ? "completed" : session.outcome === "active" ? "running" : "failed"}">${escapeHtml(session.outcome)}</span></td><td>${renderDashboardDateTime(session.startedAt)}</td><td>${renderDashboardDateTime(session.endedAt)}${session.exitCode === null ? "" : ` · code ${session.exitCode}`}</td><td>${formatNumber(session.commandSpans)} total / ${formatNumber(session.incompleteCommands)} incomplete</td><td>${escapeHtml(session.lastEvent)}</td></tr>
+  `).join("");
   const mcpReloadSteps = report.mcpPipeline.clientReload.steps.map((step) => `<li>${escapeHtml(step)}</li>`).join("");
   const mcpReloadClass = report.mcpPipeline.clientReload.suspectedStalePipe ? "failed" : report.mcpPipeline.smoke.status === "passed" ? "completed" : "queued";
   const recommendations = report.recommendations.map((note) => `<li>${escapeHtml(note)}</li>`).join("");
@@ -36384,6 +37213,10 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
         <strong>MCP Command Spans</strong>
         <p>${escapeHtml(report.mcpPipeline.commandDiagnostics.summary)}</p>
       </div>
+      <div class="callout ${report.mcpPipeline.sessionDiagnostics.counts.crashed || report.mcpPipeline.sessionDiagnostics.counts.incomplete ? "failed" : "completed"}">
+        <strong>MCP Session Correlation</strong>
+        <p>${escapeHtml(report.mcpPipeline.sessionDiagnostics.summary)}</p>
+      </div>
       <div class="callout ${report.mcpPipeline.recovery.status === "available" ? "completed" : "queued"}">
         <strong>MCP Recovery Package</strong>
         <p>${escapeHtml(report.mcpPipeline.recovery.recommendedAction)}</p>
@@ -36416,6 +37249,8 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Detail</th></tr></thead><tbody>${mcpApprovalRows || '<tr><td colspan="3">No MCP approval calls recorded in the recent log window.</td></tr>'}</tbody></table></div>
       <h3>Command Span Events</h3>
       <div class="table-wrap"><table><thead><tr><th>Time</th><th>Event</th><th>Operation</th><th>Exit/Timeout</th><th>Detail</th></tr></thead><tbody>${mcpCommandRows || '<tr><td colspan="5">No MCP command spans recorded in the recent log window.</td></tr>'}</tbody></table></div>
+      <h3>Recent MCP Sessions</h3>
+      <div class="table-wrap"><table><thead><tr><th>Process</th><th>Outcome</th><th>Started</th><th>Ended</th><th>Commands</th><th>Last Event</th></tr></thead><tbody>${mcpSessionRows || '<tr><td colspan="6">No MCP sessions recorded in the bounded lifecycle window.</td></tr>'}</tbody></table></div>
     </details>
     <details class="governance-details"${report.mcpCleanup.candidateCount ? " open" : ""}>
       <summary>Cleanup Stale MCP Sessions (${formatNumber(report.mcpCleanup.candidateCount)} candidate${report.mcpCleanup.candidateCount === 1 ? "" : "s"})</summary>
@@ -37323,43 +38158,6 @@ function renderDashboardActionCenterHtml(health: DashboardHomeHealth): string {
       </div>
     </div>
     ${rows ? `<div class="command-list">${rows}</div>` : ""}
-  </section>`;
-}
-
-function renderDashboardRoadmapPriorityHtml(report: RoadmapDashboardReport): string {
-  const openTasks = report.tasks
-    .filter((task) => task.status !== "done")
-    .sort(compareRoadmapTasks)
-    .slice(0, 3);
-  const rows = openTasks.map((task) => `
-    <div class="command-item ${task.kind === "bug" || task.priority === "critical" || task.priority === "high" ? "warn" : "good"}">
-      <div>
-        <strong>${escapeHtml(task.title)}</strong>
-        <span>${task.milestoneNumber ? `Milestone ${task.milestoneNumber}: ${escapeHtml(task.milestoneTitle ?? "")}` : "Unlinked"} · ${escapeHtml(task.priority)} priority · ${escapeHtml(task.status)}</span>
-      </div>
-      <a class="button secondary" href="/roadmap?milestone=${encodeURIComponent(String(task.milestoneNumber ?? "all"))}&status=all&priority=${encodeURIComponent(task.priority)}">Open</a>
-    </div>
-  `).join("");
-  return `<section class="panel command-center warn">
-    <div class="section-heading">
-      <div>
-        <h2>Next Best Work</h2>
-        <span class="muted">Top open roadmap items, generated from <code>docs/roadmap.md</code>.</span>
-      </div>
-      <div class="actions">
-        <a class="button secondary" href="/roadmap">Roadmap</a>
-        <a class="button secondary" href="/roadmap?view=gantt&status=open">Gantt</a>
-      </div>
-    </div>
-    <div class="command-summary">
-      <div><strong>${formatNumber(report.summary.openCount + report.summary.nextCount)} open roadmap item${report.summary.openCount + report.summary.nextCount === 1 ? "" : "s"}</strong><span>${formatNumber(report.summary.priorityCounts.critical + report.summary.priorityCounts.high)} critical/high priority item${report.summary.priorityCounts.critical + report.summary.priorityCounts.high === 1 ? "" : "s"} across ${formatNumber(report.summary.milestoneCount)} milestones.</span></div>
-      <div class="command-facts">
-        <a href="/roadmap?priority=high&status=open"><strong>${formatNumber(report.summary.priorityCounts.high)}</strong><span>high</span></a>
-        <a href="/roadmap?priority=critical&status=open"><strong>${formatNumber(report.summary.priorityCounts.critical)}</strong><span>critical</span></a>
-        <a href="/roadmap?status=open"><strong>${formatNumber(report.summary.bugCount)}</strong><span>bugs</span></a>
-      </div>
-    </div>
-    ${rows ? `<div class="command-list">${rows}</div>` : "<p class=\"muted\">No open roadmap items found.</p>"}
   </section>`;
 }
 
@@ -38586,9 +39384,10 @@ function dashboardCss(): string {
     .network-canvas-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-inline: contain; background: #020617; }
     .network-canvas-scroll:focus-visible { outline: 2px solid #60a5fa; outline-offset: 2px; }
     .network-map { display: block; width: 100%; min-height: 430px; border: 1px solid #1e3a5f; background: #020617; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.14), 0 22px 44px rgba(15,23,42,0.16); }
+    .network-map-aggregate { height: clamp(620px, 68vh, 1400px); }
     .network-map .network-backdrop { fill: url(#neuralCoreGlow); }
     .network-map .network-grid { fill: url(#neuralGrid); }
-    .network-rings circle { fill: none; stroke: #38bdf8; stroke-opacity: 0.11; stroke-width: 1.2; }
+    .network-rings ellipse { fill: none; stroke: #38bdf8; stroke-opacity: 0.11; stroke-width: 1.2; }
     .network-links path { fill: none; stroke: url(#neuralSignal); stroke-linecap: round; stroke-opacity: 0.26; }
     .network-links .signal { stroke: url(#neuralSignal); stroke-opacity: 0.48; }
     .network-links .support { stroke: #22d3ee; stroke-opacity: 0.36; }
@@ -38598,9 +39397,9 @@ function dashboardCss(): string {
     .network-links .support.dashed { stroke: #38bdf8; stroke-opacity: 0.50; }
     .network-links .sequence.dashed { stroke: #fbbf24; stroke-opacity: 0.48; }
     .network-links .outcome.dashed { stroke: #bfdbfe; stroke-opacity: 0.34; }
-    .network-signal-trail { fill: none; stroke: #e0f2fe; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: .05 .95; stroke-dashoffset: 1; opacity: .74; filter: url(#neuralGlow); animation: network-signal-run 3.2s linear infinite; animation-delay: var(--signal-delay); }
+    .network-signal-trail { fill: none; stroke: #e0f2fe; stroke-width: 2.4; stroke-linecap: round; stroke-dasharray: .05 .95; stroke-dashoffset: 1; opacity: .74; filter: url(#neuralGlow); animation: network-signal-run var(--network-signal-duration, 3.2s) linear infinite; animation-delay: var(--signal-delay); }
     .network-packet { fill: #f8fafc; stroke: #38bdf8; stroke-width: 1.5; filter: url(#neuralGlow); }
-    .network-node circle { transform-box: fill-box; transform-origin: center; animation: network-node-breathe 3.6s ease-in-out infinite; }
+    .network-node circle { transform-box: fill-box; transform-origin: center; animation: network-node-breathe var(--network-node-duration, 3.6s) ease-in-out infinite; }
     .network-stage:nth-child(3n + 1) circle, .network-primary-agent:nth-child(3n + 1) circle { animation-delay: .7s; }
     .network-stage:nth-child(3n + 2) circle, .network-primary-agent:nth-child(3n + 2) circle { animation-delay: 1.4s; }
     .network-shell.live-connected .network-signal-trail, .network-shell.live-connected .network-packet { opacity: .04; }
@@ -38609,10 +39408,15 @@ function dashboardCss(): string {
     .network-shell.live-connected .network-synapse.live-complete > path:first-child { stroke: #22c55e; stroke-opacity: .5; }
     .network-shell.live-connected .network-node circle { animation: none; }
     .network-shell.live-connected .network-node.live-firing { color: #38bdf8 !important; }
-    .network-shell.live-connected .network-node.live-firing circle { fill: rgba(14,165,233,.2); stroke-width: 6; animation: network-live-node .92s ease-in-out infinite; }
+    .network-shell.live-connected .network-node.live-firing circle { fill: rgba(14,165,233,.2); stroke: #38bdf8; stroke-width: 6; animation: network-live-node var(--network-live-duration, .92s) ease-in-out infinite; }
+    .network-shell.live-connected .network-node.live-tool circle { fill: rgba(34,211,238,.22); stroke: #22d3ee; stroke-width: 6; animation: network-live-node var(--network-live-duration, .92s) ease-in-out infinite; }
+    .network-shell.live-connected .network-node.live-approval circle { fill: rgba(168,85,247,.24); stroke: #a855f7; stroke-width: 7; animation: network-live-node var(--network-live-duration, .92s) ease-in-out infinite; }
     .network-shell.live-connected .network-node.live-complete { color: #22c55e !important; }
     .network-shell.live-connected .network-node.live-failed { color: #ef4444 !important; }
     .network-shell.live-connected .network-node.live-queued { color: #f59e0b !important; }
+    .network-shell.live-connected .network-node.live-complete circle { fill: rgba(34,197,94,.16); stroke: #22c55e; }
+    .network-shell.live-connected .network-node.live-failed circle { fill: rgba(239,68,68,.2); stroke: #ef4444; }
+    .network-shell.live-connected .network-node.live-queued circle { fill: rgba(245,158,11,.2); stroke: #f59e0b; animation: network-live-node var(--network-live-duration, .92s) ease-in-out infinite; }
     .network-health-ring { transform: rotate(-90deg); transform-origin: center; stroke-width: 4; stroke-linecap: round; filter: url(#neuralGlow); }
     .network-health-ring.completed { stroke: #22c55e; }
     .network-health-ring.failed { stroke: #ef4444; }
@@ -38630,8 +39434,10 @@ function dashboardCss(): string {
     .network-label { fill: #e2e8f0; font-size: 12px; font-weight: 700; }
     .network-layer-label { fill: #93c5fd; font-size: 11px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; }
     .network-playback { display: grid; grid-template-columns: auto minmax(230px, 1fr) minmax(360px, auto); align-items: center; gap: 14px; border: 1px solid #dbe4f0; border-top: 0; background: #f8fafc; padding: 11px 12px; }
-    .network-playback-actions { display: flex; gap: 7px; }
+    .network-playback-actions { display: flex; align-items: center; gap: 7px; }
     .network-playback .network-replay, .network-playback .network-pause { min-height: 34px; white-space: nowrap; }
+    .network-speed-label { display: flex; align-items: center; gap: 5px; color: #475569; font-size: 11px; font-weight: 700; white-space: nowrap; }
+    .network-speed { min-height: 34px; width: 70px; padding: 4px 7px; }
     .network-timeline { display: grid; grid-template-columns: auto max-content minmax(0, 1fr); align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
     .network-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #0ea5e9; box-shadow: 0 0 0 5px rgba(14,165,233,.12); animation: network-live-pulse 1.4s ease-in-out infinite; }
     .network-event-title { color: #172033; }
@@ -38654,9 +39460,15 @@ function dashboardCss(): string {
     .network-legend .legend-note { color: #93c5fd; }
     .network-legend .legend-stage { background: #2563eb; }
     .network-legend .legend-workflow { background: #0f172a; }
+    .network-legend .legend-event-request { background: #38bdf8; }
+    .network-legend .legend-event-queued { background: #f59e0b; }
+    .network-legend .legend-event-agent { background: #0ea5e9; }
+    .network-legend .legend-event-tool { background: #22d3ee; }
+    .network-legend .legend-event-approval { background: #a855f7; }
     .network-legend .legend-health-completed { background: #22c55e; }
     .network-legend .legend-health-failed { background: #ef4444; }
     .network-legend .legend-health-active { background: #f59e0b; }
+    .network-type-legend { border-top: 0; background: #111c33; }
     .network-health-summary { margin: 0; color: #58708f; font-size: 12px; }
     .network-explainer { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; background: #f8fafc; border: 1px solid #dbe4f0; padding: 10px; }
     .network-explainer div { display: grid; gap: 3px; }
@@ -38753,6 +39565,7 @@ function dashboardCss(): string {
       .network-toolbar-actions { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
       .compact-segments { min-width: 0; }
       .network-map { min-height: 360px; }
+      .network-map-aggregate { height: auto; }
       .network-canvas-scroll .network-map { width: 760px; max-width: none; min-height: 462px; }
       .network-playback { grid-template-columns: 1fr; }
       .network-phases { justify-content: flex-start; overflow-x: auto; padding-bottom: 3px; }

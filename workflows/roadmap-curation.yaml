@@ -1,0 +1,40 @@
+id: roadmap-curation
+name: Roadmap Curation
+description: Review daemon suggestions and add explicitly approved items to a project roadmap without starting implementation.
+lead: product-strategist
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: review-suggestions
+    agent: product-strategist
+    goal: Review proposed work for product value, duplication, scope, and roadmap fit.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    subagents:
+      - technical-architect
+      - workflow-orchestrator
+    context:
+      load:
+        - project_context
+        - roadmap
+        - learning_proposals
+      max_tokens: 5000
+    output: roadmap_curation_plan
+  - id: record-approved
+    agent: context-curator
+    goal: Insert only explicitly approved suggestions as unchecked roadmap items without scheduling or executing them.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
+    approval_required: true
+    context:
+      load:
+        - roadmap_curation_plan
+        - project_policy
+      max_tokens: 3000
+    output: roadmap_update

@@ -60,6 +60,12 @@ Command spans include operation name, command hash, child PID, timeout, exit
 state, and output byte counts. They do not include command text, note text,
 prompt bodies, provider keys, database URLs, storage secrets, or artifacts.
 
+Runtime Monitor correlates the bounded lifecycle log by MCP process ID. Each
+recent session is classified as clean, crashed, incomplete, or active and
+includes parent PID, start/end times, exit code, and command-span totals.
+Incomplete sessions distinguish a client pipe disappearing during work from
+ordinary on-demand MCP processes that close cleanly.
+
 Run an end-to-end launcher smoke check from the repo:
 
 ```bash

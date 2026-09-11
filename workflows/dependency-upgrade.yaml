@@ -1,0 +1,50 @@
+id: dependency-upgrade
+name: Dependency Upgrade
+description: Inventory, assess, upgrade, and verify project dependencies with compatibility and rollback evidence.
+lead: technical-architect
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: inventory
+    agent: technical-architect
+    goal: Identify requested or outdated dependencies, compatibility constraints, and the smallest safe upgrade set.
+    pattern:
+      type: planner
+      promotion_gate: none
+    subagents:
+      - security-reviewer
+    context:
+      load:
+        - dependency_files
+        - project_contract
+        - recent_changes
+      max_tokens: 5000
+    output: dependency_upgrade_plan
+  - id: upgrade
+    agent: implementation-agent
+    goal: Apply the approved dependency and compatibility changes with a rollback path.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
+    approval_required: true
+    context:
+      load:
+        - dependency_upgrade_plan
+        - relevant_source_files
+      max_tokens: 6000
+    output: dependency_changes
+  - id: verify
+    agent: auto-test-runner
+    goal: Run focused and project-level verification for the upgraded dependency surface.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - dependency_changes
+        - commands
+      max_tokens: 5000
+    output: dependency_verification

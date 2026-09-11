@@ -1,0 +1,63 @@
+id: incident-response
+name: Incident Response
+description: Triage, contain, diagnose, recover, and document an operational or security incident.
+lead: workflow-orchestrator
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: triage
+    agent: task-triager
+    goal: Establish severity, affected systems, evidence-preservation needs, and immediate safety constraints.
+    pattern:
+      type: planner
+      promotion_gate: none
+    subagents:
+      - ci-debugger
+      - security-reviewer
+    context:
+      load:
+        - logs
+        - run_receipts
+        - project_policy
+      max_tokens: 6000
+    output: incident_triage
+  - id: containment-plan
+    agent: security-reviewer
+    goal: Prepare the least-destructive containment and recovery plan with explicit approval boundaries.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    context:
+      load:
+        - incident_triage
+        - relevant_source_files
+      max_tokens: 6000
+    approval_required: true
+    output: incident_recovery_plan
+  - id: recovery-verification
+    agent: test-engineer
+    goal: Verify service recovery, data integrity, security posture, and residual risk.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - incident_recovery_plan
+        - commands
+      max_tokens: 5000
+    output: incident_verification
+  - id: follow-up
+    agent: docs-maintainer
+    goal: Produce a scrubbed incident summary, decisions, and follow-up roadmap candidates.
+    pattern:
+      type: finalizer
+      promotion_gate: approval
+    context:
+      load:
+        - incident_triage
+        - incident_verification
+      max_tokens: 4000
+    output: incident_report

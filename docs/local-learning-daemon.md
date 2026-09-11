@@ -13,6 +13,12 @@ The daemon records the roadmap path, status, open-item count, and suggestion
 count in its heartbeat. It never edits the roadmap or executes a suggested
 item; a user or workflow must explicitly select the work.
 
+Learning proposals shown on the dashboard can be approved into the configured
+project roadmap. This approval adds an unchecked item under `Agent Workflow
+Suggestions`, records the proposal source and rationale, and marks the inbox
+entry as already added. It does not queue, schedule, or execute the work, and it
+does not change the proposal's separate learning-action approval status.
+
 The local learning daemon is a proposed Agent Workflow background process that
 continually improves developer workflows from local evidence while keeping
 project data private and human control intact.
@@ -484,6 +490,13 @@ agentflow agent-improvement-apply --project /path/to/project --max-risk medium -
 own `.agent-workflow/learning/` report, inbox, application plan, shape
 recommendations, and daemon heartbeat. A failed or unavailable project records a
 failed heartbeat for that project without stopping the daemon for the rest.
+
+Each project governs its all-projects participation in
+`.agent-workflow/learning/settings.json` with `daemonEnabled`, `daemonPaused`,
+`daemonMode`, and `daemonRunLimit`. These controls are also available on the
+Learning dashboard. Every tick writes `daemon-fleet-receipt.json` and
+`daemon-fleet-receipt.md` under the supervisor project's learning directory,
+listing scheduled, skipped, and failed projects.
 
 When shared storage contains project roots from another machine, map those roots
 to local checkouts before writing project-local learning files:
