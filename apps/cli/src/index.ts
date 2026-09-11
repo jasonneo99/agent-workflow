@@ -30,6 +30,7 @@ import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/da
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
 import { buildHighRiskApprovalInbox, redactApprovalCardText, type HighRiskApprovalInbox } from "../../../packages/governance/src/high-risk-approval-inbox.js";
+import { restrictLearningDaemonLimit, restrictLearningDaemonMode, type LearningDaemonMode } from "../../../packages/governance/src/learning-daemon-policy.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
@@ -4045,8 +4046,8 @@ program
         for (const target of targets) {
           const targetProjectDir = target.projectDir;
           try {
-            const targetMode = allProjects ? target.mode : mode;
-            const targetLimit = allProjects ? target.limit : limit;
+            const targetMode = allProjects ? restrictLearningDaemonMode(mode, target.mode) : mode;
+            const targetLimit = allProjects ? restrictLearningDaemonLimit(limit, target.limit) : limit;
             const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode: targetMode, limit: targetLimit, daemonId, approvalAutopilotOverride });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
@@ -4110,7 +4111,11 @@ program
           daemonId,
           tick: ticks,
           discovered: discoveredTargets.length,
-          scheduled: targets.map((target) => ({ projectRootUri: target.projectDir, mode: allProjects ? target.mode : mode, limit: allProjects ? target.limit : limit })),
+          scheduled: targets.map((target) => ({
+            projectRootUri: target.projectDir,
+            mode: allProjects ? restrictLearningDaemonMode(mode, target.mode) : mode,
+            limit: allProjects ? restrictLearningDaemonLimit(limit, target.limit) : limit
+          })),
           skipped: skippedTargets.map((target) => ({ projectRootUri: target.projectDir, reason: target.paused ? "paused" : "disabled" })),
           errors: projectErrors
         });
@@ -6569,8 +6574,6 @@ type LearningActionReceiptCompactionResult = {
   removedReceipts: number;
   backupPaths: string[];
 };
-
-type LearningDaemonMode = "observe" | "propose" | "apply-approved";
 
 type LearningDaemonHeartbeat = {
   kind: "agentflow_learning_daemon_status";
