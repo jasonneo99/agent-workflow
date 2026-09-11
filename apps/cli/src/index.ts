@@ -25518,6 +25518,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/workflow-graph-events") {
+    await streamDashboardWorkflowGraph(request, response, requestUrl.searchParams);
+    return;
+  }
+
   if (requestUrl.pathname === "/api/model-catalog") {
     const report = await loadDashboardModelCatalogReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -28018,6 +28023,46 @@ type DashboardWorkflowGraphReport = WorkflowGraphReport & {
   graphPresets: DashboardGraphPreset[];
 };
 
+async function streamDashboardWorkflowGraph(
+  request: http.IncomingMessage,
+  response: http.ServerResponse,
+  params: URLSearchParams
+): Promise<void> {
+  const boundedParams = new URLSearchParams(params);
+  boundedParams.set("runLimit", String(Math.min(parseDashboardRunLimit(params.get("runLimit") ?? "25", 25), 50)));
+  response.writeHead(200, {
+    "content-type": "text/event-stream; charset=utf-8",
+    "cache-control": "no-store, no-transform",
+    connection: "keep-alive",
+    "x-accel-buffering": "no"
+  });
+  response.flushHeaders?.();
+  let closed = false;
+  let lastSnapshotHash = "";
+  let lastHeartbeatAt = 0;
+  request.once("close", () => { closed = true; });
+
+  while (!closed && !response.destroyed) {
+    try {
+      const report = await loadDashboardWorkflowGraph(boundedParams);
+      const payload = JSON.stringify(report);
+      const snapshotHash = textHash(payload);
+      if (snapshotHash !== lastSnapshotHash) {
+        response.write(`id: ${snapshotHash}\nevent: workflow-graph\ndata: ${payload}\n\n`);
+        lastSnapshotHash = snapshotHash;
+      } else if (Date.now() - lastHeartbeatAt >= 15_000) {
+        response.write(`: heartbeat ${new Date().toISOString()}\n\n`);
+        lastHeartbeatAt = Date.now();
+      }
+    } catch (error) {
+      const payload = JSON.stringify({ message: error instanceof Error ? error.message : String(error) });
+      response.write(`event: workflow-graph-error\ndata: ${payload}\n\n`);
+    }
+    await sleep(1_000);
+  }
+  if (!response.writableEnded) response.end();
+}
+
 async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<DashboardWorkflowGraphReport> {
   const projectDir = path.resolve(process.cwd(), params.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
   const workflows = await loadWorkflows(rootDir);
@@ -29234,7 +29279,13 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         apiUrl.searchParams.delete('view');
         apiUrl.searchParams.delete('orientation');
         apiUrl.searchParams.delete('capture');
+        const eventsUrl = new URL(apiUrl);
+        eventsUrl.pathname = '/api/workflow-graph-events';
         let pollTimer = 0;
+        let eventSource = null;
+        let reconnectTimer = 0;
+        let reconnectAttempts = 0;
+        let streamConnected = false;
         let paused = false;
         let latestReport = null;
         let playbackSpeed = 1;
@@ -29402,6 +29453,39 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
             showEvent(0, 'Live feed unavailable', error instanceof Error ? error.message : 'Could not refresh workflow state');
           }
         };
+        const connectEventStream = () => {
+          window.clearTimeout(reconnectTimer);
+          eventSource?.close();
+          if (!('EventSource' in window) || document.hidden) return;
+          eventSource = new EventSource(eventsUrl);
+          eventSource.addEventListener('open', () => {
+            streamConnected = true;
+            reconnectAttempts = 0;
+            shell.dataset.transport = 'stream';
+          });
+          eventSource.addEventListener('workflow-graph', (event) => {
+            try {
+              const report = JSON.parse(event.data);
+              if (paused || demoRunning) latestReport = report;
+              else renderLiveReport(report);
+            } catch {
+              streamConnected = false;
+            }
+          });
+          eventSource.addEventListener('workflow-graph-error', () => {
+            streamConnected = false;
+            shell.dataset.transport = 'poll';
+          });
+          eventSource.onerror = () => {
+            streamConnected = false;
+            shell.dataset.transport = 'poll';
+            eventSource?.close();
+            reconnectAttempts += 1;
+            const delay = Math.min(30_000, 1_000 * (2 ** Math.min(reconnectAttempts, 5)));
+            reconnectTimer = window.setTimeout(connectEventStream, delay);
+            void poll();
+          };
+        };
         const replayLatest = () => {
           svg.setCurrentTime?.(0);
           if (demoRunning) startDemo();
@@ -29417,9 +29501,18 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           if (paused) { svg.pauseAnimations?.(); window.clearTimeout(demoTimer); }
           else { svg.unpauseAnimations?.(); if (demoRunning) scheduleDemo(); else void poll(); }
         });
-        document.addEventListener('visibilitychange', () => { if (!document.hidden) void poll(); });
+        document.addEventListener('visibilitychange', () => {
+          if (document.hidden) {
+            streamConnected = false;
+            eventSource?.close();
+          } else {
+            void poll();
+            connectEventStream();
+          }
+        });
         void poll();
-        pollTimer = window.setInterval(() => { void poll(); }, 2000);
+        connectEventStream();
+        pollTimer = window.setInterval(() => { if (!streamConnected) void poll(); }, 5000);
       })();
     </script>
   </div>`;
