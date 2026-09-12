@@ -118,7 +118,9 @@ import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
-import { assertContextProjectPath, buildContextEfficiencyReport, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
+import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
+import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
+import { createCodegenPlan, finishCodegenPlan, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -1887,6 +1889,129 @@ program
     if (options.json) console.log(JSON.stringify({ ...report, evidencePath: path.relative(projectDir, evidencePath) }, null, 2));
     else console.log([`Context holdout cases: ${report.cases}`, `Quality pass: ${(report.qualityPassRate * 100).toFixed(1)}%`, `Citation pass: ${(report.citationPassRate * 100).toFixed(1)}%`, `Token savings: ${report.tokenSavingsPercent}%`, `p95 added latency: ${report.p95AddedLatencyMs}ms`, `Enforcement ready: ${report.enforcementReady ? "yes" : "no"}`, `Evidence: ${path.relative(projectDir, evidencePath)}`].join("\n"));
     if (!report.enforcementReady) process.exitCode = 1;
+  });
+
+program
+  .command("context-hook")
+  .description("Evaluate a Claude Code or Cursor file-read hook request from stdin")
+  .requiredOption("--host <host>", "claude or cursor")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .action(async (options: { host: string; project: string }) => {
+    const host = parseContextHost(options.host);
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const project = await loadProjectConfig(projectDir);
+    const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
+    const payload = JSON.parse(await readStandardInput());
+    const read = normalizeHostRead(host, payload);
+    const requestedPath = path.isAbsolute(read.filePath) ? read.filePath : path.resolve(projectDir, read.filePath);
+    const relativePath = path.relative(projectDir, requestedPath);
+    const sourcePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath, label: "hook read" });
+    const content = read.content ?? await fs.readFile(sourcePath, "utf8");
+    const policy = await loadContextRoutingPolicy(projectDir);
+    const decision = decideContextRoute({ policy, intent: "discovery", content });
+    const holdoutApproved = await hasApprovedContextHoldout(projectDir);
+    const enforcement = enforceContextDecision({ policy, decision, exactReadRequested: read.exactReadRequested, holdoutApproved });
+    const observation = policy.mode === "shadow" ? buildShadowObservation({ projectId, sourcePath: relativePath, content, intent: "discovery", policy }) : null;
+    if (observation) await writeShadowObservationBatch({ projectRoot: projectDir, projectId, observations: [observation] });
+    const redirectCommand = `agentflow context-route --project . --file ${JSON.stringify(relativePath)} --question ${JSON.stringify("Summarize the relevant parts of this file")} --intent discovery --mode enforce --holdout-approved --execute`;
+    process.stdout.write(`${JSON.stringify(formatHostDecision({ host, action: enforcement.action, reason: enforcement.reason, route: decision.route, redirectCommand }))}\n`);
+  });
+
+program
+  .command("context-host-setup")
+  .description("Preview or install a project-local Context Gateway host hook")
+  .requiredOption("--host <host>", "claude or cursor")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--write", "merge the hook into the host configuration")
+  .option("--json", "print JSON")
+  .action(async (options: { host: string; project: string; write?: boolean; json?: boolean }) => {
+    const host = parseContextHost(options.host);
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const definition = hostHookDefinition(host);
+    const target = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: definition.relativePath, label: "host hook config" });
+    let current: unknown = {};
+    try { current = JSON.parse(await fs.readFile(target, "utf8")); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const merged = mergeHostHookConfig(host, current);
+    if (options.write) {
+      await fs.mkdir(path.dirname(target), { recursive: true });
+      await fs.writeFile(target, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+    }
+    const report = { host, projectDir, target: definition.relativePath, written: Boolean(options.write), configured: JSON.stringify(merged).includes("agentflow context-hook"), config: merged };
+    console.log(options.json ? JSON.stringify(report, null, 2) : [`Context host setup: ${host}`, `Target: ${definition.relativePath}`, `Configured: ${report.configured ? "yes" : "no"}`, `Written: ${report.written ? "yes" : "no"}`].join("\n"));
+  });
+
+program
+  .command("context-host-doctor")
+  .description("Check Context Gateway policy, holdout evidence, and host-hook installation")
+  .requiredOption("--host <host>", "claude or cursor")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--json", "print JSON")
+  .action(async (options: { host: string; project: string; json?: boolean }) => {
+    const host = parseContextHost(options.host);
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const definition = hostHookDefinition(host);
+    const target = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: definition.relativePath, label: "host hook config" });
+    let installed = false;
+    try { installed = (await fs.readFile(target, "utf8")).includes("agentflow context-hook"); } catch { installed = false; }
+    const policy = await loadContextRoutingPolicy(projectDir);
+    const holdoutApproved = await hasApprovedContextHoldout(projectDir);
+    const report = { host, installed, policyMode: policy.mode, holdoutApproved, enforcementReady: installed && policy.mode === "enforce" && holdoutApproved, target: definition.relativePath };
+    console.log(options.json ? JSON.stringify(report, null, 2) : [`Context host doctor: ${host}`, `Installed: ${installed ? "yes" : "no"}`, `Policy: ${policy.mode}`, `Holdout approved: ${holdoutApproved ? "yes" : "no"}`, `Enforcement ready: ${report.enforcementReady ? "yes" : "no"}`].join("\n"));
+  });
+
+program
+  .command("context-codegen")
+  .description("Stage or promote governed repetitive-code generation")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--spec <text>", "generation specification")
+  .option("--reference <path>", "project-relative reference file")
+  .option("--target <path>", "project-relative target file")
+  .option("--plan <id>", "existing staged plan id to promote")
+  .option("--approved", "confirm primary-agent diff review")
+  .option("--reviewed-by <name>", "reviewer recorded in the promotion receipt")
+  .option("--validate-command <command>", "allowed project validation command")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; spec?: string; reference?: string; target?: string; plan?: string; approved?: boolean; reviewedBy?: string; validateCommand?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const project = await loadProjectConfig(projectDir);
+    if (!options.plan) {
+      if (!options.spec || !options.reference || !options.target) throw new Error("New code-generation plans require --spec, --reference, and --target.");
+      const referencePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: options.reference, label: "codegen reference" });
+      const referenceContent = await fs.readFile(referencePath, "utf8");
+      const provider = providerFromEnv();
+      const output = await provider.executeStage({
+        runId: randomUUID(), taskId: randomUUID(), projectConfig: project, workflowId: "context-codegen", workflowTask: `${options.spec}\nWrite only ${options.target}.`,
+        stageId: "generate", agentId: "context-code-writer", agentName: "Context Code Writer",
+        agentPrompt: "Generate repetitive code that follows the supplied reference. Return the candidate as a requestedFileWrite for the exact target. Do not request commands.",
+        stageGoal: options.spec, compiledBrief: `Reference: ${options.reference}\n\n${referenceContent}`, modelTier: "fast", priorReceipts: []
+      });
+      const candidate = output.requestedFileWrites?.find((item) => item.path === options.target);
+      if (!candidate) throw new Error(`Provider ${provider.id} did not return a candidate write for the exact target ${options.target}.`);
+      assertFileWriteAllowed(options.target, candidate.content, project);
+      const created = await createCodegenPlan({ projectRoot: projectDir, target: options.target, reference: options.reference, referenceContent, candidateContent: candidate.content, spec: options.spec, provider: provider.id });
+      const report = { planId: created.plan.id, status: created.plan.status, provider: provider.id, target: created.plan.target, referenceHash: created.plan.referenceHash, candidateHash: created.plan.candidateHash, diff: created.plan.diff, next: `Review the diff, then rerun with --plan ${created.plan.id} --approved --reviewed-by <name> --validate-command <allowed-command>.` };
+      console.log(options.json ? JSON.stringify(report, null, 2) : [`Code-generation plan: ${report.planId}`, `Status: ${report.status}`, report.diff, report.next].join("\n"));
+      return;
+    }
+    if (!options.approved || !options.reviewedBy?.trim() || !options.validateCommand?.trim()) throw new Error("Promotion requires --approved, --reviewed-by, and --validate-command.");
+    const loaded = await readCodegenPlan(projectDir, options.plan);
+    assertFileWriteAllowed(loaded.plan.target, loaded.candidate, project);
+    const targetPath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: loaded.plan.target, label: "codegen target" });
+    let previous: string | null = null;
+    try { previous = await fs.readFile(targetPath, "utf8"); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+    const write = await executeAllowedFileWrite({ relativePath: loaded.plan.target, content: loaded.candidate, cwd: projectDir, project });
+    const validation = await executeAllowedCommand({ commandLine: options.validateCommand, cwd: projectDir, project });
+    if (validation.exitCode !== 0 || validation.timedOut) {
+      if (previous === null) await fs.rm(targetPath, { force: true });
+      else await executeAllowedFileWrite({ relativePath: loaded.plan.target, content: previous, cwd: projectDir, project });
+      await finishCodegenPlan({ planPath: loaded.planPath, plan: loaded.plan, status: "failed", reviewedBy: options.reviewedBy, validation: `failed exit=${validation.exitCode} timedOut=${validation.timedOut}`, rollback: previous === null ? "removed newly created target" : "restored previous content" });
+      throw new Error("Generated candidate failed validation and was rolled back.");
+    }
+    await finishCodegenPlan({ planPath: loaded.planPath, plan: loaded.plan, status: "promoted", reviewedBy: options.reviewedBy, validation: `passed: ${options.validateCommand}`, rollback: `previousHash=${write.previousHash ?? "new-file"}; candidateHash=${write.nextHash}` });
+    const report = { planId: loaded.plan.id, status: "promoted", target: loaded.plan.target, reviewedBy: options.reviewedBy, validation: { command: options.validateCommand, exitCode: validation.exitCode, durationMs: validation.durationMs }, receipt: path.relative(projectDir, loaded.planPath), rollbackEvidence: `previousHash=${write.previousHash ?? "new-file"}; candidateHash=${write.nextHash}` };
+    console.log(options.json ? JSON.stringify(report, null, 2) : [`Promoted ${report.target}.`, `Validation passed: ${options.validateCommand}`, `Receipt: ${report.receipt}`].join("\n"));
   });
 
 program
@@ -42414,8 +42539,26 @@ async function indexProjectWithStorage(input: {
   };
 }
 
-async function loadContextRoutingPolicy(): Promise<ContextRoutingPolicy> {
+async function loadContextRoutingPolicy(projectDir?: string): Promise<ContextRoutingPolicy> {
+  if (projectDir) {
+    const localPath = path.join(projectDir, ".agent-workflow", "context-routing.yaml");
+    try { return contextRoutingPolicySchema.parse(YAML.parse(await fs.readFile(localPath, "utf8"))); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+  }
   return contextRoutingPolicySchema.parse(YAML.parse(await fs.readFile(path.join(rootDir, "policies", "context-routing.yaml"), "utf8")));
+}
+
+function parseContextHost(value: string): ContextHost {
+  if (value === "claude" || value === "cursor") return value;
+  throw new Error("Context host must be claude or cursor.");
+}
+
+async function readStandardInput(): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  const value = Buffer.concat(chunks).toString("utf8").trim();
+  if (!value) throw new Error("Hook input JSON is required on stdin.");
+  return value;
 }
 
 function parseContextIntent(value: string): ContextIntent {

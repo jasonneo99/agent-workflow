@@ -52,3 +52,46 @@ confidence, and exact-read handles. Summaries are cached under the target
 project with project-id isolation, TTL, bounded entry size, and invalidation
 keys covering content, policy, processor, model, question class, and schema.
 Each route attempt writes a body-free local receipt.
+
+## Claude Code And Cursor Hooks
+
+Preview first, then merge a project hook without removing existing hooks:
+
+```bash
+npm run context-host-setup -- --host claude -p /path/to/project
+npm run context-host-setup -- --host claude -p /path/to/project --write
+npm run context-host-doctor -- --host claude -p /path/to/project
+
+npm run context-host-setup -- --host cursor -p /path/to/project --write
+npm run context-host-doctor -- --host cursor -p /path/to/project
+```
+
+The Claude adapter handles `Read` `PreToolUse` input and preserves targeted
+offset/limit reads. The Cursor adapter handles `beforeReadFile`, returns its
+documented allow/deny shape, and installs with `failClosed: true`. Both reuse
+the shared routing policy and direct denied reads to `context-route`; neither
+can enable enforcement without a project-local `enforce` policy and passing
+holdout evidence.
+
+## Governed Repetitive-Code Generation
+
+Generation never writes directly to the requested target. The fast configured
+provider returns an exact-target candidate, which is staged under
+`.agent-workflow/context-gateway/codegen/` with reference, specification, and
+candidate hashes plus a bounded review diff.
+
+```bash
+npm run context-codegen -- -p /path/to/project \
+  --spec "Add tests following the reference pattern" \
+  --reference tests/reference.test.ts \
+  --target tests/generated.test.ts
+
+npm run context-codegen -- -p /path/to/project \
+  --plan <plan-id> --approved --reviewed-by "Reviewer" \
+  --validate-command "npm test"
+```
+
+Promotion requires explicit diff-review confirmation, a named reviewer, an
+allowed validation command, and project-policy approval for the target. Failed
+validation restores the prior content or removes a newly created target. The
+terminal plan records validation and rollback evidence.

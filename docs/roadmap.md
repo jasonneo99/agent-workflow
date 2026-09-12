@@ -152,9 +152,10 @@ These milestones organize the detailed roadmap items below:
       risk-aware escalation, portable host adapters, and end-to-end cost and
       quality evaluation.
     - Current status: shadow measurement, project-isolated caching, configured
-      provider delegation, aggregate reporting, holdout gates, and conservative
-      CLI/MCP enforcement are implemented. Native interactive-host adapters and
-      governed repetitive-code generation remain.
+      provider delegation, aggregate reporting, holdout gates, conservative
+      CLI/MCP enforcement, native Claude Code and Cursor read adapters, and
+      governed repetitive-code generation are implemented. Repository-scale
+      evaluation and operator visibility remain.
 
 ## Current Execution Priority
 
@@ -162,19 +163,20 @@ This is the authoritative order for open roadmap work. Phase and milestone
 numbers describe product structure, not execution priority. Re-rank this list
 when dependencies, incidents, or new evidence materially change the order.
 
-1. **Add native host read adapters for Claude Code and Cursor.**
+1. **Add a Context Gateway operator view and controls.**
    - Priority: high
-   - Why now: indexing, CLI, and MCP paths are wired; thin host hooks are the
-     remaining step for enforcing the same policy at interactive read time.
-   - Exit gate: host adapters reuse the shared YAML policy, preserve exact-read
-     escape hatches, and pass the same holdout and receipt gates.
-2. **Add governed repetitive-code generation.**
-   - Priority: medium
-   - Why next: routed reading is now evidence-gated, while code generation still
-     needs diff inspection, policy checks, validation, and receipts before it can
-     safely avoid returning full generated files to the primary model.
-   - Exit gate: generated files cannot be accepted without a reviewed diff,
-     validation result, source/reference hashes, and rollback evidence.
+   - Why now: routing, host hooks, and staged generation are available, but
+     operators need one place to inspect savings, quality gates, cache health,
+     host readiness, and pending generation plans.
+   - Exit gate: the dashboard presents body-free gateway evidence and supports
+     safe preview-first actions without bypassing policy or approval gates.
+2. **Calibrate routing with a representative repository holdout corpus.**
+   - Priority: high
+   - Why next: the mechanisms are implemented; real repository tasks must now
+     prove quality, savings, latency, and escalation behavior before broader
+     enforcement.
+   - Exit gate: versioned holdout evidence covers supported task and risk
+     classes, records regressions, and proposes threshold changes for review.
 3. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
@@ -467,8 +469,9 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Milestone: 13 Context Intelligence Gateway
   - Priority: high
   - Execution order: 1
-  - Status: active; the first six read-routing increments are implemented and
-    evidence-gated. Native host adapters and governed code generation remain.
+  - Status: active; read routing, Claude Code and Cursor adapters, setup and
+    diagnostics, and governed code generation are implemented and
+    evidence-gated. Repository-scale calibration and operator visibility remain.
   - Add a provider-neutral context-routing policy in reusable YAML, with thin
     adapters for Claude Code hooks, Codex/tool policy integration, Cursor, CLI,
     MCP, and native Agent Workflow workers.
@@ -497,6 +500,12 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Done: add configured-provider delegation through CLI and MCP with structured
     claims, confidence, hashes, cited spans when resolved, retrieval handles,
     cache reuse, and body-free route receipts.
+  - Done: add a shared host-adapter protocol with Claude Code `PreToolUse` and
+    Cursor `beforeReadFile` integrations that preserve exact reads and emit each
+    host's documented allow or deny contract.
+  - Done: add preview-first host setup and doctor commands through CLI and MCP;
+    merge existing hook configuration and report policy, holdout, and enforcement
+    readiness without silently enabling enforcement.
   - Preserve direct or automatically promoted frontier-model access for
     debugging, concurrency, security, authorization, migrations, public API
     changes, architectural decisions, safety-critical code, and low-confidence
@@ -505,6 +514,12 @@ Goal: improve quality and cost while keeping personalization auditable and porta
     the specification, reference inputs, provider/model, hashes, diff, tests,
     policy decision, and receipt; require primary-agent diff inspection and
     validation rather than accepting invisible writes.
+  - Done: stage exact-target provider candidates outside the target path with
+    specification, reference, provider, model, and content hashes plus a bounded
+    diff for primary-agent inspection.
+  - Done: require explicit approval, a named reviewer, target write-policy
+    approval, and an allowed validation command before promotion; record the
+    terminal outcome and restore or remove the target on failed validation.
   - Phase 1 — shadow measurement: observe candidate reads without blocking and
     record eligible-token share, projected savings, latency, privacy boundary,
     and routing rationale without storing file bodies in telemetry.

@@ -218,6 +218,59 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_context_host_setup",
+  {
+    title: "AgentFlow Context Gateway host setup",
+    description: "Preview or merge the project-local Claude Code or Cursor read hook without removing existing hooks.",
+    inputSchema: { project: z.string(), host: z.enum(["claude", "cursor"]), write: z.boolean().optional(), json: z.boolean().optional() }
+  },
+  async ({ project, host, write, json }) => {
+    const args = ["context-host-setup", "--project", project, "--host", host];
+    if (write) args.push("--write");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_host_doctor",
+  {
+    title: "AgentFlow Context Gateway host doctor",
+    description: "Check host-hook installation, policy mode, holdout evidence, and enforcement readiness.",
+    inputSchema: { project: z.string(), host: z.enum(["claude", "cursor"]), json: z.boolean().optional() }
+  },
+  async ({ project, host, json }) => {
+    const args = ["context-host-doctor", "--project", project, "--host", host];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_codegen",
+  {
+    title: "AgentFlow governed context code generation",
+    description: "Stage a cheap-model code candidate for diff review, or explicitly promote it through project policy and validation with rollback evidence.",
+    inputSchema: {
+      project: z.string(), spec: z.string().optional(), reference: z.string().optional(), target: z.string().optional(), plan: z.string().optional(),
+      approved: z.boolean().optional(), reviewedBy: z.string().optional(), validateCommand: z.string().optional(), json: z.boolean().optional()
+    }
+  },
+  async ({ project, spec, reference, target, plan, approved, reviewedBy, validateCommand, json }) => {
+    const args = ["context-codegen", "--project", project];
+    if (spec) args.push("--spec", spec);
+    if (reference) args.push("--reference", reference);
+    if (target) args.push("--target", target);
+    if (plan) args.push("--plan", plan);
+    if (approved) args.push("--approved");
+    if (reviewedBy) args.push("--reviewed-by", reviewedBy);
+    if (validateCommand) args.push("--validate-command", validateCommand);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 180_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_discover_projects",
   {
     title: "AgentFlow discover projects",

@@ -180,6 +180,9 @@ npm run index-project -- -p .  # Index project files for context
 npm run context-report -- -p . # Inspect privacy-safe shadow routing evidence
 npm run context-route -- -p . --file src/example.ts --question "Where is this used?" # Preview a routed read
 npm run context-holdout -- -p . --cases .agent-workflow/evals/context-holdout.json # Gate enforcement with local evidence
+npm run context-host-setup -- --host claude -p . # Preview a Claude Code read hook
+npm run context-host-setup -- --host cursor -p . # Preview a Cursor read hook
+npm run context-codegen -- -p . --spec "Generate tests" --reference tests/example.test.ts --target tests/new.test.ts
 npm run index-project -- -p . --incremental # Refresh only changed files after a baseline exists
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm
