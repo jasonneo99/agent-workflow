@@ -2,6 +2,10 @@
 
 Agent Workflow is an open framework for running portable development agents across projects. It should share the reusable operating system around agents, not private product intelligence from any one application.
 
+This policy governs every tracked file and artifact type in the repository. A
+test fixture, comment, screenshot, prompt, migration, example, generated file,
+or documentation page is not exempt merely because it is not production code.
+
 ## What Belongs In This Repository
 
 The open source project can include patterns that help any team operate agent workflows safely and cheaply:
@@ -74,6 +78,8 @@ Before contributing a change, ask:
 - Are examples synthetic or scrubbed?
 - Does the change keep project-specific context in `.agent-workflow/` or another project-local location?
 - Does it preserve dry-run or explicit-approval behavior for risky actions?
+- Does every changed file pass `npm run validate-boundary`, including tests,
+  fixtures, docs, screenshots, templates, and generated metadata?
 
 If the answer is unclear, keep the change project-local first and promote only the generalized pattern later.
 

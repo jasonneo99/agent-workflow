@@ -4,7 +4,7 @@ import { buildHighRiskApprovalInbox, redactApprovalCardText } from "./high-risk-
 
 test("redacts credentials and host paths from approval cards", () => {
   const value = redactApprovalCardText(
-    "deploy /Users/jason/private token=abc123 Authorization Bearer xyz.123",
+    "deploy /Users/person/private token=abc123 Authorization Bearer xyz.123",
     240
   );
   assert.equal(value.includes("jason"), false);

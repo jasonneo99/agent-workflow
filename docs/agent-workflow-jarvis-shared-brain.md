@@ -33,12 +33,12 @@ This repository contains only the reusable integration pattern:
 - Provider-neutral orchestration, daemon optimization, and policy gates.
 - Synthetic examples, generic dashboard surfaces, and portable client adapters.
 - The abstract Jarvis/Fleet boundary, which another assistant or fleet system
-  can implement without Jason's environment.
+  can implement without the maintainer's environment.
 
 A separate private companion repository should contain personal add-ons:
 
 - Jarvis persona, voice behavior, wake words, private skills, and preferences.
-- Jason-specific memory, contacts, calendars, accounts, and conversation data.
+- User-specific memory, contacts, calendars, accounts, and conversation data.
 - Real fleet inventory, hostnames, network addresses, signing configuration,
   deployment overlays, and operational secrets.
 - Private project mappings, domain prompts, business rules, approval policy,

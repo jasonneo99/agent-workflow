@@ -804,6 +804,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Scope: use Jarvis as the conversational intent and presentation layer while Agent Workflow remains the durable planning, policy, execution, evidence, and learning layer.
   - [x] Document responsibilities, request flow, memory boundaries, approval behavior, example interactions, and rollout guidance in `docs/agent-workflow-jarvis-shared-brain.md`.
   - [x] Define the open-source/personal boundary: portable schemas, orchestration, safety, and synthetic adapters stay here; persona, private memory, real fleet topology, secrets, project mappings, and deployment overlays stay private.
+  - [x] Enforce the open-source/personal boundary across every tracked file type with repository instructions, contributor guidance, and `npm run validate-boundary` as part of the standard check.
   - [ ] Create a separately access-controlled private companion repository for personal Jarvis, Fleet, memory, and deployment add-ons; consume tagged Agent Workflow releases through one-way public extension contracts.
   - [ ] Add a bounded Jarvis intent envelope that separates conversation, project selection, workflow goals, and requested autonomy from executable actions.
   - [ ] Add shared-brain status summaries for active goals, recent decisions, open approvals, learned preferences, and degraded services without exposing raw private memory.
