@@ -27129,6 +27129,8 @@ type RoadmapDashboardReport = {
     recommendation: string;
     priority: string;
     riskLevel: string;
+    category: "evaluation" | "feedback" | "routing" | "tuning" | "feature-candidate";
+    disposition: "operational" | "product-candidate";
   }>;
   summary: {
     milestoneCount: number;
@@ -27170,7 +27172,8 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
         target: item.proposal.target,
         recommendation: item.proposal.recommendation,
         priority: item.proposal.priority,
-        riskLevel: item.proposal.riskLevel
+        riskLevel: item.proposal.riskLevel,
+        ...classifyRoadmapLearningSuggestion(item.proposal.title)
       }));
   }))).flat();
   return {
@@ -27197,6 +27200,17 @@ async function loadRoadmapDashboardReport(): Promise<RoadmapDashboardReport> {
       }, {} as Record<RoadmapPriority, number>)
     }
   };
+}
+
+function classifyRoadmapLearningSuggestion(title: string): {
+  category: RoadmapDashboardReport["learningSuggestions"][number]["category"];
+  disposition: RoadmapDashboardReport["learningSuggestions"][number]["disposition"];
+} {
+  if (/evaluation evidence/iu.test(title)) return { category: "evaluation", disposition: "operational" };
+  if (/feedback/iu.test(title)) return { category: "feedback", disposition: "operational" };
+  if (/routing/iu.test(title)) return { category: "routing", disposition: "operational" };
+  if (/tuning proposal/iu.test(title)) return { category: "tuning", disposition: "operational" };
+  return { category: "feature-candidate", disposition: "product-candidate" };
 }
 
 function parseRoadmapMilestones(lines: string[]): RoadmapMilestone[] {
@@ -27580,7 +27594,10 @@ function renderRoadmapDashboardHtml(report: RoadmapDashboardReport, params: URLS
 }
 
 function renderRoadmapLearningSuggestions(report: RoadmapDashboardReport, params: URLSearchParams): string {
-  const rows = report.learningSuggestions.map((item) => `<tr>
+  const productCandidates = report.learningSuggestions.filter((item) => item.disposition === "product-candidate");
+  const operational = report.learningSuggestions.filter((item) => item.disposition === "operational");
+  const categoryCount = (category: RoadmapDashboardReport["learningSuggestions"][number]["category"]): number => operational.filter((item) => item.category === category).length;
+  const rows = productCandidates.map((item) => `<tr>
     <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
     <td>${escapeHtml(item.title)}<br><span class="muted">${escapeHtml(item.proposalId)} · ${escapeHtml(item.target)}</span></td>
     <td>${escapeHtml(item.priority)} / ${escapeHtml(item.riskLevel)}</td>
@@ -27593,8 +27610,16 @@ function renderRoadmapLearningSuggestions(report: RoadmapDashboardReport, params
     </form></td>
   </tr>`).join("");
   return `<section class="panel">
-    <div class="section-heading"><div><h2>Learning Suggestions</h2><span class="muted">Approved learning proposals available for optional roadmap inclusion.</span></div></div>
-    <div class="table-wrap"><table><thead><tr><th>Project</th><th>Suggestion</th><th>Priority/Risk</th><th>Recommendation</th><th>Roadmap</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No learning suggestions are waiting for roadmap review.</td></tr>"}</tbody></table></div>
+    <div class="section-heading"><div><h2>Product Candidates</h2><span class="muted">Only feature-shaped learning proposals belong on the product roadmap. Operational tuning stays in Learning.</span></div><div class="actions"><a class="button secondary" href="/learning">Learning</a><a class="button secondary" href="/feedback-inbox">Feedback</a></div></div>
+    <div class="metric-grid">
+      ${metricCard("Product Candidates", productCandidates.length, "eligible for roadmap review", productCandidates.length ? "warning" : "check")}
+      ${metricCard("Operational", operational.length, "tracked outside roadmap", "activity")}
+      ${metricCard("Evaluation", categoryCount("evaluation"), "evidence gaps", "check")}
+      ${metricCard("Routing", categoryCount("routing"), "route reviews", "route")}
+      ${metricCard("Feedback", categoryCount("feedback"), "feedback maintenance", "message")}
+      ${metricCard("Tuning", categoryCount("tuning"), "proposal reviews", "settings")}
+    </div>
+    ${rows ? `<div class="table-wrap"><table><thead><tr><th>Project</th><th>Candidate</th><th>Priority/Risk</th><th>Recommendation</th><th>Roadmap</th></tr></thead><tbody>${rows}</tbody></table></div>` : `<div class="callout completed"><strong>No learning proposals currently qualify as product features.</strong><p>The ${formatNumber(operational.length)} operational suggestions remain tracked in their project learning and feedback queues; they were not deleted or promoted into the product roadmap.</p></div>`}
   </section>`;
 }
 

@@ -788,6 +788,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Priority: high
   - Status: planned
   - Scope: improve scheduling, evidence quality, workflow-shape recommendations, resource budgets, and operator trust without granting the daemon new permissions.
+  - [x] Classify approved learning proposals as operational optimization or product-feature candidates; keep routing, feedback, tuning, and evaluation maintenance in Learning instead of flooding the product roadmap.
   - [ ] Add event-driven wakeups for completed runs, new feedback, failed evaluations, stale approvals, and degraded provider health while retaining bounded periodic reconciliation.
   - [ ] Add per-project work budgets, quiet hours, backpressure, fairness, and duplicate-work suppression across the managed project fleet.
   - [ ] Rank proposed improvements by evidence strength, expected quality/cost impact, reversibility, risk, and confidence; show why an item was deferred.
