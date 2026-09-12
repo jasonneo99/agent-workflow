@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jasonneo99.github.io/agent-workflow/schemas/workflow-handoff.schema.json",
+  "title": "Durable Workflow Handoff",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "run_id", "sender", "receiver", "source_stage", "destination_stage", "acceptance_criteria", "proposed_at", "updated_at", "status"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "run_id": { "type": "string", "minLength": 1 },
+    "sender": { "type": "string", "minLength": 1 },
+    "receiver": { "type": "string", "minLength": 1 },
+    "source_stage": { "type": "string", "minLength": 1 },
+    "destination_stage": { "type": "string", "minLength": 1 },
+    "artifacts": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "context_summary": { "type": "string", "default": "" },
+    "acceptance_criteria": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+    "proposed_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "status": { "enum": ["proposed", "accepted", "rejected", "retrying", "completed", "failed"] },
+    "receipt_links": { "type": "array", "items": { "type": "string" }, "default": [] },
+    "attempt": { "type": "integer", "minimum": 1, "default": 1 }
+  }
+}

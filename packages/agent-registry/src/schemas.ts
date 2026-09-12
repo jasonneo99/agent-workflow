@@ -35,6 +35,41 @@ export const agentCardSchema = z.object({
 
 export type AgentCard = z.infer<typeof agentCardSchema>;
 
+export const workflowHandoffStatusSchema = z.enum([
+  "proposed", "accepted", "rejected", "retrying", "completed", "failed"
+]);
+
+export const workflowHandoffSchema = z.object({
+  id: z.string().min(1),
+  run_id: z.string().min(1),
+  sender: z.string().min(1),
+  receiver: z.string().min(1),
+  source_stage: z.string().min(1),
+  destination_stage: z.string().min(1),
+  artifacts: z.array(z.string()).default([]),
+  context_summary: z.string().default(""),
+  acceptance_criteria: z.array(z.string().min(1)).min(1),
+  proposed_at: z.string().datetime(),
+  updated_at: z.string().datetime(),
+  status: workflowHandoffStatusSchema,
+  receipt_links: z.array(z.string()).default([]),
+  attempt: z.number().int().positive().default(1)
+});
+
+export type WorkflowHandoff = z.infer<typeof workflowHandoffSchema>;
+
+const dynamicWorkflowMetadataSchema = z.object({
+  schema_version: z.literal(1),
+  archetype: z.string().min(1),
+  version: z.number().int().positive(),
+  definition_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  goal: z.string().min(1),
+  construction_rationale: z.array(z.string().min(1)).min(1),
+  generated_at: z.string().datetime(),
+  policy_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  mandatory_controls: z.array(z.string().min(1)).min(1)
+});
+
 export const workflowSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -46,11 +81,19 @@ export const workflowSchema = z.object({
     schedule: z.string().optional(),
     events: z.array(z.string()).default([])
   }).default({ manual: true, events: [] }),
+  dynamic: dynamicWorkflowMetadataSchema.optional(),
   stages: z.array(z.object({
     id: z.string().min(1),
     agent: z.string().min(1),
     goal: z.string().min(1),
     subagents: z.array(z.string()).default([]),
+    depends_on: z.array(z.string().min(1)).optional(),
+    parallel_group: z.string().min(1).optional(),
+    acceptance_criteria: z.array(z.string().min(1)).optional(),
+    routing: z.object({
+      provider: z.string().min(1).default("default"),
+      model_tier: z.enum(["fast", "standard", "reasoning"]).default("standard")
+    }).optional(),
     pattern: z.object({
       type: z.enum(["single-shot", "planner", "executor", "react", "reflexive", "verifier", "finalizer"]).default("executor"),
       max_iterations: z.number().int().positive().max(25).optional(),

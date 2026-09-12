@@ -4,8 +4,22 @@ import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 
 const { Client } = pg;
+
+export function workflowDefinitionHash(definition: unknown): string {
+  return createHash("sha256").update(stableJson(definition)).digest("hex");
+}
+
+function stableJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
 
 export function databaseUrl(): string {
   return process.env.DATABASE_URL ?? "postgres://agentflow:agentflow@localhost:15432/agentflow";
@@ -82,6 +96,9 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS provider_override text,
       ADD COLUMN IF NOT EXISTS evaluation_metadata jsonb NOT NULL DEFAULT '{}',
       ADD COLUMN IF NOT EXISTS workflow_snapshot jsonb NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS workflow_definition_version text NOT NULL DEFAULT '1',
+      ADD COLUMN IF NOT EXISTS workflow_definition_hash text NOT NULL DEFAULT '',
+      ADD COLUMN IF NOT EXISTS construction_rationale jsonb NOT NULL DEFAULT '{}',
       ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}'
     `);
     await client.query(`
@@ -166,11 +183,58 @@ export async function migrateStorage(): Promise<void> {
         updated_at timestamptz NOT NULL DEFAULT now()
       )
     `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workflow_handoffs (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        sender_agent_id text NOT NULL REFERENCES agents(id),
+        receiver_agent_id text NOT NULL REFERENCES agents(id),
+        source_stage_id text NOT NULL,
+        destination_stage_id text NOT NULL,
+        transferred_artifacts jsonb NOT NULL DEFAULT '[]',
+        context_summary text NOT NULL,
+        acceptance_criteria jsonb NOT NULL DEFAULT '[]',
+        status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'accepted', 'rejected', 'retrying', 'completed', 'failed')),
+        idempotency_key text NOT NULL,
+        proposed_at timestamptz NOT NULL DEFAULT now(),
+        accepted_at timestamptz,
+        rejected_at timestamptz,
+        retrying_at timestamptz,
+        completed_at timestamptz,
+        failed_at timestamptz,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(run_id, idempotency_key)
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workflow_handoff_events (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        handoff_id uuid NOT NULL REFERENCES workflow_handoffs(id) ON DELETE CASCADE,
+        run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        status text NOT NULL CHECK (status IN ('proposed', 'accepted', 'rejected', 'retrying', 'completed', 'failed')),
+        actor_agent_id text REFERENCES agents(id),
+        note text,
+        metadata jsonb NOT NULL DEFAULT '{}',
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workflow_handoff_receipts (
+        handoff_id uuid NOT NULL REFERENCES workflow_handoffs(id) ON DELETE CASCADE,
+        receipt_id uuid NOT NULL REFERENCES action_receipts(id) ON DELETE CASCADE,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (handoff_id, receipt_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_handoffs_run_status_idx ON workflow_handoffs(run_id, status, proposed_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_handoff_events_handoff_created_idx ON workflow_handoff_events(handoff_id, created_at)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS workflow_handoff_events_one_proposal_idx ON workflow_handoff_events(handoff_id) WHERE status = 'proposed'`);
   });
 }
 
 export async function resetStorage(input: { includeRegistry?: boolean } = {}): Promise<{
   artifacts: number;
+  workflowHandoffs: number;
   actionReceipts: number;
   workflowTasks: number;
   workflowRuns: number;
@@ -183,6 +247,9 @@ export async function resetStorage(input: { includeRegistry?: boolean } = {}): P
   return withClient(async (client) => {
     await client.query("begin");
     try {
+      await deleteFrom(client, "workflow_handoff_receipts");
+      await deleteFrom(client, "workflow_handoff_events");
+      const workflowHandoffs = await deleteFrom(client, "workflow_handoffs");
       const artifacts = await deleteFrom(client, "artifacts");
       const actionReceipts = await deleteFrom(client, "action_receipts");
       const workflowTasks = await deleteFrom(client, "workflow_tasks");
@@ -192,6 +259,7 @@ export async function resetStorage(input: { includeRegistry?: boolean } = {}): P
       const projects = await deleteFrom(client, "projects");
       const result = {
         artifacts,
+        workflowHandoffs,
         actionReceipts,
         workflowTasks,
         workflowRuns,
@@ -1100,6 +1168,9 @@ export interface CreateRunInput {
   modelTierOverride?: "fast" | "standard" | "reasoning";
   providerOverride?: string;
   evaluationMetadata?: Record<string, unknown>;
+  workflowVersion?: string | number;
+  workflowHash?: string;
+  constructionRationale?: unknown;
   compiledBrief?: string;
   compiledBriefMetadata?: Record<string, unknown>;
 }
@@ -1130,9 +1201,10 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         `insert into workflow_runs (
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
-           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, compiled_brief_uri
+           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
          returning id`,
         [
           projectId,
@@ -1146,6 +1218,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           input.providerOverride ?? null,
           JSON.stringify(input.evaluationMetadata ?? {}),
           JSON.stringify(input.workflow),
+          input.workflowVersion ?? "1",
+          input.workflowHash ?? workflowDefinitionHash(input.workflow),
+          JSON.stringify(input.constructionRationale ?? {}),
           null
         ]
       );
@@ -1189,6 +1264,28 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           ]
         );
         taskIds[stage.id] = taskResult.rows[0].id;
+      }
+      for (let stageIndex = 0; stageIndex < input.workflow.stages.length; stageIndex += 1) {
+        const destination = input.workflow.stages[stageIndex];
+        const dependencies = destination.depends_on ?? (stageIndex === 0 ? [] : [input.workflow.stages[stageIndex - 1].id]);
+        for (const sourceStageId of dependencies) {
+          const source = input.workflow.stages.find((stage) => stage.id === sourceStageId);
+          if (!source) continue;
+          const handoff = await client.query<{ id: string }>(
+            `insert into workflow_handoffs (run_id, sender_agent_id, receiver_agent_id, source_stage_id, destination_stage_id,
+               transferred_artifacts, context_summary, acceptance_criteria, idempotency_key)
+             values ($1, $2, $3, $4, $5, '[]'::jsonb, $6, $7, $8)
+             returning id::text`,
+            [runId, source.agent, destination.agent, source.id, destination.id,
+              `Transfer ${source.output} from ${source.id} to ${destination.id}.`,
+              JSON.stringify(destination.acceptance_criteria ?? [destination.goal]), `${source.id}:${destination.id}`]
+          );
+          await client.query(
+            `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, metadata)
+             values ($1, $2, 'proposed', $3, $4)`,
+            [handoff.rows[0].id, runId, source.agent, JSON.stringify({ generatedFromWorkflowDefinition: true })]
+          );
+        }
       }
       const revision = input.workflow.stages.some((stage) => stage.executor)
         ? exactGitRevision(input.projectRootUri)
@@ -1248,6 +1345,9 @@ export async function replayWorkflowRun(input: {
         modelTierOverride: string | null;
         providerOverride: string | null;
         evaluationMetadata: Record<string, unknown>;
+        workflowDefinitionVersion: string;
+        workflowDefinitionHash: string;
+        constructionRationale: Record<string, unknown>;
         compiledBrief: string | null;
         compiledBriefMetadata: Record<string, unknown> | null;
       }>(
@@ -1269,6 +1369,9 @@ export async function replayWorkflowRun(input: {
            wr.model_tier_override as "modelTierOverride",
            wr.provider_override as "providerOverride",
            wr.evaluation_metadata as "evaluationMetadata",
+           wr.workflow_definition_version as "workflowDefinitionVersion",
+           wr.workflow_definition_hash as "workflowDefinitionHash",
+           wr.construction_rationale as "constructionRationale",
            artifact.content->>'text' as "compiledBrief",
            artifact.content->'metadata' as "compiledBriefMetadata"
          from workflow_runs wr
@@ -1315,9 +1418,10 @@ export async function replayWorkflowRun(input: {
         `insert into workflow_runs (
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
-           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, compiled_brief_uri
+           model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, null)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, null)
          returning id`,
         [
           projectId,
@@ -1330,7 +1434,10 @@ export async function replayWorkflowRun(input: {
           sourceRun.modelTierOverride,
           sourceRun.providerOverride,
           JSON.stringify(replayMetadata),
-          JSON.stringify(workflow)
+          JSON.stringify(workflow),
+          sourceRun.workflowDefinitionVersion,
+          sourceRun.workflowDefinitionHash || workflowDefinitionHash(workflow),
+          JSON.stringify(sourceRun.constructionRationale)
         ]
       );
       const runId = runResult.rows[0].id;
@@ -1468,7 +1575,13 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
                join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality prior_stage(definition, stage_order)
                  on prior_stage.definition->>'id' = prior.stage_id
                where prior.run_id = wt.run_id
-                 and prior_stage.stage_order < stage.stage_order
+                 and (
+                   case
+                     when stage.definition ? 'depends_on'
+                       then prior.stage_id = any(array(select jsonb_array_elements_text(stage.definition->'depends_on')))
+                     else prior_stage.stage_order < stage.stage_order
+                   end
+                 )
                  and prior.status <> 'completed'
              )
            order by wt.available_at asc, stage.stage_order asc
@@ -1531,6 +1644,21 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
         [result.rows[0].runId]
       );
 
+      const acceptedHandoffs = await client.query<{ id: string }>(
+        `update workflow_handoffs wh set status = 'accepted', accepted_at = now(), updated_at = now()
+         where wh.run_id = $1 and wh.destination_stage_id = $2 and wh.status in ('proposed', 'retrying')
+           and exists (select 1 from workflow_tasks source where source.run_id = wh.run_id and source.stage_id = wh.source_stage_id and source.status = 'completed')
+         returning wh.id::text`,
+        [result.rows[0].runId, result.rows[0].stageId]
+      );
+      for (const handoff of acceptedHandoffs.rows) {
+        await client.query(
+          `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, metadata)
+           values ($1, $2, 'accepted', $3, $4)`,
+          [handoff.id, result.rows[0].runId, result.rows[0].agentId, JSON.stringify({ taskId: result.rows[0].taskId })]
+        );
+      }
+
       await client.query("commit");
       const claimed = result.rows[0];
       const context = await loadStageContext(client, claimed.runId);
@@ -1583,6 +1711,30 @@ export async function completeWorkflowTask(input: {
         [input.taskId, outputUri]
       );
 
+      const completedStage = await client.query<{ stageId: string }>(
+        `select stage_id as "stageId" from workflow_tasks where id = $1`, [input.taskId]
+      );
+      if (completedStage.rows[0]) {
+        await client.query(
+          `update workflow_handoffs
+           set transferred_artifacts = transferred_artifacts || $3::jsonb, updated_at = now()
+           where run_id = $1 and source_stage_id = $2 and status in ('proposed', 'retrying')`,
+          [input.runId, completedStage.rows[0].stageId, JSON.stringify([{ uri: outputUri, kind: "stage_output", summary: input.summary }])]
+        );
+        const finishedHandoffs = await client.query<{ id: string }>(
+          `update workflow_handoffs set status = 'completed', completed_at = now(), updated_at = now()
+           where run_id = $1 and destination_stage_id = $2 and status = 'accepted'
+           returning id::text`, [input.runId, completedStage.rows[0].stageId]
+        );
+        for (const handoff of finishedHandoffs.rows) {
+          await client.query(
+            `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, metadata)
+             values ($1, $2, 'completed', $3, $4)`,
+            [handoff.id, input.runId, input.agentId, JSON.stringify({ outputUri })]
+          );
+        }
+      }
+
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1, $2, 'stage_completed', $3, $4, $5)`,
@@ -1633,6 +1785,23 @@ export async function failWorkflowTask(input: {
          where id = $1`,
         [input.taskId]
       );
+      const failedStage = await client.query<{ stageId: string }>(
+        `select stage_id as "stageId" from workflow_tasks where id = $1`, [input.taskId]
+      );
+      if (failedStage.rows[0]) {
+        const failedHandoffs = await client.query<{ id: string }>(
+          `update workflow_handoffs set status = 'failed', failed_at = now(), updated_at = now()
+           where run_id = $1 and destination_stage_id = $2 and status = 'accepted' returning id::text`,
+          [input.runId, failedStage.rows[0].stageId]
+        );
+        for (const handoff of failedHandoffs.rows) {
+          await client.query(
+            `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, note, metadata)
+             values ($1, $2, 'failed', $3, $4, $5)`,
+            [handoff.id, input.runId, input.agentId, input.error, JSON.stringify({ taskId: input.taskId })]
+          );
+        }
+      }
 
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
@@ -1767,6 +1936,9 @@ export interface WorkflowRunStatus {
   modelTierOverride: string | null;
   providerOverride: string | null;
   evaluationMetadata: Record<string, unknown>;
+  workflowDefinitionVersion?: string;
+  workflowDefinitionHash?: string;
+  constructionRationale?: Record<string, unknown>;
   projectName: string;
   projectRootUri: string;
   startedAt: string;
@@ -1815,6 +1987,175 @@ export interface ActionReceiptStatus {
   target: string;
   summary: string;
   createdAt: string;
+}
+
+export type WorkflowHandoffStatus = "proposed" | "accepted" | "rejected" | "retrying" | "completed" | "failed";
+
+export interface WorkflowHandoffEventStatus {
+  id: string;
+  status: WorkflowHandoffStatus;
+  actorAgentId: string | null;
+  note: string | null;
+  metadata: Record<string, unknown>;
+  createdAt: string;
+}
+
+export interface WorkflowHandoffRecord {
+  id: string;
+  runId: string;
+  senderAgentId: string;
+  receiverAgentId: string;
+  sourceStageId: string;
+  destinationStageId: string;
+  transferredArtifacts: unknown[];
+  contextSummary: string;
+  acceptanceCriteria: unknown[];
+  status: WorkflowHandoffStatus;
+  idempotencyKey: string;
+  proposedAt: string;
+  acceptedAt: string | null;
+  rejectedAt: string | null;
+  retryingAt: string | null;
+  completedAt: string | null;
+  failedAt: string | null;
+  updatedAt: string;
+  receiptIds: string[];
+  events: WorkflowHandoffEventStatus[];
+}
+
+const handoffTransitions: Record<WorkflowHandoffStatus, readonly WorkflowHandoffStatus[]> = {
+  proposed: ["accepted", "rejected"],
+  accepted: ["retrying", "completed", "failed"],
+  rejected: ["retrying"],
+  retrying: ["accepted", "rejected", "completed", "failed"],
+  completed: [],
+  failed: ["retrying"]
+};
+
+export function assertWorkflowHandoffTransition(from: WorkflowHandoffStatus, to: WorkflowHandoffStatus): void {
+  if (!handoffTransitions[from]?.includes(to)) {
+    throw new Error(`Invalid workflow handoff transition: ${from} -> ${to}`);
+  }
+}
+
+export async function proposeWorkflowHandoff(input: {
+  runId: string;
+  senderAgentId: string;
+  receiverAgentId: string;
+  sourceStageId: string;
+  destinationStageId: string;
+  transferredArtifacts?: unknown[];
+  contextSummary: string;
+  acceptanceCriteria: unknown[];
+  idempotencyKey: string;
+  receiptIds?: string[];
+  metadata?: Record<string, unknown>;
+}): Promise<string> {
+  if (!input.contextSummary.trim()) throw new Error("Workflow handoff context summary is required.");
+  if (!input.acceptanceCriteria.length) throw new Error("Workflow handoff acceptance criteria are required.");
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<{ id: string }>(
+        `insert into workflow_handoffs (
+           run_id, sender_agent_id, receiver_agent_id, source_stage_id, destination_stage_id,
+           transferred_artifacts, context_summary, acceptance_criteria, idempotency_key
+         ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         on conflict (run_id, idempotency_key) do update set idempotency_key = excluded.idempotency_key
+         returning id::text`,
+        [input.runId, input.senderAgentId, input.receiverAgentId, input.sourceStageId, input.destinationStageId,
+          JSON.stringify(input.transferredArtifacts ?? []), input.contextSummary, JSON.stringify(input.acceptanceCriteria), input.idempotencyKey]
+      );
+      const handoffId = result.rows[0].id;
+      await client.query(
+        `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, metadata)
+         select $1, $2, 'proposed', $3, $4
+         where not exists (select 1 from workflow_handoff_events where handoff_id = $1 and status = 'proposed')`,
+        [handoffId, input.runId, input.senderAgentId, JSON.stringify(input.metadata ?? {})]
+      );
+      await linkHandoffReceipts(client, handoffId, input.runId, input.receiptIds ?? []);
+      await client.query("commit");
+      return handoffId;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function transitionWorkflowHandoff(input: {
+  handoffId: string;
+  status: Exclude<WorkflowHandoffStatus, "proposed">;
+  actorAgentId?: string;
+  note?: string;
+  metadata?: Record<string, unknown>;
+  receiptIds?: string[];
+}): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const current = await client.query<{ runId: string; status: WorkflowHandoffStatus }>(
+        `select run_id::text as "runId", status from workflow_handoffs where id = $1 for update`, [input.handoffId]
+      );
+      if (!current.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      assertWorkflowHandoffTransition(current.rows[0].status, input.status);
+      await client.query(
+        `update workflow_handoffs set status = $2,
+           accepted_at = case when $2 = 'accepted' then now() else accepted_at end,
+           rejected_at = case when $2 = 'rejected' then now() else rejected_at end,
+           retrying_at = case when $2 = 'retrying' then now() else retrying_at end,
+           completed_at = case when $2 = 'completed' then now() else completed_at end,
+           failed_at = case when $2 = 'failed' then now() else failed_at end,
+           updated_at = now()
+         where id = $1`, [input.handoffId, input.status]
+      );
+      await client.query(
+        `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, note, metadata)
+         values ($1, $2, $3, $4, $5, $6)`,
+        [input.handoffId, current.rows[0].runId, input.status, input.actorAgentId ?? null, input.note ?? null, JSON.stringify(input.metadata ?? {})]
+      );
+      await linkHandoffReceipts(client, input.handoffId, current.rows[0].runId, input.receiptIds ?? []);
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function listWorkflowHandoffs(input: { runId: string }): Promise<WorkflowHandoffRecord[]> {
+  return withClient(async (client) => {
+    const result = await client.query<WorkflowHandoffRecord>(
+      `select wh.id::text, wh.run_id::text as "runId", wh.sender_agent_id as "senderAgentId",
+         wh.receiver_agent_id as "receiverAgentId", wh.source_stage_id as "sourceStageId",
+         wh.destination_stage_id as "destinationStageId", wh.transferred_artifacts as "transferredArtifacts",
+         wh.context_summary as "contextSummary", wh.acceptance_criteria as "acceptanceCriteria", wh.status,
+         wh.idempotency_key as "idempotencyKey", wh.proposed_at::text as "proposedAt",
+         wh.accepted_at::text as "acceptedAt", wh.rejected_at::text as "rejectedAt",
+         wh.retrying_at::text as "retryingAt", wh.completed_at::text as "completedAt",
+         wh.failed_at::text as "failedAt", wh.updated_at::text as "updatedAt",
+         coalesce((select jsonb_agg(whr.receipt_id::text order by whr.created_at) from workflow_handoff_receipts whr where whr.handoff_id = wh.id), '[]') as "receiptIds",
+         coalesce((select jsonb_agg(jsonb_build_object('id', whe.id::text, 'status', whe.status, 'actorAgentId', whe.actor_agent_id,
+           'note', whe.note, 'metadata', whe.metadata, 'createdAt', whe.created_at::text) order by whe.created_at, whe.id)
+           from workflow_handoff_events whe where whe.handoff_id = wh.id), '[]') as events
+       from workflow_handoffs wh where wh.run_id = $1 order by wh.proposed_at, wh.id`, [input.runId]
+    );
+    return result.rows;
+  });
+}
+
+async function linkHandoffReceipts(client: pg.Client, handoffId: string, runId: string, receiptIds: string[]): Promise<void> {
+  for (const receiptId of receiptIds) {
+    await client.query(
+      `insert into workflow_handoff_receipts (handoff_id, receipt_id)
+       select $1, ar.id from action_receipts ar where ar.id = $2 and ar.run_id = $3
+       on conflict do nothing`, [handoffId, receiptId, runId]
+    );
+  }
 }
 
 export interface ArtifactStatus {
@@ -2226,6 +2567,9 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.workflow_definition_version as "workflowDefinitionVersion",
+         wr.workflow_definition_hash as "workflowDefinitionHash",
+         wr.construction_rationale as "constructionRationale",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -2257,6 +2601,9 @@ export async function listWorkflowRunsForProject(input: {
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.workflow_definition_version as "workflowDefinitionVersion",
+         wr.workflow_definition_hash as "workflowDefinitionHash",
+         wr.construction_rationale as "constructionRationale",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -2344,6 +2691,9 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.workflow_definition_version as "workflowDefinitionVersion",
+         wr.workflow_definition_hash as "workflowDefinitionHash",
+         wr.construction_rationale as "constructionRationale",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",

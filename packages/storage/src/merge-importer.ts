@@ -271,6 +271,9 @@ async function dryRunImport(sourceClient: pg.Client, targetClient: pg.Client): P
     operation("workflow_runs", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_runs")),
     operation("workflow_tasks", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_tasks")),
     operation("action_receipts", "insert-source-only", await countMissingById(sourceClient, targetClient, "action_receipts")),
+    operation("workflow_handoffs", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_handoffs")),
+    operation("workflow_handoff_events", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_handoff_events")),
+    operation("workflow_handoff_receipts", "insert-source-only", await countMissingComposite(sourceClient, targetClient, "workflow_handoff_receipts", ["handoff_id", "receipt_id"])),
     operation("action_approvals", "insert-source-only", await countMissingById(sourceClient, targetClient, "action_approvals")),
     operation("artifacts", "insert-source-only", await countMissingByUri(sourceClient, targetClient, "artifacts"))
   ];
@@ -289,6 +292,9 @@ async function executeImport(sourceClient: pg.Client, targetClient: pg.Client): 
     operations.push(operation("workflow_runs", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_runs"), await importWorkflowRuns(sourceClient, targetClient)));
     operations.push(operation("workflow_tasks", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_tasks"), await importWorkflowTasks(sourceClient, targetClient)));
     operations.push(operation("action_receipts", "insert-source-only", await countMissingById(sourceClient, targetClient, "action_receipts"), await importActionReceipts(sourceClient, targetClient)));
+    operations.push(operation("workflow_handoffs", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_handoffs"), await importWorkflowHandoffs(sourceClient, targetClient)));
+    operations.push(operation("workflow_handoff_events", "insert-source-only", await countMissingById(sourceClient, targetClient, "workflow_handoff_events"), await importWorkflowHandoffEvents(sourceClient, targetClient)));
+    operations.push(operation("workflow_handoff_receipts", "insert-source-only", await countMissingComposite(sourceClient, targetClient, "workflow_handoff_receipts", ["handoff_id", "receipt_id"]), await importWorkflowHandoffReceipts(sourceClient, targetClient)));
     operations.push(operation("action_approvals", "insert-source-only", await countMissingById(sourceClient, targetClient, "action_approvals"), await importActionApprovals(sourceClient, targetClient)));
     operations.push(operation("artifacts", "insert-source-only", await countMissingByUri(sourceClient, targetClient, "artifacts"), await importArtifacts(sourceClient, targetClient)));
     await targetClient.query("commit");
@@ -393,10 +399,12 @@ async function importWorkflowRuns(sourceClient: pg.Client, targetClient: pg.Clie
     const targetProjectId = row.root_uri ? projectIds.get(row.root_uri) : row.project_id;
     inserted += await exec(targetClient, `insert into workflow_runs (
       id, project_id, workflow_id, status, task, autonomy, policy_profile, policy_snapshot, policy_snapshot_hash,
-      model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, executor_snapshot, compiled_brief_uri, started_at, finished_at
-    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) on conflict do nothing`, [
+      model_tier_override, provider_override, evaluation_metadata, workflow_snapshot, workflow_definition_version,
+      workflow_definition_hash, construction_rationale, executor_snapshot, compiled_brief_uri, started_at, finished_at
+    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) on conflict do nothing`, [
       row.id, targetProjectId, row.workflow_id, row.status, row.task, row.autonomy, row.policy_profile, row.policy_snapshot, row.policy_snapshot_hash,
-      row.model_tier_override, row.provider_override, row.evaluation_metadata, row.workflow_snapshot, row.executor_snapshot, row.compiled_brief_uri, row.started_at, row.finished_at
+      row.model_tier_override, row.provider_override, row.evaluation_metadata, row.workflow_snapshot, row.workflow_definition_version,
+      row.workflow_definition_hash, row.construction_rationale, row.executor_snapshot, row.compiled_brief_uri, row.started_at, row.finished_at
     ]);
   }
   return inserted;
@@ -427,6 +435,38 @@ async function importActionReceipts(sourceClient: pg.Client, targetClient: pg.Cl
       row.id, row.run_id, row.agent_id, row.action_type, row.target, row.summary, row.metadata, row.created_at
     ]);
   }
+  return inserted;
+}
+
+async function importWorkflowHandoffs(sourceClient: pg.Client, targetClient: pg.Client): Promise<number> {
+  const rows = (await sourceClient.query("select * from workflow_handoffs order by proposed_at")).rows;
+  let inserted = 0;
+  for (const row of rows) inserted += await exec(targetClient, `insert into workflow_handoffs
+    (id, run_id, sender_agent_id, receiver_agent_id, source_stage_id, destination_stage_id, transferred_artifacts,
+     context_summary, acceptance_criteria, status, idempotency_key, proposed_at, accepted_at, rejected_at, retrying_at, completed_at, failed_at, updated_at)
+    values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18) on conflict do nothing`,
+    [row.id, row.run_id, row.sender_agent_id, row.receiver_agent_id, row.source_stage_id, row.destination_stage_id,
+      row.transferred_artifacts, row.context_summary, row.acceptance_criteria, row.status, row.idempotency_key, row.proposed_at,
+      row.accepted_at, row.rejected_at, row.retrying_at, row.completed_at, row.failed_at, row.updated_at]);
+  return inserted;
+}
+
+async function importWorkflowHandoffEvents(sourceClient: pg.Client, targetClient: pg.Client): Promise<number> {
+  const rows = (await sourceClient.query("select * from workflow_handoff_events order by created_at")).rows;
+  let inserted = 0;
+  for (const row of rows) inserted += await exec(targetClient, `insert into workflow_handoff_events
+    (id, handoff_id, run_id, status, actor_agent_id, note, metadata, created_at)
+    values ($1::uuid, $2::uuid, $3::uuid, $4, $5, $6, $7, $8) on conflict do nothing`,
+    [row.id, row.handoff_id, row.run_id, row.status, row.actor_agent_id, row.note, row.metadata, row.created_at]);
+  return inserted;
+}
+
+async function importWorkflowHandoffReceipts(sourceClient: pg.Client, targetClient: pg.Client): Promise<number> {
+  const rows = (await sourceClient.query("select * from workflow_handoff_receipts order by created_at")).rows;
+  let inserted = 0;
+  for (const row of rows) inserted += await exec(targetClient, `insert into workflow_handoff_receipts
+    (handoff_id, receipt_id, created_at) values ($1::uuid, $2::uuid, $3) on conflict do nothing`,
+    [row.handoff_id, row.receipt_id, row.created_at]);
   return inserted;
 }
 
@@ -469,6 +509,14 @@ async function countMissingById(sourceClient: pg.Client, targetClient: pg.Client
   const sourceIds = new Set((await sourceClient.query(`select id::text from ${table}`)).rows.map((row) => row.id));
   const targetIds = new Set((await targetClient.query(`select id::text from ${table}`)).rows.map((row) => row.id));
   return [...sourceIds].filter((id) => !targetIds.has(id)).length;
+}
+
+async function countMissingComposite(sourceClient: pg.Client, targetClient: pg.Client, table: string, columns: string[]): Promise<number> {
+  const source = await sourceClient.query(`select ${columns.join(", ")} from ${table}`);
+  if (!source.rows.length) return 0;
+  const target = await targetClient.query(`select ${columns.join(", ")} from ${table}`);
+  const keys = new Set(target.rows.map((row) => columns.map((column) => row[column]).join(":")));
+  return source.rows.filter((row) => !keys.has(columns.map((column) => row[column]).join(":"))).length;
 }
 
 async function countMissingByUri(sourceClient: pg.Client, targetClient: pg.Client, table: "artifacts"): Promise<number> {
