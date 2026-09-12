@@ -177,6 +177,9 @@ npm run dashboard              # Inspect runs, providers, model catalog, usage, 
 npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
+npm run context-report -- -p . # Inspect privacy-safe shadow routing evidence
+npm run context-route -- -p . --file src/example.ts --question "Where is this used?" # Preview a routed read
+npm run context-holdout -- -p . --cases .agent-workflow/evals/context-holdout.json # Gate enforcement with local evidence
 npm run index-project -- -p . --incremental # Refresh only changed files after a baseline exists
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm

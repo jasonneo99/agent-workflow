@@ -1,0 +1,33 @@
+version: 1
+mode: shadow
+direct_read_max_tokens: 1400
+delegation_min_tokens: 2400
+max_exact_slice_tokens: 1800
+summary_cache_ttl_seconds: 604800
+low_risk_intents:
+  - discovery
+  - summarization
+  - documentation
+  - test_inventory
+frontier_required_intents:
+  - debugging
+  - concurrency
+  - security
+  - authorization
+  - migration
+  - public_api
+  - architecture
+  - safety_critical
+deterministic_extractors:
+  - git_diff
+  - text_match
+  - symbols
+  - imports
+  - signatures
+  - config_keys
+  - test_names
+telemetry:
+  store_file_bodies: false
+  hash_source_paths: true
+  record_project_id: true
+  record_content_hash: true

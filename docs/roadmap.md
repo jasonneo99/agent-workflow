@@ -145,6 +145,46 @@ These milestones organize the detailed roadmap items below:
     - Current status: MCP/client integrations work but need continued transport
       diagnostics and reload guidance for Codex-side stdio failures.
 
+13. **Context Intelligence Gateway**
+    - Workstreams: tool-level read interception, token-aware routing,
+      deterministic symbol extraction, content-addressed context caching,
+      question-specific cheap-model summaries, cited exact-slice retrieval,
+      risk-aware escalation, portable host adapters, and end-to-end cost and
+      quality evaluation.
+    - Current status: shadow measurement, project-isolated caching, configured
+      provider delegation, aggregate reporting, holdout gates, and conservative
+      CLI/MCP enforcement are implemented. Native interactive-host adapters and
+      governed repetitive-code generation remain.
+
+## Current Execution Priority
+
+This is the authoritative order for open roadmap work. Phase and milestone
+numbers describe product structure, not execution priority. Re-rank this list
+when dependencies, incidents, or new evidence materially change the order.
+
+1. **Add native host read adapters for Claude Code and Cursor.**
+   - Priority: high
+   - Why now: indexing, CLI, and MCP paths are wired; thin host hooks are the
+     remaining step for enforcing the same policy at interactive read time.
+   - Exit gate: host adapters reuse the shared YAML policy, preserve exact-read
+     escape hatches, and pass the same holdout and receipt gates.
+2. **Add governed repetitive-code generation.**
+   - Priority: medium
+   - Why next: routed reading is now evidence-gated, while code generation still
+     needs diff inspection, policy checks, validation, and receipts before it can
+     safely avoid returning full generated files to the primary model.
+   - Exit gate: generated files cannot be accepted without a reviewed diff,
+     validation result, source/reference hashes, and rollback evidence.
+3. **Continue MCP transport diagnosis when the defect reproduces.**
+   - Operational priority: P0 interrupt on recurrence
+   - Planned-work priority: blocked/external
+   - Why conditional: existing repository mitigations and recovery receipts are
+     complete, while the remaining failure is in the client-owned Codex stdio
+     lifecycle. A fresh reproduction with launcher evidence is required before
+     more repository work is justified.
+   - Exit gate: capture a reproducible client-side failure boundary or obtain a
+     client/runtime fix; keep the documented CLI recovery path available.
+
 ## Phase 1: Shared Platform Hardening
 
 Goal: make the reusable platform safer and easier to adopt without requiring private product context.
@@ -423,6 +463,84 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Expose feedback triage in CLI, dashboard, and JSON API while recording feedback through the existing local feedback artifact/memory path.
   - Done: add a bulk review screen where suggested ratings and notes can be edited, unchecked, and submitted together.
 
+- [ ] Token-aware context intelligence gateway.
+  - Milestone: 13 Context Intelligence Gateway
+  - Priority: high
+  - Execution order: 1
+  - Status: active; the first six read-routing increments are implemented and
+    evidence-gated. Native host adapters and governed code generation remain.
+  - Add a provider-neutral context-routing policy in reusable YAML, with thin
+    adapters for Claude Code hooks, Codex/tool policy integration, Cursor, CLI,
+    MCP, and native Agent Workflow workers.
+  - Done: add the versioned provider-neutral shadow policy at
+    `policies/context-routing.yaml` with privacy-safe telemetry requirements.
+  - Route by estimated tokens, bytes, language, file type, task intent, workflow
+    stage, expected response size, latency budget, and risk instead of a fixed
+    line-count threshold.
+  - Done: add a validated token- and risk-aware route classifier with direct,
+    deterministic, delegated, and frontier outcomes.
+  - Prefer deterministic retrieval first: Git diff hunks, ripgrep matches,
+    syntax-tree symbols, language-server references, imports, signatures,
+    configuration keys, test names, and exact bounded slices.
+  - Done: add question-targeted deterministic text extraction that returns
+    bounded excerpts with paths, line spans, matched terms, and content hashes.
+  - Add content-addressed summary reuse keyed by file hash, question class,
+    extractor or summarizer version, model, and output schema; invalidate cached
+    entries when source content or routing policy changes.
+  - Done: add stable content-addressed cache keys covering content, question
+    class, processor version, model, output schema, and policy hash.
+  - Done: persist bounded project-isolated cache entries with TTL pruning,
+    atomic writes, content/policy/processor invalidation, and cache-hit evidence.
+  - Delegate eligible exploratory large-file and multi-file reads to a cheap or
+    local model and return structured claims with file path, symbol, line span,
+    content hash, confidence, and an exact-read retrieval handle.
+  - Done: add configured-provider delegation through CLI and MCP with structured
+    claims, confidence, hashes, cited spans when resolved, retrieval handles,
+    cache reuse, and body-free route receipts.
+  - Preserve direct or automatically promoted frontier-model access for
+    debugging, concurrency, security, authorization, migrations, public API
+    changes, architectural decisions, safety-critical code, and low-confidence
+    summaries.
+  - Add a governed code-generation path for repetitive boilerplate that records
+    the specification, reference inputs, provider/model, hashes, diff, tests,
+    policy decision, and receipt; require primary-agent diff inspection and
+    validation rather than accepting invisible writes.
+  - Phase 1 — shadow measurement: observe candidate reads without blocking and
+    record eligible-token share, projected savings, latency, privacy boundary,
+    and routing rationale without storing file bodies in telemetry.
+  - Done: add the privacy-safe shadow observation builder with hashed paths,
+    content hashes, estimated input tokens, projected avoided frontier tokens,
+    risk, route rationale, and latency budget.
+  - Done: wire shadow observation batches into real project indexing, persist
+    body-free project-local evidence, and expose aggregate whole-workflow
+    projections through CLI and MCP reporting.
+  - Phase 2 — retrieval and cache: enable deterministic extraction, exact-slice
+    handles, content-hash reuse, bounded retention, project isolation, and cache
+    health/invalidation reporting.
+  - Phase 3 — advisory comparison: run direct-versus-routed holdouts and measure
+    answer quality, citation correctness, missed-context rate, follow-up exact
+    reads, worker cost, cache-hit rate, and added latency.
+  - Done: add project-local direct-versus-routed holdout evaluation with minimum
+    coverage, required-term quality, citation, token-savings, and p95 latency
+    gates; persist only aggregate results and a cases hash.
+  - Phase 4 — conservative enforcement: block only eval-proven low-risk bulk
+    reads, provide a visible escape hatch, automatically promote uncertain work,
+    and retain immutable routing and handoff receipts.
+  - Done: add the initial portable CLI/MCP enforcement adapter. Shadow and
+    advisory modes never block; enforce mode requires passing persisted holdout
+    evidence plus explicit approval, preserves exact reads, promotes high-risk
+    and low-confidence work, and records every route attempt.
+  - Learn thresholds by project, language, file type, workflow stage, and model
+    only from reviewed evidence; keep shared policy promotion and any expansion
+    into higher-risk work approval-gated with rollback support.
+  - Report total cost per accepted workflow and frontier-model input tokens as
+    the primary outcomes. Treat compression percentage for delegated reads as a
+    diagnostic metric, not the headline result.
+  - Initial success gate: demonstrate 30–60% lower frontier-model input tokens
+    on repository-heavy holdouts, no statistically meaningful quality
+    regression, bounded p95 added latency, correct citations, zero cross-project
+    cache leakage, and complete receipts before default enforcement is proposed.
+
 ## Phase 3: Distribution And Enterprise Adoption
 
 Goal: make Agent Workflow easy to install, operate, and govern across projects.
@@ -598,7 +716,10 @@ foundation is complete.
   - Done: add worker-pool defaults to project config so local workers can inherit project-specific limits, concurrency, lease timeouts, and scope.
   - Done: add named worker-pool supervision profiles for starting multiple lanes from one command.
 
-- [ ] Governed server mode.
+- [x] Governed server mode.
+  - Milestone: 9 Governed Server Mode
+  - Priority: high
+  - Execution order: completed
   - Keep local-only CLI, MCP stdio, dashboard, worker, and storage as the default developer workflow.
   - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
   - Treat shared storage as the state plane for server mode: a trusted LAN/Tailscale host such as shared host can run Postgres, Redis, and MinIO while client machines keep using CLI, MCP, and IDE integrations.
@@ -652,7 +773,11 @@ foundation is complete.
   - Done: add the per-action receipt, duplicate-idempotency replay, rollback-evidence, CLI/API, dashboard, and docs implementation plan needed before `AGENTFLOW_SERVER_ENABLE_APPROVAL_ACTIONS=1` can safely mutate approval state.
   - Done: implement the remote approval/action mutation contract against a local test adapter first, proving decision receipts, execution receipts, duplicate idempotency reuse, and rollback evidence without live side effects.
   - Done: implement storage-backed remote approval/action mutation behind the disabled-by-default server gate, reusing local approval executors and refusing live side effects unless durable receipts, idempotency replay, policy recheck, and rollback evidence all pass.
-  - Next: add a shared Redis-backed reservation/lease for approval-action idempotency so multiple server processes serialize the same new request before any local executor starts.
+  - Done: add a shared Redis-backed reservation/lease with atomic acquisition,
+    owner-checked renewal/release, bounded waiter replay, lease-expiry recovery,
+    durable-result recheck after acquisition, and failure-closed endpoint
+    behavior so multiple server processes cannot start the same new approval
+    executor concurrently.
 
 - [x] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
@@ -755,6 +880,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
 - [ ] Bug: recurring Codex MCP transport closes during planning or approval calls.
   - Milestone: 12 Ecosystem Fit
   - Priority: high
+  - Execution order: 3 (P0 operational interrupt on recurrence; otherwise blocked on fresh client-side evidence)
   - Severity: high
   - Status: open
   - Permanent fix direction: add supervised and reconnectable MCP lifecycle diagnostics, keep stdio payloads compact, record exact launcher exit and stderr evidence, surface recovery actions in Runtime Monitor and Roadmap dashboards, and preserve CLI fallback receipts when the client-owned stdio pipe drops.

@@ -20,10 +20,12 @@ exports/
 .agent-workflow/runs/
 .agent-workflow/tuning/
 .agent-workflow/context-handoffs/
+.agent-workflow/context-gateway/
 .agent-workflow/model-improvement/
 .agent-workflow/runtime.env
 templates/**/.agent-workflow/learning/
 templates/**/.agent-workflow/tuning/
+templates/**/.agent-workflow/context-gateway/
 # Files produced when reusable workflows are smoke-tested against the template.
 templates/project/.agent-workflow/plan.md
 templates/project/package-lock.json

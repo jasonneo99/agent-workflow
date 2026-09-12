@@ -1,0 +1,32 @@
+[
+  {
+    "id": "symbol-location",
+    "requiredTerms": ["route", "policy"],
+    "directAnswer": "The route is selected from policy and intent.",
+    "routedAnswer": "The route is selected from policy and intent.",
+    "citationsValid": true,
+    "directTokens": 1200,
+    "routedTokens": 320,
+    "addedLatencyMs": 600
+  },
+  {
+    "id": "cache-invalidation",
+    "requiredTerms": ["content", "hash"],
+    "directAnswer": "Content hash changes invalidate the entry.",
+    "routedAnswer": "Content hash changes invalidate the entry.",
+    "citationsValid": true,
+    "directTokens": 1100,
+    "routedTokens": 300,
+    "addedLatencyMs": 500
+  },
+  {
+    "id": "risk-promotion",
+    "requiredTerms": ["security", "frontier"],
+    "directAnswer": "Security work is promoted to the frontier model.",
+    "routedAnswer": "Security work is promoted to the frontier model.",
+    "citationsValid": true,
+    "directTokens": 1000,
+    "routedTokens": 280,
+    "addedLatencyMs": 700
+  }
+]

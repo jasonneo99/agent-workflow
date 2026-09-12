@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.local/schemas/context-routing-policy.schema.json",
+  "title": "Agent Workflow Context Routing Policy",
+  "type": "object",
+  "required": ["version", "mode", "direct_read_max_tokens", "delegation_min_tokens", "max_exact_slice_tokens", "summary_cache_ttl_seconds", "low_risk_intents", "frontier_required_intents", "deterministic_extractors", "telemetry"],
+  "properties": {
+    "version": { "const": 1 },
+    "mode": { "enum": ["shadow", "advisory", "enforce"] },
+    "direct_read_max_tokens": { "type": "integer", "minimum": 1 },
+    "delegation_min_tokens": { "type": "integer", "minimum": 1 },
+    "max_exact_slice_tokens": { "type": "integer", "minimum": 1 },
+    "summary_cache_ttl_seconds": { "type": "integer", "minimum": 1 },
+    "low_risk_intents": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "frontier_required_intents": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
+    "deterministic_extractors": { "type": "array", "items": { "enum": ["git_diff", "text_match", "symbols", "imports", "signatures", "config_keys", "test_names"] }, "uniqueItems": true },
+    "telemetry": {
+      "type": "object",
+      "required": ["store_file_bodies", "hash_source_paths", "record_project_id", "record_content_hash"],
+      "properties": {
+        "store_file_bodies": { "const": false },
+        "hash_source_paths": { "type": "boolean" },
+        "record_project_id": { "type": "boolean" },
+        "record_content_hash": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

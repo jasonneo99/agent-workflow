@@ -167,6 +167,57 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_context_report",
+  {
+    title: "AgentFlow Context Gateway report",
+    description: "Read privacy-safe shadow routing evidence and projected whole-workflow frontier-token savings.",
+    inputSchema: { project: z.string(), json: z.boolean().optional() }
+  },
+  async ({ project, json }) => {
+    const args = ["context-report", "--project", project];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_route",
+  {
+    title: "AgentFlow routed context read",
+    description: "Preview or execute a token-aware routed file read with cache, receipts, exact-read escape hatch, and evidence-gated enforcement.",
+    inputSchema: {
+      project: z.string(), file: z.string(), question: z.string(), intent: z.string().optional(),
+      mode: z.enum(["shadow", "advisory", "enforce"]).optional(), holdoutApproved: z.boolean().optional(),
+      exact: z.boolean().optional(), execute: z.boolean().optional(), json: z.boolean().optional()
+    }
+  },
+  async ({ project, file, question, intent, mode, holdoutApproved, exact, execute, json }) => {
+    const args = ["context-route", "--project", project, "--file", file, "--question", question];
+    if (intent) args.push("--intent", intent);
+    if (mode) args.push("--mode", mode);
+    if (holdoutApproved) args.push("--holdout-approved");
+    if (exact) args.push("--exact");
+    if (execute) args.push("--execute");
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: execute ? 180_000 : 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_holdout",
+  {
+    title: "AgentFlow Context Gateway holdout",
+    description: "Evaluate and persist aggregate direct-versus-routed quality, citation, token, and latency evidence without storing case bodies.",
+    inputSchema: { project: z.string(), cases: z.string(), json: z.boolean().optional() }
+  },
+  async ({ project, cases, json }) => {
+    const args = ["context-holdout", "--project", project, "--cases", cases];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_discover_projects",
   {
     title: "AgentFlow discover projects",

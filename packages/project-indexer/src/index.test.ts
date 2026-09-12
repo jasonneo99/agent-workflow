@@ -7,8 +7,16 @@ import test from "node:test";
 import { promisify } from "node:util";
 import { indexProjectFiles } from "./index.js";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
+import type { ContextRoutingPolicy } from "../../context-gateway/src/index.js";
 
 const execFileAsync = promisify(execFile);
+const contextPolicy: ContextRoutingPolicy = {
+  version: 1, mode: "shadow", direct_read_max_tokens: 100, delegation_min_tokens: 200,
+  max_exact_slice_tokens: 300, summary_cache_ttl_seconds: 3600,
+  low_risk_intents: ["summarization"], frontier_required_intents: ["security"],
+  deterministic_extractors: ["text_match"],
+  telemetry: { store_file_bodies: false, hash_source_paths: true, record_project_id: true, record_content_hash: true }
+};
 
 const project: ProjectConfig = {
   project: {
@@ -128,4 +136,15 @@ test("incremental indexing reuses unchanged summaries without rewriting files", 
   assert.equal(second.reused, 1);
   assert.equal(second.changed, 0);
   assert.deepEqual(second.deletedSourceUris, []);
+});
+
+test("indexing emits privacy-safe shadow observations without changing read behavior", async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-index-context-"));
+  await fs.writeFile(path.join(projectDir, "large.md"), "context data ".repeat(200));
+  const result = await indexProjectFiles({ projectDir, project, maxFiles: 10, contextGateway: { projectId: "project-a", policy: contextPolicy } });
+  assert.equal(result.files.length, 1);
+  assert.equal(result.contextObservations.length, 1);
+  assert.equal(result.contextObservations[0].fileBodyStored, false);
+  assert.equal(result.contextObservations[0].recommendedRoute, "delegate");
+  assert.doesNotMatch(JSON.stringify(result.contextObservations), /context data/u);
 });

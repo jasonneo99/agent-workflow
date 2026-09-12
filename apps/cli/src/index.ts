@@ -117,6 +117,8 @@ import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraph
 import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
+import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
+import { assertContextProjectPath, buildContextEfficiencyReport, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -1792,6 +1794,99 @@ program
         console.log(formatIndexResult(tick));
       }
     }
+  });
+
+program
+  .command("context-report")
+  .description("Report privacy-safe Context Gateway shadow evidence for a project")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const project = await loadProjectConfig(projectDir);
+    const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
+    const observations = await readShadowObservations({ projectRoot: projectDir, projectId });
+    const report = buildContextEfficiencyReport(observations);
+    if (options.json) console.log(JSON.stringify({ projectId, mode: "shadow", ...report }, null, 2));
+    else console.log([
+      `Context Gateway shadow report for ${project.project.name}`,
+      `Observations: ${report.observations}; eligible reads: ${report.eligibleReads}`,
+      `Estimated input tokens: ${report.totalEstimatedTokens}`,
+      `Projected avoided frontier tokens: ${report.projectedFrontierTokensAvoided} (${report.projectedSavingsPercent}%)`,
+      `Routes: direct=${report.routes.direct}, deterministic=${report.routes.deterministic}, delegate=${report.routes.delegate}, frontier=${report.routes.frontier}`,
+      "Projection only: enforcement remains disabled until approved holdout evidence passes."
+    ].join("\n"));
+  });
+
+program
+  .command("context-route")
+  .description("Preview or execute an evidence-gated routed context read")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("--file <path>", "project-relative source file")
+  .requiredOption("--question <text>", "question to answer from the source")
+  .option("--intent <intent>", "routing intent", "discovery")
+  .option("--mode <mode>", "shadow, advisory, or enforce")
+  .option("--holdout-approved", "confirm reviewed passing holdout evidence")
+  .option("--exact", "use the explicit exact-read escape hatch")
+  .option("--execute", "invoke the selected provider when routing redirects")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; file: string; question: string; intent: string; mode?: string; holdoutApproved?: boolean; exact?: boolean; execute?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const project = await loadProjectConfig(projectDir);
+    const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
+    const sourcePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: options.file, label: "context source" });
+    const content = await fs.readFile(sourcePath, "utf8");
+    const basePolicy = await loadContextRoutingPolicy();
+    const mode = options.mode && ["shadow", "advisory", "enforce"].includes(options.mode) ? options.mode as ContextRoutingPolicy["mode"] : basePolicy.mode;
+    const policy = contextRoutingPolicySchema.parse({ ...basePolicy, mode });
+    const intent = parseContextIntent(options.intent);
+    const decision = decideContextRoute({ policy, intent, content, question: options.question });
+    const holdoutEvidenceApproved = await hasApprovedContextHoldout(projectDir);
+    let enforcement = enforceContextDecision({ policy, decision, exactReadRequested: Boolean(options.exact), holdoutApproved: Boolean(options.holdoutApproved) && holdoutEvidenceApproved });
+    let routed: Awaited<ReturnType<typeof delegateContextSummary>> | null = null;
+    let cacheStatus: "not-used" | "hit" | "miss" = "not-used";
+    let cachePath: string | null = null;
+    if (options.execute && enforcement.action === "redirect") {
+      const provider = providerFromEnv();
+      if (!provider.summarizeFile) throw new Error(`Provider ${provider.id} does not support file summarization.`);
+      const policyHash = contextSha256(JSON.stringify(policy));
+      const key = contextCacheKey({ contentHash: contextSha256(content), questionClass: intent, processorVersion: "1", model: provider.id, outputSchema: "claims-v1", policyHash });
+      const cache = new ProjectContextCache(projectDir, projectId);
+      const cached = await cache.get(key);
+      if (cached) {
+        cacheStatus = "hit";
+        routed = { summary: cached.summary, claims: cached.claims, exactSlices: [] };
+      } else {
+        cacheStatus = "miss";
+        routed = await delegateContextSummary({ sourcePath: path.relative(projectDir, sourcePath), content, question: options.question, model: provider.id, summarize: (request) => provider.summarizeFile!(request) });
+        cachePath = await cache.put({ version: 1, projectId, key, createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + policy.summary_cache_ttl_seconds * 1000).toISOString(), contentHash: contextSha256(content), policyHash, processorVersion: "1", model: provider.id, outputSchema: "claims-v1", summary: routed.summary, claims: routed.claims });
+      }
+      const minimumConfidence = routed.claims.length ? Math.min(...routed.claims.map((claim) => claim.confidence)) : 0;
+      enforcement = enforceContextDecision({ policy, decision, confidence: minimumConfidence, exactReadRequested: Boolean(options.exact), holdoutApproved: Boolean(options.holdoutApproved) && holdoutEvidenceApproved });
+    }
+    const receipt = await writeContextRouteReceipt({ projectDir, projectId, file: options.file, intent, decision, enforcement, executed: Boolean(routed), cacheStatus, contentHash: contextSha256(content) });
+    const report = { projectId, fileHash: contextSha256(options.file), contentHash: contextSha256(content), intent, decision, enforcement, holdoutEvidenceApproved, executed: Boolean(routed), cacheStatus, cachePath: cachePath ? path.relative(projectDir, cachePath) : null, receipt: path.relative(projectDir, receipt), routed };
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log([`Context route: ${decision.route} (${decision.risk} risk)`, `Policy action: ${enforcement.action} — ${enforcement.reason}`, `Executed: ${routed ? "yes" : "no"}; cache: ${cacheStatus}`, routed ? `Summary:\n${routed.summary}` : "Use --execute only after enforce mode and approved holdout evidence select a redirect.", `Receipt: ${path.relative(projectDir, receipt)}`].join("\n"));
+  });
+
+program
+  .command("context-holdout")
+  .description("Evaluate direct-versus-routed context cases before enforcement")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("--cases <path>", "JSON file containing holdout cases")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; cases: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const casesPath = path.resolve(process.cwd(), options.cases);
+    const casesRaw = await fs.readFile(casesPath, "utf8");
+    const cases = contextHoldoutCasesSchema.parse(JSON.parse(casesRaw));
+    const report = evaluateContextHoldouts(cases);
+    const evidencePath = await writeContextHoldoutEvidence({ projectDir, casesHash: contextSha256(casesRaw), report });
+    if (options.json) console.log(JSON.stringify({ ...report, evidencePath: path.relative(projectDir, evidencePath) }, null, 2));
+    else console.log([`Context holdout cases: ${report.cases}`, `Quality pass: ${(report.qualityPassRate * 100).toFixed(1)}%`, `Citation pass: ${(report.citationPassRate * 100).toFixed(1)}%`, `Token savings: ${report.tokenSavingsPercent}%`, `p95 added latency: ${report.p95AddedLatencyMs}ms`, `Enforcement ready: ${report.enforcementReady ? "yes" : "no"}`, `Evidence: ${path.relative(projectDir, evidencePath)}`].join("\n"));
+    if (!report.enforcementReady) process.exitCode = 1;
   });
 
 program
@@ -13681,11 +13776,36 @@ async function loadServerApprovalActionReport(input: {
     && (decision !== "execute" && decision !== "approve-and-execute" && decision !== "dismiss" || preview.controls.policyRecheck === "pass")
     && approvalBefore);
   if (canMutate && approvalBefore) {
-    const previous = await findRunActionByIdempotencyKey({
-      runId: approvalBefore.runId,
-      artifactKind: "server_approval_action",
-      idempotencyKey: receiptIdempotencyKey
-    });
+    let leaseStore: LeaseStore | null = null;
+    let leaseOwner: string | null = null;
+    let leaseAcquired = false;
+    let leaseHeartbeat: NodeJS.Timeout | null = null;
+    try {
+      let previous = await findRunActionByIdempotencyKey({
+        runId: approvalBefore.runId,
+        artifactKind: "server_approval_action",
+        idempotencyKey: receiptIdempotencyKey
+      });
+      if (!previous) {
+        leaseStore = createRedisLeaseStore();
+        leaseOwner = randomUUID();
+        const leaseKey = redisLeaseKey("server-approval-action", receiptIdempotencyKey);
+        leaseAcquired = await leaseStore.acquire(leaseKey, leaseOwner, 60_000);
+        if (leaseAcquired) {
+          leaseHeartbeat = setInterval(() => {
+            void leaseStore?.renew(leaseKey, leaseOwner!, 60_000).catch(() => false);
+          }, 20_000);
+          leaseHeartbeat.unref();
+          previous = await findRunActionByIdempotencyKey({ runId: approvalBefore.runId, artifactKind: "server_approval_action", idempotencyKey: receiptIdempotencyKey });
+        } else {
+          const deadline = Date.now() + 15_000;
+          while (!previous && Date.now() < deadline) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            previous = await findRunActionByIdempotencyKey({ runId: approvalBefore.runId, artifactKind: "server_approval_action", idempotencyKey: receiptIdempotencyKey });
+          }
+          if (!previous) throw new Error("Timed out waiting for the in-flight approval action to publish its durable receipt.");
+        }
+      }
     if (previous) {
       const storedHash = stringFromRecord(previous.content, "requestHash");
       if (storedHash !== requestHash) {
@@ -13705,7 +13825,7 @@ async function loadServerApprovalActionReport(input: {
         };
         checks.push({ label: "Idempotency replay", status: "pass", detail: `Reused durable result ${previous.uri}; no action was executed again.` });
       }
-    } else {
+    } else if (leaseAcquired) {
       let result: DashboardFollowUpResult;
       if (decision === "approve") {
         const decided = await decideActionApproval({ approvalId: approvalBefore.id, decision: "approved", actor: preview.envelope.actor, actorRole: preview.envelope.actorRole, note: "Remote approval request." });
@@ -13758,6 +13878,16 @@ async function loadServerApprovalActionReport(input: {
       });
       mutation = { receiptUri, receiptHash: stableHash(receiptContent), requestHash, replayed: false, outcome: result.ok ? "completed" : "failed", title: receiptContent.title, output: receiptContent.output, beforeStatus: approvalBefore.status, afterStatus: approvalAfter?.status ?? null, rollbackEvidence };
       checks.push({ label: "Mutation", status: result.ok ? "pass" : "fail", detail: result.ok ? `Mutation completed and durable receipt ${receiptUri} was recorded.` : `Mutation failed and a durable failure receipt was recorded: ${result.error}` });
+    }
+      checks.push({ label: "Distributed idempotency reservation", status: "pass", detail: previous ? "An in-flight or completed request was replayed from its durable receipt." : "A Redis-backed lease serialized the request before its executor started." });
+    } catch (error) {
+      checks.push({ label: "Distributed idempotency reservation", status: "fail", detail: error instanceof Error ? error.message : String(error) });
+    } finally {
+      if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+      if (leaseStore) {
+        if (leaseAcquired && leaseOwner) await leaseStore.release(redisLeaseKey("server-approval-action", receiptIdempotencyKey), leaseOwner).catch(() => false);
+        await leaseStore.close().catch(() => undefined);
+      }
     }
   }
   const failures = checks.filter((check) => check.status === "fail").length;
@@ -42155,6 +42285,8 @@ async function indexProjectForRun(input: {
   fullIndexFallback: boolean;
   truncated: boolean;
   headCommit?: string;
+  contextObservations: number;
+  projectedContextSavingsPercent: number;
 }> {
   const project = await loadProjectConfig(input.projectDir);
   const projectId = await upsertProject({
@@ -42196,6 +42328,8 @@ async function indexProjectWithStorage(input: {
   fullIndexFallback: boolean;
   truncated: boolean;
   headCommit?: string;
+  contextObservations: number;
+  projectedContextSavingsPercent: number;
 }> {
   const existingSummaries = await listProjectFileSummaries({
     projectRootUri: input.projectDir,
@@ -42204,6 +42338,7 @@ async function indexProjectWithStorage(input: {
   const state = await getProjectIndexState({ projectId: input.projectId });
   const sinceCommit = input.sinceCommit ?? state?.headCommit ?? undefined;
   const shouldIncrement = input.incremental && Boolean(sinceCommit);
+  const contextPolicy = await loadContextRoutingPolicy();
   const result = await indexProjectFiles({
     projectDir: input.projectDir,
     project: input.project,
@@ -42212,8 +42347,16 @@ async function indexProjectWithStorage(input: {
     existingSummaries,
     forceRefine: input.forceRefine,
     deltaOnly: shouldIncrement,
-    sinceCommit
+    sinceCommit,
+    contextGateway: { projectId: input.projectId, policy: contextPolicy }
   });
+
+  const observationFile = await writeShadowObservationBatch({
+    projectRoot: input.projectDir,
+    projectId: input.projectId,
+    observations: result.contextObservations
+  });
+  const contextReport = buildContextEfficiencyReport(result.contextObservations);
 
   const count = await upsertProjectFiles({ projectId: input.projectId, files: result.files });
   const deleted = await deleteProjectFiles({
@@ -42246,7 +42389,12 @@ async function indexProjectWithStorage(input: {
       reused: result.reused,
       truncated: result.truncated,
       sinceCommit: shouldIncrement ? sinceCommit : null,
-      roadmapSnapshot
+      roadmapSnapshot,
+      contextGateway: {
+        mode: contextPolicy.mode,
+        observationFile: observationFile ? path.relative(input.projectDir, observationFile) : null,
+        ...contextReport
+      }
     }
   });
   return {
@@ -42260,8 +42408,72 @@ async function indexProjectWithStorage(input: {
     incremental: result.incremental,
     fullIndexFallback: result.fullIndexFallback,
     truncated: result.truncated,
-    headCommit: result.headCommit
+    headCommit: result.headCommit,
+    contextObservations: result.contextObservations.length,
+    projectedContextSavingsPercent: contextReport.projectedSavingsPercent
   };
+}
+
+async function loadContextRoutingPolicy(): Promise<ContextRoutingPolicy> {
+  return contextRoutingPolicySchema.parse(YAML.parse(await fs.readFile(path.join(rootDir, "policies", "context-routing.yaml"), "utf8")));
+}
+
+function parseContextIntent(value: string): ContextIntent {
+  const normalized = value.trim().toLowerCase().replaceAll("-", "_");
+  const allowed: ContextIntent[] = ["discovery", "summarization", "documentation", "test_inventory", "editing", "debugging", "concurrency", "security", "authorization", "migration", "public_api", "architecture", "safety_critical", "unknown"];
+  if (!allowed.includes(normalized as ContextIntent)) throw new Error(`Unknown context intent ${value}. Allowed: ${allowed.join(", ")}`);
+  return normalized as ContextIntent;
+}
+
+async function writeContextRouteReceipt(input: {
+  projectDir: string;
+  projectId: string;
+  file: string;
+  intent: ContextIntent;
+  decision: ReturnType<typeof decideContextRoute>;
+  enforcement: ReturnType<typeof enforceContextDecision>;
+  executed: boolean;
+  cacheStatus: string;
+  contentHash: string;
+}): Promise<string> {
+  const directory = path.join(input.projectDir, ".agent-workflow", "context-gateway", "receipts");
+  await assertContextProjectPath(input.projectDir, directory);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const target = path.join(directory, `${new Date().toISOString().replace(/[:.]/gu, "-")}-${randomUUID()}.json`);
+  await fs.writeFile(target, `${JSON.stringify({
+    version: 1,
+    createdAt: new Date().toISOString(),
+    projectId: input.projectId,
+    sourcePathHash: contextSha256(input.file),
+    contentHash: input.contentHash,
+    intent: input.intent,
+    decision: input.decision,
+    enforcement: input.enforcement,
+    executed: input.executed,
+    cacheStatus: input.cacheStatus,
+    fileBodyStored: false
+  }, null, 2)}\n`, { mode: 0o600 });
+  return target;
+}
+
+async function writeContextHoldoutEvidence(input: {
+  projectDir: string;
+  casesHash: string;
+  report: ReturnType<typeof evaluateContextHoldouts>;
+}): Promise<string> {
+  const directory = path.join(input.projectDir, ".agent-workflow", "context-gateway", "holdout");
+  await assertContextProjectPath(input.projectDir, directory);
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  const target = path.join(directory, "latest.json");
+  await fs.writeFile(target, `${JSON.stringify({ version: 1, evaluatedAt: new Date().toISOString(), casesHash: input.casesHash, ...input.report, caseBodiesStored: false }, null, 2)}\n`, { mode: 0o600 });
+  return target;
+}
+
+async function hasApprovedContextHoldout(projectDir: string): Promise<boolean> {
+  try {
+    const evidence = JSON.parse(await fs.readFile(path.join(projectDir, ".agent-workflow", "context-gateway", "holdout", "latest.json"), "utf8")) as { enforcementReady?: boolean; caseBodiesStored?: boolean };
+    return evidence.enforcementReady === true && evidence.caseBodiesStored === false;
+  } catch { return false; }
 }
 
 async function buildStoredRoadmapSnapshot(input: {
@@ -42310,11 +42522,14 @@ function formatIndexResult(result: {
   fullIndexFallback: boolean;
   truncated: boolean;
   headCommit?: string;
+  contextObservations: number;
+  projectedContextSavingsPercent: number;
 }): string {
   return [
     `${result.incremental ? "Incrementally indexed" : "Indexed"} ${result.count} file${result.count === 1 ? "" : "s"} for ${result.projectName}.`,
     `Changed: ${result.changed}; reused: ${result.reused}; deleted: ${result.deleted}; refined: ${result.refined}; skipped large: ${result.skipped}.`,
     result.headCommit ? `Head commit: ${result.headCommit}` : "",
+    `Context gateway: ${result.contextObservations} shadow observation(s); projected frontier-input savings ${result.projectedContextSavingsPercent}%.`,
     result.fullIndexFallback ? "Git delta unavailable; fell back to a full index." : "",
     result.truncated ? "Index limit reached before all changed files were processed; rerun with a higher --max-files or --index-max-files value." : ""
   ].filter(Boolean).join("\n");

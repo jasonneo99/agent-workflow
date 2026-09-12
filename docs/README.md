@@ -22,15 +22,16 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 16. [Agent Design Pattern Gap Analysis](agent-design-patterns-gap.md): compare Agent Workflow to single-shot, ReAct, planner-executor, reflexive, verifier-gated, and combined production patterns.
 17. [Evaluation Harness](evaluations.md): compare providers, model tiers, prompts, quality, latency, fallback, and estimated cost.
 18. [Model Improvement Workflow](model-improvement.md): diagnose quality, cost, prompt, context, eval, routing, retrieval, or fine-tune paths.
-19. [Local Learning Daemon](local-learning-daemon.md): autonomous local learning from approved feedback, run history, failures, evals, and research notes.
-20. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
-21. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
-22. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
-23. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
-24. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-25. [Profiles](profiles.md): enterprise and simple initialization profiles.
-26. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-27. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+19. [Context Intelligence Gateway](context-gateway.md): measure, cache, evaluate, and safely enforce token-aware context routing.
+20. [Local Learning Daemon](local-learning-daemon.md): autonomous local learning from approved feedback, run history, failures, evals, and research notes.
+21. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
+22. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
+23. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
+24. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
+25. [Autonomy Policy](autonomy.md): what each autonomy level allows.
+26. [Profiles](profiles.md): enterprise and simple initialization profiles.
+27. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+28. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 

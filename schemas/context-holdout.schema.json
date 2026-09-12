@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.local/schemas/context-holdout.schema.json",
+  "title": "Agent Workflow Context Holdout Cases",
+  "type": "array",
+  "minItems": 3,
+  "items": {
+    "type": "object",
+    "required": ["id", "requiredTerms", "directAnswer", "routedAnswer", "citationsValid", "directTokens", "routedTokens", "addedLatencyMs"],
+    "properties": {
+      "id": { "type": "string", "minLength": 1 },
+      "requiredTerms": { "type": "array", "items": { "type": "string" } },
+      "directAnswer": { "type": "string" },
+      "routedAnswer": { "type": "string" },
+      "citationsValid": { "type": "boolean" },
+      "directTokens": { "type": "integer", "minimum": 0 },
+      "routedTokens": { "type": "integer", "minimum": 0 },
+      "addedLatencyMs": { "type": "integer", "minimum": 0 }
+    },
+    "additionalProperties": false
+  }
+}

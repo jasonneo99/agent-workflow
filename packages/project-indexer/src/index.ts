@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import fg from "fast-glob";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import type { ModelProvider } from "../../model-providers/src/index.js";
+import { buildShadowObservation, type ContextRoutingPolicy, type ContextShadowObservation } from "../../context-gateway/src/index.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -34,6 +35,7 @@ export interface IndexProjectFilesResult {
   incremental: boolean;
   fullIndexFallback: boolean;
   truncated: boolean;
+  contextObservations: ContextShadowObservation[];
 }
 
 const defaultTextExtensions = new Set([
@@ -65,6 +67,7 @@ export async function indexProjectFiles(input: {
   forceRefine?: boolean;
   deltaOnly?: boolean;
   sinceCommit?: string;
+  contextGateway?: { projectId: string; policy: ContextRoutingPolicy };
 }): Promise<IndexProjectFilesResult> {
   const include = input.project.context.include.length ? input.project.context.include : ["AGENTS.md", ".agent-workflow/**"];
   const exclude = input.project.context.exclude;
@@ -93,6 +96,7 @@ export async function indexProjectFiles(input: {
   let reused = 0;
   let changed = 0;
   let truncated = false;
+  const contextObservations: ContextShadowObservation[] = [];
   const existingByPath = new Map((input.existingSummaries ?? []).map((summary) => [summary.sourceUri, summary]));
   const sortedFiles = files.sort();
   const headCommit = await getHeadCommit(input.projectDir);
@@ -150,6 +154,14 @@ export async function indexProjectFiles(input: {
           reused: true
         }
       });
+      if (input.contextGateway?.policy.mode === "shadow") contextObservations.push(buildShadowObservation({
+        projectId: input.contextGateway.projectId,
+        sourcePath: relativePath,
+        content,
+        intent: "summarization",
+        policy: input.contextGateway.policy,
+        expectedSummaryTokens: estimateTokens(existing.summary)
+      }));
       continue;
     }
 
@@ -181,6 +193,14 @@ export async function indexProjectFiles(input: {
       summary,
       metadata
     });
+    if (input.contextGateway?.policy.mode === "shadow") contextObservations.push(buildShadowObservation({
+      projectId: input.contextGateway.projectId,
+      sourcePath: relativePath,
+      content,
+      intent: "summarization",
+      policy: input.contextGateway.policy,
+      expectedSummaryTokens: estimateTokens(summary)
+    }));
   }
 
   if (changedFiles) {
@@ -200,7 +220,8 @@ export async function indexProjectFiles(input: {
     headCommit,
     incremental: Boolean(changedFiles),
     fullIndexFallback,
-    truncated
+    truncated,
+    contextObservations
   };
 }
 
