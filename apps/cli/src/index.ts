@@ -81,6 +81,7 @@ import {
   listProjectStorageSummaries,
   listStaleTerminalWorkflowRuns,
   listWorkflowQueue,
+  listWorkflowHandoffs,
   listWorkflowStageHealthForRuns,
   listWorkflowStageRunsForRuns,
   listWorkflowRunsForProject,
@@ -113,6 +114,7 @@ import type { ModelTier } from "../../../packages/model-providers/src/types.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
+import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
@@ -2016,6 +2018,51 @@ program
       return;
     }
     console.log(formatWorkflowGraphReport(report));
+  });
+
+program
+  .command("dynamic-plan")
+  .description("Construct and validate a policy-bounded workflow DAG from a natural-language goal")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "natural-language goal")
+  .option("--json", "print the generated workflow JSON")
+  .action(async (options: { project: string; task: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const project = await loadProjectConfig(projectDir);
+    const workflow = constructDynamicWorkflow({ goal: options.task, project, agents: await loadAgentsForProject(projectDir) });
+    if (options.json) {
+      console.log(JSON.stringify(workflow, null, 2));
+      return;
+    }
+    console.log(`Dynamic Workflow: ${workflow.id}`);
+    console.log(`Archetype: ${workflow.dynamic?.archetype}`);
+    console.log(`Definition: v${workflow.dynamic?.version} ${workflow.dynamic?.definition_hash}`);
+    console.log(`Stages: ${workflow.stages.map((stage) => stage.id).join(" -> ")}`);
+    console.log(`Available archetypes: ${workflowArchetypes.map((item) => item.id).join(", ")}`);
+  });
+
+program
+  .command("dynamic-run")
+  .description("Construct, persist, and queue a validated dynamic workflow from a natural-language goal")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "natural-language goal")
+  .option("--policy-profile <name>", "execution policy profile")
+  .option("--no-brief", "queue without printing the compiled brief")
+  .action(async (options: { project: string; task: string; policyProfile?: string; brief?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const configuredProject = await loadProjectConfig(projectDir);
+    const workflow = constructDynamicWorkflow({ goal: options.task, project: configuredProject, agents: await loadAgentsForProject(projectDir) });
+    await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
+    const result = await queueWorkflow({ workflowId: workflow.id, projectPath: projectDir, task: options.task, policyProfile: options.policyProfile, workflowOverride: workflow });
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Run: ${result.run.runId}`);
+    console.log(`Workflow: ${workflow.id} (${workflow.dynamic?.archetype})`);
+    console.log(`Definition hash: ${workflow.dynamic?.definition_hash}`);
+    if (options.brief) console.log(`\n${result.brief}`);
   });
 
 program
@@ -24951,6 +24998,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/dynamic-workflow") {
+    const projectDir = path.resolve(process.cwd(), requestUrl.searchParams.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+    const goal = requestUrl.searchParams.get("task")?.trim() || "Create a local web app";
+    const project = await loadProjectConfig(projectDir);
+    const workflow = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(projectDir) });
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(workflow, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/model-catalog") {
     const report = await loadDashboardModelCatalogReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -24989,8 +25046,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     }
     const details = await getWorkflowRunDetails(runId);
     const artifacts = await listArtifacts({ runId });
+    const handoffs = await listWorkflowHandoffs({ runId });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ...details, artifacts }, null, 2));
+    response.end(JSON.stringify({ ...details, artifacts, handoffs }, null, 2));
     return;
   }
 
@@ -27389,6 +27447,7 @@ type DashboardGraphHandoffViewResult =
   | { ok: false; error: string; projectDir?: string };
 
 type DashboardWorkflowGraphReport = WorkflowGraphReport & {
+  handoffPackets: Awaited<ReturnType<typeof listWorkflowHandoffs>>;
   runs: DashboardWorkflowGraphRun[];
   liveStageRuns: DashboardWorkflowStageRun[];
   runScope: "project" | "all-projects";
@@ -27433,6 +27492,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   let focusedStageVerificationRuns: DashboardWorkflowGraphRun[] = [];
   let recentGraphExports: DashboardGraphExportSummary[] = [];
   let graphPresets: DashboardGraphPreset[] = [];
+  let handoffs: Awaited<ReturnType<typeof listWorkflowHandoffs>> = [];
   if (safeRunLimit > 0) {
     try {
       const historyFetchLimit = Math.min(Math.max(safeRunLimit * 4, safeRunLimit), 1000);
@@ -27449,6 +27509,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
       if (activeRunIds.length) {
         liveStageRuns = (await Promise.all(report.stages.map((stage) => listWorkflowStageRunsForRuns({ runIds: activeRunIds, stageId: stage.id })))).flat();
       }
+      handoffs = (await Promise.all(runs.map((run) => listWorkflowHandoffs({ runId: run.id })))).flat();
       if (focusedStageId) {
         focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
         focusedStageFixRuns = historyRuns
@@ -27479,7 +27540,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
   } catch (error) {
     runWarnings.push(`Graph presets unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
-  return { ...report, runs, liveStageRuns, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
+  return { ...report, handoffPackets: handoffs, runs, liveStageRuns, runScope, runStatusFilter, runWarnings, stageHealth, focusedStageId, focusedStageRuns, focusedStageFixRuns, focusedStageVerificationRuns, recentGraphExports, graphPresets };
 }
 
 function dashboardWorkflowGraphRunFromStorage(run: Awaited<ReturnType<typeof listWorkflowRuns>>[number]): DashboardWorkflowGraphRun {
@@ -28265,7 +28326,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   };
   type NetworkNode = { id: string; label: string; title: string; x: number; y: number; r: number; color: string; kind: string; href?: string; labelX?: number; labelY?: number; labelAnchor?: string; caption?: string; stageId?: string; stageHealth?: DashboardWorkflowStageHealth; focused?: boolean };
   const nodeById = new Map<string, NetworkNode>();
-  const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string }> = [];
+  const links: Array<{ from: string; to: string; width: number; dashed?: boolean; className?: string; title?: string; handoffId?: string; status?: string }> = [];
   const requestSizedRadius = (baseRadius: number, requestCount: number, maxExtra: number): number => baseRadius + Math.min(maxExtra, Math.sqrt(Math.max(0, requestCount)) * 3.2);
   const stageNodeLabel = (stageId: string): string => truncateMiddle(stageId, 10);
   const stageHealthById = new Map(report.stageHealth.map((health) => [health.stageId, health]));
@@ -28317,7 +28378,9 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     if (stageNode.stageHealth) stageNode.title = `${stageNode.title} - ${formatStageHealthTitle(stageNode.stageHealth)}`;
     nodeById.set(stageNodeId, stageNode);
     links.push({ from: "workflow", to: stageNodeId, width: 1.2, className: "signal" });
-    if (index > 0) links.push({ from: `stage:${stages[index - 1].id}`, to: stageNodeId, width: 2.8, dashed: true, className: "sequence" });
+    if (!report.handoffPackets.length) {
+      for (const dependency of stage.dependsOn) links.push({ from: `stage:${dependency}`, to: stageNodeId, width: 2.8, dashed: true, className: "sequence" });
+    }
     const primary = agentEntries.get(stage.agentId) ?? {
       id: stage.agentId,
       label: stage.agentDisplayName ?? stage.agentId,
@@ -28342,6 +28405,21 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
       links.push({ from: stageNodeId, to: `agent:${subagent.id}`, width: 1.7, dashed: true, className: "support" });
     });
   });
+
+  for (const handoff of report.handoffPackets) {
+    if (!nodeById.has(`stage:${handoff.sourceStageId}`) || !nodeById.has(`stage:${handoff.destinationStageId}`)) continue;
+    const duration = handoff.completedAt && handoff.proposedAt ? Math.max(0, Date.parse(handoff.completedAt) - Date.parse(handoff.proposedAt)) : null;
+    links.push({
+      from: `stage:${handoff.sourceStageId}`,
+      to: `stage:${handoff.destinationStageId}`,
+      width: handoff.status === "failed" ? 3.6 : 3,
+      dashed: handoff.status === "retrying" || handoff.status === "failed",
+      className: `handoff handoff-${handoff.status}`,
+      handoffId: handoff.id,
+      status: handoff.status,
+      title: `${handoff.senderAgentId} → ${handoff.receiverAgentId}; ${handoff.status}; ${handoff.transferredArtifacts.length} artifact(s); ${handoff.events.filter((event) => event.status === "retrying").length} retry event(s)${duration === null ? "" : `; ${duration}ms`}`
+    });
+  }
 
   const agents = [...agentEntries.values()].sort((a, b) => {
     if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
@@ -28439,7 +28517,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
     const delay = formatSvgNumber((index % 9) * 0.34);
     const duration = formatSvgNumber(2.4 + (index % 5) * 0.22);
     const animateSignal = link.className !== "outcome" || index % 18 === 0;
-    return `<g class="network-synapse" data-from="${escapeHtml(link.from)}" data-to="${escapeHtml(link.to)}" style="--signal-delay:${delay}s">
+    return `<g class="network-synapse" data-from="${escapeHtml(link.from)}" data-to="${escapeHtml(link.to)}"${link.handoffId ? ` data-handoff-id="${escapeHtml(link.handoffId)}" data-handoff-status="${escapeHtml(link.status ?? "")}"` : ""} style="--signal-delay:${delay}s">
+      ${link.title ? `<title>${escapeHtml(link.title)}</title>` : ""}
       <path${className} d="${pathData}" stroke-width="${link.width}"${dash}></path>
       ${animateSignal ? `<path class="network-signal-trail" d="${pathData}" pathLength="1"></path>
       <circle class="network-packet" r="3.6">
@@ -42037,6 +42116,9 @@ async function queueWorkflow(input: {
     policyProfile: resolvedPolicy.profile,
     policySnapshot: resolvedPolicy.snapshot,
     policySnapshotHash: resolvedPolicy.snapshotHash,
+    workflowVersion: workflow.dynamic?.version,
+    workflowHash: workflow.dynamic?.definition_hash,
+    constructionRationale: workflow.dynamic?.construction_rationale,
     modelTierOverride: input.modelTierOverride,
     providerOverride: input.providerOverride,
     evaluationMetadata: input.evaluationMetadata,

@@ -92,6 +92,10 @@ git commit -m "Prepare vX.Y.Z package release"
 git push origin master
 ```
 
+## Signing key rotation
+
+The `0.3.0` release intentionally rotated the local Ed25519 bundle signer after the previous private key could no longer be located. The prior public fingerprint was `53c94168605f9e51499c14832d9a85da19ef8d9aeae3db117e42d4ca3d4bf8cf`; the replacement `agent-workflow-release` fingerprint is `045a466ce5d9a8f6cbcd43b9a7af68dbd238c6ca4061f83479a46970fdc344c0`. The replacement private key remains outside the repository under the maintainer's protected Agent Workflow configuration directory. Managed trust stores using `require` policy must approve the replacement public key before adopting `0.3.0` or later.
+
 ## Trusted Publishing
 
 The npm package uses GitHub Actions Trusted Publishing, so GitHub receives a short-lived OIDC token instead of storing a long-lived npm token.

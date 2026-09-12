@@ -63,8 +63,22 @@ export interface WorkflowGraphReport {
     subagentLinks: number;
   };
   stages: WorkflowGraphStage[];
+  handoffs: WorkflowGraphHandoff[];
   warnings: string[];
   mermaid: string;
+}
+
+export interface WorkflowGraphHandoff {
+  id: string;
+  sourceStageId: string;
+  destinationStageId: string;
+  senderAgentId: string;
+  receiverAgentId: string;
+  status: string;
+  durationMs: number | null;
+  artifacts: unknown[];
+  receiptIds: string[];
+  retryCount: number;
 }
 
 export function buildWorkflowGraphReport(input: {
@@ -72,6 +86,20 @@ export function buildWorkflowGraphReport(input: {
   agents: AgentCard[];
   project: ProjectConfig;
   resolvedPolicy: ResolvedExecutionPolicy;
+  handoffs?: Array<{
+    id: string;
+    sourceStageId: string;
+    destinationStageId: string;
+    senderAgentId: string;
+    receiverAgentId: string;
+    status: string;
+    transferredArtifacts?: unknown[];
+    receiptIds?: string[];
+    proposedAt?: string;
+    completedAt?: string | null;
+    failedAt?: string | null;
+    events?: Array<{ status: string }>;
+  }>;
 }): WorkflowGraphReport {
   const agentsById = new Map(input.agents.map((agent) => [agent.id, agent]));
   const stages = input.workflow.stages.map((stage, index): WorkflowGraphStage => {
@@ -117,7 +145,7 @@ export function buildWorkflowGraphReport(input: {
       policyAllowed: decision.allowed,
       policyApprovalRequired: decision.approvalRequired,
       policyReasons: decision.reasons,
-      dependsOn: index === 0 ? [] : [input.workflow.stages[index - 1].id]
+      dependsOn: stage.depends_on ?? (index === 0 ? [] : [input.workflow.stages[index - 1].id])
     };
   });
   const warnings = [
@@ -125,6 +153,21 @@ export function buildWorkflowGraphReport(input: {
     ...stages.flatMap((stage) => stage.subagents.filter((subagent) => !subagent.displayName).map((subagent) => `Stage ${stage.id} references missing subagent ${subagent.id}`))
   ];
 
+  const handoffs: WorkflowGraphHandoff[] = (input.handoffs ?? []).map((handoff) => {
+    const finishedAt = handoff.completedAt ?? handoff.failedAt ?? null;
+    return {
+      id: handoff.id,
+      sourceStageId: handoff.sourceStageId,
+      destinationStageId: handoff.destinationStageId,
+      senderAgentId: handoff.senderAgentId,
+      receiverAgentId: handoff.receiverAgentId,
+      status: handoff.status,
+      durationMs: handoff.proposedAt && finishedAt ? Math.max(0, Date.parse(finishedAt) - Date.parse(handoff.proposedAt)) : null,
+      artifacts: handoff.transferredArtifacts ?? [],
+      receiptIds: handoff.receiptIds ?? [],
+      retryCount: (handoff.events ?? []).filter((event) => event.status === "retrying").length
+    };
+  });
   return {
     workflow: {
       id: input.workflow.id,
@@ -155,6 +198,7 @@ export function buildWorkflowGraphReport(input: {
       subagentLinks: stages.reduce((total, stage) => total + stage.subagents.length, 0)
     },
     stages,
+    handoffs,
     warnings,
     mermaid: buildMermaid(input.workflow, stages)
   };
@@ -198,9 +242,11 @@ function buildMermaid(workflow: WorkflowDefinition, stages: WorkflowGraphStage[]
     const label = `${stage.order}. ${stage.id}\\n${stage.agentId}\\n${stage.pattern.type}\\n${stage.contextMaxTokens} tokens${stage.approvalRequired || stage.policyApprovalRequired ? "\\napproval" : ""}${stage.policyAllowed ? "" : "\\nblocked"}`;
     lines.push(`  ${nodeId(stage.id)}["${escapeMermaid(label)}"]`);
   }
-  lines.push(`  start --> ${nodeId(stages[0]?.id ?? "end")}`);
-  for (let index = 1; index < stages.length; index += 1) {
-    lines.push(`  ${nodeId(stages[index - 1].id)} --> ${nodeId(stages[index].id)}`);
+  for (const stage of stages.filter((item) => item.dependsOn.length === 0)) {
+    lines.push(`  start --> ${nodeId(stage.id)}`);
+  }
+  for (const stage of stages) {
+    for (const dependency of stage.dependsOn) lines.push(`  ${nodeId(dependency)} --> ${nodeId(stage.id)}`);
   }
   for (const stage of stages) {
     for (const subagent of stage.subagents) {

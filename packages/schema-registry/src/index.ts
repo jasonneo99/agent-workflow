@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export interface AgentWorkflowSchema {
-  id: "agent" | "workflow" | "project" | "schedules" | "bundle-state" | "bundle-pin";
+  id: "agent" | "workflow" | "workflow-handoff" | "project" | "schedules" | "bundle-state" | "bundle-pin";
   title: string;
   fileName: string;
   description: string;
@@ -22,6 +22,13 @@ export const agentWorkflowSchemas: AgentWorkflowSchema[] = [
     fileName: "workflow.schema.json",
     description: "Reusable workflow graph definition.",
     fileGlobs: ["workflows/**/*.yaml", "workflows/**/*.yml"]
+  },
+  {
+    id: "workflow-handoff",
+    title: "Durable Workflow Handoff",
+    fileName: "workflow-handoff.schema.json",
+    description: "Durable agent-to-agent handoff packet and lifecycle state.",
+    fileGlobs: [".agent-workflow/handoffs/**/*.json"]
   },
   {
     id: "project",

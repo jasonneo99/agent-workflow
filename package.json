@@ -1,6 +1,6 @@
 {
   "name": "@jasonneo99/agent-workflow",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "type": "module",
   "description": "Portable, model-agnostic agent workflows for any codebase",
   "license": "MIT",
@@ -60,6 +60,7 @@
     "setup": "tsx apps/cli/src/setup.ts",
     "build": "tsc",
     "check": "npm run validate && npm run validate-examples && npm run typecheck && npm test",
+    "canary:dynamic": "DEFAULT_MODEL_PROVIDER=mock tsx apps/cli/src/index.ts dynamic-plan --project templates/project --task 'Create me a local web app that tracks release readiness' --json",
     "prepack": "npm run build",
     "pack:check": "node scripts/verify-package.mjs",
     "release:check": "node scripts/release-check.mjs",

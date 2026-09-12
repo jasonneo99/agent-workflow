@@ -102,7 +102,18 @@ export interface PreferenceScoreGroup {
   recommendation: string;
 }
 
-export type WorkflowShapeRecommendationKind = "add_stage" | "remove_stage" | "split_stage" | "collapse_stages" | "gate_stage" | "add_agent_type";
+export type WorkflowShapeRecommendationKind =
+  | "add_stage"
+  | "remove_stage"
+  | "split_stage"
+  | "collapse_stages"
+  | "gate_stage"
+  | "add_agent_type"
+  | "parallelize_stages"
+  | "remove_handoff"
+  | "strengthen_acceptance_criteria"
+  | "tune_routing"
+  | "tune_context";
 
 export interface WorkflowShapeStageInput {
   id: string;
@@ -112,6 +123,23 @@ export interface WorkflowShapeStageInput {
   contextLoads: string[];
   approvalRequired: boolean;
   subagentCount: number;
+  dependsOn?: string[];
+  acceptanceCriteria?: string[];
+}
+
+export interface WorkflowShapeHandoffInput {
+  sourceStageId: string;
+  destinationStageId: string;
+  count: number;
+  retryCount: number;
+  rejectedCount: number;
+  averageDurationMs: number | null;
+  artifactCount: number;
+  contextSummaryPresentRate: number;
+}
+
+export interface WorkflowShapePolicyInput {
+  allowAutomaticLowRiskTuning?: boolean;
 }
 
 export interface WorkflowShapeStageHealthInput {
@@ -142,6 +170,8 @@ export interface WorkflowShapeOptimizationInput {
   stageHealth: WorkflowShapeStageHealthInput[];
   scoreGroups: PreferenceScoreGroup[];
   projectContext: WorkflowShapeProjectContextInput;
+  handoffs?: WorkflowShapeHandoffInput[];
+  policy?: WorkflowShapePolicyInput;
 }
 
 export interface WorkflowShapeRecommendation {
@@ -153,7 +183,9 @@ export interface WorkflowShapeRecommendation {
   stageIds: string[];
   agentTypeId?: string;
   preferredScope: "project_overlay" | "shared_workflow_review";
-  approvalRequired: true;
+  approvalRequired: boolean;
+  risk: "low" | "medium" | "high";
+  application: "automatic" | "review_required";
   rationale: string[];
   recommendation: string;
   overlayHint: string;
@@ -167,6 +199,10 @@ export interface WorkflowShapeRecommendation {
     averageQuality?: number | null;
     feedbackCounts?: Record<string, number>;
     indexedFiles?: number;
+    handoffCount?: number;
+    retryCount?: number;
+    rejectedCount?: number;
+    acceptanceCriteriaCount?: number;
   };
 }
 
@@ -734,9 +770,16 @@ export function buildWorkflowShapeOptimizationReport(input: WorkflowShapeOptimiz
   }
 
   const recommendations: WorkflowShapeRecommendation[] = [];
-  const addRecommendation = (recommendation: Omit<WorkflowShapeRecommendation, "id">): void => {
+  const addRecommendation = (recommendation: Omit<WorkflowShapeRecommendation, "id" | "risk" | "application"> & Partial<Pick<WorkflowShapeRecommendation, "risk" | "application">>): void => {
+    const structural = recommendation.kind !== "tune_routing" && recommendation.kind !== "tune_context";
+    const automatic = !structural
+      && recommendation.risk === "low"
+      && input.policy?.allowAutomaticLowRiskTuning === true;
     recommendations.push({
       ...recommendation,
+      risk: recommendation.risk ?? (structural ? "medium" : "low"),
+      application: automatic ? "automatic" : "review_required",
+      approvalRequired: automatic ? false : true,
       id: `shape-${String(recommendations.length + 1).padStart(3, "0")}`
     });
   };
@@ -957,6 +1000,134 @@ export function buildWorkflowShapeOptimizationReport(input: WorkflowShapeOptimiz
     });
   }
 
+  // Dynamic-run evidence can reveal graph improvements that linear task health cannot.
+  // Keep every structural suggestion review-only; only bounded routing/context tuning may
+  // be automatically applicable when the project policy explicitly opts in.
+  for (const stage of input.stages) {
+    const criteria = stage.acceptanceCriteria ?? [];
+    const health = healthByStage.get(stage.id);
+    if ((health?.totalTasks ?? 0) >= 3 && criteria.length === 0) {
+      addRecommendation({
+        kind: "strengthen_acceptance_criteria",
+        priority: (health?.failedTasks ?? 0) > 0 ? "high" : "medium",
+        risk: "medium",
+        title: `Strengthen acceptance criteria for ${stage.id}`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [
+          `${health?.totalTasks ?? 0} task(s) ran without machine-readable acceptance criteria.`,
+          "Explicit artifact, verification, and completion conditions make handoff acceptance reproducible."
+        ],
+        recommendation: "Add concrete artifact and verification assertions before changing the stage structure.",
+        overlayHint: `Add acceptance criteria to ${stage.id} in a project-local overlay and compare retry rates.`,
+        evidence: { runsAnalyzed: input.runsAnalyzed, totalTasks: health?.totalTasks ?? 0, failedTasks: health?.failedTasks ?? 0, acceptanceCriteriaCount: 0 }
+      });
+    }
+
+    const groups = groupsByStage.get(stage.id) ?? [];
+    const fallbackRate = maxNumber(groups.map((group) => group.fallbackRate));
+    if (groups.length > 0 && fallbackRate >= 0.5) {
+      addRecommendation({
+        kind: "tune_routing",
+        priority: "medium",
+        risk: "low",
+        title: `Tune routing for ${stage.id}`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [`Observed fallback rate is ${fallbackRate}.`, "The recommendation changes only provider/tier preference and does not widen permissions."],
+        recommendation: "Prefer the successful fallback route while retaining the current fallback chain and policy boundary.",
+        overlayHint: `Adjust only the project-local provider/tier preference for ${stage.id}.`,
+        evidence: { runsAnalyzed: input.runsAnalyzed, fallbackRate }
+      });
+    }
+    const averageQuality = averageNullable(groups.map((group) => group.averageQuality));
+    if (groups.length > 0 && averageQuality !== null && averageQuality < 0.75 && stage.contextMaxTokens < 6000) {
+      addRecommendation({
+        kind: "tune_context",
+        priority: "medium",
+        risk: "low",
+        title: `Tune context budget for ${stage.id}`,
+        target: `${input.workflowId}/${stage.id}`,
+        stageIds: [stage.id],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [`Average quality is ${averageQuality} with a ${stage.contextMaxTokens}-token context budget.`, "A bounded budget increase does not alter stage structure, permissions, or mandatory gates."],
+        recommendation: "Increase the stage context budget by at most 20% and retain the same context sources and policy controls.",
+        overlayHint: `Increase only ${stage.id}.context.max_tokens by at most 20% in project-local tuning state.`,
+        evidence: { runsAnalyzed: input.runsAnalyzed, averageQuality }
+      });
+    }
+  }
+
+  const handoffs = input.handoffs ?? [];
+  for (const handoff of handoffs) {
+    const unsuccessful = handoff.retryCount + handoff.rejectedCount;
+    if (handoff.count >= 3 && handoff.artifactCount === 0 && unsuccessful === 0) {
+      addRecommendation({
+        kind: "remove_handoff",
+        priority: "low",
+        risk: "medium",
+        title: `Review redundant handoff ${handoff.sourceStageId} → ${handoff.destinationStageId}`,
+        target: `${input.workflowId}/${handoff.sourceStageId}+${handoff.destinationStageId}`,
+        stageIds: [handoff.sourceStageId, handoff.destinationStageId],
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [`${handoff.count} handoff(s) transferred no artifacts and had no retries or rejections.`, "Combining adjacent low-value boundaries may reduce coordination latency."],
+        recommendation: "Evaluate combining the stages or removing the empty handoff in a reviewed overlay.",
+        overlayHint: `Prototype a local overlay without the ${handoff.sourceStageId} → ${handoff.destinationStageId} boundary.`,
+        evidence: { runsAnalyzed: input.runsAnalyzed, handoffCount: handoff.count, retryCount: handoff.retryCount, rejectedCount: handoff.rejectedCount, averageLatencyMs: handoff.averageDurationMs }
+      });
+    }
+  }
+
+  // Omitted dependency metadata represents a legacy/unknown graph, not an independent root.
+  const roots = input.stages.filter((stage) => Array.isArray(stage.dependsOn) && stage.dependsOn.length === 0);
+  if (input.runsAnalyzed >= 3 && roots.length >= 2) {
+    addRecommendation({
+      kind: "parallelize_stages",
+      priority: "medium",
+      risk: "medium",
+      title: `Parallelize ${roots.map((stage) => stage.id).join(" and ")}`,
+      target: input.workflowId,
+      stageIds: roots.map((stage) => stage.id),
+      preferredScope: "project_overlay",
+      approvalRequired: true,
+      rationale: ["Multiple stages declare no dependencies and can be evaluated as an independent parallel branch.", `${input.runsAnalyzed} completed run(s) provide a comparison baseline.`],
+      recommendation: "Run the independent stages concurrently, preserving all downstream gates and policy checks.",
+      overlayHint: "Create a reviewed project-local parallel branch and compare duration, output quality, and handoff retries.",
+      evidence: { runsAnalyzed: input.runsAnalyzed }
+    });
+  }
+
+  const stageText = input.stages.map((stage) => `${stage.id} ${stage.agentId}`).join(" ");
+  for (const specialist of [
+    { pattern: /ux|design|accessibility/i, id: "ux-reviewer", label: "UX" },
+    { pattern: /security|threat/i, id: "security-reviewer", label: "security" },
+    { pattern: /approval|review-gate/i, id: "approval-gate", label: "approval" }
+  ]) {
+    if (input.runsAnalyzed >= 3 && !specialist.pattern.test(stageText)) {
+      addRecommendation({
+        kind: "add_stage",
+        priority: "low",
+        risk: "medium",
+        title: `Review whether a ${specialist.label} stage is missing`,
+        target: input.workflowId,
+        stageIds: [],
+        agentTypeId: specialist.id,
+        preferredScope: "project_overlay",
+        approvalRequired: true,
+        rationale: [`No ${specialist.label} stage appears in the observed dynamic shape.`, "Adding a specialist boundary is structural and therefore always requires review."],
+        recommendation: `Assess the run boundary and add a ${specialist.label} stage when the goal's risk profile requires it.`,
+        overlayHint: `Draft a reviewed project-local ${specialist.label} stage without weakening existing verification.`,
+        evidence: { runsAnalyzed: input.runsAnalyzed }
+      });
+    }
+  }
+
   const sortedRecommendations = recommendations.sort((left, right) => priorityRank(left.priority) - priorityRank(right.priority) || left.id.localeCompare(right.id));
   return {
     kind: "agentflow_workflow_shape_optimization",
@@ -1002,6 +1173,7 @@ export function formatWorkflowShapeOptimizationReport(report: WorkflowShapeOptim
         `- ${item.id} [${item.priority}] ${item.kind}: ${item.title}`,
         `  - Target: ${item.target}`,
         `  - Scope: ${item.preferredScope}`,
+        `  - Risk/application: ${item.risk}/${item.application}`,
         `  - Approval required: ${item.approvalRequired ? "yes" : "no"}`,
         `  - Recommendation: ${item.recommendation}`,
         `  - Overlay hint: ${item.overlayHint}`,
@@ -1043,6 +1215,8 @@ export function formatWorkflowShapeOptimizationMarkdown(report: WorkflowShapeOpt
         `- Priority: ${item.priority}`,
         `- Target: ${item.target}`,
         `- Preferred scope: ${item.preferredScope}`,
+        `- Risk: ${item.risk}`,
+        `- Application: ${item.application}`,
         item.agentTypeId ? `- Agent type: ${item.agentTypeId}` : "",
         `- Approval required: ${item.approvalRequired ? "yes" : "no"}`,
         "",

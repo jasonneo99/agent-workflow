@@ -67,6 +67,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   provider_override text,
   evaluation_metadata jsonb NOT NULL DEFAULT '{}',
   workflow_snapshot jsonb NOT NULL DEFAULT '{}',
+  workflow_definition_version text NOT NULL DEFAULT '1',
+  workflow_definition_hash text NOT NULL DEFAULT '',
+  construction_rationale jsonb NOT NULL DEFAULT '{}',
   executor_snapshot jsonb NOT NULL DEFAULT '{}',
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
@@ -102,6 +105,55 @@ CREATE TABLE IF NOT EXISTS action_receipts (
   metadata jsonb NOT NULL DEFAULT '{}',
   created_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS workflow_handoffs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  sender_agent_id text NOT NULL REFERENCES agents(id),
+  receiver_agent_id text NOT NULL REFERENCES agents(id),
+  source_stage_id text NOT NULL,
+  destination_stage_id text NOT NULL,
+  transferred_artifacts jsonb NOT NULL DEFAULT '[]',
+  context_summary text NOT NULL,
+  acceptance_criteria jsonb NOT NULL DEFAULT '[]',
+  status text NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'accepted', 'rejected', 'retrying', 'completed', 'failed')),
+  idempotency_key text NOT NULL,
+  proposed_at timestamptz NOT NULL DEFAULT now(),
+  accepted_at timestamptz,
+  rejected_at timestamptz,
+  retrying_at timestamptz,
+  completed_at timestamptz,
+  failed_at timestamptz,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_id, idempotency_key)
+);
+
+CREATE TABLE IF NOT EXISTS workflow_handoff_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  handoff_id uuid NOT NULL REFERENCES workflow_handoffs(id) ON DELETE CASCADE,
+  run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  status text NOT NULL CHECK (status IN ('proposed', 'accepted', 'rejected', 'retrying', 'completed', 'failed')),
+  actor_agent_id text REFERENCES agents(id),
+  note text,
+  metadata jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS workflow_handoff_receipts (
+  handoff_id uuid NOT NULL REFERENCES workflow_handoffs(id) ON DELETE CASCADE,
+  receipt_id uuid NOT NULL REFERENCES action_receipts(id) ON DELETE CASCADE,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (handoff_id, receipt_id)
+);
+
+CREATE INDEX IF NOT EXISTS workflow_handoffs_run_status_idx
+ON workflow_handoffs(run_id, status, proposed_at);
+
+CREATE INDEX IF NOT EXISTS workflow_handoff_events_handoff_created_idx
+ON workflow_handoff_events(handoff_id, created_at);
+
+CREATE UNIQUE INDEX IF NOT EXISTS workflow_handoff_events_one_proposal_idx
+ON workflow_handoff_events(handoff_id) WHERE status = 'proposed';
 
 CREATE TABLE IF NOT EXISTS action_approvals (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
