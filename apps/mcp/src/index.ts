@@ -204,6 +204,35 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_context_status",
+  {
+    title: "AgentFlow Context Gateway operator status",
+    description: "Inspect body-free savings, cache health, host readiness, calibration, and pending generation plans.",
+    inputSchema: { project: z.string(), json: z.boolean().optional() }
+  },
+  async ({ project, json }) => {
+    const args = ["context-status", "--project", project];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_calibrate",
+  {
+    title: "AgentFlow repository context calibration",
+    description: "Run a versioned repository holdout, compare the prior baseline, and record review-required threshold proposals without changing policy.",
+    inputSchema: { project: z.string(), corpus: z.string().optional(), json: z.boolean().optional() }
+  },
+  async ({ project, corpus, json }) => {
+    const args = ["context-calibrate", "--project", project];
+    if (corpus) args.push("--corpus", corpus);
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 180_000 }));
+  }
+);
+
+server.registerTool(
   "agentflow_context_holdout",
   {
     title: "AgentFlow Context Gateway holdout",

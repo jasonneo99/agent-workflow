@@ -178,6 +178,8 @@ npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
 npm run context-report -- -p . # Inspect privacy-safe shadow routing evidence
+npm run context-status -- -p . # Inspect gateway readiness, cache, calibration, and review queues
+npm run context-calibrate -- -p . # Run the versioned repository holdout and regression gate
 npm run context-route -- -p . --file src/example.ts --question "Where is this used?" # Preview a routed read
 npm run context-holdout -- -p . --cases .agent-workflow/evals/context-holdout.json # Gate enforcement with local evidence
 npm run context-host-setup -- --host claude -p . # Preview a Claude Code read hook

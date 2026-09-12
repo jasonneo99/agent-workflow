@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "name": "agent-workflow-context-gateway-v1",
+  "cases": [
+    { "id": "route-risk", "file": "packages/context-gateway/src/index.ts", "question": "Where does decideContextRoute assign route and risk?", "requiredTerms": ["decideContextRoute", "risk"], "intent": "discovery" },
+    { "id": "claude-read-hook", "file": "packages/context-host-adapters/src/index.ts", "question": "How does the Claude Read hook format a denial?", "requiredTerms": ["Claude", "Read"], "intent": "documentation" },
+    { "id": "codegen-hash", "file": "packages/governed-codegen/src/index.ts", "question": "Where does the codegen plan validate candidateHash?", "requiredTerms": ["candidateHash"], "intent": "test_inventory" },
+    { "id": "calibration-regression", "file": "packages/context-calibration/src/index.ts", "question": "How are regression and enforcementReady calculated?", "requiredTerms": ["regression", "enforcementReady"], "intent": "architecture" },
+    { "id": "cli-setup", "file": "README.md", "question": "Where are context-host-setup and context-codegen documented?", "requiredTerms": ["context-host-setup", "context-codegen"], "intent": "summarization" },
+    { "id": "holdout-safety", "file": "docs/context-gateway.md", "question": "How do holdout evidence and enforcement protect reads?", "requiredTerms": ["holdout", "enforcement"], "intent": "security" }
+  ]
+}

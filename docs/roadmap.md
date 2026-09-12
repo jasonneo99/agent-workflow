@@ -154,8 +154,9 @@ These milestones organize the detailed roadmap items below:
     - Current status: shadow measurement, project-isolated caching, configured
       provider delegation, aggregate reporting, holdout gates, conservative
       CLI/MCP enforcement, native Claude Code and Cursor read adapters, and
-      governed repetitive-code generation are implemented. Repository-scale
-      evaluation and operator visibility remain.
+      governed repetitive-code generation, operator reporting, and a versioned
+      repository calibration gate are implemented. Segmented threshold learning
+      and accepted-workflow outcome accounting remain.
 
 ## Current Execution Priority
 
@@ -163,20 +164,19 @@ This is the authoritative order for open roadmap work. Phase and milestone
 numbers describe product structure, not execution priority. Re-rank this list
 when dependencies, incidents, or new evidence materially change the order.
 
-1. **Add a Context Gateway operator view and controls.**
+1. **Learn segmented Context Gateway thresholds from reviewed evidence.**
    - Priority: high
-   - Why now: routing, host hooks, and staged generation are available, but
-     operators need one place to inspect savings, quality gates, cache health,
-     host readiness, and pending generation plans.
-   - Exit gate: the dashboard presents body-free gateway evidence and supports
-     safe preview-first actions without bypassing policy or approval gates.
-2. **Calibrate routing with a representative repository holdout corpus.**
+   - Why now: repository calibration and review-required proposals exist; the
+     next step is to segment evidence by project, language, file type, stage,
+     and model without automatically widening risk.
+   - Exit gate: reviewed proposals can be approved or rejected with rollback
+     evidence and never mutate shared policy implicitly.
+2. **Measure accepted-workflow cost and actual frontier input tokens.**
    - Priority: high
-   - Why next: the mechanisms are implemented; real repository tasks must now
-     prove quality, savings, latency, and escalation behavior before broader
-     enforcement.
-   - Exit gate: versioned holdout evidence covers supported task and risk
-     classes, records regressions, and proposes threshold changes for review.
+   - Why next: calibration proves retrieval behavior, while the product success
+     gate depends on real accepted-workflow cost and frontier-token outcomes.
+   - Exit gate: reports join routing receipts to accepted workflow outcomes and
+     distinguish measured savings from projections.
 3. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
@@ -471,7 +471,8 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Execution order: 1
   - Status: active; read routing, Claude Code and Cursor adapters, setup and
     diagnostics, and governed code generation are implemented and
-    evidence-gated. Repository-scale calibration and operator visibility remain.
+    evidence-gated. Segmented threshold learning and accepted-workflow outcome
+    accounting remain.
   - Add a provider-neutral context-routing policy in reusable YAML, with thin
     adapters for Claude Code hooks, Codex/tool policy integration, Cursor, CLI,
     MCP, and native Agent Workflow workers.
@@ -520,6 +521,11 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Done: require explicit approval, a named reviewer, target write-policy
     approval, and an allowed validation command before promotion; record the
     terminal outcome and restore or remove the target on failed validation.
+  - Done: aggregate body-free savings, cache health, host readiness, calibration,
+    and governed-generation review status through CLI, MCP, JSON API, and a
+    dedicated dashboard operator page.
+  - Done: expose pending governed-generation plans without returning candidate
+    bodies or review diffs through the operator-status API.
   - Phase 1 — shadow measurement: observe candidate reads without blocking and
     record eligible-token share, projected savings, latency, privacy boundary,
     and routing rationale without storing file bodies in telemetry.
@@ -538,6 +544,11 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Done: add project-local direct-versus-routed holdout evaluation with minimum
     coverage, required-term quality, citation, token-savings, and p95 latency
     gates; persist only aggregate results and a cases hash.
+  - Done: add a committed versioned six-case repository corpus spanning low- and
+    high-risk intents plus deterministic, direct, and frontier routes.
+  - Done: run repository files through a regression-aware calibration gate,
+    retain hashed case evidence, and produce review-required threshold proposals
+    without editing routing policy.
   - Phase 4 — conservative enforcement: block only eval-proven low-risk bulk
     reads, provide a visible escape hatch, automatically promote uncertain work,
     and retain immutable routing and handoff receipts.

@@ -54,6 +54,23 @@ export async function finishCodegenPlan(input: { planPath: string; plan: Codegen
   await fs.writeFile(input.planPath, `${JSON.stringify({ ...input.plan, status: input.status, completedAt: new Date().toISOString(), reviewedBy: input.reviewedBy, validation: input.validation, rollback: input.rollback }, null, 2)}\n`, { mode: 0o600 });
 }
 
+export async function listCodegenPlans(projectRoot: string, limit = 50): Promise<Array<CodegenPlan & { receipt: string }>> {
+  const directory = path.join(projectRoot, ".agent-workflow", "context-gateway", "codegen");
+  await assertContextProjectPath(projectRoot, directory);
+  let names: string[];
+  try { names = await fs.readdir(directory); } catch { return []; }
+  const plans: Array<CodegenPlan & { receipt: string }> = [];
+  for (const name of names.sort().reverse()) {
+    if (plans.length >= Math.max(1, limit) || !/^[a-f0-9-]{36}$/iu.test(name)) continue;
+    const receipt = path.join(directory, name, "plan.json");
+    try {
+      const plan = JSON.parse(await fs.readFile(receipt, "utf8")) as CodegenPlan;
+      if (plan.version === 1 && plan.id === name) plans.push({ ...plan, receipt: path.relative(projectRoot, receipt) });
+    } catch { /* ignore malformed local plans */ }
+  }
+  return plans;
+}
+
 function compactDiff(before: string, after: string): string {
   if (before === after) return "No changes.";
   const oldLines = before.split(/\r?\n/u);

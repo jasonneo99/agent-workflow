@@ -299,6 +299,25 @@ export class ProjectContextCache {
   }
 }
 
+export async function readContextCacheHealth(input: { projectRoot: string; projectId: string; now?: number }): Promise<{ entries: number; validEntries: number; expiredEntries: number; bytes: number }> {
+  const directory = path.join(path.resolve(input.projectRoot), ".agent-workflow", "context-gateway", "cache");
+  await assertContextProjectPath(input.projectRoot, directory);
+  let names: string[];
+  try { names = await fs.readdir(directory); } catch { return { entries: 0, validEntries: 0, expiredEntries: 0, bytes: 0 }; }
+  let entries = 0; let validEntries = 0; let expiredEntries = 0; let bytes = 0;
+  for (const name of names.filter((item) => item.endsWith(".json"))) {
+    try {
+      const target = path.join(directory, name);
+      const [raw, stat] = await Promise.all([fs.readFile(target, "utf8"), fs.stat(target)]);
+      const entry = JSON.parse(raw) as ContextCacheEntry;
+      entries += 1; bytes += stat.size;
+      if (entry.projectId === input.projectId && Date.parse(entry.expiresAt) > (input.now ?? Date.now())) validEntries += 1;
+      else expiredEntries += 1;
+    } catch { entries += 1; expiredEntries += 1; }
+  }
+  return { entries, validEntries, expiredEntries, bytes };
+}
+
 export type DelegatedContextClaim = {
   text: string;
   sourcePath: string;

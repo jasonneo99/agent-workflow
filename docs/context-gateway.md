@@ -53,6 +53,24 @@ project with project-id isolation, TTL, bounded entry size, and invalidation
 keys covering content, policy, processor, model, question class, and schema.
 Each route attempt writes a body-free local receipt.
 
+## Operator Status And Repository Calibration
+
+Use `context-status` for one body-free view of projected savings, cache health,
+host installation, holdout readiness, the latest repository calibration, and
+pending governed-generation reviews. The same report is available through MCP,
+`/api/context-gateway`, and the dashboard's **Context Gateway** page.
+
+```bash
+npm run context-status -- -p /path/to/project
+npm run context-calibrate -- -p /path/to/project \
+  --corpus evals/context-gateway-holdout.json
+```
+
+The versioned corpus references project files and expected terms; calibration
+receipts retain hashes and metrics rather than source bodies. Each run compares
+the newest prior result as a regression baseline. Any suggested routing
+threshold changes are marked `review-required` and never edit policy directly.
+
 ## Claude Code And Cursor Hooks
 
 Preview first, then merge a project hook without removing existing hooks:

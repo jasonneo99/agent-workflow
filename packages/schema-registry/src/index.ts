@@ -1,7 +1,7 @@
 import path from "node:path";
 
 export interface AgentWorkflowSchema {
-  id: "agent" | "workflow" | "workflow-handoff" | "project" | "schedules" | "bundle-state" | "bundle-pin" | "context-routing-policy" | "context-holdout";
+  id: "agent" | "workflow" | "workflow-handoff" | "project" | "schedules" | "bundle-state" | "bundle-pin" | "context-routing-policy" | "context-holdout" | "context-corpus";
   title: string;
   fileName: string;
   description: string;
@@ -71,6 +71,13 @@ export const agentWorkflowSchemas: AgentWorkflowSchema[] = [
     fileName: "context-holdout.schema.json",
     description: "Direct-versus-routed context quality, citation, token, and latency cases.",
     fileGlobs: ["evaluations/context-*.json", ".agent-workflow/evals/context-*.json"]
+  },
+  {
+    id: "context-corpus",
+    title: "Agent Workflow Repository Context Corpus",
+    fileName: "context-corpus.schema.json",
+    description: "Versioned repository-file context calibration cases.",
+    fileGlobs: ["evals/context-gateway-*.json", ".agent-workflow/evals/context-gateway-*.json"]
   }
 ];
 

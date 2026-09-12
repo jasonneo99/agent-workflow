@@ -118,9 +118,10 @@ import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
-import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
+import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readContextCacheHealth, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
-import { createCodegenPlan, finishCodegenPlan, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
+import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
+import { proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence } from "../../../packages/context-calibration/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -1870,6 +1871,56 @@ program
     const report = { projectId, fileHash: contextSha256(options.file), contentHash: contextSha256(content), intent, decision, enforcement, holdoutEvidenceApproved, executed: Boolean(routed), cacheStatus, cachePath: cachePath ? path.relative(projectDir, cachePath) : null, receipt: path.relative(projectDir, receipt), routed };
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else console.log([`Context route: ${decision.route} (${decision.risk} risk)`, `Policy action: ${enforcement.action} — ${enforcement.reason}`, `Executed: ${routed ? "yes" : "no"}; cache: ${cacheStatus}`, routed ? `Summary:\n${routed.summary}` : "Use --execute only after enforce mode and approved holdout evidence select a redirect.", `Receipt: ${path.relative(projectDir, receipt)}`].join("\n"));
+  });
+
+program
+  .command("context-status")
+  .description("Show the body-free Context Gateway operator status for a project")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; json?: boolean }) => {
+    const report = await loadContextOperatorReport(path.resolve(process.cwd(), options.project));
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log([
+      `Context Gateway status for ${report.projectName}`,
+      `Policy: ${report.policyMode}; holdout ready: ${report.holdoutApproved ? "yes" : "no"}`,
+      `Observations: ${report.efficiency.observations}; projected savings: ${report.efficiency.projectedSavingsPercent}%`,
+      `Cache: ${report.cache.validEntries}/${report.cache.entries} valid (${report.cache.bytes} bytes)`,
+      `Hosts: Claude ${report.hosts.claude ? "installed" : "not installed"}; Cursor ${report.hosts.cursor ? "installed" : "not installed"}`,
+      `Generation plans: ${report.codegen.awaitingReview} awaiting review, ${report.codegen.total} total`,
+      `Calibration: ${report.calibration ? `${report.calibration.cases} cases; ready=${report.calibration.enforcementReady}` : "not run"}`
+    ].join("\n"));
+  });
+
+program
+  .command("context-calibrate")
+  .description("Run a versioned repository holdout and record regression-aware calibration evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--corpus <path>", "versioned holdout corpus", "evals/context-gateway-holdout.json")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; corpus: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const corpusPath = path.isAbsolute(options.corpus) ? options.corpus : path.resolve(projectDir, options.corpus);
+    await assertContextProjectPath(projectDir, corpusPath);
+    const corpusRaw = await fs.readFile(corpusPath, "utf8");
+    const corpus = repositoryHoldoutCorpusSchema.parse(JSON.parse(corpusRaw));
+    const policy = await loadContextRoutingPolicy(projectDir);
+    const baseline = await readLatestCalibration(projectDir);
+    const calibration = await runRepositoryCalibration({ projectRoot: projectDir, corpus, corpusRaw, policy, baseline });
+    const proposal = proposeContextThresholds(calibration.report, policy);
+    const evidence = await writeCalibrationEvidence({ projectRoot: projectDir, report: calibration.report, cases: calibration.cases, proposal });
+    const report = { ...calibration.report, proposal, evidence: path.relative(projectDir, evidence) };
+    if (options.json) console.log(JSON.stringify(report, null, 2));
+    else console.log([
+      `Context calibration: ${report.corpus} (${report.cases} cases)`,
+      `Quality: ${(report.qualityPassRate * 100).toFixed(1)}%; citations: ${(report.citationPassRate * 100).toFixed(1)}%`,
+      `Token savings: ${report.tokenSavingsPercent}%; p95 added latency: ${report.p95AddedLatencyMs}ms`,
+      `Regression gate: ${report.regression.passed ? "pass" : "fail"}; enforcement ready: ${report.enforcementReady ? "yes" : "no"}`,
+      `Threshold proposals: ${report.proposal.changes.length} (review required; policy unchanged)`,
+      `Evidence: ${report.evidence}`
+    ].join("\n"));
+    if (!report.enforcementReady) process.exitCode = 1;
   });
 
 program
@@ -24817,6 +24868,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/context-gateway") {
+    const project = requestUrl.searchParams.get("project") ?? rootDir;
+    const report = await loadContextOperatorReport(await resolveLocalProjectRootUri(project));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/queue") {
     const queue = await listWorkflowQueue(100, {
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined
@@ -25964,6 +26023,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const aliasMergePlan = buildDashboardProjectAliasMergePlan(projects, identities);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProjectsHtml(projects, identities, aliasMergePlan));
+    return;
+  }
+
+  if (requestUrl.pathname === "/context-gateway") {
+    const projects = await listProjectStorageSummaries(100);
+    const selected = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects.find((item) => item.rootUri === rootDir)?.rootUri ?? rootDir;
+    const report = await loadContextOperatorReport(await resolveLocalProjectRootUri(selected));
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderContextGatewayHtml(report, projects, selected));
     return;
   }
 
@@ -37956,7 +38024,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Operate",
@@ -37985,6 +38053,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
         ["model-improvement", "/model-improvement", "Model Improve", "sparkles"],
         ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"],
+        ["context-gateway", "/context-gateway", "Context Gateway", "route"],
         ["roadmap", "/roadmap", "Roadmap", "clipboard"]
       ]
     },
@@ -38015,6 +38084,26 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label, iconName]) => `<a class="${active === id ? "active" : ""}" href="${href}">${iconLabel(iconName, label)}</a>`).join("")}</div>`;
     }).join("")}
   </nav>`;
+}
+
+function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextOperatorReport>>, projects: DashboardProjectSummary[], selected: string): string {
+  const options = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${project.rootUri === selected ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const plans = report.codegen.plans.map((plan) => `<tr><td>${escapeHtml(plan.id)}</td><td>${escapeHtml(plan.target)}</td><td>${escapeHtml(plan.status)}</td><td><code>${escapeHtml(plan.receipt)}</code></td></tr>`).join("") || `<tr><td colspan="4">No governed generation plans.</td></tr>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Context Gateway</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("context-gateway")}
+  <main><header><div><p class="eyebrow">Optimize</p><h1>Context Gateway</h1><p>Body-free operating evidence, readiness gates, and review queues.</p></div></header>
+  <section class="panel"><form method="get" action="/context-gateway"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
+  <section class="metrics">
+    ${metricCard("Projected Savings", `${report.efficiency.projectedSavingsPercent}%`, `${report.efficiency.projectedFrontierTokensAvoided} frontier tokens avoided`)}
+    ${metricCard("Evidence", report.efficiency.observations, `${report.efficiency.eligibleReads} eligible reads`)}
+    ${metricCard("Cache Health", `${report.cache.validEntries}/${report.cache.entries}`, `${report.cache.bytes} bytes; ${report.cache.expiredEntries} expired`)}
+    ${metricCard("Pending Review", report.codegen.awaitingReview, `${report.codegen.total} generation plans`)}
+  </section>
+  <section class="grid two"><article class="panel"><h2>Readiness</h2><dl><dt>Policy</dt><dd>${escapeHtml(report.policyMode)}</dd><dt>Holdout approved</dt><dd>${report.holdoutApproved ? "yes" : "no"}</dd><dt>Claude Code</dt><dd>${report.hosts.claude ? "installed" : "not installed"}</dd><dt>Cursor</dt><dd>${report.hosts.cursor ? "installed" : "not installed"}</dd></dl></article>
+  <article class="panel"><h2>Calibration</h2>${report.calibration ? `<p><strong>${escapeHtml(report.calibration.corpus)}</strong></p><p>${report.calibration.cases} cases · quality ${(report.calibration.qualityPassRate * 100).toFixed(1)}% · citations ${(report.calibration.citationPassRate * 100).toFixed(1)}% · savings ${report.calibration.tokenSavingsPercent}%</p><p>Regression ${report.calibration.regression.passed ? "passed" : "failed"}; enforcement ${report.calibration.enforcementReady ? "ready" : "not ready"}.</p>` : "<p>No repository calibration evidence yet.</p>"}</article></section>
+  <section class="panel"><h2>Governed generation plans</h2><table><thead><tr><th>ID</th><th>Target</th><th>Status</th><th>Receipt</th></tr></thead><tbody>${plans}</tbody></table></section>
+  <section class="panel"><h2>Safe actions</h2><p>Use <code>context-host-setup</code> without <code>--write</code> to preview hooks, and <code>context-calibrate</code> to write evidence. Threshold proposals remain review-required and never modify policy automatically.</p><p><a href="/api/context-gateway?project=${encodeURIComponent(selected)}">JSON status</a></p></section>
+  </main></body></html>`;
 }
 
 function renderFeedbackHtml(runId: string, report: CostQualityReport): string {
@@ -42546,6 +42635,30 @@ async function loadContextRoutingPolicy(projectDir?: string): Promise<ContextRou
     catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
   }
   return contextRoutingPolicySchema.parse(YAML.parse(await fs.readFile(path.join(rootDir, "policies", "context-routing.yaml"), "utf8")));
+}
+
+async function loadContextOperatorReport(projectDir: string) {
+  const project = await loadProjectConfig(projectDir);
+  const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
+  const [observations, cache, plans, calibration, policy, holdoutApproved] = await Promise.all([
+    readShadowObservations({ projectRoot: projectDir, projectId }),
+    readContextCacheHealth({ projectRoot: projectDir, projectId }),
+    listCodegenPlans(projectDir),
+    readLatestCalibration(projectDir),
+    loadContextRoutingPolicy(projectDir),
+    hasApprovedContextHoldout(projectDir)
+  ]);
+  const installed = async (host: ContextHost) => {
+    const definition = hostHookDefinition(host);
+    try { return (await fs.readFile(path.join(projectDir, definition.relativePath), "utf8")).includes("agentflow context-hook"); } catch { return false; }
+  };
+  const [claude, cursor] = await Promise.all([installed("claude"), installed("cursor")]);
+  const planSummaries = plans.map(({ id, createdAt, target, status, provider, receipt }) => ({ id, createdAt, target, status, provider, receipt }));
+  return {
+    version: 1, projectName: project.project.name, projectId, policyMode: policy.mode, holdoutApproved,
+    efficiency: buildContextEfficiencyReport(observations), cache, hosts: { claude, cursor }, calibration,
+    codegen: { total: plans.length, awaitingReview: plans.filter((item) => item.status === "awaiting-review").length, plans: planSummaries }
+  };
 }
 
 function parseContextHost(value: string): ContextHost {

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://agent-workflow.dev/schemas/context-corpus.schema.json",
+  "title": "Agent Workflow Repository Context Corpus",
+  "type": "object",
+  "required": ["version", "name", "cases"],
+  "properties": {
+    "version": { "const": 1 },
+    "name": { "type": "string", "minLength": 1 },
+    "cases": {
+      "type": "array",
+      "minItems": 6,
+      "items": {
+        "type": "object",
+        "required": ["id", "file", "question", "requiredTerms", "intent"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "file": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "requiredTerms": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+          "intent": { "enum": ["discovery", "summarization", "documentation", "test_inventory", "editing", "debugging", "concurrency", "security", "authorization", "migration", "public_api", "architecture", "safety_critical", "unknown"] }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

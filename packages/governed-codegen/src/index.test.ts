@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createCodegenPlan, finishCodegenPlan, readCodegenPlan } from "./index.js";
+import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "./index.js";
 
 test("governed code generation stages a hashed candidate and review diff", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codegen-"));
@@ -12,6 +12,7 @@ test("governed code generation stages a hashed candidate and review diff", async
   assert.match(created.plan.diff, /\+ export const b/u);
   const loaded = await readCodegenPlan(root, created.plan.id);
   assert.equal(loaded.candidate, "export const b = 2;\n");
+  assert.equal((await listCodegenPlans(root))[0]?.id, created.plan.id);
   await finishCodegenPlan({ planPath: loaded.planPath, plan: loaded.plan, status: "promoted", reviewedBy: "reviewer", validation: "passed", rollback: "previous hash recorded" });
   await assert.rejects(() => readCodegenPlan(root, created.plan.id), /already terminal/u);
 });
