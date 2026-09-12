@@ -2,6 +2,8 @@
 
 Portable Agent Workflows is a local-first developer workflow kit for reusable agents, automatic agents, multi-stage workflows, MCP tools, dashboard controls, and enterprise local storage. The goal is to keep reusable workflow logic outside target projects while each project contributes compact local context through `AGENTS.md` and `.agent-workflow/`.
 
+Local release operations use the ignored `.agent-workflow/runtime.env`. Jarvis should verify `AGENTFLOW_RELEASE_SIGNING_KEY` points to the protected local Ed25519 key and run `npm run release:check` before any version bump or publish. Never print, copy, commit, or export the private key.
+
 ## Detected Stack
 
 - Package manager: npm
