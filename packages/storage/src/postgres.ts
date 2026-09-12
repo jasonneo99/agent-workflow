@@ -1481,6 +1481,7 @@ export async function replayWorkflowRun(input: {
         );
         taskIds[stage.id] = taskResult.rows[0].id;
       }
+      await createWorkflowHandoffsForRun(client, runId, workflow);
       const sourceRevision = Object.values(sourceRun.executorSnapshot ?? {})[0]?.revision;
       const replayExecutorSnapshots = sourceRevision ? createExecutorSnapshots({
         project: sourceRun.policySnapshot as ProjectConfig,
@@ -1521,6 +1522,33 @@ export async function replayWorkflowRun(input: {
       throw error;
     }
   });
+}
+
+async function createWorkflowHandoffsForRun(client: pg.Client, runId: string, workflow: WorkflowDefinition): Promise<void> {
+  for (let stageIndex = 0; stageIndex < workflow.stages.length; stageIndex += 1) {
+    const destination = workflow.stages[stageIndex];
+    const dependencies = destination.depends_on ?? (stageIndex === 0 ? [] : [workflow.stages[stageIndex - 1].id]);
+    for (const sourceStageId of dependencies) {
+      const source = workflow.stages.find((stage) => stage.id === sourceStageId);
+      if (!source) continue;
+      const handoff = await client.query<{ id: string }>(
+        `insert into workflow_handoffs (run_id, sender_agent_id, receiver_agent_id, source_stage_id, destination_stage_id,
+           transferred_artifacts, context_summary, acceptance_criteria, idempotency_key)
+         values ($1, $2, $3, $4, $5, '[]'::jsonb, $6, $7, $8)
+         on conflict (run_id, idempotency_key) do nothing
+         returning id::text`,
+        [runId, source.agent, destination.agent, source.id, destination.id,
+          `Transfer ${source.output} from ${source.id} to ${destination.id}.`,
+          JSON.stringify(destination.acceptance_criteria ?? [destination.goal]), `${source.id}:${destination.id}`]
+      );
+      if (!handoff.rows[0]) continue;
+      await client.query(
+        `insert into workflow_handoff_events (handoff_id, run_id, status, actor_agent_id, metadata)
+         values ($1, $2, 'proposed', $3, $4)`,
+        [handoff.rows[0].id, runId, source.agent, JSON.stringify({ generatedFromWorkflowDefinition: true })]
+      );
+    }
+  }
 }
 
 export interface ClaimedWorkflowTask {
@@ -1623,11 +1651,19 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            wt.agent_id as "agentId",
            a.display_name as "agentName",
            a.definition->>'prompt' as "agentPrompt",
-           wr.provider_override as "providerOverride",
+           coalesce(wr.provider_override, nullif((
+             select stage->'routing'->>'provider'
+             from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') stage
+             where stage->>'id' = wt.stage_id limit 1
+           ), 'default')) as "providerOverride",
            wt.worker_id as "workerId",
            wt.lease_expires_at::text as "leaseExpiresAt",
            nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
-           coalesce(wr.model_tier_override, a.definition->>'model_tier') as "modelTier"`
+           coalesce(wr.model_tier_override, (
+             select stage->'routing'->>'model_tier'
+             from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') stage
+             where stage->>'id' = wt.stage_id limit 1
+           ), a.definition->>'model_tier') as "modelTier"`
         ,
         [workerId, leaseSeconds, projectRootUri]
       );

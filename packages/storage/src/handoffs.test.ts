@@ -32,4 +32,6 @@ test("storage bootstrap and migration retain durable handoff history and workflo
   }
   assert.match(postgres, /for update/u);
   assert.match(postgres, /where ar\.id = \$2 and ar\.run_id = \$3/u);
+  assert.match(postgres, /stage->'routing'->>'provider'/u);
+  assert.match(postgres, /stage->'routing'->>'model_tier'/u);
 });

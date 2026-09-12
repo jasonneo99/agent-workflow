@@ -3,6 +3,7 @@ import test from "node:test";
 import { projectConfigSchema, workflowHandoffSchema } from "../../agent-registry/src/schemas.js";
 import {
   constructDynamicWorkflow,
+  definitionHash,
   selectWorkflowArchetype,
   stageTemplates,
   validateDynamicWorkflow,
@@ -75,6 +76,13 @@ test("rejects removal or tampering of mandatory controls", () => {
   assert.throws(() => validateDynamicWorkflow(plan, project), /definition hash/);
   const changedPolicy = projectConfigSchema.parse({ project: { name: "Dynamic fixture" }, policies: { require_receipts: false } });
   assert.throws(() => validateDynamicWorkflow(constructDynamicWorkflow({ goal: "Build an API", project, now: "2026-01-02T03:04:05.000Z" }), changedPolicy), /policy snapshot/);
+});
+
+test("rejects cyclic dynamic workflow dependencies", () => {
+  const plan = constructDynamicWorkflow({ goal: "Build an API", project, now: "2026-01-02T03:04:05.000Z" });
+  plan.stages[0].depends_on = [plan.stages.at(-1)!.id];
+  plan.dynamic!.definition_hash = definitionHash(plan);
+  assert.throws(() => validateDynamicWorkflow(plan, project), /dependency cycle/);
 });
 
 test("validates first-class handoff records", () => {

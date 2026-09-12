@@ -189,6 +189,7 @@ export function validateDynamicWorkflow(value: unknown, project: ProjectConfig):
   for (const item of workflow.stages) {
     if ((item.depends_on ?? []).some((dependency) => !ids.has(dependency) || dependency === item.id)) throw new Error(`Stage '${item.id}' has an invalid dependency.`);
   }
+  assertAcyclic(workflow);
   if (!workflow.stages.some((item) => item.pattern.type === "verifier")) throw new Error("Dynamic workflows require a verification stage.");
   return workflow;
 }
@@ -211,3 +212,17 @@ function sortValue(value: unknown): unknown { if (Array.isArray(value)) return v
 function sameMultiset(left: string[], right: string[]): boolean { return [...left].sort().join("\0") === [...right].sort().join("\0"); }
 function stageIdAt(ids: string[], index: number): string { const id = ids[index]; const occurrence = ids.slice(0, index + 1).filter((item) => item === id).length; return occurrence === 1 ? id : `${id}-${occurrence}`; }
 function parallelDependencies(ids: string[], index: number, group: string[]): string[] { const firstIndex = Math.min(...group.map((id) => ids.findIndex((template, candidateIndex) => stageIdAt(ids, candidateIndex) === id)).filter((item) => item >= 0)); return firstIndex <= 0 || index < firstIndex ? [] : [stageIdAt(ids, firstIndex - 1)]; }
+function assertAcyclic(workflow: WorkflowDefinition): void {
+  const dependencies = new Map(workflow.stages.map((stage) => [stage.id, stage.depends_on ?? []]));
+  const visiting = new Set<string>();
+  const visited = new Set<string>();
+  const visit = (id: string): void => {
+    if (visiting.has(id)) throw new Error(`Dynamic workflow contains a dependency cycle at '${id}'.`);
+    if (visited.has(id)) return;
+    visiting.add(id);
+    for (const dependency of dependencies.get(id) ?? []) visit(dependency);
+    visiting.delete(id);
+    visited.add(id);
+  };
+  for (const id of dependencies.keys()) visit(id);
+}
