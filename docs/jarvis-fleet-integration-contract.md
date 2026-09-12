@@ -4,6 +4,10 @@ Version 1.0 defines the boundary between Jarvis Voice, Jarvis Orchestrator,
 Agent Workflow, and Fleet Control. It does not deploy or enable a network
 listener.
 
+For the operating model, memory boundaries, interaction patterns, and rollout
+sequence built on this contract, see
+[Agent Workflow + Jarvis Shared Brain](agent-workflow-jarvis-shared-brain.md).
+
 ## Responsibilities
 
 - Jarvis Voice captures intent and presents bounded status. It never converts

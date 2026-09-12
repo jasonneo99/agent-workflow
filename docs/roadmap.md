@@ -97,7 +97,9 @@ These milestones organize the detailed roadmap items below:
      workflow-shape optimizer, project discovery, daemon heartbeat/status,
      approval autopilot integration, and owned learning files.
    - Current status: daemon can observe, propose, and autonomously update
-     Agent Workflow-owned local learning state across registered projects.
+     Agent Workflow-owned local learning state across registered projects;
+     the next track adds event-driven scheduling, budgets, simulation, and
+     explainable workflow optimization.
 
 7. **Self-Improving Agent System**
    - Workstreams: agent-improvement reports, YAML patch previews, holdout eval
@@ -120,9 +122,10 @@ These milestones organize the detailed roadmap items below:
      envelopes, route previews, queue endpoint, approval/action envelopes,
      auth hardening, rate limits, redacted audit logs, network binding defaults,
      and reverse-proxy/TLS guidance.
-   - Current status: queueing is gated and approval/action preview exists;
-     next improvement is the mutation-disabled remote approval/action endpoint
-     behind explicit server-mode/auth/role/idempotency/receipt gates.
+   - Current status: the local-first server contract, authenticated queue and
+     approval/action endpoints, shared-state proof, auth hardening, bounded
+     streaming, audit receipts, and disabled-by-default mutation gates are
+     implemented and acceptance-verified.
 
 10. **Production-Ready Developer Workflow**
     - Workstreams: one-command dev startup, LaunchAgent durability, worker
@@ -142,8 +145,9 @@ These milestones organize the detailed roadmap items below:
     - Workstreams: Codex, Cursor, VS Code, CLI, MCP stdio, future hosted/server
       clients, local models, OpenAI, Bedrock, BYO gateways, and open-source docs
       for integration examples.
-    - Current status: MCP/client integrations work but need continued transport
-      diagnostics and reload guidance for Codex-side stdio failures.
+   - Current status: MCP/client integrations include lifecycle diagnostics,
+     compact recovery packages, and CLI fallbacks; reconnecting a closed private
+     stdio pipe remains owned by the client runtime.
 
 ## Phase 1: Shared Platform Hardening
 
@@ -598,7 +602,7 @@ foundation is complete.
   - Done: add worker-pool defaults to project config so local workers can inherit project-specific limits, concurrency, lease timeouts, and scope.
   - Done: add named worker-pool supervision profiles for starting multiple lanes from one command.
 
-- [ ] Governed server mode.
+- [x] Governed server mode.
   - Keep local-only CLI, MCP stdio, dashboard, worker, and storage as the default developer workflow.
   - Add an explicit authenticated HTTP/server mode for teams that want a shared Agent Workflow runtime on a trusted network.
   - Treat shared storage as the state plane for server mode: a trusted LAN/Tailscale host such as shared host can run Postgres, Redis, and MinIO while client machines keep using CLI, MCP, and IDE integrations.
@@ -664,7 +668,8 @@ foundation is complete.
   - Done: promote the accumulated Agent Workflow feature batch with multi-project daemon governance, learning-to-roadmap controls, whole-computer Spotlight discovery, MCP session diagnostics, live neuron-style graph animation, and ten focused reusable workflows.
   - Done: enforce explicit all-project daemon mode and run-limit caps so project settings can only make a run more restrictive; validate an observe-only 13-project canary with zero autonomous applications.
   - Done: add a bounded read-only `/api/workflow-graph-events` SSE feed with stable snapshot ids, heartbeats, browser reconnect/backoff, and polling fallback; validate three distinct snapshots from a deterministic no-write workflow run.
-  - Next: add resumable event cursors and targeted stage deltas so reconnecting graph clients can avoid full snapshot replay while preserving bounded polling compatibility.
+  - Done: add resumable event cursors, targeted stage/run deltas, bounded in-memory replay, visible live/reconnecting/polling state, and the full JSON snapshot compatibility fallback.
+  - Done: pass the final local-first acceptance audit with shared Postgres, Redis, and MinIO reachable; registered-project routing available; request-size and rate controls bounded; remote mutations gated; and the dashboard, worker, and learning daemon healthy.
 
 - [x] High priority: shared storage migration utility.
   - This is now the state-plane implementation path for governed server mode, not a detached storage feature.
@@ -764,18 +769,46 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: implemented as a read-only dashboard generated from `docs/roadmap.md`.
   - Scope: expose all checklist tasks, next actions, bugs, milestone links, and source line references without creating a second roadmap database.
 
-- [ ] Bug: recurring Codex MCP transport closes during planning or approval calls.
+- [x] Bug: recurring Codex MCP transport closes during planning or approval calls.
   - Milestone: 12 Ecosystem Fit
   - Priority: high
   - Severity: high
-  - Status: open
+  - Status: resolved within the Agent Workflow boundary; residual client-owned stdio reconnection remains an upstream Codex limitation.
   - Permanent fix direction: add supervised and reconnectable MCP lifecycle diagnostics, keep stdio payloads compact, record exact launcher exit and stderr evidence, surface recovery actions in Runtime Monitor and Roadmap dashboards, and preserve CLI fallback receipts when the client-owned stdio pipe drops.
   - Current mitigation: Agent Workflow services continue running independently, the CLI fallback can complete local work, and restarting the Codex task/app creates a fresh private MCP subprocess.
   - Recovery package: `npm run runtime-monitor -- --check-mcp --write-mcp-recovery` writes `.agent-workflow/runtime/mcp/recovery/mcp-recovery.md`, `.agent-workflow/runtime/mcp/recovery/mcp-recovery.json`, and `.agent-workflow/runtime/mcp/recovery/mcp-client-recovery.sh` for repeatable local recovery without secrets or prompt bodies.
   - Done: surface the recovery package command and Runtime Monitor links directly on the Roadmap dashboard while this bug remains open.
   - Done: log metadata-only MCP command spans so runtime diagnostics can show whether the stdio pipe closed before, during, or after a launched Agent Workflow CLI operation.
   - Done: correlate a bounded lifecycle window into per-process MCP sessions with parent PID, start/end time, exit code, command-span counts, incomplete-command counts, and clean/crashed/incomplete/active outcomes; surface the summary and session table in Runtime Monitor JSON/UI and preserve it in recovery packages.
+  - Done: verify the launcher pipeline, compiled MCP server, metadata-only lifecycle evidence, recovery package, CLI fallback, and low-risk stale-session cleanup guidance while preserving the rule that Agent Workflow cannot reconnect a client-owned pipe.
   - Boundary: Agent Workflow can detect, diagnose, record, and guide recovery, but Codex owns the private stdio transport and may still close it outside this repository.
+
+- [ ] Task: evolve the learning daemon into a proactive, explainable workflow optimizer.
+  - Milestone: 6 Local Learning Daemon
+  - Priority: high
+  - Status: planned
+  - Scope: improve scheduling, evidence quality, workflow-shape recommendations, resource budgets, and operator trust without granting the daemon new permissions.
+  - [ ] Add event-driven wakeups for completed runs, new feedback, failed evaluations, stale approvals, and degraded provider health while retaining bounded periodic reconciliation.
+  - [ ] Add per-project work budgets, quiet hours, backpressure, fairness, and duplicate-work suppression across the managed project fleet.
+  - [ ] Rank proposed improvements by evidence strength, expected quality/cost impact, reversibility, risk, and confidence; show why an item was deferred.
+  - [ ] Add simulation and shadow modes that replay recommendations against historical runs before promotion.
+  - [ ] Let the daemon recommend workflow-stage, handoff, context, routing, and evaluation changes, but keep permission expansion and high-risk structural changes reviewable.
+  - [ ] Add promotion, rollback, and regression receipts for every autonomously applied low-risk optimization.
+  - [ ] Publish a concise fleet optimizer health view with queue depth, project fairness, budget consumption, recommendation outcomes, and stale-evidence warnings.
+
+- [ ] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: planned
+  - Scope: use Jarvis as the conversational intent and presentation layer while Agent Workflow remains the durable planning, policy, execution, evidence, and learning layer.
+  - [x] Document responsibilities, request flow, memory boundaries, approval behavior, example interactions, and rollout guidance in `docs/agent-workflow-jarvis-shared-brain.md`.
+  - [x] Define the open-source/personal boundary: portable schemas, orchestration, safety, and synthetic adapters stay here; persona, private memory, real fleet topology, secrets, project mappings, and deployment overlays stay private.
+  - [ ] Create a separately access-controlled private companion repository for personal Jarvis, Fleet, memory, and deployment add-ons; consume tagged Agent Workflow releases through one-way public extension contracts.
+  - [ ] Add a bounded Jarvis intent envelope that separates conversation, project selection, workflow goals, and requested autonomy from executable actions.
+  - [ ] Add shared-brain status summaries for active goals, recent decisions, open approvals, learned preferences, and degraded services without exposing raw private memory.
+  - [ ] Let Jarvis preview orchestrator plans and explain daemon recommendations before the user approves material changes.
+  - [ ] Add end-to-end canaries for ask, plan, execute, observe, approve, recover, and summarize paths through the existing authenticated Fleet bridge.
+  - [ ] Keep Fleet Control separately signed and allowlisted for host actions; conversational context must never imply approval or expand project policy.
 
 - [x] Task: link every future roadmap task or bug to a milestone.
   - Milestone: 3 Developer Dashboard

@@ -76,3 +76,20 @@ Before contributing a change, ask:
 - Does it preserve dry-run or explicit-approval behavior for risky actions?
 
 If the answer is unclear, keep the change project-local first and promote only the generalized pattern later.
+
+## Private Companion Repositories
+
+Personal or product add-ons may live in a separate private repository that
+depends on a tagged Agent Workflow release. Keep the dependency one-way: the
+private add-on imports public contracts and extension points, while this open
+source repository never imports private code, configuration, data, or secrets.
+
+A private Jarvis companion can own persona and voice behavior, personal memory,
+real fleet topology, private project mappings, signing and deployment overlays,
+domain skills, and unsanitized operational evidence. The open framework may own
+only the generic intent envelopes, handoff schemas, policy interfaces, redacted
+status views, synthetic fixtures, and portable adapter contracts.
+
+Promote a private improvement upstream only after replacing personal names and
+infrastructure with neutral fixtures, removing private data and credentials,
+and proving the result is useful to an unrelated Agent Workflow installation.

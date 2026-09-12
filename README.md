@@ -333,6 +333,7 @@ and MCP tool list independently of the Codex private stdio connection.
 - [Contract Tests](docs/contract-tests.md): verify custom agents, workflows, and provider adapters
 - [Model Improvement Workflow](docs/model-improvement.md): diagnose quality and cost issues without exporting private data by default
 - [Model Improvement Walkthrough](docs/model-improvement-walkthrough.md): follow the local feedback, comparison, and promotion-note loop end to end
+- [Agent Workflow + Jarvis Shared Brain](docs/agent-workflow-jarvis-shared-brain.md): use Jarvis as the conversational layer over governed workflows, durable evidence, learning, approvals, and signed fleet actions
 - [Contributing](CONTRIBUTING.md): local checks, contribution boundaries, and PR guidance
 - [Security Policy](SECURITY.md): responsible disclosure, scope, and local automation safety boundaries
 - [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing
