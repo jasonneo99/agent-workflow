@@ -11,6 +11,12 @@ auto-approval, and application-plan construction live in
 `packages/learning-governance/`. CLI and dashboard entry points consume that
 shared policy contract so they cannot silently diverge.
 
+Learning report evidence aggregation now lives in `packages/learning-evidence/`:
+failed-run selection, repeated-stage failure patterns, routing/cost opportunity
+selection, route-feedback grouping, evaluation-gap analysis, and proposal-preview
+counts. The CLI remains responsible only for loading storage-backed inputs and
+assembling the stable report envelope.
+
 Repository maintenance reports every production source file over 1,000 lines.
 Files over 2,000 lines are warnings; files between 1,001 and 2,000 lines are
 informational. Size is a review trigger, not an automatic failure: a split must

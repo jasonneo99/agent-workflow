@@ -29,6 +29,7 @@ import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, 
 import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.js";
 import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
 import { buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals, type LearningApplicationAction, type LearningApplicationPlan, type LearningApprovalDecisionResult, type LearningApprovalItem, type LearningApprovalQueue, type LearningApprovalStatus, type LearningProposal, type LearningProposalKind, type LearningProposalPriority, type LearningProposalSet, type LearningRiskLevel } from "../../../packages/learning-governance/src/index.js";
+import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buildProposalPreview, selectFailedRuns, summarizeRouteFeedback } from "../../../packages/learning-evidence/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -15590,54 +15591,15 @@ async function loadLearningReport(input: {
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit });
   const scorecard = await loadPreferenceScorecard({ projectDir, limit });
   const proposals = buildTuningProposals(scorecard);
-  const routeFeedback = summarizeLearningRouteFeedback(await readRouteDecisionFeedbackLog(projectDir));
+  const routeFeedback = summarizeRouteFeedback((await readRouteDecisionFeedbackLog(projectDir)).events) as LearningRouteFeedbackSummary;
   const stageHealth = runs.length ? await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) }) : [];
   const evaluationRuns = runs.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
   const reports = (await Promise.all(runs.slice(0, Math.min(runs.length, 20)).map((run) => loadCostQualityReport(run.id)))).filter((report): report is CostQualityReport => report !== null);
-  const failedRuns = runs
-    .filter((run) => run.status === "failed")
-    .slice(0, 10)
-    .map((run) => ({
-      runId: run.id,
-      workflowId: run.workflowId,
-      task: run.task,
-      startedAt: run.startedAt
-    }));
-  const repeatedFailurePatterns = stageHealth
-    .filter((stage) => stage.failedTasks > 0)
-    .map((stage) => ({
-      workflowId: inferStageWorkflowId(runs, reports, stage.stageId),
-      stageId: stage.stageId,
-      agentId: inferStageAgentId(reports, stage.stageId),
-      failedTasks: stage.failedTasks,
-      totalTasks: stage.totalTasks,
-      failureRate: stage.totalTasks > 0 ? Number((stage.failedTasks / stage.totalTasks).toFixed(3)) : 0
-    }))
-    .sort((left, right) => right.failedTasks - left.failedTasks || right.failureRate - left.failureRate)
-    .slice(0, 10);
-  const costOpportunities = scorecard.groups
-    .filter((group) => group.recommendation !== "Keep current routing." || group.fallbackRate > 0 || (group.averageLatencyMs ?? 0) > 30_000)
-    .sort((left, right) => right.feedbackScore - left.feedbackScore || right.fallbackRate - left.fallbackRate)
-    .slice(0, 10)
-    .map((group) => ({
-      workflowId: group.workflowId,
-      stageId: group.stageId,
-      agentId: group.agentId,
-      providerId: group.providerId,
-      modelTier: group.modelTier,
-      runs: group.runs,
-      fallbackRate: group.fallbackRate,
-      averageLatencyMs: group.averageLatencyMs,
-      recommendation: group.recommendation
-    }));
-  const proposalKinds = countStrings(proposals.proposals.map((proposal) => proposal.kind));
-  const evalGaps: string[] = [];
-  if (runs.length === 0) evalGaps.push("Run at least one workflow before learning can identify patterns.");
-  if (Object.values(scorecard.feedbackCounts).reduce((sum, value) => sum + value, 0) === 0) evalGaps.push("Record accepted, revised, or rejected feedback so learning can personalize recommendations.");
-  if (evaluationRuns.length === 0) evalGaps.push("Run or create an evaluation suite before promoting routing, prompt, or context-budget changes.");
-  if (failedRuns.length > 0 && repeatedFailurePatterns.length === 0) evalGaps.push("Failed runs exist, but stage-level health did not isolate a repeated failing stage yet.");
-  if (proposals.proposals.some((proposal) => proposal.kind === "feedback_needed")) evalGaps.push("Some routes need human feedback before the daemon can rank them confidently.");
-  if (!evalGaps.length) evalGaps.push("Learning evidence is ready for autonomous low/medium local optimization and high-risk approval review.");
+  const failedRuns = selectFailedRuns(runs);
+  const repeatedFailurePatterns = buildFailurePatterns(stageHealth, (stageId) => ({ workflowId: inferStageWorkflowId(runs, reports, stageId), agentId: inferStageAgentId(reports, stageId) }));
+  const costOpportunities = buildCostOpportunities(scorecard.groups);
+  const proposalPreview = buildProposalPreview(proposals.proposals);
+  const evalGaps = buildEvaluationGaps({ runs: runs.length, feedbackCount: Object.values(scorecard.feedbackCounts).reduce((sum, value) => sum + value, 0), evaluationRuns: evaluationRuns.length, failedRuns: failedRuns.length, failurePatterns: repeatedFailurePatterns.length, feedbackNeeded: proposals.proposals.some((proposal) => proposal.kind === "feedback_needed") });
   return {
     kind: "agentflow_learning_report",
     generatedAt: new Date().toISOString(),
@@ -15653,11 +15615,7 @@ async function loadLearningReport(input: {
     failedRuns,
     repeatedFailurePatterns,
     costOpportunities,
-    proposalPreview: {
-      total: proposals.proposals.length,
-      highPriority: proposals.proposals.filter((proposal) => proposal.priority === "high").length,
-      byKind: proposalKinds
-    },
+    proposalPreview,
     evalGaps,
     safeAutomaticActions: [
       "Read local run history, receipts, feedback, eval summaries, and queue status.",
@@ -15689,46 +15647,6 @@ async function loadLearningReport(input: {
       `npm run agentflow -- run-and-watch model-improvement --project ${shellQuote(projectDir)} --task "Improve local developer workflow quality and cost"`
     ]
   };
-}
-
-function summarizeLearningRouteFeedback(log: RouteDecisionFeedbackLog): LearningRouteFeedbackSummary {
-  const groups = new Map<string, LearningRouteFeedbackGroup>();
-  for (const event of log.events) {
-    const target = `${event.workflowId}/${event.stageId}/${event.agentId}`;
-    const route = `${event.providerId}/${event.modelTier}`;
-    const key = `${target}:${route}:${event.routeClass}`;
-    const existing = groups.get(key) ?? {
-      target,
-      route,
-      routeClass: event.routeClass,
-      total: 0,
-      helpful: 0,
-      costly: 0,
-      neutral: 0,
-      latestAt: null
-    };
-    existing.total += 1;
-    existing[event.rating] += 1;
-    existing.latestAt = latestIso(existing.latestAt, event.createdAt);
-    groups.set(key, existing);
-  }
-  const sorted = [...groups.values()].sort((left, right) =>
-    right.total - left.total ||
-    (right.latestAt ?? "").localeCompare(left.latestAt ?? "") ||
-    left.target.localeCompare(right.target)
-  );
-  const counts = countStrings(log.events.map((event) => event.rating));
-  return {
-    total: log.events.length,
-    counts,
-    latestAt: log.events.map((event) => event.createdAt).sort().at(-1) ?? null,
-    costlyGroups: sorted.filter((group) => group.costly > 0).sort((left, right) => right.costly - left.costly || right.total - left.total).slice(0, 8),
-    helpfulGroups: sorted.filter((group) => group.helpful > 0).sort((left, right) => right.helpful - left.helpful || right.total - left.total).slice(0, 8)
-  };
-}
-
-function latestIso(left: string | null, right: string): string {
-  return !left || right > left ? right : left;
 }
 
 function inferStageWorkflowId(runs: DashboardRunStatus[], reports: CostQualityReport[], stageId: string): string {

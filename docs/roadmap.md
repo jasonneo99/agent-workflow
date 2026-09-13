@@ -183,6 +183,10 @@ Completed learning-governance extraction: approval queue decisions and governed
 application-plan construction now share a tested package contract across CLI,
 dashboard, and daemon execution paths.
 
+Completed learning-evidence extraction: report contracts now use shared,
+independently tested aggregation for failures, stage health, routing cost,
+feedback, evaluation gaps, and proposal previews.
+
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
