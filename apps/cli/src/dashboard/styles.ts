@@ -50,16 +50,7 @@ export function dashboardCss(): string {
     .lifecycle-help { margin-top: 14px; border: 1px solid #e2e7f0; background: #f8fafc; padding: 12px; }
     .lifecycle-help summary { cursor: pointer; font-weight: 700; color: #172033; }
     .lifecycle-help pre { margin-bottom: 0; }
-    .side-nav { position: fixed; inset: 0 auto 0 0; width: var(--nav-width); background: #111827; color: #dbe4f0; padding: 14px; display: grid; align-content: start; gap: 12px; z-index: 10; overflow-y: auto; transition: width .18s ease, padding .18s ease; }
-    .nav-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; }
-    .nav-toggle { flex: 0 0 auto; width: 34px; height: 34px; min-height: 34px; padding: 0; border-color: #475569; background: #1f2937; color: #e2e8f0; font-size: 20px; line-height: 1; }
-    .nav-toggle:hover { background: #334155; border-color: #64748b; }
-    body.nav-collapsed { --nav-width: 64px; }
-    body.nav-collapsed .side-nav { padding-inline: 10px; overflow-x: hidden; }
-    body.nav-collapsed .nav-brand { justify-content: center; }
-    body.nav-collapsed .side-nav strong, body.nav-collapsed .primary-nav-link span:not(.icon), body.nav-collapsed .nav-disclosure, body.nav-collapsed .nav-children { display: none; }
-    body.nav-collapsed .side-nav a { justify-content: center; padding-inline: 8px; }
-    body.nav-collapsed .primary-nav-row { grid-template-columns: 1fr; }
+    .side-nav { position: fixed; inset: 0 auto 0 0; width: var(--nav-width); background: #111827; color: #dbe4f0; padding: 20px 14px; display: grid; align-content: start; gap: 12px; z-index: 10; overflow-y: auto; }
     .side-nav strong { color: white; font-size: 14px; margin: 0 0 2px; }
     .nav-section { display: grid; gap: 4px; }
     .nav-section span { color: #94a3b8; font-size: 10px; font-weight: 800; letter-spacing: 0; text-transform: uppercase; padding: 0 10px; }
@@ -533,7 +524,6 @@ export function dashboardCss(): string {
       main { width: 100%; margin-left: 0; padding: 94px 12px 24px; }
       .side-nav { right: 0; bottom: auto; width: auto; display: block; overflow: visible; padding: 10px 12px; }
       .side-nav strong { display: block; margin: 0; }
-      .nav-toggle { display: none; }
       .nav-menu-button { display: inline-flex; align-items: center; gap: 7px; color: #dbe4f0; }
       .dashboard-menu { display: none; position: absolute; inset: 58px 10px auto 10px; max-height: calc(100vh - 76px); overflow-y: auto; background: #111827; border: 1px solid #334155; border-radius: 8px; padding: 10px; box-shadow: 0 14px 30px rgba(2, 6, 23, .3); }
       .dashboard-menu.open { display: grid; }

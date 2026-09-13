@@ -37807,7 +37807,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
   ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
   const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
   return `<nav class="side-nav human-nav" aria-label="Dashboard navigation">
-    <div class="nav-brand"><strong>Agent Workflow</strong><button class="nav-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">&#171;</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div>
+    <div class="nav-brand"><strong>Agent Workflow</strong><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div>
     <div id="dashboard-menu" class="dashboard-menu">
       <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
     ${groups.map((group) => {
@@ -37815,26 +37815,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       return `<div class="nav-cluster ${activeGroup ? "active-group" : ""}"><div class="primary-nav-row"><a class="primary-nav-link ${activeGroup ? "active" : ""}" ${activeGroup ? 'aria-current="page"' : ""} href="${group.href}">${iconLabel(group.icon, group.label)}</a><button type="button" class="nav-disclosure" aria-label="Show ${escapeHtml(group.label)} pages" aria-expanded="${activeGroup ? "true" : "false"}" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${dashboardIcon("chevrons")}</button></div><div class="nav-children">${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}</div></div>`;
     }).join("")}
     </div>
-  </nav><script>
-    (() => {
-      const key = "agentflow.dashboard.navCollapsed";
-      const button = document.querySelector(".nav-toggle");
-      if (!(button instanceof HTMLButtonElement)) return;
-      const apply = (collapsed) => {
-        document.body.classList.toggle("nav-collapsed", collapsed);
-        button.setAttribute("aria-expanded", String(!collapsed));
-        button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
-        button.setAttribute("title", collapsed ? "Expand sidebar" : "Collapse sidebar");
-        button.innerHTML = collapsed ? "&#187;" : "&#171;";
-      };
-      apply(window.localStorage.getItem(key) === "1");
-      button.addEventListener("click", () => {
-        const collapsed = !document.body.classList.contains("nav-collapsed");
-        apply(collapsed);
-        window.localStorage.setItem(key, collapsed ? "1" : "0");
-      });
-    })();
-  </script>`;
+  </nav>`;
 }
 
 function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextOperatorReport>>, projects: DashboardProjectSummary[], selected: string): string {
