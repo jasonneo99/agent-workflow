@@ -5,7 +5,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 ## What it does
 
 - **25 specialist agents** — architecture, frontend, backend, security, UX, testing, model improvement, docs, and more
-- **9 composable workflows** — build features, review PRs, debug failures, improve model routing, check production readiness
+- **19 composable workflows** — build features, review PRs, debug failures, improve model routing, make architecture decisions, investigate performance, and check release readiness
 - **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
 - **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
 - **Adaptive routing** — send cheap stages to local/BYO models, promote stages from feedback, and use stronger providers where needed
@@ -13,6 +13,11 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 - **Multi-project governance** — read-only health, provider, policy-drift, queue, role, artifact lifecycle, and remediation reporting
 - **Trusted workflow bundles** — detached Ed25519 signatures, public-key trust policy, and tamper detection
+- **Dynamic multi-handoff planning** — construct policy-checked workflows from natural-language goals while preserving mandatory safety stages
+- **Context Intelligence Gateway** — route large reads through cited summaries, project-isolated caching, holdout gates, and exact-read escape hatches
+- **Proactive workflow optimization** — wake on evidence events, enforce project budgets and quiet hours, rank recommendations, simulate changes in shadow mode, and record promotion or rollback receipts
+- **Governed Jarvis integration** — exchange non-executable intent envelopes and bounded status summaries while separately signing and allowlisting Fleet host actions
+- **Repository-wide public/private boundary** — validate that code, prompts, tests, fixtures, docs, and release metadata remain portable and scrubbed
 
 ## Quick Start
 
@@ -147,7 +152,7 @@ Override per-tier models where the provider supports it, such as
 ```
 agents/          — Reusable agent cards (YAML)
 workflows/       — Multi-stage workflow definitions (YAML)
-packages/        — Runtime: model providers, context compiler, workflow engine
+packages/        — Runtime: providers, context gateway, dynamic workflows, optimizer, policy, storage
 apps/cli/        — CLI, dashboard, and background worker entry points
 apps/mcp/        — MCP server for IDE integration
 infra/           — Docker Compose for enterprise storage (Postgres, Redis, MinIO)
@@ -159,6 +164,7 @@ templates/       — Project initialization templates
 ```bash
 npm run setup                  # Interactive onboarding
 npm run check                  # Contributor checks before opening a PR
+npm run validate-boundary      # Reject personal, machine-specific, secret-shaped, or unscrubbed tracked content
 npm run release:check -- --allow-current-version # Verify release readiness without changing files
 npm run release:prepare -- --dry-run # Preview signed npm release prep
 npm run provider-check         # Verify model provider
@@ -183,7 +189,9 @@ npm run context-route -- -p . --file src/example.ts --question "Where is this us
 npm run context-holdout -- -p . --cases .agent-workflow/evals/context-holdout.json # Gate enforcement with local evidence
 npm run context-host-setup -- --host claude -p . # Preview a Claude Code read hook
 npm run context-host-setup -- --host cursor -p . # Preview a Cursor read hook
+npm run context-host-doctor -- -p . # Verify installed host hooks and gateway readiness
 npm run context-codegen -- -p . --spec "Generate tests" --reference tests/example.test.ts --target tests/new.test.ts
+npm run canary:dynamic         # Run a deterministic dynamic multi-handoff planning canary
 npm run index-project -- -p . --incremental # Refresh only changed files after a baseline exists
 npm run index-project -- -p . --incremental --since-commit origin/main # CI-style changed-file refresh
 npm run index-project -- -p . --incremental --watch # Keep local context warm
@@ -206,6 +214,7 @@ npm run dev:agentflow:launchd:uninstall # macOS: remove the LaunchAgent
 npm run agentflow -- learning-daemon --all-projects --mode apply-approved --once # Refresh learning state for all registered projects once
 npm run agentflow -- learning-action-receipts -p . --health # Inspect learning receipt health and duplicate pressure
 npm run agentflow -- learning-action-receipts -p . --compact # Backup and compact duplicate daemon-owned learning receipts
+npm run repository-maintenance -- -p . # Preview bounded daemon-owned repository hygiene and security fixes
 npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
 npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run worker -- --watch --project /path/to/project # Use project worker_pool defaults from .agent-workflow/project.yaml
@@ -341,6 +350,10 @@ and MCP tool list independently of the Codex private stdio connection.
 - [Model Improvement Workflow](docs/model-improvement.md): diagnose quality and cost issues without exporting private data by default
 - [Model Improvement Walkthrough](docs/model-improvement-walkthrough.md): follow the local feedback, comparison, and promotion-note loop end to end
 - [Agent Workflow + Jarvis Shared Brain](docs/agent-workflow-jarvis-shared-brain.md): use Jarvis as the conversational layer over governed workflows, durable evidence, learning, approvals, and signed fleet actions
+- [Jarvis–Fleet Integration Contract](docs/jarvis-fleet-integration-contract.md): authenticated envelopes, bounded responses, approval separation, and signed host actions
+- [Dynamic Workflows](docs/dynamic-workflows.md): reusable archetypes and policy-preserving on-the-fly workflow construction
+- [Context Intelligence Gateway](docs/context-gateway.md): cited summaries, cache isolation, holdout evidence, and enforcement modes
+- [Workflow Optimizer](docs/workflow-optimizer.md): daemon wakeups, budgets, ranking, simulation, receipts, health, and shared-brain contracts
 - [Contributing](CONTRIBUTING.md): local checks, contribution boundaries, and PR guidance
 - [Security Policy](SECURITY.md): responsible disclosure, scope, and local automation safety boundaries
 - [Release Guide](docs/release.md): contributor checks, maintainer signing, and Trusted Publishing
