@@ -37784,12 +37784,31 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
     }
   ] as const satisfies ReadonlyArray<{ label: string; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
   return `<nav class="side-nav" aria-label="Dashboard navigation">
-    <strong>Agent Workflow</strong>
+    <div class="nav-header"><strong>Agent Workflow</strong><button class="nav-toggle" type="button" aria-label="Collapse sidebar" aria-expanded="true" title="Collapse sidebar">&#171;</button></div>
     ${groups.map((group) => {
       const activeGroup = group.items.some(([id]) => id === active);
       return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label, iconName]) => `<a class="${active === id ? "active" : ""}" href="${href}">${iconLabel(iconName, label)}</a>`).join("")}</div>`;
     }).join("")}
-  </nav>`;
+  </nav><script>
+    (() => {
+      const key = "agentflow.dashboard.navCollapsed";
+      const button = document.querySelector(".nav-toggle");
+      if (!(button instanceof HTMLButtonElement)) return;
+      const apply = (collapsed) => {
+        document.body.classList.toggle("nav-collapsed", collapsed);
+        button.setAttribute("aria-expanded", String(!collapsed));
+        button.setAttribute("aria-label", collapsed ? "Expand sidebar" : "Collapse sidebar");
+        button.setAttribute("title", collapsed ? "Expand sidebar" : "Collapse sidebar");
+        button.innerHTML = collapsed ? "&#187;" : "&#171;";
+      };
+      apply(window.localStorage.getItem(key) === "1");
+      button.addEventListener("click", () => {
+        const collapsed = !document.body.classList.contains("nav-collapsed");
+        apply(collapsed);
+        window.localStorage.setItem(key, collapsed ? "1" : "0");
+      });
+    })();
+  </script>`;
 }
 
 function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextOperatorReport>>, projects: DashboardProjectSummary[], selected: string): string {
