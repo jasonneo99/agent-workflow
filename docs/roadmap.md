@@ -166,6 +166,12 @@ when dependencies, incidents, or new evidence materially change the order.
 
 Completed integration: optimizer dashboard control plane, optimizer approval records, durable evidence-event ingestion, fair multi-project scheduling, authenticated shared-brain APIs, and shared-brain lifecycle/security canaries.
 
+Completed daemon expansion: one supervised control plane now registers evidence,
+optimizer, action, runtime-maintenance, repository-steward, release/CI, security,
+and backup/recovery lanes. Each project can select an independent low, medium,
+or high autonomous risk ceiling for every lane without bypassing policy,
+validation, receipts, or the repository-wide open-source boundary.
+
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external

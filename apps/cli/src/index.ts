@@ -25,6 +25,7 @@ import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfi
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { authenticateSharedBrainRequest, createJarvisIntent, fairProjectOrder, optimizerDashboardReport, previewJarvisPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
+import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, type DaemonTrustSettings } from "../../../packages/daemon-control/src/index.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -6929,6 +6930,7 @@ type LearningSettings = {
   autonomousApplyMaxRisk: LearningRiskLevel;
   approvalAutopilotEnabled: boolean;
   approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
+  daemonTrustLevels: DaemonTrustSettings;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -23612,11 +23614,8 @@ async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promi
 
 async function learningAutonomousApplyMaxRisk(projectDir: string): Promise<LearningRiskLevel> {
   const override = process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK;
-  if (override) {
-    return parseLearningRiskLevel(override);
-  }
   const settings = await readLearningSettings(projectDir).catch(() => null);
-  return settings?.autonomousApplyMaxRisk ?? "medium";
+  return lowerRiskLevel(override ? parseLearningRiskLevel(override) : settings?.autonomousApplyMaxRisk ?? "medium", settings?.daemonTrustLevels["action-executor"] ?? "low");
 }
 
 async function learningAgentImprovementProjectLocalAutoApplyEnabled(projectDir: string): Promise<boolean> {
@@ -23645,11 +23644,13 @@ async function learningApprovalAutopilotEnabled(projectDir: string): Promise<boo
 
 async function learningApprovalAutopilotMaxRisk(projectDir: string): Promise<ApprovalAutopilotRisk> {
   const override = process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK;
-  if (override) {
-    return parseApprovalAutopilotRisk(override);
-  }
   const settings = await readLearningSettings(projectDir).catch(() => null);
-  return settings?.approvalAutopilotMaxRisk ?? parseApprovalAutopilotRisk(process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK);
+  return lowerRiskLevel(override ? parseApprovalAutopilotRisk(override) : settings?.approvalAutopilotMaxRisk ?? parseApprovalAutopilotRisk(process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK), settings?.daemonTrustLevels["action-executor"] ?? "low");
+}
+
+function lowerRiskLevel(left: LearningRiskLevel, right: LearningRiskLevel): LearningRiskLevel {
+  const levels: LearningRiskLevel[] = ["low", "medium", "high"];
+  return levels[Math.min(levels.indexOf(left), levels.indexOf(right))] ?? "low";
 }
 
 async function readLearningSettings(projectDir: string): Promise<LearningSettings> {
@@ -23667,7 +23668,8 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     agentImprovementProjectLocalAutoApply: typeof parsed.agentImprovementProjectLocalAutoApply === "boolean" ? parsed.agentImprovementProjectLocalAutoApply : true,
     autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
     approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
-    approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium"))
+    approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium")),
+    daemonTrustLevels: normalizeDaemonTrustSettings(parsed.daemonTrustLevels)
   };
 }
 
@@ -24641,7 +24643,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       agentImprovementProjectLocalAutoApply: form.get("agentImprovementProjectLocalAutoApply") === "on",
       autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
       approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
-      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium")
+      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium"),
+      daemonTrustLevels: normalizeDaemonTrustSettings(Object.fromEntries(daemonLanes.map((lane) => [lane.id, form.get(`daemonTrust.${lane.id}`)])))
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -29259,8 +29262,9 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   const autonomousApplyMaxRisk = learningSettings?.autonomousApplyMaxRisk ?? "medium";
   const approvalAutopilotEnabled = learningSettings?.approvalAutopilotEnabled ?? false;
   const approvalAutopilotMaxRisk = learningSettings?.approvalAutopilotMaxRisk ?? "medium";
+  const daemonTrustLevels = learningSettings?.daemonTrustLevels ?? defaultDaemonTrustSettings();
   const body = report
-    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, supervisor, projectPath)
+    ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels, supervisor, projectPath)
     : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
@@ -29328,7 +29332,7 @@ function renderDashboardProjectPathResolutionHtml(projectPath: DashboardProjectP
   `;
 }
 
-function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
+function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, daemonTrustLevels: DaemonTrustSettings, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
   const failureRows = report.repeatedFailurePatterns.map((pattern) => `
     <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
   `).join("");
@@ -29372,7 +29376,8 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It auto-applies low/medium-risk Agent Workflow-owned local optimization files by default, including project-local tuning overlays. High-risk source, provider, command, network, reusable bundle, and export changes still require approval.</p>
     </section>
-    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk) : ""}
+    ${renderDaemonControlHtml(report.projectDir, report.limit, workflowShape?.workflowId ?? "", daemonTrustLevels, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk)}
+    ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels) : ""}
     ${agentImprovement ? renderAgentImprovementHtml(agentImprovement, agentImprovementEval, agentImprovementPromotion) : ""}
     <section class="panel">
       <div class="section-heading"><div><h2>Autonomy Boundary</h2><span class="muted">The learning daemon should keep working automatically until an action becomes dangerous.</span></div></div>
@@ -29539,7 +29544,28 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
   `;
 }
 
-function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk): string {
+function renderDaemonControlHtml(project: string, limit: number, workflow: string, trust: DaemonTrustSettings, shapeAutoUpdate: boolean, agentAutoApply: boolean, autonomousMaxRisk: LearningRiskLevel, autopilotEnabled: boolean, autopilotMaxRisk: ApprovalAutopilotRisk): string {
+  const cards = daemonLanes.map((lane) => {
+    const options = (["low", "medium", "high"] as const).map((level) => `<option value="${level}"${trust[lane.id] === level ? " selected" : ""}>${level}</option>`).join("");
+    return `<div class="card"><h3>${escapeHtml(lane.name)}</h3><p>${escapeHtml(lane.purpose)}</p><p class="muted">${escapeHtml(lane.capabilities.join(" · "))}</p><label>Maximum autonomous risk<select name="daemonTrust.${escapeHtml(lane.id)}">${options}</select></label></div>`;
+  }).join("");
+  return `<section class="panel">
+    <div class="section-heading"><div><h2>Daemon Control Plane</h2><span class="muted">Eight supervised lanes with independent trust ceilings.</span></div><span class="status completed">configured</span></div>
+    <p class="warn-box">Trust is a maximum eligible risk level. It never bypasses project policy, command/write allowlists, validation, receipts, the open-source boundary, or destructive-action gates.</p>
+    <form method="post" action="/api/learning-settings">
+      <input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="limit" value="${escapeHtml(String(limit))}"><input type="hidden" name="workflow" value="${escapeHtml(workflow)}">
+      ${shapeAutoUpdate ? '<input type="hidden" name="workflowShapeAutoUpdate" value="on">' : ""}
+      ${agentAutoApply ? '<input type="hidden" name="agentImprovementProjectLocalAutoApply" value="on">' : ""}
+      <input type="hidden" name="autonomousApplyMaxRisk" value="${escapeHtml(autonomousMaxRisk)}">
+      ${autopilotEnabled ? '<input type="hidden" name="approvalAutopilotEnabled" value="on">' : ""}
+      <input type="hidden" name="approvalAutopilotMaxRisk" value="${escapeHtml(autopilotMaxRisk)}">
+      <div class="metric-grid">${cards}</div>
+      <div class="form-actions"><button type="submit">Save daemon trust levels</button></div>
+    </form>
+  </section>`;
+}
+
+function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, daemonTrustLevels: DaemonTrustSettings): string {
   const recommendationRows = report.recommendations.map((item) => `
     <tr>
       <td>${escapeHtml(item.id)}<br><span class="muted">${escapeHtml(item.kind)}</span></td>
@@ -29568,6 +29594,7 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
         <input type="hidden" name="workflow" value="${escapeHtml(report.workflowId)}">
         <input type="hidden" name="limit" value="${escapeHtml(String(report.runsAnalyzed || 50))}">
+        ${daemonLanes.map((lane) => `<input type="hidden" name="daemonTrust.${escapeHtml(lane.id)}" value="${escapeHtml(daemonTrustLevels[lane.id])}">`).join("")}
         <label class="checkbox-label">
           <input type="checkbox" name="workflowShapeAutoUpdate" value="on" ${autoUpdate ? "checked" : ""}>
           Autonomous optimizer writes learning-owned recommendation files
