@@ -211,7 +211,7 @@ function stableJson(value: unknown): string { return JSON.stringify(sortValue(va
 function sortValue(value: unknown): unknown { if (Array.isArray(value)) return value.map(sortValue); if (value && typeof value === "object") return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, sortValue(item)])); return value; }
 function sameMultiset(left: string[], right: string[]): boolean { return [...left].sort().join("\0") === [...right].sort().join("\0"); }
 function stageIdAt(ids: string[], index: number): string { const id = ids[index]; const occurrence = ids.slice(0, index + 1).filter((item) => item === id).length; return occurrence === 1 ? id : `${id}-${occurrence}`; }
-function parallelDependencies(ids: string[], index: number, group: string[]): string[] { const firstIndex = Math.min(...group.map((id) => ids.findIndex((template, candidateIndex) => stageIdAt(ids, candidateIndex) === id)).filter((item) => item >= 0)); return firstIndex <= 0 || index < firstIndex ? [] : [stageIdAt(ids, firstIndex - 1)]; }
+function parallelDependencies(ids: string[], index: number, group: string[]): string[] { const firstIndex = Math.min(...group.map((id) => ids.findIndex((_template, candidateIndex) => stageIdAt(ids, candidateIndex) === id)).filter((item) => item >= 0)); return firstIndex <= 0 || index < firstIndex ? [] : [stageIdAt(ids, firstIndex - 1)]; }
 function assertAcyclic(workflow: WorkflowDefinition): void {
   const dependencies = new Map(workflow.stages.map((stage) => [stage.id, stage.depends_on ?? []]));
   const visiting = new Set<string>();

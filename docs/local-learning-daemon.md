@@ -28,6 +28,9 @@ provider settings, or expose private data.
 ## Goals
 
 - Improve developer workflow quality, cost, latency, and reliability over time.
+- Continuously inspect repository hygiene and security, including duplicated
+  implementation blocks, oversized ownership surfaces, dynamic execution, and
+  likely committed credentials.
 - Learn from approved user feedback, run history, repeated failures, evaluation
   evidence, routing outcomes, and optional user-approved research notes.
 - Keep project-specific context and personalization inside each project.
@@ -103,6 +106,11 @@ the action changes behavior outside an ephemeral report.
 | Preview stale Agent Workflow MCP sessions from this checkout | Automatic |
 | Terminate old duplicate Agent Workflow MCP sessions when `AGENTFLOW_DAEMON_CLEANUP_STALE_MCP=on` and `AGENTFLOW_MCP_CLEANUP_MODE=auto-low-risk` | Automatic, low-risk only |
 | Reconcile queued/running workflow runs whose child tasks are already terminal | Automatic by default |
+| Scan repository hygiene and security and write `.agent-workflow/learning/repository-maintenance-receipt.json` | Automatic every tick |
+| Apply low/medium-risk, policy-allowed repository hygiene or security fixes | Automatic when enabled; every changed file, before/after hash, risk, and validation result must be visible in the receipt |
+| Create a local commit containing only its validated maintenance edits | Automatic when enabled; record commit hash, message, and changed files in the receipt |
+| Apply high-risk auth, permission, credential, deployment, or trust-boundary changes | Explicit approval required |
+| Push, publish, deploy, merge, or rewrite Git history | Explicit approval required |
 | Write high-risk project-local tuning, eval, workflow, source, provider, command, network, or export changes | Approval required |
 | Generate reusable bundle patch plans for `agents/`, `workflows/`, docs, or schemas | Approval required |
 | Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source | Approval required |

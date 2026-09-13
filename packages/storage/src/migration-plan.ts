@@ -1,6 +1,7 @@
-import { defaultServiceEndpoints, type ServiceEndpoint } from "./config.js";
+import { defaultServiceEndpoints } from "./config.js";
 import { checkServices, type ServiceCheck } from "./doctor.js";
 import { buildStorageVerificationReport, type StorageVerificationDiff, type StorageVerificationReport } from "./verification.js";
+import { endpointUrlWhenHostMatches, redactStorageUrl, storageEndpointCoordinates, storageEndpointWarnings } from "./endpoints.js";
 
 export type StorageMigrationPlanStatus = "ready" | "attention" | "blocked";
 
@@ -283,32 +284,16 @@ function storageEndpointSummary(
   input: { databaseUrl?: string; redisUrl?: string; objectStorageEndpoint?: string; objectStorageBucket?: string },
   targetHost?: string
 ): StorageMigrationEndpointSummary {
-  return {
-    databaseUrl: input.databaseUrl ?? (targetHost ? `postgres://agentflow:agentflow@${targetHost}:15432/agentflow` : "postgres://agentflow:agentflow@localhost:15432/agentflow"),
-    redisUrl: input.redisUrl ?? (targetHost ? `redis://${targetHost}:16379` : "redis://localhost:16379"),
-    objectStorageEndpoint: input.objectStorageEndpoint ?? (targetHost ? `http://${targetHost}:19000` : "http://localhost:19000"),
-    objectStorageBucket: input.objectStorageBucket ?? "agentflow-artifacts"
-  };
+  return storageEndpointCoordinates(input, targetHost);
 }
 
 function redactedEndpointSummary(summary: StorageMigrationEndpointSummary): StorageMigrationEndpointSummary {
   return {
-    databaseUrl: redactUrl(summary.databaseUrl),
-    redisUrl: redactUrl(summary.redisUrl),
-    objectStorageEndpoint: redactUrl(summary.objectStorageEndpoint),
+    databaseUrl: redactStorageUrl(summary.databaseUrl),
+    redisUrl: redactStorageUrl(summary.redisUrl),
+    objectStorageEndpoint: redactStorageUrl(summary.objectStorageEndpoint),
     objectStorageBucket: summary.objectStorageBucket
   };
-}
-
-function redactUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    if (parsed.username) parsed.username = "user";
-    if (parsed.password) parsed.password = "redacted";
-    return parsed.toString();
-  } catch {
-    return value.replace(/:\/\/([^:@/]+):([^@/]+)@/, "://user:redacted@");
-  }
 }
 
 function serviceWarnings(prefix: string, checks: ServiceCheck[]): string[] {
@@ -318,37 +303,7 @@ function serviceWarnings(prefix: string, checks: ServiceCheck[]): string[] {
 }
 
 function sameEndpointWarnings(source: StorageMigrationEndpointSummary, target: StorageMigrationEndpointSummary): string[] {
-  const warnings: string[] = [];
-  if (canonicalUrl(source.databaseUrl) === canonicalUrl(target.databaseUrl)) {
-    warnings.push("source and target database URLs point to the same endpoint");
-  }
-  if (canonicalUrl(source.redisUrl) === canonicalUrl(target.redisUrl)) {
-    warnings.push("source and target Redis URLs point to the same endpoint");
-  }
-  if (canonicalUrl(source.objectStorageEndpoint) === canonicalUrl(target.objectStorageEndpoint) && source.objectStorageBucket === target.objectStorageBucket) {
-    warnings.push("source and target object storage point to the same endpoint and bucket");
-  }
-  return warnings;
-}
-
-function endpointUrlWhenHostMatches(value: string, host: string | undefined): string | undefined {
-  if (!host) return undefined;
-  try {
-    return new URL(value).hostname === host ? value : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function canonicalUrl(value: string): string {
-  try {
-    const parsed = new URL(value);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.toString();
-  } catch {
-    return value;
-  }
+  return storageEndpointWarnings(source, target);
 }
 
 function formatServiceCheck(check: ServiceCheck): string {

@@ -148,8 +148,7 @@ Override per-tier models where the provider supports it, such as
 agents/          — Reusable agent cards (YAML)
 workflows/       — Multi-stage workflow definitions (YAML)
 packages/        — Runtime: model providers, context compiler, workflow engine
-apps/cli/        — CLI interface
-apps/worker/     — Background task processor
+apps/cli/        — CLI, dashboard, and background worker entry points
 apps/mcp/        — MCP server for IDE integration
 infra/           — Docker Compose for enterprise storage (Postgres, Redis, MinIO)
 templates/       — Project initialization templates

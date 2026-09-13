@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import {
   buildFileSummaryPrompt,
+  buildStageExecutionOutput,
   buildStagePrompt,
   extractJsonObject,
   normalizeFileSummaryArtifact,
@@ -66,31 +67,13 @@ export class KiroProvider implements ModelProvider {
     });
     const parsed = normalizeStageArtifact(extractJsonObject(stripAnsi(text)) as StageJsonArtifact);
 
-    return {
-      summary: parsed.summary,
-      requestedCommands: parsed.requestedCommands,
-      requestedFileWrites: parsed.requestedFileWrites,
-      artifact: {
+    return buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model: this.modelLabel,
         modelTier,
         agent: this.agent,
-        cli: this.cliBin,
-        runId: input.runId,
-        taskId: input.taskId,
-        workflowId: input.workflowId,
-        workflowTask: input.workflowTask,
-        stageId: input.stageId,
-        agentId: input.agentId,
-        agentName: input.agentName,
-        stageGoal: input.stageGoal,
-        findings: parsed.findings,
-        nextAction: parsed.nextAction,
-        requestedCommands: parsed.requestedCommands,
-        requestedFileWrites: parsed.requestedFileWrites,
-        summary: parsed.summary
-      }
-    };
+        cli: this.cliBin
+    });
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {

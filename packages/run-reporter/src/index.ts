@@ -1714,7 +1714,7 @@ export function buildCandidateComparisonPlan(input: {
     };
   });
   const suites = suiteFiles.map(({ content: _content, ...suite }) => suite);
-  const gateCommands = suites.map((suite) => `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${input.modelPlan.projectRootUri}`);
+  const gateCommands = suites.map(() => `npm run agentflow -- gate --run <candidate-run-id> --baseline-run <baseline-run-id> --project ${input.modelPlan.projectRootUri}`);
   const document = {
     kind: "agentflow_candidate_comparison_plan" as const,
     projectRootUri: input.modelPlan.projectRootUri,

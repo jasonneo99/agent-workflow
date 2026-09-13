@@ -107,7 +107,7 @@ import { executorApprovalTarget, runExecutorApprovalGate, runWorkerOnce, runWork
 import { assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot, type ExecutorResult, type ExecutorSnapshot } from "../../../packages/executor-adapters/src/index.js";
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import { explainModelCatalogSelection, normalizeModelSelectionPolicy, selectModelFromCatalog, type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy } from "../../../packages/model-providers/src/catalog.js";
-import { buildSavingsAwareLocalRoutingRecommendations, type LocalRoutingFeedbackEvent, type LocalRoutingFeedbackRating, type LocalRoutingFeedbackSummary, type LocalRoutingRecommendation } from "../../../packages/model-providers/src/local-routing-recommendations.js";
+import { buildSavingsAwareLocalRoutingRecommendations, type LocalRoutingFeedbackEvent, type LocalRoutingFeedbackRating, type LocalRoutingRecommendation } from "../../../packages/model-providers/src/local-routing-recommendations.js";
 import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../packages/model-providers/src/openai.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import type { ModelTier } from "../../../packages/model-providers/src/types.js";
@@ -122,6 +122,7 @@ import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObse
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
 import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
 import { proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence } from "../../../packages/context-calibration/src/index.js";
+import { scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -3446,6 +3447,20 @@ program
     const report = await loadRoadmapDashboardReport();
     console.log(options.json ? JSON.stringify(report, null, 2) : formatRoadmapAuditReport(report));
     if (report.summary.unlinkedCount > 0) process.exitCode = 1;
+  });
+
+program
+  .command("repository-maintenance")
+  .description("Scan repository hygiene and security risks and write a visible local receipt")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const report = await scanRepositoryMaintenance(projectDir);
+    const receipt = await writeRepositoryMaintenanceReceipt(projectDir, report);
+    if (options.json) console.log(JSON.stringify({ ...report, receipt: path.relative(projectDir, receipt) }, null, 2));
+    else console.log([`Repository maintenance: ${report.filesScanned} files`, `Hygiene: ${report.summary.hygiene}; security: ${report.summary.security}; errors: ${report.summary.errors}`, `Receipt: ${path.relative(projectDir, receipt)}`].join("\n"));
   });
 
 program
@@ -22051,7 +22066,6 @@ function formatFeedbackInboxBucket(title: string, rating: FeedbackRating, items:
 
 async function loadDashboardTuningOverlayStatus(projectDir: string): Promise<DashboardTuningOverlayStatus> {
   const overlayPath = path.join(projectDir, ".agent-workflow", "tuning", "proposals.json");
-  const historyPath = path.join(projectDir, ".agent-workflow", "tuning", "approval-history.json");
   const overlayResult = await readDashboardJsonFile<TuningOverlayDocument>(overlayPath, (value) =>
     value.kind === "agentflow_tuning_overlay" &&
     Array.isArray(value.selectedIds) &&
@@ -22862,7 +22876,9 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
-}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport }> {
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+  const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
+  await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir);
   const proposalSet = buildLearningProposalSet(report);
@@ -22932,7 +22948,7 @@ async function runLearningDaemonTick(input: {
     }
   }
   const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
-  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
+  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
 }
 
 async function loadAndWriteRoadmapSuggestions(projectDir: string): Promise<RoadmapSuggestionReport> {
@@ -35726,7 +35742,6 @@ function formatApprovalBacklogReport(report: ApprovalBacklogReport): string {
 }
 
 function classifyApprovalAutopilotRisk(approval: DashboardActionApproval, project: ProjectConfig): { eligible: boolean; risk: ApprovalAutopilotRisk; reasons: string[] } {
-  const reasons: string[] = [];
   if (!isExecutableApprovalAction(approval.actionType)) {
     return { eligible: false, risk: "high", reasons: [`${approval.actionType} is not an executable local approval action.`] };
   }
@@ -37881,16 +37896,6 @@ function dashboardActionItems(health: DashboardHomeHealth): Array<{ severity: "b
     });
   }
   return items;
-}
-
-function renderDashboardAttentionHtml(health: DashboardHomeHealth): string {
-  const items = dashboardActionItems(health).filter((item) => item.severity !== "good");
-  if (!items.length) return "<p class=\"muted\">No immediate action needed. The worker, storage, queue, approvals, MCP, and recent runs look healthy.</p>";
-  return `<div class="attention-list">${items.map(attentionItem).join("")}</div>`;
-}
-
-function attentionItem(input: { title: string; detail: string; href: string; action: string }): string {
-  return `<div class="attention-item"><div><strong>${escapeHtml(input.title)}</strong><span>${escapeHtml(input.detail)}</span></div><a class="button secondary" href="${escapeHtml(input.href)}">${escapeHtml(input.action)}</a></div>`;
 }
 
 function compactDashboardText(value: string, maxLength: number): string {

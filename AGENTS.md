@@ -55,6 +55,15 @@ Automatic agents:
 - `auto-release-check`: checks release readiness.
 - `auto-wide-open-executor`: runs trusted maximum-autonomy automation when explicitly enabled.
 
+The local learning daemon also owns recurring repository hygiene and security
+maintenance. It may apply policy-allowed low/medium-risk source fixes when each
+changed file, before/after hash, risk decision, and validation result is written
+to the visible repository-maintenance receipt. High-risk trust-boundary changes
+still require explicit approval. It may create a local commit containing only
+its validated maintenance edits and must record the commit hash and message;
+pushing, publishing, merging, deploying, or rewriting history remains outside
+that authority.
+
 ## Workflows
 
 - `build-feature`: plan, implement, verify, document, and package a feature.

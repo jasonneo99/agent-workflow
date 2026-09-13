@@ -1,4 +1,4 @@
-import type { StageExecutionInput } from "./types.js";
+import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
 
 export interface StageJsonArtifact {
   summary: string;
@@ -79,6 +79,30 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
       ? value.requestedFileWrites
         .filter((item): item is { path: string; content: string } => Boolean(item) && typeof item.path === "string" && typeof item.content === "string")
       : []
+  };
+}
+
+export function buildStageExecutionOutput(input: StageExecutionInput, parsed: StageJsonArtifact, provider: Record<string, unknown>): StageExecutionOutput {
+  return {
+    summary: parsed.summary,
+    requestedCommands: parsed.requestedCommands,
+    requestedFileWrites: parsed.requestedFileWrites,
+    artifact: {
+      ...provider,
+      runId: input.runId,
+      taskId: input.taskId,
+      workflowId: input.workflowId,
+      workflowTask: input.workflowTask,
+      stageId: input.stageId,
+      agentId: input.agentId,
+      agentName: input.agentName,
+      stageGoal: input.stageGoal,
+      findings: parsed.findings,
+      nextAction: parsed.nextAction,
+      requestedCommands: parsed.requestedCommands,
+      requestedFileWrites: parsed.requestedFileWrites,
+      summary: parsed.summary
+    }
   };
 }
 

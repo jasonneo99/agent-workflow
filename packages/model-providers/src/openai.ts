@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import {
   buildFileSummaryPrompt,
+  buildStageExecutionOutput,
   buildStagePrompt,
   normalizeFileSummaryArtifact,
   normalizeStageArtifact,
@@ -158,30 +159,12 @@ export class OpenAIProvider implements ModelProvider {
 
     const parsed = normalizeStageArtifact(JSON.parse(response.output_text) as StageJsonArtifact);
 
-    return {
-      summary: parsed.summary,
-      requestedCommands: parsed.requestedCommands,
-      requestedFileWrites: parsed.requestedFileWrites,
-      artifact: {
+    return buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model,
         modelTier: input.modelTier ?? "standard",
-        responseId: response.id,
-        runId: input.runId,
-        taskId: input.taskId,
-        workflowId: input.workflowId,
-        workflowTask: input.workflowTask,
-        stageId: input.stageId,
-        agentId: input.agentId,
-        agentName: input.agentName,
-        stageGoal: input.stageGoal,
-        findings: parsed.findings,
-        nextAction: parsed.nextAction,
-        requestedCommands: parsed.requestedCommands,
-        requestedFileWrites: parsed.requestedFileWrites,
-        summary: parsed.summary
-      }
-    };
+        responseId: response.id
+    });
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
