@@ -187,6 +187,11 @@ Completed learning-evidence extraction: report contracts now use shared,
 independently tested aggregation for failures, stage health, routing cost,
 feedback, evaluation gaps, and proposal previews.
 
+Completed learning-proposals extraction: proposal construction, stable IDs,
+risk classification, summaries, console/Markdown rendering, and project-local
+persistence now share one independently tested package across CLI, dashboard,
+and daemon paths.
+
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external

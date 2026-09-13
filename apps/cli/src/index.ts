@@ -30,12 +30,14 @@ import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.j
 import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
 import { buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals, type LearningApplicationAction, type LearningApplicationPlan, type LearningApprovalDecisionResult, type LearningApprovalItem, type LearningApprovalQueue, type LearningApprovalStatus, type LearningProposal, type LearningProposalKind, type LearningProposalPriority, type LearningProposalSet, type LearningRiskLevel } from "../../../packages/learning-governance/src/index.js";
 import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buildProposalPreview, selectFailedRuns, summarizeRouteFeedback } from "../../../packages/learning-evidence/src/index.js";
+import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
 import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceReport, type GovernanceReport } from "../../../packages/governance/src/index.js";
+import { buildHighRiskApprovalInbox, redactApprovalCardText, type HighRiskApprovalInbox } from "../../../packages/governance/src/high-risk-approval-inbox.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
@@ -13579,6 +13581,43 @@ function formatServerRoutePreview(report: ServerRoutePreviewReport): string {
   ].join("\n");
 }
 
+async function loadServerHighRiskApprovalInbox(limit: number): Promise<HighRiskApprovalInbox> {
+  const boundedLimit = Math.max(1, Math.min(limit, 25));
+  const approvals = (await listActionApprovals({ limit: Math.max(100, boundedLimit * 8) }))
+    .filter(isOpenApproval);
+  const projects = await listProjectStorageSummaries(1000);
+  const projectIds = new Map(projects.map((project) => [project.rootUri, project.id]));
+  const projectConfigs = new Map<string, ProjectConfig | null>();
+  const items: HighRiskApprovalInbox["items"] = [];
+  for (const approval of approvals) {
+    if (items.length >= boundedLimit) break;
+    if (!projectConfigs.has(approval.projectRootUri)) {
+      projectConfigs.set(approval.projectRootUri, await loadLocalProjectConfig(approval.projectRootUri).catch(() => null));
+    }
+    const project = projectConfigs.get(approval.projectRootUri);
+    const classification = project
+      ? classifyApprovalAutopilotRisk(approval, project)
+      : { eligible: false, risk: "high" as const, reasons: ["Project policy could not be loaded; manual review is required."] };
+    if (classification.risk !== "high") continue;
+    items.push({
+      approvalId: approval.id,
+      projectId: projectIds.get(approval.projectRootUri) ?? null,
+      projectName: approval.projectName,
+      workflowId: approval.workflowId,
+      runId: approval.runId,
+      approvalStatus: approval.status,
+      actionType: approval.actionType,
+      target: redactApprovalCardText(approval.target, 240),
+      rationale: redactApprovalCardText(approval.rationale, 360),
+      risk: "high",
+      riskReasons: classification.reasons.map((reason) => redactApprovalCardText(reason, 240)).slice(0, 5),
+      requestedAt: approval.createdAt,
+      dashboardPath: `/approvals?status=open&run=${encodeURIComponent(approval.runId)}`
+    });
+  }
+  return buildHighRiskApprovalInbox({ scanned: approvals.length, open: approvals.length, items });
+}
+
 async function loadServerApprovalPreview(input: {
   projectId: string;
   approvalId: string;
@@ -17071,204 +17110,6 @@ function formatLearningReport(report: LearningReport): string {
     "",
     "Next commands:",
     ...report.nextCommands.map((command) => `- ${command}`)
-  ].join("\n");
-}
-
-function buildLearningProposalSet(report: LearningReport): LearningProposalSet {
-  const proposals: LearningProposal[] = [];
-  const addProposal = (input: Omit<LearningProposal, "id">): void => {
-    proposals.push({
-      ...input,
-      id: `learn-${String(proposals.length + 1).padStart(3, "0")}`
-    });
-  };
-
-  for (const pattern of report.repeatedFailurePatterns.slice(0, 5)) {
-    addProposal({
-      priority: pattern.failureRate >= 0.5 ? "high" : "medium",
-      kind: "repeated_failure",
-      riskLevel: "high",
-      title: `Investigate repeated failures in ${pattern.stageId}`,
-      target: `${pattern.workflowId}/${pattern.stageId}/${pattern.agentId}`,
-      rationale: `${pattern.failedTasks} of ${pattern.totalTasks} recent stage task(s) failed.`,
-      evidence: [
-        `workflow=${pattern.workflowId}`,
-        `stage=${pattern.stageId}`,
-        `agent=${pattern.agentId}`,
-        `failureRate=${pattern.failureRate}`
-      ],
-      recommendation: "Queue a debug-failure run or add targeted eval coverage before changing workflow behavior.",
-      approvalRequired: true
-    });
-  }
-
-  for (const item of report.costOpportunities.slice(0, 5)) {
-    addProposal({
-      priority: item.fallbackRate >= 0.5 ? "high" : "medium",
-      kind: "cost_routing",
-      riskLevel: "medium",
-      title: `Review routing for ${item.stageId}`,
-      target: `${item.workflowId}/${item.stageId}/${item.agentId}`,
-      rationale: `Route ${item.providerId}/${item.modelTier} has fallback=${item.fallbackRate}, latency=${item.averageLatencyMs ?? "n/a"}ms, runs=${item.runs}.`,
-      evidence: [
-        `provider=${item.providerId}`,
-        `modelTier=${item.modelTier}`,
-        `fallbackRate=${item.fallbackRate}`,
-        `averageLatencyMs=${item.averageLatencyMs ?? "n/a"}`
-      ],
-      recommendation: `${item.recommendation} In autonomous mode, write project-local tuning overlay notes before promoting any shared workflow or provider change.`,
-      approvalRequired: false
-    });
-  }
-
-  for (const group of report.routeFeedback.costlyGroups.slice(0, 5)) {
-    addProposal({
-      priority: group.costly >= 2 ? "medium" : "low",
-      kind: "route_feedback",
-      riskLevel: "low",
-      title: `Review costly route feedback for ${group.target.split("/")[1] ?? group.target}`,
-      target: group.target,
-      rationale: `${group.costly} costly route feedback signal(s) were recorded for ${group.route} (${group.routeClass}).`,
-      evidence: [
-        `route=${group.route}`,
-        `routeClass=${group.routeClass}`,
-        `helpful=${group.helpful}`,
-        `costly=${group.costly}`,
-        `neutral=${group.neutral}`,
-        `latest=${group.latestAt ?? "n/a"}`
-      ],
-      recommendation: "Refresh savings-aware local routing recommendations and prepare a project-local routing-note plan if the evidence still supports retreating, holding, or expanding this route.",
-      approvalRequired: false
-    });
-  }
-
-  for (const group of report.routeFeedback.helpfulGroups.slice(0, 3)) {
-    addProposal({
-      priority: group.helpful >= 2 ? "medium" : "low",
-      kind: "route_feedback",
-      riskLevel: "low",
-      title: `Preserve helpful route feedback for ${group.target.split("/")[1] ?? group.target}`,
-      target: group.target,
-      rationale: `${group.helpful} helpful route feedback signal(s) were recorded for ${group.route} (${group.routeClass}).`,
-      evidence: [
-        `route=${group.route}`,
-        `routeClass=${group.routeClass}`,
-        `helpful=${group.helpful}`,
-        `costly=${group.costly}`,
-        `neutral=${group.neutral}`,
-        `latest=${group.latestAt ?? "n/a"}`
-      ],
-      recommendation: "Refresh savings-aware local routing recommendations so repeated helpful signals can strengthen low-risk local routing trial candidates without changing provider defaults directly.",
-      approvalRequired: false
-    });
-  }
-
-  for (const gap of report.evalGaps) {
-    const feedbackGap = gap.toLowerCase().includes("feedback");
-    addProposal({
-      priority: feedbackGap ? "medium" : "low",
-      kind: feedbackGap ? "feedback_gap" : "eval_gap",
-      riskLevel: feedbackGap ? "low" : "high",
-      title: feedbackGap ? "Collect developer feedback" : "Improve evaluation evidence",
-      target: report.projectDir,
-      rationale: gap,
-      evidence: [`runsAnalyzed=${report.runsAnalyzed}`, `evaluationRuns=${report.evaluationRuns}`],
-      recommendation: feedbackGap
-        ? "Record accepted, revised, or rejected feedback on recent workflow runs before promoting tuning changes."
-        : "Create or run a small local evaluation suite before applying prompt, routing, or context-budget changes.",
-      approvalRequired: !feedbackGap
-    });
-  }
-
-  if (report.proposalPreview.total > 0) {
-    addProposal({
-      priority: report.proposalPreview.highPriority > 0 ? "high" : "medium",
-      kind: "proposal_followup",
-      riskLevel: "medium",
-      title: "Review tuning proposal candidates",
-      target: report.projectDir,
-      rationale: `${report.proposalPreview.total} tuning proposal candidate(s), including ${report.proposalPreview.highPriority} high-priority item(s), are available.`,
-      evidence: Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `${kind}=${count}`),
-      recommendation: "Write project-local tuning overlay notes automatically in autonomous mode. Promote shared workflow/provider changes only with approval.",
-      approvalRequired: false
-    });
-  }
-
-  return {
-    kind: "agentflow_learning_proposals",
-    projectRootUri: report.projectDir,
-    generatedAt: new Date().toISOString(),
-    sourceReportGeneratedAt: report.generatedAt,
-    sourceRunsAnalyzed: report.runsAnalyzed,
-    proposals,
-    summary: summarizeLearningProposals(proposals, report)
-  };
-}
-
-function summarizeLearningProposals(proposals: LearningProposal[], report: LearningReport): string[] {
-  if (!proposals.length) {
-    return ["No learning proposal candidates were found in the inspected run window."];
-  }
-  const counts = countStrings(proposals.map((proposal) => proposal.kind));
-  return [
-    `${proposals.length} proposal candidate(s) from ${report.runsAnalyzed} run(s).`,
-    `${proposals.filter((proposal) => proposal.priority === "high").length} high-priority proposal(s).`,
-    `${proposals.filter((proposal) => proposal.approvalRequired).length} proposal(s) require approval before any behavior-changing action.`,
-    `Kinds: ${formatInlineCounts(counts) || "none"}.`
-  ];
-}
-
-function formatLearningProposalSet(proposalSet: LearningProposalSet): string {
-  return [
-    `Learning Proposals: ${proposalSet.projectRootUri}`,
-    `Generated: ${proposalSet.generatedAt}`,
-    `Runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
-    "",
-    "Summary",
-    proposalSet.summary.map((item) => `- ${item}`).join("\n"),
-    "",
-    "Proposals",
-    proposalSet.proposals.length
-      ? proposalSet.proposals.map((proposal) => [
-        `- ${proposal.id} [${proposal.priority}] ${proposal.kind}: ${proposal.title}`,
-        `  - Target: ${proposal.target}`,
-        `  - Risk: ${proposal.riskLevel}${proposal.approvalRequired ? " approval-required" : " report-only"}`,
-        `  - Rationale: ${proposal.rationale}`,
-        `  - Recommendation: ${proposal.recommendation}`
-      ].join("\n")).join("\n")
-      : "- No learning proposals yet."
-  ].join("\n");
-}
-
-function formatLearningProposalMarkdown(proposalSet: LearningProposalSet): string {
-  const sections = proposalSet.proposals.map((proposal) => [
-    `## ${proposal.id} - ${proposal.title}`,
-    "",
-    `- Priority: ${proposal.priority}`,
-    `- Kind: ${proposal.kind}`,
-    `- Risk: ${proposal.riskLevel}`,
-    `- Target: ${proposal.target}`,
-    `- Approval required: ${proposal.approvalRequired ? "yes" : "no"}`,
-    `- Rationale: ${proposal.rationale}`,
-    `- Recommendation: ${proposal.recommendation}`,
-    "",
-    "Evidence:",
-    ...proposal.evidence.map((item) => `- ${item}`),
-    ""
-  ].join("\n"));
-  return [
-    "# Agent Workflow Learning Proposals",
-    "",
-    `Project: ${proposalSet.projectRootUri}`,
-    `Generated: ${proposalSet.generatedAt}`,
-    `Source report: ${proposalSet.sourceReportGeneratedAt}`,
-    `Source runs analyzed: ${proposalSet.sourceRunsAnalyzed}`,
-    "",
-    "## Summary",
-    "",
-    ...proposalSet.summary.map((item) => `- ${item}`),
-    "",
-    ...sections
   ].join("\n");
 }
 
@@ -22602,10 +22443,7 @@ async function readLearningApprovalQueue(projectDir: string): Promise<LearningAp
 }
 
 async function writeLearningProposals(projectDir: string, proposalSet: LearningProposalSet): Promise<void> {
-  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
-  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
-  await fs.writeFile(path.join(learningDir, "proposals.json"), `${JSON.stringify(proposalSet, null, 2)}\n`, "utf8");
-  await fs.writeFile(path.join(learningDir, "proposals.md"), formatLearningProposalMarkdown(proposalSet), "utf8");
+  await writeLearningProposalFiles(projectDir, proposalSet);
 }
 
 async function writeLearningApprovalQueue(projectDir: string, queue: LearningApprovalQueue): Promise<void> {
@@ -25050,6 +24888,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/server-high-risk-approvals") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_high_risk_approval_inbox", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerHighRiskApprovalInbox(parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "25", 25));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/server-request-preview") {
     const report = await loadServerRequestPreview({
       projectId: requestUrl.searchParams.get("projectId") ?? "",
@@ -25771,38 +25622,56 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/learning") {
+    const requestedLearningView = requestUrl.searchParams.get("view") ?? "overview";
+    const learningView = ["overview", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"].includes(requestedLearningView)
+      ? requestedLearningView
+      : "overview";
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
     const projectPath = project ? await resolveDashboardProjectPath(project) : null;
-    const report = project
-      ? await loadLearningReport({
+    const localLearningDir = projectPath?.localRootUri ?? project;
+    const reportPromise = project && learningView !== "overview"
+      ? loadLearningReport({
         projectDir: projectPath?.storageRootUri ?? project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       })
-      : null;
-    const localLearningDir = projectPath?.localRootUri ?? project;
-    const learningQueue = project ? await readLearningApprovalQueue(localLearningDir).catch(() => null) : null;
-    const learningDaemon = project ? await loadLearningDaemonStatus(localLearningDir) : null;
-    const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
-    const learningSettings = project ? await readLearningSettings(localLearningDir).catch(() => null) : null;
-    const learningActionReceipts = project ? await readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir))) : null;
-    const learningActionReceiptHealth = project ? await loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir)) : null;
-    const supervisor = await loadDashboardSupervisorStatus();
-    const workflowShape = project
-      ? await loadWorkflowShapeOptimization({
+      : Promise.resolve(null);
+    const learningQueuePromise = project && learningView === "approvals" ? readLearningApprovalQueue(localLearningDir).catch(() => null) : Promise.resolve(null);
+    const learningDaemonPromise = project && (learningView === "diagnostics" || learningView === "settings") ? loadLearningDaemonStatus(localLearningDir) : Promise.resolve(null);
+    const learningSettingsPromise = project && learningView === "settings" ? readLearningSettings(localLearningDir).catch(() => null) : Promise.resolve(null);
+    const learningActionReceiptsPromise = project && learningView === "diagnostics"
+      ? readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir)))
+      : Promise.resolve(null);
+    const learningActionReceiptHealthPromise = project && learningView === "diagnostics"
+      ? loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir))
+      : Promise.resolve(null);
+    const workflowShapePromise = project && learningView === "recommendations"
+      ? loadWorkflowShapeOptimization({
         projectDir: localLearningDir,
         workflowId: requestUrl.searchParams.get("workflow") ?? undefined,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       }).catch(() => null)
-      : null;
-    const agentImprovement = project
-      ? await loadAgentImprovementReport({
+      : Promise.resolve(null);
+    const agentImprovementPromise = project && learningView === "agent-improvements"
+      ? loadAgentImprovementReport({
         projectDir: localLearningDir,
         agentId: requestUrl.searchParams.get("agent") ?? undefined,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
         mode: "read-only"
       }).catch(() => null)
-      : null;
+      : Promise.resolve(null);
+    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement] = await Promise.all([
+      reportPromise,
+      learningQueuePromise,
+      learningDaemonPromise,
+      learningSettingsPromise,
+      learningActionReceiptsPromise,
+      learningActionReceiptHealthPromise,
+      loadDashboardSupervisorStatus(),
+      workflowShapePromise,
+      agentImprovementPromise
+    ]);
+    const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
     const agentImprovementEval = agentImprovement
       ? await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), localLearningDir), agentImprovement, "all")
         .then((patchPlan) => buildAgentImprovementEvalPlan(path.resolve(process.cwd(), localLearningDir), patchPlan, "all", parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)))
@@ -29091,9 +28960,21 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   const approvalAutopilotEnabled = learningSettings?.approvalAutopilotEnabled ?? false;
   const approvalAutopilotMaxRisk = learningSettings?.approvalAutopilotMaxRisk ?? "medium";
   const daemonTrustLevels = learningSettings?.daemonTrustLevels ?? defaultDaemonTrustSettings();
+  const overviewBody = selectedProject ? `<section class="human-section learning-overview-intro">
+    <h2>Choose what to review</h2>
+    <p class="page-intro">Open only the evidence you need. Detailed analysis loads when you select a view.</p>
+    <div class="human-list">
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=recommendations"><span class="human-row-icon">${dashboardIcon("sparkles")}</span><span><strong>Recommendations</strong><small>Workflow improvements, evaluation gaps, and routing opportunities.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=approvals"><span class="human-row-icon">${dashboardIcon("shield")}</span><span><strong>Approvals</strong><small>Review learning proposals and planned changes.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=agent-improvements"><span class="human-row-icon">${dashboardIcon("agent")}</span><span><strong>Agent improvements</strong><small>Inspect evaluated changes to agent definitions.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=diagnostics"><span class="human-row-icon">${dashboardIcon("gauge")}</span><span><strong>Diagnostics</strong><small>Failures, receipts, routing signals, and daemon health.</small></span>${dashboardIcon("chevrons")}</a>
+    </div>
+  </section>` : "";
   const body = report
     ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels, supervisor, projectPath)
-    : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
+    : learningView === "overview" && selectedProject
+      ? overviewBody
+      : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
 <head>
@@ -29147,7 +29028,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       (() => {
         const view = ${JSON.stringify(learningView)};
         const groups = {
-          overview: ["Recent Dashboard Actions", "Workflow Optimizer"],
+          overview: ["Recent Dashboard Actions", "Workflow Optimizer", "Choose what to review"],
           recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
           approvals: ["Learning Proposal Inbox", "Approved Application Plan"],
           "agent-improvements": ["Agent Definition Improvement"],
