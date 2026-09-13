@@ -789,13 +789,13 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: planned
   - Scope: improve scheduling, evidence quality, workflow-shape recommendations, resource budgets, and operator trust without granting the daemon new permissions.
   - [x] Classify approved learning proposals as operational optimization or product-feature candidates; keep routing, feedback, tuning, and evaluation maintenance in Learning instead of flooding the product roadmap.
-  - [ ] Add event-driven wakeups for completed runs, new feedback, failed evaluations, stale approvals, and degraded provider health while retaining bounded periodic reconciliation.
-  - [ ] Add per-project work budgets, quiet hours, backpressure, fairness, and duplicate-work suppression across the managed project fleet.
-  - [ ] Rank proposed improvements by evidence strength, expected quality/cost impact, reversibility, risk, and confidence; show why an item was deferred.
-  - [ ] Add simulation and shadow modes that replay recommendations against historical runs before promotion.
-  - [ ] Let the daemon recommend workflow-stage, handoff, context, routing, and evaluation changes, but keep permission expansion and high-risk structural changes reviewable.
-  - [ ] Add promotion, rollback, and regression receipts for every autonomously applied low-risk optimization.
-  - [ ] Publish a concise fleet optimizer health view with queue depth, project fairness, budget consumption, recommendation outcomes, and stale-evidence warnings.
+  - [x] Add event-driven wakeups for completed runs, new feedback, failed evaluations, stale approvals, and degraded provider health while retaining bounded periodic reconciliation.
+  - [x] Add per-project work budgets, quiet hours, backpressure, fairness, and duplicate-work suppression across the managed project fleet.
+  - [x] Rank proposed improvements by evidence strength, expected quality/cost impact, reversibility, risk, and confidence; show why an item was deferred.
+  - [x] Add simulation and shadow modes that replay recommendations against historical runs before promotion.
+  - [x] Let the daemon recommend workflow-stage, handoff, context, routing, and evaluation changes, but keep permission expansion and high-risk structural changes reviewable.
+  - [x] Add promotion, rollback, and regression receipts for every autonomously applied low-risk optimization.
+  - [x] Publish a concise fleet optimizer health view with queue depth, project fairness, budget consumption, recommendation outcomes, and stale-evidence warnings.
 
 - [ ] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
   - Milestone: 12 Ecosystem Fit
@@ -805,9 +805,9 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - [x] Document responsibilities, request flow, memory boundaries, approval behavior, example interactions, and rollout guidance in `docs/agent-workflow-jarvis-shared-brain.md`.
   - [x] Define the open-source/personal boundary: portable schemas, orchestration, safety, and synthetic adapters stay here; persona, private memory, real fleet topology, secrets, project mappings, and deployment overlays stay private.
   - [x] Enforce the open-source/personal boundary across every tracked file type with repository instructions, contributor guidance, and `npm run validate-boundary` as part of the standard check.
-  - [ ] Create a separately access-controlled private companion repository for personal Jarvis, Fleet, memory, and deployment add-ons; consume tagged Agent Workflow releases through one-way public extension contracts.
-  - [ ] Add a bounded Jarvis intent envelope that separates conversation, project selection, workflow goals, and requested autonomy from executable actions.
-  - [ ] Add shared-brain status summaries for active goals, recent decisions, open approvals, learned preferences, and degraded services without exposing raw private memory.
+  - [x] Create a separately access-controlled private companion repository for personal Jarvis, Fleet, memory, and deployment add-ons; consume tagged Agent Workflow releases through one-way public extension contracts.
+  - [x] Add a bounded Jarvis intent envelope that separates conversation, project selection, workflow goals, and requested autonomy from executable actions.
+  - [x] Add shared-brain status summaries for active goals, recent decisions, open approvals, learned preferences, and degraded services without exposing raw private memory.
   - [ ] Let Jarvis preview orchestrator plans and explain daemon recommendations before the user approves material changes.
   - [ ] Add end-to-end canaries for ask, plan, execute, observe, approve, recover, and summarize paths through the existing authenticated Fleet bridge.
   - [ ] Keep Fleet Control separately signed and allowlisted for host actions; conversational context must never imply approval or expand project policy.
