@@ -13301,7 +13301,7 @@ async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthRep
       heartbeatAgeMs: worker.ageMs === null ? null : Math.max(0, Math.round(worker.ageMs)),
       lanes: worker.lanes.slice(0, 32).map((lane) => ({ id: lane.workerId ?? "worker", status: lane.status, lastHeartbeatAt: lane.lastHeartbeatAt, heartbeatAgeMs: lane.ageMs === null ? null : Math.max(0, Math.round(lane.ageMs)), claimed: lane.claimed, completed: lane.completed, failed: lane.failed }))
     },
-    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: runtimeHealthy ? "running" : "attention" })),
+    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: worker.status === "running" ? "running" : "attention" })),
     projects
   };
 }
