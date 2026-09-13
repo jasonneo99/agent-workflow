@@ -122,7 +122,7 @@ import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObse
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
 import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
 import { proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence } from "../../../packages/context-calibration/src/index.js";
-import { scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
+import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
@@ -22942,6 +22942,16 @@ async function runLearningDaemonTick(input: {
         actor: input.daemonId ?? "learning-daemon",
         actorRole: "approver"
       });
+      const maintenanceFiles = approvalAutopilot.items.filter((item) => item.status === "executed" && item.actionType === "file_write").map((item) => item.target);
+      const validationCommand = process.env.AGENTFLOW_DAEMON_MAINTENANCE_VALIDATION_COMMAND?.trim();
+      if (maintenanceFiles.length && envFlagEnabled(process.env.AGENTFLOW_DAEMON_MAINTENANCE_COMMITS) && validationCommand) {
+        const project = await loadProjectConfig(input.projectDir);
+        const validation = await executeAllowedCommand({ commandLine: validationCommand, cwd: input.projectDir, project });
+        if (validation.exitCode === 0 && !validation.timedOut) {
+          const committed = await commitRepositoryMaintenance({ projectRoot: input.projectDir, files: maintenanceFiles, validation: `${validationCommand} passed`, message: "chore: apply daemon repository maintenance" });
+          if (committed) await writeRepositoryMaintenanceReceipt(input.projectDir, await scanRepositoryMaintenance(input.projectDir), committed.applied, { hash: committed.hash, message: committed.message });
+        }
+      }
     }
     if (autonomousApplication.appliedActions > 0) {
       await recordLearningApplicationPlanReceipts(input.projectDir, filterAppliedLearningApplicationPlan(applicationPlan), "learning-daemon", "autonomous local apply tick", "applied");

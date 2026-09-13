@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import fg from "fast-glob";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+
+const runFile = promisify(execFile);
 
 export type RepositoryMaintenanceFinding = { kind: "hygiene" | "security"; severity: "info" | "warning" | "error"; file: string; line: number; summary: string; autoFixEligible: boolean };
 export type RepositoryMaintenanceReport = { kind: "agentflow_repository_maintenance_report"; generatedAt: string; projectRootHash: string; filesScanned: number; findings: RepositoryMaintenanceFinding[]; summary: { hygiene: number; security: number; autoFixEligible: number; errors: number } };
@@ -44,4 +48,24 @@ export async function writeRepositoryMaintenanceReceipt(projectRoot: string, rep
   const target = path.join(directory, "repository-maintenance-receipt.json");
   await fs.writeFile(target, `${JSON.stringify({ ...report, applied, commit, visibility: { changedFiles: applied.map((item) => item.file), beforeAfterHashes: true, validationRecorded: true, commitRecorded: Boolean(commit) } }, null, 2)}\n`, "utf8");
   return target;
+}
+
+export async function commitRepositoryMaintenance(input: { projectRoot: string; files: string[]; message?: string; validation: string }): Promise<{ hash: string; message: string; applied: Array<{ file: string; beforeHash: string; afterHash: string; validation: string }> } | null> {
+  const files = [...new Set(input.files)].filter(Boolean);
+  if (!files.length) return null;
+  const applied = [];
+  for (const file of files) {
+    const absolute = path.resolve(input.projectRoot, file);
+    if (absolute !== input.projectRoot && !absolute.startsWith(`${path.resolve(input.projectRoot)}${path.sep}`)) throw new Error(`Maintenance commit path escapes project: ${file}`);
+    let beforeHash = "new"; let afterHash = "deleted";
+    try { beforeHash = createHash("sha256").update((await runFile("git", ["show", `HEAD:${file}`], { cwd: input.projectRoot })).stdout).digest("hex"); } catch { /* new file */ }
+    try { afterHash = createHash("sha256").update(await fs.readFile(absolute)).digest("hex"); } catch { /* deleted file */ }
+    applied.push({ file, beforeHash, afterHash, validation: input.validation });
+  }
+  await runFile("git", ["add", "--", ...files], { cwd: input.projectRoot });
+  try { await runFile("git", ["diff", "--cached", "--quiet", "--", ...files], { cwd: input.projectRoot }); return null; } catch { /* staged changes exist */ }
+  const message = input.message ?? "chore: apply visible repository maintenance";
+  await runFile("git", ["commit", "-m", message, "--", ...files], { cwd: input.projectRoot });
+  const hash = (await runFile("git", ["rev-parse", "--short=8", "HEAD"], { cwd: input.projectRoot })).stdout.trim();
+  return { hash, message, applied };
 }

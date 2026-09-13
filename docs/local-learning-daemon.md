@@ -111,6 +111,17 @@ the action changes behavior outside an ephemeral report.
 | Create a local commit containing only its validated maintenance edits | Automatic when enabled; record commit hash, message, and changed files in the receipt |
 | Apply high-risk auth, permission, credential, deployment, or trust-boundary changes | Explicit approval required |
 | Push, publish, deploy, merge, or rewrite Git history | Explicit approval required |
+
+Visible maintenance commits are opt-in and require a policy-allowed validation
+command to pass before Git stages the exact files written by executed daemon
+approvals:
+
+```bash
+AGENTFLOW_DAEMON_MAINTENANCE_COMMITS=on
+AGENTFLOW_DAEMON_MAINTENANCE_VALIDATION_COMMAND="npm run check"
+```
+
+The daemon never stages unrelated working-tree changes.
 | Write high-risk project-local tuning, eval, workflow, source, provider, command, network, or export changes | Approval required |
 | Generate reusable bundle patch plans for `agents/`, `workflows/`, docs, or schemas | Approval required |
 | Modify reusable agents, workflows, package code, docs, schemas, provider settings, or project source | Approval required |
