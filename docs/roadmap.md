@@ -783,7 +783,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: verify the launcher pipeline, compiled MCP server, metadata-only lifecycle evidence, recovery package, CLI fallback, and low-risk stale-session cleanup guidance while preserving the rule that Agent Workflow cannot reconnect a client-owned pipe.
   - Boundary: Agent Workflow can detect, diagnose, record, and guide recovery, but Codex owns the private stdio transport and may still close it outside this repository.
 
-- [ ] Task: evolve the learning daemon into a proactive, explainable workflow optimizer.
+- [x] Task: evolve the learning daemon into a proactive, explainable workflow optimizer.
   - Milestone: 6 Local Learning Daemon
   - Priority: high
   - Status: planned
@@ -796,8 +796,9 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - [x] Let the daemon recommend workflow-stage, handoff, context, routing, and evaluation changes, but keep permission expansion and high-risk structural changes reviewable.
   - [x] Add promotion, rollback, and regression receipts for every autonomously applied low-risk optimization.
   - [x] Publish a concise fleet optimizer health view with queue depth, project fairness, budget consumption, recommendation outcomes, and stale-evidence warnings.
+  - [x] Integrate optimizer wakeups, persisted cursors, budgets, ranking, shadow evidence, receipts, and health generation into each governed daemon tick.
 
-- [ ] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
+- [x] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
   - Milestone: 12 Ecosystem Fit
   - Priority: high
   - Status: planned
@@ -808,9 +809,10 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - [x] Create a separately access-controlled private companion repository for personal Jarvis, Fleet, memory, and deployment add-ons; consume tagged Agent Workflow releases through one-way public extension contracts.
   - [x] Add a bounded Jarvis intent envelope that separates conversation, project selection, workflow goals, and requested autonomy from executable actions.
   - [x] Add shared-brain status summaries for active goals, recent decisions, open approvals, learned preferences, and degraded services without exposing raw private memory.
-  - [ ] Let Jarvis preview orchestrator plans and explain daemon recommendations before the user approves material changes.
-  - [ ] Add end-to-end canaries for ask, plan, execute, observe, approve, recover, and summarize paths through the existing authenticated Fleet bridge.
-  - [ ] Keep Fleet Control separately signed and allowlisted for host actions; conversational context must never imply approval or expand project policy.
+  - [x] Let Jarvis preview orchestrator plans and explain daemon recommendations before the user approves material changes.
+  - [x] Add end-to-end canaries for ask, plan, execute, observe, approve, recover, and summarize paths through the existing authenticated Fleet bridge.
+  - [x] Keep Fleet Control separately signed and allowlisted for host actions; conversational context must never imply approval or expand project policy.
+  - [x] Add authenticated-boundary contracts for plan previews, Ed25519-signed allowlisted Fleet actions, and ask/plan/execute/observe/approve/recover/summarize canaries.
 
 - [x] Task: link every future roadmap task or bug to a milestone.
   - Milestone: 3 Developer Dashboard

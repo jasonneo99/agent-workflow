@@ -25,6 +25,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
+import { runOptimizerCycle } from "../../../packages/workflow-optimizer/src/index.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -23031,6 +23032,21 @@ async function runLearningDaemonTick(input: {
     }
   }
   const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
+  await runOptimizerCycle({
+    projectDir: input.projectDir,
+    events: [{ id: `run-scan:${report.generatedAt}`, kind: "run.completed", projectId: input.projectDir, occurredAt: report.generatedAt }],
+    recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({
+      id: `workflow-shape:${index}:${report.generatedAt}`,
+      projectId: input.projectDir,
+      kind: "stage" as const,
+      evidence: Math.min(1, report.runsAnalyzed / 10),
+      impact: 0.5,
+      reversibility: 1,
+      risk: "medium" as const,
+      confidence: Math.min(1, report.runsAnalyzed / 5),
+      duplicateKey: JSON.stringify(item)
+    })) ?? []
+  });
   return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog };
 }
 
