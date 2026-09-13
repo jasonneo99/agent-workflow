@@ -164,6 +164,8 @@ This is the authoritative order for open roadmap work. Phase and milestone
 numbers describe product structure, not execution priority. Re-rank this list
 when dependencies, incidents, or new evidence materially change the order.
 
+Completed integration: optimizer dashboard control plane, optimizer approval records, durable evidence-event ingestion, fair multi-project scheduling, authenticated shared-brain APIs, and shared-brain lifecycle/security canaries.
+
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external

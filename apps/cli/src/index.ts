@@ -24,7 +24,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
-import { runOptimizerCycle } from "../../../packages/workflow-optimizer/src/index.js";
+import { authenticateSharedBrainRequest, createJarvisIntent, fairProjectOrder, optimizerDashboardReport, previewJarvisPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -4318,7 +4318,9 @@ program
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
-        const targets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
+        const discoveredTargets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
+        const fairIds = fairProjectOrder(discoveredTargets.map(target => ({ projectId: target, maxActions: limit, consumedActions: 0, queueDepth: 0 }))).map(item => item.projectId);
+        const targets = [...discoveredTargets].sort((a, b) => fairIds.indexOf(a) - fairIds.indexOf(b));
         let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
         let analyzedRuns = 0;
         let proposalCount = 0;
@@ -22959,9 +22961,16 @@ async function runLearningDaemonTick(input: {
     }
   }
   const approvalBacklog = await buildApprovalBacklogReport({ projectRootUri: input.projectDir, limit: 500, staleMinutes: 60 });
+  const optimizerEvents = [
+    ...report.failedRuns.map(run => ({ id: `run-failed:${run.runId}`, kind: "evaluation.failed" as const, projectId: input.projectDir, occurredAt: run.startedAt })),
+    ...(report.routeFeedback.latestAt ? [{ id: `feedback:${report.routeFeedback.latestAt}`, kind: "feedback.created" as const, projectId: input.projectDir, occurredAt: report.routeFeedback.latestAt }] : []),
+    ...(report.latestEvaluationAt ? [{ id: `evaluation:${report.latestEvaluationAt}`, kind: "run.completed" as const, projectId: input.projectDir, occurredAt: report.latestEvaluationAt }] : []),
+    ...(approvalBacklog.severityCounts.warning || approvalBacklog.severityCounts.error ? [{ id: `approval-backlog:${report.generatedAt}`, kind: "approval.stale" as const, projectId: input.projectDir, occurredAt: report.generatedAt }] : []),
+    ...report.costOpportunities.filter(item => item.fallbackRate >= 0.5).map(item => ({ id: `provider-degraded:${item.providerId}:${item.workflowId}:${item.stageId}`, kind: "provider.degraded" as const, projectId: input.projectDir, occurredAt: report.generatedAt }))
+  ];
   await runOptimizerCycle({
     projectDir: input.projectDir,
-    events: [{ id: `run-scan:${report.generatedAt}`, kind: "run.completed", projectId: input.projectDir, occurredAt: report.generatedAt }],
+    events: optimizerEvents,
     recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({ id: `workflow-shape:${index}:${report.generatedAt}`, projectId: input.projectDir, kind: "stage" as const, evidence: Math.min(1, report.runsAnalyzed / 10), impact: 0.5, reversibility: 1, risk: "medium" as const, confidence: Math.min(1, report.runsAnalyzed / 5), duplicateKey: JSON.stringify(item) })) ?? []
   });
   return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
@@ -25555,6 +25564,36 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const status = await loadLearningDaemonStatus(project);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(status, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/optimizer-status") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: "Missing project" })); return; }
+    const projectDir = path.resolve(process.cwd(), project);
+    const state = await readOptimizerState(projectDir);
+    const events = await readOptimizerEvents(projectDir);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(optimizerDashboardReport(state, state.approvals, events), null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-shared-brain/status") {
+    if (!authenticateSharedBrainRequest(firstHeader(request.headers.authorization) ?? undefined, process.env.AGENTFLOW_SERVER_TOKEN)) { response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }); response.end(JSON.stringify({ error: "authenticated server access is required" })); return; }
+    const projectId = requestUrl.searchParams.get("projectId") ?? "";
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify({ projectId, ...sharedBrainSummary({ activeGoals: [], recentDecisions: [], openApprovalCount: 0, learnedPreferenceCount: 0, degradedServices: [] }) }, null, 2));
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/server-shared-brain/intent") {
+    if (!authenticateSharedBrainRequest(firstHeader(request.headers.authorization) ?? undefined, process.env.AGENTFLOW_SERVER_TOKEN)) { response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }); response.end(JSON.stringify({ error: "authenticated server access is required" })); return; }
+    try {
+      const payload = objectValue(await readJsonBody(request, serverRequestLimits().maxBodyBytes));
+      const intent = createJarvisIntent({ requestId: stringValue(payload.requestId) ?? randomUUID(), conversationId: stringValue(payload.conversationId) ?? "server", projectId: stringValue(payload.projectId) ?? undefined, goal: stringValue(payload.goal) ?? "", requestedAutonomy: parseLearningDaemonMode(stringValue(payload.requestedAutonomy) ?? "propose"), createdAt: new Date().toISOString() });
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ intent, preview: previewJarvisPlan(intent, []) }, null, 2));
+    } catch (error) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); }
     return;
   }
 
@@ -29261,6 +29300,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       </form>
     </section>
     ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
+    ${selectedProject ? `<section class="panel"><div class="section-heading"><div><h2>Workflow Optimizer</h2><span class="muted">Durable events, budgets, shadow evidence, approvals, and fleet health.</span></div><a class="button secondary" href="/api/optimizer-status?project=${encodeURIComponent(selectedProject)}">JSON</a></div><div id="optimizer-summary" class="meta-grid"><div><strong>Status</strong>Loading…</div></div></section><script>fetch(${JSON.stringify(`/api/optimizer-status?project=${encodeURIComponent(selectedProject)}`)}).then(r=>r.json()).then(r=>{document.getElementById('optimizer-summary').innerHTML='<div><strong>Status</strong>'+String(r.health?.status??'unknown')+'</div><div><strong>Events</strong>'+String(r.eventCursorCount??0)+'</div><div><strong>Queue</strong>'+String(r.health?.queueDepth??0)+'</div><div><strong>Budget</strong>'+String(r.health?.budgetConsumed??0)+' / '+String(r.health?.budgetLimit??0)+'</div><div><strong>Shadow Results</strong>'+String(r.shadowResults?.length??0)+'</div><div><strong>Approvals</strong>'+String(r.approvals?.length??0)+'</div>'}).catch(()=>{document.getElementById('optimizer-summary').textContent='Optimizer status unavailable.'})</script>` : ""}
     ${body}
   </main>
 </body>
