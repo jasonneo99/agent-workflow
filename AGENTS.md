@@ -11,6 +11,25 @@ This repository is the shared Portable Agent Workflows kit. It defines reusable 
 - Developer-facing CLI lives in `apps/cli/`.
 - Enterprise storage and local services live in `infra/`.
 
+## Repository-Wide Open-Source Boundary
+
+The [Open Source Boundary](docs/open-source-boundary.md) applies to every tracked
+file in this repository: source code, agent prompts, workflow definitions,
+schemas, migrations, tests, fixtures, documentation, screenshots, examples,
+configuration templates, and generated release metadata.
+
+- Commit only portable framework behavior, generic contracts, synthetic or
+  scrubbed evidence, and neutral examples.
+- Never commit personal memory, real fleet topology, private project mappings,
+  customer or product intelligence, credentials, machine-specific paths, or
+  unsanitized runtime artifacts.
+- Put personal Jarvis behavior, private skills, real host configuration, and
+  deployment overlays in a separately access-controlled companion repository.
+- A private companion may depend on tagged Agent Workflow releases; Agent
+  Workflow must never depend on or import the private companion.
+- Run `npm run validate-boundary` before committing. Do not weaken its checks to
+  accommodate private material; generalize or move that material instead.
+
 ## Agent Roster
 
 Core agents:
@@ -69,6 +88,16 @@ that authority.
 - `build-feature`: plan, implement, verify, document, and package a feature.
 - `review-pr`: review changes for bugs, risks, missing tests, UX, and security.
 - `debug-failure`: reproduce, diagnose, fix, and verify a failure.
+- `ci-triage`: classify CI failures, diagnose the highest-impact issue, and verify the correction.
+- `security-audit`: assess threats, secrets, dependencies, privacy, and remediation evidence.
+- `product-discovery`: frame product problems, review experience needs, and assess feasibility.
+- `roadmap-curation`: review daemon suggestions and insert only approved roadmap items without starting work.
+- `dependency-upgrade`: assess, apply, and verify bounded dependency upgrades.
+- `data-migration`: design, approve, execute, and verify reversible data migrations.
+- `performance-investigation`: baseline, diagnose, optimize, and compare measurable performance.
+- `accessibility-review`: audit accessibility barriers and verify remediation coverage.
+- `incident-response`: triage, contain, verify recovery, and document follow-up work.
+- `architecture-decision`: compare options and record an approved architecture decision.
 - `ship-release`: check readiness and prepare release approval.
 - `maintain-context`: refresh project context and reusable memory.
 - `model-improvement`: diagnose and plan local quality, cost, routing, evaluation, retrieval, prompt, or fine-tuning improvements without exporting private data by default.
@@ -118,3 +147,5 @@ Use `npm run init-project -- --project /path/to/project --profile enterprise` fo
 - Keep workflow stages narrow and auditable.
 - Treat project-local context as the source of truth for project-specific facts.
 - Preserve portability across model providers.
+- Apply the open-source/personal boundary to every file type and contribution,
+  including tests and documentation.

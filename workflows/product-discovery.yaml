@@ -1,0 +1,48 @@
+id: product-discovery
+name: Product Discovery
+description: Turn a problem or opportunity into evidence-backed product scope, success measures, and roadmap candidates.
+lead: product-strategist
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: frame
+    agent: product-strategist
+    goal: Clarify the user problem, constraints, intended outcome, assumptions, and measurable success criteria.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - project_context
+        - roadmap
+        - recent_decisions
+      max_tokens: 5000
+    output: product_brief
+  - id: experience-review
+    agent: ux-reviewer
+    goal: Evaluate user journeys, usability risks, accessibility needs, and trust implications.
+    pattern:
+      type: verifier
+      promotion_gate: none
+    context:
+      load:
+        - product_brief
+        - relevant_source_files
+      max_tokens: 5000
+    output: experience_assessment
+  - id: feasibility
+    agent: technical-architect
+    goal: Compare feasible approaches, dependencies, delivery risks, and incremental slices.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    context:
+      load:
+        - product_brief
+        - experience_assessment
+        - architecture_docs
+      max_tokens: 6000
+    output: discovery_recommendation

@@ -1,0 +1,47 @@
+id: accessibility-review
+name: Accessibility Review
+description: Audit accessibility, prioritize barriers, prepare remediation, and verify regressions.
+lead: ux-reviewer
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: experience-audit
+    agent: ux-reviewer
+    goal: Review user journeys for keyboard, screen-reader, visual, cognitive, and trust barriers.
+    pattern:
+      type: verifier
+      promotion_gate: none
+    context:
+      load:
+        - project_contract
+        - site_files
+        - quality_reports
+      max_tokens: 6000
+    output: accessibility_findings
+  - id: technical-review
+    agent: frontend-engineer
+    goal: Map validated accessibility findings to specific implementation changes and standards.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    context:
+      load:
+        - accessibility_findings
+        - relevant_source_files
+      max_tokens: 6000
+    output: accessibility_remediation_plan
+  - id: verify
+    agent: test-engineer
+    goal: Define and run automated and manual regression checks for the affected journeys.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - accessibility_remediation_plan
+        - commands
+      max_tokens: 4000
+    output: accessibility_verification

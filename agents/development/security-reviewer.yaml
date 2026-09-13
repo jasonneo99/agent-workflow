@@ -21,7 +21,10 @@ requires_approval:
   - changing_security_policy
 context_budget:
   max_tokens: 2500
-  preferred_sources: []
+  preferred_sources:
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: security_review
 prompt: >

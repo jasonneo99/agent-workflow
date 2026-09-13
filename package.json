@@ -61,7 +61,7 @@
   "scripts": {
     "setup": "tsx apps/cli/src/setup.ts",
     "build": "tsc",
-    "check": "npm run validate && npm run validate-examples && npm run typecheck && npm test",
+    "check": "npm run validate && npm run validate-boundary && npm run validate-examples && npm run typecheck && npm test",
     "canary:dynamic": "DEFAULT_MODEL_PROVIDER=mock tsx apps/cli/src/index.ts dynamic-plan --project templates/project --task 'Create me a local web app that tracks release readiness' --json",
     "prepack": "npm run build",
     "pack:check": "node scripts/verify-package.mjs",
@@ -120,6 +120,7 @@
     "onboard-project": "tsx apps/cli/src/index.ts onboard-project",
     "validate": "tsx apps/cli/src/index.ts validate",
     "validate-examples": "node scripts/validate-scrubbed-examples.mjs",
+    "validate-boundary": "node scripts/validate-open-source-boundary.mjs",
     "list": "tsx apps/cli/src/index.ts list",
     "mcp": "tsx apps/mcp/src/index.ts",
     "object-artifact-proof": "tsx apps/cli/src/index.ts object-artifact-proof",

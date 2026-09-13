@@ -14,12 +14,12 @@
   },
   "counts": {
     "agents": 25,
-    "workflows": 9,
-    "files": 34
+    "workflows": 19,
+    "files": 44
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "7b01dc80c379e36cd9f94bf505c1abe27700cbaa9912d0ba1dd780b0aefc0366"
+    "value": "9ffcefb2ca84e7fe1eefc5b01737cbe22e9ae8752d47455dc500351c18a7e88d"
   },
   "agents": [
     {
@@ -60,7 +60,7 @@
     {
       "id": "task-triager",
       "path": "agents/core/task-triager.yaml",
-      "checksum": "a34ace7353b010f20edddfe720c517aeefac199cd3c6b22a73ba9f63705633c8"
+      "checksum": "fd7895aa93085c43edb215c5b19afb3453225105ce8d130e53de4dfba6ebd7b7"
     },
     {
       "id": "workflow-orchestrator",
@@ -70,7 +70,7 @@
     {
       "id": "backend-engineer",
       "path": "agents/development/backend-engineer.yaml",
-      "checksum": "0df53d64340aba9e6f492fc5021e3efb7052a4b9794a5dbe1001c1699d585967"
+      "checksum": "97885ef86d01bc1f27bd99b330491769355d56c61485b4586bbc981807031f71"
     },
     {
       "id": "ci-debugger",
@@ -90,12 +90,12 @@
     {
       "id": "frontend-engineer",
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "20c7a6402cc68f7498f2e4a50533bc31c3eef9f4140620de9735485187824dd0"
+      "checksum": "c1545e3c87fbca3992126311df51bdfb176aa11eca158ba71c28af1bd0ca5192"
     },
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "08e031b3be5d7072c3fcf63bc325a799d0ed16450d827339dd2a6fdbcd3c1a95"
+      "checksum": "efcdb84cc51d6952051059c65828bd0c26cfab44d9dc72d0730d2da8890c0ccf"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -110,12 +110,12 @@
     {
       "id": "security-reviewer",
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "b36349f7e80b57ffa083880db7a36e033eab2897cc33013d417ac966a62a4653"
+      "checksum": "88d4c47d8a68c337dddf520b89c59246f63b4cc7a721e8afb3e64ce94b40d5f9"
     },
     {
       "id": "technical-architect",
       "path": "agents/development/technical-architect.yaml",
-      "checksum": "1bc87869ef2688427526c945f5ec18ac5426dad194644f9f4df57d5ef7d20e90"
+      "checksum": "135bce1ac714597bc3e4aa1aecbeed5bc70e0587eb6f61a4604cbc9c64609ba0"
     },
     {
       "id": "test-engineer",
@@ -125,7 +125,7 @@
     {
       "id": "docs-maintainer",
       "path": "agents/operations/docs-maintainer.yaml",
-      "checksum": "2d759d6fb8fd38e6b29784491bd9d0d0785d9b6257167b026b6781c3d68965f3"
+      "checksum": "064171512795f0bef1499582a694d0a045999759e88685410a429adb26ddd566"
     },
     {
       "id": "pr-preparer",
@@ -145,19 +145,49 @@
     {
       "id": "ux-reviewer",
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "6c11a524e44eebc8cf381b73cf484a05909038c821a028df3e8a389d0d303906"
+      "checksum": "0d952381af4db2bb765081df34a348aee76c6ac2eba1d1acfe6df92919796f6e"
     }
   ],
   "workflows": [
+    {
+      "id": "accessibility-review",
+      "path": "workflows/accessibility-review.yaml",
+      "checksum": "23cb506efb8f9e345dc3beeda3976fee0cf38e6042d826dc5a877e95cd203097"
+    },
+    {
+      "id": "architecture-decision",
+      "path": "workflows/architecture-decision.yaml",
+      "checksum": "5a52b8bf00985f66950ab9086d01d019574ec3d6697d5106db9104c3a6628bf9"
+    },
     {
       "id": "build-feature",
       "path": "workflows/build-feature.yaml",
       "checksum": "b984515e3da1a257c5d87be56b2f18a1b7897a0f6167c66432e7f95fe764ce22"
     },
     {
+      "id": "ci-triage",
+      "path": "workflows/ci-triage.yaml",
+      "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+    },
+    {
+      "id": "data-migration",
+      "path": "workflows/data-migration.yaml",
+      "checksum": "128fecaf771c12220dbd1ed0e269bbade79df49c190dba4ca37f1c884cc610ab"
+    },
+    {
       "id": "debug-failure",
       "path": "workflows/debug-failure.yaml",
       "checksum": "965484c7f035a622e00daf8a303d4a16dadd5936b837a6220165064f84716970"
+    },
+    {
+      "id": "dependency-upgrade",
+      "path": "workflows/dependency-upgrade.yaml",
+      "checksum": "0f14363187da9beddc0ed9afeb3f91bc123635e2d97ac9cdef1c0192ef9ac920"
+    },
+    {
+      "id": "incident-response",
+      "path": "workflows/incident-response.yaml",
+      "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
     },
     {
       "id": "maintain-context",
@@ -168,6 +198,16 @@
       "id": "model-improvement",
       "path": "workflows/model-improvement.yaml",
       "checksum": "43df0bb3bdde08e651d13d2c7bf64761daee8ad09f6e8106296a99e8844d2f1e"
+    },
+    {
+      "id": "performance-investigation",
+      "path": "workflows/performance-investigation.yaml",
+      "checksum": "abee449fa90a5303c7b8b285dd688765b0d526fe3a5a0d4f94cebca419f57b91"
+    },
+    {
+      "id": "product-discovery",
+      "path": "workflows/product-discovery.yaml",
+      "checksum": "63b594f864db800f0247669e801fc61c659d6b7063692114c6abe3bab27ac421"
     },
     {
       "id": "production-readiness",
@@ -183,6 +223,16 @@
       "id": "review-pr",
       "path": "workflows/review-pr.yaml",
       "checksum": "a2a05368c8d185ebe0d8a199f18ea70679e2511ab80bc94c41a549578bbfc207"
+    },
+    {
+      "id": "roadmap-curation",
+      "path": "workflows/roadmap-curation.yaml",
+      "checksum": "441a56bb69b4fc03a316550edd0433dfefbc02ffc46c7dbf9636f9b9cb12a9c4"
+    },
+    {
+      "id": "security-audit",
+      "path": "workflows/security-audit.yaml",
+      "checksum": "067dfa5b5a0d1e8ccf4c446eaaf7371026a6a23dc9a560d9db9b6203b5cc4ded"
     },
     {
       "id": "ship-release",
@@ -226,7 +276,7 @@
     },
     {
       "path": "agents/core/task-triager.yaml",
-      "checksum": "a34ace7353b010f20edddfe720c517aeefac199cd3c6b22a73ba9f63705633c8"
+      "checksum": "fd7895aa93085c43edb215c5b19afb3453225105ce8d130e53de4dfba6ebd7b7"
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
@@ -234,7 +284,7 @@
     },
     {
       "path": "agents/development/backend-engineer.yaml",
-      "checksum": "0df53d64340aba9e6f492fc5021e3efb7052a4b9794a5dbe1001c1699d585967"
+      "checksum": "97885ef86d01bc1f27bd99b330491769355d56c61485b4586bbc981807031f71"
     },
     {
       "path": "agents/development/ci-debugger.yaml",
@@ -250,11 +300,11 @@
     },
     {
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "20c7a6402cc68f7498f2e4a50533bc31c3eef9f4140620de9735485187824dd0"
+      "checksum": "c1545e3c87fbca3992126311df51bdfb176aa11eca158ba71c28af1bd0ca5192"
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "08e031b3be5d7072c3fcf63bc325a799d0ed16450d827339dd2a6fdbcd3c1a95"
+      "checksum": "efcdb84cc51d6952051059c65828bd0c26cfab44d9dc72d0730d2da8890c0ccf"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
@@ -266,11 +316,11 @@
     },
     {
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "b36349f7e80b57ffa083880db7a36e033eab2897cc33013d417ac966a62a4653"
+      "checksum": "88d4c47d8a68c337dddf520b89c59246f63b4cc7a721e8afb3e64ce94b40d5f9"
     },
     {
       "path": "agents/development/technical-architect.yaml",
-      "checksum": "1bc87869ef2688427526c945f5ec18ac5426dad194644f9f4df57d5ef7d20e90"
+      "checksum": "135bce1ac714597bc3e4aa1aecbeed5bc70e0587eb6f61a4604cbc9c64609ba0"
     },
     {
       "path": "agents/development/test-engineer.yaml",
@@ -278,7 +328,7 @@
     },
     {
       "path": "agents/operations/docs-maintainer.yaml",
-      "checksum": "2d759d6fb8fd38e6b29784491bd9d0d0785d9b6257167b026b6781c3d68965f3"
+      "checksum": "064171512795f0bef1499582a694d0a045999759e88685410a429adb26ddd566"
     },
     {
       "path": "agents/operations/pr-preparer.yaml",
@@ -294,15 +344,39 @@
     },
     {
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "6c11a524e44eebc8cf381b73cf484a05909038c821a028df3e8a389d0d303906"
+      "checksum": "0d952381af4db2bb765081df34a348aee76c6ac2eba1d1acfe6df92919796f6e"
+    },
+    {
+      "path": "workflows/accessibility-review.yaml",
+      "checksum": "23cb506efb8f9e345dc3beeda3976fee0cf38e6042d826dc5a877e95cd203097"
+    },
+    {
+      "path": "workflows/architecture-decision.yaml",
+      "checksum": "5a52b8bf00985f66950ab9086d01d019574ec3d6697d5106db9104c3a6628bf9"
     },
     {
       "path": "workflows/build-feature.yaml",
       "checksum": "b984515e3da1a257c5d87be56b2f18a1b7897a0f6167c66432e7f95fe764ce22"
     },
     {
+      "path": "workflows/ci-triage.yaml",
+      "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+    },
+    {
+      "path": "workflows/data-migration.yaml",
+      "checksum": "128fecaf771c12220dbd1ed0e269bbade79df49c190dba4ca37f1c884cc610ab"
+    },
+    {
       "path": "workflows/debug-failure.yaml",
       "checksum": "965484c7f035a622e00daf8a303d4a16dadd5936b837a6220165064f84716970"
+    },
+    {
+      "path": "workflows/dependency-upgrade.yaml",
+      "checksum": "0f14363187da9beddc0ed9afeb3f91bc123635e2d97ac9cdef1c0192ef9ac920"
+    },
+    {
+      "path": "workflows/incident-response.yaml",
+      "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
     },
     {
       "path": "workflows/maintain-context.yaml",
@@ -311,6 +385,14 @@
     {
       "path": "workflows/model-improvement.yaml",
       "checksum": "43df0bb3bdde08e651d13d2c7bf64761daee8ad09f6e8106296a99e8844d2f1e"
+    },
+    {
+      "path": "workflows/performance-investigation.yaml",
+      "checksum": "abee449fa90a5303c7b8b285dd688765b0d526fe3a5a0d4f94cebca419f57b91"
+    },
+    {
+      "path": "workflows/product-discovery.yaml",
+      "checksum": "63b594f864db800f0247669e801fc61c659d6b7063692114c6abe3bab27ac421"
     },
     {
       "path": "workflows/production-readiness.yaml",
@@ -323,6 +405,14 @@
     {
       "path": "workflows/review-pr.yaml",
       "checksum": "a2a05368c8d185ebe0d8a199f18ea70679e2511ab80bc94c41a549578bbfc207"
+    },
+    {
+      "path": "workflows/roadmap-curation.yaml",
+      "checksum": "441a56bb69b4fc03a316550edd0433dfefbc02ffc46c7dbf9636f9b9cb12a9c4"
+    },
+    {
+      "path": "workflows/security-audit.yaml",
+      "checksum": "067dfa5b5a0d1e8ccf4c446eaaf7371026a6a23dc9a560d9db9b6203b5cc4ded"
     },
     {
       "path": "workflows/ship-release.yaml",

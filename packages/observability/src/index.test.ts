@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
+// boundary-synthetic-fixtures: credential-shaped values below verify redaction only.
 import { buildObservabilityReport } from "./index.js";
 import type { ArtifactStatus, WorkflowRunStatus, WorkflowTaskStatus } from "../../storage/src/postgres.js";
 

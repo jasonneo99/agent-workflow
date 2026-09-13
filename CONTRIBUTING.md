@@ -28,6 +28,12 @@ npm run check
 
 Keep this repository focused on reusable developer workflows. Before adding domain-specific behavior, read [Open Source Boundary](docs/open-source-boundary.md).
 
+This boundary applies to every tracked file, including code, tests, fixtures,
+prompts, workflows, schemas, docs, screenshots, examples, templates, and
+generated metadata. Run `npm run validate-boundary`; private material must be
+generalized, scrubbed, or moved to a separately controlled companion repository
+rather than allowlisted here.
+
 Good contributions usually improve:
 
 - reusable agent definitions
@@ -77,6 +83,7 @@ Run:
 
 ```bash
 npm run validate
+npm run validate-boundary
 npm run check
 ```
 

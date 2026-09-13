@@ -31,3 +31,4 @@ test("maintenance commits stage only the exact validated files", async () => {
   assert.ok(result?.hash);
   assert.match((await runFile("git", ["status", "--short"], { cwd: root })).stdout, /user\.txt/u);
 });
+// boundary-synthetic-fixtures: credential-shaped values below verify maintenance detection only.

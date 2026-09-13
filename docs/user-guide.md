@@ -574,6 +574,11 @@ Use `review-pr` for reviewing local changes, PR-like work, or risk-sensitive are
 Before queueing work, inspect the workflow graph, stage patterns, agents,
 subagents, context budgets, approval points, and selected policy profile:
 
+The dashboard network view prefers the read-only
+`/api/workflow-graph-events` Server-Sent Events feed for live run, stage,
+agent, tool, approval, completion, and failure state. It reconnects with
+bounded exponential backoff and retains periodic JSON polling as a fallback.
+
 ```bash
 npm run agentflow -- workflow-graph \
   --workflow build-feature \

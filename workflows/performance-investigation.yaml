@@ -1,0 +1,64 @@
+id: performance-investigation
+name: Performance Investigation
+description: Establish a baseline, isolate bottlenecks, apply a scoped optimization, and compare results.
+lead: technical-architect
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: baseline
+    agent: test-engineer
+    goal: Define a reproducible performance baseline, workload, metrics, and regression budget.
+    pattern:
+      type: verifier
+      promotion_gate: none
+    context:
+      load:
+        - commands
+        - quality_reports
+        - project_context
+      max_tokens: 5000
+    output: performance_baseline
+  - id: diagnose
+    agent: technical-architect
+    goal: Isolate the dominant bottleneck and select the appropriate frontend, backend, or database specialist.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    subagents:
+      - frontend-engineer
+      - backend-engineer
+      - database-engineer
+    context:
+      load:
+        - performance_baseline
+        - relevant_source_files
+      max_tokens: 7000
+    output: performance_diagnosis
+  - id: optimize
+    agent: implementation-agent
+    goal: Apply the smallest measurable optimization supported by the diagnosis.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
+    context:
+      load:
+        - performance_diagnosis
+        - touched_files
+      max_tokens: 6000
+    output: performance_changes
+  - id: compare
+    agent: auto-test-runner
+    goal: Compare before and after metrics and reject changes that exceed regression budgets.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - performance_baseline
+        - performance_changes
+      max_tokens: 5000
+    output: performance_verification

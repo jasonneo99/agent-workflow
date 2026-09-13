@@ -892,6 +892,16 @@ foundation is complete.
 
 ## Roadmap Task And Bug Register
 
+- [x] Task: evolve the learning daemon into a proactive, explainable workflow optimizer.
+  - Milestone: 6 Local Learning Daemon
+  - Priority: high
+  - Status: implemented with event wakeups, persisted cursors and budgets, explainable ranking, shadow evidence, promotion/rollback receipts, and fleet-health summaries integrated into governed daemon ticks.
+
+- [x] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: implemented with non-executable intent envelopes, explainable plan previews, bounded summaries, full lifecycle canaries, and signed allowlisted Fleet actions. Personal adapters remain in the private companion repository.
+
 This register records cross-cutting tasks and recurring defects that should stay
 visible even when the detailed roadmap sections move around. The dashboard reads
 this file directly, so roadmap updates automatically flow into `/roadmap` and

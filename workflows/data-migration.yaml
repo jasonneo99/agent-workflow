@@ -1,0 +1,63 @@
+id: data-migration
+name: Data Migration
+description: Design, preview, approve, execute, and verify a reversible schema or data migration.
+lead: database-engineer
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: inspect
+    agent: database-engineer
+    goal: Inspect the current schema and data constraints without changing persistent state.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - database_schema
+        - migrations
+        - project_policy
+      max_tokens: 6000
+    output: migration_assessment
+  - id: design
+    agent: backend-engineer
+    goal: Design forward and rollback migrations, application compatibility, batching, and downtime controls.
+    pattern:
+      type: planner
+      requires_verifier: true
+      promotion_gate: approval
+    subagents:
+      - security-reviewer
+    context:
+      load:
+        - migration_assessment
+        - relevant_source_files
+      max_tokens: 7000
+    output: migration_plan
+  - id: execute
+    agent: database-engineer
+    goal: Execute only the explicitly approved migration using project policy and record complete receipts.
+    pattern:
+      type: executor
+      requires_verifier: true
+      promotion_gate: policy
+    approval_required: true
+    context:
+      load:
+        - migration_plan
+        - project_policy
+      max_tokens: 5000
+    output: migration_receipt
+  - id: verify
+    agent: test-engineer
+    goal: Verify data integrity, application compatibility, and rollback readiness.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - migration_receipt
+        - commands
+      max_tokens: 5000
+    output: migration_verification

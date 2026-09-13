@@ -11,8 +11,10 @@ reachable. Every `agentflow index-project` run, including watch-mode refreshes,
 also republishes. The publisher resolves only `project.roadmap_path` (or
 `docs/roadmap.md`) beneath the canonical project root and rejects absolute paths,
 parent traversal, and symlinks that escape the checkout. Input is capped at 1 MB;
-output is capped at 500 checklist items (200 by default). Titles and section names
-are bounded and local absolute paths are redacted.
+the retained item set is capped at 500 checklist items. Titles and section names
+are bounded and local absolute paths are redacted. Indented prose immediately
+following a checklist item is joined to its title; nested list metadata remains
+separate.
 
 The latest validated snapshot is retained in `project_index_state.metadata` under
 `roadmapSnapshot`. It contains only:
@@ -23,7 +25,10 @@ The latest validated snapshot is retained in `project_index_state.metadata` unde
 - source modification and publication timestamps
 - bounded publishing hostname (never a checkout path)
 - ready/empty/missing/unavailable publication state and bounded reason
-- checklist totals, truncation flag, and bounded item ID/title/section/line/status
+- checklist totals and complete per-section total/open/done aggregates
+- explicit captured/returned counts, offset, limit, truncation, `hasMore`, and
+  `nextOffset` metadata
+- bounded item ID/title/section/line/status records
 
 ## Authenticated read contract
 
@@ -31,6 +36,15 @@ The latest validated snapshot is retained in `project_index_state.metadata` unde
 server bearer-token or OIDC-proxy authentication as governed server mutations.
 Bearer clients send `Authorization: Bearer <AGENTFLOW_SERVER_TOKEN>`. Responses set
 `Cache-Control: no-store`.
+
+The endpoint returns a bounded item window. `limit` defaults to 100 and is capped
+at 500; `offset` defaults to 0. Follow `nextOffset` while `hasMore` is true.
+`totalItems` and `sections` always describe the full parsed roadmap, while
+`capturedItems` reports how many item records the publisher retained and
+`returnedItems` reports the size of the current response page. `truncated` is true
+whenever the response does not contain all `totalItems`; if `capturedItems` is
+less than `totalItems`, later item records were intentionally not retained, but
+the complete section aggregates remain available.
 
 The response kind is `agentflow_server_roadmap_snapshot`. `status` is one of:
 
@@ -56,6 +70,7 @@ are unambiguous. The response never includes `rootUri` or another host path.
 
 Rollback by returning the Heimdall process and workstation publishers to the prior
 package revision. Retained `roadmapSnapshot` JSON is additive and can remain in
-`project_index_state`; older versions ignore it. Fleet clients should fall back to
+`project_index_state`; older versions ignore the new metadata, and the new parser
+continues accepting earlier version-1 snapshots. Fleet clients should fall back to
 their prior read-only status when the endpoint is unavailable, never to arbitrary
 filesystem access.
