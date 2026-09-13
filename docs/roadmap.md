@@ -107,6 +107,9 @@ These milestones organize the detailed roadmap items below:
      receipts, and owner-controlled project-local auto-apply exist; next
      improvement is stronger promotion evidence and review UX before any
      broader shared-agent or research-driven automation.
+   - The authenticated server health contract now aggregates supervisor,
+     worker-lane, logical daemon-lane, trust, and per-project learning status
+     for bounded private clients such as Jarvis.
 
 8. **Multi-Project / Multi-Machine State Plane**
    - Workstreams: shared storage migration, shared host/LAN/Tailscale state plane,
@@ -171,6 +174,10 @@ optimizer, action, runtime-maintenance, repository-steward, release/CI, security
 and backup/recovery lanes. Each project can select an independent low, medium,
 or high autonomous risk ceiling for every lane without bypassing policy,
 validation, receipts, or the repository-wide open-source boundary.
+
+Completed daemon module extraction: daemon settings and trust policy, dashboard
+rendering, request parsing, status reporting, supervisor lane coordination, and
+focused contracts now have dedicated owners outside the CLI entry point.
 
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence

@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
 import YAML from "yaml";
+import { supervisedDaemonLaneStatus } from "./supervisor-daemon-lanes.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
@@ -318,6 +319,7 @@ async function writeHeartbeat(status, message) {
     learningIntervalMs: positiveNumber(learningIntervalMs, 60000),
     learningLimit: positiveNumber(learningLimit, 50),
     learningHeartbeatPath,
+    daemonLanes: supervisedDaemonLaneStatus(learningEnabled),
     workerLimit,
     workerConcurrency,
     workerPoolProfile: configuredWorkerPoolProfile ?? null,

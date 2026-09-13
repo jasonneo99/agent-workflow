@@ -26,6 +26,10 @@ import { compileContext } from "../../../packages/context-compiler/src/index.js"
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { authenticateSharedBrainRequest, createJarvisIntent, fairProjectOrder, optimizerDashboardReport, previewJarvisPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
 import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, type DaemonTrustSettings } from "../../../packages/daemon-control/src/index.js";
+import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.js";
+import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
+import { renderDaemonControl } from "./dashboard/daemon-control.js";
+import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -4265,9 +4269,12 @@ program
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
-        const discoveredTargets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
-        const fairIds = fairProjectOrder(discoveredTargets.map(target => ({ projectId: target, maxActions: limit, consumedActions: 0, queueDepth: 0 }))).map(item => item.projectId);
-        const targets = [...discoveredTargets].sort((a, b) => fairIds.indexOf(a) - fairIds.indexOf(b));
+        const discoveredTargets = allProjects
+          ? await loadLearningDaemonProjectTargets(projectDir)
+          : [{ projectDir, enabled: true, paused: false, mode, limit }];
+        const enabledTargets = discoveredTargets.filter((target) => target.enabled && !target.paused);
+        const fairIds = fairProjectOrder(enabledTargets.map((target) => ({ projectId: target.projectDir, maxActions: target.limit, consumedActions: 0, queueDepth: 0 }))).map((item) => item.projectId);
+        const targets = [...enabledTargets].sort((a, b) => fairIds.indexOf(a.projectDir) - fairIds.indexOf(b.projectDir));
         let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
         let analyzedRuns = 0;
         let proposalCount = 0;
@@ -4294,9 +4301,10 @@ program
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
-        for (const targetProjectDir of targets) {
+        for (const target of targets) {
+          const targetProjectDir = target.projectDir;
           try {
-            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit, daemonId, approvalAutopilotOverride });
+            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode: target.mode, limit: target.limit, daemonId, approvalAutopilotOverride });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
             analyzedRuns += update.report.runsAnalyzed;
@@ -4330,7 +4338,7 @@ program
         }
         mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
         staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
-        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
+        await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
           proposals: proposalCount,
           inboxItems: inboxCount,
           applicationActions,
@@ -6877,6 +6885,29 @@ type LearningSettings = {
   approvalAutopilotEnabled: boolean;
   approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
   daemonTrustLevels: DaemonTrustSettings;
+  daemonEnabled: boolean;
+  daemonPaused: boolean;
+  daemonMode: LearningDaemonMode;
+  daemonRunLimit: number;
+};
+
+type ServerDaemonFleetHealthReport = {
+  kind: "agentflow_server_daemon_fleet_health";
+  generatedAt: string;
+  status: "healthy" | "attention";
+  counts: { projects: number; running: number; paused: number; disabled: number; unavailable: number; workerLanes: number; activeWorkerLanes: number; daemonLanes: number };
+  supervisor: { status: DashboardSupervisorStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; message: string };
+  worker: { status: DashboardWorkerStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; lanes: Array<{ id: string; status: DashboardWorkerLane["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; claimed: number; completed: number; failed: number }> };
+  daemonLanes: Array<{ id: string; name: string; purpose: string; trust: "low" | "medium" | "high"; status: "running" | "attention" }>;
+  projects: Array<{ projectId: string; name: string; scheduling: "enabled" | "paused" | "disabled"; daemonStatus: DashboardLearningDaemonStatus["status"]; mode: LearningDaemonMode; runLimit: number; heartbeatAgeMs: number | null; lastHeartbeatAt: string | null; lastError: string | null }>;
+};
+
+type LearningDaemonProjectTarget = {
+  projectDir: string;
+  enabled: boolean;
+  paused: boolean;
+  mode: LearningDaemonMode;
+  limit: number;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -13155,6 +13186,70 @@ async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Pr
   } catch {
     return null;
   }
+}
+
+async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthReport> {
+  const [registry, supervisor, worker] = await Promise.all([
+    loadServerProjectRegistryReport({ limit: 100, includeRoots: true }),
+    loadDashboardSupervisorStatus(),
+    loadDashboardWorkerStatus()
+  ]);
+  const projects = await Promise.all(registry.projects.filter((project) => project.rootUri).map(async (project) => {
+    const localRoot = await resolveLocalProjectRootUri(project.rootUri as string);
+    const [settings, heartbeat] = await Promise.all([
+      readLearningSettings(localRoot).catch(() => null),
+      loadLearningDaemonStatus(localRoot)
+    ]);
+    const enabled = settings?.daemonEnabled ?? true;
+    const paused = settings?.daemonPaused ?? false;
+    return {
+      projectId: project.projectId,
+      name: project.name,
+      scheduling: (!enabled ? "disabled" : paused ? "paused" : "enabled") as "enabled" | "paused" | "disabled",
+      daemonStatus: heartbeat.status,
+      mode: settings?.daemonMode ?? heartbeat.mode ?? "apply-approved",
+      runLimit: settings?.daemonRunLimit ?? heartbeat.limit ?? 50,
+      heartbeatAgeMs: heartbeat.ageMs === null ? null : Math.max(0, Math.round(heartbeat.ageMs)),
+      lastHeartbeatAt: heartbeat.lastHeartbeatAt,
+      lastError: heartbeat.lastError ? truncateText(heartbeat.lastError, 240) : null
+    };
+  }));
+  const counts = {
+    projects: projects.length,
+    running: projects.filter((project) => project.daemonStatus === "running").length,
+    paused: projects.filter((project) => project.scheduling === "paused").length,
+    disabled: projects.filter((project) => project.scheduling === "disabled").length,
+    unavailable: projects.filter((project) => project.scheduling === "enabled" && project.daemonStatus !== "running").length,
+    workerLanes: worker.lanes.length,
+    activeWorkerLanes: worker.lanes.filter((lane) => lane.status === "running").length,
+    daemonLanes: daemonLanes.length
+  };
+  const firstRoot = registry.projects.find((project) => project.rootUri)?.rootUri;
+  const activeTrust = firstRoot ? await readLearningSettings(await resolveLocalProjectRootUri(firstRoot)).catch(() => null) : null;
+  const runtimeHealthy = worker.status === "running" && counts.unavailable === 0;
+  const supervisorStatus = supervisor.status === "missing" && worker.status === "running" ? "running" : supervisor.status;
+  const supervisorHeartbeatAt = supervisor.lastHeartbeatAt ?? worker.lastHeartbeatAt;
+  const supervisorHeartbeatAgeMs = supervisor.ageMs ?? worker.ageMs;
+  return {
+    kind: "agentflow_server_daemon_fleet_health",
+    generatedAt: new Date().toISOString(),
+    status: runtimeHealthy ? "healthy" : "attention",
+    counts,
+    supervisor: {
+      status: supervisorStatus,
+      lastHeartbeatAt: supervisorHeartbeatAt,
+      heartbeatAgeMs: supervisorHeartbeatAgeMs === null ? null : Math.max(0, Math.round(supervisorHeartbeatAgeMs)),
+      message: truncateText(supervisor.status === "missing" && worker.status === "running" ? "External service manager supervision is active." : supervisor.message, 160)
+    },
+    worker: {
+      status: worker.status,
+      lastHeartbeatAt: worker.lastHeartbeatAt,
+      heartbeatAgeMs: worker.ageMs === null ? null : Math.max(0, Math.round(worker.ageMs)),
+      lanes: worker.lanes.slice(0, 32).map((lane) => ({ id: lane.workerId ?? "worker", status: lane.status, lastHeartbeatAt: lane.lastHeartbeatAt, heartbeatAgeMs: lane.ageMs === null ? null : Math.max(0, Math.round(lane.ageMs)), claimed: lane.claimed, completed: lane.completed, failed: lane.failed }))
+    },
+    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: runtimeHealthy ? "running" : "attention" })),
+    projects
+  };
 }
 
 async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
@@ -23093,19 +23188,27 @@ function formatLearningDaemonMcpCleanupReceipt(receipt: {
   ].join("\n");
 }
 
-async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
+async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<LearningDaemonProjectTarget[]> {
   const summaries = await listProjectStorageSummaries(500);
+  const mappedRoots = await Promise.all(summaries.map((summary) => resolveLocalProjectRootUri(summary.rootUri)));
   const candidates = orderedUnique([
-    ...summaries.map((summary) => summary.rootUri),
+    ...mappedRoots,
     fallbackProjectDir
   ].map((item) => path.resolve(process.cwd(), item)));
-  const available: string[] = [];
+  const available: LearningDaemonProjectTarget[] = [];
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
-      available.push(candidate);
+      const settings = await readLearningSettings(candidate).catch(() => null);
+      available.push({
+        projectDir: candidate,
+        enabled: settings?.daemonEnabled ?? true,
+        paused: settings?.daemonPaused ?? false,
+        mode: settings?.daemonMode ?? "apply-approved",
+        limit: settings?.daemonRunLimit ?? 50
+      });
     }
   }
-  return available.length ? available : [fallbackProjectDir];
+  return available.length ? available : [{ projectDir: fallbackProjectDir, enabled: true, paused: false, mode: "apply-approved", limit: 50 }];
 }
 
 const discoveryMarkerFiles = [
@@ -23561,7 +23664,7 @@ async function learningWorkflowShapeAutoUpdateEnabled(projectDir: string): Promi
 async function learningAutonomousApplyMaxRisk(projectDir: string): Promise<LearningRiskLevel> {
   const override = process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK;
   const settings = await readLearningSettings(projectDir).catch(() => null);
-  return lowerRiskLevel(override ? parseLearningRiskLevel(override) : settings?.autonomousApplyMaxRisk ?? "medium", settings?.daemonTrustLevels["action-executor"] ?? "low");
+  return lowerTrustLevel(override ? parseLearningRiskLevel(override) : settings?.autonomousApplyMaxRisk ?? "medium", settings?.daemonTrustLevels["action-executor"] ?? "low");
 }
 
 async function learningAgentImprovementProjectLocalAutoApplyEnabled(projectDir: string): Promise<boolean> {
@@ -23591,12 +23694,7 @@ async function learningApprovalAutopilotEnabled(projectDir: string): Promise<boo
 async function learningApprovalAutopilotMaxRisk(projectDir: string): Promise<ApprovalAutopilotRisk> {
   const override = process.env.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK;
   const settings = await readLearningSettings(projectDir).catch(() => null);
-  return lowerRiskLevel(override ? parseApprovalAutopilotRisk(override) : settings?.approvalAutopilotMaxRisk ?? parseApprovalAutopilotRisk(process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK), settings?.daemonTrustLevels["action-executor"] ?? "low");
-}
-
-function lowerRiskLevel(left: LearningRiskLevel, right: LearningRiskLevel): LearningRiskLevel {
-  const levels: LearningRiskLevel[] = ["low", "medium", "high"];
-  return levels[Math.min(levels.indexOf(left), levels.indexOf(right))] ?? "low";
+  return lowerTrustLevel(override ? parseApprovalAutopilotRisk(override) : settings?.approvalAutopilotMaxRisk ?? parseApprovalAutopilotRisk(process.env.AGENTFLOW_LEARNING_AUTONOMOUS_MAX_RISK), settings?.daemonTrustLevels["action-executor"] ?? "low");
 }
 
 async function readLearningSettings(projectDir: string): Promise<LearningSettings> {
@@ -23615,7 +23713,11 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
     approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
     approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium")),
-    daemonTrustLevels: normalizeDaemonTrustSettings(parsed.daemonTrustLevels)
+    daemonTrustLevels: normalizeDaemonTrustSettings(parsed.daemonTrustLevels),
+    daemonEnabled: typeof parsed.daemonEnabled === "boolean" ? parsed.daemonEnabled : true,
+    daemonPaused: typeof parsed.daemonPaused === "boolean" ? parsed.daemonPaused : false,
+    daemonMode: parseLearningDaemonMode(String(parsed.daemonMode ?? "apply-approved")),
+    daemonRunLimit: Math.max(1, Math.min(500, typeof parsed.daemonRunLimit === "number" ? parsed.daemonRunLimit : 50))
   };
 }
 
@@ -24581,6 +24683,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       return;
     }
     const projectDir = path.resolve(process.cwd(), project);
+    const existingLearningSettings = await readLearningSettings(projectDir).catch(() => null);
     await writeLearningSettings(projectDir, {
       kind: "agentflow_learning_settings",
       projectRootUri: projectDir,
@@ -24590,7 +24693,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
       approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
       approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium"),
-      daemonTrustLevels: normalizeDaemonTrustSettings(Object.fromEntries(daemonLanes.map((lane) => [lane.id, form.get(`daemonTrust.${lane.id}`)])))
+      ...parseDaemonSettingsRequest(form),
+      daemonEnabled: existingLearningSettings?.daemonEnabled ?? true,
+      daemonPaused: existingLearningSettings?.daemonPaused ?? false,
+      daemonMode: existingLearningSettings?.daemonMode ?? "apply-approved",
+      daemonRunLimit: existingLearningSettings?.daemonRunLimit ?? 50
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -25144,6 +25251,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/server-daemon-fleet-health") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_daemon_fleet_health", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerDaemonFleetHealth();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/server-roadmap") {
     const auth = validateServerMutationAuth(request);
     if (!auth.ok) {
@@ -25524,6 +25644,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const events = await readOptimizerEvents(projectDir);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(optimizerDashboardReport(state, state.approvals, events), null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/daemon-control-status") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: "Missing project" })); return; }
+    const projectDir = path.resolve(process.cwd(), project);
+    const settings = await readLearningSettings(projectDir).catch(() => null);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(buildDaemonControlStatus(settings?.daemonTrustLevels), null, 2));
     return;
   }
 
@@ -29322,7 +29452,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
       ${learningDaemon ? renderLearningDaemonStatusHtml(learningDaemon, supervisor) : `<p class="muted">No project selected.</p>`}
       <p class="muted">Start autonomous mode with <code>${escapeHtml(daemonCommand)}</code>. It auto-applies low/medium-risk Agent Workflow-owned local optimization files by default, including project-local tuning overlays. High-risk source, provider, command, network, reusable bundle, and export changes still require approval.</p>
     </section>
-    ${renderDaemonControlHtml(report.projectDir, report.limit, workflowShape?.workflowId ?? "", daemonTrustLevels, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk)}
+    ${renderDaemonControl({ project: report.projectDir, limit: report.limit, workflow: workflowShape?.workflowId ?? "", trust: daemonTrustLevels, shapeAutoUpdate, agentAutoApply: agentImprovementProjectLocalAutoApply, autonomousMaxRisk: autonomousApplyMaxRisk, autopilotEnabled: approvalAutopilotEnabled, autopilotMaxRisk: approvalAutopilotMaxRisk })}
     ${workflowShape ? renderWorkflowShapeOptimizationHtml(workflowShape, shapeCommand, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels) : ""}
     ${agentImprovement ? renderAgentImprovementHtml(agentImprovement, agentImprovementEval, agentImprovementPromotion) : ""}
     <section class="panel">
@@ -29488,27 +29618,6 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
     </div>
     ${statusDetail ? `<p class="warn-box">${escapeHtml(statusDetail)}</p>` : ""}
   `;
-}
-
-function renderDaemonControlHtml(project: string, limit: number, workflow: string, trust: DaemonTrustSettings, shapeAutoUpdate: boolean, agentAutoApply: boolean, autonomousMaxRisk: LearningRiskLevel, autopilotEnabled: boolean, autopilotMaxRisk: ApprovalAutopilotRisk): string {
-  const cards = daemonLanes.map((lane) => {
-    const options = (["low", "medium", "high"] as const).map((level) => `<option value="${level}"${trust[lane.id] === level ? " selected" : ""}>${level}</option>`).join("");
-    return `<div class="card"><h3>${escapeHtml(lane.name)}</h3><p>${escapeHtml(lane.purpose)}</p><p class="muted">${escapeHtml(lane.capabilities.join(" · "))}</p><label>Maximum autonomous risk<select name="daemonTrust.${escapeHtml(lane.id)}">${options}</select></label></div>`;
-  }).join("");
-  return `<section class="panel">
-    <div class="section-heading"><div><h2>Daemon Control Plane</h2><span class="muted">Eight supervised lanes with independent trust ceilings.</span></div><span class="status completed">configured</span></div>
-    <p class="warn-box">Trust is a maximum eligible risk level. It never bypasses project policy, command/write allowlists, validation, receipts, the open-source boundary, or destructive-action gates.</p>
-    <form method="post" action="/api/learning-settings">
-      <input type="hidden" name="project" value="${escapeHtml(project)}"><input type="hidden" name="limit" value="${escapeHtml(String(limit))}"><input type="hidden" name="workflow" value="${escapeHtml(workflow)}">
-      ${shapeAutoUpdate ? '<input type="hidden" name="workflowShapeAutoUpdate" value="on">' : ""}
-      ${agentAutoApply ? '<input type="hidden" name="agentImprovementProjectLocalAutoApply" value="on">' : ""}
-      <input type="hidden" name="autonomousApplyMaxRisk" value="${escapeHtml(autonomousMaxRisk)}">
-      ${autopilotEnabled ? '<input type="hidden" name="approvalAutopilotEnabled" value="on">' : ""}
-      <input type="hidden" name="approvalAutopilotMaxRisk" value="${escapeHtml(autopilotMaxRisk)}">
-      <div class="metric-grid">${cards}</div>
-      <div class="form-actions"><button type="submit">Save daemon trust levels</button></div>
-    </form>
-  </section>`;
 }
 
 function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationReport, command: string, autoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, daemonTrustLevels: DaemonTrustSettings): string {
