@@ -25676,38 +25676,56 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/learning") {
+    const requestedLearningView = requestUrl.searchParams.get("view") ?? "overview";
+    const learningView = ["overview", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"].includes(requestedLearningView)
+      ? requestedLearningView
+      : "overview";
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
     const projectPath = project ? await resolveDashboardProjectPath(project) : null;
-    const report = project
-      ? await loadLearningReport({
+    const localLearningDir = projectPath?.localRootUri ?? project;
+    const reportPromise = project && learningView !== "overview"
+      ? loadLearningReport({
         projectDir: projectPath?.storageRootUri ?? project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       })
-      : null;
-    const localLearningDir = projectPath?.localRootUri ?? project;
-    const learningQueue = project ? await readLearningApprovalQueue(localLearningDir).catch(() => null) : null;
-    const learningDaemon = project ? await loadLearningDaemonStatus(localLearningDir) : null;
-    const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
-    const learningSettings = project ? await readLearningSettings(localLearningDir).catch(() => null) : null;
-    const learningActionReceipts = project ? await readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir))) : null;
-    const learningActionReceiptHealth = project ? await loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir)) : null;
-    const supervisor = await loadDashboardSupervisorStatus();
-    const workflowShape = project
-      ? await loadWorkflowShapeOptimization({
+      : Promise.resolve(null);
+    const learningQueuePromise = project && learningView === "approvals" ? readLearningApprovalQueue(localLearningDir).catch(() => null) : Promise.resolve(null);
+    const learningDaemonPromise = project && (learningView === "diagnostics" || learningView === "settings") ? loadLearningDaemonStatus(localLearningDir) : Promise.resolve(null);
+    const learningSettingsPromise = project && learningView === "settings" ? readLearningSettings(localLearningDir).catch(() => null) : Promise.resolve(null);
+    const learningActionReceiptsPromise = project && learningView === "diagnostics"
+      ? readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir)))
+      : Promise.resolve(null);
+    const learningActionReceiptHealthPromise = project && learningView === "diagnostics"
+      ? loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir))
+      : Promise.resolve(null);
+    const workflowShapePromise = project && learningView === "recommendations"
+      ? loadWorkflowShapeOptimization({
         projectDir: localLearningDir,
         workflowId: requestUrl.searchParams.get("workflow") ?? undefined,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       }).catch(() => null)
-      : null;
-    const agentImprovement = project
-      ? await loadAgentImprovementReport({
+      : Promise.resolve(null);
+    const agentImprovementPromise = project && learningView === "agent-improvements"
+      ? loadAgentImprovementReport({
         projectDir: localLearningDir,
         agentId: requestUrl.searchParams.get("agent") ?? undefined,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
         mode: "read-only"
       }).catch(() => null)
-      : null;
+      : Promise.resolve(null);
+    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement] = await Promise.all([
+      reportPromise,
+      learningQueuePromise,
+      learningDaemonPromise,
+      learningSettingsPromise,
+      learningActionReceiptsPromise,
+      learningActionReceiptHealthPromise,
+      loadDashboardSupervisorStatus(),
+      workflowShapePromise,
+      agentImprovementPromise
+    ]);
+    const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
     const agentImprovementEval = agentImprovement
       ? await buildAgentImprovementPatchPlan(path.resolve(process.cwd(), localLearningDir), agentImprovement, "all")
         .then((patchPlan) => buildAgentImprovementEvalPlan(path.resolve(process.cwd(), localLearningDir), patchPlan, "all", parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)))
@@ -28996,9 +29014,21 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   const approvalAutopilotEnabled = learningSettings?.approvalAutopilotEnabled ?? false;
   const approvalAutopilotMaxRisk = learningSettings?.approvalAutopilotMaxRisk ?? "medium";
   const daemonTrustLevels = learningSettings?.daemonTrustLevels ?? defaultDaemonTrustSettings();
+  const overviewBody = selectedProject ? `<section class="human-section learning-overview-intro">
+    <h2>Choose what to review</h2>
+    <p class="page-intro">Open only the evidence you need. Detailed analysis loads when you select a view.</p>
+    <div class="human-list">
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=recommendations"><span class="human-row-icon">${dashboardIcon("sparkles")}</span><span><strong>Recommendations</strong><small>Workflow improvements, evaluation gaps, and routing opportunities.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=approvals"><span class="human-row-icon">${dashboardIcon("shield")}</span><span><strong>Approvals</strong><small>Review learning proposals and planned changes.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=agent-improvements"><span class="human-row-icon">${dashboardIcon("agent")}</span><span><strong>Agent improvements</strong><small>Inspect evaluated changes to agent definitions.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=diagnostics"><span class="human-row-icon">${dashboardIcon("gauge")}</span><span><strong>Diagnostics</strong><small>Failures, receipts, routing signals, and daemon health.</small></span>${dashboardIcon("chevrons")}</a>
+    </div>
+  </section>` : "";
   const body = report
     ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels, supervisor, projectPath)
-    : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
+    : learningView === "overview" && selectedProject
+      ? overviewBody
+      : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Register or select a project to inspect read-only local learning evidence.</p></section>`;
   return `<!doctype html>
 <html>
 <head>
@@ -29052,7 +29082,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       (() => {
         const view = ${JSON.stringify(learningView)};
         const groups = {
-          overview: ["Recent Dashboard Actions", "Workflow Optimizer"],
+          overview: ["Recent Dashboard Actions", "Workflow Optimizer", "Choose what to review"],
           recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
           approvals: ["Learning Proposal Inbox", "Approved Application Plan"],
           "agent-improvements": ["Agent Definition Improvement"],
