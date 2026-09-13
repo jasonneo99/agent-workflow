@@ -26045,15 +26045,6 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     listActionApprovals({ status: "pending", limit: 25 }),
     listActionApprovals({ status: "approved", limit: 25 })
   ]);
-  const includeMock = requestUrl.searchParams.get("includeMock") === "true";
-  const usage = await withTimeout(
-    loadDashboardUsageSummary(runs.slice(0, 10), { includeMock }),
-    1200,
-    () => fallbackDashboardUsageSummary(runs, {
-      includeMock,
-      note: "Usage metrics timed out, so the dashboard rendered a fast run-status summary. Open run details or refresh for full cost/token estimates."
-    })
-  );
   const health: DashboardHomeHealth = {
     worker,
     supervisor,
@@ -26068,25 +26059,41 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     approvedExecutableApprovals: approvedExecutableApprovals.filter((approval) => isExecutableApprovalAction(approval.actionType) && !approval.executedAt)
   };
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs, workflows, usage, health));
+  response.end(renderDashboardHtml(runs, workflows, health));
 }
 
 function renderDashboardHtml(
   runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
   workflows: Awaited<ReturnType<typeof loadWorkflows>>,
-  usage: DashboardUsageSummary,
   health: DashboardHomeHealth
 ): string {
-  const rows = runs.map((run) => `
-    <tr>
-      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
-      <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
-      <td>${escapeHtml(run.workflowId)}</td>
-      <td>${escapeHtml(run.projectName)}</td>
-      <td>${escapeHtml(run.task)}</td>
-      <td>${renderDashboardDateTime(run.startedAt)}</td>
-    </tr>
-  `).join("");
+  const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "running").slice(0, 5);
+  const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 5);
+  const pendingApprovals = health.pendingApprovals.length;
+  const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
+  const attentionHref = pendingApprovals ? "/approvals?status=pending" : failedRuns ? "/queue" : "/settings";
+  const attentionTitle = pendingApprovals
+    ? `${pendingApprovals} approval${pendingApprovals === 1 ? "" : "s"} need a decision`
+    : failedRuns
+      ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"} need review`
+      : "Everything is ready";
+  const attentionDetail = pendingApprovals
+    ? "Review requested actions before work can continue."
+    : failedRuns
+      ? "Open failed work to understand what happened and recover safely."
+      : "Services are healthy and no decisions are blocking work.";
+  const workRows = activeRuns.map((run) => `
+    <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
+      <span class="human-row-icon">${dashboardIcon(run.status === "running" ? "activity" : "list")}</span>
+      <span><strong>${escapeHtml(compactDashboardText(run.task, 78))}</strong><small>${escapeHtml(run.projectName)} · ${escapeHtml(run.workflowId.replace(/-/g, " "))}</small></span>
+      <span class="human-row-state ${escapeHtml(run.status)}">${run.status === "running" ? "In progress" : "Waiting"}</span>
+    </a>`).join("");
+  const outcomeRows = recentRuns.map((run) => `
+    <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
+      <span class="human-row-icon ${run.status === "completed" ? "success" : "danger"}">${dashboardIcon(run.status === "completed" ? "check" : "warning")}</span>
+      <span><strong>${escapeHtml(compactDashboardText(run.task, 70))}</strong><small>${escapeHtml(run.projectName)} · ${renderDashboardDateTime(run.startedAt)}</small></span>
+      <span class="human-row-state ${escapeHtml(run.status)}">${run.status === "completed" ? "Completed" : "Needs review"}</span>
+    </a>`).join("");
   const workflowOptions = workflows
     .filter((workflow) => workflow.triggers.manual)
     .map((workflow) => `<option value="${escapeHtml(workflow.id)}">${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
@@ -26108,84 +26115,58 @@ function renderDashboardHtml(
   <main>
     <div class="topbar">
       <div>
-        <h1>Agent Workflow Dashboard</h1>
-        <p class="muted">Local control center for reusable development agents, runs, queues, providers, and project context.</p>
+        <h1>Home</h1>
+        <p class="page-intro">Here’s what needs your attention and what’s happening.</p>
       </div>
-      <div class="actions">
-        <a class="button secondary" href="/queue">Queue</a>
-        <a class="button secondary" href="/projects">Projects</a>
-        <a class="button secondary" href="/workflow-graph">Graph</a>
-        <a class="button secondary" href="/providers">Providers</a>
-        <a class="button secondary" href="/settings">Settings</a>
-        <a class="button secondary" href="/api/runs">JSON</a>
+      <a class="button start-work-link" href="#start-work">${dashboardIcon("play")} Start work</a>
+    </div>
+    <section class="attention-callout ${pendingApprovals || failedRuns ? "warn" : "good"}">
+      <span class="attention-icon">${dashboardIcon(pendingApprovals || failedRuns ? "warning" : "check")}</span>
+      <span><strong>${escapeHtml(attentionTitle)}</strong><small>${escapeHtml(attentionDetail)}</small></span>
+      <a class="button secondary" href="${attentionHref}">${pendingApprovals ? "Review approvals" : failedRuns ? "Review failed work" : "View system status"}</a>
+    </section>
+    <div class="home-layout">
+      <section class="human-section">
+        <div class="human-section-heading"><h2>In progress</h2><a href="/queue">View all work</a></div>
+        <div class="human-list">${workRows || '<div class="human-empty"><strong>No work is running</strong><span>Start something new when you’re ready.</span></div>'}</div>
+      </section>
+      <div class="home-side">
+        <section class="human-section recommended-action">
+          <h2>Recommended next action</h2>
+          <a class="recommendation-row" href="${attentionHref}"><span>${dashboardIcon(pendingApprovals ? "shield" : failedRuns ? "warning" : "play")}</span><span><strong>${pendingApprovals ? "Review approvals" : failedRuns ? "Review failed work" : "Start your next task"}</strong><small>${escapeHtml(attentionDetail)}</small></span>${dashboardIcon("chevrons")}</a>
+        </section>
+        <section class="human-section">
+          <div class="human-section-heading"><h2>Recent outcomes</h2><a href="/runs">View all</a></div>
+          <div class="human-list compact">${outcomeRows || '<div class="human-empty"><strong>No recent outcomes</strong><span>Completed work will appear here.</span></div>'}</div>
+        </section>
       </div>
     </div>
-    ${renderDashboardActionCenterHtml(health)}
-    ${renderDashboardRoadmapPriorityHtml(health.roadmap)}
-    <section class="panel">
-      <h2>System Health</h2>
-      ${renderDashboardHealthHtml(health)}
-    </section>
-    ${renderDashboardOperationsSnapshotHtml(health)}
-    <section class="panel">
-      <h2>Quick Actions</h2>
-      <div class="actions">
-        ${workflowPresets.map((preset) => presetForm(preset.id, preset.label, preset.project)).join("")}
-      </div>
-    </section>
-    <section class="panel">
-      <div class="section-heading">
-        <div>
-          <h2>Background Worker</h2>
-          <span class="muted">${escapeHtml(workerStatusDetail(health.worker))}</span>
-        </div>
-        <a class="button secondary" href="/queue">Open Queue</a>
-      </div>
-      ${renderWorkerStatusHtml(health.worker, { compact: true })}
-    </section>
-    <section class="panel">
-      <h2>Run Workflow</h2>
-      <form class="workflow-form" method="post" action="/api/workflow-run">
-        <label>Workflow
-          <select name="workflowId">${workflowOptions}</select>
-        </label>
+    <section class="human-section start-work" id="start-work">
+      <div class="human-section-heading"><div><h2>Start work</h2><p>Describe the outcome. Agent Workflow will handle the execution details.</p></div></div>
+      <form class="workflow-form human-composer" method="post" action="/api/workflow-run">
         <label>Project path
           <input name="project" value="${escapeHtml(defaultProject)}" placeholder="/path/to/project">
         </label>
-        <label class="wide">Task
-          <textarea name="task" rows="4" placeholder="Describe the work to run"></textarea>
+        <label>Workflow
+          <select name="workflowId">${workflowOptions}</select>
         </label>
-        <label>Source token budget
-          <input name="sourceTokenBudget" inputmode="numeric" placeholder="3000">
+        <label class="wide">What would you like done?
+          <textarea name="task" rows="4" placeholder="Describe the outcome you want"></textarea>
         </label>
-        <label>Source max files
-          <input name="sourceMaxFiles" inputmode="numeric" placeholder="20">
-        </label>
-        <label>Worker limit
-          <input name="workerLimit" inputmode="numeric" value="6">
-        </label>
-        <label>Worker concurrency
-          <input name="workerConcurrency" inputmode="numeric" value="1">
-        </label>
-        <label>Watch timeout ms
-          <input name="timeoutMs" inputmode="numeric" value="60000">
-        </label>
-        <label class="check-row">
-          <input type="checkbox" name="watch">
-          Run and watch
-        </label>
-        <div class="form-actions"><button type="submit">Queue Run</button></div>
+        <details class="advanced-options wide">
+          <summary>Advanced options</summary>
+          <div class="advanced-grid">
+            <label>Context token budget<input name="sourceTokenBudget" inputmode="numeric" placeholder="3000"></label>
+            <label>Maximum source files<input name="sourceMaxFiles" inputmode="numeric" placeholder="20"></label>
+            <label>Maximum work items<input name="workerLimit" inputmode="numeric" value="6"></label>
+            <label>Parallel work items<input name="workerConcurrency" inputmode="numeric" value="1"></label>
+            <label>Watch timeout in milliseconds<input name="timeoutMs" inputmode="numeric" value="60000"></label>
+            <label class="check-row"><input type="checkbox" name="watch"> Stay on this page while work starts</label>
+          </div>
+        </details>
+        <div class="form-actions wide"><button type="submit">Start work</button></div>
       </form>
-      <p class="muted">Queue only returns immediately. Run and watch processes a bounded number of worker ticks in the browser request, then returns the run status and link.</p>
     </section>
-    <section class="panel">
-      <h2>Usage & Performance</h2>
-      ${renderDashboardUsageHtml(usage)}
-    </section>
-    <table>
-      <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
-      <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
-    </table>
   </main>
 </body>
 </html>`;
@@ -29096,6 +29077,9 @@ function renderModelImprovementHtml(
 }
 
 function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null): string {
+  const learningViews = ["overview", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"] as const;
+  const requestedView = params.get("view");
+  const learningView = learningViews.includes(requestedView as typeof learningViews[number]) ? requestedView as typeof learningViews[number] : "overview";
   const selectedProject = projectPath?.storageRootUri ?? report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
@@ -29123,17 +29107,26 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   <main>
     <div class="topbar">
       <div>
-        <a href="/">Dashboard</a>
-        <h1>Learning</h1>
-        <p class="muted">Read-only local learning from approved feedback, run history, failures, routing, and evaluation evidence.</p>
+        <a href="/">Home</a>
+        <h1>Insights</h1>
+        <p class="page-intro">Review recommendations, decisions, and system learning without the implementation noise.</p>
       </div>
       ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
     </div>
+    <nav class="learning-tabs" aria-label="Insight views">
+      ${learningViews.map((view) => {
+        const hrefParams = new URLSearchParams(params);
+        hrefParams.set("view", view);
+        const label = view === "agent-improvements" ? "Agent improvements" : titleCase(view);
+        return `<a href="/learning?${escapeHtml(hrefParams.toString())}" class="${learningView === view ? "active" : ""}" ${learningView === view ? 'aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
+      }).join("")}
+    </nav>
     ${renderDashboardFlash(params)}
     ${renderDashboardActionHistory()}
     ${projectPath ? renderDashboardProjectPathResolutionHtml(projectPath) : ""}
     <section class="panel">
       <form method="get" class="workflow-form">
+        <input type="hidden" name="view" value="${escapeHtml(learningView)}">
         <label class="wide">Project path
           <input name="project" value="${escapeHtml(selectedProject)}" list="learning-projects" placeholder="/path/to/project">
           <datalist id="learning-projects">${projectOptions}</datalist>
@@ -29150,6 +29143,32 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
     ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
     ${selectedProject ? `<section class="panel"><div class="section-heading"><div><h2>Workflow Optimizer</h2><span class="muted">Durable events, budgets, shadow evidence, approvals, and fleet health.</span></div><a class="button secondary" href="/api/optimizer-status?project=${encodeURIComponent(selectedProject)}">JSON</a></div><div id="optimizer-summary" class="meta-grid"><div><strong>Status</strong>Loading…</div></div></section><script>fetch(${JSON.stringify(`/api/optimizer-status?project=${encodeURIComponent(selectedProject)}`)}).then(r=>r.json()).then(r=>{document.getElementById('optimizer-summary').innerHTML='<div><strong>Status</strong>'+String(r.health?.status??'unknown')+'</div><div><strong>Events</strong>'+String(r.eventCursorCount??0)+'</div><div><strong>Queue</strong>'+String(r.health?.queueDepth??0)+'</div><div><strong>Budget</strong>'+String(r.health?.budgetConsumed??0)+' / '+String(r.health?.budgetLimit??0)+'</div><div><strong>Shadow Results</strong>'+String(r.shadowResults?.length??0)+'</div><div><strong>Approvals</strong>'+String(r.approvals?.length??0)+'</div>'}).catch(()=>{document.getElementById('optimizer-summary').textContent='Optimizer status unavailable.'})</script>` : ""}
     ${body}
+    <script>
+      (() => {
+        const view = ${JSON.stringify(learningView)};
+        const groups = {
+          overview: ["Recent Dashboard Actions", "Workflow Optimizer"],
+          recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
+          approvals: ["Learning Proposal Inbox", "Approved Application Plan"],
+          "agent-improvements": ["Agent Definition Improvement"],
+          diagnostics: ["Project Path Mapping", "Route Feedback Signals", "Learning Daemon", "Recent Failed Runs", "Learning Receipt Health", "Proposal-To-Action Receipts", "Privacy Boundaries", "Next Commands"],
+          settings: ["Durable Learning Target", "Daemon Control Plane", "Autonomy Boundary"]
+        };
+        const utilityHeadings = ["Recent Dashboard Actions", "Project Path Mapping"];
+        const alwaysOverview = (section) => !section.querySelector("h2") && !section.querySelector("form") && !section.classList.contains("compact-panel");
+        document.querySelectorAll("main > section").forEach((section) => {
+          if (section.querySelector("form[method='get']")) {
+            section.classList.toggle("learning-hidden", view !== "overview");
+            return;
+          }
+          const heading = section.querySelector("h2")?.textContent?.trim() ?? "";
+          const allowed = view === "overview"
+            ? alwaysOverview(section) || groups.overview.includes(heading)
+            : groups[view]?.includes(heading) && !utilityHeadings.includes(heading);
+          section.classList.toggle("learning-hidden", !allowed);
+        });
+      })();
+    </script>
   </main>
 </body>
 </html>`;
@@ -29593,9 +29612,9 @@ function renderLearningActionReceiptsHtml(log: LearningActionReceiptLog, limit: 
       <form method="post" action="/api/learning-action-receipts" class="inline-action-form">
         <input type="hidden" name="project" value="${escapeHtml(log.projectRootUri)}">
         <input type="hidden" name="limit" value="${escapeHtml(String(limit))}">
-        <input name="reject" placeholder="action, proposal, or receipt id">
-        <input name="actor" value="dashboard">
-        <input name="note" placeholder="why reject this planned action">
+        <label>Item to reject<input name="reject" placeholder="action, proposal, or receipt id"></label>
+        <label>Decision made by<input name="actor" value="dashboard"></label>
+        <label>Reason for rejection<input name="note" placeholder="why reject this planned action"></label>
         <button type="submit" class="secondary">Reject Planned Action</button>
       </form>
       <div class="table-wrap"><table><thead><tr><th>Receipt</th><th>Status</th><th>Action</th><th>Type/Gate</th><th>Actor/Note</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No learning action receipts yet.</td></tr>"}</tbody></table></div>
@@ -37828,9 +37847,11 @@ function iconForMetric(label: string): DashboardIconName {
 function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
-      label: "Operate",
+      label: "Work",
+      id: "work",
+      href: "/queue",
+      icon: "play",
       items: [
-        ["dashboard", "/", "Dashboard", "grid"],
         ["queue", "/queue", "Queue", "list"],
         ["approvals", "/approvals", "Approvals", "shield"],
         ["runs", "/runs", "Runs", "activity"]
@@ -37838,8 +37859,10 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
     },
     {
       label: "Projects",
+      id: "projects",
+      href: "/projects",
+      icon: "file",
       items: [
-        ["projects", "/projects", "Projects", "file"],
         ["agents", "/agents", "Agents", "agent"],
         ["discovery", "/discovery", "Discovery", "search"],
         ["workflow-graph", "/workflow-graph", "Graph", "git"],
@@ -37847,43 +37870,46 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       ]
     },
     {
-      label: "Optimize",
+      label: "Insights",
+      id: "insights",
+      href: "/learning",
+      icon: "brain",
       items: [
         ["evaluations", "/evaluations", "Evaluations", "clipboard"],
-        ["learning", "/learning", "Learning", "brain"],
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
-        ["model-improvement", "/model-improvement", "Model Improve", "sparkles"],
+        ["model-improvement", "/model-improvement", "Model improvements", "sparkles"],
         ["candidate-comparisons", "/candidate-comparisons", "Comparisons", "chevrons"],
-        ["context-gateway", "/context-gateway", "Context Gateway", "route"],
+        ["context-gateway", "/context-gateway", "Context efficiency", "route"],
         ["roadmap", "/roadmap", "Roadmap", "clipboard"]
       ]
     },
     {
-      label: "Govern",
+      label: "Admin",
+      id: "admin",
+      href: "/settings",
+      icon: "settings",
       items: [
         ["governance", "/governance", "Governance", "shield"],
-        ["approval-rules", "/approval-rules", "Always Approved", "key"],
+        ["approval-rules", "/approval-rules", "Approval rules", "key"],
         ["roles", "/roles", "Roles", "users"],
         ["backup-report", "/backup-report", "Backup", "database"],
-        ["server-readiness", "/server-readiness", "Server", "server"],
-        ["bundles", "/bundles", "Bundles", "package"]
-      ]
-    },
-    {
-      label: "Setup",
-      items: [
+        ["server-readiness", "/server-readiness", "System readiness", "server"],
+        ["bundles", "/bundles", "Workflow bundles", "package"],
         ["providers", "/providers", "Providers", "route"],
-        ["model-catalog", "/model-catalog", "Catalog", "layers"],
-        ["info", "/settings", "Settings", "settings"]
+        ["model-catalog", "/model-catalog", "Model catalog", "layers"]
       ]
     }
-  ] as const satisfies ReadonlyArray<{ label: string; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
-  return `<nav class="side-nav" aria-label="Dashboard navigation">
-    <strong>Agent Workflow</strong>
+  ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
+  const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
+  return `<nav class="side-nav human-nav" aria-label="Dashboard navigation">
+    <div class="nav-brand"><strong>Agent Workflow</strong><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div>
+    <div id="dashboard-menu" class="dashboard-menu">
+      <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
     ${groups.map((group) => {
-      const activeGroup = group.items.some(([id]) => id === active);
-      return `<div class="nav-section ${activeGroup ? "active-group" : ""}"><span>${escapeHtml(group.label)}</span>${group.items.map(([id, href, label, iconName]) => `<a class="${active === id ? "active" : ""}" href="${href}">${iconLabel(iconName, label)}</a>`).join("")}</div>`;
+      const activeGroup = groupForActive?.id === group.id;
+      return `<div class="nav-cluster ${activeGroup ? "active-group" : ""}"><div class="primary-nav-row"><a class="primary-nav-link ${activeGroup ? "active" : ""}" ${activeGroup ? 'aria-current="page"' : ""} href="${group.href}">${iconLabel(group.icon, group.label)}</a><button type="button" class="nav-disclosure" aria-label="Show ${escapeHtml(group.label)} pages" aria-expanded="${activeGroup ? "true" : "false"}" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));this.closest('.nav-cluster')?.classList.toggle('expanded',!open)">${dashboardIcon("chevrons")}</button></div><div class="nav-children">${group.items.map(([id, href, label]) => `<a class="${active === id ? "active" : ""}" ${active === id ? 'aria-current="page"' : ""} href="${href}">${escapeHtml(label)}</a>`).join("")}</div></div>`;
     }).join("")}
+    </div>
   </nav>`;
 }
 
