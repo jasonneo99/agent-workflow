@@ -97,12 +97,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
 
-    return buildStageExecutionOutput(input, parsed, {
+    return { ...buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model,
         modelTier: input.modelTier ?? "standard",
         responseId: response.id
-    });
+    }), usage: { inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens, totalTokens: response.usage?.total_tokens } };
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {

@@ -33,6 +33,7 @@ export interface StageExecutionInput {
 export interface StageExecutionOutput {
   summary: string;
   artifact: Record<string, unknown>;
+  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
   requestedCommands?: string[];
   requestedFileWrites?: Array<{
     path: string;

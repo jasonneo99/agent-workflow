@@ -1,5 +1,25 @@
 # Evaluation Harness
 
+## Accepted Workflow Outcomes
+
+`quality-report` now reports provider-measured input-token coverage, measured
+frontier input tokens, and provider-reported cost for the run. A workflow counts
+as accepted only when it completed and its latest recorded feedback is
+`accepted`. Missing usage is shown as unavailable or partial and is never
+replaced by a projection.
+
+Aggregate the primary outcomes across recent project runs with:
+
+```bash
+npm run accepted-outcomes -- -p /path/to/project --limit 100 --json
+```
+
+The report separates the number of accepted workflows from the subset with
+measured usage, preventing uninstrumented historical runs from appearing as
+zero-token or zero-cost successes. OpenAI Responses and OpenAI-compatible
+adapters record provider-returned token counts for new workflow stages. Dollar
+cost remains unavailable unless an adapter supplies provider-reported cost.
+
 Agent Workflow evaluation suites compare the same workflow cases across model
 providers, model tiers, and prompt variants. Suites may be committed synthetic
 benchmarks or private project-local YAML files.

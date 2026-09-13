@@ -122,17 +122,21 @@ import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../
 import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readContextCacheHealth, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
 import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
-import { proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, runRepositoryCalibration, writeCalibrationEvidence } from "../../../packages/context-calibration/src/index.js";
+import { buildSegmentedThresholdQueue, inferContextLanguage, proposeContextThresholds, readLatestCalibration, repositoryHoldoutCorpusSchema, resolveSegmentedThresholdPolicy, runRepositoryCalibration, writeCalibrationEvidence, writeSegmentedThresholdQueue } from "../../../packages/context-calibration/src/index.js";
 import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { dashboardCss, roadmapDashboardCss } from "./dashboard/styles.js";
 import { dashboardIcon, type DashboardIconName } from "./dashboard/icons.js";
 import { registerRepositoryMaintenanceCommand } from "./commands/repository-maintenance.js";
+import { registerContextThresholdCommands } from "./commands/context-thresholds.js";
+import { registerAcceptedOutcomeCommands } from "./commands/accepted-outcomes.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
 
 const program = new Command();
 registerRepositoryMaintenanceCommand(program);
+registerContextThresholdCommands(program);
+registerAcceptedOutcomeCommands(program);
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const configuredEnvPath = agentWorkflowEnvPath(rootDir);
 dotenv.config({ path: configuredEnvPath, quiet: true });
@@ -1845,10 +1849,13 @@ program
     const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
     const sourcePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: options.file, label: "context source" });
     const content = await fs.readFile(sourcePath, "utf8");
-    const basePolicy = await loadContextRoutingPolicy();
+    const basePolicy = await loadContextRoutingPolicy(projectDir);
     const mode = options.mode && ["shadow", "advisory", "enforce"].includes(options.mode) ? options.mode as ContextRoutingPolicy["mode"] : basePolicy.mode;
-    const policy = contextRoutingPolicySchema.parse({ ...basePolicy, mode });
     const intent = parseContextIntent(options.intent);
+    const providerId = process.env.DEFAULT_MODEL_PROVIDER?.trim().toLowerCase() || "mock";
+    const extension = path.extname(options.file).toLowerCase().replace(/^\./u, "") || "none";
+    const segmentedPolicy = await resolveSegmentedThresholdPolicy({ projectRoot: projectDir, policy: basePolicy, segment: { language: inferContextLanguage(options.file), fileType: extension, stage: "context-route", model: providerId } });
+    const policy = contextRoutingPolicySchema.parse({ ...segmentedPolicy.policy, mode });
     const decision = decideContextRoute({ policy, intent, content, question: options.question });
     const holdoutEvidenceApproved = await hasApprovedContextHoldout(projectDir);
     let enforcement = enforceContextDecision({ policy, decision, exactReadRequested: Boolean(options.exact), holdoutApproved: Boolean(options.holdoutApproved) && holdoutEvidenceApproved });
@@ -1874,7 +1881,7 @@ program
       enforcement = enforceContextDecision({ policy, decision, confidence: minimumConfidence, exactReadRequested: Boolean(options.exact), holdoutApproved: Boolean(options.holdoutApproved) && holdoutEvidenceApproved });
     }
     const receipt = await writeContextRouteReceipt({ projectDir, projectId, file: options.file, intent, decision, enforcement, executed: Boolean(routed), cacheStatus, contentHash: contextSha256(content) });
-    const report = { projectId, fileHash: contextSha256(options.file), contentHash: contextSha256(content), intent, decision, enforcement, holdoutEvidenceApproved, executed: Boolean(routed), cacheStatus, cachePath: cachePath ? path.relative(projectDir, cachePath) : null, receipt: path.relative(projectDir, receipt), routed };
+    const report = { projectId, fileHash: contextSha256(options.file), contentHash: contextSha256(content), intent, decision, enforcement, thresholdProposalId: segmentedPolicy.proposalId, holdoutEvidenceApproved, executed: Boolean(routed), cacheStatus, cachePath: cachePath ? path.relative(projectDir, cachePath) : null, receipt: path.relative(projectDir, receipt), routed };
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else console.log([`Context route: ${decision.route} (${decision.risk} risk)`, `Policy action: ${enforcement.action} — ${enforcement.reason}`, `Executed: ${routed ? "yes" : "no"}; cache: ${cacheStatus}`, routed ? `Summary:\n${routed.summary}` : "Use --execute only after enforce mode and approved holdout evidence select a redirect.", `Receipt: ${path.relative(projectDir, receipt)}`].join("\n"));
   });
@@ -1916,7 +1923,9 @@ program
     const calibration = await runRepositoryCalibration({ projectRoot: projectDir, corpus, corpusRaw, policy, baseline });
     const proposal = proposeContextThresholds(calibration.report, policy);
     const evidence = await writeCalibrationEvidence({ projectRoot: projectDir, report: calibration.report, cases: calibration.cases, proposal });
-    const report = { ...calibration.report, proposal, evidence: path.relative(projectDir, evidence) };
+    const segmented = buildSegmentedThresholdQueue({ projectIdentity: projectDir, cases: calibration.cases, policy });
+    const thresholdQueue = await writeSegmentedThresholdQueue(projectDir, segmented);
+    const report = { ...calibration.report, proposal, segmentedProposalCount: segmented.proposals.length, thresholdQueue: path.relative(projectDir, thresholdQueue), evidence: path.relative(projectDir, evidence) };
     if (options.json) console.log(JSON.stringify(report, null, 2));
     else console.log([
       `Context calibration: ${report.corpus} (${report.cases} cases)`,
@@ -1924,6 +1933,7 @@ program
       `Token savings: ${report.tokenSavingsPercent}%; p95 added latency: ${report.p95AddedLatencyMs}ms`,
       `Regression gate: ${report.regression.passed ? "pass" : "fail"}; enforcement ready: ${report.enforcementReady ? "yes" : "no"}`,
       `Threshold proposals: ${report.proposal.changes.length} (review required; policy unchanged)`,
+      `Segmented proposals: ${report.segmentedProposalCount} (review queue: ${report.thresholdQueue})`,
       `Evidence: ${report.evidence}`
     ].join("\n"));
     if (!report.enforcementReady) process.exitCode = 1;

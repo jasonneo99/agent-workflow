@@ -71,6 +71,24 @@ receipts retain hashes and metrics rather than source bodies. Each run compares
 the newest prior result as a regression baseline. Any suggested routing
 threshold changes are marked `review-required` and never edit policy directly.
 
+Calibration also groups evidence by language, file type, workflow stage, and
+model. Segment proposals require a minimum sample count and are written to a
+project-local review queue. Listing is read-only; approval or rejection requires
+a named reviewer, and applying is possible only after approval. Every apply
+writes the prior overlay and its hash to a rollback snapshot before replacing
+the project-local segmented threshold overlay. Routed context reads consume a
+matching overlay only while its base-policy hash remains current:
+
+```bash
+npm run context-thresholds -- -p /path/to/project --json
+npm run context-thresholds -- -p /path/to/project --approve <proposal-id> --reviewer "Reviewer"
+npm run context-thresholds -- -p /path/to/project --apply --ids <proposal-id>
+```
+
+No proposal is generated when reviewed evidence already clears quality,
+citation, savings, and sample gates; calibration never widens higher-risk
+intent routing.
+
 ## Claude Code And Cursor Hooks
 
 Preview first, then merge a project hook without removing existing hooks:

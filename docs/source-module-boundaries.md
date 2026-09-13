@@ -24,10 +24,13 @@ presentation in `apps/cli/src/dashboard/`, and reusable behavior in the owning
 package under `packages/`. Command modules should depend on package APIs rather
 than importing other command modules.
 
-The first extraction moved dashboard styles and icons into the dashboard module
-and repository-maintenance registration into the commands module without
-changing command names or output. Continue by extracting cohesive command
-families and their tests; avoid a mechanical file-per-function split.
+The first extractions moved dashboard styles and icons into the dashboard
+module, repository-maintenance and accepted-outcome/threshold-review commands
+into command modules, MCP diagnostic redaction into a diagnostic module,
+database connection ownership into a storage client module, model-route receipt
+construction into a workflow-engine module, and accepted-workflow accounting
+into a run-reporter module. Continue by extracting cohesive command and storage
+families; avoid a mechanical file-per-function split.
 
 ## Current Large-File Inventory
 

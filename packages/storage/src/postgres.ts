@@ -1,12 +1,12 @@
-import pg from "pg";
+import type pg from "pg";
 import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-
-const { Client } = pg;
+import { withClient } from "./client.js";
+export { databaseUrl, withClient } from "./client.js";
 
 export function workflowDefinitionHash(definition: unknown): string {
   return createHash("sha256").update(stableJson(definition)).digest("hex");
@@ -19,20 +19,6 @@ function stableJson(value: unknown): string {
     return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
   }
   return JSON.stringify(value) ?? "null";
-}
-
-export function databaseUrl(): string {
-  return process.env.DATABASE_URL ?? "postgres://agentflow:agentflow@localhost:15432/agentflow";
-}
-
-export async function withClient<T>(fn: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new Client({ connectionString: databaseUrl() });
-  await client.connect();
-  try {
-    return await fn(client);
-  } finally {
-    await client.end();
-  }
 }
 
 export async function seedRegistry(

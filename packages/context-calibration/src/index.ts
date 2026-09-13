@@ -9,12 +9,16 @@ const intent = z.enum(["discovery", "summarization", "documentation", "test_inve
 export const repositoryHoldoutCorpusSchema = z.object({
   version: z.literal(1),
   name: z.string().min(1),
-  cases: z.array(z.object({ id: z.string().min(1), file: z.string().min(1), question: z.string().min(1), requiredTerms: z.array(z.string().min(1)).min(1), intent })).min(6)
+  cases: z.array(z.object({
+    id: z.string().min(1), file: z.string().min(1), question: z.string().min(1), requiredTerms: z.array(z.string().min(1)).min(1), intent,
+    language: z.string().min(1).optional(), fileType: z.string().min(1).optional(), stage: z.string().min(1).optional(), model: z.string().min(1).optional()
+  })).min(6)
 });
 
 export type RepositoryHoldoutCorpus = z.infer<typeof repositoryHoldoutCorpusSchema>;
 export type RepositoryCalibrationCase = {
   id: string; fileHash: string; contentHash: string; intent: ContextIntent; risk: "low" | "medium" | "high"; route: string;
+  language: string; fileType: string; stage: string; model: string;
   requiredTermsPresent: boolean; citationsValid: boolean; directTokens: number; routedTokens: number; addedLatencyMs: number;
 };
 export type RepositoryCalibrationReport = {
@@ -38,6 +42,8 @@ export async function runRepositoryCalibration(input: { projectRoot: string; cor
     const routed = routeUsesSlices ? slices.map((slice) => slice.excerpt).join("\n") : content;
     results.push({
       id: item.id, fileHash: hash(item.file), contentHash: hash(content), intent: item.intent, risk: decision.risk, route: decision.route,
+      language: item.language ?? inferContextLanguage(item.file), fileType: item.fileType ?? (path.extname(item.file).toLowerCase().replace(/^\./u, "") || "none"),
+      stage: item.stage ?? "unspecified", model: item.model ?? "policy-default",
       requiredTermsPresent: item.requiredTerms.every((term) => routed.toLowerCase().includes(term.toLowerCase())),
       citationsValid: !routeUsesSlices || (slices.length > 0 && slices.every((slice) => slice.contentHash === hash(content) && slice.startLine > 0 && slice.endLine >= slice.startLine)),
       directTokens: estimateContextTokens(content), routedTokens: estimateContextTokens(routed), addedLatencyMs: Math.ceil(performance.now() - started)
@@ -93,3 +99,10 @@ export async function readLatestCalibration(projectRoot: string): Promise<Reposi
 function count(values: string[]): Record<string, number> { return values.reduce<Record<string, number>>((out, value) => ({ ...out, [value]: (out[value] ?? 0) + 1 }), {}); }
 function hash(value: string): string { return createHash("sha256").update(value).digest("hex"); }
 function round(value: number): number { return Math.round(value * 1000) / 1000; }
+
+export function inferContextLanguage(file: string): string {
+  const extension = path.extname(file).toLowerCase();
+  return ({ ".ts": "typescript", ".tsx": "typescript", ".js": "javascript", ".mjs": "javascript", ".py": "python", ".rs": "rust", ".go": "go", ".java": "java", ".md": "markdown", ".yaml": "yaml", ".yml": "yaml", ".json": "json" } as Record<string, string>)[extension] ?? "unknown";
+}
+
+export * from "./threshold-learning.js";

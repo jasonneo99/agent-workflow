@@ -6,6 +6,7 @@ import { providerFromEnv } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
+import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
@@ -102,18 +103,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         target: `${task.workflowId}/${task.stageId}`,
         summary: `${route.providerId}${fallbackUsed ? ` -> ${fallbackProviderId}` : ""} quality=${quality.score}`,
         artifactKind: "model_route",
-        artifactContent: {
-          target: `${task.workflowId}/${task.stageId}`,
-          workflowId: task.workflowId,
-          stageId: task.stageId,
-          agentId: task.agentId,
-          route,
-          fallbackProviderId,
-          fallbackUsed,
-          latencyMs: Date.now() - startedAt,
-          stagePattern,
-          quality
-        }
+        artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
       });
 
       const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);

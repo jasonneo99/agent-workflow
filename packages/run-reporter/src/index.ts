@@ -4,6 +4,8 @@ import type {
   WorkflowRunStatus,
   WorkflowTaskStatus
 } from "../../storage/src/postgres.js";
+import { buildAcceptedWorkflowOutcome, type AcceptedWorkflowOutcome } from "./outcome-metrics.js";
+export * from "./outcome-metrics.js";
 
 export interface RunExportInput {
   run: WorkflowRunStatus;
@@ -39,6 +41,7 @@ export interface CostQualityReport {
   feedback: FeedbackSummary;
   stages: CostQualityStage[];
   recommendations: string[];
+  outcome?: AcceptedWorkflowOutcome;
 }
 
 export interface FeedbackSummary {
@@ -532,6 +535,7 @@ export function buildCostQualityReport(input: RunExportInput): CostQualityReport
   const routeArtifacts = input.artifacts.filter((artifact) => artifact.kind === "model_route");
   const stageOutputArtifacts = input.artifacts.filter((artifact) => artifact.kind === "stage_output");
   const feedback = collectRunFeedback(input.artifacts);
+  const outcome = buildAcceptedWorkflowOutcome({ accepted: input.run.status === "completed" && feedback.latest?.rating === "accepted", routeArtifacts });
   const stageOutputByKey = new Map(
     stageOutputArtifacts.map((artifact) => {
       const stageId = stringValue(artifact.content.stageId, "");
@@ -601,11 +605,13 @@ export function buildCostQualityReport(input: RunExportInput): CostQualityReport
     estimatedByoSavingsStages,
     feedback,
     stages,
-    recommendations: recommendCostQualityActions(stages, input.run.status, feedback)
+    recommendations: recommendCostQualityActions(stages, input.run.status, feedback),
+    outcome
   };
 }
 
 export function formatCostQualityReport(report: CostQualityReport): string {
+  const outcome = report.outcome ?? { accepted: false, measuredFrontierInputTokens: 0, measuredCostUsd: null, tokenCoverageStages: 0, routedStages: report.routedStages };
   return [
     `Cost & Quality Report: ${report.runId}`,
     `Status: ${report.status}`,
@@ -620,6 +626,9 @@ export function formatCostQualityReport(report: CostQualityReport): string {
     `- Fallbacks used: ${report.fallbackCount}`,
     `- Total latency: ${report.totalLatencyMs}ms`,
     `- Estimated BYO/local savings stages: ${report.estimatedByoSavingsStages}`,
+    `- Accepted workflow: ${outcome.accepted ? "yes" : "no"}`,
+    `- Measured frontier input tokens: ${outcome.tokenCoverageStages ? outcome.measuredFrontierInputTokens : "unavailable"} (${outcome.tokenCoverageStages}/${outcome.routedStages} stages covered)`,
+    `- Measured workflow cost: ${outcome.measuredCostUsd === null ? "unavailable" : `$${outcome.measuredCostUsd.toFixed(6)}`}`,
     `- Provider mix: ${formatCounts(report.providerMix)}`,
     `- Cost mix: ${formatCounts(report.estimatedCostMix)}`,
     `- Tier mix: ${formatCounts(report.modelTierMix)}`,

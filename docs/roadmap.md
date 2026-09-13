@@ -164,20 +164,7 @@ This is the authoritative order for open roadmap work. Phase and milestone
 numbers describe product structure, not execution priority. Re-rank this list
 when dependencies, incidents, or new evidence materially change the order.
 
-1. **Learn segmented Context Gateway thresholds from reviewed evidence.**
-   - Priority: high
-   - Why now: repository calibration and review-required proposals exist; the
-     next step is to segment evidence by project, language, file type, stage,
-     and model without automatically widening risk.
-   - Exit gate: reviewed proposals can be approved or rejected with rollback
-     evidence and never mutate shared policy implicitly.
-2. **Measure accepted-workflow cost and actual frontier input tokens.**
-   - Priority: high
-   - Why next: calibration proves retrieval behavior, while the product success
-     gate depends on real accepted-workflow cost and frontier-token outcomes.
-   - Exit gate: reports join routing receipts to accepted workflow outcomes and
-     distinguish measured savings from projections.
-3. **Continue MCP transport diagnosis when the defect reproduces.**
+1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
    - Why conditional: existing repository mitigations and recovery receipts are
@@ -186,6 +173,13 @@ when dependencies, incidents, or new evidence materially change the order.
      more repository work is justified.
    - Exit gate: capture a reproducible client-side failure boundary or obtain a
      client/runtime fix; keep the documented CLI recovery path available.
+2. **Continue cohesive source-module extraction.**
+   - Priority: medium
+   - Why next: the first CLI, MCP, storage, reporting, and executor seams are
+     established, while repository maintenance still reports five production
+     source files above the review threshold.
+   - Exit gate: each extraction has an owning domain, focused tests, stable
+     public contracts, and a smaller large-file inventory.
 
 ## Phase 1: Shared Platform Hardening
 
@@ -556,12 +550,13 @@ Goal: improve quality and cost while keeping personalization auditable and porta
     advisory modes never block; enforce mode requires passing persisted holdout
     evidence plus explicit approval, preserves exact reads, promotes high-risk
     and low-confidence work, and records every route attempt.
-  - Learn thresholds by project, language, file type, workflow stage, and model
-    only from reviewed evidence; keep shared policy promotion and any expansion
-    into higher-risk work approval-gated with rollback support.
-  - Report total cost per accepted workflow and frontier-model input tokens as
-    the primary outcomes. Treat compression percentage for delegated reads as a
-    diagnostic metric, not the headline result.
+  - Done: learn proposed thresholds by project, language, file type, workflow
+    stage, and model only from reviewed evidence; require named approval or
+    rejection, keep higher-risk routing unchanged, and write rollback evidence
+    before applying a project-local overlay.
+  - Done: report provider-measured cost per accepted workflow and actual
+    frontier-model input tokens as the primary outcomes, with explicit partial
+    or unavailable coverage instead of presenting projections as measurements.
   - Initial success gate: demonstrate 30–60% lower frontier-model input tokens
     on repository-heavy holdouts, no statistically meaningful quality
     regression, bounded p95 added latency, correct citations, zero cross-project

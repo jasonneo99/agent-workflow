@@ -3,7 +3,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { redactDiagnosticData, shortDiagnosticHash } from "./diagnostics.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v3";
@@ -241,6 +241,29 @@ server.registerTool(
   },
   async ({ project, cases, json }) => {
     const args = ["context-holdout", "--project", project, "--cases", cases];
+    if (json) args.push("--json");
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_context_thresholds",
+  {
+    title: "AgentFlow segmented context thresholds",
+    description: "List or explicitly review segmented threshold proposals; applying requires a previously approved proposal and writes rollback evidence.",
+    inputSchema: {
+      project: z.string(), approve: z.string().optional(), reject: z.string().optional(), apply: z.boolean().optional(), ids: z.string().optional(),
+      reviewer: z.string().optional(), note: z.string().optional(), json: z.boolean().optional()
+    }
+  },
+  async ({ project, approve, reject, apply, ids, reviewer, note, json }) => {
+    const args = ["context-thresholds", "--project", project];
+    if (approve) args.push("--approve", approve);
+    if (reject) args.push("--reject", reject);
+    if (apply) args.push("--apply");
+    if (ids) args.push("--ids", ids);
+    if (reviewer) args.push("--reviewer", reviewer);
+    if (note) args.push("--note", note);
     if (json) args.push("--json");
     return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
   }
@@ -1101,6 +1124,25 @@ server.registerTool(
     if (json) {
       args.push("--json");
     }
+    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+  }
+);
+
+server.registerTool(
+  "agentflow_accepted_outcomes",
+  {
+    title: "AgentFlow accepted workflow outcomes",
+    description: "Report measured frontier input tokens and provider-reported cost per accepted workflow.",
+    inputSchema: {
+      project: z.string().describe("Project directory."),
+      limit: z.number().int().positive().max(1000).optional(),
+      json: z.boolean().optional()
+    }
+  },
+  async ({ project, limit, json }) => {
+    const args = ["accepted-outcomes", "--project", project];
+    if (limit) args.push("--limit", String(limit));
+    if (json) args.push("--json");
     return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
   }
 );
@@ -2091,13 +2133,13 @@ function approvalCallDiagnostic(input: {
 }
 
 function shortHash(value: string): string {
-  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+  return shortDiagnosticHash(value);
 }
 
 async function appendMcpLog(event: string, data: Record<string, unknown>): Promise<void> {
   try {
     await fs.mkdir(path.dirname(mcpLogPath), { recursive: true });
-    await fs.appendFile(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactLogData(data) })}\n`, "utf8");
+    await fs.appendFile(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactDiagnosticData(data) })}\n`, "utf8");
   } catch {
     // MCP uses stdout for the protocol; logging failures must stay silent.
   }
@@ -2106,15 +2148,8 @@ async function appendMcpLog(event: string, data: Record<string, unknown>): Promi
 function appendMcpLogSyncSafe(event: string, data: Record<string, unknown>): void {
   try {
     fsSync.mkdirSync(path.dirname(mcpLogPath), { recursive: true });
-    fsSync.appendFileSync(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactLogData(data) })}\n`, "utf8");
+    fsSync.appendFileSync(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactDiagnosticData(data) })}\n`, "utf8");
   } catch {
     // Best-effort process-exit breadcrumb only.
   }
-}
-
-function redactLogData(data: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(data).map(([key, value]) => [
-    key,
-    /(?:key|token|secret|password|databaseUrl|redisUrl)/i.test(key) ? "[redacted]" : value
-  ]));
 }
