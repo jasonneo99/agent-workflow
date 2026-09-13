@@ -179,6 +179,10 @@ Completed daemon module extraction: daemon settings and trust policy, dashboard
 rendering, request parsing, status reporting, supervisor lane coordination, and
 focused contracts now have dedicated owners outside the CLI entry point.
 
+Completed learning-governance extraction: approval queue decisions and governed
+application-plan construction now share a tested package contract across CLI,
+dashboard, and daemon execution paths.
+
 1. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external

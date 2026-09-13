@@ -28,6 +28,7 @@ import { authenticateSharedBrainRequest, createJarvisIntent, fairProjectOrder, o
 import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, type DaemonTrustSettings } from "../../../packages/daemon-control/src/index.js";
 import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.js";
 import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
+import { buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals, type LearningApplicationAction, type LearningApplicationPlan, type LearningApprovalDecisionResult, type LearningApprovalItem, type LearningApprovalQueue, type LearningApprovalStatus, type LearningProposal, type LearningProposalKind, type LearningProposalPriority, type LearningProposalSet, type LearningRiskLevel } from "../../../packages/learning-governance/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -4434,7 +4435,7 @@ program
   .action(async (options: { project: string; ids: string; write?: boolean; json?: boolean }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
     const queue = await readLearningApprovalQueue(projectDir);
-    const plan = buildLearningApplicationPlan(queue, parseProposalIds(options.ids));
+    const plan = buildGovernedLearningApplicationPlan(queue, parseProposalIds(options.ids));
     if (options.write) {
       await writeLearningApplicationPlan(projectDir, plan);
       await recordLearningApplicationPlanReceipts(projectDir, plan, "learning-application-plan", "application plan written");
@@ -6677,84 +6678,6 @@ type AgentImprovementApplyResult = {
   skippedIds: string[];
   unknownIds: string[];
   dryRun: boolean;
-};
-
-type LearningProposalPriority = "high" | "medium" | "low";
-type LearningProposalKind = "repeated_failure" | "cost_routing" | "route_feedback" | "eval_gap" | "feedback_gap" | "proposal_followup";
-type LearningRiskLevel = "low" | "medium" | "high";
-type LearningApprovalStatus = "pending" | "approved" | "rejected";
-
-type LearningProposalSet = {
-  kind: "agentflow_learning_proposals";
-  projectRootUri: string;
-  generatedAt: string;
-  sourceReportGeneratedAt: string;
-  sourceRunsAnalyzed: number;
-  proposals: LearningProposal[];
-  summary: string[];
-};
-
-type LearningProposal = {
-  id: string;
-  priority: LearningProposalPriority;
-  kind: LearningProposalKind;
-  riskLevel: LearningRiskLevel;
-  title: string;
-  target: string;
-  rationale: string;
-  evidence: string[];
-  recommendation: string;
-  approvalRequired: boolean;
-};
-
-type LearningApprovalQueue = {
-  kind: "agentflow_learning_approval_queue";
-  projectRootUri: string;
-  generatedAt: string;
-  sourceGeneratedAt: string;
-  sourceRunsAnalyzed: number;
-  skippedIds: string[];
-  items: LearningApprovalItem[];
-};
-
-type LearningApprovalItem = {
-  id: string;
-  proposalId: string;
-  status: LearningApprovalStatus;
-  createdAt: string;
-  decidedAt?: string;
-  reviewer?: string;
-  note?: string;
-  proposal: LearningProposal;
-};
-
-type LearningApprovalDecisionResult = {
-  queue: LearningApprovalQueue;
-  selectedIds: string[];
-  skippedIds: string[];
-};
-
-type LearningApplicationPlan = {
-  kind: "agentflow_learning_application_plan";
-  projectRootUri: string;
-  generatedAt: string;
-  sourceGeneratedAt: string;
-  selectedIds: string[];
-  skippedIds: string[];
-  actions: LearningApplicationAction[];
-  summary: string[];
-};
-
-type LearningApplicationAction = {
-  id: string;
-  proposalId: string;
-  title: string;
-  actionType: "collect_feedback" | "create_eval" | "debug_failure" | "review_tuning" | "apply_tuning_overlay" | "refresh_routing_recommendations" | "manual_review";
-  dangerGate: "none" | "approval_required";
-  rationale: string;
-  command: string | null;
-  writesOwnedLearningStateOnly: boolean;
-  blockedUntil: string[];
 };
 
 type LearningAutonomousApplicationResult = {
@@ -13247,7 +13170,7 @@ async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthRep
       heartbeatAgeMs: worker.ageMs === null ? null : Math.max(0, Math.round(worker.ageMs)),
       lanes: worker.lanes.slice(0, 32).map((lane) => ({ id: lane.workerId ?? "worker", status: lane.status, lastHeartbeatAt: lane.lastHeartbeatAt, heartbeatAgeMs: lane.ageMs === null ? null : Math.max(0, Math.round(lane.ageMs)), claimed: lane.claimed, completed: lane.completed, failed: lane.failed }))
     },
-    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: runtimeHealthy ? "running" : "attention" })),
+    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: worker.status === "running" ? "running" : "attention" })),
     projects
   };
 }
@@ -17375,79 +17298,6 @@ function summarizeLearningProposals(proposals: LearningProposal[], report: Learn
     `${proposals.filter((proposal) => proposal.approvalRequired).length} proposal(s) require approval before any behavior-changing action.`,
     `Kinds: ${formatInlineCounts(counts) || "none"}.`
   ];
-}
-
-function buildLearningApprovalQueue(
-  proposalSet: LearningProposalSet,
-  selectedIds: string[] | "all" = "all",
-  existingQueue?: LearningApprovalQueue,
-  autonomousApplyMaxRisk: LearningRiskLevel = "medium"
-): LearningApprovalQueue {
-  const requestedIds = selectedIds === "all" ? proposalSet.proposals.map((proposal) => proposal.id) : selectedIds;
-  const requestedIdSet = new Set(requestedIds);
-  const selected = proposalSet.proposals.filter((proposal) => requestedIdSet.has(proposal.id));
-  const selectedIdSet = new Set(selected.map((proposal) => proposal.id));
-  const existingByProposal = new Map((existingQueue?.items ?? []).map((item) => [item.proposalId, item]));
-  const generatedAt = new Date().toISOString();
-  return {
-    kind: "agentflow_learning_approval_queue",
-    projectRootUri: proposalSet.projectRootUri,
-    generatedAt,
-    sourceGeneratedAt: proposalSet.generatedAt,
-    sourceRunsAnalyzed: proposalSet.sourceRunsAnalyzed,
-    skippedIds: requestedIds.filter((id) => !selectedIdSet.has(id)),
-    items: selected.map((proposal) => {
-      const existing = existingByProposal.get(proposal.id);
-      const autoApproved = !proposal.approvalRequired && riskRank(proposal.riskLevel) <= riskRank(autonomousApplyMaxRisk);
-      const status = existing?.status === "pending" && autoApproved ? "approved" : existing?.status ?? (autoApproved ? "approved" : "pending");
-      return {
-        id: existing?.id ?? `learn-approval-${proposal.id.replace(/^learn-/, "")}`,
-        proposalId: proposal.id,
-        status,
-        createdAt: existing?.createdAt ?? generatedAt,
-        decidedAt: existing?.decidedAt ?? (status === "approved" && autoApproved ? generatedAt : undefined),
-        reviewer: existing?.reviewer ?? (status === "approved" && autoApproved ? "learning-daemon" : undefined),
-        note: existing?.note ?? (status === "approved" && autoApproved ? `Autonomous local approval: risk=${proposal.riskLevel}, threshold=${autonomousApplyMaxRisk}.` : undefined),
-        proposal
-      };
-    })
-  };
-}
-
-function decideLearningApprovals(input: {
-  queue: LearningApprovalQueue;
-  ids: string[] | "all";
-  status: Exclude<LearningApprovalStatus, "pending">;
-  reviewer?: string;
-  note?: string;
-}): LearningApprovalDecisionResult {
-  const idSet = input.ids === "all" ? null : new Set(input.ids);
-  const decidedAt = new Date().toISOString();
-  const selectedIds: string[] = [];
-  const matchedIds = new Set<string>();
-  const items = input.queue.items.map((item) => {
-    const selected = idSet === null || idSet.has(item.id) || idSet.has(item.proposalId);
-    if (!selected) return item;
-    selectedIds.push(item.proposalId);
-    matchedIds.add(item.id);
-    matchedIds.add(item.proposalId);
-    return {
-      ...item,
-      status: input.status,
-      decidedAt,
-      reviewer: input.reviewer,
-      note: input.note
-    };
-  });
-  return {
-    queue: {
-      ...input.queue,
-      generatedAt: decidedAt,
-      items
-    },
-    selectedIds,
-    skippedIds: input.ids === "all" ? [] : input.ids.filter((id) => !matchedIds.has(id))
-  };
 }
 
 function formatLearningProposalSet(proposalSet: LearningProposalSet): string {
@@ -22931,7 +22781,7 @@ async function runLearningDaemonTick(input: {
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
   const autonomousApplyMaxRisk = await learningAutonomousApplyMaxRisk(input.projectDir);
   const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue, autonomousApplyMaxRisk);
-  const applicationPlan = buildLearningApplicationPlan(approvalQueue, "all");
+  const applicationPlan = buildGovernedLearningApplicationPlan(approvalQueue, "all");
   const workflowShapeAutoUpdate = await learningWorkflowShapeAutoUpdateEnabled(input.projectDir);
   const agentImprovementProjectLocalAutoApply = await learningAgentImprovementProjectLocalAutoApplyEnabled(input.projectDir);
   const workflowShape = workflowShapeAutoUpdate
@@ -25684,7 +25534,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       return;
     }
     const queue = await readLearningApprovalQueue(project).catch(() => null);
-    const plan = queue ? buildLearningApplicationPlan(queue, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all")) : null;
+    const plan = queue ? buildGovernedLearningApplicationPlan(queue, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all")) : null;
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(plan ?? { kind: "agentflow_learning_application_plan", projectRootUri: project, actions: [], summary: ["No learning approval inbox found."] }, null, 2));
     return;
@@ -26015,7 +25865,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const localLearningDir = projectPath?.localRootUri ?? project;
     const learningQueue = project ? await readLearningApprovalQueue(localLearningDir).catch(() => null) : null;
     const learningDaemon = project ? await loadLearningDaemonStatus(localLearningDir) : null;
-    const learningApplicationPlan = learningQueue ? buildLearningApplicationPlan(learningQueue, "all") : null;
+    const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
     const learningSettings = project ? await readLearningSettings(localLearningDir).catch(() => null) : null;
     const learningActionReceipts = project ? await readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir))) : null;
     const learningActionReceiptHealth = project ? await loadLearningActionReceiptHealth(path.resolve(process.cwd(), localLearningDir)) : null;
