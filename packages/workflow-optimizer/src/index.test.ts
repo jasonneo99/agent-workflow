@@ -4,7 +4,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { canSchedule, createJarvisIntent, fleetHealth, optimizationReceipt, previewJarvisPlan, rankRecommendations, runOptimizerCycle, runSharedBrainCanary, sharedBrainSummary, shouldWake, simulateRecommendation, verifyFleetControlAction } from "./index.js";
+import { authenticateSharedBrainRequest, buildOptimizerApprovals, canSchedule, createJarvisIntent, fairProjectOrder, fleetHealth, optimizationReceipt, optimizerDashboardReport, previewJarvisPlan, rankRecommendations, readOptimizerEvents, runOptimizerCycle, runSharedBrainCanary, sharedBrainSummary, shouldWake, simulateRecommendation, verifyFleetControlAction } from "./index.js";
 
 test("event wakeups deduplicate and budgets enforce quiet hours and backpressure", () => {
   assert.equal(shouldWake({ id: "e1", kind: "run.completed", projectId: "p", occurredAt: "now" }, new Set()), true);
@@ -17,6 +17,19 @@ test("optimizer cycle persists event cursors and shadow evidence", async () => {
   const result = await runOptimizerCycle({ projectDir, events: [{ id: "e", kind: "feedback.created", projectId: "p", occurredAt: "now" }], recommendations: [{ id: "r", projectId: "p", kind: "routing", evidence: 1, impact: 1, reversibility: 1, risk: "low", confidence: 1 }], historicalOutcomes: { r: [.1, .2, .3] } });
   assert.equal(result.woke, true);
   assert.equal((await fs.readFile(path.join(projectDir, ".agent-workflow/learning/optimizer-state.json"), "utf8")).includes('"e"'), true);
+  assert.equal((await readOptimizerEvents(projectDir))[0]?.kind, "feedback.created");
+  assert.equal(optimizerDashboardReport(result.state, buildOptimizerApprovals(result.ranked), result.wakeEvents).eventCursorCount, 1);
+});
+
+test("fair scheduling prefers least recently scheduled eligible projects", () => {
+  const ordered = fairProjectOrder([{ projectId: "new", maxActions: 2, consumedActions: 0, queueDepth: 0 }, { projectId: "old", maxActions: 2, consumedActions: 0, queueDepth: 0 }], { old: "2020", new: "2025" });
+  assert.equal(ordered[0]?.projectId, "old");
+});
+
+test("shared-brain authentication fails closed", () => {
+  assert.equal(authenticateSharedBrainRequest("Bearer correct", "correct"), true);
+  assert.equal(authenticateSharedBrainRequest("Bearer wrong", "correct"), false);
+  assert.equal(authenticateSharedBrainRequest(undefined, "correct"), false);
 });
 
 test("Fleet actions require valid signatures and allowlisting; shared-brain canary covers every path", () => {
