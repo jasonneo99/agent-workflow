@@ -107,6 +107,9 @@ These milestones organize the detailed roadmap items below:
      receipts, and owner-controlled project-local auto-apply exist; next
      improvement is stronger promotion evidence and review UX before any
      broader shared-agent or research-driven automation.
+   - The authenticated server health contract now aggregates supervisor,
+     worker-lane, logical daemon-lane, trust, and per-project learning status
+     for bounded private clients such as Jarvis.
 
 8. **Multi-Project / Multi-Machine State Plane**
    - Workstreams: shared storage migration, shared host/LAN/Tailscale state plane,

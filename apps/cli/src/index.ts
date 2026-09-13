@@ -4319,9 +4319,12 @@ program
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
-        const discoveredTargets = allProjects ? await loadLearningDaemonProjectTargets(projectDir) : [projectDir];
-        const fairIds = fairProjectOrder(discoveredTargets.map(target => ({ projectId: target, maxActions: limit, consumedActions: 0, queueDepth: 0 }))).map(item => item.projectId);
-        const targets = [...discoveredTargets].sort((a, b) => fairIds.indexOf(a) - fairIds.indexOf(b));
+        const discoveredTargets = allProjects
+          ? await loadLearningDaemonProjectTargets(projectDir)
+          : [{ projectDir, enabled: true, paused: false, mode, limit }];
+        const enabledTargets = discoveredTargets.filter((target) => target.enabled && !target.paused);
+        const fairIds = fairProjectOrder(enabledTargets.map((target) => ({ projectId: target.projectDir, maxActions: target.limit, consumedActions: 0, queueDepth: 0 }))).map((item) => item.projectId);
+        const targets = [...enabledTargets].sort((a, b) => fairIds.indexOf(a.projectDir) - fairIds.indexOf(b.projectDir));
         let lastUpdate: Awaited<ReturnType<typeof runLearningDaemonTick>> | undefined;
         let analyzedRuns = 0;
         let proposalCount = 0;
@@ -4348,9 +4351,10 @@ program
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
-        for (const targetProjectDir of targets) {
+        for (const target of targets) {
+          const targetProjectDir = target.projectDir;
           try {
-            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode, limit, daemonId, approvalAutopilotOverride });
+            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode: target.mode, limit: target.limit, daemonId, approvalAutopilotOverride });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
             analyzedRuns += update.report.runsAnalyzed;
@@ -4384,7 +4388,7 @@ program
         }
         mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
         staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
-        await writeStatus(projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
+        await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
           proposals: proposalCount,
           inboxItems: inboxCount,
           applicationActions,
@@ -6931,6 +6935,29 @@ type LearningSettings = {
   approvalAutopilotEnabled: boolean;
   approvalAutopilotMaxRisk: ApprovalAutopilotRisk;
   daemonTrustLevels: DaemonTrustSettings;
+  daemonEnabled: boolean;
+  daemonPaused: boolean;
+  daemonMode: LearningDaemonMode;
+  daemonRunLimit: number;
+};
+
+type ServerDaemonFleetHealthReport = {
+  kind: "agentflow_server_daemon_fleet_health";
+  generatedAt: string;
+  status: "healthy" | "attention";
+  counts: { projects: number; running: number; paused: number; disabled: number; unavailable: number; workerLanes: number; activeWorkerLanes: number; daemonLanes: number };
+  supervisor: { status: DashboardSupervisorStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; message: string };
+  worker: { status: DashboardWorkerStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; lanes: Array<{ id: string; status: DashboardWorkerLane["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; claimed: number; completed: number; failed: number }> };
+  daemonLanes: Array<{ id: string; name: string; purpose: string; trust: "low" | "medium" | "high"; status: "running" | "attention" }>;
+  projects: Array<{ projectId: string; name: string; scheduling: "enabled" | "paused" | "disabled"; daemonStatus: DashboardLearningDaemonStatus["status"]; mode: LearningDaemonMode; runLimit: number; heartbeatAgeMs: number | null; lastHeartbeatAt: string | null; lastError: string | null }>;
+};
+
+type LearningDaemonProjectTarget = {
+  projectDir: string;
+  enabled: boolean;
+  paused: boolean;
+  mode: LearningDaemonMode;
+  limit: number;
 };
 
 type SpotlightMode = "auto" | "on" | "off";
@@ -13209,6 +13236,70 @@ async function loadRegisteredProjectConfig(summary: DashboardProjectSummary): Pr
   } catch {
     return null;
   }
+}
+
+async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthReport> {
+  const [registry, supervisor, worker] = await Promise.all([
+    loadServerProjectRegistryReport({ limit: 100, includeRoots: true }),
+    loadDashboardSupervisorStatus(),
+    loadDashboardWorkerStatus()
+  ]);
+  const projects = await Promise.all(registry.projects.filter((project) => project.rootUri).map(async (project) => {
+    const localRoot = await resolveLocalProjectRootUri(project.rootUri as string);
+    const [settings, heartbeat] = await Promise.all([
+      readLearningSettings(localRoot).catch(() => null),
+      loadLearningDaemonStatus(localRoot)
+    ]);
+    const enabled = settings?.daemonEnabled ?? true;
+    const paused = settings?.daemonPaused ?? false;
+    return {
+      projectId: project.projectId,
+      name: project.name,
+      scheduling: (!enabled ? "disabled" : paused ? "paused" : "enabled") as "enabled" | "paused" | "disabled",
+      daemonStatus: heartbeat.status,
+      mode: settings?.daemonMode ?? heartbeat.mode ?? "apply-approved",
+      runLimit: settings?.daemonRunLimit ?? heartbeat.limit ?? 50,
+      heartbeatAgeMs: heartbeat.ageMs === null ? null : Math.max(0, Math.round(heartbeat.ageMs)),
+      lastHeartbeatAt: heartbeat.lastHeartbeatAt,
+      lastError: heartbeat.lastError ? truncateText(heartbeat.lastError, 240) : null
+    };
+  }));
+  const counts = {
+    projects: projects.length,
+    running: projects.filter((project) => project.daemonStatus === "running").length,
+    paused: projects.filter((project) => project.scheduling === "paused").length,
+    disabled: projects.filter((project) => project.scheduling === "disabled").length,
+    unavailable: projects.filter((project) => project.scheduling === "enabled" && project.daemonStatus !== "running").length,
+    workerLanes: worker.lanes.length,
+    activeWorkerLanes: worker.lanes.filter((lane) => lane.status === "running").length,
+    daemonLanes: daemonLanes.length
+  };
+  const firstRoot = registry.projects.find((project) => project.rootUri)?.rootUri;
+  const activeTrust = firstRoot ? await readLearningSettings(await resolveLocalProjectRootUri(firstRoot)).catch(() => null) : null;
+  const runtimeHealthy = worker.status === "running" && counts.unavailable === 0;
+  const supervisorStatus = supervisor.status === "missing" && worker.status === "running" ? "running" : supervisor.status;
+  const supervisorHeartbeatAt = supervisor.lastHeartbeatAt ?? worker.lastHeartbeatAt;
+  const supervisorHeartbeatAgeMs = supervisor.ageMs ?? worker.ageMs;
+  return {
+    kind: "agentflow_server_daemon_fleet_health",
+    generatedAt: new Date().toISOString(),
+    status: runtimeHealthy ? "healthy" : "attention",
+    counts,
+    supervisor: {
+      status: supervisorStatus,
+      lastHeartbeatAt: supervisorHeartbeatAt,
+      heartbeatAgeMs: supervisorHeartbeatAgeMs === null ? null : Math.max(0, Math.round(supervisorHeartbeatAgeMs)),
+      message: truncateText(supervisor.status === "missing" && worker.status === "running" ? "External service manager supervision is active." : supervisor.message, 160)
+    },
+    worker: {
+      status: worker.status,
+      lastHeartbeatAt: worker.lastHeartbeatAt,
+      heartbeatAgeMs: worker.ageMs === null ? null : Math.max(0, Math.round(worker.ageMs)),
+      lanes: worker.lanes.slice(0, 32).map((lane) => ({ id: lane.workerId ?? "worker", status: lane.status, lastHeartbeatAt: lane.lastHeartbeatAt, heartbeatAgeMs: lane.ageMs === null ? null : Math.max(0, Math.round(lane.ageMs)), claimed: lane.claimed, completed: lane.completed, failed: lane.failed }))
+    },
+    daemonLanes: daemonLanes.map((lane) => ({ id: lane.id, name: lane.name, purpose: lane.purpose, trust: activeTrust?.daemonTrustLevels[lane.id] ?? lane.defaultTrust, status: runtimeHealthy ? "running" : "attention" })),
+    projects
+  };
 }
 
 async function loadServerRoadmapSnapshot(projectIdInput: string): Promise<{ statusCode: number; report: ServerRoadmapSnapshotReport }> {
@@ -23147,19 +23238,27 @@ function formatLearningDaemonMcpCleanupReceipt(receipt: {
   ].join("\n");
 }
 
-async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<string[]> {
+async function loadLearningDaemonProjectTargets(fallbackProjectDir: string): Promise<LearningDaemonProjectTarget[]> {
   const summaries = await listProjectStorageSummaries(500);
+  const mappedRoots = await Promise.all(summaries.map((summary) => resolveLocalProjectRootUri(summary.rootUri)));
   const candidates = orderedUnique([
-    ...summaries.map((summary) => summary.rootUri),
+    ...mappedRoots,
     fallbackProjectDir
   ].map((item) => path.resolve(process.cwd(), item)));
-  const available: string[] = [];
+  const available: LearningDaemonProjectTarget[] = [];
   for (const candidate of candidates) {
     if (await pathExists(candidate)) {
-      available.push(candidate);
+      const settings = await readLearningSettings(candidate).catch(() => null);
+      available.push({
+        projectDir: candidate,
+        enabled: settings?.daemonEnabled ?? true,
+        paused: settings?.daemonPaused ?? false,
+        mode: settings?.daemonMode ?? "apply-approved",
+        limit: settings?.daemonRunLimit ?? 50
+      });
     }
   }
-  return available.length ? available : [fallbackProjectDir];
+  return available.length ? available : [{ projectDir: fallbackProjectDir, enabled: true, paused: false, mode: "apply-approved", limit: 50 }];
 }
 
 const discoveryMarkerFiles = [
@@ -23669,7 +23768,11 @@ async function readLearningSettings(projectDir: string): Promise<LearningSetting
     autonomousApplyMaxRisk: parseLearningRiskLevel(String(parsed.autonomousApplyMaxRisk ?? "medium")),
     approvalAutopilotEnabled: typeof parsed.approvalAutopilotEnabled === "boolean" ? parsed.approvalAutopilotEnabled : false,
     approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(String(parsed.approvalAutopilotMaxRisk ?? parsed.autonomousApplyMaxRisk ?? "medium")),
-    daemonTrustLevels: normalizeDaemonTrustSettings(parsed.daemonTrustLevels)
+    daemonTrustLevels: normalizeDaemonTrustSettings(parsed.daemonTrustLevels),
+    daemonEnabled: typeof parsed.daemonEnabled === "boolean" ? parsed.daemonEnabled : true,
+    daemonPaused: typeof parsed.daemonPaused === "boolean" ? parsed.daemonPaused : false,
+    daemonMode: parseLearningDaemonMode(String(parsed.daemonMode ?? "apply-approved")),
+    daemonRunLimit: Math.max(1, Math.min(500, typeof parsed.daemonRunLimit === "number" ? parsed.daemonRunLimit : 50))
   };
 }
 
@@ -24635,6 +24738,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       return;
     }
     const projectDir = path.resolve(process.cwd(), project);
+    const existingLearningSettings = await readLearningSettings(projectDir).catch(() => null);
     await writeLearningSettings(projectDir, {
       kind: "agentflow_learning_settings",
       projectRootUri: projectDir,
@@ -24644,7 +24748,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
       approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
       approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium"),
-      daemonTrustLevels: normalizeDaemonTrustSettings(Object.fromEntries(daemonLanes.map((lane) => [lane.id, form.get(`daemonTrust.${lane.id}`)])))
+      daemonTrustLevels: normalizeDaemonTrustSettings(Object.fromEntries(daemonLanes.map((lane) => [lane.id, form.get(`daemonTrust.${lane.id}`)]))),
+      daemonEnabled: existingLearningSettings?.daemonEnabled ?? true,
+      daemonPaused: existingLearningSettings?.daemonPaused ?? false,
+      daemonMode: existingLearningSettings?.daemonMode ?? "apply-approved",
+      daemonRunLimit: existingLearningSettings?.daemonRunLimit ?? 50
     });
     const query = new URLSearchParams({
       project: projectDir,
@@ -25195,6 +25303,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(result.resolved ? 200 : 404, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/server-daemon-fleet-health") {
+    const auth = validateServerMutationAuth(request);
+    if (!auth.ok) {
+      response.writeHead(401, { "content-type": "application/json; charset=utf-8", "www-authenticate": "Bearer" });
+      response.end(JSON.stringify({ kind: "agentflow_server_daemon_fleet_health", status: "invalid", error: "authenticated server access is required" }));
+      return;
+    }
+    const report = await loadServerDaemonFleetHealth();
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
     return;
   }
 
