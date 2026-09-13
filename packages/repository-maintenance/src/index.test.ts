@@ -19,6 +19,16 @@ test("maintenance scan detects security material and writes a visible receipt", 
   assert.match(await fs.readFile(receipt, "utf8"), /beforeAfterHashes/u);
 });
 
+test("maintenance scan inventories source files over one thousand lines", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "maintenance-large-"));
+  await fs.mkdir(path.join(root, "packages"));
+  await fs.writeFile(path.join(root, "packages", "large.ts"), `${Array.from({ length: 1001 }, (_, index) => `export const value${index} = ${index};`).join("\n")}\n`);
+  const report = await scanRepositoryMaintenance(root);
+  const finding = report.findings.find((item) => item.file === "packages/large.ts");
+  assert.equal(finding?.kind, "hygiene");
+  assert.match(finding?.summary ?? "", /1002-line source file/u);
+});
+
 test("maintenance commits stage only the exact validated files", async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "maintenance-git-"));
   await runFile("git", ["init"], { cwd: root });

@@ -17,7 +17,7 @@ export async function scanRepositoryMaintenance(projectRoot: string): Promise<Re
   for (const file of files) {
     const content = await fs.readFile(path.join(projectRoot, file), "utf8");
     const lines = content.split(/\r?\n/u);
-    if (lines.length > 5000) findings.push({ kind: "hygiene", severity: "warning", file, line: 1, summary: `${lines.length}-line source file raises duplication and ownership risk.`, autoFixEligible: false });
+    if (lines.length > 1000) findings.push({ kind: "hygiene", severity: lines.length > 2000 ? "warning" : "info", file, line: 1, summary: `${lines.length}-line source file should be reviewed for cohesive module boundaries.`, autoFixEligible: false });
     for (const [index, line] of lines.entries()) {
       if (/AKIA[0-9A-Z]{16}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|\bsk-[A-Za-z0-9_-]{20,}/u.test(line)) findings.push({ kind: "security", severity: "error", file, line: index + 1, summary: "Possible committed credential or private key material.", autoFixEligible: false });
       if (/(?:^|[=({;,]\s*)eval\s*\(|(?:^|[=({;,]\s*)new Function\s*\(/u.test(line)) findings.push({ kind: "security", severity: "warning", file, line: index + 1, summary: "Dynamic code execution requires security review.", autoFixEligible: false });
