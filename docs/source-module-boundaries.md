@@ -6,6 +6,11 @@ dashboard rendering and request parsing in `apps/cli/src/dashboard/`; and
 supervisor process-to-lane reporting in `scripts/supervisor-daemon-lanes.mjs`.
 The CLI entry point now composes these contracts instead of owning their logic.
 
+Learning approval queue construction, explicit approval decisions, risk-aware
+auto-approval, and application-plan construction live in
+`packages/learning-governance/`. CLI and dashboard entry points consume that
+shared policy contract so they cannot silently diverge.
+
 Repository maintenance reports every production source file over 1,000 lines.
 Files over 2,000 lines are warnings; files between 1,001 and 2,000 lines are
 informational. Size is a review trigger, not an automatic failure: a split must
