@@ -17,6 +17,12 @@ selection, route-feedback grouping, evaluation-gap analysis, and proposal-previe
 counts. The CLI remains responsible only for loading storage-backed inputs and
 assembling the stable report envelope.
 
+Learning proposal construction now lives in `packages/learning-proposals/`:
+stable proposal IDs, prioritization and risk gates, summaries, console and
+Markdown formatting, and project-contained JSON/Markdown persistence. CLI,
+dashboard, and daemon paths consume the same proposal contract; the CLI retains
+only orchestration of report loading and approval-queue updates.
+
 Repository maintenance reports every production source file over 1,000 lines.
 Files over 2,000 lines are warnings; files between 1,001 and 2,000 lines are
 informational. Size is a review trigger, not an automatic failure: a split must
