@@ -1,5 +1,11 @@
 # Source Module Boundaries
 
+The daemon control-plane extraction keeps lane definitions, trust normalization,
+effective risk ceilings, and status contracts in `packages/daemon-control/`;
+dashboard rendering and request parsing in `apps/cli/src/dashboard/`; and
+supervisor process-to-lane reporting in `scripts/supervisor-daemon-lanes.mjs`.
+The CLI entry point now composes these contracts instead of owning their logic.
+
 Repository maintenance reports every production source file over 1,000 lines.
 Files over 2,000 lines are warnings; files between 1,001 and 2,000 lines are
 informational. Size is a review trigger, not an automatic failure: a split must
