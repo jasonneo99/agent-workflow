@@ -182,6 +182,9 @@ Completed integration: optimizer dashboard control plane, optimizer approval rec
      source files above the review threshold.
    - Exit gate: each extraction has an owning domain, focused tests, stable
      public contracts, and a smaller large-file inventory.
+   - Progress: source-size growth is ratcheted in `npm run check`; Context
+     Gateway CLI commands, MCP context/reporting tools, project-index storage,
+     tuning history, and action/ReAct receipts now have owned modules.
 
 ## Phase 1: Shared Platform Hardening
 

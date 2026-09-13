@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "files": {
+    "apps/cli/src/index.ts": 43437,
+    "apps/mcp/src/index.ts": 2120,
+    "packages/storage/src/postgres.ts": 2816,
+    "packages/run-reporter/src/index.ts": 2531,
+    "packages/workflow-engine/src/executor.ts": 957
+  }
+}

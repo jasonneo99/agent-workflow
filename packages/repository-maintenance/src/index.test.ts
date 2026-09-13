@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt } from "./index.js";
+import { checkSourceSizeRatchet, commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt } from "./index.js";
 
 const runFile = promisify(execFile);
 
@@ -40,5 +40,15 @@ test("maintenance commits stage only the exact validated files", async () => {
   const result = await commitRepositoryMaintenance({ projectRoot: root, files: ["owned.txt"], validation: "test passed" });
   assert.ok(result?.hash);
   assert.match((await runFile("git", ["status", "--short"], { cwd: root })).stdout, /user\.txt/u);
+});
+
+test("source-size ratchet rejects growth but permits extraction", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "maintenance-ratchet-"));
+  await fs.mkdir(path.join(root, "apps"));
+  await fs.writeFile(path.join(root, "apps", "cli.ts"), "one\ntwo\n");
+  await fs.writeFile(path.join(root, "repository-maintenance-baseline.json"), JSON.stringify({ version: 1, files: { "apps/cli.ts": 2 } }));
+  assert.equal((await checkSourceSizeRatchet(root)).passed, false);
+  await fs.writeFile(path.join(root, "apps", "cli.ts"), "one");
+  assert.equal((await checkSourceSizeRatchet(root)).passed, true);
 });
 // boundary-synthetic-fixtures: credential-shaped values below verify maintenance detection only.

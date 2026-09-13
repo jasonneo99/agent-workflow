@@ -214,7 +214,7 @@ npm run dev:agentflow:launchd:uninstall # macOS: remove the LaunchAgent
 npm run agentflow -- learning-daemon --all-projects --mode apply-approved --once # Refresh learning state for all registered projects once
 npm run agentflow -- learning-action-receipts -p . --health # Inspect learning receipt health and duplicate pressure
 npm run agentflow -- learning-action-receipts -p . --compact # Backup and compact duplicate daemon-owned learning receipts
-npm run repository-maintenance -- -p . # Preview bounded daemon-owned repository hygiene and security fixes
+npm run repository-maintenance -- -p . --check # Scan hygiene/security and reject source-size regressions
 npm run worker -- --watch --worker-id local-dev # Start a named worker for queue ownership visibility
 npm run worker -- --watch --project /path/to/project --concurrency 3 --limit 12 # Scope a worker lane to one project
 npm run worker -- --watch --project /path/to/project # Use project worker_pool defaults from .agent-workflow/project.yaml

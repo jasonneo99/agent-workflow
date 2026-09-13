@@ -7,6 +7,8 @@ import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
+export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
@@ -850,28 +852,6 @@ async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOption
   return result;
 }
 
-export function actionIdempotencyKey(input: {
-  taskId: string;
-  stageId: string;
-  agentId: string;
-  actionType: string;
-  target: string;
-  payload: string;
-  normalizePayload?: boolean;
-}): string {
-  const payload = input.normalizePayload ? normalizeActionText(input.payload) : input.payload;
-  return createHash("sha256")
-    .update(JSON.stringify({
-      taskId: input.taskId,
-      stageId: input.stageId,
-      agentId: input.agentId,
-      actionType: input.actionType,
-      target: normalizeActionText(input.target),
-      payloadHash: createHash("sha256").update(payload).digest("hex")
-    }))
-    .digest("hex");
-}
-
 type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
 
 function normalizeStagePattern(value: unknown): StagePattern {
@@ -939,50 +919,6 @@ async function recordBoundedReactLoopReceipt(input: {
     artifactKind: "react_loop_receipt",
     artifactContent: receipt
   });
-}
-
-export function buildBoundedReactLoopReceiptContent(input: {
-  task: Pick<ClaimedWorkflowTask, "runId" | "taskId" | "workflowId" | "workflowTask" | "stageId" | "stageGoal" | "agentId">;
-  stagePattern: StagePattern;
-  iteration: number;
-  totalRequestedActions: number;
-  actionType: "local_command" | "file_write";
-  target: string;
-  payloadHash: string;
-  policyDecision: Record<string, unknown>;
-  resultReceipt: Record<string, unknown>;
-}): Record<string, unknown> {
-  const maxIterations = input.stagePattern.maxIterations ?? Math.max(input.totalRequestedActions, 1);
-  const overBudget = input.iteration > maxIterations;
-  const stopReason = overBudget
-    ? "max_iterations_exceeded"
-    : input.iteration >= input.totalRequestedActions
-      ? "provider_returned_no_more_actions"
-      : "next_action_requested";
-
-  return {
-    kind: "agentflow_bounded_react_loop_receipt",
-    workflowId: input.task.workflowId,
-    stageId: input.task.stageId,
-    taskId: input.task.taskId,
-    agentId: input.task.agentId,
-    goal: input.task.stageGoal || input.task.workflowTask,
-    observationSource: "compiled_brief_and_prior_stage_receipts",
-    iteration: input.iteration,
-    maxIterations,
-    overBudget,
-    actionRequested: {
-      type: input.actionType,
-      target: input.target,
-      payloadHash: input.payloadHash
-    },
-    policyDecision: input.policyDecision,
-    resultReceipt: input.resultReceipt,
-    stopReason,
-    configuredStopConditions: input.stagePattern.stopConditions,
-    promotionGate: input.stagePattern.promotionGate,
-    verifierRequired: input.stagePattern.requiresVerifier
-  };
 }
 
 function normalizeActionText(value: string): string {

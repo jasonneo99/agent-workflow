@@ -10,11 +10,17 @@ Run the inventory with:
 
 ```bash
 npm run repository-maintenance -- -p . --json
+npm run repository-maintenance -- -p . --check
 ```
 
 The command writes the complete result to
 `.agent-workflow/learning/repository-maintenance-receipt.json` so daemon and
 human maintenance decisions remain visible.
+
+`repository-maintenance-baseline.json` is a ratchet for the known large files.
+The `--check` mode fails only when one grows beyond its committed baseline;
+successful extractions lower the baseline. This prevents new concentration
+without requiring an unsafe all-at-once rewrite.
 
 ## CLI Boundaries
 
@@ -24,13 +30,13 @@ presentation in `apps/cli/src/dashboard/`, and reusable behavior in the owning
 package under `packages/`. Command modules should depend on package APIs rather
 than importing other command modules.
 
-The first extractions moved dashboard styles and icons into the dashboard
-module, repository-maintenance and accepted-outcome/threshold-review commands
-into command modules, MCP diagnostic redaction into a diagnostic module,
-database connection ownership into a storage client module, model-route receipt
-construction into a workflow-engine module, and accepted-workflow accounting
-into a run-reporter module. Continue by extracting cohesive command and storage
-families; avoid a mechanical file-per-function split.
+The current extractions place Context Gateway reporting/calibration and
+accepted-outcome/threshold-review registration in CLI command modules; MCP
+threshold and accepted-outcome registration in domain tool modules; database
+connection and project-index ownership in storage modules; tuning history and
+accepted-workflow accounting in run-reporter modules; and model-route plus
+action/ReAct receipt construction in workflow-engine modules. Continue by
+extracting cohesive families; avoid a mechanical file-per-function split.
 
 ## Current Large-File Inventory
 
