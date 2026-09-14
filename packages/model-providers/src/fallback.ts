@@ -33,7 +33,7 @@ export function classifyProviderFailure(error: unknown): ProviderExecutionError 
   if (/insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|exceeded.*quota|quota.*exhaust/.test(label)) return new ProviderExecutionError("account_quota", "Provider account quota is exhausted.", status, code);
   if (status === 429 || /rate[_ -]?limit|too many requests|throttl/.test(label)) return new ProviderExecutionError("rate_limited", "Provider rate limit was reached.", status, code);
   if (status === 404 || /model.*(not found|unavailable|does not exist|unsupported)|deployment.*not found/.test(label)) return new ProviderExecutionError("model_unavailable", "Requested provider model is unavailable.", status, code);
-  if ((status !== undefined && status >= 500) || /econnreset|econnrefused|enotfound|etimedout|fetch failed|socket hang up|service unavailable/.test(label)) return new ProviderExecutionError("provider_outage", "Provider service is unavailable.", status, code);
+  if ((status !== undefined && status >= 500) || /econnreset|econnrefused|enotfound|etimedout|connection error|fetch failed|socket hang up|service unavailable/.test(label)) return new ProviderExecutionError("provider_outage", "Provider service is unavailable.", status, code);
   if (/required when default_model_provider|is not configured|required environment|missing configuration|unsupported provider adapter/.test(label)) return new ProviderExecutionError("configuration", "Provider configuration is incomplete.", status, code);
   return new ProviderExecutionError("unknown", "Provider execution failed.", status, code);
 }

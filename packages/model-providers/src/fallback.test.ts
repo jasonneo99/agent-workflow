@@ -14,6 +14,7 @@ test("provider failures are classified without preserving provider response bodi
   assert.equal(classifyProviderFailure({ status: 429, message: "rate limit" }).kind, "rate_limited");
   assert.equal(classifyProviderFailure({ status: 404, message: "model not found" }).kind, "model_unavailable");
   assert.equal(classifyProviderFailure({ code: "ECONNREFUSED" }).kind, "provider_outage");
+  assert.equal(classifyProviderFailure(new Error("Connection error.")).kind, "provider_outage");
   assert.equal(classifyProviderFailure({ status: 401, message: "secret response" }).message.includes("secret"), false);
 });
 
