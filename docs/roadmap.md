@@ -253,6 +253,12 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
 
 Goal: improve quality and cost while keeping personalization auditable and portable.
 
+- [x] Durable multi-provider execution fallback.
+  - Classify provider outages, rate limits, model unavailability, authentication failures, account quota exhaustion, configuration failures, and unknown failures separately.
+  - Use ordered provider/model candidates with bounded retries, persistent circuit breakers, cooldown health probes, deterministic attempt identities, and route receipts that name the actual provider.
+  - Never retry or route authentication and configuration failures. Permit account-quota fallback only when explicitly enabled and the destination is already fleet-approved with a declared data policy.
+  - Preserve the existing authenticated queue and idempotency contract so assistant clients never implement prompt-level retry loops.
+
 - [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.

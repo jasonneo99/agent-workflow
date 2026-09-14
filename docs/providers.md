@@ -116,7 +116,7 @@ and reasoning choices with provider availability, override source, estimated
 cost class, policy score, tier fit, and top ranked candidates. The matching JSON
 endpoint is `/api/model-catalog`.
 
-Each worker stage records a `model_route` receipt with the selected provider, requested tier, routed tier, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`.
+Each worker stage records a `model_route` receipt with the requested and actual provider, requested tier, routed tier, exact attempt identities, classified failures, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`; transport and availability failures use the ordered policy described in [Durable Provider Fallback](provider-fallback.md).
 
 When prior project feedback includes revised or rejected runs, Agent Workflow adds compact preference notes to the compiled brief and conservatively promotes fast stages to standard. The quality report shows both the requested tier and the routed tier so the tuning remains auditable.
 

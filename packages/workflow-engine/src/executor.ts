@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
-import { providerFromEnv } from "../../model-providers/src/index.js";
+import { executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
@@ -80,21 +80,49 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         ...stageInput,
         modelTier: route.modelTier
       };
-      let provider = providerFromEnv(route.providerId);
       const startedAt = Date.now();
-      let output = await provider.executeStage(routedStageInput);
+      const fallbackPolicy = providerFallbackPolicyFromEnv();
+      let execution;
+      try {
+        execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
+      } catch (error) {
+        const failure = error instanceof ProviderExecutionError ? error : new ProviderExecutionError("unknown", "Provider execution failed.");
+        await recordRunAction({
+          runId: task.runId,
+          agentId: task.agentId,
+          actionType: "model_route_failed",
+          target: `${task.workflowId}/${task.stageId}`,
+          summary: `${route.providerId} failed (${failure.kind})`,
+          artifactKind: "model_route",
+          artifactContent: { workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, status: "failed", failureKind: failure.kind, attempts: failure.attempts, latencyMs: Date.now() - startedAt }
+        });
+        throw failure;
+      }
+      let output = execution.output;
       let quality = scoreStageOutput(routedStageInput, output);
-      const fallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
-      let fallbackUsed = false;
+      let fallbackProviderId = execution.fallbackUsed ? execution.actualProvider : undefined;
+      let actualProviderId = execution.actualProvider;
+      let actualModel = execution.actualModel;
+      let fallbackAttempts: ProviderFallbackAttempt[] = [...execution.attempts];
+      let fallbackUsed = execution.fallbackUsed;
+      const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
 
-      if (!quality.passed && fallbackProviderId && fallbackProviderId !== route.providerId) {
-        provider = providerFromEnv(fallbackProviderId);
-        const fallbackOutput = await provider.executeStage(routedStageInput);
-        const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
-        if (fallbackQuality.score >= quality.score) {
-          output = fallbackOutput;
-          quality = fallbackQuality;
-          fallbackUsed = true;
+      if (!quality.passed && qualityFallbackProviderId && qualityFallbackProviderId !== actualProviderId) {
+        try {
+          const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerFromEnv });
+          const fallbackOutput = qualityExecution.output;
+          const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
+          fallbackAttempts = [...fallbackAttempts, ...qualityExecution.attempts];
+          if (fallbackQuality.score >= quality.score) {
+            output = fallbackOutput;
+            quality = fallbackQuality;
+            fallbackUsed = true;
+            fallbackProviderId = qualityExecution.actualProvider;
+            actualProviderId = qualityExecution.actualProvider;
+            actualModel = qualityExecution.actualModel;
+          }
+        } catch (error) {
+          if (error instanceof ProviderExecutionError) fallbackAttempts = [...fallbackAttempts, ...error.attempts];
         }
       }
 
@@ -103,9 +131,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         agentId: task.agentId,
         actionType: "model_route",
         target: `${task.workflowId}/${task.stageId}`,
-        summary: `${route.providerId}${fallbackUsed ? ` -> ${fallbackProviderId}` : ""} quality=${quality.score}`,
+        summary: `${route.providerId}${actualProviderId !== route.providerId ? ` -> ${actualProviderId}` : ""} quality=${quality.score}`,
         artifactKind: "model_route",
-        artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
+        artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
       });
 
       const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);
@@ -668,7 +696,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           routing: {
             ...route,
             fallbackProviderId,
-            fallbackUsed
+            fallbackUsed,
+            actualProviderId,
+            actualModel,
+            attempts: fallbackAttempts
           },
           quality,
           actionResults

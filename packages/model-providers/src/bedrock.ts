@@ -83,7 +83,7 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model: modelForStage } = await this.resolveModelForTier(input.modelTier);
+    const modelForStage = input.modelOverride ?? (await this.resolveModelForTier(input.modelTier)).model;
     const text = await this.converseJson({
       system: [
         "You are executing one stage in a durable agent workflow.",

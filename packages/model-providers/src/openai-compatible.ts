@@ -74,7 +74,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model } = await this.resolveModelForTier(input.modelTier);
+    const model = input.modelOverride ?? (await this.resolveModelForTier(input.modelTier)).model;
     const response = await this.client.chat.completions.create({
       model,
       messages: [

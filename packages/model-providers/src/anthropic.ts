@@ -84,7 +84,7 @@ export class AnthropicProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model } = await resolveAnthropicModelForTier(input.modelTier);
+    const model = input.modelOverride ?? (await resolveAnthropicModelForTier(input.modelTier)).model;
     const response = await createMessage(model, [
       "You are executing one stage in a durable agent workflow.",
       "Return one valid JSON object only.",

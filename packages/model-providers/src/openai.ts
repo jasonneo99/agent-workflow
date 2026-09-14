@@ -102,7 +102,7 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model } = await resolveOpenAIModelForTier(input.modelTier);
+    const model = input.modelOverride ?? (await resolveOpenAIModelForTier(input.modelTier)).model;
     const response = await this.client.responses.create({
       model,
       input: [
