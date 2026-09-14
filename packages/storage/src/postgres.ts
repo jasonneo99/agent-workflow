@@ -1051,6 +1051,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
       const evaluationMetadataJson = JSON.stringify(input.evaluationMetadata ?? {});
       const constructionRationaleJson = JSON.stringify(input.constructionRationale ?? {});
+      const compiledBriefJson = input.compiledBrief
+        ? JSON.stringify({ text: input.compiledBrief, metadata: input.compiledBriefMetadata ?? {} })
+        : null;
       const duplicate = await findRecentDuplicateRun(client, {
         projectId,
         workflowId: input.workflow.id,
@@ -1064,7 +1067,7 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         workflowHash,
         evaluationMetadataJson,
         constructionRationaleJson,
-        compiledBrief: input.compiledBrief ?? null
+        compiledBriefJson
       });
       if (duplicate) {
         await client.query("commit");
@@ -1109,10 +1112,7 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           [
             runId,
             compiledBriefUri,
-            JSON.stringify({
-              text: input.compiledBrief,
-              metadata: input.compiledBriefMetadata ?? {}
-            })
+            compiledBriefJson
           ]
         );
         await client.query(

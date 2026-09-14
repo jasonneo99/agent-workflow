@@ -13,7 +13,7 @@ export interface RunDeduplicationContract {
   workflowHash: string;
   evaluationMetadataJson: string;
   constructionRationaleJson: string;
-  compiledBrief: string | null;
+  compiledBriefJson: string | null;
 }
 
 export async function findRecentDuplicateRun(client: pg.Client, input: RunDeduplicationContract): Promise<{ id: string; tasks: number } | null> {
@@ -48,7 +48,7 @@ export async function findRecentDuplicateRun(client: pg.Client, input: RunDedupl
     [input.projectId, input.workflowId, normalizedTask, input.autonomy, input.policyProfile,
       input.policySnapshotHash, input.modelTierOverride, input.providerOverride,
       input.workflowVersion, input.workflowHash, input.evaluationMetadataJson,
-      input.constructionRationaleJson, input.compiledBrief]
+      input.constructionRationaleJson, input.compiledBriefJson]
   );
   return result.rows[0] ?? null;
 }

@@ -15,7 +15,7 @@ const contract: RunDeduplicationContract = {
   workflowHash: "workflow-hash",
   evaluationMetadataJson: "{}",
   constructionRationaleJson: "{}",
-  compiledBrief: "brief"
+  compiledBriefJson: JSON.stringify({ text: "brief", metadata: {} })
 };
 
 test("run deduplication binds the advisory lock and query to the complete execution contract", async () => {
@@ -33,5 +33,6 @@ test("run deduplication binds the advisory lock and query to the complete execut
   assert.match(calls[1]?.text ?? "", /policy_snapshot_hash = \$6/);
   assert.match(calls[1]?.text ?? "", /workflow_definition_hash = \$10/);
   assert.match(calls[1]?.text ?? "", /a\.content = \$13::jsonb/);
+  assert.deepEqual(JSON.parse(String(calls[1]?.values[12])), { text: "brief", metadata: {} });
   assert.match(String(calls[0]?.values[0]), /policy-hash/);
 });
