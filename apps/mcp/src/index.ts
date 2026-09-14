@@ -63,7 +63,7 @@ const server = new McpServer(
       "When this server is available and a request involves planning, implementation, debugging, testing, review, security, UX, documentation, release readiness, or project maintenance, use its tools before doing substantive work. " +
       "Prefer agentflow_orchestrate for ambiguous or multi-stage tasks and the narrowest matching tool for focused tasks. " +
       "When any tool result says Approval required, ask the user in the current chat whether to approve and execute now, approve only, reject, dismiss stale, or always approve the listed side effect, then call agentflow_approvals with the selected approval id. Prefer approveAndExecute for executable inline approvals. " +
-      "Use project paths that are accessible on Loki. If the target project is not accessible on Loki or this server cannot serve the task, continue with native Codex tools and state the fallback."
+      "Use project paths that are accessible on the configured workflow host. If the target project is not accessible there or this server cannot serve the task, continue with native Codex tools and state the fallback."
   }
 );
 

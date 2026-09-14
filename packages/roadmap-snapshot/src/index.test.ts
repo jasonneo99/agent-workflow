@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 import { buildRoadmapSnapshot, paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot } from "./index.js";
 
-const base = { projectId: "project-1", projectName: "Example", source: "docs/roadmap.md", publishingHost: "loki" };
+const base = { projectId: "project-1", projectName: "Example", source: "docs/roadmap.md", publishingHost: "host-a" };
 
 test("publishes bounded roadmap metadata without host paths", () => {
   const snapshot = buildRoadmapSnapshot({ ...base, markdown: "# One\n- [ ] Open /Users/person/private item\n- [x] Done item", sourceModifiedAt: "2026-09-10T00:00:00.000Z", publishedAt: "2026-09-10T01:00:00.000Z" });

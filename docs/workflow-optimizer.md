@@ -4,7 +4,7 @@ The workflow optimizer supplies provider-neutral primitives for event wakeups, p
 
 Recommendations may cover stages, handoffs, context, routing, and evaluations. High-risk recommendations remain deferred for review and these contracts never grant new permissions.
 
-Jarvis sends a versioned, non-executable intent envelope. Agent Workflow converts that intent into policy-checked plans and actions. Status responses contain bounded counts and summaries and explicitly exclude raw memory. Personal adapters and real Fleet topology live in the separately access-controlled private companion repository.
+A compatible assistant sends a versioned, non-executable intent envelope. Agent Workflow converts that intent into policy-checked plans and actions. Status responses contain bounded counts and summaries and explicitly exclude raw memory. Personal adapters and real fleet topology live in a separately access-controlled private companion repository.
 
 ## Operational integration
 

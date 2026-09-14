@@ -73,7 +73,7 @@ On a configured remote executor after the reviewed build is installed:
 5. Canary `validate`, then `test` separately.
 
 Do not restart services or enable bindings as part of a source-only rollout.
-The fleet-config role already owns installation of the fixed executor.
+The private deployment companion should own installation of the fixed executor.
 
 Local fallback is deliberately separate configuration. Set `local_fallback:
 explicit` only after an unreachable/timeout exercise has been reviewed. The

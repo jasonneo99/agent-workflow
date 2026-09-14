@@ -4,7 +4,7 @@ import { generateKeyPairSync, sign } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { authenticateSharedBrainRequest, buildOptimizerApprovals, canSchedule, createJarvisIntent, fairProjectOrder, fleetHealth, optimizationReceipt, optimizerDashboardReport, previewJarvisPlan, rankRecommendations, readOptimizerEvents, runOptimizerCycle, runSharedBrainCanary, sharedBrainSummary, shouldWake, simulateRecommendation, verifyFleetControlAction } from "./index.js";
+import { authenticateSharedBrainRequest, buildOptimizerApprovals, canSchedule, createAssistantIntent, fairProjectOrder, fleetHealth, optimizationReceipt, optimizerDashboardReport, previewAssistantPlan, rankRecommendations, readOptimizerEvents, runOptimizerCycle, runSharedBrainCanary, sharedBrainSummary, shouldWake, simulateRecommendation, verifyFleetControlAction } from "./index.js";
 
 test("event wakeups deduplicate and budgets enforce quiet hours and backpressure", () => {
   assert.equal(shouldWake({ id: "e1", kind: "run.completed", projectId: "p", occurredAt: "now" }, new Set()), true);
@@ -37,8 +37,8 @@ test("Fleet actions require valid signatures and allowlisting; shared-brain cana
   const unsigned = { actionId: "a", operation: "host.status", target: "fleet-node", issuedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 60000).toISOString() };
   const signature = sign(null, Buffer.from(JSON.stringify(unsigned)), keys.privateKey).toString("base64");
   assert.equal(verifyFleetControlAction({ ...unsigned, signature }, keys.publicKey.export({ type: "spki", format: "pem" }).toString(), new Set(["host.status"])), true);
-  const intent = createJarvisIntent({ requestId: "r", conversationId: "c", goal: "status", requestedAutonomy: "observe", createdAt: "now" });
-  assert.equal(previewJarvisPlan(intent, []).executable, false);
+  const intent = createAssistantIntent({ requestId: "r", conversationId: "c", goal: "status", requestedAutonomy: "observe", createdAt: "now" });
+  assert.equal(previewAssistantPlan(intent, []).executable, false);
   assert.equal(runSharedBrainCanary({ intent, planPreviewed: true, executed: true, observed: true, approved: true, recovered: true, summarized: true }).passed, true);
 });
 
@@ -49,8 +49,8 @@ test("recommendations are explainably ranked, shadowed, receipted, and summarize
   assert.equal(fleetHealth([{ projectId: "p", maxActions: 4, consumedActions: 1, queueDepth: 0 }], ranked, 0).status, "healthy");
 });
 
-test("Jarvis intents are non-executable and summaries exclude raw memory", () => {
-  const intent = createJarvisIntent({ requestId: "r", conversationId: "c", goal: "build", requestedAutonomy: "propose", createdAt: "now" });
+test("assistant intents are non-executable and summaries exclude raw memory", () => {
+  const intent = createAssistantIntent({ requestId: "r", conversationId: "c", goal: "build", requestedAutonomy: "propose", createdAt: "now" });
   assert.equal(intent.executable, false);
   assert.equal(sharedBrainSummary({ activeGoals: [], recentDecisions: [], openApprovalCount: 1, learnedPreferenceCount: 2, degradedServices: [] }).rawMemoryIncluded, false);
 });

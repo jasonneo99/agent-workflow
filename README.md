@@ -16,7 +16,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Dynamic multi-handoff planning** — construct policy-checked workflows from natural-language goals while preserving mandatory safety stages
 - **Context Intelligence Gateway** — route large reads through cited summaries, project-isolated caching, holdout gates, and exact-read escape hatches
 - **Proactive workflow optimization** — wake on evidence events, enforce project budgets and quiet hours, rank recommendations, simulate changes in shadow mode, and record promotion or rollback receipts
-- **Governed Jarvis integration** — exchange non-executable intent envelopes and bounded status summaries while separately signing and allowlisting Fleet host actions
+- **Governed assistant integration** — exchange non-executable intent envelopes and bounded status summaries while separately signing and allowlisting fleet host actions
 - **Repository-wide public/private boundary** — validate that code, prompts, tests, fixtures, docs, and release metadata remain portable and scrubbed
 
 ## Quick Start
@@ -349,8 +349,7 @@ and MCP tool list independently of the Codex private stdio connection.
 - [Contract Tests](docs/contract-tests.md): verify custom agents, workflows, and provider adapters
 - [Model Improvement Workflow](docs/model-improvement.md): diagnose quality and cost issues without exporting private data by default
 - [Model Improvement Walkthrough](docs/model-improvement-walkthrough.md): follow the local feedback, comparison, and promotion-note loop end to end
-- [Agent Workflow + Jarvis Shared Brain](docs/agent-workflow-jarvis-shared-brain.md): use Jarvis as the conversational layer over governed workflows, durable evidence, learning, approvals, and signed fleet actions
-- [Jarvis–Fleet Integration Contract](docs/jarvis-fleet-integration-contract.md): authenticated envelopes, bounded responses, approval separation, and signed host actions
+- [Assistant integration](docs/workflow-optimizer.md): use a compatible conversational layer over governed workflows, durable evidence, learning, and approvals
 - [Dynamic Workflows](docs/dynamic-workflows.md): reusable archetypes and policy-preserving on-the-fly workflow construction
 - [Context Intelligence Gateway](docs/context-gateway.md): cited summaries, cache isolation, holdout evidence, and enforcement modes
 - [Workflow Optimizer](docs/workflow-optimizer.md): daemon wakeups, budgets, ranking, simulation, receipts, health, and shared-brain contracts

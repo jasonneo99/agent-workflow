@@ -77,12 +77,12 @@ test("snapshot creation rejects unknown adapters, projects, and operations", () 
   assert.throws(() => createExecutorSnapshots({ project: base, workflow: unknown, revision, runId: "r", taskIds: { s: "t" }, projectRootUri: process.cwd() }), /Unknown executor/);
   assert.throws(() => fixture({ projects: ["another-project"] }), /not registered for project/);
   assert.throws(() => fixture({ operations: ["test"] }), /does not permit operation typecheck/);
-  assert.throws(() => fixture({ host: "loki" }), /Invalid literal value|Invalid input/);
+  assert.throws(() => fixture({ host: "unknown-host" }), /Invalid literal value|Invalid input/);
   assert.throws(() => fixture({ project_root: "relative/path" }), /project_root must be absolute/);
   assert.throws(() => fixture({ project_root: path.join(process.cwd(), "spoof") }), /not registered for project root/);
   assert.throws(() => assertSnapshot({ ...fixture(), registeredProject: "unknown", snapshotHash: fixture().snapshotHash }), /Unregistered executor project/);
   assert.throws(() => assertSnapshot({ ...fixture(), operation: "deploy" as never }), /Unregistered executor operation/);
-  assert.throws(() => assertSnapshot({ ...fixture(), requestedHost: "loki" }), /Unregistered executor host/);
+  assert.throws(() => assertSnapshot({ ...fixture(), requestedHost: "unknown-host" }), /Unregistered executor host/);
 });
 
 test("unreachable shared host fails closed unless explicit local fallback is configured", async () => {

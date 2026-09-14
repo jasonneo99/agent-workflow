@@ -5,13 +5,12 @@ import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-a
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
+import { findRecentDuplicateRun } from "./run-deduplication.js";
 export { databaseUrl, withClient } from "./client.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
-
 export function workflowDefinitionHash(definition: unknown): string {
   return createHash("sha256").update(stableJson(definition)).digest("hex");
 }
-
 function stableJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
   if (value && typeof value === "object") {
@@ -20,7 +19,6 @@ function stableJson(value: unknown): string {
   }
   return JSON.stringify(value) ?? "null";
 }
-
 export async function seedRegistry(
   agents: RegistryRecord<AgentCard>[],
   workflows: RegistryRecord<WorkflowDefinition>[]
@@ -45,7 +43,6 @@ export async function seedRegistry(
         ]
       );
     }
-
     for (const record of workflows) {
       await client.query(
         `insert into workflows (id, name, source_path, definition, updated_at)
@@ -1029,8 +1026,7 @@ export interface CreateRunInput {
   compiledBrief?: string;
   compiledBriefMetadata?: Record<string, unknown>;
 }
-
-export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number }> {
+export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number; deduplicated?: boolean }> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -1051,7 +1047,29 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         ]
       );
       const projectId = projectResult.rows[0].id;
-
+      const workflowVersion = String(input.workflowVersion ?? "1");
+      const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
+      const evaluationMetadataJson = JSON.stringify(input.evaluationMetadata ?? {});
+      const constructionRationaleJson = JSON.stringify(input.constructionRationale ?? {});
+      const duplicate = await findRecentDuplicateRun(client, {
+        projectId,
+        workflowId: input.workflow.id,
+        task: input.task,
+        autonomy: input.autonomy,
+        policyProfile: input.policyProfile,
+        policySnapshotHash: input.policySnapshotHash,
+        modelTierOverride: input.modelTierOverride ?? null,
+        providerOverride: input.providerOverride ?? null,
+        workflowVersion,
+        workflowHash,
+        evaluationMetadataJson,
+        constructionRationaleJson,
+        compiledBrief: input.compiledBrief ?? null
+      });
+      if (duplicate) {
+        await client.query("commit");
+        return { projectId, runId: duplicate.id, tasks: duplicate.tasks, deduplicated: true };
+      }
       const runResult = await client.query<{ id: string }>(
         `insert into workflow_runs (
            project_id, workflow_id, status, task, autonomy,
@@ -1071,11 +1089,11 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           input.policySnapshotHash,
           input.modelTierOverride ?? null,
           input.providerOverride ?? null,
-          JSON.stringify(input.evaluationMetadata ?? {}),
+          evaluationMetadataJson,
           JSON.stringify(input.workflow),
-          input.workflowVersion ?? "1",
-          input.workflowHash ?? workflowDefinitionHash(input.workflow),
-          JSON.stringify(input.constructionRationale ?? {}),
+          workflowVersion,
+          workflowHash,
+          constructionRationaleJson,
           null
         ]
       );

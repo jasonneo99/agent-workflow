@@ -45,9 +45,9 @@ export function fleetHealth(budgets: ProjectBudget[], ranked: RankedRecommendati
   return { projects: budgets.length, queueDepth: budgets.reduce((n, x) => n + x.queueDepth, 0), budgetConsumed: budgets.reduce((n, x) => n + x.consumedActions, 0), budgetLimit: budgets.reduce((n, x) => n + x.maxActions, 0), deferred: ranked.filter(x => x.deferredReason).length, staleEvidence, status: staleEvidence || ranked.some(x => x.risk === "high" && !x.deferredReason) ? "watch" : "healthy" };
 }
 
-export interface JarvisIntentEnvelope { version: 1; requestId: string; conversationId: string; projectId?: string; goal: string; requestedAutonomy: "observe" | "propose" | "apply-approved"; executable: false; createdAt: string; }
-export function createJarvisIntent(input: Omit<JarvisIntentEnvelope, "version" | "executable">): JarvisIntentEnvelope {
-  if (!input.requestId || !input.conversationId || !input.goal.trim()) throw new Error("Jarvis intent identity and goal are required");
+export interface AssistantIntentEnvelope { version: 1; requestId: string; conversationId: string; projectId?: string; goal: string; requestedAutonomy: "observe" | "propose" | "apply-approved"; executable: false; createdAt: string; }
+export function createAssistantIntent(input: Omit<AssistantIntentEnvelope, "version" | "executable">): AssistantIntentEnvelope {
+  if (!input.requestId || !input.conversationId || !input.goal.trim()) throw new Error("Assistant intent identity and goal are required");
   return { version: 1, executable: false, ...input };
 }
 
@@ -120,11 +120,11 @@ export function verifyFleetControlAction(action: FleetControlAction, publicKey: 
   return verify(null, Buffer.from(payload), publicKey, Buffer.from(action.signature, "base64"));
 }
 
-export function previewJarvisPlan(intent: JarvisIntentEnvelope, recommendations: RankedRecommendation[]) {
+export function previewAssistantPlan(intent: AssistantIntentEnvelope, recommendations: RankedRecommendation[]) {
   return { requestId: intent.requestId, goal: intent.goal, executable: false, approvalRequired: recommendations.some(x => x.risk === "high" || x.deferredReason), steps: recommendations.slice(0, 10).map(x => ({ kind: x.kind, score: x.score, explanation: x.deferredReason ?? "ranked by evidence, impact, reversibility, and confidence" })) };
 }
 
-export function runSharedBrainCanary(input: { intent: JarvisIntentEnvelope; planPreviewed: boolean; executed: boolean; observed: boolean; approved: boolean; recovered: boolean; summarized: boolean }) {
+export function runSharedBrainCanary(input: { intent: AssistantIntentEnvelope; planPreviewed: boolean; executed: boolean; observed: boolean; approved: boolean; recovered: boolean; summarized: boolean }) {
   const paths = { ask: Boolean(input.intent.goal), plan: input.planPreviewed, execute: input.executed, observe: input.observed, approve: input.approved, recover: input.recovered, summarize: input.summarized };
   return { paths, passed: Object.values(paths).every(Boolean), rawMemoryIncluded: false };
 }

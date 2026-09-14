@@ -100,7 +100,7 @@ depends on a tagged Agent Workflow release. Keep the dependency one-way: the
 private add-on imports public contracts and extension points, while this open
 source repository never imports private code, configuration, data, or secrets.
 
-A private Jarvis companion can own persona and voice behavior, personal memory,
+A private assistant companion can own persona and voice behavior, personal memory,
 real fleet topology, private project mappings, signing and deployment overlays,
 domain skills, and unsanitized operational evidence. The open framework may own
 only the generic intent envelopes, handoff schemas, policy interfaces, redacted

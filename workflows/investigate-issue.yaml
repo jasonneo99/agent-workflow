@@ -1,0 +1,45 @@
+id: investigate-issue
+name: Investigate Issue
+description: Read-only investigation for suspected problems, audits, and diagnostic questions that do not yet justify a repair workflow.
+lead: ci-debugger
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: collect
+    agent: ci-debugger
+    goal: Gather the smallest useful evidence without changing project or external state.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - logs
+        - commands
+        - recent_changes
+      max_tokens: 4000
+    output: investigation_evidence
+  - id: analyze
+    agent: test-engineer
+    goal: Distinguish a reproducible defect from expected behavior, missing evidence, or an operational condition.
+    pattern:
+      type: verifier
+      promotion_gate: evaluation
+    context:
+      load:
+        - investigation_evidence
+        - relevant_source_files
+      max_tokens: 4500
+    output: investigation_findings
+  - id: report
+    agent: ci-debugger
+    goal: Report the outcome, supporting evidence, and the narrowest next action without applying a fix.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - investigation_findings
+      max_tokens: 3000
+    output: investigation_report

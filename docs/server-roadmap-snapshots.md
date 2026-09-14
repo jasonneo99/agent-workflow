@@ -1,7 +1,7 @@
 # Governed Roadmap Snapshots
 
 Agent Workflow publishes roadmap metadata from the machine that owns a registered
-project checkout. Heimdall serves the retained snapshot and never reads a remote
+project checkout. The control-plane host serves the retained snapshot and never reads a remote
 workstation path or accepts an arbitrary path or command.
 
 ## Publication
@@ -60,7 +60,7 @@ are unambiguous. The response never includes `rootUri` or another host path.
 
 ## Rollout and rollback
 
-1. Deploy the reviewed Agent Workflow package to the Heimdall service and restart
+1. Deploy the reviewed Agent Workflow package to the control-plane service and restart
    its dashboard/API process in an approved window.
 2. Deploy the same publisher revision to machines that own registered checkouts.
 3. Run `agentflow index-project --project <checkout>` on each owning machine, or
@@ -68,7 +68,7 @@ are unambiguous. The response never includes `rootUri` or another host path.
 4. Read every registered project by ID through the authenticated endpoint and
    verify identity, digest, publisher, freshness, and absence of host paths.
 
-Rollback by returning the Heimdall process and workstation publishers to the prior
+Rollback by returning the control-plane process and workstation publishers to the prior
 package revision. Retained `roadmapSnapshot` JSON is additive and can remain in
 `project_index_state`; older versions ignore the new metadata, and the new parser
 continues accepting earlier version-1 snapshots. Fleet clients should fall back to

@@ -577,7 +577,7 @@ same key returns the stored result without executing the action again; reusing
 the key with a different envelope is rejected.
 
 `GET /api/server-high-risk-approvals` is the authenticated read-only review
-surface for clients such as Jarvis. It returns at most 25 open approvals that
+surface for compatible assistant clients. It returns at most 25 open approvals that
 the existing approval policy classifies as high risk, with registered project
 identity, bounded rationale and risk reasons, and a local dashboard path. It
 redacts host paths and secret-shaped values and exposes no decision, dismissal,

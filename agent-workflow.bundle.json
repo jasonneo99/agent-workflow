@@ -14,12 +14,12 @@
   },
   "counts": {
     "agents": 25,
-    "workflows": 19,
-    "files": 44
+    "workflows": 20,
+    "files": 45
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "9ffcefb2ca84e7fe1eefc5b01737cbe22e9ae8752d47455dc500351c18a7e88d"
+    "value": "225eb33c67d06e0a96a1147f45761c4bbd0de42be867461c55a74d35a7a65b04"
   },
   "agents": [
     {
@@ -65,7 +65,7 @@
     {
       "id": "workflow-orchestrator",
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "f478b36cc6f4bde614202ffb1d925a81f366a1cbb08df6951aeea09bfbc548e5"
+      "checksum": "49ee8e4728521198f9c1088659b46c87348cb2e8a7253e7701271734692109c5"
     },
     {
       "id": "backend-engineer",
@@ -177,7 +177,7 @@
     {
       "id": "debug-failure",
       "path": "workflows/debug-failure.yaml",
-      "checksum": "965484c7f035a622e00daf8a303d4a16dadd5936b837a6220165064f84716970"
+      "checksum": "f1e0f576dcabe25858d5ae81e9f3ba44a837b4d376902b2af063a3cfe91b073d"
     },
     {
       "id": "dependency-upgrade",
@@ -188,6 +188,11 @@
       "id": "incident-response",
       "path": "workflows/incident-response.yaml",
       "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
+    },
+    {
+      "id": "investigate-issue",
+      "path": "workflows/investigate-issue.yaml",
+      "checksum": "df5785948a18374245b7a3683e0600fc08dd6544fdbbea54ea598e89cf3b341a"
     },
     {
       "id": "maintain-context",
@@ -280,7 +285,7 @@
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "f478b36cc6f4bde614202ffb1d925a81f366a1cbb08df6951aeea09bfbc548e5"
+      "checksum": "49ee8e4728521198f9c1088659b46c87348cb2e8a7253e7701271734692109c5"
     },
     {
       "path": "agents/development/backend-engineer.yaml",
@@ -368,7 +373,7 @@
     },
     {
       "path": "workflows/debug-failure.yaml",
-      "checksum": "965484c7f035a622e00daf8a303d4a16dadd5936b837a6220165064f84716970"
+      "checksum": "f1e0f576dcabe25858d5ae81e9f3ba44a837b4d376902b2af063a3cfe91b073d"
     },
     {
       "path": "workflows/dependency-upgrade.yaml",
@@ -377,6 +382,10 @@
     {
       "path": "workflows/incident-response.yaml",
       "checksum": "a904147d6e623c6273b3eaf1eba15ef3e9a7f4a4bd12adf91914ae4444209d43"
+    },
+    {
+      "path": "workflows/investigate-issue.yaml",
+      "checksum": "df5785948a18374245b7a3683e0600fc08dd6544fdbbea54ea598e89cf3b341a"
     },
     {
       "path": "workflows/maintain-context.yaml",

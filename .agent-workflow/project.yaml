@@ -10,6 +10,7 @@ project:
     - build-feature
     - review-pr
     - debug-failure
+    - investigate-issue
     - maintain-context
   autonomy: 3
 context:

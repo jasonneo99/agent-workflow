@@ -7,6 +7,7 @@ const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "ut
   .filter(Boolean);
 const allowedUserNames = new Set(["example", "me", "person", "runner", "user", "you"]);
 const violations = [];
+const privateDeploymentTerms = ["loki", "heimdall", "hulk", "jarvis", "fleet-config"];
 
 function add(file, label, value) {
   violations.push(`${file}: ${label} (${value})`);
@@ -14,10 +15,20 @@ function add(file, label, value) {
 
 for (const file of files) {
   if (file === "scripts/validate-open-source-boundary.mjs") continue;
+  if (!fs.existsSync(file)) continue;
+  const normalizedFile = file.toLowerCase();
+  for (const term of privateDeploymentTerms) {
+    if (normalizedFile.includes(term)) add(file, "private deployment identifier in path", term);
+  }
   const buffer = fs.readFileSync(file);
   if (buffer.includes(0)) continue;
   const text = buffer.toString("utf8");
   const markedSyntheticFixture = /boundary-synthetic-fixtures/u.test(text) && /(?:^|\/)\w[^/]*\.test\.[cm]?[jt]sx?$/u.test(file);
+
+  for (const term of privateDeploymentTerms) {
+    if (new RegExp(`\\b${term}\\b`, "iu").test(text)) add(file, "private deployment identifier", term);
+  }
+  for (const match of text.matchAll(/\b[A-Za-z0-9-]+\.ts\.net\b/giu)) add(file, "private tailnet domain", match[0]);
 
   for (const match of text.matchAll(/\/(?:Users|home)\/([A-Za-z0-9._-]+)/g)) {
     if (!allowedUserNames.has(match[1].toLowerCase())) add(file, "machine-specific user path", match[0]);

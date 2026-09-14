@@ -25,7 +25,7 @@ import { buildBundleManifest, compareBundleManifests, formatBundleManifest, load
 import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
-import { authenticateSharedBrainRequest, createJarvisIntent, fairProjectOrder, optimizerDashboardReport, previewJarvisPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
+import { authenticateSharedBrainRequest, createAssistantIntent, fairProjectOrder, optimizerDashboardReport, previewAssistantPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
 import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, type DaemonTrustSettings } from "../../../packages/daemon-control/src/index.js";
 import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.js";
 import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
@@ -25384,9 +25384,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     if (!authenticateSharedBrainRequest(firstHeader(request.headers.authorization) ?? undefined, process.env.AGENTFLOW_SERVER_TOKEN)) { response.writeHead(401, { "content-type": "application/json", "www-authenticate": "Bearer" }); response.end(JSON.stringify({ error: "authenticated server access is required" })); return; }
     try {
       const payload = objectValue(await readJsonBody(request, serverRequestLimits().maxBodyBytes));
-      const intent = createJarvisIntent({ requestId: stringValue(payload.requestId) ?? randomUUID(), conversationId: stringValue(payload.conversationId) ?? "server", projectId: stringValue(payload.projectId) ?? undefined, goal: stringValue(payload.goal) ?? "", requestedAutonomy: parseLearningDaemonMode(stringValue(payload.requestedAutonomy) ?? "propose"), createdAt: new Date().toISOString() });
+      const intent = createAssistantIntent({ requestId: stringValue(payload.requestId) ?? randomUUID(), conversationId: stringValue(payload.conversationId) ?? "server", projectId: stringValue(payload.projectId) ?? undefined, goal: stringValue(payload.goal) ?? "", requestedAutonomy: parseLearningDaemonMode(stringValue(payload.requestedAutonomy) ?? "propose"), createdAt: new Date().toISOString() });
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ intent, preview: previewJarvisPlan(intent, []) }, null, 2));
+      response.end(JSON.stringify({ intent, preview: previewAssistantPlan(intent, []) }, null, 2));
     } catch (error) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); }
     return;
   }
@@ -26070,14 +26070,14 @@ function renderDashboardHtml(
   const workRows = activeRuns.map((run) => `
     <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
       <span class="human-row-icon">${dashboardIcon(run.status === "running" ? "activity" : "list")}</span>
-      <span><strong>${escapeHtml(compactDashboardText(run.task, 78))}</strong><small>${escapeHtml(run.projectName)} · ${escapeHtml(run.workflowId.replace(/-/g, " "))}</small></span>
+      <span><strong>${escapeHtml(compactDashboardText(run.task, 78))}</strong><small>${escapeHtml(run.projectName)} · ${escapeHtml(workflowDisplayName(run.workflowId))}</small></span>
       <span class="human-row-state ${escapeHtml(run.status)}">${run.status === "running" ? "In progress" : "Waiting"}</span>
     </a>`).join("");
   const outcomeRows = recentRuns.map((run) => `
     <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
       <span class="human-row-icon ${run.status === "completed" ? "success" : "danger"}">${dashboardIcon(run.status === "completed" ? "check" : "warning")}</span>
       <span><strong>${escapeHtml(compactDashboardText(run.task, 70))}</strong><small>${escapeHtml(run.projectName)} · ${renderDashboardDateTime(run.startedAt)}</small></span>
-      <span class="human-row-state ${escapeHtml(run.status)}">${run.status === "completed" ? "Completed" : "Needs review"}</span>
+      <span class="human-row-state ${escapeHtml(run.status)}">${escapeHtml(workflowOutcomeLabel(run.workflowId, run.status))}</span>
     </a>`).join("");
   const workflowOptions = workflows
     .filter((workflow) => workflow.triggers.manual)
@@ -27420,7 +27420,7 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
         ]
       })}</div></td>
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
-      <td>${escapeHtml(run.workflowId)}</td>
+      <td><strong>${escapeHtml(workflowDisplayName(run.workflowId))}</strong><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
       <td>${escapeHtml(run.task)}</td>
       <td>${renderDashboardDateTime(run.startedAt)}</td>
@@ -32478,7 +32478,7 @@ function renderRunDetailHtml(input: {
     <section class="panel">
       <div class="meta-grid">
         <div><strong>Status</strong><span class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span></div>
-        <div><strong>Workflow</strong>${escapeHtml(input.run.workflowId)}</div>
+        <div><strong>Workflow</strong>${escapeHtml(workflowDisplayName(input.run.workflowId))}<br><span class="muted">${escapeHtml(input.run.workflowId)}</span></div>
         <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
         <div><strong>Started</strong>${renderDashboardDateTime(input.run.startedAt)}</div>
         <div><strong>Tasks</strong>${completedTasks}/${input.tasks.length} completed</div>
@@ -32493,7 +32493,8 @@ function renderRunDetailHtml(input: {
         ${queueRunActionForm(input.run.id, "resume-checkpoint", "Resume Checkpoint")}
         ${queueRunActionForm(input.run.id, "replay-run", "Replay Run")}
         ${runActionForm(input.run.id, "summarize", "Summarize Run")}
-        ${runActionForm(input.run.id, "debug-failure", "Debug Failure")}
+        ${runActionForm(input.run.id, "debug-failure", "Diagnose & Fix")}
+        ${runActionForm(input.run.id, "investigate-issue", "Investigate Issue")}
         ${runActionForm(input.run.id, "mira-ux-pass", "Ask Mira")}
         ${runActionForm(input.run.id, "frontend-pass", "Frontend Pass")}
         ${runActionForm(input.run.id, "maintain-context", "Maintain Context")}
@@ -34610,7 +34611,7 @@ async function queueDashboardWorkflowRun(input: {
     `Run: ${queued.run.runId}`,
     `Workflow: ${queued.workflow.id}`,
     `Project: ${queued.projectDir}`,
-    `Queued stages: ${queued.run.tasks}`,
+    queued.run.deduplicated ? "Duplicate suppressed: reused the matching active or recently completed run." : `Queued stages: ${queued.run.tasks}`,
     `Open: ${runUrl}`
   ];
 
@@ -40011,12 +40012,18 @@ function createOrchestrationPlan(input: { projectDir: string; task: string }): O
   }
 
   if (includesAny(["test", "tests", "failing", "failure", "bug", "error", "ci", "build failed", "broken"])) {
+    const requestsRepair = includesAny(["fix", "implement", "repair", "patch", "resolve"]);
+    const requestsInvestigationOnly = includesAny(["read-only", "investigate", "audit", "diagnose", "analyze", "analyse", "inspect", "validate"]);
     addStep({
-      title: "Failure and test triage",
-      reason: "The request includes failures, tests, CI, bugs, or build issues.",
+      title: requestsInvestigationOnly && !requestsRepair ? "Issue investigation" : "Failure diagnosis and repair",
+      reason: requestsInvestigationOnly && !requestsRepair
+        ? "The request asks for investigation without authorizing a repair."
+        : "The request identifies a failure and asks for diagnosis or repair.",
       kind: "workflow",
-      target: "debug-failure",
-      task: `Investigate failures, likely causes, and next fixes for: ${input.task}`
+      target: requestsInvestigationOnly && !requestsRepair ? "investigate-issue" : "debug-failure",
+      task: requestsInvestigationOnly && !requestsRepair
+        ? `Investigate and classify the issue without making changes: ${input.task}`
+        : `Diagnose, fix, and verify the confirmed failure: ${input.task}`
     });
   }
 
@@ -40367,6 +40374,19 @@ function escapeHtml(value: string): string {
     .replaceAll('"', "&quot;");
 }
 
+function workflowDisplayName(workflowId: string): string {
+  if (workflowId === "debug-failure") return "Diagnose & Fix";
+  if (workflowId === "investigate-issue") return "Investigate Issue";
+  return workflowId.split("-").map((word) => word ? `${word[0].toUpperCase()}${word.slice(1)}` : word).join(" ");
+}
+
+function workflowOutcomeLabel(workflowId: string, status: string): string {
+  if (status !== "completed") return status === "failed" ? "Needs review" : status === "running" ? "In progress" : "Waiting";
+  if (workflowId === "debug-failure") return "Fix verified";
+  if (workflowId === "investigate-issue") return "Investigation complete";
+  return "Completed";
+}
+
 function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: string): T | undefined {
   const aliases: Record<string, string> = {
     "review-change": "review-pr",
@@ -40374,6 +40394,8 @@ function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: s
     "pull-request-review": "review-pr",
     "fix-failure": "debug-failure",
     debug: "debug-failure",
+    investigate: "investigate-issue",
+    diagnose: "investigate-issue",
     release: "ship-release",
     ship: "ship-release",
     "context-maintenance": "maintain-context",

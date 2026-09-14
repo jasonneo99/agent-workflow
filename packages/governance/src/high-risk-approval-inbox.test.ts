@@ -16,7 +16,7 @@ test("redacts credentials and host paths from approval cards", () => {
 
 test("builds a bounded immutable read-only contract", () => {
   const item = {
-    approvalId: "approval-1", projectId: "project-1", projectName: "fleet-config",
+    approvalId: "approval-1", projectId: "project-1", projectName: "example-project",
     workflowId: "build-feature", runId: "run-1", approvalStatus: "pending",
     actionType: "deployment", target: "deploy canary", rationale: "manual review",
     risk: "high" as const, riskReasons: ["deployment requires review"],

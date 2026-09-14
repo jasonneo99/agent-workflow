@@ -1,6 +1,6 @@
 id: debug-failure
-name: Debug Failure
-description: Reproduce, diagnose, fix, and verify a failing test, build, runtime path, or CI check.
+name: Diagnose & Fix
+description: Reproduce, diagnose, fix, and verify a confirmed failing test, build, runtime path, or CI check.
 lead: ci-debugger
 default_autonomy: 3
 triggers:

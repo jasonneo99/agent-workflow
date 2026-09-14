@@ -23,7 +23,7 @@ configuration templates, and generated release metadata.
 - Never commit personal memory, real fleet topology, private project mappings,
   customer or product intelligence, credentials, machine-specific paths, or
   unsanitized runtime artifacts.
-- Put personal Jarvis behavior, private skills, real host configuration, and
+- Put personal assistant behavior, private skills, real host configuration, and
   deployment overlays in a separately access-controlled companion repository.
 - A private companion may depend on tagged Agent Workflow releases; Agent
   Workflow must never depend on or import the private companion.
@@ -34,7 +34,7 @@ configuration templates, and generated release metadata.
 
 Core agents:
 
-- `workflow-orchestrator`: Jarvis Orchestrator; routes natural-language goals,
+- `workflow-orchestrator`: Workflow Orchestrator; routes natural-language goals,
   delegates to specialists, and owns final workflow coherence across registered
   projects.
 - `task-triager`: classifies work and selects the right workflow.

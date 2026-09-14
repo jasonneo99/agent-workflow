@@ -109,7 +109,7 @@ These milestones organize the detailed roadmap items below:
      broader shared-agent or research-driven automation.
    - The authenticated server health contract now aggregates supervisor,
      worker-lane, logical daemon-lane, trust, and per-project learning status
-     for bounded private clients such as Jarvis.
+     for bounded private assistant clients.
 
 8. **Multi-Project / Multi-Machine State Plane**
    - Workstreams: shared storage migration, shared host/LAN/Tailscale state plane,
@@ -923,7 +923,7 @@ foundation is complete.
   - Priority: high
   - Status: implemented with event wakeups, persisted cursors and budgets, explainable ranking, shadow evidence, promotion/rollback receipts, and fleet-health summaries integrated into governed daemon ticks.
 
-- [x] Task: operationalize Agent Workflow and Jarvis as a governed shared brain.
+- [x] Task: operationalize Agent Workflow and an assistant client as a governed shared brain.
   - Milestone: 12 Ecosystem Fit
   - Priority: high
   - Status: implemented with non-executable intent envelopes, explainable plan previews, bounded summaries, full lifecycle canaries, and signed allowlisted Fleet actions. Personal adapters remain in the private companion repository.
