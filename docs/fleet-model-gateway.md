@@ -20,6 +20,7 @@ Keep all credentials outside Git:
 export AGENTFLOW_MODEL_GATEWAY_UPSTREAM_URL="https://provider.example/v1"
 export AGENTFLOW_MODEL_GATEWAY_UPSTREAM_API_KEY="..."
 export AGENTFLOW_MODEL_GATEWAY_CLIENT_TOKENS='{"workstation-a":"...","worker-b":"..."}'
+export AGENTFLOW_MODEL_GATEWAY_OBSERVER_TOKENS='{"dashboard":"..."}'
 export AGENTFLOW_MODEL_GATEWAY_CLIENT_POLICIES='{"workstation-a":{"allowedModels":["example-model"],"requestsPerMinute":60,"dailyTokenBudget":1000000}}'
 export AGENTFLOW_MODEL_GATEWAY_PRICING='{"example-model":{"inputPerMillionUsd":1,"outputPerMillionUsd":4}}'
 export AGENTFLOW_MODEL_GATEWAY_HOST="127.0.0.1"
@@ -46,6 +47,46 @@ Authenticated clients can probe `/healthz`. Per-client policies can independentl
 restrict models, requests per minute, and daily tokens. The gateway rejects over-
 budget or disallowed traffic before contacting the upstream provider. Optional
 pricing produces estimates only; provider billing remains authoritative.
+
+## Authoritative fleet reporting
+
+The gateway host can be the authoritative usage source without sharing or
+mounting its raw JSONL ledger. Configure a separate observer token and let
+dashboards read:
+
+```http
+GET /_agentflow/usage/summary?limit=100&since=2026-01-01T00:00:00.000Z
+Authorization: Bearer <observer token>
+```
+
+The summary returns fleet-wide totals for the requested time window plus at
+most 500 recent metadata-only receipts. Observer credentials cannot proxy model
+calls or upload node receipts. Configure a dashboard with the exact private
+endpoint and its observer credential:
+
+```bash
+export AGENTFLOW_FLEET_USAGE_SUMMARY_URL="https://private-gateway.example/_agentflow/usage/summary"
+export AGENTFLOW_FLEET_USAGE_SUMMARY_TOKEN="..."
+```
+
+The dashboard labels the authoritative source explicitly. If it is unavailable,
+the dashboard visibly falls back to its local ledger rather than presenting
+local data as fleet-wide data.
+
+Local inference and temporarily offline nodes can upload batches of no more
+than 100 receipts using their existing per-node token:
+
+```http
+POST /_agentflow/usage/receipts
+Authorization: Bearer <node token>
+Content-Type: application/json
+
+{"receipts":[{"version":1,"id":"<stable receipt id>","observedAt":"<ISO timestamp>","clientId":"<authenticated node id>","provider":"local","inputTokens":0,"cachedInputTokens":0,"reasoningTokens":0,"outputTokens":0,"totalTokens":0,"latencyMs":0,"status":"completed","requestHash":"<correlation hash>"}]}
+```
+
+The authenticated node identity must exactly match every receipt. Stable
+receipt IDs make repeated delivery idempotent. Requests, labels, numeric fields,
+body size, and batch size are validated before any ledger append.
 
 ```bash
 npm run model-gateway:report

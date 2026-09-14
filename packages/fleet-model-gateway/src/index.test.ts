@@ -23,6 +23,8 @@ test("fleet summary aggregates tokens and failures", () => {
   assert.deepEqual(report.clients, ["host-a", "host-b"]);
   assert.equal(report.totals.totalTokens, 20);
   assert.equal(report.totals.failures, 1);
+  assert.equal(summarizeFleetUsage([base, { ...base, id: "two" }], { limit: 1 }).receipts.length, 1);
+  assert.equal(summarizeFleetUsage([base], { since: new Date(1).toISOString() }).totals.requests, 0);
 });
 
 test("offline receipt import is idempotent", async () => {
@@ -47,7 +49,7 @@ test("gateway health and client policies fail closed before upstream", async () 
   await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
   const upstreamAddress = upstream.address();
   assert.ok(upstreamAddress && typeof upstreamAddress === "object");
-  const gateway = createFleetModelGateway({ upstreamBaseUrl: `http://127.0.0.1:${upstreamAddress.port}`, clientTokens: { client: "token" }, clientPolicies: { client: { allowedModels: ["model-a"], requestsPerMinute: 3, dailyTokenBudget: 100 } }, ledgerPath: path.join(directory, "ledger.jsonl"), provider: "test" });
+  const gateway = createFleetModelGateway({ upstreamBaseUrl: `http://127.0.0.1:${upstreamAddress.port}`, clientTokens: { client: "token" }, observerTokens: { dashboard: "observer-token" }, clientPolicies: { client: { allowedModels: ["model-a"], requestsPerMinute: 6, dailyTokenBudget: 100 } }, ledgerPath: path.join(directory, "ledger.jsonl"), provider: "test" });
   await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
   const gatewayAddress = gateway.address();
   assert.ok(gatewayAddress && typeof gatewayAddress === "object");
@@ -57,6 +59,16 @@ test("gateway health and client policies fail closed before upstream", async () 
     assert.equal((await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "blocked" }) })).status, 403);
     assert.equal((await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "model-a" }) })).status, 200);
     assert.equal((await readFleetUsageReceipts(path.join(directory, "ledger.jsonl")))[0]?.totalTokens, 3);
+    assert.equal((await fetch(`${base}/_agentflow/usage/summary`, { headers: { authorization: "Bearer token" } })).status, 401);
+    const summaryResponse = await fetch(`${base}/_agentflow/usage/summary?limit=1`, { headers: { authorization: "Bearer observer-token" } });
+    assert.equal(summaryResponse.status, 200);
+    assert.equal(((await summaryResponse.json()) as { returnedReceiptCount: number }).returnedReceiptCount, 1);
+    const offlineReceipt: FleetUsageReceipt = { version: 1, id: "offline-two", observedAt: new Date().toISOString(), clientId: "client", provider: "local", inputTokens: 2, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1, totalTokens: 3, latencyMs: 2, status: "completed", requestHash: "hash-two" };
+    const ingest = () => fetch(`${base}/_agentflow/usage/receipts`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ receipts: [offlineReceipt] }) });
+    assert.deepEqual(await (await ingest()).json(), { accepted: 1, imported: 1, duplicates: 0 });
+    assert.deepEqual(await (await ingest()).json(), { accepted: 1, imported: 0, duplicates: 1 });
+    const wrongOwner = await fetch(`${base}/_agentflow/usage/receipts`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ receipts: [{ ...offlineReceipt, id: "wrong-owner", clientId: "another-client" }] }) });
+    assert.equal(wrongOwner.status, 400);
   } finally {
     await new Promise<void>((resolve) => gateway.close(() => resolve()));
     await new Promise<void>((resolve) => upstream.close(() => resolve()));

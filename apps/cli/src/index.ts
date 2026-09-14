@@ -25154,8 +25154,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/fleet-model-usage") {
-    const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.join(rootDir, ".agent-workflow", "runtime", "fleet-model-usage.jsonl");
-    const report = summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath));
+    const report = await loadDashboardFleetUsageReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -25998,8 +25997,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/fleet-model-usage") {
-    const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.join(rootDir, ".agent-workflow", "runtime", "fleet-model-usage.jsonl");
-    const report = summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath));
+    const report = await loadDashboardFleetUsageReport();
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderFleetModelUsageHtml(report));
     return;
@@ -36740,7 +36738,55 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
   </section>`;
 }
 
-function renderFleetModelUsageHtml(report: ReturnType<typeof summarizeFleetUsage>): string {
+type DashboardFleetUsageReport = ReturnType<typeof summarizeFleetUsage> & { dashboardSource: "authoritative-gateway" | "local-ledger" | "local-fallback"; dashboardNotice?: string };
+
+async function loadDashboardFleetUsageReport(): Promise<DashboardFleetUsageReport> {
+  const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.join(rootDir, ".agent-workflow", "runtime", "fleet-model-usage.jsonl");
+  const remoteUrl = process.env.AGENTFLOW_FLEET_USAGE_SUMMARY_URL?.trim();
+  if (!remoteUrl) return { ...summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath)), dashboardSource: "local-ledger" };
+  try {
+    const target = new URL(remoteUrl);
+    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password) throw new Error("Summary URL must be an HTTP(S) URL without embedded credentials.");
+    target.searchParams.set("limit", "100");
+    const token = process.env.AGENTFLOW_FLEET_USAGE_SUMMARY_TOKEN;
+    if (!token) throw new Error("Summary observer token is not configured.");
+    const remote = await fetch(target, { headers: { authorization: `Bearer ${token}`, accept: "application/json" }, signal: AbortSignal.timeout(5_000) });
+    if (!remote.ok) throw new Error(`Summary service returned HTTP ${remote.status}.`);
+    const body = await readBoundedDashboardResponse(remote, 2_000_000);
+    const parsed = JSON.parse(body) as ReturnType<typeof summarizeFleetUsage>;
+    if (parsed.version !== 1 || !parsed.totals || !Array.isArray(parsed.clients) || !Array.isArray(parsed.receipts) || parsed.receipts.length > 500) throw new Error("Summary service returned an invalid report.");
+    return { ...parsed, dashboardSource: "authoritative-gateway" };
+  } catch (error) {
+    return {
+      ...summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath)),
+      dashboardSource: "local-fallback",
+      dashboardNotice: `Authoritative summary unavailable: ${error instanceof Error ? error.message : "unknown error"}`
+    };
+  }
+}
+
+async function readBoundedDashboardResponse(response: Response, maxBytes: number): Promise<string> {
+  if (!response.body) return "";
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > maxBytes) {
+      await reader.cancel();
+      throw new Error("Summary response exceeded the configured limit.");
+    }
+    chunks.push(value);
+  }
+  const combined = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) { combined.set(chunk, offset); offset += chunk.byteLength; }
+  return new TextDecoder().decode(combined);
+}
+
+function renderFleetModelUsageHtml(report: DashboardFleetUsageReport): string {
   const rows = report.receipts.slice(-100).reverse().map((receipt: FleetUsageReceipt) => `<tr>
     <td>${escapeHtml(receipt.observedAt)}</td><td>${escapeHtml(receipt.clientId)}</td><td>${escapeHtml(receipt.projectId ?? "unattributed")}</td>
     <td>${escapeHtml(receipt.provider)}</td><td>${escapeHtml(receipt.model ?? "unknown")}</td><td>${formatNumber(receipt.inputTokens)}</td>
@@ -36749,6 +36795,7 @@ function renderFleetModelUsageHtml(report: ReturnType<typeof summarizeFleetUsage
   </tr>`).join("") || `<tr><td colspan="11">No gateway usage receipts have been observed yet.</td></tr>`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fleet Model Usage</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("fleet-model-usage")}<main><div class="topbar"><div><a href="/settings">Settings</a><h1>Fleet Model Usage</h1><p class="page-intro">Metadata-only usage observed through the authenticated fleet gateway.</p></div><a class="button secondary" href="/api/fleet-model-usage">JSON</a></div>
+  <section class="callout ${report.dashboardSource === "local-fallback" ? "failed" : "completed"}"><strong>Data source</strong><p>${escapeHtml(report.dashboardSource)}${report.dashboardNotice ? ` · ${escapeHtml(report.dashboardNotice)}` : ""}</p></section>
   <section class="metrics">${metricCard("Requests", report.totals.requests, `${report.totals.failures} failed`)}${metricCard("Total Tokens", report.totals.totalTokens, `${report.clients.length} clients`)}${metricCard("Input Tokens", report.totals.inputTokens, `${report.totals.cachedInputTokens} cached`)}${metricCard("Output Tokens", report.totals.outputTokens, `${report.totals.reasoningTokens} reasoning`)}${metricCard("Estimated Cost", `$${report.totals.estimatedCostUsd.toFixed(4)}`, "configured pricing; billing is authoritative")}</section>
   <section class="panel"><h2>Recent Requests</h2><p class="muted">Prompts, responses, credentials, and raw request bodies are never stored. Calls that bypass the gateway are not included.</p><div class="table-wrap"><table><thead><tr><th>Observed</th><th>Client</th><th>Project</th><th>Provider</th><th>Model</th><th>Input</th><th>Cached</th><th>Reasoning</th><th>Output</th><th>Total</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>
   <section class="panel"><h2>Run the Gateway</h2><p><code>npm run model-gateway</code></p><p>Configure credentials only through the environment. See <code>docs/fleet-model-gateway.md</code> for fleet setup and reconciliation guidance.</p></section></main></body></html>`;

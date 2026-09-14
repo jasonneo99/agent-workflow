@@ -26,8 +26,11 @@ if (command === "report") {
   const modelPricing = process.env.AGENTFLOW_MODEL_GATEWAY_PRICING
     ? JSON.parse(process.env.AGENTFLOW_MODEL_GATEWAY_PRICING)
     : undefined;
+  const observerTokens = process.env.AGENTFLOW_MODEL_GATEWAY_OBSERVER_TOKENS
+    ? JSON.parse(process.env.AGENTFLOW_MODEL_GATEWAY_OBSERVER_TOKENS) as Record<string, string>
+    : undefined;
   const port = Number.parseInt(process.env.AGENTFLOW_MODEL_GATEWAY_PORT ?? "18080", 10);
   const maxResponseBytes = Number.parseInt(process.env.AGENTFLOW_MODEL_GATEWAY_MAX_RESPONSE_BYTES ?? "25000000", 10);
-  createFleetModelGateway({ upstreamBaseUrl, upstreamApiKey: process.env.AGENTFLOW_MODEL_GATEWAY_UPSTREAM_API_KEY, clientTokens, clientPolicies, modelPricing, ledgerPath, maxResponseBytes, provider: process.env.AGENTFLOW_MODEL_GATEWAY_PROVIDER ?? "upstream" })
+  createFleetModelGateway({ upstreamBaseUrl, upstreamApiKey: process.env.AGENTFLOW_MODEL_GATEWAY_UPSTREAM_API_KEY, clientTokens, observerTokens, clientPolicies, modelPricing, ledgerPath, maxResponseBytes, provider: process.env.AGENTFLOW_MODEL_GATEWAY_PROVIDER ?? "upstream" })
     .listen(port, process.env.AGENTFLOW_MODEL_GATEWAY_HOST ?? "127.0.0.1", () => console.log(`Fleet model gateway listening on port ${port}.`));
 }

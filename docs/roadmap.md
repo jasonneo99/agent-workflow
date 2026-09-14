@@ -259,6 +259,14 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Never retry or route authentication and configuration failures. Permit account-quota fallback only when explicitly enabled and the destination is already fleet-approved with a declared data policy.
   - Preserve the existing authenticated queue and idempotency contract so assistant clients never implement prompt-level retry loops.
 
+- [x] Authoritative fleet model-usage reporting contract.
+  - Expose a separately authenticated, bounded summary endpoint on the gateway host.
+  - Accept bounded metadata-only receipt batches from authenticated nodes with exact identity binding and idempotent receipt IDs.
+  - Support bounded time windows and recent-receipt limits without exposing the raw ledger.
+  - Let dashboards consume the authoritative summary and visibly fall back to a local ledger during outages.
+  - Report summary and ingestion readiness through the authenticated gateway health contract.
+  - Keep endpoint addresses, TLS, ACLs, tokens, node identities, and rollout configuration in the private fleet-management layer.
+
 - [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.

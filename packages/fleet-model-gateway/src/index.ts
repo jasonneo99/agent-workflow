@@ -35,8 +35,11 @@ export interface FleetGatewayConfig {
   maxResponseBytes?: number;
   upstreamTimeoutMs?: number;
   clientPolicies?: Record<string, FleetClientPolicy>;
+  observerTokens?: Record<string, string>;
   modelPricing?: Record<string, { inputPerMillionUsd: number; outputPerMillionUsd: number }>;
 }
+
+export interface FleetUsageSummaryOptions { limit?: number; since?: string; }
 
 export interface FleetClientPolicy {
   allowedModels?: string[];
@@ -110,20 +113,28 @@ export async function readFleetUsageReceipts(ledgerPath: string): Promise<FleetU
   }
 }
 
+let importWrite = Promise.resolve();
+
 export async function importFleetUsageReceipts(ledgerPath: string, incoming: FleetUsageReceipt[]): Promise<number> {
-  const existingIds = new Set((await readFleetUsageReceipts(ledgerPath)).map((item) => item.id));
   let imported = 0;
-  for (const receipt of incoming) {
-    if (receipt.version !== 1 || !receipt.id || !receipt.clientId || existingIds.has(receipt.id)) continue;
-    await appendFleetUsageReceipt(ledgerPath, receipt);
-    existingIds.add(receipt.id);
-    imported += 1;
-  }
+  importWrite = importWrite.catch(() => undefined).then(async () => {
+    const existingIds = new Set((await readFleetUsageReceipts(ledgerPath)).map((item) => item.id));
+    for (const receipt of incoming) {
+      if (!validFleetUsageReceipt(receipt) || existingIds.has(receipt.id)) continue;
+      await appendFleetUsageReceipt(ledgerPath, receipt);
+      existingIds.add(receipt.id);
+      imported += 1;
+    }
+  });
+  await importWrite;
   return imported;
 }
 
-export function summarizeFleetUsage(receipts: FleetUsageReceipt[]) {
-  const totals = receipts.reduce((sum, item) => ({
+export function summarizeFleetUsage(receipts: FleetUsageReceipt[], options: FleetUsageSummaryOptions = {}) {
+  const sinceMs = options.since ? Date.parse(options.since) : Number.NaN;
+  const filtered = Number.isFinite(sinceMs) ? receipts.filter((item) => Date.parse(item.observedAt) >= sinceMs) : receipts;
+  const limit = Math.max(1, Math.min(500, Math.trunc(options.limit ?? 100)));
+  const totals = filtered.reduce((sum, item) => ({
     requests: sum.requests + 1,
     inputTokens: sum.inputTokens + item.inputTokens,
     cachedInputTokens: sum.cachedInputTokens + item.cachedInputTokens,
@@ -133,7 +144,17 @@ export function summarizeFleetUsage(receipts: FleetUsageReceipt[]) {
     failures: sum.failures + (item.status === "failed" ? 1 : 0),
     estimatedCostUsd: sum.estimatedCostUsd + (item.estimatedCostUsd ?? 0)
   }), { requests: 0, inputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 0, totalTokens: 0, failures: 0, estimatedCostUsd: 0 });
-  return { version: 1, generatedAt: new Date().toISOString(), totals, clients: [...new Set(receipts.map((item) => item.clientId))].sort(), receipts };
+  return { version: 1, generatedAt: new Date().toISOString(), totals, clients: [...new Set(filtered.map((item) => item.clientId))].sort(), receiptCount: filtered.length, returnedReceiptCount: Math.min(filtered.length, limit), receipts: filtered.slice(-limit) };
+}
+
+function validFleetUsageReceipt(value: unknown): value is FleetUsageReceipt {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Partial<FleetUsageReceipt>;
+  const bounded = [item.id, item.observedAt, item.clientId, item.provider, item.requestHash].every((part) => typeof part === "string" && part.length > 0 && part.length <= 256);
+  const optionalLabels = [item.projectId, item.workflowId, item.runId, item.stageId, item.model].every((part) => part === undefined || (typeof part === "string" && part.length <= 128));
+  const numbers = [item.inputTokens, item.cachedInputTokens, item.reasoningTokens, item.outputTokens, item.totalTokens, item.latencyMs].every((part) => typeof part === "number" && Number.isFinite(part) && part >= 0);
+  const cost = item.estimatedCostUsd === undefined || (typeof item.estimatedCostUsd === "number" && Number.isFinite(item.estimatedCostUsd) && item.estimatedCostUsd >= 0);
+  return item.version === 1 && bounded && optionalLabels && numbers && cost && !Number.isNaN(Date.parse(item.observedAt!)) && (item.status === "completed" || item.status === "failed");
 }
 
 export function estimateModelCost(usage: ReturnType<typeof usageFromPayload>, model: string | undefined, pricing: FleetGatewayConfig["modelPricing"]): number | undefined {
@@ -198,15 +219,53 @@ export function createFleetModelGateway(config: FleetGatewayConfig): http.Server
   const maxResponseBytes = config.maxResponseBytes ?? 25_000_000;
   const requestWindows = new Map<string, number[]>();
   return http.createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? "/", "http://gateway.invalid");
+    if (requestUrl.pathname === "/_agentflow/usage/summary") {
+      const observerId = authenticateFleetClient(request.headers.authorization, config.observerTokens ?? {});
+      if (!observerId) {
+        response.writeHead(401, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: { message: "Valid fleet observer credentials are required." } }));
+        return;
+      }
+      const limit = Number.parseInt(requestUrl.searchParams.get("limit") ?? "100", 10);
+      const since = requestUrl.searchParams.get("since") ?? undefined;
+      const report = summarizeFleetUsage(await readFleetUsageReceipts(config.ledgerPath), { limit: Number.isFinite(limit) ? limit : 100, since });
+      response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      response.end(JSON.stringify(report));
+      return;
+    }
     const clientId = authenticateFleetClient(request.headers.authorization, config.clientTokens);
     if (!clientId) {
       response.writeHead(401, { "content-type": "application/json" });
       response.end(JSON.stringify({ error: { message: "Valid fleet gateway credentials are required." } }));
       return;
     }
+    if (requestUrl.pathname === "/_agentflow/usage/receipts") {
+      if (request.method !== "POST") {
+        response.writeHead(405, { "content-type": "application/json", allow: "POST" });
+        response.end(JSON.stringify({ error: { message: "Receipt ingestion requires POST." } }));
+        return;
+      }
+      try {
+        const payload = JSON.parse((await readBody(request, Math.min(maxBodyBytes, 1_000_000))).toString("utf8")) as unknown;
+        const incoming = Array.isArray(payload) ? payload : (payload && typeof payload === "object" && Array.isArray((payload as { receipts?: unknown }).receipts) ? (payload as { receipts: unknown[] }).receipts : []);
+        if (incoming.length > 100 || incoming.some((item) => !validFleetUsageReceipt(item) || item.clientId !== clientId)) {
+          response.writeHead(400, { "content-type": "application/json" });
+          response.end(JSON.stringify({ error: { message: "Receipts must be a valid batch of at most 100 records owned by the authenticated client." } }));
+          return;
+        }
+        const imported = await importFleetUsageReceipts(config.ledgerPath, incoming);
+        response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+        response.end(JSON.stringify({ accepted: incoming.length, imported, duplicates: incoming.length - imported }));
+      } catch {
+        response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: { message: "Receipt ingestion body must be valid bounded JSON." } }));
+      }
+      return;
+    }
     if (request.url === "/healthz") {
       response.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
-      response.end(JSON.stringify({ status: "ready", provider: config.provider, ledger: "configured" }));
+      response.end(JSON.stringify({ status: "ready", provider: config.provider, ledger: "configured", receiptIngestion: "ready", authoritativeSummary: Object.keys(config.observerTokens ?? {}).length ? "ready" : "disabled" }));
       return;
     }
     const policy = config.clientPolicies?.[clientId] ?? {};
