@@ -1014,9 +1014,9 @@ audit log. It is not a direct model proxy.
 ```json
 {
   "message": "What is the current service status?",
-  "history": [{ "role": "user", "content": "Is Heimdall online?" }],
-  "idempotencyKey": "jarvis-turn-20260914-001",
-  "actor": "jarvis",
+  "history": [{ "role": "user", "content": "Is the coordinator online?" }],
+  "idempotencyKey": "assistant-turn-001",
+  "actor": "assistant-client",
   "actorRole": "operator",
   "projectId": "registered-project-id",
   "capabilityMode": "conversation"
@@ -1054,5 +1054,5 @@ npm run agentflow -- server-conversation --json --request-json \
   '{"message":"What provider is configured?","history":[],"idempotencyKey":"local-chat-001","actor":"local-operator","actorRole":"operator","projectId":"registered-project-id","capabilityMode":"conversation"}'
 ```
 
-Keep this endpoint behind the Fleet-owned authenticated bridge. Do not expose
-Ollama directly or copy provider credentials into assistant clients.
+Keep this endpoint behind an authenticated deployment bridge. Do not expose a
+local model runtime directly or copy provider credentials into assistant clients.

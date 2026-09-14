@@ -11,8 +11,8 @@ import {
 const base = {
   message: "What is the current provider status?",
   history: [{ role: "user", content: "Hello" }],
-  idempotencyKey: "jarvis-chat-001",
-  actor: "jarvis",
+  idempotencyKey: "assistant-chat-001",
+  actor: "assistant-client",
   actorRole: "operator",
   projectId: "project-123",
   capabilityMode: "conversation"
@@ -28,7 +28,7 @@ test("parses a bounded conversation and produces a stable body hash", () => {
 
 test("rejects excess history and project paths", () => {
   assert.throws(() => parseConversationRequest({ ...base, history: Array.from({ length: 13 }, () => ({ role: "user", content: "x" })) }), /at most 12 turns/u);
-  assert.throws(() => parseConversationRequest({ ...base, projectId: "/home/private/project" }), /registered project id/u);
+  assert.throws(() => parseConversationRequest({ ...base, projectId: "../outside-project" }), /registered project id/u);
 });
 
 test("routes substantive requests into governed workflows", () => {
