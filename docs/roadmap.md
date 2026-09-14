@@ -494,10 +494,10 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Milestone: 13 Context Intelligence Gateway
   - Priority: high
   - Execution order: 1
-  - Status: active; read routing, Claude Code and Cursor adapters, setup and
-    diagnostics, and governed code generation are implemented and
-    evidence-gated. Segmented threshold learning and accepted-workflow outcome
-    accounting remain.
+  - Status: active; implementation is complete, including segmented threshold
+    learning and accepted-workflow outcome accounting. The remaining work is
+    the empirical graduation gate below; keep enforcement conservative until
+    representative holdouts satisfy it.
   - Add a provider-neutral context-routing policy in reusable YAML, with thin
     adapters for Claude Code hooks, Codex/tool policy integration, Cursor, CLI,
     MCP, and native Agent Workflow workers.
@@ -939,10 +939,78 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: implemented as a read-only dashboard generated from `docs/roadmap.md`.
   - Scope: expose all checklist tasks, next actions, bugs, milestone links, and source line references without creating a second roadmap database.
 
+- [ ] Task: persist dashboard report snapshots across process restarts.
+  - Milestone: 3 Developer Dashboard
+  - Priority: high
+  - Execution order: 3
+  - Status: open
+  - Scope: persist bounded last-known-good snapshots for expensive diagnostic reports so `/model-improvement` and `/server-readiness` do not return to multi-second cold starts after a dashboard restart.
+  - Validation: prove snapshot freshness, safe invalidation, failure fallback, and sub-800 ms warm navigation without storing secrets or private report bodies outside their existing boundary.
+
+- [ ] Task: strengthen agent-promotion evidence and review UX.
+  - Milestone: 7 Self-Improving Agent System
+  - Priority: high
+  - Execution order: 4
+  - Status: open
+  - Scope: present holdout coverage, source changes, policy decisions, rollback evidence, and promotion readiness as one decision-ready review surface.
+  - Validation: reviewers can approve, reject, or defer a promotion without consulting raw learning artifacts, while every decision remains receipted and reversible.
+
+- [ ] Task: add a mutation-disabled remote approval/action endpoint.
+  - Milestone: 9 Governed Server Mode
+  - Priority: high
+  - Execution order: 5
+  - Status: open
+  - Scope: expose authenticated remote approval/action inspection behind registered-project routing, roles, idempotency, policy checks, redacted audit logs, and receipts while keeping mutations disabled by default.
+  - Validation: unauthorized, replayed, cross-project, and mutation attempts fail closed; read-only previews remain bounded and auditable.
+
+- [ ] Task: harden multi-machine synchronization and recovery proof.
+  - Milestone: 8 Multi-Project / Multi-Machine State Plane
+  - Priority: high
+  - Execution order: 6
+  - Status: open
+  - Scope: validate background synchronization, offline fallback recovery, cross-machine path mapping, and shared-state switch-over with repeatable evidence.
+  - Validation: demonstrate recovery from an unavailable shared host without split-brain writes, lost receipts, or ambiguous project identity.
+
+- [x] Task: expose authenticated fleet model-gateway readiness.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Status: implemented
+  - Done: add an authenticated `/healthz` response that reports readiness without exposing upstream credentials, URLs, or request data.
+
+- [x] Task: enforce per-client model allowlists at the fleet gateway.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Status: implemented
+  - Done: reject missing or disallowed model selections before making an upstream request.
+
+- [x] Task: enforce per-client fleet gateway request-rate ceilings.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Status: implemented
+  - Done: add bounded in-memory minute windows and fail closed with HTTP 429 before contacting the provider.
+
+- [x] Task: enforce per-client daily model-token budgets.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Status: implemented
+  - Done: calculate UTC-day usage from the metadata ledger and block exhausted clients before upstream inference.
+
+- [x] Task: add configurable fleet model cost estimation.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: medium
+  - Status: implemented
+  - Done: calculate optional per-request and aggregate estimates from environment-supplied per-model prices while keeping provider billing authoritative.
+
+- [x] Task: make fleet request correlation privacy-safe.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Status: implemented
+  - Done: salt request-body correlation hashes with a random request ID so the ledger cannot expose stable low-entropy prompt fingerprints.
+
 - [ ] Bug: recurring Codex MCP transport closes during planning or approval calls.
   - Milestone: 12 Ecosystem Fit
   - Priority: high
-  - Execution order: 3 (P0 operational interrupt on recurrence; otherwise blocked on fresh client-side evidence)
+  - Execution order: 2 (P0 operational interrupt on recurrence; otherwise blocked on fresh client-side evidence)
   - Severity: high
   - Status: open
   - Permanent fix direction: add supervised and reconnectable MCP lifecycle diagnostics, keep stdio payloads compact, record exact launcher exit and stderr evidence, surface recovery actions in Runtime Monitor and Roadmap dashboards, and preserve CLI fallback receipts when the client-owned stdio pipe drops.

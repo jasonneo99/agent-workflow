@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
@@ -33,6 +34,7 @@ import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buil
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
+import { prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -119,6 +121,7 @@ import { providerFromEnv } from "../../../packages/model-providers/src/index.js"
 import { explainModelCatalogSelection, normalizeModelSelectionPolicy, selectModelFromCatalog, type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy } from "../../../packages/model-providers/src/catalog.js";
 import { buildSavingsAwareLocalRoutingRecommendations, type LocalRoutingFeedbackEvent, type LocalRoutingFeedbackRating, type LocalRoutingRecommendation } from "../../../packages/model-providers/src/local-routing-recommendations.js";
 import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../packages/model-providers/src/openai.js";
+import { anthropicCatalogConfig, describeAnthropicProvider, describeAnthropicProviderFast, formatTierModelPreview, inspectAnthropicStatus, loadGenericTierModelPreview } from "./dashboard/anthropic-provider.js";
 import { selectModelRoute } from "../../../packages/model-providers/src/routing.js";
 import type { ModelTier } from "../../../packages/model-providers/src/types.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
@@ -142,6 +145,7 @@ import { registerContextThresholdCommands } from "./commands/context-thresholds.
 import { registerAcceptedOutcomeCommands } from "./commands/accepted-outcomes.js";
 import { registerContextCommands } from "./commands/context.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
+import { readFleetUsageReceipts, summarizeFleetUsage, type FleetUsageReceipt } from "../../../packages/fleet-model-gateway/src/index.js";
 
 const program = new Command();
 registerRepositoryMaintenanceCommand(program);
@@ -159,6 +163,66 @@ const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.make
 const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 const defaultServerRequestAuditLogPath = path.join(rootDir, ".agent-workflow", "runtime", "server", "request-log.jsonl");
+const dashboardReportCache = new Map<string, { expiresAt: number; value: unknown }>();
+const dashboardReportLoads = new Map<string, Promise<unknown>>();
+const dashboardReportCacheTtlMs = 30_000;
+const dashboardRequestWaiters: Array<() => void> = [];
+let dashboardActiveRequests = 0;
+const dashboardMaxConcurrentRequests = 6;
+
+async function acquireDashboardRequestSlot(): Promise<() => void> {
+  if (dashboardActiveRequests >= dashboardMaxConcurrentRequests) {
+    await new Promise<void>((resolve) => dashboardRequestWaiters.push(resolve));
+  }
+  dashboardActiveRequests += 1;
+  return () => {
+    dashboardActiveRequests -= 1;
+    dashboardRequestWaiters.shift()?.();
+  };
+}
+
+async function loadCachedDashboardReport<T>(key: string, load: () => Promise<T>, ttlMs = dashboardReportCacheTtlMs): Promise<T> {
+  const cached = dashboardReportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+
+  const pending = dashboardReportLoads.get(key);
+  if (pending) return cached ? cached.value as T : pending as Promise<T>;
+
+  const loadPromise = load()
+    .then((value) => {
+      dashboardReportCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+      if (dashboardReportCache.size > 100) {
+        const oldestKey = dashboardReportCache.keys().next().value as string | undefined;
+        if (oldestKey) dashboardReportCache.delete(oldestKey);
+      }
+      return value;
+    })
+    .finally(() => dashboardReportLoads.delete(key));
+  dashboardReportLoads.set(key, loadPromise);
+  // Serve an expired snapshot while its replacement is refreshed. This keeps
+  // diagnostic pages responsive even when their underlying probes are slow.
+  if (cached) {
+    void loadPromise.catch(() => undefined);
+    return cached.value as T;
+  }
+  return loadPromise;
+}
+
+function configureDashboardResponse(request: http.IncomingMessage, response: http.ServerResponse): void {
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("vary", "Accept-Encoding");
+  if (request.method !== "GET" || !/\bgzip\b/u.test(request.headers["accept-encoding"] ?? "")) return;
+
+  response.setHeader("content-encoding", "gzip");
+  const originalEnd = response.end.bind(response);
+  response.end = ((chunk?: string | Uint8Array, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
+    if (chunk === undefined) return originalEnd(callback ?? (typeof encodingOrCallback === "function" ? encodingOrCallback : undefined));
+    const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
+    const body = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    return originalEnd(gzipSync(body, { level: 4 }), done);
+  }) as typeof response.end;
+}
 
 function envFlagEnabled(value: string | undefined): boolean {
   if (!value) return false;
@@ -947,10 +1011,10 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "auto, mock, byo, openai, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, byo, openai, anthropic, openai-compatible, bedrock, or kiro")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean }) => {
-    const supported = ["auto", "mock", "byo", "openai", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "byo", "openai", "anthropic", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -965,6 +1029,8 @@ program
 
     if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY. Set OPENAI_MODEL=auto to select tier models from the live OpenAI catalog.");
+    } else if (providerId === "anthropic") {
+      console.log("Using Anthropic Messages API. Requires ANTHROPIC_API_KEY. Set ANTHROPIC_MODEL=auto to select tier models from the live Anthropic catalog.");
     } else if (providerId === "auto") {
       console.log("Using auto routing. Agent Workflow will pick a ready provider per stage tier.");
     } else if (providerId === "byo") {
@@ -5832,11 +5898,14 @@ program
   .action(async (options: { host: string; port: string }) => {
     const port = parsePositiveInteger(options.port, 17888);
     const server = http.createServer(async (request, response) => {
+      const releaseRequestSlot = await acquireDashboardRequestSlot();
       try {
         await handleDashboardRequest(request, response);
       } catch (error) {
         response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
         response.end(error instanceof Error ? error.message : String(error));
+      } finally {
+        releaseRequestSlot();
       }
     });
 
@@ -6331,6 +6400,7 @@ type DashboardAgentsReport = {
 
 type DashboardEvaluationRun = {
   runId: string;
+  projectRootUri: string;
   suiteId: string;
   suiteName: string;
   caseId: string;
@@ -15014,25 +15084,25 @@ function isAuditArtifact(artifact: { kind: string }): boolean {
   return artifact.kind === "action_approval" || artifact.kind === "run_feedback" || artifact.kind === "command_output" || artifact.kind === "file_write";
 }
 
-async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluationSuite[]> {
+async function loadDashboardEvaluations(limit = 250, projectRootUri?: string): Promise<DashboardEvaluationSuite[]> {
   const runs = (await listWorkflowRuns(limit)).filter((run) =>
-    typeof run.evaluationMetadata?.suiteId === "string"
+    typeof run.evaluationMetadata?.suiteId === "string" && (!projectRootUri || path.resolve(run.projectRootUri) === path.resolve(projectRootUri))
   );
-  const evaluated: DashboardEvaluationRun[] = [];
-  for (const run of runs) {
+  const evaluated = (await Promise.all(runs.map(async (run): Promise<DashboardEvaluationRun | null> => {
     const metadata = run.evaluationMetadata ?? {};
     const report = await loadCostQualityReport(run.id);
     if (!report) {
-      continue;
+      return null;
     }
     const suiteId = stringValue(metadata.suiteId);
     const caseId = stringValue(metadata.caseId);
     const variantId = stringValue(metadata.variantId);
     if (!suiteId || !caseId || !variantId) {
-      continue;
+      return null;
     }
-    evaluated.push({
+    return {
       runId: run.id,
+      projectRootUri: run.projectRootUri,
       suiteId,
       suiteName: stringValue(metadata.suiteName) ?? suiteId,
       caseId,
@@ -15047,8 +15117,8 @@ async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluatio
       estimatedCostMix: report.estimatedCostMix,
       feedback: report.feedback.latest?.rating ?? null,
       startedAt: run.startedAt
-    });
-  }
+    };
+  }))).filter((run): run is DashboardEvaluationRun => run !== null);
 
   const suites = new Map<string, DashboardEvaluationRun[]>();
   for (const run of evaluated) {
@@ -22528,10 +22598,27 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
-}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
   const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
   await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
+  const modelRoutingOptimizer = await runModelRoutingOptimizer({ projectDir: input.projectDir, suites: await loadDashboardEvaluations(250, input.projectDir), autoUpdate: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE) });
+  const modelComparisonSchedule = await prepareRecurringModelComparison({
+    projectDir: input.projectDir,
+    enabled: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_COMPARISON_AUTO_RUN),
+    intervalMs: parsePositiveInteger(process.env.AGENTFLOW_MODEL_COMPARISON_INTERVAL_MS ?? "", 86400000)
+  });
+  if (modelComparisonSchedule.due) {
+    const logFd = fsSync.openSync(path.join(input.projectDir, ".agent-workflow", "learning", "model-comparison.log"), "a");
+    const child = spawn("npm", ["run", "agentflow", "--", "evaluate", "--suite", modelComparisonSchedule.suitePath, "--project", input.projectDir, "--skip-index", "--worker-limit", "2", "--worker-concurrency", "1"], {
+      cwd: rootDir,
+      env: process.env,
+      detached: true,
+      stdio: ["ignore", logFd, logFd]
+    });
+    child.unref();
+    fsSync.closeSync(logFd);
+  }
   const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir);
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
@@ -22622,7 +22709,7 @@ async function runLearningDaemonTick(input: {
     events: optimizerEvents,
     recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({ id: `workflow-shape:${index}:${report.generatedAt}`, projectId: input.projectDir, kind: "stage" as const, evidence: Math.min(1, report.runsAnalyzed / 10), impact: 0.5, reversibility: 1, risk: "medium" as const, confidence: Math.min(1, report.runsAnalyzed / 5), duplicateKey: JSON.stringify(item) })) ?? []
   });
-  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
+  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
 }
 
 async function loadAndWriteRoadmapSuggestions(projectDir: string): Promise<RoadmapSuggestionReport> {
@@ -24106,6 +24193,7 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 }
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  configureDashboardResponse(request, response);
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
   if (requestUrl.pathname === "/assets/queue-watcher.js") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -25065,6 +25153,14 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/fleet-model-usage") {
+    const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.join(rootDir, ".agent-workflow", "runtime", "fleet-model-usage.jsonl");
+    const report = summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/info" || requestUrl.pathname === "/api/settings") {
     const info = await loadDashboardInfo(dashboardUrlFromRequest(request));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -25568,7 +25664,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/evaluations") {
-    const suites = await loadDashboardEvaluations();
+    const suites = await loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations());
     const requestedSuite = requestUrl.searchParams.get("suite");
     const selected = requestedSuite
       ? suites.find((suite) => suite.id === requestedSuite) ?? null
@@ -25590,10 +25686,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
     const report = project
-      ? await loadDashboardModelImprovementReport({
+      ? await loadCachedDashboardReport(`model-improvement:${project}:${requestUrl.searchParams.get("limit") ?? "50"}`, () => loadDashboardModelImprovementReport({
         projectDir: project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
-      })
+      }))
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelImprovementHtml(report, projects, requestUrl.searchParams));
@@ -25601,10 +25697,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/feedback-inbox") {
-    const report = await loadDashboardFeedbackInboxReport({
+    const feedbackKey = `feedback-inbox:${requestUrl.searchParams.toString()}`;
+    const report = await loadCachedDashboardReport(feedbackKey, () => loadDashboardFeedbackInboxReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderFeedbackInboxHtml(report, projects, requestUrl.searchParams));
@@ -25696,27 +25793,30 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/candidate-comparisons") {
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
-    const report = project ? await loadDashboardCandidateComparisonReport({ projectDir: project }) : null;
+    const report = project
+      ? await loadCachedDashboardReport(`candidate-comparisons:${project}`, () => loadDashboardCandidateComparisonReport({ projectDir: project }))
+      : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/governance") {
-    const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
+    const report = await loadCachedDashboardReport(`governance:${requestUrl.searchParams.toString()}`, () =>
+      loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true"));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderGovernanceHtml(filterGovernanceReport(report, requestUrl.searchParams), requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/roles") {
-    const report = await loadRoleGovernanceReport({
+    const report = await loadCachedDashboardReport(`roles:${requestUrl.searchParams.toString()}`, () => loadRoleGovernanceReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
       role: requestUrl.searchParams.get("role") ?? undefined,
       status: requestUrl.searchParams.get("status") ?? undefined,
       actionType: requestUrl.searchParams.get("action") ?? undefined
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRolesHtml(report, projects, requestUrl.searchParams));
@@ -25724,7 +25824,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/artifact-lifecycle") {
-    const report = await loadArtifactLifecycleReport({
+    const report = await loadCachedDashboardReport(`artifact-lifecycle:${requestUrl.searchParams.toString()}`, () => loadArtifactLifecycleReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       kind: requestUrl.searchParams.get("kind") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
@@ -25734,7 +25834,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parseNonNegativeInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
       minBytes: requestUrl.searchParams.has("minBytes") ? parseNonNegativeInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
       includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderArtifactLifecycleHtml(report, projects, requestUrl.searchParams));
@@ -25742,10 +25842,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/backup-report") {
-    const report = await loadBackupRestoreReport({
+    const report = await loadCachedDashboardReport(`backup-report:${requestUrl.searchParams.toString()}`, () => loadBackupRestoreReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderBackupRestoreHtml(report, projects, requestUrl.searchParams));
@@ -25753,28 +25853,34 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/server-readiness") {
-    const report = await loadServerReadinessReport({
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
-    });
-    const registry = await loadServerProjectRegistryReport({
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100),
-      includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
-    });
-    const storageVerification = await buildStorageVerificationReport({
-      targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
-    });
-    const migrationPlans = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
-    const mergeEvidence = await loadStorageMergeEvidenceListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
-    const offlineFallback = await loadOfflineFallbackReport();
+    const cacheKey = `server-readiness:${requestUrl.searchParams.toString()}`;
+    const html = await loadCachedDashboardReport(cacheKey, async () => {
+      const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
+      const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100);
+      const migrationDir = requestUrl.searchParams.get("migrationDir") ?? undefined;
+      const [report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, runtimeMonitor, requestAudit, projects] = await Promise.all([
+        loadServerReadinessReport({ projectRootUri, limit }),
+        loadServerProjectRegistryReport({
+          projectRootUri,
+          limit,
+          includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
+        }),
+        buildStorageVerificationReport({
+          targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
+        }),
+        loadStorageMigrationPlanListing(migrationDir),
+        loadStorageMergeEvidenceListing(migrationDir),
+        loadOfflineFallbackReport(),
+        loadRuntimeMonitorReport(),
+        loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50)),
+        listProjectStorageSummaries(100)
+      ]);
     const objectProof = await buildObjectArtifactProofReport({
       projectRootUri: report.projectRootUri || undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
       enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
-    const runtimeMonitor = await loadRuntimeMonitorReport();
     const statePlaneProof = buildSharedStatePlaneProof({
       server: report,
       storageVerification,
@@ -25783,10 +25889,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       objectProof,
       runtimeMonitor
     });
-    const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
-    const projects = await listProjectStorageSummaries(100);
+      return renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams);
+    });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams));
+    response.end(html);
     return;
   }
 
@@ -25832,12 +25938,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/discovery") {
-    const report = await discoverLocalProjects({
+    const report = await loadCachedDashboardReport(`discovery:${requestUrl.searchParams.toString()}`, () => discoverLocalProjects({
       roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
       maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
       maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
       spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
-    });
+    }));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDiscoveryHtml(report, requestUrl.searchParams));
     return;
@@ -25862,22 +25968,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/providers") {
-    const info = await withTimeout(
+    const dashboardUrl = dashboardUrlFromRequest(request);
+    const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
       loadDashboardInfo(dashboardUrlFromRequest(request)),
       3000,
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProvidersHtml(info, requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/model-catalog") {
-    const report = await withTimeout(
+    const report = await loadCachedDashboardReport("model-catalog", () => withTimeout(
       loadDashboardModelCatalogReport(),
       5000,
       () => fallbackDashboardModelCatalogReport()
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelCatalogHtml(report));
     return;
@@ -25890,12 +25997,21 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/fleet-model-usage") {
+    const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.join(rootDir, ".agent-workflow", "runtime", "fleet-model-usage.jsonl");
+    const report = summarizeFleetUsage(await readFleetUsageReceipts(ledgerPath));
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderFleetModelUsageHtml(report));
+    return;
+  }
+
   if (requestUrl.pathname === "/info" || requestUrl.pathname === "/settings") {
-    const info = await withTimeout(
+    const dashboardUrl = dashboardUrlFromRequest(request);
+    const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
       loadDashboardInfo(dashboardUrlFromRequest(request)),
       1200,
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
     return;
@@ -25906,11 +26022,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
-    loadRuntimeMonitorReport(),
-    loadRoadmapDashboardReport(),
+    loadCachedDashboardReport("runtime-monitor", () => loadRuntimeMonitorReport()),
+    loadCachedDashboardReport("roadmap", () => loadRoadmapDashboardReport()),
     listWorkflowQueue(100),
-    listProjectStorageSummaries(100),
-    checkServices(),
+    loadCachedDashboardReport("projects:100", () => listProjectStorageSummaries(100)),
+    loadCachedDashboardReport("services", () => checkServices()),
     listActionApprovals({ status: "pending", limit: 25 }),
     listActionApprovals({ status: "approved", limit: 25 })
   ]);
@@ -28984,12 +29100,12 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   <style>${dashboardCss()}</style>
 </head>
 <body>
-  ${dashboardNav("learning")}
+  ${dashboardNav(learningView === "settings" ? "daemon-control" : "learning")}
   <main>
     <div class="topbar">
       <div>
         <a href="/">Home</a>
-        <h1>Insights</h1>
+        <h1>Learning</h1>
         <p class="page-intro">Review recommendations, decisions, and system learning without the implementation noise.</p>
       </div>
       ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
@@ -32638,7 +32754,7 @@ type DashboardModelCatalogReport = {
 };
 
 type DashboardModelCatalogProvider = {
-  providerId: "openai" | "byo" | "openai-compatible" | "bedrock";
+  providerId: "openai" | "anthropic" | "byo" | "openai-compatible" | "bedrock";
   label: string;
   configured: boolean;
   status: "ready" | "missing" | "not configured";
@@ -33525,6 +33641,9 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       routingConfig: loadRoutingConfig()
     };
   }
+  if (selected === "anthropic") {
+    return describeAnthropicProvider(adapter, loadRoutingConfig());
+  }
   if (selected === "local") {
     const currentModel = process.env.LOCAL_MODEL_NAME || "auto";
     const localBaseUrl = process.env.LOCAL_MODEL_BASE_URL || "http://localhost:11434/v1";
@@ -33655,6 +33774,7 @@ async function loadDashboardModelCatalogReport(): Promise<DashboardModelCatalogR
       loadModels: () => loadOpenAIModelIds(),
       configuredForTier: (tier) => configuredOpenAIModelForTier(tier)
     }),
+    loadProviderCatalogExplanation(anthropicCatalogConfig()),
     loadProviderCatalogExplanation({
       providerId: "byo",
       label: "BYO / OpenAI-compatible gateway",
@@ -33859,6 +33979,9 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       routingConfig
     };
   }
+  if (selected === "anthropic") {
+    return describeAnthropicProviderFast(adapter, routingConfig);
+  }
   if (selected === "byo") {
     const currentModel = process.env.BYO_MODEL_NAME || "auto";
     return {
@@ -33920,7 +34043,7 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
 function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,openai,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,openai,anthropic,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
@@ -33950,8 +34073,9 @@ async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provi
 }
 
 async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
-  const [openai, local, byo, compatible, bedrock, kiro, mock] = await Promise.all([
+  const [openai, anthropic, local, byo, compatible, bedrock, kiro, mock] = await Promise.all([
     inspectOpenAIStatus(),
+    inspectAnthropicStatus(),
     inspectOpenAICompatibleStatus({
       providerId: "local",
       label: "Local model runtime",
@@ -33990,7 +34114,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       details: ["Always available for deterministic local validation."]
     }
   ]);
-  return [openai, local, byo, compatible, bedrock, kiro, mock];
+  return [openai, anthropic, local, byo, compatible, bedrock, kiro, mock];
 }
 
 async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
@@ -34220,28 +34344,6 @@ async function loadOpenAITierModelPreview(catalog: string[]): Promise<NonNullabl
   }));
 }
 
-function loadGenericTierModelPreview(input: {
-  catalog: string[];
-  provider: "compatible" | "bedrock";
-  baseModel: string;
-  tierEnvPrefix: string;
-}): NonNullable<DashboardInfo["provider"]["tierModels"]> {
-  return (["fast", "standard", "reasoning"] as const).map((tier) => {
-    const configured = process.env[`${input.tierEnvPrefix}_${tier.toUpperCase()}`] || input.baseModel;
-    if (configured !== "auto") {
-      return { tier, model: configured, source: "env" as const };
-    }
-    const model = selectModelFromCatalog(input.catalog, tier, { provider: input.provider });
-    return model
-      ? { tier, model, source: "catalog" as const }
-      : { tier, model: "unavailable", source: "unavailable" as const };
-  });
-}
-
-function formatTierModelPreview(tierModels: NonNullable<DashboardInfo["provider"]["tierModels"]>): string {
-  return `Tier models: ${tierModels.map((item) => `${item.tier}=${item.model}${item.source === "catalog" ? " auto" : ""}`).join(", ")}.`;
-}
-
 async function loadOpenAICompatibleModelIds(baseUrl?: string, apiKey?: string): Promise<string[]> {
   if (!baseUrl) {
     return [];
@@ -34278,6 +34380,9 @@ function safeErrorMessage(error: unknown): string {
 function modelEnvForProvider(provider: string): string | undefined {
   if (provider === "openai") {
     return "OPENAI_MODEL";
+  }
+  if (provider === "anthropic") {
+    return "ANTHROPIC_MODEL";
   }
   if (provider === "byo") {
     return "BYO_MODEL_NAME";
@@ -34360,7 +34465,7 @@ async function updateDashboardRouting(input: {
   const updates: Record<string, string> = {
     DEFAULT_MODEL_PROVIDER: provider,
     AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,openai,openai-compatible,kiro",
+    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,openai,anthropic,openai-compatible,kiro",
     AGENTFLOW_PROVIDER_FAST: fastProvider,
     AGENTFLOW_PROVIDER_STANDARD: standardProvider,
     AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
@@ -34419,7 +34524,7 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
     return "";
   }
   const normalized = normalizeProviderRef(trimmed);
-  const supported = new Set(["auto", "mock", "local", "byo", "openai", "openai-compatible", "bedrock", "kiro"]);
+  const supported = new Set(["auto", "mock", "local", "byo", "openai", "anthropic", "openai-compatible", "bedrock", "kiro"]);
   return supported.has(normalized) ? normalized : undefined;
 }
 
@@ -36634,6 +36739,20 @@ function renderRuntimeMonitorPanel(report: RuntimeMonitorReport, params: URLSear
   </section>`;
 }
 
+function renderFleetModelUsageHtml(report: ReturnType<typeof summarizeFleetUsage>): string {
+  const rows = report.receipts.slice(-100).reverse().map((receipt: FleetUsageReceipt) => `<tr>
+    <td>${escapeHtml(receipt.observedAt)}</td><td>${escapeHtml(receipt.clientId)}</td><td>${escapeHtml(receipt.projectId ?? "unattributed")}</td>
+    <td>${escapeHtml(receipt.provider)}</td><td>${escapeHtml(receipt.model ?? "unknown")}</td><td>${formatNumber(receipt.inputTokens)}</td>
+    <td>${formatNumber(receipt.cachedInputTokens)}</td><td>${formatNumber(receipt.reasoningTokens)}</td><td>${formatNumber(receipt.outputTokens)}</td>
+    <td>${formatNumber(receipt.totalTokens)}</td><td><span class="status ${receipt.status === "completed" ? "completed" : "failed"}">${escapeHtml(receipt.status)}</span></td>
+  </tr>`).join("") || `<tr><td colspan="11">No gateway usage receipts have been observed yet.</td></tr>`;
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Fleet Model Usage</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("fleet-model-usage")}<main><div class="topbar"><div><a href="/settings">Settings</a><h1>Fleet Model Usage</h1><p class="page-intro">Metadata-only usage observed through the authenticated fleet gateway.</p></div><a class="button secondary" href="/api/fleet-model-usage">JSON</a></div>
+  <section class="metrics">${metricCard("Requests", report.totals.requests, `${report.totals.failures} failed`)}${metricCard("Total Tokens", report.totals.totalTokens, `${report.clients.length} clients`)}${metricCard("Input Tokens", report.totals.inputTokens, `${report.totals.cachedInputTokens} cached`)}${metricCard("Output Tokens", report.totals.outputTokens, `${report.totals.reasoningTokens} reasoning`)}${metricCard("Estimated Cost", `$${report.totals.estimatedCostUsd.toFixed(4)}`, "configured pricing; billing is authoritative")}</section>
+  <section class="panel"><h2>Recent Requests</h2><p class="muted">Prompts, responses, credentials, and raw request bodies are never stored. Calls that bypass the gateway are not included.</p><div class="table-wrap"><table><thead><tr><th>Observed</th><th>Client</th><th>Project</th><th>Provider</th><th>Model</th><th>Input</th><th>Cached</th><th>Reasoning</th><th>Output</th><th>Total</th><th>Status</th></tr></thead><tbody>${rows}</tbody></table></div></section>
+  <section class="panel"><h2>Run the Gateway</h2><p><code>npm run model-gateway</code></p><p>Configure credentials only through the environment. See <code>docs/fleet-model-gateway.md</code> for fleet setup and reconciliation guidance.</p></section></main></body></html>`;
+}
+
 function renderDashboardInfoHtml(info: DashboardInfo, params: URLSearchParams = new URLSearchParams()): string {
   const serviceRows = info.services.map((service) => `
     <tr>
@@ -36762,9 +36881,9 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
     : info.provider.selected === "auto"
       ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
       : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "openai", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+  const providerIds = ["auto", "local", "byo", "bedrock", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "local", "byo", "bedrock", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "openai", "anthropic", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
   const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
   const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
     const selected = value === selectedValue ? " selected" : "";
@@ -37725,7 +37844,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "daemon-control" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Work",
@@ -37751,11 +37870,12 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       ]
     },
     {
-      label: "Insights",
-      id: "insights",
+      label: "Learning",
+      id: "learning",
       href: "/learning",
       icon: "brain",
       items: [
+        ["daemon-control", "/learning?view=settings", "Daemon settings", "server"],
         ["evaluations", "/evaluations", "Evaluations", "clipboard"],
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
         ["model-improvement", "/model-improvement", "Model improvements", "sparkles"],
@@ -37765,8 +37885,8 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       ]
     },
     {
-      label: "Admin",
-      id: "admin",
+      label: "Settings",
+      id: "info",
       href: "/settings",
       icon: "settings",
       items: [
@@ -37775,6 +37895,7 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
         ["roles", "/roles", "Roles", "users"],
         ["backup-report", "/backup-report", "Backup", "database"],
         ["server-readiness", "/server-readiness", "System readiness", "server"],
+        ["fleet-model-usage", "/fleet-model-usage", "Fleet model usage", "gauge"],
         ["bundles", "/bundles", "Workflow bundles", "package"],
         ["providers", "/providers", "Providers", "route"],
         ["model-catalog", "/model-catalog", "Model catalog", "layers"]
@@ -40305,6 +40426,8 @@ function normalizeProviderRef(value: string): string {
     "open-ai": "openai",
     gpt: "openai",
     kiro: "kiro",
+    anthropic: "anthropic",
+    claude: "anthropic",
     byo: "byo",
     "bring-your-own": "byo",
     "bring-your-own-model": "byo",

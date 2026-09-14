@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { selectOpenAIModelFromCatalog } from "./openai.js";
+import { extractJsonObject } from "./prompts.js";
 
 test("OpenAI auto catalog selection chooses tier-appropriate newest accessible models", () => {
   const catalog = [
@@ -30,4 +31,14 @@ test("OpenAI auto catalog selection adopts newer GPT families without exact vers
   assert.equal(selectOpenAIModelFromCatalog(catalog, "fast"), "gpt-6.1-luna");
   assert.equal(selectOpenAIModelFromCatalog(catalog, "standard"), "gpt-6.1-terra");
   assert.equal(selectOpenAIModelFromCatalog(catalog, "reasoning"), "gpt-6.1-astra");
+});
+
+test("provider JSON extraction ignores trailing duplicate or diagnostic content", () => {
+  assert.deepEqual(extractJsonObject('{"summary":"done","detail":"a } brace"}{"duplicate":true}'), {
+    summary: "done",
+    detail: "a } brace"
+  });
+  assert.deepEqual(extractJsonObject('```json\n{"summary":"done"}\n```\nverification complete'), {
+    summary: "done"
+  });
 });

@@ -15,6 +15,8 @@ interface SetupAnswers {
   provider: string;
   openaiKey?: string;
   openaiModel?: string;
+  anthropicKey?: string;
+  anthropicModel?: string;
   bedrockModel?: string;
   bedrockRegion?: string;
   awsProfile?: string;
@@ -46,14 +48,15 @@ async function main(): Promise<void> {
   console.log("  1) auto          — Smart routing across configured providers by stage tier.");
   console.log("  2) mock          — No model calls. Good for testing workflows locally.");
   console.log("  3) openai        — OpenAI API with live model-catalog tier selection");
-  console.log("  4) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
-  console.log("  5) byo           — Bring your own OpenAI-compatible model gateway");
-  console.log("  6) openai-compatible — Same as BYO, with legacy env names");
-  console.log("  7) kiro          — Optional Kiro CLI adapter");
+  console.log("  4) anthropic     — Anthropic Messages API with Claude");
+  console.log("  5) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
+  console.log("  6) byo           — Bring your own OpenAI-compatible model gateway");
+  console.log("  7) openai-compatible — Same as BYO, with legacy env names");
+  console.log("  8) kiro          — Optional Kiro CLI adapter");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-7, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "bedrock", "5": "byo", "6": "openai-compatible", "7": "kiro", "": "auto" };
+  const providerChoice = await ask("  Provider [1-8, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "anthropic", "5": "bedrock", "6": "byo", "7": "openai-compatible", "8": "kiro", "": "auto" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -63,6 +66,13 @@ async function main(): Promise<void> {
     answers.openaiKey = await ask("  OpenAI API key: ");
     const model = await ask("  Model [default auto]: ");
     answers.openaiModel = model.trim() || "auto";
+  }
+
+  if (provider === "anthropic") {
+    console.log("");
+    answers.anthropicKey = await ask("  Anthropic API key: ");
+    const model = await ask("  Claude model [default auto]: ");
+    answers.anthropicModel = model.trim() || "auto";
   }
 
   if (provider === "bedrock") {
@@ -178,13 +188,18 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
 
   if (answers.provider === "auto") {
     lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
-    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,openai-compatible,kiro");
+    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,anthropic,openai-compatible,kiro");
     lines.push("AGENTFLOW_MODEL_POLICY=best-coding");
   }
 
   if (answers.provider === "openai") {
     lines.push(`OPENAI_API_KEY=${answers.openaiKey ?? ""}`);
     lines.push(`OPENAI_MODEL=${answers.openaiModel ?? "auto"}`);
+  }
+
+  if (answers.provider === "anthropic") {
+    lines.push(`ANTHROPIC_API_KEY=${answers.anthropicKey ?? ""}`);
+    lines.push(`ANTHROPIC_MODEL=${answers.anthropicModel ?? "auto"}`);
   }
 
   if (answers.provider === "bedrock") {

@@ -4,6 +4,21 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { selectModelRoute } from "./routing.js";
 
+test("daemon comparison preferences select the proven provider for the job tier", async () => {
+  const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
+  const previousMode = process.env.AGENTFLOW_ROUTING_MODE;
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "openai";
+    delete process.env.AGENTFLOW_ROUTING_MODE;
+    const route = await selectModelRoute({ workflowId: "review-pr", stageId: "review", agentId: "security-reviewer", modelTier: "reasoning", providerOverride: undefined, compiledBrief: "## Adaptive Preference Notes\n- Preferred provider reasoning: mock\n" });
+    assert.equal(route.providerId, "mock");
+    assert.match(route.reason, /learning daemon selected mock/u);
+  } finally {
+    if (previousProvider === undefined) delete process.env.DEFAULT_MODEL_PROVIDER; else process.env.DEFAULT_MODEL_PROVIDER = previousProvider;
+    if (previousMode === undefined) delete process.env.AGENTFLOW_ROUTING_MODE; else process.env.AGENTFLOW_ROUTING_MODE = previousMode;
+  }
+});
+
 test("approved local holdout notes select local for fast adaptive stages", async () => {
   const server = createServer((request, response) => {
     if (request.url === "/models" || request.url === "/v1/models") {

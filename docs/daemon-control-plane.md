@@ -8,7 +8,7 @@ controllable.
 | Lane | Autonomous responsibility |
 | --- | --- |
 | Evidence Collector | Ingest local run, feedback, evaluation, provider, cost, and context evidence; detect anomalies and staleness; write scrubbed digests. |
-| Workflow Optimizer | Rank and shadow-test workflow, handoff, context, scheduling, and routing recommendations. |
+| Workflow & Model Optimizer | Continuously compare completed provider/model evaluations by job tier, quality, fallback rate, latency, and evidence coverage; update project-local routing preferences only after gates pass. |
 | Action Executor | Apply eligible changes, validate outcomes, roll back regressions, escalate blocked work, and write receipts. |
 | Runtime Maintenance | Reconcile stale runs, clean stale MCP sessions, maintain offline sync and caches, and surface capacity problems. |
 | Repository Steward | Inspect dependencies and source hygiene, find missing tests/docs, apply eligible maintenance, and create validated local commits when enabled. |

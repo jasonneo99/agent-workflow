@@ -22,6 +22,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
     return new OpenAIProvider();
   }
 
+  if (provider === "anthropic") {
+    return new AnthropicProvider();
+  }
+
   if (provider === "openai-compatible") {
     return new OpenAICompatibleProvider();
   }
@@ -69,6 +73,9 @@ function resolveAutoProviderFallback(): string {
   if (process.env.OPENAI_API_KEY) {
     return "openai";
   }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return "anthropic";
+  }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";
   }
@@ -82,3 +89,4 @@ function resolveAutoProviderFallback(): string {
 }
 
 export type { ModelProvider, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { AnthropicProvider } from "./anthropic.js";

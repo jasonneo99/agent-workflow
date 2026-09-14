@@ -1,6 +1,6 @@
 {
   "name": "@jasonneo99/agent-workflow",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "type": "module",
   "description": "Portable, model-agnostic agent workflows for any codebase",
   "license": "MIT",
@@ -20,7 +20,8 @@
   "bin": {
     "agentflow": "dist/apps/cli/src/index.js",
     "agentflow-mcp": "dist/apps/mcp/src/index.js",
-    "agentflow-setup": "dist/apps/cli/src/setup.js"
+    "agentflow-setup": "dist/apps/cli/src/setup.js",
+    "agentflow-model-gateway": "dist/apps/gateway/src/index.js"
   },
   "files": [
     "dist/",
@@ -84,6 +85,9 @@
     "context-host-doctor": "tsx apps/cli/src/index.ts context-host-doctor",
     "context-codegen": "tsx apps/cli/src/index.ts context-codegen",
     "dashboard": "tsx apps/cli/src/index.ts dashboard",
+    "model-gateway": "tsx apps/gateway/src/index.ts serve",
+    "model-gateway:report": "tsx apps/gateway/src/index.ts report",
+    "model-gateway:import": "tsx apps/gateway/src/index.ts import",
     "dev:agentflow": "node scripts/dev-agentflow.mjs",
     "dev:agentflow:stop": "node scripts/dev-agentflow-stop.mjs",
     "dev:agentflow:launchd:install": "node scripts/install-launchagent.mjs",

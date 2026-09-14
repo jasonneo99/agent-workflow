@@ -34,6 +34,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `local` | On-machine Ollama, LM Studio, or llama.cpp-compatible runtime | optional `LOCAL_MODEL_BASE_URL`, optional `LOCAL_MODEL_NAME`, optional `LOCAL_MODEL_API_KEY` |
 | `byo` | Bring your own hosted or enterprise model gateway | `BYO_MODEL_BASE_URL`, optional `BYO_MODEL_NAME`, optional `BYO_MODEL_API_KEY` |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
+| `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
@@ -44,7 +45,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,anthropic,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding
@@ -416,6 +417,47 @@ Run a one-stage provider contract smoke:
 ```bash
 DEFAULT_MODEL_PROVIDER=openai npm run provider-smoke
 ```
+
+## Anthropic Claude
+
+Create a dedicated API key in the Claude Console, then keep it only in the
+local `.env` file:
+
+```bash
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=auto
+```
+
+`ANTHROPIC_MODEL=auto` uses Anthropic's live `/v1/models` catalog and assigns
+Claude models by workflow tier. Pin `ANTHROPIC_MODEL_FAST`,
+`ANTHROPIC_MODEL_STANDARD`, or `ANTHROPIC_MODEL_REASONING` only when a workflow
+needs a reproducible model selection.
+
+To make Claude available to adaptive routing without replacing the current
+default provider, include `anthropic` in `AGENTFLOW_AUTO_PROVIDERS`. Verify the
+connection and structured-output contract with:
+
+```bash
+npm run agentflow -- provider-use anthropic --check
+DEFAULT_MODEL_PROVIDER=anthropic npm run provider-smoke
+```
+
+The supervised learning daemon also runs the Workflow & Model Optimizer on each
+tick. It compares completed provider evaluation leaders by job tier, quality,
+fallback rate, latency, and sample coverage, then writes a visible report under
+`.agent-workflow/learning/model-routing-optimizer.*`. Set
+`AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE=true` to let evidence-gated winners update
+the daemon-owned block in `.agent-workflow/tuning/routing-preferences.md`.
+Explicit tier overrides still win, unavailable providers fall back safely, and
+thin or low-quality evidence never changes routing.
+
+Set `AGENTFLOW_MODEL_COMPARISON_AUTO_RUN=true` to have that daemon launch one
+bounded comparison when the configured interval elapses. It rotates through
+fast, standard, and reasoning jobs, compares ready OpenAI and Anthropic
+providers on the same task, records normal evaluation artifacts, and waits
+`AGENTFLOW_MODEL_COMPARISON_INTERVAL_MS` (24 hours by default) before launching
+another. This keeps the choice current without creating a large comparison
+matrix on every daemon tick.
 
 ## BYO
 

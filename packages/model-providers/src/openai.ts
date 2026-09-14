@@ -4,6 +4,7 @@ import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
   buildStagePrompt,
+  extractJsonObject,
   normalizeFileSummaryArtifact,
   normalizeStageArtifact,
   type FileSummaryJsonArtifact,
@@ -157,7 +158,7 @@ export class OpenAIProvider implements ModelProvider {
       }
     });
 
-    const parsed = normalizeStageArtifact(JSON.parse(response.output_text) as StageJsonArtifact);
+    const parsed = normalizeStageArtifact(extractJsonObject(response.output_text) as StageJsonArtifact);
 
     return { ...buildStageExecutionOutput(input, parsed, {
         provider: this.id,
@@ -210,7 +211,7 @@ export class OpenAIProvider implements ModelProvider {
       }
     });
 
-    const parsed = normalizeFileSummaryArtifact(JSON.parse(response.output_text) as FileSummaryJsonArtifact);
+    const parsed = normalizeFileSummaryArtifact(extractJsonObject(response.output_text) as FileSummaryJsonArtifact);
     const summary = [
       parsed.summary,
       parsed.keyFacts.length ? `Key facts: ${parsed.keyFacts.join(" | ")}` : "",

@@ -7,7 +7,7 @@ export type CatalogModelSelection = {
   source: "env" | "catalog";
 };
 
-export type CatalogProviderKind = "openai" | "compatible" | "bedrock";
+export type CatalogProviderKind = "openai" | "anthropic" | "compatible" | "bedrock";
 
 export type CatalogCandidate = {
   id: string;
@@ -80,6 +80,9 @@ function excludedReason(id: string, provider: CatalogProviderKind): string | und
   }
   if (provider === "openai") {
     return /^gpt-/u.test(normalized) ? undefined : "not an OpenAI GPT model";
+  }
+  if (provider === "anthropic") {
+    return /^claude-/u.test(normalized) ? undefined : "not an Anthropic Claude model";
   }
   return undefined;
 }

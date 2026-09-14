@@ -29,10 +29,12 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
   const approvedLocalRoute = mode !== "fixed" && modelTier === "fast" && preference.localHoldoutPromotion.approved
     ? await selectApprovedLocalRoute(preference.localHoldoutPromotion)
     : undefined;
+  const learnedProvider = mode !== "fixed" ? inferDaemonPreferredProvider(input.compiledBrief, modelTier) : undefined;
+  const learnedRoute = learnedProvider ? await selectLearnedProvider(learnedProvider) : undefined;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
   const providerId = mode === "fixed"
     ? defaultProvider
-    : approvedLocalRoute?.providerId ?? autoRoute?.providerId ?? tierProvider ?? defaultProvider;
+    : approvedLocalRoute?.providerId ?? tierProvider ?? learnedRoute?.providerId ?? autoRoute?.providerId ?? defaultProvider;
 
   return {
     providerId,
@@ -46,6 +48,7 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
         ? [
           `Auto routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
           approvedLocalRoute?.reason ?? "",
+          learnedRoute?.reason ?? "",
           autoRoute?.reason ?? "",
           modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
           preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
@@ -53,10 +56,24 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
       : [
         `Adaptive routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
         approvedLocalRoute?.reason ?? "",
+        learnedRoute?.reason ?? "",
         modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
         preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
       ].filter(Boolean).join(" ")
   };
+}
+
+async function selectLearnedProvider(providerId: string): Promise<{ providerId?: string; reason: string }> {
+  const readiness = await getProviderReadiness(providerId);
+  return readiness.ready
+    ? { providerId, reason: `The learning daemon selected ${providerId} from comparison evidence that passed quality, fallback, latency, and sample gates.` }
+    : { reason: `The learning daemon preferred ${providerId}, but it is not ready (${readiness.details.join("; ")}); using the normal route.` };
+}
+
+function inferDaemonPreferredProvider(compiledBrief: string, tier: ModelTier): string | undefined {
+  const section = compiledBrief.split("## Adaptive Preference Notes")[1]?.split("\n## ")[0] ?? "";
+  const match = section.match(new RegExp(`^- Preferred provider ${tier}:\\s*([a-z0-9_-]+)\\s*$`, "imu"));
+  return match?.[1];
 }
 
 async function selectApprovedLocalRoute(promotion: LocalHoldoutPreference): Promise<{ providerId?: string; reason: string }> {
@@ -112,12 +129,12 @@ function autoProviderCandidates(modelTier: ModelTier): string[] {
   }
 
   if (modelTier === "fast") {
-    return ["local", "byo", "bedrock", "openai-compatible", "openai", "kiro", "mock"];
+    return ["local", "byo", "bedrock", "openai-compatible", "openai", "anthropic", "kiro", "mock"];
   }
   if (modelTier === "reasoning") {
-    return ["openai", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
+    return ["openai", "anthropic", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
   }
-  return ["local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  return ["local", "byo", "bedrock", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
 }
 
 function splitProviderList(value?: string): string[] {

@@ -38,7 +38,7 @@ controls remain the authority for whether an action can run.
 7. The runner delegates to provider adapters with the brief plus prior stage receipts.
 8. Receipts, summaries, embeddings, and artifacts are persisted.
 
-The `mock` provider gives deterministic local workflow execution. The recommended live-provider path is `byo`, which points at any OpenAI-compatible model gateway with `DEFAULT_MODEL_PROVIDER=byo`. OpenAI, Bedrock, OpenAI-compatible legacy env names, and Kiro CLI are optional adapters behind the same `executeStage` contract.
+The `mock` provider gives deterministic local workflow execution. The recommended live-provider path is `byo`, which points at any OpenAI-compatible model gateway with `DEFAULT_MODEL_PROVIDER=byo`. OpenAI, Anthropic Claude, Bedrock, OpenAI-compatible legacy env names, and Kiro CLI are optional adapters behind the same `executeStage` contract.
 
 ## Artifacts
 
