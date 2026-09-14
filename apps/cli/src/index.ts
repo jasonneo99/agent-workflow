@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { gzipSync } from "node:zlib";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
@@ -159,6 +160,66 @@ const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.make
 const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 const defaultServerRequestAuditLogPath = path.join(rootDir, ".agent-workflow", "runtime", "server", "request-log.jsonl");
+const dashboardReportCache = new Map<string, { expiresAt: number; value: unknown }>();
+const dashboardReportLoads = new Map<string, Promise<unknown>>();
+const dashboardReportCacheTtlMs = 30_000;
+const dashboardRequestWaiters: Array<() => void> = [];
+let dashboardActiveRequests = 0;
+const dashboardMaxConcurrentRequests = 6;
+
+async function acquireDashboardRequestSlot(): Promise<() => void> {
+  if (dashboardActiveRequests >= dashboardMaxConcurrentRequests) {
+    await new Promise<void>((resolve) => dashboardRequestWaiters.push(resolve));
+  }
+  dashboardActiveRequests += 1;
+  return () => {
+    dashboardActiveRequests -= 1;
+    dashboardRequestWaiters.shift()?.();
+  };
+}
+
+async function loadCachedDashboardReport<T>(key: string, load: () => Promise<T>, ttlMs = dashboardReportCacheTtlMs): Promise<T> {
+  const cached = dashboardReportCache.get(key);
+  if (cached && cached.expiresAt > Date.now()) return cached.value as T;
+
+  const pending = dashboardReportLoads.get(key);
+  if (pending) return cached ? cached.value as T : pending as Promise<T>;
+
+  const loadPromise = load()
+    .then((value) => {
+      dashboardReportCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+      if (dashboardReportCache.size > 100) {
+        const oldestKey = dashboardReportCache.keys().next().value as string | undefined;
+        if (oldestKey) dashboardReportCache.delete(oldestKey);
+      }
+      return value;
+    })
+    .finally(() => dashboardReportLoads.delete(key));
+  dashboardReportLoads.set(key, loadPromise);
+  // Serve an expired snapshot while its replacement is refreshed. This keeps
+  // diagnostic pages responsive even when their underlying probes are slow.
+  if (cached) {
+    void loadPromise.catch(() => undefined);
+    return cached.value as T;
+  }
+  return loadPromise;
+}
+
+function configureDashboardResponse(request: http.IncomingMessage, response: http.ServerResponse): void {
+  response.setHeader("cache-control", "no-store");
+  response.setHeader("vary", "Accept-Encoding");
+  if (request.method !== "GET" || !/\bgzip\b/u.test(request.headers["accept-encoding"] ?? "")) return;
+
+  response.setHeader("content-encoding", "gzip");
+  const originalEnd = response.end.bind(response);
+  response.end = ((chunk?: string | Uint8Array, encodingOrCallback?: BufferEncoding | (() => void), callback?: () => void) => {
+    if (chunk === undefined) return originalEnd(callback ?? (typeof encodingOrCallback === "function" ? encodingOrCallback : undefined));
+    const encoding = typeof encodingOrCallback === "string" ? encodingOrCallback : "utf8";
+    const body = typeof chunk === "string" ? Buffer.from(chunk, encoding) : Buffer.from(chunk);
+    const done = typeof encodingOrCallback === "function" ? encodingOrCallback : callback;
+    return originalEnd(gzipSync(body, { level: 4 }), done);
+  }) as typeof response.end;
+}
 
 function envFlagEnabled(value: string | undefined): boolean {
   if (!value) return false;
@@ -5832,11 +5893,14 @@ program
   .action(async (options: { host: string; port: string }) => {
     const port = parsePositiveInteger(options.port, 17888);
     const server = http.createServer(async (request, response) => {
+      const releaseRequestSlot = await acquireDashboardRequestSlot();
       try {
         await handleDashboardRequest(request, response);
       } catch (error) {
         response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
         response.end(error instanceof Error ? error.message : String(error));
+      } finally {
+        releaseRequestSlot();
       }
     });
 
@@ -15018,20 +15082,19 @@ async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluatio
   const runs = (await listWorkflowRuns(limit)).filter((run) =>
     typeof run.evaluationMetadata?.suiteId === "string"
   );
-  const evaluated: DashboardEvaluationRun[] = [];
-  for (const run of runs) {
+  const evaluated = (await Promise.all(runs.map(async (run): Promise<DashboardEvaluationRun | null> => {
     const metadata = run.evaluationMetadata ?? {};
     const report = await loadCostQualityReport(run.id);
     if (!report) {
-      continue;
+      return null;
     }
     const suiteId = stringValue(metadata.suiteId);
     const caseId = stringValue(metadata.caseId);
     const variantId = stringValue(metadata.variantId);
     if (!suiteId || !caseId || !variantId) {
-      continue;
+      return null;
     }
-    evaluated.push({
+    return {
       runId: run.id,
       suiteId,
       suiteName: stringValue(metadata.suiteName) ?? suiteId,
@@ -15047,8 +15110,8 @@ async function loadDashboardEvaluations(limit = 250): Promise<DashboardEvaluatio
       estimatedCostMix: report.estimatedCostMix,
       feedback: report.feedback.latest?.rating ?? null,
       startedAt: run.startedAt
-    });
-  }
+    };
+  }))).filter((run): run is DashboardEvaluationRun => run !== null);
 
   const suites = new Map<string, DashboardEvaluationRun[]>();
   for (const run of evaluated) {
@@ -24106,6 +24169,7 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 }
 
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
+  configureDashboardResponse(request, response);
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
   if (requestUrl.pathname === "/assets/queue-watcher.js") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
@@ -25568,7 +25632,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/evaluations") {
-    const suites = await loadDashboardEvaluations();
+    const suites = await loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations());
     const requestedSuite = requestUrl.searchParams.get("suite");
     const selected = requestedSuite
       ? suites.find((suite) => suite.id === requestedSuite) ?? null
@@ -25590,10 +25654,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
     const report = project
-      ? await loadDashboardModelImprovementReport({
+      ? await loadCachedDashboardReport(`model-improvement:${project}:${requestUrl.searchParams.get("limit") ?? "50"}`, () => loadDashboardModelImprovementReport({
         projectDir: project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
-      })
+      }))
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelImprovementHtml(report, projects, requestUrl.searchParams));
@@ -25601,10 +25665,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/feedback-inbox") {
-    const report = await loadDashboardFeedbackInboxReport({
+    const feedbackKey = `feedback-inbox:${requestUrl.searchParams.toString()}`;
+    const report = await loadCachedDashboardReport(feedbackKey, () => loadDashboardFeedbackInboxReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderFeedbackInboxHtml(report, projects, requestUrl.searchParams));
@@ -25696,27 +25761,30 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/candidate-comparisons") {
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
-    const report = project ? await loadDashboardCandidateComparisonReport({ projectDir: project }) : null;
+    const report = project
+      ? await loadCachedDashboardReport(`candidate-comparisons:${project}`, () => loadDashboardCandidateComparisonReport({ projectDir: project }))
+      : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/governance") {
-    const report = await loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true");
+    const report = await loadCachedDashboardReport(`governance:${requestUrl.searchParams.toString()}`, () =>
+      loadGovernanceReport(parsePositiveInteger(requestUrl.searchParams.get("staleMinutes") ?? "15", 15), requestUrl.searchParams.get("includeEphemeral") === "true"));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderGovernanceHtml(filterGovernanceReport(report, requestUrl.searchParams), requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/roles") {
-    const report = await loadRoleGovernanceReport({
+    const report = await loadCachedDashboardReport(`roles:${requestUrl.searchParams.toString()}`, () => loadRoleGovernanceReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50),
       role: requestUrl.searchParams.get("role") ?? undefined,
       status: requestUrl.searchParams.get("status") ?? undefined,
       actionType: requestUrl.searchParams.get("action") ?? undefined
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRolesHtml(report, projects, requestUrl.searchParams));
@@ -25724,7 +25792,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/artifact-lifecycle") {
-    const report = await loadArtifactLifecycleReport({
+    const report = await loadCachedDashboardReport(`artifact-lifecycle:${requestUrl.searchParams.toString()}`, () => loadArtifactLifecycleReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       kind: requestUrl.searchParams.get("kind") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500),
@@ -25734,7 +25802,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       minAgeDays: requestUrl.searchParams.has("minAgeDays") ? parseNonNegativeInteger(requestUrl.searchParams.get("minAgeDays") ?? "", 30) : undefined,
       minBytes: requestUrl.searchParams.has("minBytes") ? parseNonNegativeInteger(requestUrl.searchParams.get("minBytes") ?? "", 20_000) : undefined,
       includeAudit: requestUrl.searchParams.has("includeAudit") ? requestUrl.searchParams.get("includeAudit") === "true" : undefined
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderArtifactLifecycleHtml(report, projects, requestUrl.searchParams));
@@ -25742,10 +25810,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/backup-report") {
-    const report = await loadBackupRestoreReport({
+    const report = await loadCachedDashboardReport(`backup-report:${requestUrl.searchParams.toString()}`, () => loadBackupRestoreReport({
       projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "500", 500)
-    });
+    }));
     const projects = await listProjectStorageSummaries(100);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderBackupRestoreHtml(report, projects, requestUrl.searchParams));
@@ -25753,28 +25821,34 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/server-readiness") {
-    const report = await loadServerReadinessReport({
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100)
-    });
-    const registry = await loadServerProjectRegistryReport({
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined,
-      limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100),
-      includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
-    });
-    const storageVerification = await buildStorageVerificationReport({
-      targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
-    });
-    const migrationPlans = await loadStorageMigrationPlanListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
-    const mergeEvidence = await loadStorageMergeEvidenceListing(requestUrl.searchParams.get("migrationDir") ?? undefined);
-    const offlineFallback = await loadOfflineFallbackReport();
+    const cacheKey = `server-readiness:${requestUrl.searchParams.toString()}`;
+    const html = await loadCachedDashboardReport(cacheKey, async () => {
+      const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
+      const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100);
+      const migrationDir = requestUrl.searchParams.get("migrationDir") ?? undefined;
+      const [report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, runtimeMonitor, requestAudit, projects] = await Promise.all([
+        loadServerReadinessReport({ projectRootUri, limit }),
+        loadServerProjectRegistryReport({
+          projectRootUri,
+          limit,
+          includeRoots: requestUrl.searchParams.get("includeRoots") === "true"
+        }),
+        buildStorageVerificationReport({
+          targetHost: requestUrl.searchParams.get("storageHost") ?? requestUrl.searchParams.get("targetHost") ?? undefined
+        }),
+        loadStorageMigrationPlanListing(migrationDir),
+        loadStorageMergeEvidenceListing(migrationDir),
+        loadOfflineFallbackReport(),
+        loadRuntimeMonitorReport(),
+        loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50)),
+        listProjectStorageSummaries(100)
+      ]);
     const objectProof = await buildObjectArtifactProofReport({
       projectRootUri: report.projectRootUri || undefined,
       limit: parsePositiveInteger(requestUrl.searchParams.get("objectLimit") ?? "500", 500),
       enumerateBuckets: requestUrl.searchParams.get("enumerateBuckets") === "1",
       verify: requestUrl.searchParams.get("verifyObjects") === "1"
     });
-    const runtimeMonitor = await loadRuntimeMonitorReport();
     const statePlaneProof = buildSharedStatePlaneProof({
       server: report,
       storageVerification,
@@ -25783,10 +25857,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       objectProof,
       runtimeMonitor
     });
-    const requestAudit = await loadServerRequestAuditLog(parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50));
-    const projects = await listProjectStorageSummaries(100);
+      return renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams);
+    });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams));
+    response.end(html);
     return;
   }
 
@@ -25832,12 +25906,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/discovery") {
-    const report = await discoverLocalProjects({
+    const report = await loadCachedDashboardReport(`discovery:${requestUrl.searchParams.toString()}`, () => discoverLocalProjects({
       roots: splitCommaList(requestUrl.searchParams.get("roots") ?? path.join(os.homedir(), "Projects")).map((item) => path.resolve(process.cwd(), item)),
       maxDepth: parsePositiveInteger(requestUrl.searchParams.get("maxDepth") ?? "5", 5),
       maxCandidates: parsePositiveInteger(requestUrl.searchParams.get("maxCandidates") ?? "200", 200),
       spotlight: parseSpotlightMode(requestUrl.searchParams.get("spotlight") ?? "auto")
-    });
+    }));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDiscoveryHtml(report, requestUrl.searchParams));
     return;
@@ -25862,22 +25936,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/providers") {
-    const info = await withTimeout(
+    const dashboardUrl = dashboardUrlFromRequest(request);
+    const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
       loadDashboardInfo(dashboardUrlFromRequest(request)),
       3000,
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderProvidersHtml(info, requestUrl.searchParams));
     return;
   }
 
   if (requestUrl.pathname === "/model-catalog") {
-    const report = await withTimeout(
+    const report = await loadCachedDashboardReport("model-catalog", () => withTimeout(
       loadDashboardModelCatalogReport(),
       5000,
       () => fallbackDashboardModelCatalogReport()
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderModelCatalogHtml(report));
     return;
@@ -25891,11 +25966,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/info" || requestUrl.pathname === "/settings") {
-    const info = await withTimeout(
+    const dashboardUrl = dashboardUrlFromRequest(request);
+    const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
       loadDashboardInfo(dashboardUrlFromRequest(request)),
       1200,
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
-    );
+    ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
     return;
@@ -25906,11 +25982,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
-    loadRuntimeMonitorReport(),
-    loadRoadmapDashboardReport(),
+    loadCachedDashboardReport("runtime-monitor", () => loadRuntimeMonitorReport()),
+    loadCachedDashboardReport("roadmap", () => loadRoadmapDashboardReport()),
     listWorkflowQueue(100),
-    listProjectStorageSummaries(100),
-    checkServices(),
+    loadCachedDashboardReport("projects:100", () => listProjectStorageSummaries(100)),
+    loadCachedDashboardReport("services", () => checkServices()),
     listActionApprovals({ status: "pending", limit: 25 }),
     listActionApprovals({ status: "approved", limit: 25 })
   ]);
@@ -28984,12 +29060,12 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
   <style>${dashboardCss()}</style>
 </head>
 <body>
-  ${dashboardNav("learning")}
+  ${dashboardNav(learningView === "settings" ? "daemon-control" : "learning")}
   <main>
     <div class="topbar">
       <div>
         <a href="/">Home</a>
-        <h1>Insights</h1>
+        <h1>Learning</h1>
         <p class="page-intro">Review recommendations, decisions, and system learning without the implementation noise.</p>
       </div>
       ${jsonHref ? `<a class="button secondary" href="${escapeHtml(jsonHref)}">JSON</a>` : ""}
@@ -37725,7 +37801,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "daemon-control" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Work",
@@ -37751,11 +37827,12 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       ]
     },
     {
-      label: "Insights",
-      id: "insights",
+      label: "Learning",
+      id: "learning",
       href: "/learning",
       icon: "brain",
       items: [
+        ["daemon-control", "/learning?view=settings", "Daemon settings", "server"],
         ["evaluations", "/evaluations", "Evaluations", "clipboard"],
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
         ["model-improvement", "/model-improvement", "Model improvements", "sparkles"],
@@ -37765,8 +37842,8 @@ function dashboardNav(active: "dashboard" | "queue" | "approvals" | "approval-ru
       ]
     },
     {
-      label: "Admin",
-      id: "admin",
+      label: "Settings",
+      id: "info",
       href: "/settings",
       icon: "settings",
       items: [
