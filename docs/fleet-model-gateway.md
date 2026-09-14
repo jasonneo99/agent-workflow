@@ -5,6 +5,13 @@ records token metadata without retaining prompt or response bodies. Run it on a
 private, TLS-terminated network endpoint and point fleet clients at its `/v1`
 base URL.
 
+This is an optional portable service. Installing Agent Workflow does not start
+it, change provider routing, open a listener, generate credentials, or enroll a
+client. Operators must explicitly run the gateway command and supply its local
+environment. Real host identities, network topology, TLS/ACL configuration,
+credentials, client routing, and deployment receipts belong in a private
+companion repository rather than this open-source project.
+
 ## Configuration
 
 Keep all credentials outside Git:

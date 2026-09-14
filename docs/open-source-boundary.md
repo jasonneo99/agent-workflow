@@ -21,6 +21,11 @@ The open source project can include patterns that help any team operate agent wo
 - Generic developer workflow agents for architecture, implementation, testing, frontend, UX, security, docs, release readiness, and project maintenance.
 - Documentation about how to evaluate, personalize, and improve agent workflows without coupling them to a private product domain.
 
+Portable fleet or multi-machine capabilities belong here only as optional,
+deployment-neutral contracts. They must work with synthetic client identities
+and generic endpoints, remain disabled until explicitly configured, and avoid
+assuming any particular host roster, network, project map, or operator.
+
 ## What Should Stay Project-Local Or Private
 
 Product-specific agent engines should keep their private intelligence outside the open source framework:
@@ -32,6 +37,9 @@ Product-specific agent engines should keep their private intelligence outside th
 - Raw ML training infrastructure, GPU scheduling, model registries, and large model artifacts.
 - Product-specific agents whose value depends on non-public context.
 - Any generated tuning overlay that reveals private project behavior, priorities, users, customers, or architecture.
+- Real hostnames, device identities, addresses, tailnet names, ACLs, client
+  tokens, project-to-host mappings, immutable deployment revisions, and live
+  fleet receipts. These belong in the private fleet-management companion.
 
 ## How To Share Learnings Safely
 
@@ -78,6 +86,8 @@ Before contributing a change, ask:
 - Are examples synthetic or scrubbed?
 - Does the change keep project-specific context in `.agent-workflow/` or another project-local location?
 - Does it preserve dry-run or explicit-approval behavior for risky actions?
+- If it supports fleet operation, is the public portion optional and useful
+  without the private deployment overlay?
 - Does every changed file pass `npm run validate-boundary`, including tests,
   fixtures, docs, screenshots, templates, and generated metadata?
 
