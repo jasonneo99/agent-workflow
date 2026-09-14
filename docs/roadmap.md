@@ -258,6 +258,7 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Use ordered provider/model candidates with bounded retries, persistent circuit breakers, cooldown health probes, deterministic attempt identities, and route receipts that name the actual provider.
   - Never retry or route authentication and configuration failures. Permit account-quota fallback only when explicitly enabled and the destination is already fleet-approved with a declared data policy.
   - Preserve the existing authenticated queue and idempotency contract so assistant clients never implement prompt-level retry loops.
+  - Done: add a bounded authenticated synchronous conversation contract that routes general typed chat through provider fallback, returns actual provider/model attribution, writes metadata-only receipts, and routes substantive requests into existing governed workflows without exposing a direct model proxy.
 
 - [x] Authoritative fleet model-usage reporting contract.
   - Expose a separately authenticated, bounded summary endpoint on the gateway host.

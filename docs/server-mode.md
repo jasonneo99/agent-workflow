@@ -1003,3 +1003,56 @@ Reason: project id must not be a filesystem path
 The preview commands may report `attention` while `AGENTFLOW_SERVER_MODE=0`.
 That is correct: local-first mode is safe, but remote mutation endpoints would
 require explicit server-mode opt-in and authentication.
+
+## Synchronous degraded conversation
+
+`POST /api/server-conversation` is the bounded synchronous contract for typed
+assistant clients. It reuses server authentication, registered project ids,
+rate limits, provider fallback, workflow queue policy, and the redacted request
+audit log. It is not a direct model proxy.
+
+```json
+{
+  "message": "What is the current service status?",
+  "history": [{ "role": "user", "content": "Is Heimdall online?" }],
+  "idempotencyKey": "jarvis-turn-20260914-001",
+  "actor": "jarvis",
+  "actorRole": "operator",
+  "projectId": "registered-project-id",
+  "capabilityMode": "conversation"
+}
+```
+
+The request accepts one message of at most 4,000 characters and at most 12
+prior user/assistant turns. Each turn is limited to 4,000 characters and the
+combined history to 24,000 characters. Idempotency keys are stable URL-safe
+values of 8-128 characters. `projectId` must come from `server-projects`;
+filesystem paths are rejected.
+
+- `conversation` answers general conversation synchronously. Substantive build,
+  fix, run, release, deployment, or repository requests return an
+  `operation-required` workflow route instead of model text.
+- `plan` permits advisory text but still routes imperative state changes into a
+  governed workflow.
+- `governed-operation` queues that workflow only when server mode, auth, the
+  queue gate, project roles, policy, rate limits, and idempotency all pass.
+
+Responses contain bounded assistant text plus actual provider, model, and
+fallback attribution. Model-requested commands and writes are ignored.
+Assistant text is scrubbed for token-shaped values and local home paths.
+Substantive requests never receive free-form claims that an action occurred;
+they receive an existing workflow id and, when authorized, its run id.
+
+Receipts are metadata-only: hashes, byte/turn counts, provider attempts,
+failure classification, model attribution, and run ids. Message/history bodies,
+credentials, addresses, and project roots are not written to the request log.
+Exact response replay is cached only within the running server; reusing a key
+with a different body is rejected.
+
+```bash
+npm run agentflow -- server-conversation --json --request-json \
+  '{"message":"What provider is configured?","history":[],"idempotencyKey":"local-chat-001","actor":"local-operator","actorRole":"operator","projectId":"registered-project-id","capabilityMode":"conversation"}'
+```
+
+Keep this endpoint behind the Fleet-owned authenticated bridge. Do not expose
+Ollama directly or copy provider credentials into assistant clients.
