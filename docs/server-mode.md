@@ -222,7 +222,7 @@ Content-Type: application/json
 `projectName` may replace `projectId` only when it exactly and uniquely matches
 a registered project. A successful asynchronous response is HTTP `202` and
 contains `operationId`, the generated dynamic `workflowId`, `runGroup.runIds`,
-an aggregate status, a durable receipt URI, and status/run links. Reusing the
+an aggregate status, a durable receipt URI, and status/events/run links. Reusing the
 same idempotency key returns the same operation and run.
 
 Poll the aggregate:
@@ -236,7 +236,24 @@ Aggregate status is one of `queued`, `running`, `completed`, `blocked`,
 `failed`, or `missing`. A stage that reports missing required context,
 authority, implementation, or verification resolves the operation as
 `blocked`; it is never presented as a successful completion. The final result
-contains the terminal stage summary and artifact URI when available.
+contains an explicit terminal outcome, the terminal stage summary, and artifact
+URI when available. Every status snapshot also includes a stable `cursor`,
+bounded stage counts, completion percentage, up to eight current stages, and a
+pending-approval count.
+
+Clients that need conversation or Control Center progress can consume bounded,
+authenticated server-sent events instead of polling:
+
+```http
+GET /api/server-orchestration-events?projectId=<registered-project-id>&operationId=<operation-id>
+Authorization: Bearer <server token>
+Accept: text/event-stream
+```
+
+The stream emits `orchestration` events only when the stable cursor changes,
+plus bounded heartbeats. It closes on a terminal outcome or after 60 seconds;
+clients may reconnect using the same operation id. It never includes prompts,
+credentials, raw source, or artifact bodies.
 
 `POST /api/server-queue` remains available for callers that explicitly name a
 predefined complete workflow. It is not the default conversational integration

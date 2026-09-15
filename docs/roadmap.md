@@ -1062,6 +1062,13 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: implemented
   - Scope: allow checklist-backed roadmap tasks and bugs to set explicit `Priority:` values from `/roadmap` while preserving inferred priorities for older items.
 
+- [x] Task: expose one-goal asynchronous orchestration with bounded progress streaming.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: implemented
+  - Done: accept one authenticated registered-project goal, construct and queue the governed dynamic lifecycle, preserve idempotency and receipts, propagate blocked or failed stages truthfully, aggregate terminal results, and expose bounded authenticated polling and server-sent progress events for assistant and Control Center clients.
+  - Boundary: clients submit goals and render progress; Agent Workflow owns decomposition, stage execution, retries, approval state, validation, and final resolution.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

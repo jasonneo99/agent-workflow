@@ -8045,7 +8045,7 @@ type ServerOrchestrationReport = {
   receiptUri: string | null;
   reused: boolean;
   checks: Array<{ label: string; status: ServerReadinessCheckStatus; detail: string }>;
-  links: { status: string; run: string | null };
+  links: { status: string; events: string; run: string | null };
 };
 
 type ServerOrchestrationStatusReport = {
@@ -8055,7 +8055,20 @@ type ServerOrchestrationStatusReport = {
   projectId: string;
   status: "queued" | "running" | "completed" | "blocked" | "failed" | "missing";
   runGroup: Array<{ runId: string; workflowId: string; status: string; startedAt: string; finishedAt: string | null }>;
-  result: null | { summary: string; artifactUri: string | null };
+  progress: {
+    totalStages: number;
+    completedStages: number;
+    runningStages: number;
+    queuedStages: number;
+    blockedStages: number;
+    failedStages: number;
+    cancelledStages: number;
+    percent: number;
+    currentStages: Array<{ runId: string; stageId: string; agentId: string; status: string; attempts: number }>;
+    pendingApprovals: number;
+  };
+  cursor: string;
+  result: null | { outcome: "completed" | "blocked" | "failed"; summary: string; artifactUri: string | null };
 };
 
 type ServerConversationReport = {
@@ -14506,27 +14519,67 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
     receiptUri,
     reused,
     checks,
-    links: { status: `/api/server-orchestration-status?projectId=${encodeURIComponent(projectId)}&operationId=${encodeURIComponent(operationId)}`, run: runId ? `/run?id=${encodeURIComponent(runId)}` : null }
+    links: {
+      status: `/api/server-orchestration-status?projectId=${encodeURIComponent(projectId)}&operationId=${encodeURIComponent(operationId)}`,
+      events: `/api/server-orchestration-events?projectId=${encodeURIComponent(projectId)}&operationId=${encodeURIComponent(operationId)}`,
+      run: runId ? `/run?id=${encodeURIComponent(runId)}` : null
+    }
   };
+}
+
+function emptyServerOrchestrationProgress(): ServerOrchestrationStatusReport["progress"] {
+  return { totalStages: 0, completedStages: 0, runningStages: 0, queuedStages: 0, blockedStages: 0, failedStages: 0, cancelledStages: 0, percent: 0, currentStages: [], pendingApprovals: 0 };
+}
+
+function serverOrchestrationStatusIsTerminal(status: ServerOrchestrationStatusReport["status"]): boolean {
+  return status === "completed" || status === "blocked" || status === "failed" || status === "missing";
 }
 
 async function loadServerOrchestrationStatus(request: http.IncomingMessage, projectId: string, operationId: string): Promise<{ statusCode: number; report: ServerOrchestrationStatusReport }> {
   const auth = validateServerMutationAuth(request);
-  if (!auth.ok) return { statusCode: 403, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], result: null } };
+  const emptyProgress = emptyServerOrchestrationProgress();
+  if (!auth.ok) return { statusCode: 403, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, cursor: stableHash([operationId, "missing"]), result: null } };
   const summary = (await listProjectStorageSummaries(500)).find((item) => item.id === projectId);
   const runs = summary ? (await listWorkflowRunsForProject({ projectRootUri: summary.rootUri, limit: 500 }))
     .filter((run) => stringValue(run.evaluationMetadata?.source) === "server-orchestration" && stringValue(run.evaluationMetadata?.operationId) === operationId) : [];
-  if (!runs.length) return { statusCode: 404, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], result: null } };
+  if (!runs.length) return { statusCode: 404, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, cursor: stableHash([operationId, "missing"]), result: null } };
   const statuses = runs.map((run) => run.status);
   const status: ServerOrchestrationStatusReport["status"] = statuses.includes("blocked") ? "blocked" : statuses.includes("failed") ? "failed" : statuses.some((item) => item === "queued" || item === "running") ? (statuses.includes("running") ? "running" : "queued") : "completed";
   const latest = runs[0];
+  const details = await Promise.all(runs.map((run) => getWorkflowRunDetails(run.id)));
+  const tasks = details.flatMap((detail) => detail.tasks.map((task) => ({ ...task, runId: detail.run?.id ?? "" })));
+  const count = (taskStatus: string): number => tasks.filter((task) => task.status === taskStatus).length;
+  const completedStages = count("completed");
+  const blockedStages = count("blocked");
+  const failedStages = count("failed");
+  const cancelledStages = count("cancelled");
+  const terminalStages = completedStages + blockedStages + failedStages + cancelledStages;
+  const pendingApprovals = (await Promise.all(runs.map((run) => listActionApprovals({ runId: run.id, limit: 100 })))).flat().filter((approval) => isOpenApproval(approval)).length;
+  const progress: ServerOrchestrationStatusReport["progress"] = {
+    totalStages: tasks.length,
+    completedStages,
+    runningStages: count("running"),
+    queuedStages: count("queued"),
+    blockedStages,
+    failedStages,
+    cancelledStages,
+    percent: tasks.length ? Math.round((terminalStages / tasks.length) * 100) : 0,
+    currentStages: tasks.filter((task) => task.status === "running" || task.status === "queued" || task.status === "blocked" || task.status === "failed").slice(0, 8).map((task) => ({ runId: task.runId, stageId: task.stageId, agentId: task.agentId, status: task.status, attempts: task.attempts })),
+    pendingApprovals
+  };
   const artifacts = await listArtifacts({ runId: latest.id, kind: "stage_output" });
   const finalArtifact = artifacts.at(-1) ?? null;
+  const result = serverOrchestrationStatusIsTerminal(status)
+    ? { outcome: status as "completed" | "blocked" | "failed", summary: (stringValue(finalArtifact?.content?.summary) ?? "").slice(0, 2000), artifactUri: finalArtifact?.uri ?? null }
+    : null;
+  const cursor = stableHash([operationId, status, JSON.stringify(progress), finalArtifact?.uri ?? ""]);
   return { statusCode: 200, report: {
     kind: "agentflow_server_orchestration_status",
     generatedAt: new Date().toISOString(), operationId, projectId, status,
     runGroup: runs.map((run) => ({ runId: run.id, workflowId: run.workflowId, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt })),
-    result: finalArtifact ? { summary: stringValue(finalArtifact.content?.summary) ?? "", artifactUri: finalArtifact.uri } : null
+    progress,
+    cursor,
+    result
   } };
 }
 
@@ -25874,6 +25927,43 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const result = await loadServerOrchestrationStatus(request, requestUrl.searchParams.get("projectId") ?? "", requestUrl.searchParams.get("operationId") ?? "");
     response.writeHead(result.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(result.report, null, 2));
+    return;
+  }
+
+  if (request.method === "GET" && requestUrl.pathname === "/api/server-orchestration-events") {
+    const projectId = requestUrl.searchParams.get("projectId") ?? "";
+    const operationId = requestUrl.searchParams.get("operationId") ?? "";
+    const initial = await loadServerOrchestrationStatus(request, projectId, operationId);
+    if (initial.statusCode !== 200) {
+      response.writeHead(initial.statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify(initial.report, null, 2));
+      return;
+    }
+    response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", connection: "keep-alive", "x-accel-buffering": "no" });
+    let closed = false;
+    let events = 0;
+    let lastCursor = "";
+    const startedAt = Date.now();
+    let timer: NodeJS.Timeout | null = null;
+    request.on("close", () => { closed = true; if (timer) clearTimeout(timer); });
+    const send = async (): Promise<void> => {
+      if (closed) return;
+      const current = events === 0 ? initial : await loadServerOrchestrationStatus(request, projectId, operationId);
+      const report = current.report;
+      if (report.cursor !== lastCursor) {
+        response.write(`id: ${report.cursor}\nevent: orchestration\ndata: ${JSON.stringify(report)}\n\n`);
+        lastCursor = report.cursor;
+        events += 1;
+      } else {
+        response.write(`event: heartbeat\ndata: ${JSON.stringify({ operationId, generatedAt: new Date().toISOString() })}\n\n`);
+      }
+      if (serverOrchestrationStatusIsTerminal(report.status) || events >= 31 || Date.now() - startedAt >= 60_000) {
+        response.end();
+        return;
+      }
+      timer = setTimeout(() => { void send(); }, 2_000);
+    };
+    await send();
     return;
   }
 
