@@ -56,6 +56,7 @@ test("blocked stage output terminates the run without reporting success", () => 
   assert.match(source, /export async function blockWorkflowTask/u);
   assert.match(source, /update workflow_tasks set status = 'blocked'/u);
   assert.match(source, /update workflow_runs set status = 'blocked'/u);
+  assert.doesNotMatch(source, /update workflow_handoffs[\s\S]{0,200}note =/u);
   assert.match(source, /wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u);
 });
 

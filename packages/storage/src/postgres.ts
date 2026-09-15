@@ -1719,10 +1719,10 @@ export async function blockWorkflowTask(input: {
       );
       await client.query(
         `update workflow_handoffs
-         set status = 'failed', failed_at = now(), updated_at = now(), note = $3
+         set status = 'failed', failed_at = now(), updated_at = now()
          where run_id = $1 and destination_stage_id = (select stage_id from workflow_tasks where id = $2)
            and status in ('proposed', 'accepted', 'retrying')`,
-        [input.runId, input.taskId, input.reason]
+        [input.runId, input.taskId]
       );
       await client.query(
         `update workflow_runs set status = 'blocked', finished_at = now() where id = $1`,
