@@ -42741,6 +42741,9 @@ async function queueWorkflow(input: {
   if (!workflow) {
     return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
   }
+  if (input.workflowOverride) {
+    await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
+  }
 
   const configuredProject = await loadProjectConfig(projectDir);
   let resolvedPolicy: ReturnType<typeof resolveExecutionPolicy>;
