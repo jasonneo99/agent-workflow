@@ -48,6 +48,18 @@ restrict models, requests per minute, and daily tokens. The gateway rejects over
 budget or disallowed traffic before contacting the upstream provider. Optional
 pricing produces estimates only; provider billing remains authoritative.
 
+Native Agent Workflow provider calls are mirrored into the same ledger by
+default, including retries, failures, and fallbacks. Set
+`AGENTFLOW_FLEET_USAGE_DIRECT=false` only to opt out. Direct receipts contain
+hashed project identity and bounded run metadata, never prompts or outputs.
+Token totals are measured when the provider adapter returns usage; configured
+model pricing produces estimates only.
+
+Agent Workflow includes dated default estimates for its active GPT-5.6 and
+Claude model routes. `AGENTFLOW_MODEL_GATEWAY_PRICING` overrides individual
+model entries when provider prices or negotiated rates differ. The dashboard
+labels these values as estimates; provider invoices remain authoritative.
+
 ## Authoritative fleet reporting
 
 The gateway host can be the authoritative usage source without sharing or

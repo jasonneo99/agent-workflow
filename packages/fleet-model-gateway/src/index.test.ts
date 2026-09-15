@@ -4,7 +4,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
-import { authenticateFleetClient, createFleetModelGateway, estimateModelCost, importFleetUsageReceipts, readFleetUsageReceipts, summarizeFleetUsage, usageFromPayload, type FleetUsageReceipt } from "./index.js";
+import { authenticateFleetClient, createFleetModelGateway, estimateModelCost, importFleetUsageReceipts, modelPricingFromEnv, readFleetUsageReceipts, summarizeFleetUsage, usageFromPayload, type FleetUsageReceipt } from "./index.js";
 
 test("fleet client authentication requires an exact bearer token", () => {
   assert.equal(authenticateFleetClient("Bearer secret-a", { "client-a": "secret-a" }), "client-a");
@@ -38,6 +38,12 @@ test("offline receipt import is idempotent", async () => {
 
 test("estimates configured model cost", () => {
   assert.equal(estimateModelCost({ inputTokens: 1000, cachedInputTokens: 200, reasoningTokens: 0, outputTokens: 500, totalTokens: 1500 }, "model-a", { "model-a": { inputPerMillionUsd: 2, outputPerMillionUsd: 6 } }), 0.0046);
+});
+
+test("ships versioned default pricing for active OpenAI and Anthropic routes", () => {
+  const pricing = modelPricingFromEnv("");
+  assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "gpt-5.6-luna", pricing), 1.4);
+  assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "claude-sonnet-5", pricing), 12);
 });
 
 test("gateway health and client policies fail closed before upstream", async () => {

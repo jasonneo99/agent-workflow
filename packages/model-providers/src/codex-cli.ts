@@ -25,6 +25,8 @@ const stageSchema = {
   type: "object",
   additionalProperties: false,
   properties: {
+    outcome: { type: "string", enum: ["completed", "blocked"] },
+    blockedReason: { type: "string" },
     summary: { type: "string" },
     findings: { type: "array", items: { type: "string" } },
     nextAction: { type: "string" },
@@ -39,7 +41,7 @@ const stageSchema = {
       }
     }
   },
-  required: ["summary", "findings", "nextAction", "requestedCommands", "requestedFileWrites"]
+  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileWrites"]
 };
 
 const fileSummarySchema = {

@@ -1,0 +1,75 @@
+{
+  "suiteId": "daemon-model-comparison-standard",
+  "suiteName": "Daemon model comparison (standard)",
+  "workflow": "provider-smoke",
+  "generatedAt": "2026-09-15T22:43:20.556Z",
+  "rows": [
+    {
+      "caseId": "standard-safe-repository-task",
+      "variantId": "openai-standard",
+      "runId": "e0344d44-7bd0-4717-9786-cc04a0f217a9",
+      "provider": "openai",
+      "modelTier": "standard",
+      "status": "completed",
+      "averageQuality": 1,
+      "fallbackCount": 0,
+      "totalLatencyMs": 5012,
+      "estimatedCostMix": {
+        "medium": 1
+      },
+      "feedbackRating": null,
+      "passed": true,
+      "failures": []
+    },
+    {
+      "caseId": "standard-safe-repository-task",
+      "variantId": "anthropic-standard",
+      "runId": "e7c75b42-5dcf-4e59-a298-1a79e2f0677a",
+      "provider": "anthropic",
+      "modelTier": "standard",
+      "status": "failed",
+      "averageQuality": null,
+      "fallbackCount": 0,
+      "totalLatencyMs": 645,
+      "estimatedCostMix": {
+        "medium": 1
+      },
+      "feedbackRating": null,
+      "passed": false,
+      "failures": [
+        "status failed did not match completed",
+        "quality n/a was below 0.7"
+      ]
+    }
+  ],
+  "variants": [
+    {
+      "variantId": "openai-standard",
+      "provider": "openai",
+      "modelTier": "standard",
+      "runs": 1,
+      "passed": 1,
+      "passRate": 1,
+      "averageQuality": 1,
+      "averageLatencyMs": 5012,
+      "fallbackRate": 0,
+      "feedbackCounts": {},
+      "privateScore": null
+    },
+    {
+      "variantId": "anthropic-standard",
+      "provider": "anthropic",
+      "modelTier": "standard",
+      "runs": 1,
+      "passed": 0,
+      "passRate": 0,
+      "averageQuality": null,
+      "averageLatencyMs": 645,
+      "fallbackRate": 0,
+      "feedbackCounts": {},
+      "privateScore": null
+    }
+  ],
+  "winner": "openai-standard",
+  "scoringProfile": null
+}

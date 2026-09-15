@@ -45,6 +45,11 @@ let ticks = 0;
 
 async function main() {
   await fs.mkdir(runtimeDir, { recursive: true });
+  const existingSupervisor = await activeSupervisor();
+  if (existingSupervisor) {
+    console.log(`Agent Workflow supervisor is already running (pid ${existingSupervisor.pid}); leaving it in control.`);
+    return;
+  }
   if (shouldStartLocalStorageServices()) {
     await writeHeartbeat("starting", "checking docker");
     await ensureDocker();
@@ -72,6 +77,30 @@ async function main() {
     await sleep(monitorIntervalMs);
     await monitor();
   }
+}
+
+async function activeSupervisor() {
+  try {
+    const heartbeat = JSON.parse(await fs.readFile(supervisorHeartbeatPath, "utf8"));
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? Date.parse(heartbeat.lastHeartbeatAt) : 0;
+    const staleAfterMs = Math.max(positiveNumber(heartbeat.monitorIntervalMs, monitorIntervalMs) * 3, 15_000);
+    if (!pid || pid === process.pid || Date.now() - lastHeartbeatAt > staleAfterMs) return null;
+    const command = await processCommand(pid);
+    return command.includes(rootDir) && command.includes("scripts/dev-agentflow.mjs") ? { pid, command } : null;
+  } catch {
+    return null;
+  }
+}
+
+function processCommand(pid) {
+  return new Promise((resolve) => {
+    const child = spawn("ps", ["-p", String(pid), "-o", "command="], { cwd: rootDir, stdio: ["ignore", "pipe", "ignore"] });
+    let output = "";
+    child.stdout.on("data", (chunk) => { output += chunk.toString(); });
+    child.on("error", () => resolve(""));
+    child.on("close", (code) => resolve(code === 0 ? output.trim() : ""));
+  });
 }
 
 function shouldStartLocalStorageServices() {

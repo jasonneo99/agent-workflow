@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "daemon-model-comparison-fast",
+  "name": "Daemon model comparison (fast)",
+  "description": "Bounded recurring provider comparison owned by the Workflow & Model Optimizer daemon.",
+  "workflow": "provider-smoke",
+  "cases": [
+    {
+      "id": "fast-safe-repository-task",
+      "task": "Analyze a representative fast developer task. Return a concise, structured recommendation with explicit evidence and no commands or file writes.",
+      "expectations": {
+        "status": "completed",
+        "minimum_average_quality": 0.7,
+        "maximum_fallbacks": 0
+      }
+    }
+  ],
+  "variants": [
+    {
+      "id": "openai-fast",
+      "provider": "openai",
+      "model_tier": "fast",
+      "prompt_suffix": "Preserve correctness, evidence, safety boundaries, and concise output."
+    },
+    {
+      "id": "anthropic-fast",
+      "provider": "anthropic",
+      "model_tier": "fast",
+      "prompt_suffix": "Preserve correctness, evidence, safety boundaries, and concise output."
+    }
+  ]
+}

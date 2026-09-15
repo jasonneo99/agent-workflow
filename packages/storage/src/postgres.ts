@@ -327,7 +327,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
          count(*) filter (where wt.status = 'running')::int as "runningTasks",
          count(*) filter (where wt.status = 'completed')::int as "completedTasks",
-         count(*) filter (where wt.status = 'failed')::int as "failedTasks",
+         count(*) filter (where wt.status in ('failed', 'blocked'))::int as "failedTasks",
          count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks",
          (array_agg(wt.stage_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextStageId",
          (array_agg(wt.agent_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextAgentId",
@@ -341,15 +341,15 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
        where ($2::text is null or p.root_uri = $2)
-         and (wr.status in ('queued', 'running', 'failed')
+         and (wr.status in ('queued', 'running', 'failed', 'blocked')
           or exists (
             select 1 from workflow_tasks active
             where active.run_id = wr.id
-              and active.status in ('queued', 'running', 'failed')
+              and active.status in ('queued', 'running', 'failed', 'blocked')
           ))
        group by wr.id, p.id
        order by
-         case wr.status when 'running' then 0 when 'queued' then 1 when 'failed' then 2 else 3 end,
+         case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
          coalesce(min(wt.started_at) filter (where wt.status = 'running'), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
        limit $1`,
       [limit, projectRootUri]
@@ -807,10 +807,10 @@ export async function dismissFailedWorkflowRun(input: {
              finished_at = coalesce(finished_at, now())
          where wr.id = $1
            and (
-             wr.status = 'failed'
+             wr.status in ('failed', 'blocked')
              or exists (
                select 1 from workflow_tasks wt
-               where wt.run_id = wr.id and wt.status = 'failed'
+               where wt.run_id = wr.id and wt.status in ('failed', 'blocked')
              )
            )
          returning wr.id::text`,
@@ -824,7 +824,7 @@ export async function dismissFailedWorkflowRun(input: {
         `update workflow_tasks
          set status = 'dismissed',
              finished_at = coalesce(finished_at, now())
-         where run_id = $1::uuid and status in ('queued', 'running', 'failed')`,
+         where run_id = $1::uuid and status in ('queued', 'running', 'failed', 'blocked')`,
         [input.runId]
       );
       await client.query(
@@ -854,10 +854,10 @@ export async function dismissAllFailedWorkflowRuns(input: {
          from workflow_runs wr
          join projects p on p.id = wr.project_id
          where (
-           wr.status = 'failed'
+           wr.status in ('failed', 'blocked')
            or exists (
              select 1 from workflow_tasks wt
-             where wt.run_id = wr.id and wt.status = 'failed'
+             where wt.run_id = wr.id and wt.status in ('failed', 'blocked')
            )
          )
            and ($1::text is null or p.root_uri = $1)
@@ -873,7 +873,7 @@ export async function dismissAllFailedWorkflowRuns(input: {
         `update workflow_tasks
          set status = 'dismissed',
              finished_at = coalesce(finished_at, now())
-         where run_id = any($1::uuid[]) and status in ('queued', 'running', 'failed')`,
+         where run_id = any($1::uuid[]) and status in ('queued', 'running', 'failed', 'blocked')`,
         [runIds]
       );
       await client.query(
@@ -1448,6 +1448,12 @@ export interface ClaimedWorkflowTask {
     actionType: string;
     summary: string;
   }>;
+  priorStageArtifacts: Array<{
+    stageId: string;
+    agentId: string;
+    summary: string;
+    artifact: Record<string, unknown>;
+  }>;
 }
 
 export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string }): Promise<ClaimedWorkflowTask | null> {
@@ -1457,7 +1463,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       const workerId = input?.workerId?.trim() || null;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
       const projectRootUri = input?.projectRootUri?.trim() || null;
-      const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">>(
+      const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
         `with next_task as (
            select wt.id
            from workflow_tasks wt
@@ -1665,11 +1671,63 @@ export async function completeWorkflowTask(input: {
              select 1
              from workflow_tasks wt
              where wt.run_id = wr.id
-               and wt.status in ('queued', 'running', 'failed')
+               and wt.status in ('queued', 'running', 'failed', 'blocked')
            )`,
         [input.runId]
       );
 
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function blockWorkflowTask(input: {
+  taskId: string;
+  runId: string;
+  agentId: string;
+  summary: string;
+  reason: string;
+  artifact: Record<string, unknown>;
+}): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const outputUri = `db://workflow_tasks/${input.taskId}/output`;
+      await client.query(
+        `insert into artifacts (run_id, task_id, kind, uri, content)
+         values ($1, $2, 'stage_output', $3, $4)
+         on conflict (uri) do update set content = excluded.content`,
+        [input.runId, input.taskId, outputUri, JSON.stringify(input.artifact)]
+      );
+      await client.query(
+        `update workflow_tasks set status = 'blocked', output_uri = $2, finished_at = now() where id = $1`,
+        [input.taskId, outputUri]
+      );
+      await client.query(
+        `update workflow_tasks
+         set status = 'cancelled', finished_at = now()
+         where run_id = $1 and id <> $2 and status in ('queued', 'running')`,
+        [input.runId, input.taskId]
+      );
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1, $2, 'stage_blocked', $3, $4, $5)`,
+        [input.runId, input.agentId, input.taskId, input.summary, JSON.stringify({ reason: input.reason, outputUri })]
+      );
+      await client.query(
+        `update workflow_handoffs
+         set status = 'failed', failed_at = now(), updated_at = now(), note = $3
+         where run_id = $1 and destination_stage_id = (select stage_id from workflow_tasks where id = $2)
+           and status in ('proposed', 'accepted', 'retrying')`,
+        [input.runId, input.taskId, input.reason]
+      );
+      await client.query(
+        `update workflow_runs set status = 'blocked', finished_at = now() where id = $1`,
+        [input.runId]
+      );
       await client.query("commit");
     } catch (error) {
       await client.query("rollback");
@@ -2745,7 +2803,7 @@ export async function getArtifactById(id: string): Promise<ArtifactStatus | null
   });
 }
 
-async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts">> {
+async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">> {
   const briefResult = await client.query<{ text: string }>(
     `select content->>'text' as text
      from artifacts
@@ -2770,9 +2828,25 @@ async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<
     [runId]
   );
 
+  const stageArtifactsResult = await client.query<{
+    stageId: string;
+    agentId: string;
+    summary: string;
+    artifact: Record<string, unknown>;
+  }>(
+    `select wt.stage_id as "stageId", wt.agent_id as "agentId",
+       coalesce(a.content->>'summary', '') as summary, a.content as artifact
+     from workflow_tasks wt
+     join artifacts a on a.task_id = wt.id and a.kind = 'stage_output'
+     where wt.run_id = $1 and wt.status = 'completed'
+     order by wt.finished_at asc`,
+    [runId]
+  );
+
   return {
     compiledBrief: briefResult.rows[0]?.text ?? "",
-    priorReceipts: receiptsResult.rows
+    priorReceipts: receiptsResult.rows,
+    priorStageArtifacts: stageArtifactsResult.rows
   };
 }
 

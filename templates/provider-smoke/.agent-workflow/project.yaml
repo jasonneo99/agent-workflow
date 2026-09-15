@@ -1,0 +1,31 @@
+project:
+  name: Provider Smoke Project
+  summary: Persistent fixture for provider contract validation.
+  default_workflows:
+    - provider-smoke
+  autonomy: 1
+context:
+  include:
+    - AGENTS.md
+    - .agent-workflow/**
+  exclude:
+    - node_modules/**
+    - .git/**
+  max_project_tokens: 2000
+storage:
+  cache_summaries: false
+  semantic_index: false
+policies:
+  allow_wide_open: false
+  require_approval_for_external_actions: true
+  require_receipts: true
+actions:
+  allowed_commands: []
+  blocked_commands:
+    - "*"
+  command_timeout_ms: 30000
+  max_output_chars: 4000
+  allowed_write_paths: []
+  blocked_write_paths:
+    - "**"
+  max_write_bytes: 1

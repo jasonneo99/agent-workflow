@@ -12,10 +12,19 @@ import { registerContextThresholdTool } from "./tools/context.js";
 import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
 
 const rootDir = findAgentWorkflowRoot(import.meta.url);
+const packageVersion = readPackageVersion(rootDir);
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
 const mcpLogPath = process.env.AGENTFLOW_MCP_LOG_FILE || path.join(rootDir, ".agent-workflow", "runtime", "mcp", "stdio.log");
 const maxOutputChars = parsePositiveInteger(process.env.AGENTFLOW_MCP_MAX_OUTPUT_CHARS, 12_000);
 const defaultTimeoutMs = 120_000;
+
+function readPackageVersion(root: string): string {
+  const metadata = JSON.parse(fsSync.readFileSync(path.join(root, "package.json"), "utf8")) as { version?: unknown };
+  if (typeof metadata.version !== "string" || metadata.version.length === 0) {
+    throw new Error(`Package version is missing from ${path.join(root, "package.json")}`);
+  }
+  return metadata.version;
+}
 
 type CommandResult = {
   command: string;
@@ -55,7 +64,7 @@ process.on("exit", (code) => {
 const server = new McpServer(
   {
     name: "portable-agent-workflows",
-    version: "0.2.1"
+    version: packageVersion
   },
   {
     instructions:

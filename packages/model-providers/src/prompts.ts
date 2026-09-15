@@ -1,6 +1,8 @@
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
 
 export interface StageJsonArtifact {
+  outcome: "completed" | "blocked";
+  blockedReason: string;
   summary: string;
   findings: string[];
   nextAction: string;
@@ -42,7 +44,18 @@ export function buildStagePrompt(input: StageExecutionInput): string {
       ? input.priorReceipts.map((receipt) => `- ${receipt.actionType} ${receipt.agentId}: ${receipt.summary}`).join("\n")
       : "None yet.",
     "",
+    "Prior stage artifacts (authoritative outputs from this run):",
+    input.priorStageArtifacts?.length
+      ? input.priorStageArtifacts.map((item) => [
+        `### ${item.stageId} (${item.agentId})`,
+        `Summary: ${item.summary}`,
+        truncate(JSON.stringify(item.artifact), 4000)
+      ].join("\n")).join("\n\n")
+      : "None yet.",
+    "",
     "Return JSON with:",
+    "- outcome: completed only when the stage goal was actually achieved; blocked when required context, authority, implementation, or verification is missing",
+    "- blockedReason: concise reason when outcome is blocked; otherwise an empty string",
     "- summary: one or two sentences describing the stage result",
     "- findings: concrete observations, risks, or decisions",
     "- nextAction: the next useful workflow action",
@@ -68,8 +81,14 @@ export function buildFileSummaryPrompt(input: {
 }
 
 export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): StageJsonArtifact {
+  const blockedReason = typeof value.blockedReason === "string" ? value.blockedReason.trim() : "";
+  const summary = typeof value.summary === "string" ? value.summary : "Stage completed.";
+  const explicitlyBlocked = value.outcome === "blocked";
+  const legacyBlocked = value.outcome === undefined && /\b(blocked|could not|cannot proceed|no (?:changes|tests) (?:were )?(?:made|run|applied)|not supplied)\b/iu.test(`${summary} ${blockedReason}`);
   return {
-    summary: typeof value.summary === "string" ? value.summary : "Stage completed.",
+    outcome: explicitlyBlocked || legacyBlocked ? "blocked" : "completed",
+    blockedReason: explicitlyBlocked || legacyBlocked ? (blockedReason || summary) : "",
+    summary,
     findings: Array.isArray(value.findings) ? value.findings.filter((item): item is string => typeof item === "string") : [],
     nextAction: typeof value.nextAction === "string" ? value.nextAction : "",
     requestedCommands: Array.isArray(value.requestedCommands)
@@ -84,6 +103,8 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
 
 export function buildStageExecutionOutput(input: StageExecutionInput, parsed: StageJsonArtifact, provider: Record<string, unknown>): StageExecutionOutput {
   return {
+    outcome: parsed.outcome,
+    blockedReason: parsed.blockedReason || undefined,
     summary: parsed.summary,
     requestedCommands: parsed.requestedCommands,
     requestedFileWrites: parsed.requestedFileWrites,
@@ -99,6 +120,8 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
       stageGoal: input.stageGoal,
       findings: parsed.findings,
       nextAction: parsed.nextAction,
+      outcome: parsed.outcome,
+      blockedReason: parsed.blockedReason,
       requestedCommands: parsed.requestedCommands,
       requestedFileWrites: parsed.requestedFileWrites,
       summary: parsed.summary

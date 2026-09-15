@@ -56,6 +56,7 @@ AGENTFLOW_SERVER_BIND=127.0.0.1
 AGENTFLOW_SERVER_AUTH=token
 AGENTFLOW_SERVER_TOKEN=...
 AGENTFLOW_SERVER_ENABLE_QUEUE=0
+AGENTFLOW_SERVER_ENABLE_ORCHESTRATION=0
 AGENTFLOW_SERVER_ALLOWED_ORIGINS=http://127.0.0.1:17888
 AGENTFLOW_SERVER_MAX_BODY_BYTES=64000
 AGENTFLOW_SERVER_RATE_LIMIT_PER_MINUTE=60
@@ -182,6 +183,64 @@ project policy rechecks, and receipts:
 Remote prune/delete remains unavailable until explicit destructive execution is
 implemented and reviewed. Current lifecycle deletion behavior remains disabled
 by default.
+
+## One-goal asynchronous orchestration
+
+Assistant integrations should normally submit one goal to Agent Workflow
+and then poll the returned operation. Agent Workflow owns decomposition,
+project-context gathering, dynamic specialist and stage selection,
+implementation, verification, approvals, bounded recovery, and final status.
+The caller must not chain individual workflows or interpret intermediate stages
+as separate user decisions.
+
+Enable this mutation independently (the existing queue gate is accepted during
+the compatibility rollout):
+
+```env
+AGENTFLOW_SERVER_MODE=1
+AGENTFLOW_SERVER_AUTH=token
+AGENTFLOW_SERVER_ENABLE_ORCHESTRATION=1
+```
+
+Submit a goal:
+
+```http
+POST /api/server-orchestrations
+Authorization: Bearer <server token>
+Content-Type: application/json
+
+{
+  "projectId": "<registered-project-id>",
+  "goal": "Diagnose the failing build, implement the repair, and verify it.",
+  "actor": "assistant-client",
+  "actorRole": "operator",
+  "idempotencyKey": "assistant-goal-001",
+  "execute": true
+}
+```
+
+`projectName` may replace `projectId` only when it exactly and uniquely matches
+a registered project. A successful asynchronous response is HTTP `202` and
+contains `operationId`, the generated dynamic `workflowId`, `runGroup.runIds`,
+an aggregate status, a durable receipt URI, and status/run links. Reusing the
+same idempotency key returns the same operation and run.
+
+Poll the aggregate:
+
+```http
+GET /api/server-orchestration-status?projectId=<registered-project-id>&operationId=<operation-id>
+Authorization: Bearer <server token>
+```
+
+Aggregate status is one of `queued`, `running`, `completed`, `blocked`,
+`failed`, or `missing`. A stage that reports missing required context,
+authority, implementation, or verification resolves the operation as
+`blocked`; it is never presented as a successful completion. The final result
+contains the terminal stage summary and artifact URI when available.
+
+`POST /api/server-queue` remains available for callers that explicitly name a
+predefined complete workflow. It is not the default conversational integration
+path.
 
 ## Audit Receipts
 

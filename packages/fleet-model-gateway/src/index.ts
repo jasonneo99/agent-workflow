@@ -36,8 +36,10 @@ export interface FleetGatewayConfig {
   upstreamTimeoutMs?: number;
   clientPolicies?: Record<string, FleetClientPolicy>;
   observerTokens?: Record<string, string>;
-  modelPricing?: Record<string, { inputPerMillionUsd: number; outputPerMillionUsd: number }>;
+  modelPricing?: ModelPricing;
 }
+
+export type ModelPricing = Record<string, { inputPerMillionUsd: number; outputPerMillionUsd: number; cachedInputPerMillionUsd?: number }>;
 
 export interface FleetUsageSummaryOptions { limit?: number; since?: string; }
 
@@ -160,7 +162,26 @@ function validFleetUsageReceipt(value: unknown): value is FleetUsageReceipt {
 export function estimateModelCost(usage: ReturnType<typeof usageFromPayload>, model: string | undefined, pricing: FleetGatewayConfig["modelPricing"]): number | undefined {
   const price = model ? pricing?.[model] : undefined;
   if (!price) return undefined;
-  return Number((((usage.inputTokens - usage.cachedInputTokens) * price.inputPerMillionUsd + usage.outputTokens * price.outputPerMillionUsd) / 1_000_000).toFixed(8));
+  return Number((((usage.inputTokens - usage.cachedInputTokens) * price.inputPerMillionUsd + usage.cachedInputTokens * (price.cachedInputPerMillionUsd ?? 0) + usage.outputTokens * price.outputPerMillionUsd) / 1_000_000).toFixed(8));
+}
+
+export function modelPricingFromEnv(value = process.env.AGENTFLOW_MODEL_GATEWAY_PRICING): ModelPricing {
+  const configured = value ? parseModelPricing(value) : {};
+  return { ...defaultModelPricing, ...configured };
+}
+
+const defaultModelPricing: ModelPricing = {
+  "gpt-5.6-luna": { inputPerMillionUsd: 0.2, cachedInputPerMillionUsd: 0.02, outputPerMillionUsd: 1.2 },
+  "gpt-5.6-terra": { inputPerMillionUsd: 2, cachedInputPerMillionUsd: 0.2, outputPerMillionUsd: 12 },
+  "gpt-5.6-sol": { inputPerMillionUsd: 4, cachedInputPerMillionUsd: 0.4, outputPerMillionUsd: 20 },
+  "claude-haiku-4-5": { inputPerMillionUsd: 1, cachedInputPerMillionUsd: 0.1, outputPerMillionUsd: 5 },
+  "claude-haiku-4-5-20251001": { inputPerMillionUsd: 1, cachedInputPerMillionUsd: 0.1, outputPerMillionUsd: 5 },
+  "claude-sonnet-5": { inputPerMillionUsd: 2, cachedInputPerMillionUsd: 0.2, outputPerMillionUsd: 10 },
+  "claude-opus-5": { inputPerMillionUsd: 5, cachedInputPerMillionUsd: 0.5, outputPerMillionUsd: 25 }
+};
+
+function parseModelPricing(value: string): ModelPricing {
+  try { const parsed = JSON.parse(value); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as ModelPricing : {}; } catch { return {}; }
 }
 
 async function readBody(request: http.IncomingMessage, maxBytes: number): Promise<Buffer> {

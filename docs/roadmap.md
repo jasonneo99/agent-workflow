@@ -267,6 +267,8 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Let dashboards consume the authoritative summary and visibly fall back to a local ledger during outages.
   - Report summary and ingestion readiness through the authenticated gateway health contract.
   - Keep endpoint addresses, TLS, ACLs, tokens, node identities, and rollout configuration in the private fleet-management layer.
+  - Done: mirror native Agent Workflow provider attempts into the same privacy-safe ledger, including retries, fallbacks, failures, actual provider/model identity, and measured usage without prompt or output bodies.
+  - Done: ship overridable price estimates for the active GPT-5.6 and Claude routes so direct calls appear with estimated cost while provider invoices remain authoritative.
 
 - [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.

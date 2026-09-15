@@ -6,72 +6,7 @@ AGENTFLOW_CLI=(node "$ROOT_DIR/dist/apps/cli/src/index.js")
 
 WORKFLOW="provider-smoke"
 TASK="${AGENTFLOW_PROVIDER_SMOKE_TASK:-Return a concise provider contract smoke result. Do not request commands. Do not request file writes.}"
-PROJECT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/agentflow-provider-smoke.XXXXXX")"
-
-cleanup() {
-  rm -rf "$PROJECT_DIR"
-}
-trap cleanup EXIT
-
-mkdir -p "$PROJECT_DIR/.agent-workflow"
-
-cat >"$PROJECT_DIR/AGENTS.md" <<'EOF'
-# AGENTS.md
-
-This is an isolated provider smoke project. Do not request commands or file writes.
-EOF
-
-cat >"$PROJECT_DIR/.agent-workflow/context.md" <<'EOF'
-# Project Context
-
-This temporary project exists only to verify that the selected model provider can return valid structured workflow output.
-EOF
-
-cat >"$PROJECT_DIR/.agent-workflow/commands.md" <<'EOF'
-# Commands
-
-No commands are allowed for this provider smoke project.
-EOF
-
-cat >"$PROJECT_DIR/.agent-workflow/decisions.md" <<'EOF'
-# Decisions
-
-No durable decisions are recorded for provider smoke tests.
-EOF
-
-cat >"$PROJECT_DIR/.agent-workflow/project.yaml" <<'EOF'
-project:
-  name: Provider Smoke Project
-  summary: Temporary project for provider contract validation.
-  default_workflows:
-    - provider-smoke
-  autonomy: 1
-context:
-  include:
-    - AGENTS.md
-    - .agent-workflow/**
-  exclude:
-    - node_modules/**
-    - .git/**
-  max_project_tokens: 2000
-storage:
-  cache_summaries: false
-  semantic_index: false
-policies:
-  allow_wide_open: false
-  require_approval_for_external_actions: true
-  require_receipts: true
-actions:
-  allowed_commands: []
-  blocked_commands:
-    - "*"
-  command_timeout_ms: 30000
-  max_output_chars: 4000
-  allowed_write_paths: []
-  blocked_write_paths:
-    - "**"
-  max_write_bytes: 1
-EOF
+PROJECT_DIR="$ROOT_DIR/templates/provider-smoke"
 
 retry() {
   local attempts="$1"
@@ -119,7 +54,14 @@ echo "==> Execute one provider stage"
 "${AGENTFLOW_CLI[@]}" worker --limit 1
 
 echo "==> Inspect provider smoke run"
-RUN_STATUS="$("${AGENTFLOW_CLI[@]}" status --run "$RUN_ID" --artifacts)"
+RUN_STATUS=""
+for _ in $(seq 1 30); do
+  RUN_STATUS="$("${AGENTFLOW_CLI[@]}" status --run "$RUN_ID" --artifacts)"
+  if printf '%s\n' "$RUN_STATUS" | grep -Eq "^$RUN_ID (completed|failed) "; then
+    break
+  fi
+  sleep 1
+done
 echo "$RUN_STATUS"
 
 if ! printf '%s\n' "$RUN_STATUS" | grep -q "^$RUN_ID completed "; then

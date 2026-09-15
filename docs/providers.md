@@ -46,9 +46,17 @@ Use `codex-cli` when Agent Workflow runs on a trusted local machine where the
 Codex CLI is already authenticated with ChatGPT:
 
 ```bash
-codex login
-codex login status
-npm run agentflow -- provider-use codex-cli --check
+npm run agentflow -- provider-use codex-cli --login --check
+```
+
+That single command opens the Codex ChatGPT sign-in flow, verifies the resulting
+authentication method, writes `CODEX_CLI_AUTH_MODE=chatgpt` and
+`DEFAULT_MODEL_PROVIDER=codex-cli` to the local `.env`, and runs the provider
+readiness check. If the machine has no usable browser callback, run the same
+flow with device-code authentication:
+
+```bash
+npm run agentflow -- provider-use codex-cli --login --device-auth --check
 ```
 
 ```env
@@ -433,6 +441,31 @@ DEFAULT_MODEL_PROVIDER=mock npm run smoke
 ```
 
 The mock provider does not call a model. It is the default for CI-safe tests.
+
+## Local
+
+Use `local` for an OpenAI-compatible runtime on the same trusted machine, such
+as Ollama, LM Studio, or llama.cpp. Install and start that runtime, download a
+model using the runtime's own tooling, then add the non-secret endpoint and
+model selection to `.env`:
+
+```env
+DEFAULT_MODEL_PROVIDER=local
+LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
+LOCAL_MODEL_NAME=auto
+LOCAL_MODEL_API_KEY=
+```
+
+Verify endpoint readiness and the discovered model catalog:
+
+```bash
+npm run provider-check
+npm run agentflow -- local-llm-checklist --project /path/to/project
+```
+
+Keep the endpoint loopback-only unless it is protected by a separately managed
+authenticated gateway. If a local runtime requires a key, store
+`LOCAL_MODEL_API_KEY` only in the untracked `.env` or a private secret manager.
 
 ## OpenAI
 

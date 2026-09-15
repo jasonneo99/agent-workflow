@@ -10,6 +10,12 @@ test("finds the package root from source modules", () => {
   assert.equal(pkg.name, "@jasonneo99/agent-workflow");
 });
 
+test("uses an explicit packaged runtime root for single-executable sidecars", () => {
+  const root = findAgentWorkflowRoot(import.meta.url);
+  assert.equal(findAgentWorkflowRoot("file:///virtual/agentflow", { AGENTFLOW_ROOT: root }), root);
+  assert.throws(() => findAgentWorkflowRoot("file:///virtual/agentflow", { AGENTFLOW_ROOT: "/tmp/missing-agentflow-root" }), /does not contain package\.json/);
+});
+
 test("installed packages use a user configuration path", () => {
   assert.match(agentWorkflowEnvPath("/opt/package", "/tmp/project"), /\.config\/agent-workflow\/\.env$/);
 });

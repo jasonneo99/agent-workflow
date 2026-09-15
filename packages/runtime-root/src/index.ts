@@ -4,7 +4,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import os from "node:os";
 
-export function findAgentWorkflowRoot(moduleUrl: string): string {
+export function findAgentWorkflowRoot(moduleUrl: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.AGENTFLOW_ROOT) {
+    const configuredRoot = path.resolve(env.AGENTFLOW_ROOT);
+    const packagePath = path.join(configuredRoot, "package.json");
+    if (!existsSync(packagePath)) throw new Error(`AGENTFLOW_ROOT does not contain package.json: ${configuredRoot}`);
+    const pkg = JSON.parse(readFileSync(packagePath, "utf8")) as { name?: string };
+    if (pkg.name !== "@jasonneo99/agent-workflow" && !existsSync(path.join(configuredRoot, "agent-workflow.bundle.json"))) {
+      throw new Error(`AGENTFLOW_ROOT is not an Agent Workflow package: ${configuredRoot}`);
+    }
+    return configuredRoot;
+  }
   let current = path.dirname(fileURLToPath(moduleUrl));
   while (true) {
     const packagePath = path.join(current, "package.json");

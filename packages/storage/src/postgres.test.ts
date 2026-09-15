@@ -46,8 +46,17 @@ test("completed retried tasks can finalize runs with cancelled downstream tasks"
 
   assert.match(
     source,
-    /set status = 'completed'[\s\S]+not exists \([\s\S]+wt\.status in \('queued', 'running', 'failed'\)/u
+    /set status = 'completed'[\s\S]+not exists \([\s\S]+wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u
   );
+});
+
+test("blocked stage output terminates the run without reporting success", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+
+  assert.match(source, /export async function blockWorkflowTask/u);
+  assert.match(source, /update workflow_tasks set status = 'blocked'/u);
+  assert.match(source, /update workflow_runs set status = 'blocked'/u);
+  assert.match(source, /wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u);
 });
 
 test("stale terminal run reconciliation only repairs terminal child-task runs", () => {

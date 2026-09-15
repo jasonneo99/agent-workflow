@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { createFleetModelGateway, importFleetUsageReceipts, readFleetUsageReceipts, summarizeFleetUsage, type FleetUsageReceipt } from "../../../packages/fleet-model-gateway/src/index.js";
+import { createFleetModelGateway, importFleetUsageReceipts, modelPricingFromEnv, readFleetUsageReceipts, summarizeFleetUsage, type FleetUsageReceipt } from "../../../packages/fleet-model-gateway/src/index.js";
 
 const command = process.argv[2] ?? "serve";
 const ledgerPath = process.env.AGENTFLOW_FLEET_USAGE_LEDGER ?? path.resolve(".agent-workflow/runtime/fleet-model-usage.jsonl");
@@ -23,9 +23,7 @@ if (command === "report") {
   const clientPolicies = process.env.AGENTFLOW_MODEL_GATEWAY_CLIENT_POLICIES
     ? JSON.parse(process.env.AGENTFLOW_MODEL_GATEWAY_CLIENT_POLICIES)
     : undefined;
-  const modelPricing = process.env.AGENTFLOW_MODEL_GATEWAY_PRICING
-    ? JSON.parse(process.env.AGENTFLOW_MODEL_GATEWAY_PRICING)
-    : undefined;
+  const modelPricing = modelPricingFromEnv();
   const observerTokens = process.env.AGENTFLOW_MODEL_GATEWAY_OBSERVER_TOKENS
     ? JSON.parse(process.env.AGENTFLOW_MODEL_GATEWAY_OBSERVER_TOKENS) as Record<string, string>
     : undefined;

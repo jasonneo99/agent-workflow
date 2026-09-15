@@ -7,12 +7,14 @@ import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
+import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
 import {
+  blockWorkflowTask,
   claimNextWorkflowTask,
   completeWorkflowTask,
   findRunActionByIdempotencyKey,
@@ -87,6 +89,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
       } catch (error) {
         const failure = error instanceof ProviderExecutionError ? error : new ProviderExecutionError("unknown", "Provider execution failed.");
+        await recordDirectProviderUsage({ stage: routedStageInput, attempts: failure.attempts, latencyMs: Date.now() - startedAt }).catch(() => 0);
         await recordRunAction({
           runId: task.runId,
           agentId: task.agentId,
@@ -98,6 +101,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         });
         throw failure;
       }
+      await recordDirectProviderUsage({ stage: routedStageInput, attempts: execution.attempts, output: execution.output, latencyMs: Date.now() - startedAt }).catch(() => 0);
       let output = execution.output;
       let quality = scoreStageOutput(routedStageInput, output);
       let fallbackProviderId = execution.fallbackUsed ? execution.actualProvider : undefined;
@@ -112,6 +116,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerFromEnv });
           const fallbackOutput = qualityExecution.output;
           const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
+          await recordDirectProviderUsage({ stage: routedStageInput, attempts: qualityExecution.attempts, output: fallbackOutput, latencyMs: Date.now() - startedAt }).catch(() => 0);
           fallbackAttempts = [...fallbackAttempts, ...qualityExecution.attempts];
           if (fallbackQuality.score >= quality.score) {
             output = fallbackOutput;
@@ -135,6 +140,34 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         artifactKind: "model_route",
         artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
       });
+
+      if (output.outcome === "blocked") {
+        const blockedReason = output.blockedReason?.trim() || output.summary;
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          summary: output.summary,
+          reason: blockedReason,
+          artifact: {
+            ...output.artifact,
+            outcome: "blocked",
+            blockedReason,
+            routing: {
+              ...route,
+              fallbackProviderId,
+              fallbackUsed,
+              actualProviderId,
+              actualModel,
+              attempts: fallbackAttempts
+            },
+            quality,
+            actionResults: []
+          }
+        });
+        result.failed += 1;
+        continue;
+      }
 
       const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);
       let reactIteration = 0;

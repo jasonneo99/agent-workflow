@@ -1822,6 +1822,15 @@ or `high` only if you want maximum local autonomy. Turn off **Auto-apply passing
 project-local agent-card improvements** to keep agent YAML promotion
 review-first while the daemon continues refreshing recommendation files.
 
+When failure triage cannot safely recover a run, the daemon records a bounded
+attention event. Authenticated fleet clients receive these events in the
+`attention` array returned by `/api/server-daemon-fleet-health`. Each entry has a
+stable event ID, severity, project ID and display name, failure category, short
+diagnosis, recovery status, and timestamp. It intentionally omits project paths,
+credentials, raw prompts, workflow input, and approval authority. A private
+assistant or notification bridge may present these entries, but must use the
+normal approval and execution endpoints for any follow-up action.
+
 In the dashboard, open:
 
 ```text

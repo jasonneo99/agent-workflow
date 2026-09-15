@@ -17,29 +17,43 @@ const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
     : rootDir;
 const learningHeartbeatPath = path.join(learningProject, ".agent-workflow", "learning", "daemon-status.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
+const dryRun = process.argv.includes("--dry-run");
+const pruneStale = process.argv.includes("--prune-stale");
 
 async function main() {
-  const supervisorPid = await heartbeatPid(supervisorHeartbeatPath);
-  const workerPid = await heartbeatPid(workerHeartbeatPath);
+  const supervisorPid = await heartbeatPid(supervisorHeartbeatPath, "supervisor");
+  const workerPid = await heartbeatPid(workerHeartbeatPath, "worker");
   const workerRegistryPids = await workerHeartbeatPids();
-  const learningPid = await heartbeatPid(learningHeartbeatPath);
+  const learningPid = await heartbeatPid(learningHeartbeatPath, "learning");
   const dashboardPid = await listenerPid(dashboardPort);
   const matchingPids = await matchingAgentflowPids();
+
+  if (pruneStale) {
+    console.log(`Pruned stale worker registrations; ${workerRegistryPids.length} live registration(s) remain.`);
+    return;
+  }
 
   const pids = uniqueNumbers([supervisorPid, workerPid, ...workerRegistryPids, learningPid, dashboardPid, ...matchingPids]);
   if (pids.length === 0) {
     console.log("No Agent Workflow supervisor, dashboard, or worker process was found.");
-    await writeStoppedHeartbeat("stopped", "No running process found.");
+    if (!dryRun) await writeStoppedHeartbeat("stopped", "No running process found.");
     return;
   }
 
+  if (dryRun) {
+    console.log(`Would stop verified Agent Workflow processes: ${pids.join(", ")}`);
+    return;
+  }
   console.log(`Stopping Agent Workflow processes: ${pids.join(", ")}`);
   for (const pid of pids) {
     signal(pid, "SIGTERM");
   }
 
   await sleep(1500);
-  const survivors = pids.filter((pid) => isProcessAlive(pid));
+  const survivors = [];
+  for (const pid of pids) {
+    if (await isVerifiedAgentWorkflowProcess(pid)) survivors.push(pid);
+  }
   for (const pid of survivors) {
     signal(pid, "SIGKILL");
   }
@@ -51,10 +65,11 @@ async function main() {
   console.log("Agent Workflow dashboard, worker, and learning daemon stopped. Docker services were left running.");
 }
 
-async function heartbeatPid(filePath) {
+async function heartbeatPid(filePath, expectedKind) {
   try {
     const heartbeat = JSON.parse(await fs.readFile(filePath, "utf8"));
-    return typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    return pid && await isVerifiedAgentWorkflowProcess(pid, expectedKind) ? pid : null;
   } catch {
     return null;
   }
@@ -63,10 +78,16 @@ async function heartbeatPid(filePath) {
 async function workerHeartbeatPids() {
   try {
     const entries = await fs.readdir(workerHeartbeatDir, { withFileTypes: true });
-    const pids = await Promise.all(entries
+    const candidates = entries
       .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-      .map((entry) => heartbeatPid(path.join(workerHeartbeatDir, entry.name))));
-    return pids.filter((pid) => Number.isInteger(pid));
+      .map((entry) => path.join(workerHeartbeatDir, entry.name));
+    const pids = [];
+    for (const filePath of candidates) {
+      const pid = await heartbeatPid(filePath, "worker");
+      if (pid) pids.push(pid);
+      else if (!dryRun) await fs.unlink(filePath).catch(() => {});
+    }
+    return pids;
   } catch {
     return [];
   }
@@ -76,7 +97,8 @@ async function listenerPid(port) {
   try {
     const output = await execFileText("lsof", ["-nP", "-iTCP:" + String(port), "-sTCP:LISTEN", "-Fp"]);
     const pidLine = output.split(/\r?\n/).find((line) => /^p\d+$/.test(line));
-    return pidLine ? Number.parseInt(pidLine.slice(1), 10) : null;
+    const pid = pidLine ? Number.parseInt(pidLine.slice(1), 10) : null;
+    return pid && await isVerifiedAgentWorkflowProcess(pid, "dashboard") ? pid : null;
   } catch {
     return null;
   }
@@ -85,7 +107,7 @@ async function listenerPid(port) {
 async function matchingAgentflowPids() {
   try {
     const output = await execFileText("ps", ["-axo", "pid=,command="]);
-    return output
+    const candidates = output
       .split(/\r?\n/)
       .map((line) => line.trim())
       .filter(Boolean)
@@ -94,7 +116,6 @@ async function matchingAgentflowPids() {
         return match ? { pid: Number.parseInt(match[1], 10), command: match[2] } : null;
       })
       .filter((entry) => entry && entry.pid !== process.pid)
-      .filter((entry) => entry.command.includes(rootDir))
       .filter((entry) => !entry.command.includes("dev-agentflow-stop.mjs"))
       .filter((entry) => {
         return entry.command.includes("scripts/dev-agentflow.mjs")
@@ -103,6 +124,11 @@ async function matchingAgentflowPids() {
           || entry.command.includes("apps/cli/src/index.ts learning-daemon");
       })
       .map((entry) => entry.pid);
+    const verified = [];
+    for (const pid of candidates) {
+      if (await isVerifiedAgentWorkflowProcess(pid)) verified.push(pid);
+    }
+    return verified;
   } catch {
     return [];
   }
@@ -119,12 +145,32 @@ function signal(pid, signalName) {
   }
 }
 
-function isProcessAlive(pid) {
+async function isVerifiedAgentWorkflowProcess(pid, expectedKind) {
   try {
-    process.kill(pid, 0);
+    const command = (await execFileText("ps", ["-p", String(pid), "-o", "command="])).trim();
+    const kindMatches = {
+      supervisor: command.includes("scripts/dev-agentflow.mjs"),
+      dashboard: command.includes("apps/cli/src/index.ts dashboard"),
+      worker: command.includes("apps/cli/src/index.ts worker --watch"),
+      learning: command.includes("apps/cli/src/index.ts learning-daemon")
+    };
+    const kind = expectedKind ? Boolean(kindMatches[expectedKind]) : Object.values(kindMatches).some(Boolean);
+    if (!command || !kind) return false;
+    const ownedByRoot = command.includes(rootDir) || (kindMatches.supervisor && await processWorkingDirectory(pid) === rootDir);
+    if (!ownedByRoot) return false;
     return true;
   } catch {
     return false;
+  }
+}
+
+async function processWorkingDirectory(pid) {
+  try {
+    const output = await execFileText("lsof", ["-a", "-p", String(pid), "-d", "cwd", "-Fn"]);
+    const pathLine = output.split(/\r?\n/).find((line) => line.startsWith("n"));
+    return pathLine ? pathLine.slice(1) : null;
+  } catch {
+    return null;
   }
 }
 

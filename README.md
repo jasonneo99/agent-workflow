@@ -78,48 +78,82 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 | `mock` | None (deterministic) | No config needed |
 | `local` | Ollama, LM Studio, or llama.cpp-compatible localhost runtime | `LOCAL_MODEL_BASE_URL` + `LOCAL_MODEL_NAME` |
 | `byo` | Any remote or enterprise OpenAI-compatible gateway | `BYO_MODEL_BASE_URL` + `BYO_MODEL_NAME` |
-| `openai` | GPT-4o, GPT-5.5 | `OPENAI_API_KEY` |
+| `openai` | Models available to the configured OpenAI project | `OPENAI_API_KEY` |
+| `codex-cli` | Codex CLI using ChatGPT subscription authentication | `codex login` |
+| `anthropic` | Claude through the Anthropic Messages API | `ANTHROPIC_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
 | `openai-compatible` | Legacy BYO-compatible alias | `OPENAI_COMPATIBLE_BASE_URL` + model name |
 | `kiro` | Optional Kiro CLI adapter | `kiro-cli login` or `KIRO_API_KEY` |
 
-Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
+Run `npm run setup` for guided configuration, or configure one of the following
+in the untracked local `.env`. Never commit provider keys or CLI authentication
+caches. `provider-use` persists the primary selection and checks readiness:
 
 ```bash
 # Smart routing across configured providers
-DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
-AGENTFLOW_MODEL_POLICY=best-coding
+npm run agentflow -- provider-use auto --check
+# Configure AGENTFLOW_AUTO_PROVIDERS with the ready providers you want considered.
+
+# Deterministic tests with no external model call
+npm run agentflow -- provider-use mock --check
 
 # Local model runtime: Ollama, LM Studio, llama.cpp-compatible endpoints
-DEFAULT_MODEL_PROVIDER=local
 LOCAL_MODEL_BASE_URL=http://localhost:11434/v1
 LOCAL_MODEL_NAME=auto
 LOCAL_MODEL_API_KEY=
+DEFAULT_MODEL_PROVIDER=local
+# Then run: npm run provider-check
 
 # BYO model gateway: vLLM, LiteLLM, internal routers, etc.
-DEFAULT_MODEL_PROVIDER=byo
 BYO_MODEL_BASE_URL=http://localhost:11434/v1
 BYO_MODEL_NAME=auto
 BYO_MODEL_API_KEY=
+npm run agentflow -- provider-use byo --check
+
+# OpenAI API (usage-based Platform billing)
+OPENAI_API_KEY=...
+OPENAI_MODEL=auto
+npm run agentflow -- provider-use openai --check
+
+# Codex CLI (ChatGPT subscription authentication)
+npm run agentflow -- provider-use codex-cli --login --check
+# Headless node: add --device-auth to the same command.
+
+# Anthropic Claude
+ANTHROPIC_API_KEY=...
+ANTHROPIC_MODEL=auto
+npm run agentflow -- provider-use anthropic --check
 
 # AWS Bedrock
-DEFAULT_MODEL_PROVIDER=bedrock
-BEDROCK_MODEL=auto
+aws sso login # when your AWS profile uses SSO
 AWS_REGION=us-east-1
+BEDROCK_MODEL=auto
+npm run agentflow -- provider-use bedrock --check
+
+# Legacy OpenAI-compatible endpoint (prefer `byo` for new setups)
+OPENAI_COMPATIBLE_BASE_URL=http://localhost:11434/v1
+OPENAI_COMPATIBLE_MODEL=auto
+OPENAI_COMPATIBLE_API_KEY=
+npm run agentflow -- provider-use openai-compatible --check
 
 # Kiro CLI
-DEFAULT_MODEL_PROVIDER=kiro
+kiro-cli login
 KIRO_CLI_BIN=kiro-cli
 KIRO_AGENT=
-
-# OpenAI
-DEFAULT_MODEL_PROVIDER=openai
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=auto
+npm run agentflow -- provider-use kiro --check
 ```
 
-For a fresh install, local and BYO providers can be configured either through `npm run setup` or by manually adding the `LOCAL_*` or `BYO_*` lines to `.env`. After that, `npm run provider-check` verifies that the endpoint is reachable and shows the model selected from its catalog. Use `npm run agentflow -- local-llm-checklist -p .` when you also want proof that local routing is visible to Agent Workflow, has produced a low-risk route receipt, and has useful smoke-run history for the next model download or routing fix.
+Shell assignments shown on separate lines belong in `.env`; do not paste those
+lines directly into a shell. After any change, `npm run provider-check` verifies
+the selected provider. A one-stage live contract test is available through
+`npm run provider-smoke`. For authentication details, headless setup, model
+overrides, adaptive routing, and troubleshooting for every provider, see the
+[Provider Matrix](docs/providers.md).
+
+Use `npm run agentflow -- local-llm-checklist -p .` when you also want proof
+that local routing is visible to Agent Workflow, has produced a low-risk route
+receipt, and has useful smoke-run history for the next model download or
+routing fix.
 
 ## Model Tier Routing
 
@@ -289,6 +323,13 @@ npm run agentflow -- apply-tuning-proposals -p . --ids all # Dry-run project-loc
 npm run artifacts -- -r <id>   # View run artifacts
 npm run agentflow -- dashboard # Start local web dashboard
 ```
+
+Open `/studio` on the dashboard host for the task-first Agent Workflow Studio.
+Studio presents editable multi-agent plans, live workflow stages, a task thread,
+real Git diffs, governed file and command evidence, inline approvals,
+checkpoint-aware controls, indexed-project switching, and server-sent updates in
+one workspace. Natural-language tasks compile into validated dynamic workflows;
+choosing a fixed workflow remains available as an explicit override.
 
 If a workflow, worker, dashboard action, or MCP call returns `Approval required`,
 show that approval id to the user in their current context. The workflow may keep

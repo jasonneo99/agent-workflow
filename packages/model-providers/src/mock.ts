@@ -9,6 +9,7 @@ export class MockProvider implements ModelProvider {
     const requestedFileWrites = parseMockRequestedFileWrites(input.workflowTask);
 
     return {
+      outcome: "completed",
       summary,
       requestedCommands,
       requestedFileWrites,
@@ -24,6 +25,8 @@ export class MockProvider implements ModelProvider {
         stageGoal: input.stageGoal,
         compiledBriefAvailable: input.compiledBrief.length > 0,
         priorReceiptCount: input.priorReceipts.length,
+        priorStageArtifactCount: input.priorStageArtifacts?.length ?? 0,
+        outcome: "completed",
         summary,
         nextAction: "Advance to the next queued stage.",
         requestedCommands,

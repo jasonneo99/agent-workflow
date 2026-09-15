@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "id": "daemon-model-comparison-standard",
+  "name": "Daemon model comparison (standard)",
+  "description": "Bounded recurring provider comparison owned by the Workflow & Model Optimizer daemon.",
+  "workflow": "provider-smoke",
+  "cases": [
+    {
+      "id": "standard-safe-repository-task",
+      "task": "Analyze a representative standard developer task. Return a concise, structured recommendation with explicit evidence and no commands or file writes.",
+      "expectations": {
+        "status": "completed",
+        "minimum_average_quality": 0.7,
+        "maximum_fallbacks": 0
+      }
+    }
+  ],
+  "variants": [
+    {
+      "id": "openai-standard",
+      "provider": "openai",
+      "model_tier": "standard",
+      "prompt_suffix": "Preserve correctness, evidence, safety boundaries, and concise output."
+    },
+    {
+      "id": "anthropic-standard",
+      "provider": "anthropic",
+      "model_tier": "standard",
+      "prompt_suffix": "Preserve correctness, evidence, safety boundaries, and concise output."
+    }
+  ]
+}

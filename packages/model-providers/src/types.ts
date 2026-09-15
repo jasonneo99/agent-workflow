@@ -29,9 +29,17 @@ export interface StageExecutionInput {
     actionType: string;
     summary: string;
   }>;
+  priorStageArtifacts?: Array<{
+    stageId: string;
+    agentId: string;
+    summary: string;
+    artifact: Record<string, unknown>;
+  }>;
 }
 
 export interface StageExecutionOutput {
+  outcome?: "completed" | "blocked";
+  blockedReason?: string;
   summary: string;
   artifact: Record<string, unknown>;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
