@@ -1069,6 +1069,13 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: accept one authenticated registered-project goal, construct and queue the governed dynamic lifecycle, preserve idempotency and receipts, propagate blocked or failed stages truthfully, aggregate terminal results, and expose bounded authenticated polling and server-sent progress events for assistant and Control Center clients.
   - Boundary: clients submit goals and render progress; Agent Workflow owns decomposition, stage execution, retries, approval state, validation, and final resolution.
 
+- [x] Task: add one-click governed repair for blocked workflow runs.
+  - Milestone: 3 Developer Dashboard
+  - Priority: high
+  - Status: implemented
+  - Done: refresh the registered project's indexed context, carry forward the original task and recorded blocker, queue a policy-governed `debug-failure` repair run, preserve the blocked source run, and record the repair relationship as a durable receipt.
+  - Safety: project policy and approval gates still apply; unavailable external dependencies and genuine approval requirements remain blocked rather than being reported as repaired.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

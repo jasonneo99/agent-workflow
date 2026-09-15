@@ -35834,6 +35834,60 @@ async function processDashboardQueueAction(input: {
     };
   }
 
+  if (action === "repair-blocked") {
+    const details = await getWorkflowRunDetails(runId);
+    if (!details.run || (details.run.status !== "blocked" && details.run.status !== "failed")) {
+      return { ok: false, error: `Run is not blocked/failed or does not exist: ${runId}` };
+    }
+    const projectDir = await resolveLocalProjectRootUri(details.run.projectRootUri);
+    const artifacts = await listArtifacts({ runId, kind: "stage_output" });
+    const lastOutput = artifacts.at(-1)?.content ?? {};
+    const blockedReason = (stringValue(lastOutput.blockedReason) || stringValue(lastOutput.summary) || "The source run did not record a specific blocker.").slice(0, 2000);
+    try {
+      await indexProjectForRun({ projectDir, maxFiles: 180, refine: false, forceRefine: false });
+    } catch (error) {
+      return { ok: false, error: `Project context refresh failed before repair: ${error instanceof Error ? error.message : String(error)}` };
+    }
+    const repairTask = [
+      `Repair blocked Agent Workflow run ${runId}.`,
+      `Original workflow: ${details.run.workflowId}.`,
+      `Original task: ${details.run.task.slice(0, 4000)}`,
+      `Recorded blocker: ${blockedReason}`,
+      "Use the newly refreshed project context and source-run artifacts. Diagnose and resolve the actual prerequisite or implementation failure, perform policy-allowed implementation and verification, preserve the original task boundaries, and report blocked rather than completed if a real approval or unavailable external dependency remains."
+    ].join("\n\n");
+    const queued = await queueWorkflow({
+      workflowId: "debug-failure",
+      projectPath: projectDir,
+      registeredProjectRootUri: details.run.projectRootUri,
+      task: repairTask,
+      sourceTokenBudget: "12000",
+      sourceMaxFiles: "180"
+    });
+    if (!queued.ok) return { ok: false, error: queued.error };
+    await recordRunAction({
+      runId,
+      agentId: "workflow-orchestrator",
+      actionType: "blocked_run_repair_queued",
+      target: queued.run.runId,
+      summary: "Refreshed project context and queued a governed debug-failure repair run.",
+      artifactKind: "blocked_run_repair",
+      artifactContent: { sourceRunId: runId, repairRunId: queued.run.runId, workflowId: queued.workflow.id, projectRootUri: details.run.projectRootUri },
+      idempotencyKey: `blocked-repair-${runId}-${queued.run.runId}`
+    });
+    return {
+      ok: true,
+      title: "Blocked run repair queued",
+      runId: queued.run.runId,
+      output: [
+        `Blocked run: ${runId}`,
+        `Repair run: ${queued.run.runId}`,
+        `Project context refreshed: ${projectDir}`,
+        queued.run.deduplicated ? "Matching repair already exists; reused it." : `Queued repair stages: ${queued.run.tasks}`,
+        `Open: /run?id=${encodeURIComponent(queued.run.runId)}`
+      ].join("\n")
+    };
+  }
+
   if (action === "resume-checkpoint") {
     const staleReport = await assessRunStaleInputs(runId);
     const result = await resumeWorkflowRunFromCheckpoint({
@@ -39652,6 +39706,9 @@ function queueItemForms(item: DashboardQueueItem): string {
     forms.push(queueRunActionForm(item.runId, "resume-checkpoint", "Resume Checkpoint"));
   }
   if (item.failedTasks > 0 || item.runStatus === "failed" || item.runStatus === "blocked") {
+    if (item.runStatus === "blocked") {
+      forms.push(queueRunActionForm(item.runId, "repair-blocked", "Repair Blocker"));
+    }
     forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
     forms.push(queueDismissRunForm(item.runId));
   }
