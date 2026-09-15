@@ -7,6 +7,8 @@ const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 test("server orchestration accepts one goal and queues one dynamic lifecycle", () => {
   assert.match(source, /request\.method === "POST" && requestUrl\.pathname === "\/api\/server-orchestrations"/u);
   assert.match(source, /constructDynamicWorkflow\(\{ goal, project/u);
+  assert.match(source, /registeredProjectRootUri: summary\.rootUri/u);
+  assert.match(source, /projectRootUri: input\.registeredProjectRootUri \?\? projectDir/u);
   assert.match(source, /actionType: "server_orchestration_requested"/u);
   assert.match(source, /source: "server-orchestration"/u);
 });

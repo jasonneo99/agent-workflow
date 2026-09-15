@@ -14428,6 +14428,7 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
   const summary = requestedProjectId
     ? summaries.find((item) => item.id === requestedProjectId)
     : nameMatches.length === 1 ? nameMatches[0] : undefined;
+  const localProjectRoot = summary ? await resolveLocalProjectRootUri(summary.rootUri) : null;
   const registeredProject = summary ? await loadRegisteredProjectConfig(summary).catch(() => null) : null;
   const roleGate = registeredProject
     ? evaluateRoleGate(registeredProject, actorRole, "can_request_approvals")
@@ -14462,13 +14463,14 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
       workflowId = existing.workflowId;
       reused = true;
     } else {
-      const project = await loadProjectConfig(summary.rootUri);
-      const dynamic = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(summary.rootUri) });
+      const project = await loadProjectConfig(localProjectRoot as string);
+      const dynamic = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(localProjectRoot as string) });
       workflowId = dynamic.id;
       const queued = await queueWorkflow({
         workflowId: dynamic.id,
         workflowOverride: dynamic,
-        projectPath: summary.rootUri,
+        projectPath: localProjectRoot as string,
+        registeredProjectRootUri: summary.rootUri,
         task: goal,
         policyProfile: project.execution.policy_profile,
         evaluationMetadata: { source: "server-orchestration", operationId, idempotencyKey, actor, actorRole, projectId: summary.id }
@@ -42720,6 +42722,7 @@ async function queueWorkflow(input: {
   workflowOverride?: Awaited<ReturnType<typeof loadWorkflows>>[number];
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
+  registeredProjectRootUri?: string;
 }): Promise<
   | {
     ok: true;
@@ -42787,7 +42790,7 @@ async function queueWorkflow(input: {
 
   const run = await createWorkflowRun({
     projectName: project.project.name,
-    projectRootUri: projectDir,
+    projectRootUri: input.registeredProjectRootUri ?? projectDir,
     projectProfile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",
     projectConfig: configuredProject,
     workflow,
