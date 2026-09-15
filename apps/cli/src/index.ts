@@ -25181,10 +25181,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const action = form.get("action") ?? "";
     if (action === "compact") {
       const projectDir = path.resolve(process.cwd(), project);
-      await compactLearningActionReceiptFiles(projectDir);
+      const result = await compactLearningActionReceiptFiles(projectDir);
       const query = new URLSearchParams({
         project: projectDir,
-        limit: form.get("limit") ?? "50"
+        limit: form.get("limit") ?? "50",
+        notice: result.removedReceipts > 0
+          ? `Compacted ${result.removedReceipts} duplicate daemon-owned receipt${result.removedReceipts === 1 ? "" : "s"}; backup created.`
+          : "Receipt health is already clean; no duplicate daemon-owned receipts were removed."
       });
       if (form.get("workflow")) query.set("workflow", form.get("workflow") ?? "");
       response.writeHead(303, { location: `/learning?${query.toString()}` });
@@ -30412,7 +30415,7 @@ function renderLearningActionReceiptHealthHtml(health: LearningActionReceiptHeal
         <input type="hidden" name="limit" value="${escapeHtml(String(limit))}">
         <input type="hidden" name="workflow" value="${escapeHtml(workflowId)}">
         <input type="hidden" name="action" value="compact">
-        <button type="submit" class="secondary"${clean ? " disabled" : ""}>Compact daemon-owned receipts</button>
+        <button type="submit" class="secondary"${clean ? ' disabled title="Receipt health is already clean; there are no duplicate daemon-owned receipts to compact."' : ""}>${clean ? "Receipts already compact" : "Compact daemon-owned receipts"}</button>
         <span class="muted">Creates local backups before rewriting Agent Workflow-owned receipt files.</span>
       </form>
       <div class="meta-grid compact">
