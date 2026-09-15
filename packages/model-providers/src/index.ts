@@ -1,4 +1,5 @@
 import { BedrockProvider } from "./bedrock.js";
+import { CodexCliProvider } from "./codex-cli.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
@@ -21,6 +22,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "openai") {
     return new OpenAIProvider();
+  }
+
+  if (provider === "codex-cli") {
+    return new CodexCliProvider();
   }
 
   if (provider === "anthropic") {

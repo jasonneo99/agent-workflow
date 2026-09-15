@@ -1012,10 +1012,10 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "auto, mock, byo, openai, anthropic, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, byo, openai, codex-cli, anthropic, openai-compatible, bedrock, or kiro")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean }) => {
-    const supported = ["auto", "mock", "byo", "openai", "anthropic", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "byo", "openai", "codex-cli", "anthropic", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -1030,6 +1030,8 @@ program
 
     if (providerId === "openai") {
       console.log("Using OpenAI Responses API. Requires OPENAI_API_KEY. Set OPENAI_MODEL=auto to select tier models from the live OpenAI catalog.");
+    } else if (providerId === "codex-cli") {
+      console.log("Using the authenticated Codex CLI. Defaults to ChatGPT subscription auth and never reads the Codex credential cache directly.");
     } else if (providerId === "anthropic") {
       console.log("Using Anthropic Messages API. Requires ANTHROPIC_API_KEY. Set ANTHROPIC_MODEL=auto to select tier models from the live Anthropic catalog.");
     } else if (providerId === "auto") {
@@ -33908,6 +33910,20 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       routingConfig: loadRoutingConfig()
     };
   }
+  if (selected === "codex-cli") {
+    const currentModel = process.env.CODEX_CLI_MODEL || "codex-default";
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "CODEX_CLI_MODEL",
+      apiKeyConfigured: false,
+      canSelectModel: true,
+      availableModels: [currentModel],
+      catalogHint: "Codex CLI uses its own authenticated model availability. Leave codex-default selected to use the CLI default, or configure a supported model explicitly.",
+      routingConfig: loadRoutingConfig()
+    };
+  }
   if (selected === "anthropic") {
     return describeAnthropicProvider(adapter, loadRoutingConfig());
   }
@@ -34246,6 +34262,20 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
       routingConfig
     };
   }
+  if (selected === "codex-cli") {
+    const currentModel = process.env.CODEX_CLI_MODEL || "codex-default";
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "CODEX_CLI_MODEL",
+      apiKeyConfigured: false,
+      canSelectModel: true,
+      availableModels: [currentModel],
+      catalogHint: "Codex CLI uses ChatGPT or access-token authentication rather than OPENAI_API_KEY.",
+      routingConfig
+    };
+  }
   if (selected === "anthropic") {
     return describeAnthropicProviderFast(adapter, routingConfig);
   }
@@ -34310,7 +34340,7 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
 function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,openai,anthropic,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,codex-cli,openai,anthropic,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
@@ -34647,6 +34677,9 @@ function safeErrorMessage(error: unknown): string {
 function modelEnvForProvider(provider: string): string | undefined {
   if (provider === "openai") {
     return "OPENAI_MODEL";
+  }
+  if (provider === "codex-cli") {
+    return "CODEX_CLI_MODEL";
   }
   if (provider === "anthropic") {
     return "ANTHROPIC_MODEL";
@@ -37197,9 +37230,9 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
     : info.provider.selected === "auto"
       ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
       : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "local", "byo", "bedrock", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "local", "byo", "bedrock", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "openai", "anthropic", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+  const providerIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
   const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
   const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
     const selected = value === selectedValue ? " selected" : "";
@@ -40762,6 +40795,8 @@ function normalizeProviderRef(value: string): string {
     openai: "openai",
     "open-ai": "openai",
     gpt: "openai",
+    codex: "codex-cli",
+    "codex-cli": "codex-cli",
     kiro: "kiro",
     anthropic: "anthropic",
     claude: "anthropic",

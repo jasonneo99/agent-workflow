@@ -34,10 +34,45 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `local` | On-machine Ollama, LM Studio, or llama.cpp-compatible runtime | optional `LOCAL_MODEL_BASE_URL`, optional `LOCAL_MODEL_NAME`, optional `LOCAL_MODEL_API_KEY` |
 | `byo` | Bring your own hosted or enterprise model gateway | `BYO_MODEL_BASE_URL`, optional `BYO_MODEL_NAME`, optional `BYO_MODEL_API_KEY` |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
+| `codex-cli` | Trusted local workflows billed through an authenticated Codex/ChatGPT entitlement | Codex CLI login, optional `CODEX_CLI_MODEL` |
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
+
+### Codex CLI subscription provider
+
+Use `codex-cli` when Agent Workflow runs on a trusted local machine where the
+Codex CLI is already authenticated with ChatGPT:
+
+```bash
+codex login
+codex login status
+npm run agentflow -- provider-use codex-cli --check
+```
+
+```env
+DEFAULT_MODEL_PROVIDER=codex-cli
+CODEX_CLI_AUTH_MODE=chatgpt
+# Optional; omit to use the Codex CLI default model.
+CODEX_CLI_MODEL=
+```
+
+The adapter invokes `codex exec` in an ephemeral temporary directory with a
+read-only sandbox and a strict JSON output schema. It does not read or copy the
+Codex credential cache, and it removes `OPENAI_API_KEY` and `OPENAI_ADMIN_KEY`
+from the child environment so an API credential cannot silently replace the
+requested ChatGPT authentication path. The default readiness check requires
+`codex login status` to report ChatGPT authentication. Enterprise operators may
+set `CODEX_CLI_AUTH_MODE=access-token` after configuring a trusted Codex access
+token; `any` is available only when the deployment intentionally accepts either
+Codex authentication method.
+
+This provider is intended for trusted private development automation. It is not
+an OAuth proxy and must not expose Codex execution to untrusted or public
+requests. OpenAI documents ChatGPT subscription login for local Codex clients
+and recommends Platform API keys for general OpenAI API calls:
+<https://learn.chatgpt.com/docs/auth>.
 
 ## Auto And Adaptive Routing
 
@@ -45,7 +80,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,anthropic,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,codex-cli,openai,anthropic,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding

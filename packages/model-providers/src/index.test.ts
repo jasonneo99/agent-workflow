@@ -25,3 +25,22 @@ test("local provider is a first-class OpenAI-compatible adapter", () => {
     else process.env.LOCAL_MODEL_NAME = previousModel;
   }
 });
+
+test("Codex CLI is a first-class provider without requiring an API key", () => {
+  const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
+  const previousApiKey = process.env.OPENAI_API_KEY;
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "codex-cli";
+    delete process.env.OPENAI_API_KEY;
+    const provider = providerFromEnv();
+    assert.equal(provider.id, "codex-cli");
+    assert.equal(typeof provider.check, "function");
+    assert.equal(typeof provider.executeStage, "function");
+    assert.equal(typeof provider.summarizeFile, "function");
+  } finally {
+    if (previousProvider === undefined) delete process.env.DEFAULT_MODEL_PROVIDER;
+    else process.env.DEFAULT_MODEL_PROVIDER = previousProvider;
+    if (previousApiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = previousApiKey;
+  }
+});
