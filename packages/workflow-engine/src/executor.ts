@@ -573,7 +573,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         });
 
-        if (commandResult.exitCode !== 0 || commandResult.timedOut) {
+        if ((commandResult.exitCode !== 0 || commandResult.timedOut) && !commandFailureIsDiagnosticEvidence(stagePattern)) {
           throw new Error(`Requested command failed: ${commandLine}`);
         }
       }
@@ -1105,6 +1105,10 @@ async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOption
 }
 
 type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
+
+export function commandFailureIsDiagnosticEvidence(stagePattern: Pick<StagePattern, "type">): boolean {
+  return stagePattern.type === "planner" || stagePattern.type === "react";
+}
 
 function normalizeStagePattern(value: unknown): StagePattern {
   if (!value || typeof value !== "object") {

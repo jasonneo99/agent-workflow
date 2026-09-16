@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
@@ -10,6 +10,13 @@ test("workers recover expired leases before claiming new work", () => {
   assert.match(source, /runWorkerOnce[\s\S]+requeueExpiredWorkflowTaskLeases[\s\S]+claimNextWorkflowTask/u);
   assert.match(source, /projectRootUri: options\?\.projectRootUri/u);
   assert.match(source, /recoverExpiredLeases: false/u);
+});
+
+test("diagnostic stages retain failing commands as evidence while execution gates fail closed", () => {
+  assert.equal(commandFailureIsDiagnosticEvidence({ type: "planner" }), true);
+  assert.equal(commandFailureIsDiagnosticEvidence({ type: "react" }), true);
+  assert.equal(commandFailureIsDiagnosticEvidence({ type: "executor" }), false);
+  assert.equal(commandFailureIsDiagnosticEvidence({ type: "verifier" }), false);
 });
 
 test("action idempotency keys are stable for the same normalized action", () => {
