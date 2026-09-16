@@ -2226,6 +2226,7 @@ export interface WorkflowRunStatus {
   startedAt: string;
   finishedAt: string | null;
   blockedReason?: string | null;
+  dismissed?: boolean;
   stateVersion?: string;
   leaseEpoch?: string;
   leaseOwner?: string | null;
@@ -2910,7 +2911,13 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
            where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
            order by ar.created_at desc
            limit 1
-         ) else null end as "blockedReason"
+         ) else null end as "blockedReason",
+         exists (
+           select 1
+           from action_receipts dismissed
+           where dismissed.run_id = wr.id
+             and dismissed.action_type = 'failed_run_dismissed'
+         ) as dismissed
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        order by wr.started_at desc
@@ -3031,7 +3038,13 @@ export async function listWorkflowRunsForProject(input: {
            where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
            order by ar.created_at desc
            limit 1
-         ) else null end as "blockedReason"
+         ) else null end as "blockedReason",
+         exists (
+           select 1
+           from action_receipts dismissed
+           where dismissed.run_id = wr.id
+             and dismissed.action_type = 'failed_run_dismissed'
+         ) as dismissed
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        where p.root_uri = $1

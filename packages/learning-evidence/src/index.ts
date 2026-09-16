@@ -6,8 +6,11 @@ export type LearningRouteFeedbackSummary = { total: number; counts: Record<strin
 
 const counts = (values: string[]) => values.reduce<Record<string, number>>((result, value) => { result[value] = (result[value] ?? 0) + 1; return result; }, {});
 
-export function selectFailedRuns(runs: Array<{ id: string; workflowId: string; task: string; startedAt: string; status: string }>, limit = 10): LearningFailedRun[] {
-  return runs.filter((run) => run.status === "failed").slice(0, limit).map((run) => ({ runId: run.id, workflowId: run.workflowId, task: run.task, startedAt: run.startedAt }));
+export function selectFailedRuns(runs: Array<{ id: string; workflowId: string; task: string; startedAt: string; status: string; evaluationMetadata?: Record<string, unknown>; dismissed?: boolean }>, limit = 10): LearningFailedRun[] {
+  return runs
+    .filter((run) => run.status === "failed" && !run.dismissed && typeof run.evaluationMetadata?.suiteId !== "string")
+    .slice(0, limit)
+    .map((run) => ({ runId: run.id, workflowId: run.workflowId, task: run.task, startedAt: run.startedAt }));
 }
 export function buildFailurePatterns(stages: Array<{ stageId: string; failedTasks: number; totalTasks: number }>, identify: (stageId: string) => { workflowId: string; agentId: string }, limit = 10): LearningFailurePattern[] {
   return stages.filter((stage) => stage.failedTasks > 0).map((stage) => ({ ...identify(stage.stageId), stageId: stage.stageId, failedTasks: stage.failedTasks, totalTasks: stage.totalTasks, failureRate: stage.totalTasks > 0 ? Number((stage.failedTasks / stage.totalTasks).toFixed(3)) : 0 })).sort((left, right) => right.failedTasks - left.failedTasks || right.failureRate - left.failureRate).slice(0, limit);

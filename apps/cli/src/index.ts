@@ -16481,8 +16481,9 @@ async function loadLearningReport(input: {
   const scorecard = await loadPreferenceScorecard({ projectDir, limit });
   const proposals = buildTuningProposals(scorecard);
   const routeFeedback = summarizeRouteFeedback((await readRouteDecisionFeedbackLog(projectDir)).events) as LearningRouteFeedbackSummary;
-  const stageHealth = runs.length ? await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) }) : [];
   const evaluationRuns = runs.filter((run) => typeof run.evaluationMetadata?.suiteId === "string");
+  const operationalRuns = runs.filter((run) => typeof run.evaluationMetadata?.suiteId !== "string" && !run.dismissed);
+  const stageHealth = operationalRuns.length ? await listWorkflowStageHealthForRuns({ runIds: operationalRuns.map((run) => run.id) }) : [];
   const reports = (await Promise.all(runs.slice(0, Math.min(runs.length, 20)).map((run) => loadCostQualityReport(run.id)))).filter((report): report is CostQualityReport => report !== null);
   const failedRuns = selectFailedRuns(runs);
   const repeatedFailurePatterns = buildFailurePatterns(stageHealth, (stageId) => ({ workflowId: inferStageWorkflowId(runs, reports, stageId), agentId: inferStageAgentId(reports, stageId) }));
@@ -16496,7 +16497,7 @@ async function loadLearningReport(input: {
     limit,
     autonomyMode: "autonomous-local",
     runsAnalyzed: runs.length,
-    runStatusCounts: countStrings(runs.map((run) => run.status)),
+    runStatusCounts: countStrings(operationalRuns.map((run) => run.status)),
     feedbackCounts: scorecard.feedbackCounts,
     routeFeedback,
     evaluationRuns: evaluationRuns.length,
