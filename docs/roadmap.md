@@ -201,7 +201,25 @@ and daemon paths.
      more repository work is justified.
    - Exit gate: capture a reproducible client-side failure boundary or obtain a
      client/runtime fix; keep the documented CLI recovery path available.
-2. **Continue cohesive source-module extraction.**
+2. **Complete multi-machine synchronization and recovery proof.**
+   - Priority: high
+   - Why next: same-plane verification passes, but it does not prove offline
+     recovery or switchover between independent hosts.
+   - Exit gate: repeatable two-host recovery evidence with no split-brain writes,
+     lost receipts, or ambiguous project identity.
+3. **Automate dashboard performance regression gates.**
+   - Priority: high
+   - Why next: manual SLA audits found cold diagnostic routes taking roughly
+     10–17 seconds and the restart cache now provides a stable optimization seam.
+   - Exit gate: CI or a repeatable local canary measures critical routes, records
+     warm/cold evidence, and fails on agreed navigation-budget regressions.
+4. **Publish a versioned client capability contract.**
+   - Priority: medium
+   - Why next: Studio, IDE, MCP, and dashboard clients need one truthful source
+     for supported actions, review semantics, and runtime compatibility.
+   - Exit gate: clients can negotiate capabilities and disable or relabel
+     unsupported controls without duplicating orchestration behavior.
+5. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
      established, while repository maintenance still reports five production
@@ -507,14 +525,16 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Expose feedback triage in CLI, dashboard, and JSON API while recording feedback through the existing local feedback artifact/memory path.
   - Done: add a bulk review screen where suggested ratings and notes can be edited, unchecked, and submitted together.
 
-- [ ] Token-aware context intelligence gateway.
+- [x] Token-aware context intelligence gateway.
   - Milestone: 13 Context Intelligence Gateway
   - Priority: high
   - Execution order: 1
-  - Status: active; implementation is complete, including segmented threshold
-    learning and accepted-workflow outcome accounting. The remaining work is
-    the empirical graduation gate below; keep enforcement conservative until
-    representative holdouts satisfy it.
+  - Status: implemented; segmented threshold learning, accepted-workflow
+    outcome accounting, and the empirical graduation gate are complete.
+  - Validation: the versioned six-case repository holdout passed quality and
+    citation gates at 100%, reduced frontier-token use by 58.9%, held p95 added
+    latency to 2 ms, and produced `enforcementReady: true` without changing
+    policy thresholds. Enforcement remains conservative and reversible.
   - Add a provider-neutral context-routing policy in reusable YAML, with thin
     adapters for Claude Code hooks, Codex/tool policy integration, Cursor, CLI,
     MCP, and native Agent Workflow workers.
@@ -971,27 +991,33 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: implemented as a read-only dashboard generated from `docs/roadmap.md`.
   - Scope: expose all checklist tasks, next actions, bugs, milestone links, and source line references without creating a second roadmap database.
 
-- [ ] Task: persist dashboard report snapshots across process restarts.
+- [x] Task: persist dashboard report snapshots across process restarts.
   - Milestone: 3 Developer Dashboard
   - Priority: high
   - Execution order: 3
-  - Status: open
+  - Status: implemented with bounded, versioned, atomic, project-keyed snapshot
+    files for model-improvement and server-readiness reports; invalid, stale,
+    oversized, future-dated, or mismatched snapshots fail closed.
   - Scope: persist bounded last-known-good snapshots for expensive diagnostic reports so `/model-improvement` and `/server-readiness` do not return to multi-second cold starts after a dashboard restart.
   - Validation: prove snapshot freshness, safe invalidation, failure fallback, and sub-800 ms warm navigation without storing secrets or private report bodies outside their existing boundary.
 
-- [ ] Task: strengthen agent-promotion evidence and review UX.
+- [x] Task: strengthen agent-promotion evidence and review UX.
   - Milestone: 7 Self-Improving Agent System
   - Priority: high
   - Execution order: 4
-  - Status: open
+  - Status: implemented as decision-ready promotion cards with holdout evidence,
+    source diff/hash, policy/risk, readiness, rollback proof, and receipted
+    approve, defer, and reject actions.
   - Scope: present holdout coverage, source changes, policy decisions, rollback evidence, and promotion readiness as one decision-ready review surface.
   - Validation: reviewers can approve, reject, or defer a promotion without consulting raw learning artifacts, while every decision remains receipted and reversible.
 
-- [ ] Task: add a mutation-disabled remote approval/action endpoint.
+- [x] Task: add a mutation-disabled remote approval/action endpoint.
   - Milestone: 9 Governed Server Mode
   - Priority: high
   - Execution order: 5
-  - Status: open
+  - Status: implemented and verified by the six-case test adapter: unauthorized,
+    cross-project, replayed, and mutation-disabled requests fail closed while
+    bounded previews remain auditable and no live side effects execute.
   - Scope: expose authenticated remote approval/action inspection behind registered-project routing, roles, idempotency, policy checks, redacted audit logs, and receipts while keeping mutations disabled by default.
   - Validation: unauthorized, replayed, cross-project, and mutation attempts fail closed; read-only previews remain bounded and auditable.
 
@@ -1002,6 +1028,35 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: open
   - Scope: validate background synchronization, offline fallback recovery, cross-machine path mapping, and shared-state switch-over with repeatable evidence.
   - Validation: demonstrate recovery from an unavailable shared host without split-brain writes, lost receipts, or ambiguous project identity.
+  - Current evidence: shared Postgres, Redis, and object-storage fingerprints
+    match, but source and target resolve to the same endpoints. This proves one
+    healthy state plane, not independent-host recovery or switchover.
+
+- [ ] Task: automate dashboard performance regression gates.
+  - Milestone: 3 Developer Dashboard
+  - Priority: high
+  - Execution order: 3
+  - Status: open; added from the dashboard SLA task after manual audits exposed
+    repeatable cold-start regressions on diagnostic routes.
+  - Scope: measure critical dashboard routes in cold, persisted-warm, and
+    in-process-warm states; retain bounded timing evidence and compare it with
+    explicit route budgets.
+  - Validation: the canary fails on regression, identifies the route and cache
+    state, and proves `/model-improvement` and `/server-readiness` persisted-warm
+    navigation remains below 800 ms.
+
+- [ ] Task: publish a versioned client capability and compatibility contract.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: medium
+  - Execution order: 4
+  - Status: open; added after Studio and IDE work exposed drift between visible
+    controls and the actions supported by the connected Agent Workflow runtime.
+  - Scope: expose runtime version, action capabilities, review semantics,
+    streaming support, and compatibility bounds through CLI, MCP, and server
+    surfaces without moving orchestration into clients.
+  - Validation: a client can negotiate the contract, disable or relabel
+    unsupported controls, and report an actionable version mismatch before a
+    user starts work.
 
 - [x] Task: expose authenticated fleet model-gateway readiness.
   - Milestone: 10 Model / Provider Intelligence

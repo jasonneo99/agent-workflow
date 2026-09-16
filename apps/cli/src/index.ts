@@ -141,6 +141,7 @@ import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObse
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
 import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
 import { inferContextLanguage, readLatestCalibration, resolveSegmentedThresholdPolicy } from "../../../packages/context-calibration/src/index.js";
+import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../packages/dashboard-report-cache/src/index.js";
 import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
@@ -210,15 +211,23 @@ async function acquireDashboardRequestSlot(): Promise<() => void> {
 }
 
 async function loadCachedDashboardReport<T>(key: string, load: () => Promise<T>, ttlMs = dashboardReportCacheTtlMs): Promise<T> {
-  const cached = dashboardReportCache.get(key);
+  let cached = dashboardReportCache.get(key);
+  if (!cached && isDurableDashboardReportKey(key)) {
+    const durable = await readDashboardReportSnapshot<T>(rootDir, key).catch(() => null);
+    if (durable) {
+      cached = { expiresAt: durable.capturedAt + ttlMs, value: durable.value };
+      dashboardReportCache.set(key, cached);
+    }
+  }
   if (cached && cached.expiresAt > Date.now()) return cached.value as T;
 
   const pending = dashboardReportLoads.get(key);
   if (pending) return cached ? cached.value as T : pending as Promise<T>;
 
   const loadPromise = load()
-    .then((value) => {
+    .then(async (value) => {
       dashboardReportCache.set(key, { expiresAt: Date.now() + ttlMs, value });
+      if (isDurableDashboardReportKey(key)) await writeDashboardReportSnapshot(rootDir, key, value).catch(() => false);
       if (dashboardReportCache.size > 100) {
         const oldestKey = dashboardReportCache.keys().next().value as string | undefined;
         if (oldestKey) dashboardReportCache.delete(oldestKey);
@@ -4878,11 +4887,12 @@ program
   .option("-l, --limit <number>", "number of recent project runs to analyze", "50")
   .option("--approve <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to approve, or all")
   .option("--reject <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to reject, or all")
+  .option("--defer <ids>", "comma-separated promotion ids, patch ids, eval ids, candidate ids, or agent ids to defer, or all")
   .option("--reviewer <name>", "reviewer name")
   .option("--note <text>", "decision note")
   .option("--write", "write promotion queue files under .agent-workflow/learning")
   .option("--json", "print agent improvement promotion queue JSON")
-  .action(async (options: { project: string; ids: string; agent?: string; limit: string; approve?: string; reject?: string; reviewer?: string; note?: string; write?: boolean; json?: boolean }) => {
+  .action(async (options: { project: string; ids: string; agent?: string; limit: string; approve?: string; reject?: string; defer?: string; reviewer?: string; note?: string; write?: boolean; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -4893,9 +4903,9 @@ program
       return;
     }
 
-    const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject));
+    const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject)) + Number(Boolean(options.defer));
     if (decisionCount > 1) {
-      console.error("Use either --approve or --reject, not both.");
+      console.error("Use exactly one of --approve, --reject, or --defer.");
       process.exitCode = 1;
       return;
     }
@@ -4915,12 +4925,12 @@ program
     let queue = buildAgentImprovementPromotionQueue(projectDir, patchPlan, evalPlan, ids, existingQueue);
     let receipts: AgentImprovementPromotionReceiptLog | null = null;
 
-    if (options.approve || options.reject) {
+    if (options.approve || options.reject || options.defer) {
       const result = await decideAgentImprovementPromotions({
         projectDir,
         queue,
-        ids: parseProposalIds(options.approve ?? options.reject),
-        status: options.approve ? "approved" : "rejected",
+        ids: parseProposalIds(options.approve ?? options.reject ?? options.defer),
+        status: options.approve ? "approved" : options.reject ? "rejected" : "deferred",
         reviewer: options.reviewer,
         note: options.note
       });
@@ -4931,7 +4941,7 @@ program
       }
     }
 
-    if (options.write || options.approve || options.reject) {
+    if (options.write || options.approve || options.reject || options.defer) {
       await writeAgentImprovementPromotionQueue(projectDir, queue);
     }
 
@@ -4945,7 +4955,7 @@ program
       console.log("");
       console.log(formatAgentImprovementPromotionReceipts(receipts));
     }
-    if (options.write || options.approve || options.reject) {
+    if (options.write || options.approve || options.reject || options.defer) {
       console.log("");
       console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.json");
       console.log("Wrote .agent-workflow/learning/agent-improvement-promotions.md");
@@ -6779,7 +6789,7 @@ type AgentImprovementEval = {
   recommendation: string;
 };
 
-type AgentImprovementPromotionStatus = "pending" | "approved" | "rejected" | "applied" | "superseded";
+type AgentImprovementPromotionStatus = "pending" | "deferred" | "approved" | "rejected" | "applied" | "superseded";
 
 type AgentImprovementPromotionQueue = {
   kind: "agentflow_agent_improvement_promotion_queue";
@@ -6834,7 +6844,7 @@ type AgentImprovementPromotionReceipt = {
   patchId: string;
   evalId: string;
   agentId: string;
-  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected">;
+  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected" | "deferred">;
   score: number;
   riskLevel: LearningRiskLevel;
   scope: "shared" | "project-local";
@@ -17219,7 +17229,7 @@ function buildAgentImprovementPromotionQueue(
     const previous = existingById.get(id);
     const sourceHashStillMatches = previous?.sourceHash === patch.sourceHash && previous?.score === evaluation.score;
     const preservedStatus = sourceHashStillMatches && previous?.status !== "superseded" ? previous?.status ?? "pending" : "pending";
-    const preserveDecision = sourceHashStillMatches && (preservedStatus === "approved" || preservedStatus === "rejected");
+    const preserveDecision = sourceHashStillMatches && (preservedStatus === "approved" || preservedStatus === "rejected" || preservedStatus === "deferred");
     return [{
       id,
       patchId: patch.id,
@@ -17295,6 +17305,7 @@ function summarizeAgentImprovementPromotionQueue(queue: AgentImprovementPromotio
   return [
     `${activeItems.length} promotion-ready agent improvement patch(es) queued.`,
     `${activeItems.filter((item) => item.status === "pending").length} pending decision(s).`,
+    `${activeItems.filter((item) => item.status === "deferred").length} deferred decision(s).`,
     `${activeItems.filter((item) => item.status === "approved").length} approved decision(s).`,
     `${activeItems.filter((item) => item.status === "applied").length} applied promotion(s).`,
     `${activeItems.filter((item) => item.status === "rejected").length} rejected decision(s).`,
@@ -17305,7 +17316,7 @@ function summarizeAgentImprovementPromotionQueue(queue: AgentImprovementPromotio
 }
 
 function promotionStatusRank(status: AgentImprovementPromotionStatus): number {
-  return status === "pending" ? 0 : status === "approved" ? 1 : status === "applied" ? 2 : status === "rejected" ? 3 : 4;
+  return status === "pending" ? 0 : status === "deferred" ? 1 : status === "approved" ? 2 : status === "applied" ? 3 : status === "rejected" ? 4 : 5;
 }
 
 async function readAgentImprovementPromotionQueue(projectDir: string): Promise<AgentImprovementPromotionQueue> {
@@ -17589,14 +17600,14 @@ async function decideAgentImprovementPromotions(input: {
   projectDir: string;
   queue: AgentImprovementPromotionQueue;
   ids: string[] | "all";
-  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected">;
+  status: Extract<AgentImprovementPromotionStatus, "approved" | "rejected" | "deferred">;
   reviewer?: string;
   note?: string;
 }): Promise<AgentImprovementPromotionDecisionResult> {
   const matching = input.queue.items.filter((item) =>
     input.ids === "all" || input.ids.includes(item.id) || input.ids.includes(item.patchId) || input.ids.includes(item.evalId) || input.ids.includes(item.candidateId) || input.ids.includes(item.agentId)
   );
-  const selected = matching.filter((item) => item.status === "pending");
+  const selected = matching.filter((item) => item.status === "pending" || item.status === "deferred");
   const selectedIds = selected.map((item) => item.id);
   const skippedIds = input.ids === "all" ? [] : input.ids.filter((id) =>
     !matching.some((item) => item.id === id || item.patchId === id || item.evalId === id || item.candidateId === id || item.agentId === id)
@@ -25508,6 +25519,42 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/agent-improvement-promotion-decision") {
+    const form = await readFormBody(request);
+    const project = form.get("project") ?? "";
+    const promotionId = form.get("promotionId") ?? "";
+    const decision = form.get("decision") ?? "";
+    if (!project || !promotionId || !["approved", "rejected", "deferred"].includes(decision)) {
+      respondDashboardAction(request, response, form, { ok: false, error: "Project, promotion, and a valid decision are required." }, "/learning?view=agent-improvements");
+      return;
+    }
+    try {
+      const projectDir = path.resolve(process.cwd(), project);
+      const queue = await readAgentImprovementPromotionQueue(projectDir);
+      const result = await decideAgentImprovementPromotions({
+        projectDir,
+        queue,
+        ids: [promotionId],
+        status: decision as "approved" | "rejected" | "deferred",
+        reviewer: form.get("reviewer") ?? "dashboard",
+        note: form.get("note") ?? undefined
+      });
+      if (!result.selectedIds.length) {
+        respondDashboardAction(request, response, form, { ok: false, error: "Promotion is not pending/deferred or no longer exists." }, "/learning?view=agent-improvements");
+        return;
+      }
+      await writeAgentImprovementPromotionQueue(projectDir, result.queue);
+      respondDashboardAction(request, response, form, {
+        ok: true,
+        title: `Promotion ${decision}`,
+        output: `${promotionId} was ${decision}; the reversible decision receipt was recorded.`
+      }, `/learning?project=${encodeURIComponent(projectDir)}&view=agent-improvements`);
+    } catch (error) {
+      respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/learning?view=agent-improvements");
+    }
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/learning-daemon-target") {
     const form = await readFormBody(request);
     const result = await processDashboardLearningDaemonTarget({
@@ -30715,16 +30762,41 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
       <td>${escapeHtml(item.recommendation)}</td>
     </tr>
   `).join("");
-  const promotionRows = (promotionQueue?.items ?? []).slice(0, 12).map((item) => `
-    <tr>
-      <td>${escapeHtml(item.agentId)}<br><span class="muted">${escapeHtml(item.id)}</span></td>
-      <td><span class="flag ${item.status === "pending" ? "queued" : item.status === "approved" ? "good" : "warn"}">${escapeHtml(item.status)}</span><br><span class="muted">${item.score}/100</span></td>
-      <td>${escapeHtml(item.scope)}<br><span class="muted">${escapeHtml(item.priority)} / ${escapeHtml(item.riskLevel)}</span></td>
-      <td>${item.approvalRequired ? "yes" : "no"}</td>
-      <td>${item.autoApplyReady ? "yes" : "no"}</td>
-      <td>${escapeHtml(item.recommendation)}</td>
-    </tr>
-  `).join("");
+  const evalById = new Map((evalPlan?.evaluations ?? []).map((item) => [item.id, item]));
+  const promotionCards = (promotionQueue?.items ?? []).slice(0, 12).map((item) => {
+    const evaluation = evalById.get(item.evalId);
+    const decisionOpen = item.status === "pending" || item.status === "deferred";
+    return `<article class="panel nested-panel">
+      <div class="section-heading">
+        <div><h3>${escapeHtml(item.displayName)}</h3><span class="muted">${escapeHtml(item.agentId)} · ${escapeHtml(item.id)}</span></div>
+        <span class="flag ${item.status === "approved" || item.status === "applied" ? "good" : item.status === "pending" || item.status === "deferred" ? "queued" : "warn"}">${escapeHtml(item.status)} · ${item.score}/100</span>
+      </div>
+      <div class="meta-grid compact">
+        <div><strong>Holdout coverage</strong>${evaluation?.holdoutTasks.length ?? 0} task(s)</div>
+        <div><strong>Readiness</strong>${item.promotionReady ? "promotion ready" : "not ready"}</div>
+        <div><strong>Policy</strong>${escapeHtml(item.scope)} · ${escapeHtml(item.priority)} priority · ${escapeHtml(item.riskLevel)} risk</div>
+        <div><strong>Approval</strong>${item.approvalRequired ? "owner required" : "policy eligible"}</div>
+        <div><strong>Auto apply</strong>${item.autoApplyReady ? "eligible" : "disabled"}</div>
+        <div><strong>Source current</strong>${item.rollback.sourceHashCurrent ? "yes" : "no"}</div>
+        <div><strong>Source</strong><code>${escapeHtml(item.sourcePath)}</code></div>
+        <div><strong>Source hash</strong><code>${escapeHtml(item.sourceHash.slice(0, 16))}</code></div>
+        <div><strong>Rollback</strong><code>${escapeHtml(item.rollback.restorePath)}</code> · <code>${escapeHtml(item.rollback.restoreSourceHash.slice(0, 16))}</code></div>
+      </div>
+      <p>${escapeHtml(item.recommendation)}</p>
+      <p class="muted">${escapeHtml(item.rationale)}</p>
+      ${evaluation?.holdoutTasks.length ? `<details><summary>Holdout evidence (${evaluation.holdoutTasks.length})</summary><ul>${evaluation.holdoutTasks.map((task) => `<li><strong>${escapeHtml(task.workflowId)}</strong> · ${escapeHtml(task.status)} · ${escapeHtml(task.evidence)}</li>`).join("")}</ul></details>` : ""}
+      <details><summary>Proposed source change</summary><pre>${escapeHtml(item.diff)}</pre></details>
+      <form method="post" action="/api/agent-improvement-promotion-decision" class="inline-action-form">
+        <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
+        <input type="hidden" name="promotionId" value="${escapeHtml(item.id)}">
+        <input type="hidden" name="returnTo" value="/learning?project=${encodeURIComponent(report.projectRootUri)}&view=agent-improvements">
+        <label>Decision note <input name="note" placeholder="Optional review note"${decisionOpen ? "" : " disabled"}></label>
+        <button type="submit" name="decision" value="approved"${decisionOpen ? "" : " disabled"}>Approve</button>
+        <button type="submit" name="decision" value="deferred" class="secondary"${decisionOpen ? "" : " disabled"}>Defer</button>
+        <button type="submit" name="decision" value="rejected" class="secondary"${decisionOpen ? "" : " disabled"}>Reject</button>
+      </form>
+    </article>`;
+  }).join("");
   const candidateRows = report.candidates.map((candidate) => `
     <tr>
       <td>${escapeHtml(candidate.agentId)}<br><span class="muted">${escapeHtml(candidate.displayName)} · ${escapeHtml(candidate.scope)}</span></td>
@@ -30772,7 +30844,7 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
       <h3>Holdout Eval Scores</h3>
       <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Holdout</th><th>Promote</th><th>Auto</th><th>Recommendation</th></tr></thead><tbody>${evalRows || "<tr><td colspan=\"6\">No holdout eval scores generated yet.</td></tr>"}</tbody></table></div>
       <h3>Promotion Queue</h3>
-      <div class="table-wrap"><table><thead><tr><th>Agent</th><th>Status</th><th>Scope</th><th>Approval</th><th>Auto</th><th>Recommendation</th></tr></thead><tbody>${promotionRows || "<tr><td colspan=\"6\">No promotion-ready agent patches queued yet.</td></tr>"}</tbody></table></div>
+      ${promotionCards || '<p class="muted">No promotion-ready agent patches queued yet.</p>'}
     </section>
   `;
 }
