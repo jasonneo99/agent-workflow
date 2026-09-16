@@ -69,6 +69,12 @@ export function shouldRetryWeakFallbackBlock(input: {
   return genericBlocker || input.qualityReasons.includes("no concrete findings") || input.qualityReasons.includes("limited project-specific evidence");
 }
 
+export function isInternalWorkflowReceiptWrite(relativePath: string): boolean {
+  const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  return /^\.agent-workflow\/receipts\/[a-zA-Z0-9._/-]+\.(?:md|json)$/u.test(normalized)
+    && !normalized.split("/").includes("..");
+}
+
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
   const safeLimit = Math.max(0, Math.floor(limit));
   const requestedConcurrency = Math.floor(options?.concurrency ?? 1);
@@ -198,6 +204,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
 
       if (shouldRetryWeakFallbackBlock({ fallbackUsed, actualProviderId, output, qualityReasons: quality.reasons })) {
+        const fallbackOutput = output;
+        const fallbackQuality = quality;
         try {
           const primaryRetry = await executeWithProviderFallback({
             providerId: route.providerId,
@@ -215,9 +223,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         } catch (error) {
           const failure = classifyProviderFailure(error);
           fallbackAttempts = [...fallbackAttempts, ...failure.attempts];
-          const rejected = new ProviderExecutionError(failure.kind, "Primary provider retry failed after a fallback returned an unsubstantiated terminal blocker.");
-          rejected.attempts = fallbackAttempts;
-          throw rejected;
+          output = {
+            ...fallbackOutput,
+            outcome: "blocked",
+            blockedReason: `Provider recovery is required: the fallback blocker was not sufficiently evidenced and the primary retry failed (${failure.kind}).`
+          };
+          quality = fallbackQuality;
         }
       }
 
@@ -629,7 +640,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         }
 
         let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
-        if (project.policies.require_approval_for_external_actions) {
+        if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
           try {
             assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
           } catch (error) {

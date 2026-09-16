@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, shouldRetryWeakFallbackBlock } from "./executor.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
@@ -64,6 +64,14 @@ test("weak local fallback blockers require one primary-provider retry", () => {
     output: { outcome: "completed", summary: "Review completed with concrete evidence.", artifact: {} },
     qualityReasons: []
   }), false);
+});
+
+test("only bounded internal receipt files bypass external-action approval", () => {
+  assert.equal(isInternalWorkflowReceiptWrite(".agent-workflow/receipts/run.md"), true);
+  assert.equal(isInternalWorkflowReceiptWrite("./.agent-workflow/receipts/run.json"), true);
+  assert.equal(isInternalWorkflowReceiptWrite(".agent-workflow/receipts/../project.yaml"), false);
+  assert.equal(isInternalWorkflowReceiptWrite(".agent-workflow/tuning/agent-notes.md"), false);
+  assert.equal(isInternalWorkflowReceiptWrite("src/index.ts"), false);
 });
 
 test("bounded ReAct loop receipts capture action, policy, result, and stop reason", () => {
