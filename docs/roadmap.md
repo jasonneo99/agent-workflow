@@ -654,6 +654,13 @@ matrix, and a machine-readable reliability SLO report. Live dependency-outage
 drills remain evidence-gated, and autonomous authority must remain bounded when
 these controls report attention.
 
+- [x] One authoritative, fenced workflow-run state machine.
+  - Done: validate every runtime run-state edge through one transactional gate.
+  - Done: persist monotonic state versions, run lease epochs, immutable transition events, and matching action receipts.
+  - Done: reject expired or superseded worker writes by matching task and run fencing tokens.
+  - Done: preserve terminal history by replaying retries into new runs rather than reopening terminal rows.
+  - Done: backfill existing runs additively and preserve downstream API compatibility with optional lease metadata.
+
 Goal: make long-running, partially automated workflows recoverable, observable,
 and safe under real development conditions.
 
