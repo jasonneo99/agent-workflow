@@ -22,6 +22,7 @@ import {
   failWorkflowTask,
   finalizeSideEffect,
   recordRunAction,
+  requeueExpiredWorkflowTaskLeases,
   renewWorkflowTaskLease,
   assertWorkflowTaskLease,
   requestActionApproval,
@@ -40,6 +41,7 @@ export type WorkerRunOptions = {
   leaseSeconds?: number;
   projectRootUri?: string;
   concurrency?: number;
+  recoverExpiredLeases?: boolean;
 };
 
 export class LostWorkflowTaskLeaseError extends Error {
@@ -72,8 +74,16 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
   const concurrency = Number.isFinite(requestedConcurrency)
     ? Math.max(1, Math.min(safeLimit || 1, requestedConcurrency, 16))
     : 1;
+  if (options?.recoverExpiredLeases !== false) {
+    const workerId = options?.workerId?.trim() || "worker";
+    await requeueExpiredWorkflowTaskLeases({
+      projectRootUri: options?.projectRootUri,
+      actor: workerId,
+      reason: "Worker automatically recovered expired task leases before claiming new work."
+    });
+  }
   if (safeLimit > 1 && concurrency > 1) {
-    return runWorkerOnceConcurrently(safeLimit, { ...options, concurrency: 1 }, concurrency);
+    return runWorkerOnceConcurrently(safeLimit, { ...options, concurrency: 1, recoverExpiredLeases: false }, concurrency);
   }
 
   const result: WorkerResult = {

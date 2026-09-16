@@ -3,6 +3,14 @@ import test from "node:test";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
+import { readFileSync } from "node:fs";
+
+test("workers recover expired leases before claiming new work", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /runWorkerOnce[\s\S]+requeueExpiredWorkflowTaskLeases[\s\S]+claimNextWorkflowTask/u);
+  assert.match(source, /projectRootUri: options\?\.projectRootUri/u);
+  assert.match(source, /recoverExpiredLeases: false/u);
+});
 
 test("action idempotency keys are stable for the same normalized action", () => {
   const base = {
