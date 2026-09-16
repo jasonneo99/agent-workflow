@@ -6,6 +6,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
 import { findRecentDuplicateRun } from "./run-deduplication.js";
+import { assertWorkflowRunFence, assertWorkflowRunTransition, isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 export { databaseUrl, withClient } from "./client.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
 export { acquireWorkIntent, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent } from "./reliability.js";
@@ -83,7 +84,68 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS workflow_definition_version text NOT NULL DEFAULT '1',
       ADD COLUMN IF NOT EXISTS workflow_definition_hash text NOT NULL DEFAULT '',
       ADD COLUMN IF NOT EXISTS construction_rationale jsonb NOT NULL DEFAULT '{}',
-      ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}'
+      ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}',
+      ADD COLUMN IF NOT EXISTS state_version bigint NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS lease_epoch bigint NOT NULL DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS lease_owner text,
+      ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz
+    `);
+    await client.query(`
+      UPDATE workflow_runs
+      SET status = 'cancelled'
+      WHERE status = 'dismissed'
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE workflow_runs ADD CONSTRAINT workflow_runs_status_check
+          CHECK (status IN ('queued','leased','running','completed','blocked','failed','cancelled'));
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS workflow_run_transitions (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        from_status text NOT NULL,
+        to_status text NOT NULL,
+        state_version bigint NOT NULL,
+        lease_epoch bigint NOT NULL,
+        actor text NOT NULL,
+        reason text NOT NULL,
+        idempotency_key text NOT NULL,
+        metadata jsonb NOT NULL DEFAULT '{}',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(run_id, idempotency_key),
+        UNIQUE(run_id, state_version)
+      );
+      CREATE INDEX IF NOT EXISTS workflow_run_transitions_run_created_idx
+      ON workflow_run_transitions(run_id, created_at)
+    `);
+    await client.query(`
+      DO $$ BEGIN
+        ALTER TABLE workflow_run_transitions ADD CONSTRAINT workflow_run_transitions_from_status_check
+          CHECK (from_status IN ('queued','leased','running','completed','blocked','failed','cancelled'));
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$;
+      DO $$ BEGIN
+        ALTER TABLE workflow_run_transitions ADD CONSTRAINT workflow_run_transitions_to_status_check
+          CHECK (to_status IN ('queued','leased','running','completed','blocked','failed','cancelled'));
+      EXCEPTION WHEN duplicate_object THEN NULL;
+      END $$
+    `);
+    await client.query(`
+      INSERT INTO workflow_run_transitions (
+        run_id, from_status, to_status, state_version, lease_epoch,
+        actor, reason, idempotency_key, metadata
+      )
+      SELECT id, status, status, state_version, lease_epoch,
+             'migration', 'Backfilled authoritative run state.',
+             'run-state-backfill-v1', jsonb_build_object('backfilled', true)
+      FROM workflow_runs wr
+      WHERE NOT EXISTS (
+        SELECT 1 FROM workflow_run_transitions existing WHERE existing.run_id = wr.id
+      )
+      ON CONFLICT (run_id, idempotency_key) DO NOTHING
     `);
     await client.query(`
       ALTER TABLE workflow_tasks
@@ -241,6 +303,134 @@ export async function migrateStorage(): Promise<void> {
   });
 }
 
+type WorkflowRunTransitionInput = {
+  runId: string;
+  to: WorkflowRunState;
+  actor: string;
+  reason: string;
+  idempotencyKey: string;
+  expectedLeaseEpoch?: string;
+  expectedLeaseOwner?: string;
+  metadata?: Record<string, unknown>;
+};
+
+async function transitionWorkflowRun(
+  client: pg.Client,
+  input: WorkflowRunTransitionInput
+): Promise<{ changed: boolean; status: WorkflowRunState; stateVersion: string; leaseEpoch: string }> {
+  const prior = await client.query<{ toStatus: string }>(
+    `select to_status as "toStatus"
+     from workflow_run_transitions
+     where run_id = $1::uuid and idempotency_key = $2`,
+    [input.runId, input.idempotencyKey]
+  );
+  if (prior.rows[0]) {
+    if (prior.rows[0].toStatus !== input.to) {
+      throw new Error(`Workflow run transition idempotency key was reused for ${prior.rows[0].toStatus} -> ${input.to}.`);
+    }
+    const current = await client.query<{ status: string; stateVersion: string; leaseEpoch: string }>(
+      `select status, state_version::text as "stateVersion", lease_epoch::text as "leaseEpoch"
+       from workflow_runs where id = $1::uuid`,
+      [input.runId]
+    );
+    if (!current.rows[0] || !isWorkflowRunState(current.rows[0].status)) throw new Error(`Workflow run not found: ${input.runId}`);
+    return { changed: false, status: current.rows[0].status, stateVersion: current.rows[0].stateVersion, leaseEpoch: current.rows[0].leaseEpoch };
+  }
+
+  const locked = await client.query<{ status: string; stateVersion: string; leaseEpoch: string; leaseOwner: string | null }>(
+    `select status,
+            state_version::text as "stateVersion",
+            lease_epoch::text as "leaseEpoch",
+            lease_owner as "leaseOwner"
+     from workflow_runs where id = $1::uuid for update`,
+    [input.runId]
+  );
+  const run = locked.rows[0];
+  if (!run || !isWorkflowRunState(run.status)) throw new Error(`Workflow run has no authoritative state: ${input.runId}`);
+  if (input.expectedLeaseEpoch !== undefined && (
+    input.expectedLeaseOwner === undefined
+  )) {
+    throw new Error("Workflow run fencing requires an expected lease owner.");
+  }
+  if (input.expectedLeaseEpoch !== undefined) {
+    assertWorkflowRunFence(
+      { leaseEpoch: run.leaseEpoch, leaseOwner: run.leaseOwner },
+      { leaseEpoch: input.expectedLeaseEpoch, leaseOwner: input.expectedLeaseOwner! }
+    );
+  }
+  const action = assertWorkflowRunTransition(run.status, input.to);
+  if (action === "idempotent") {
+    return { changed: false, status: run.status, stateVersion: run.stateVersion, leaseEpoch: run.leaseEpoch };
+  }
+  const updated = await client.query<{ status: WorkflowRunState; stateVersion: string; leaseEpoch: string }>(
+    `update workflow_runs
+     set status = $2,
+         state_version = state_version + 1,
+         finished_at = case when $2 = any($3::text[]) then coalesce(finished_at, now()) else null end,
+         lease_owner = case when $2 = any($3::text[]) then null else lease_owner end,
+         lease_expires_at = case when $2 = any($3::text[]) then null else lease_expires_at end
+     where id = $1::uuid
+     returning status, state_version::text as "stateVersion", lease_epoch::text as "leaseEpoch"`,
+    [input.runId, input.to, ["completed", "blocked", "failed", "cancelled"]]
+  );
+  const next = updated.rows[0];
+  await client.query(
+    `insert into workflow_run_transitions (
+       run_id, from_status, to_status, state_version, lease_epoch,
+       actor, reason, idempotency_key, metadata
+     ) values ($1::uuid, $2, $3, $4::bigint, $5::bigint, $6, $7, $8, $9)`,
+    [input.runId, run.status, input.to, next.stateVersion, next.leaseEpoch, input.actor, input.reason, input.idempotencyKey, JSON.stringify(input.metadata ?? {})]
+  );
+  await client.query(
+    `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+     values ($1::uuid, 'workflow-orchestrator', 'workflow_run_transition', $2::text, $3, $4)`,
+    [input.runId, input.runId, `${run.status} -> ${input.to}: ${input.reason}`, JSON.stringify({ actor: input.actor, from: run.status, to: input.to, stateVersion: next.stateVersion, leaseEpoch: next.leaseEpoch, idempotencyKey: input.idempotencyKey, ...(input.metadata ?? {}) })]
+  );
+  return { changed: true, ...next };
+}
+
+async function acquireWorkflowRunLease(client: pg.Client, input: {
+  runId: string;
+  workerId: string;
+  leaseSeconds: number;
+  taskId: string;
+}): Promise<string> {
+  const locked = await client.query<{ status: string; leaseEpoch: string }>(
+    `select status, lease_epoch::text as "leaseEpoch" from workflow_runs where id = $1::uuid for update`,
+    [input.runId]
+  );
+  const run = locked.rows[0];
+  if (!run || !isWorkflowRunState(run.status)) throw new Error(`Workflow run has no authoritative state: ${input.runId}`);
+  if (run.status === "queued") {
+    await transitionWorkflowRun(client, {
+      runId: input.runId,
+      to: "leased",
+      actor: input.workerId,
+      reason: "Worker acquired the first runnable task.",
+      idempotencyKey: `run-leased:${input.taskId}`,
+      metadata: { taskId: input.taskId }
+    });
+  } else if (run.status !== "leased" && run.status !== "running") {
+    throw new Error(`Cannot lease task for terminal workflow run in ${run.status}.`);
+  }
+  const authority = await client.query<{ leaseEpoch: string }>(
+    `update workflow_runs
+     set lease_epoch = lease_epoch + 1,
+         lease_owner = $2,
+         lease_expires_at = now() + ($3::int * interval '1 second')
+     where id = $1::uuid
+     returning lease_epoch::text as "leaseEpoch"`,
+    [input.runId, input.workerId, input.leaseSeconds]
+  );
+  const leaseEpoch = authority.rows[0].leaseEpoch;
+  await client.query(
+    `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+     values ($1::uuid, 'workflow-orchestrator', 'workflow_run_lease_acquired', $3, $2, $4)`,
+    [input.runId, `Run authority leased to ${input.workerId}.`, input.taskId, JSON.stringify({ workerId: input.workerId, taskId: input.taskId, leaseEpoch })]
+  );
+  return leaseEpoch;
+}
+
 export async function resetStorage(input: { includeRegistry?: boolean } = {}): Promise<{
   artifacts: number;
   workflowHandoffs: number;
@@ -320,7 +510,7 @@ export interface WorkflowQueueItem {
   projectRootUri: string;
   startedAt: string;
   finishedAt: string | null;
-  blockedReason: string | null;
+  blockedReason?: string | null;
   totalTasks: number;
   queuedTasks: number;
   runningTasks: number;
@@ -396,19 +586,12 @@ export async function cancelWorkflowRun(runId: string): Promise<boolean> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const result = await client.query<{ id: string }>(
-        `update workflow_runs
-         set status = 'cancelled',
-             finished_at = now()
-         where id = $1
-           and status in ('queued', 'leased', 'running')
-         returning id::text`,
-        [runId]
-      );
-      if (!result.rows[0]) {
+      const current = await client.query<{ status: string }>(`select status from workflow_runs where id = $1::uuid`, [runId]);
+      if (!current.rows[0] || !isWorkflowRunState(current.rows[0].status) || ["completed", "blocked", "failed", "cancelled"].includes(current.rows[0].status)) {
         await client.query("rollback");
         return false;
       }
+      await transitionWorkflowRun(client, { runId, to: "cancelled", actor: "operator", reason: "Run cancellation requested.", idempotencyKey: `cancel:${runId}` });
       await client.query(
         `update workflow_tasks
          set status = 'cancelled',
@@ -444,14 +627,7 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
         [runId]
       );
       if (result.rowCount && result.rowCount > 0) {
-        await client.query(
-          `update workflow_runs
-           set status = 'queued',
-               finished_at = null
-           where id = $1
-             and status in ('leased','running')`,
-          [runId]
-        );
+        await client.query(`update workflow_runs set lease_owner = null, lease_expires_at = null where id = $1::uuid and status in ('leased','running')`, [runId]);
       }
       await client.query("commit");
       return result.rowCount ?? 0;
@@ -503,8 +679,8 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
       if (runIds.length) {
         await client.query(
           `update workflow_runs
-           set status = 'queued',
-               finished_at = null
+           set lease_owner = null,
+               lease_expires_at = null
            where id = any($1::uuid[])
              and status in ('leased','running')`,
           [runIds]
@@ -625,10 +801,9 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
     await client.query("begin");
     try {
       for (const candidate of candidates) {
-        const result = await client.query<{ id: string }>(
-          `update workflow_runs wr
-           set status = $2::text,
-               finished_at = now()
+        const eligible = await client.query<{ id: string }>(
+          `select wr.id::text
+           from workflow_runs wr
            where wr.id = $1::uuid
              and wr.status in ('queued', 'leased', 'running')
              and exists (
@@ -657,10 +832,20 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
                    and completed_task.status = 'completed'
                ))
              )
-           returning wr.id::text`,
+           for update`,
           [candidate.runId, candidate.recommendedStatus]
         );
-        const updated = (result.rowCount ?? 0) > 0;
+        let updated = false;
+        if (eligible.rows[0]) {
+          await transitionWorkflowRun(client, {
+            runId: candidate.runId,
+            to: candidate.recommendedStatus,
+            actor: input.actor ?? "system",
+            reason: "All child tasks were terminal during reconciliation.",
+            idempotencyKey: `stale-run-reconcile:${candidate.recommendedStatus}`
+          });
+          updated = true;
+        }
         reconciled.push({
           runId: candidate.runId,
           status: candidate.recommendedStatus,
@@ -703,39 +888,12 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
 }
 
 export async function retryFailedWorkflowRun(runId: string): Promise<number> {
-  return withClient(async (client) => {
-    await client.query("begin");
-    try {
-      const result = await client.query<{ id: string }>(
-        `update workflow_tasks
-         set status = 'queued',
-             started_at = null,
-             finished_at = null,
-             worker_id = null,
-             lease_expires_at = null,
-             available_at = now()
-         where run_id = $1
-           and status = 'failed'
-         returning id::text`,
-        [runId]
-      );
-      if (result.rowCount && result.rowCount > 0) {
-        await client.query(
-          `update workflow_runs
-           set status = 'queued',
-               finished_at = null
-           where id = $1
-             and status = 'failed'`,
-          [runId]
-        );
-      }
-      await client.query("commit");
-      return result.rowCount ?? 0;
-    } catch (error) {
-      await client.query("rollback");
-      throw error;
-    }
+  const replay = await replayWorkflowRun({
+    sourceRunId: runId,
+    actor: "retry-failed-run",
+    reason: "Retry requested; terminal history is immutable, so a new run was created."
   });
+  return replay?.tasks ?? 0;
 }
 
 export async function resumeWorkflowRunFromCheckpoint(input: {
@@ -748,6 +906,16 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
   completedTasks: number;
   totalTasks: number;
 }> {
+  if (input.includeFailed) {
+    const terminal = await withClient(async (client) => {
+      const result = await client.query<{ status: string }>(`select status from workflow_runs where id = $1::uuid`, [input.runId]);
+      return result.rows[0]?.status;
+    });
+    if (terminal === "failed" || terminal === "blocked" || terminal === "cancelled") {
+      const replay = await replayWorkflowRun({ sourceRunId: input.runId, actor: input.actor, reason: input.reason });
+      return { requeuedTasks: replay?.tasks ?? 0, completedTasks: 0, totalTasks: replay?.tasks ?? 0 };
+    }
+  }
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -755,7 +923,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         `select id::text
          from workflow_runs
          where id = $1::uuid
-           and status in ('queued', 'leased', 'running', 'failed', 'blocked')
+           and status in ('queued', 'leased', 'running')
          for update`,
         [input.runId]
       );
@@ -764,9 +932,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         return { requeuedTasks: 0, completedTasks: 0, totalTasks: 0 };
       }
 
-      const resumableStatuses = input.includeFailed
-        ? ["queued", "running", "failed", "blocked", "cancelled"]
-        : ["queued", "running"];
+      const resumableStatuses = ["queued", "running"];
       const result = await client.query<{ id: string }>(
         `update workflow_tasks
          set status = 'queued',
@@ -788,15 +954,10 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
          where run_id = $1::uuid`,
         [input.runId]
       );
-      if ((result.rowCount ?? 0) > 0) {
-        await client.query(
-          `update workflow_runs
-           set status = 'queued',
-               finished_at = null
-           where id = $1::uuid`,
-          [input.runId]
-        );
-      }
+      if ((result.rowCount ?? 0) > 0) await client.query(
+        `update workflow_runs set lease_owner = null, lease_expires_at = null where id = $1::uuid`,
+        [input.runId]
+      );
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', $2::text, $3, $4)`,
@@ -836,31 +997,16 @@ export async function dismissFailedWorkflowRun(input: {
     await client.query("begin");
     try {
       const runResult = await client.query<{ id: string }>(
-        `update workflow_runs wr
-         set status = 'dismissed',
-             finished_at = coalesce(finished_at, now())
-         where wr.id = $1
-           and (
-             wr.status in ('failed', 'blocked')
-             or exists (
-               select 1 from workflow_tasks wt
-               where wt.run_id = wr.id and wt.status in ('failed', 'blocked')
-             )
-           )
-         returning wr.id::text`,
+        `select wr.id::text
+         from workflow_runs wr
+         where wr.id = $1 and wr.status in ('failed', 'blocked', 'cancelled')
+         for update`,
         [input.runId]
       );
       if (!runResult.rows[0]) {
         await client.query("rollback");
         return false;
       }
-      await client.query(
-        `update workflow_tasks
-         set status = 'dismissed',
-             finished_at = coalesce(finished_at, now())
-         where run_id = $1::uuid and status in ('queued', 'leased', 'running', 'failed', 'blocked')`,
-        [input.runId]
-      );
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1::uuid, 'workflow-orchestrator', 'failed_run_dismissed', $2::text, $3, $4)`,
@@ -887,13 +1033,7 @@ export async function dismissAllFailedWorkflowRuns(input: {
         `select wr.id::text
          from workflow_runs wr
          join projects p on p.id = wr.project_id
-         where (
-           wr.status in ('failed', 'blocked')
-           or exists (
-             select 1 from workflow_tasks wt
-             where wt.run_id = wr.id and wt.status in ('failed', 'blocked')
-           )
-         )
+         where wr.status in ('failed', 'blocked', 'cancelled')
            and ($1::text is null or p.root_uri = $1)
          for update of wr`,
         [input.projectRootUri ?? null]
@@ -903,20 +1043,6 @@ export async function dismissAllFailedWorkflowRuns(input: {
         await client.query("rollback");
         return 0;
       }
-      await client.query(
-        `update workflow_tasks
-         set status = 'dismissed',
-             finished_at = coalesce(finished_at, now())
-         where run_id = any($1::uuid[]) and status in ('queued', 'leased', 'running', 'failed', 'blocked')`,
-        [runIds]
-      );
-      await client.query(
-        `update workflow_runs
-         set status = 'dismissed',
-             finished_at = coalesce(finished_at, now())
-         where id = any($1::uuid[])`,
-        [runIds]
-      );
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          select id, 'workflow-orchestrator', 'failed_run_dismissed', id::text, $2, $3
@@ -1512,6 +1638,11 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
              and not exists (
+               select 1 from workflow_tasks active
+               where active.run_id = wt.run_id
+                 and active.status in ('leased', 'running')
+             )
+             and not exists (
                select 1
                from workflow_tasks prior
                join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality prior_stage(definition, stage_order)
@@ -1534,7 +1665,6 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
          set status = 'leased',
              attempts = wt.attempts + 1,
              worker_id = $1,
-             lease_generation = wt.lease_generation + 1,
              lease_expires_at = now() + ($2::int * interval '1 second'),
              started_at = null
          from next_task, workflow_runs wr, workflows wf, agents a, projects p
@@ -1573,7 +1703,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            ), 'default')) as "providerOverride",
            wt.worker_id as "workerId",
            wt.lease_expires_at::text as "leaseExpiresAt",
-           wt.lease_generation::text as "fencingToken",
+           '0'::text as "fencingToken",
            nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
            coalesce(wr.model_tier_override, (
              select stage->'routing'->>'model_tier'
@@ -1589,12 +1719,17 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
         return null;
       }
 
+      const leaseEpoch = await acquireWorkflowRunLease(client, {
+        runId: result.rows[0].runId,
+        workerId,
+        leaseSeconds,
+        taskId: result.rows[0].taskId
+      });
       await client.query(
-        `update workflow_runs
-         set status = 'leased'
-         where id = $1 and status = 'queued'`,
-        [result.rows[0].runId]
+        `update workflow_tasks set lease_generation = $2::bigint where id = $1::uuid`,
+        [result.rows[0].taskId, leaseEpoch]
       );
+      result.rows[0].fencingToken = leaseEpoch;
 
       const acceptedHandoffs = await client.query<{ id: string }>(
         `update workflow_handoffs wh set status = 'accepted', accepted_at = now(), updated_at = now()
@@ -1631,7 +1766,16 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
     try {
       const result = await client.query(`update workflow_tasks set status='running',started_at=coalesce(started_at,now()) where id=$1 and run_id=$2 and status='leased' and worker_id=$3 and lease_generation=$4::bigint and lease_expires_at>now()`, [input.taskId,input.runId,input.workerId,input.fencingToken]);
       if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
-      await client.query(`update workflow_runs set status='running' where id=$1 and status in ('queued','leased')`, [input.runId]);
+      await transitionWorkflowRun(client, {
+        runId: input.runId,
+        to: "running",
+        actor: input.workerId,
+        reason: "Leased worker started task execution.",
+        idempotencyKey: `run-started:${input.taskId}:${input.fencingToken}`,
+        expectedLeaseEpoch: input.fencingToken,
+        expectedLeaseOwner: input.workerId,
+        metadata: { taskId: input.taskId }
+      });
       await client.query("commit");
     } catch (error) { await client.query("rollback"); throw error; }
   });
@@ -1645,10 +1789,60 @@ function exactGitRevision(projectRootUri: string): string {
 
 async function assertActiveTaskFence(client: pg.Client, input: { taskId: string; workerId: string; fencingToken: string }): Promise<void> {
   const result = await client.query(
-    `select 1 from workflow_tasks where id=$1 and status='running' and worker_id=$2 and lease_generation=$3::bigint and lease_expires_at>now() for update`,
+    `select 1
+     from workflow_tasks wt
+     join workflow_runs wr on wr.id = wt.run_id
+     where wt.id=$1 and wt.status='running' and wt.worker_id=$2
+       and wt.lease_generation=$3::bigint and wt.lease_expires_at>now()
+       and wr.lease_owner=$2 and wr.lease_epoch=$3::bigint and wr.lease_expires_at>now()
+     for update of wt, wr`,
     [input.taskId, input.workerId, input.fencingToken]
   );
   if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
+}
+
+export async function renewWorkflowTaskLease(input: {
+  taskId: string;
+  runId: string;
+  workerId: string;
+  fencingToken: string;
+  leaseSeconds?: number;
+}): Promise<boolean> {
+  const leaseSeconds = Math.max(30, Math.min(3600, input.leaseSeconds ?? 900));
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const task = await client.query(
+        `update workflow_tasks
+         set lease_expires_at = now() + ($5::int * interval '1 second')
+         where id = $1::uuid and run_id = $2::uuid and status = 'running'
+           and worker_id = $3 and lease_generation = $4::bigint and lease_expires_at > now()
+         returning id`,
+        [input.taskId, input.runId, input.workerId, input.fencingToken, leaseSeconds]
+      );
+      if (task.rowCount !== 1) {
+        await client.query("rollback");
+        return false;
+      }
+      const run = await client.query(
+        `update workflow_runs
+         set lease_expires_at = now() + ($4::int * interval '1 second')
+         where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint
+           and status in ('leased','running') and lease_expires_at > now()
+         returning id`,
+        [input.runId, input.workerId, input.fencingToken, leaseSeconds]
+      );
+      if (run.rowCount !== 1) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
 }
 
 export async function completeWorkflowTask(input: {
@@ -1722,19 +1916,37 @@ export async function completeWorkflowTask(input: {
         ]
       );
 
-      await client.query(
-        `update workflow_runs wr
-         set status = 'completed',
-             finished_at = now()
+      const ready = await client.query<{ id: string }>(
+        `select wr.id::text
+         from workflow_runs wr
          where wr.id = $1
            and not exists (
              select 1
              from workflow_tasks wt
              where wt.run_id = wr.id
                and wt.status in ('queued', 'leased', 'running', 'failed', 'blocked')
-           )`,
+           )
+         for update`,
         [input.runId]
       );
+      if (ready.rows[0]) {
+        await transitionWorkflowRun(client, {
+          runId: input.runId,
+          to: "completed",
+          actor: input.workerId,
+          reason: "All workflow tasks completed.",
+          idempotencyKey: `run-completed:${input.taskId}:${input.fencingToken}`,
+          expectedLeaseEpoch: input.fencingToken,
+          expectedLeaseOwner: input.workerId,
+          metadata: { taskId: input.taskId }
+        });
+      } else {
+        await client.query(
+          `update workflow_runs set lease_owner = null, lease_expires_at = null
+           where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint`,
+          [input.runId, input.workerId, input.fencingToken]
+        );
+      }
 
       await client.query("commit");
     } catch (error) {
@@ -1787,10 +1999,16 @@ export async function blockWorkflowTask(input: {
            and status in ('proposed', 'accepted', 'retrying')`,
         [input.runId, input.taskId]
       );
-      await client.query(
-        `update workflow_runs set status = 'blocked', finished_at = now() where id = $1`,
-        [input.runId]
-      );
+      await transitionWorkflowRun(client, {
+        runId: input.runId,
+        to: "blocked",
+        actor: input.workerId,
+        reason: input.reason,
+        idempotencyKey: `run-blocked:${input.taskId}:${input.fencingToken}`,
+        expectedLeaseEpoch: input.fencingToken,
+        expectedLeaseOwner: input.workerId,
+        metadata: { taskId: input.taskId }
+      });
       await client.query("commit");
     } catch (error) {
       await client.query("rollback");
@@ -1858,13 +2076,16 @@ export async function failWorkflowTask(input: {
         [input.runId, input.taskId]
       );
 
-      await client.query(
-        `update workflow_runs
-         set status = 'failed',
-             finished_at = now()
-         where id = $1`,
-        [input.runId]
-      );
+      await transitionWorkflowRun(client, {
+        runId: input.runId,
+        to: "failed",
+        actor: input.workerId,
+        reason: input.error,
+        idempotencyKey: `run-failed:${input.taskId}:${input.fencingToken}`,
+        expectedLeaseEpoch: input.fencingToken,
+        expectedLeaseOwner: input.workerId,
+        metadata: { taskId: input.taskId }
+      });
 
       await client.query("commit");
     } catch (error) {
@@ -1976,7 +2197,11 @@ export interface WorkflowRunStatus {
   projectRootUri: string;
   startedAt: string;
   finishedAt: string | null;
-  blockedReason: string | null;
+  blockedReason?: string | null;
+  stateVersion?: string;
+  leaseEpoch?: string;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: string | null;
 }
 
 export interface WorkflowTaskStatus {
@@ -2404,13 +2629,9 @@ export async function completeApprovalRequestRun(input: {
           JSON.stringify(input.metadata)
         ]
       );
-      await client.query(
-        `update workflow_runs
-         set status = 'completed',
-             finished_at = now()
-         where id = $1::uuid`,
-        [input.runId]
-      );
+      await transitionWorkflowRun(client, { runId: input.runId, to: "leased", actor: input.agentId, reason: "Approval-only run was claimed by the approval service.", idempotencyKey: "approval-run-leased" });
+      await transitionWorkflowRun(client, { runId: input.runId, to: "running", actor: input.agentId, reason: "Approval-only run processing started.", idempotencyKey: "approval-run-running" });
+      await transitionWorkflowRun(client, { runId: input.runId, to: "completed", actor: input.agentId, reason: input.summary, idempotencyKey: "approval-run-completed" });
       await client.query("commit");
     } catch (error) {
       await client.query("rollback");
@@ -2604,6 +2825,10 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          wr.workflow_definition_version as "workflowDefinitionVersion",
          wr.workflow_definition_hash as "workflowDefinitionHash",
          wr.construction_rationale as "constructionRationale",
+         wr.state_version::text as "stateVersion",
+         wr.lease_epoch::text as "leaseEpoch",
+         wr.lease_owner as "leaseOwner",
+         wr.lease_expires_at::text as "leaseExpiresAt",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",

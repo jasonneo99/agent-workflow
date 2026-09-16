@@ -3,7 +3,7 @@ import test from "node:test";
 import { createOrchestrationPlan } from "./orchestration-plan.js";
 
 test("routes roadmap questions to one read-only project specialist", () => {
-  const plan = createOrchestrationPlan({ projectDir: "/tmp/jarvis", task: "What are the next 10 items on the roadmap for jarvis?" });
+  const plan = createOrchestrationPlan({ projectDir: "/tmp/example-project", task: "What are the next 10 items on the roadmap for this project?" });
   assert.equal(plan.steps.length, 1);
   assert.equal(plan.steps[0]?.kind, "agent");
   assert.equal(plan.steps[0]?.target, "technical-architect");

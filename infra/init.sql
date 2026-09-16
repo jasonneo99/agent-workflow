@@ -71,9 +71,32 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   workflow_definition_hash text NOT NULL DEFAULT '',
   construction_rationale jsonb NOT NULL DEFAULT '{}',
   executor_snapshot jsonb NOT NULL DEFAULT '{}',
+  state_version bigint NOT NULL DEFAULT 0,
+  lease_epoch bigint NOT NULL DEFAULT 0,
+  lease_owner text,
+  lease_expires_at timestamptz,
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
-  finished_at timestamptz
+  finished_at timestamptz,
+  CONSTRAINT workflow_runs_status_check CHECK (status IN ('queued','leased','running','completed','blocked','failed','cancelled'))
+);
+
+CREATE TABLE IF NOT EXISTS workflow_run_transitions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  from_status text NOT NULL,
+  to_status text NOT NULL,
+  state_version bigint NOT NULL,
+  lease_epoch bigint NOT NULL,
+  actor text NOT NULL,
+  reason text NOT NULL,
+  idempotency_key text NOT NULL,
+  metadata jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(run_id, idempotency_key),
+  UNIQUE(run_id, state_version),
+  CONSTRAINT workflow_run_transitions_from_status_check CHECK (from_status IN ('queued','leased','running','completed','blocked','failed','cancelled')),
+  CONSTRAINT workflow_run_transitions_to_status_check CHECK (to_status IN ('queued','leased','running','completed','blocked','failed','cancelled'))
 );
 
 CREATE TABLE IF NOT EXISTS workflow_tasks (

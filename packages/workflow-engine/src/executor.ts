@@ -19,6 +19,7 @@ import {
   completeWorkflowTask,
   findRunActionByIdempotencyKey,
   failWorkflowTask,
+  renewWorkflowTaskLease,
   recordRunAction,
   requestActionApproval,
   startWorkflowTask,
@@ -62,8 +63,20 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
     result.claimed += 1;
 
+    let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       await startWorkflowTask({ taskId: task.taskId, runId: task.runId, workerId: task.workerId!, fencingToken: task.fencingToken });
+      const leaseSeconds = Math.max(30, Math.min(3600, options?.leaseSeconds ?? 900));
+      leaseHeartbeat = setInterval(() => {
+        void renewWorkflowTaskLease({
+          taskId: task.taskId,
+          runId: task.runId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          leaseSeconds
+        }).catch(() => false);
+      }, Math.max(10_000, Math.floor(leaseSeconds * 1000 / 3)));
+      leaseHeartbeat.unref();
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
       const localProjectRootUri = (await resolveLocalProjectPath(task.projectRootUri)).localRootUri;
@@ -747,15 +760,21 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       });
       result.completed += 1;
     } catch (error) {
-      await failWorkflowTask({
-        taskId: task.taskId,
-        runId: task.runId,
-        agentId: task.agentId,
-        workerId: task.workerId!,
-        fencingToken: task.fencingToken,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      try {
+        await failWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          error: error instanceof Error ? error.message : String(error)
+        });
+      } catch (leaseError) {
+        if (!(leaseError instanceof Error) || !/stale workflow fencing token|expired task lease/iu.test(leaseError.message)) throw leaseError;
+      }
       result.failed += 1;
+    } finally {
+      if (leaseHeartbeat) clearInterval(leaseHeartbeat);
     }
   }
 
