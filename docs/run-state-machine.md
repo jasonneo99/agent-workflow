@@ -35,7 +35,7 @@ transition ledger. Existing `dismissed` run rows are mapped to `cancelled`, and
 every existing run receives an idempotent same-state backfill event at version
 zero. Existing API fields remain unchanged. Run-detail responses add optional
 `stateVersion`, `leaseEpoch`, `leaseOwner`, and `leaseExpiresAt` fields; consumers
-such as Jarvis may ignore them and should treat `leased` as active work.
+may ignore them and should treat `leased` as active work.
 
 Before rollout, back up PostgreSQL and run the migration once. Canary one
 deterministic workflow and verify its transition receipts are ordered and its

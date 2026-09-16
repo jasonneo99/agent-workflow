@@ -12,7 +12,5 @@
 - Privacy: credential-shaped values are redacted before diagnostic text is
   recorded; arbitrary provider response bodies remain suppressed.
 - Validation: focused routing/provider tests, TypeScript typecheck, dry-run and
-  live execution against the Jarvis roadmap question, and all 257 package tests.
-- Existing check issue: open-source boundary validation remains blocked by the
-  unrelated pre-existing `/home/remote` fixture in
-  `packages/daemon-control/src/index.test.ts`; this change did not edit it.
+  live execution against a registered-project roadmap question, and all 257
+  package tests available at implementation time.

@@ -15,7 +15,7 @@ Observed result: **Fail**. This is a point-in-time lab audit, not enough traffic
 
 ## Method
 
-- Targets: `http://127.0.0.1:17888` and `https://loki.tail67e949.ts.net`.
+- Targets: the local loopback dashboard and its authenticated private-network endpoint.
 - Coverage: all 25 top-level dashboard pages exposed by the navigation/router.
 - HTTP test: five requests per route per endpoint, issued as a modest concurrent route sweep; 30-second timeout; gzip/Brotli advertised by the client.
 - Browser test: cold, unthrottled Chrome DevTools performance trace of the local home page, cache bypassed.
