@@ -36,6 +36,7 @@ import { buildLearningProposalSet, formatLearningProposalSet, writeLearningPropo
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
+import { mapWithConcurrency } from "./concurrency.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
@@ -15866,7 +15867,7 @@ async function loadDashboardEvaluations(limit = 250, projectRootUri?: string): P
   const runs = (await listWorkflowRuns(limit)).filter((run) =>
     typeof run.evaluationMetadata?.suiteId === "string" && (!projectRootUri || path.resolve(run.projectRootUri) === path.resolve(projectRootUri))
   );
-  const evaluated = (await Promise.all(runs.map(async (run): Promise<DashboardEvaluationRun | null> => {
+  const evaluated = (await mapWithConcurrency(runs, 8, async (run): Promise<DashboardEvaluationRun | null> => {
     const metadata = run.evaluationMetadata ?? {};
     const report = await loadCostQualityReport(run.id);
     if (!report) {
@@ -15896,7 +15897,7 @@ async function loadDashboardEvaluations(limit = 250, projectRootUri?: string): P
       feedback: report.feedback.latest?.rating ?? null,
       startedAt: run.startedAt
     };
-  }))).filter((run): run is DashboardEvaluationRun => run !== null);
+  })).filter((run): run is DashboardEvaluationRun => run !== null);
 
   const suites = new Map<string, DashboardEvaluationRun[]>();
   for (const run of evaluated) {
@@ -18770,7 +18771,7 @@ async function loadDashboardLocalHoldoutRoutingStatus(
 }
 
 async function loadCostQualityReportsForDashboardRuns(runs: DashboardRunStatus[]): Promise<CostQualityReport[]> {
-  const reports = await Promise.all(runs.map((run) => loadCostQualityReport(run.id).catch(() => null)));
+  const reports = await mapWithConcurrency(runs, 8, (run) => loadCostQualityReport(run.id).catch(() => null));
   return reports.filter((report): report is CostQualityReport => report !== null);
 }
 
