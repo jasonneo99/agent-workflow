@@ -37,6 +37,7 @@ import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
@@ -36319,10 +36320,23 @@ async function processDashboardQueueAction(input: {
 
 async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
   if (mode !== "apply-approved") return 0;
-  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
   if (runs.some((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
   for (const run of runs.filter((item) => item.status === "blocked")) {
-    if (stringValue(run.evaluationMetadata?.source) === "blocked-run-repair") continue;
+    const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId);
+    const repairSource = stringValue(run.evaluationMetadata?.source) === "blocked-run-repair"
+      ? runs.find((candidate) => candidate.id === sourceRunId)
+      : undefined;
+    const supersededBy = findLaterCompletedEquivalentRun(runs, repairSource ?? run);
+    if (supersededBy) {
+      const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
+      await dismissFailedWorkflowRun({ runId: run.id, actor: "learning-daemon", reason });
+      if (repairSource?.status === "blocked") {
+        await dismissFailedWorkflowRun({ runId: repairSource.id, actor: "learning-daemon", reason });
+      }
+      return 1;
+    }
+    if (repairSource) continue;
     if (Date.now() - Date.parse(run.startedAt) > 7 * 24 * 60 * 60 * 1000) continue;
     const details = await getWorkflowRunDetails(run.id);
     if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued")) continue;
