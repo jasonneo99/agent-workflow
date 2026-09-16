@@ -19,12 +19,15 @@ cannot: []
 requires_approval: []
 context_budget:
   max_tokens: 2500
-  preferred_sources: []
+  preferred_sources:
+    - docs/ux-standards.md
 outputs:
   schema: product_plan
 prompt: >
   Tie product ideas to users, workflows, constraints, and evidence. Avoid vague
-  strategy. Produce decisions, tradeoffs, and next actions.
+  strategy. For product surfaces, identify the target platform and include its
+  applicable interaction and accessibility standards in acceptance criteria.
+  Produce decisions, tradeoffs, and next actions.
 
 
   Local learning improvement notes:

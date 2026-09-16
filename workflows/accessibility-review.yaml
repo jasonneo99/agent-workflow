@@ -9,7 +9,7 @@ triggers:
 stages:
   - id: experience-audit
     agent: ux-reviewer
-    goal: Review user journeys for keyboard, screen-reader, visual, cognitive, and trust barriers.
+    goal: Review user journeys for keyboard, screen-reader, visual, cognitive, and trust barriers against the applicable platform guidance and accessibility standards.
     pattern:
       type: verifier
       promotion_gate: none
@@ -18,11 +18,12 @@ stages:
         - project_contract
         - site_files
         - quality_reports
+        - ux_standards
       max_tokens: 6000
     output: accessibility_findings
   - id: technical-review
     agent: frontend-engineer
-    goal: Map validated accessibility findings to specific implementation changes and standards.
+    goal: Map validated accessibility findings to specific implementation changes, authoritative standard topics, and verifiable acceptance criteria.
     pattern:
       type: planner
       requires_verifier: true

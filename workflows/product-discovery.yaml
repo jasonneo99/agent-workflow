@@ -22,7 +22,7 @@ stages:
     output: product_brief
   - id: experience-review
     agent: ux-reviewer
-    goal: Evaluate user journeys, usability risks, accessibility needs, and trust implications.
+    goal: Evaluate user journeys, usability risks, accessibility needs, trust implications, and fit with the authoritative guidance for every target platform.
     pattern:
       type: verifier
       promotion_gate: none
@@ -30,6 +30,7 @@ stages:
       load:
         - product_brief
         - relevant_source_files
+        - ux_standards
       max_tokens: 5000
     output: experience_assessment
   - id: feasibility

@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "225eb33c67d06e0a96a1147f45761c4bbd0de42be867461c55a74d35a7a65b04"
+    "value": "a479e6af6893c64c87891ceeb0eaeff3debff60d6c14e4eb20fea75b260e5e46"
   },
   "agents": [
     {
@@ -90,7 +90,7 @@
     {
       "id": "frontend-engineer",
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "c1545e3c87fbca3992126311df51bdfb176aa11eca158ba71c28af1bd0ca5192"
+      "checksum": "878522b1c5a6f4c1603e4e8b25bc0d64e2f6b0655c9d62f403e8b68e4b94a8e9"
     },
     {
       "id": "implementation-agent",
@@ -140,19 +140,19 @@
     {
       "id": "product-strategist",
       "path": "agents/product/product-strategist.yaml",
-      "checksum": "8822d507401e87ab26487f244d7ae68401602a8b11f19ccf257f3e9c81972e52"
+      "checksum": "3911e9e420f00f3972885105898b5e83d0b5c7025e05ea6a68aebe24d70e599b"
     },
     {
       "id": "ux-reviewer",
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "0d952381af4db2bb765081df34a348aee76c6ac2eba1d1acfe6df92919796f6e"
+      "checksum": "12b4d9cd341417155e4ceb82ea8fbe9a87d60fb39871f64be6c19fd6a84eca52"
     }
   ],
   "workflows": [
     {
       "id": "accessibility-review",
       "path": "workflows/accessibility-review.yaml",
-      "checksum": "23cb506efb8f9e345dc3beeda3976fee0cf38e6042d826dc5a877e95cd203097"
+      "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
     },
     {
       "id": "architecture-decision",
@@ -212,7 +212,7 @@
     {
       "id": "product-discovery",
       "path": "workflows/product-discovery.yaml",
-      "checksum": "63b594f864db800f0247669e801fc61c659d6b7063692114c6abe3bab27ac421"
+      "checksum": "4b628895f2ff67213ddd42ff5c566d46c2d54d7165675ea4956e08c806246559"
     },
     {
       "id": "production-readiness",
@@ -305,7 +305,7 @@
     },
     {
       "path": "agents/development/frontend-engineer.yaml",
-      "checksum": "c1545e3c87fbca3992126311df51bdfb176aa11eca158ba71c28af1bd0ca5192"
+      "checksum": "878522b1c5a6f4c1603e4e8b25bc0d64e2f6b0655c9d62f403e8b68e4b94a8e9"
     },
     {
       "path": "agents/development/implementation-agent.yaml",
@@ -345,15 +345,15 @@
     },
     {
       "path": "agents/product/product-strategist.yaml",
-      "checksum": "8822d507401e87ab26487f244d7ae68401602a8b11f19ccf257f3e9c81972e52"
+      "checksum": "3911e9e420f00f3972885105898b5e83d0b5c7025e05ea6a68aebe24d70e599b"
     },
     {
       "path": "agents/product/ux-reviewer-mira.yaml",
-      "checksum": "0d952381af4db2bb765081df34a348aee76c6ac2eba1d1acfe6df92919796f6e"
+      "checksum": "12b4d9cd341417155e4ceb82ea8fbe9a87d60fb39871f64be6c19fd6a84eca52"
     },
     {
       "path": "workflows/accessibility-review.yaml",
-      "checksum": "23cb506efb8f9e345dc3beeda3976fee0cf38e6042d826dc5a877e95cd203097"
+      "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
     },
     {
       "path": "workflows/architecture-decision.yaml",
@@ -401,7 +401,7 @@
     },
     {
       "path": "workflows/product-discovery.yaml",
-      "checksum": "63b594f864db800f0247669e801fc61c659d6b7063692114c6abe3bab27ac421"
+      "checksum": "4b628895f2ff67213ddd42ff5c566d46c2d54d7165675ea4956e08c806246559"
     },
     {
       "path": "workflows/production-readiness.yaml",

@@ -20,6 +20,8 @@ requires_approval:
 context_budget:
   max_tokens: 2500
   preferred_sources:
+    - docs/ui-system.md
+    - docs/ux-standards.md
     - recent relevant receipts
     - evaluation evidence
     - project-local tuning notes
@@ -28,7 +30,13 @@ outputs:
 prompt: >
   Build usable, accessible interfaces that match the existing design system.
   Verify responsive layout, interaction states, and text fit. Keep visual
-  changes intentional and domain-appropriate.
+  changes intentional and domain-appropriate. Identify the target platform and
+  implement its established interaction conventions: Apple HIG for Apple
+  platforms, Material Design for Android, Fluent for Microsoft surfaces, and
+  WCAG 2.2 plus WAI-ARIA patterns for web accessibility. Prefer native or
+  design-system components when they satisfy the requirement. Record the
+  standard and topic behind intentional deviations, and never claim standards
+  conformance without matching implementation and test evidence.
 
 
   Local learning improvement notes:
