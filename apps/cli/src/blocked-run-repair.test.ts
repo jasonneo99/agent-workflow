@@ -16,4 +16,13 @@ test("blocked repair preserves governance and truthful terminal semantics", () =
   assert.match(source, /preserve the original task boundaries/u);
   assert.match(source, /report blocked rather than completed if a real approval/u);
   assert.match(source, /registeredProjectRootUri: details\.run\.projectRootUri/u);
+  assert.match(source, /includeExactSourceExcerpts: true/u);
+});
+
+test("learning daemon auto-heals only recent context-only blockers", () => {
+  assert.match(source, /autoHealOneBlockedRun\(targetProjectDir, target\.mode\)/u);
+  assert.match(source, /mode !== "apply-approved"/u);
+  assert.match(source, /7 \* 24 \* 60 \* 60 \* 1000/u);
+  assert.match(source, /approvals\.some\(isOpenApproval\)/u);
+  assert.match(source, /missingExistingEvidence/u);
 });

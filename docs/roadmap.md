@@ -1076,6 +1076,13 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: refresh the registered project's indexed context, carry forward the original task and recorded blocker, queue a policy-governed `debug-failure` repair run, preserve the blocked source run, and record the repair relationship as a durable receipt.
   - Safety: project policy and approval gates still apply; unavailable external dependencies and genuine approval requirements remain blocked rather than being reported as repaired.
 
+- [x] Task: make context-only blocked runs self-healing and authoritative to Codex clients.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: implemented
+  - Done: require Codex clients to surface terminal blocked evidence instead of duplicating work; let the learning daemon refresh project context, retrieve bounded exact source excerpts, and queue one governed repair per project when the missing evidence already exists locally.
+  - Safety: open approvals, policy restrictions, credentials, network/deployment authority, unavailable external systems, old runs, and repeated repair attempts remain terminal blockers requiring explicit resolution.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

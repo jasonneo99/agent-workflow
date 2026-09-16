@@ -179,6 +179,23 @@ Use the agent-workflow MCP to orchestrate /path/to/project for "Review the produ
 
 The MCP server reuses the existing CLI and `.env`, so provider, storage, and project policies remain in one place.
 
+## Authoritative Orchestration Contract
+
+When Codex submits a substantive goal through Agent Workflow, the workflow
+operation is authoritative. Codex should wait for `completed`, `blocked`, or
+`failed` rather than independently duplicating the requested implementation.
+On `blocked`, Codex must present the returned summary, artifact URI, blocked
+stage, and pending-approval count as evidence. It may request a governed repair
+only when the blocker is missing context or evidence that already exists in the
+registered checkout. It must not bypass approval, policy, credentials, or an
+unavailable external dependency.
+
+Use `/api/server-orchestration-events` for bounded progress and
+`/api/server-orchestration-status` for reconnect or final resolution. A caller
+that cannot remain attached to the stream should persist `operationId` and
+resume from the status link; it should never infer success from an intermediate
+stage.
+
 ## Provider Switching
 
 Ask Codex:

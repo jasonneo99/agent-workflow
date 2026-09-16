@@ -4449,6 +4449,7 @@ program
         let approvalBacklogErrors = 0;
         let approvalBacklogScanned = 0;
         let approvalAutopilotEnabled = false;
+        let blockedRunsAutoHealed = 0;
         let approvalAutopilotMaxRisk: ApprovalAutopilotRisk = await learningApprovalAutopilotMaxRisk(projectDir);
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
@@ -4482,6 +4483,7 @@ program
             approvalBacklogScanned += update.approvalBacklog.scanned;
             approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
             approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
+            blockedRunsAutoHealed += await autoHealOneBlockedRun(targetProjectDir, target.mode);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${targetProjectDir}: ${message}`);
@@ -4527,7 +4529,7 @@ program
           }
         }
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, blockedAutoHealed=${blockedRunsAutoHealed}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -35730,6 +35732,7 @@ async function processDashboardQueueAction(input: {
   project: string;
   reason: string;
   confirmed: boolean;
+  actor?: string;
 }): Promise<DashboardFollowUpResult> {
   const action = input.action.trim();
   const runId = input.runId.trim();
@@ -35835,6 +35838,7 @@ async function processDashboardQueueAction(input: {
   }
 
   if (action === "repair-blocked") {
+    const repairActor = input.actor?.trim() || "dashboard";
     const details = await getWorkflowRunDetails(runId);
     if (!details.run || (details.run.status !== "blocked" && details.run.status !== "failed")) {
       return { ok: false, error: `Run is not blocked/failed or does not exist: ${runId}` };
@@ -35861,7 +35865,9 @@ async function processDashboardQueueAction(input: {
       registeredProjectRootUri: details.run.projectRootUri,
       task: repairTask,
       sourceTokenBudget: "12000",
-      sourceMaxFiles: "180"
+      sourceMaxFiles: "180",
+      includeExactSourceExcerpts: true,
+      evaluationMetadata: { source: "blocked-run-repair", sourceRunId: runId, actor: repairActor }
     });
     if (!queued.ok) return { ok: false, error: queued.error };
     await recordRunAction({
@@ -35872,7 +35878,7 @@ async function processDashboardQueueAction(input: {
       summary: "Refreshed project context and queued a governed debug-failure repair run.",
       artifactKind: "blocked_run_repair",
       artifactContent: { sourceRunId: runId, repairRunId: queued.run.runId, workflowId: queued.workflow.id, projectRootUri: details.run.projectRootUri },
-      idempotencyKey: `blocked-repair-${runId}-${queued.run.runId}`
+      idempotencyKey: `blocked-repair-${runId}-${queued.run.runId}-${repairActor}`
     });
     return {
       ok: true,
@@ -35954,6 +35960,37 @@ async function processDashboardQueueAction(input: {
   }
 
   return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
+}
+
+async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
+  if (mode !== "apply-approved") return 0;
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
+  if (runs.some((run) => (run.status === "queued" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
+  for (const run of runs.filter((item) => item.status === "blocked")) {
+    if (Date.now() - Date.parse(run.startedAt) > 7 * 24 * 60 * 60 * 1000) continue;
+    const details = await getWorkflowRunDetails(run.id);
+    if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued")) continue;
+    const approvals = await listActionApprovals({ runId: run.id, limit: 100 });
+    if (approvals.some(isOpenApproval)) continue;
+    const artifacts = await listArtifacts({ runId: run.id, kind: "stage_output" });
+    const output = artifacts.at(-1)?.content ?? {};
+    const reason = `${stringValue(output.blockedReason) ?? ""} ${stringValue(output.summary) ?? ""}`.toLowerCase();
+    const missingExistingEvidence = /\b(?:missing|not supplied|not provided|unavailable|omits?)\b/u.test(reason)
+      && /\b(?:context|source|files?|diff|tests?|evidence|repository|implementation|configuration)\b/u.test(reason);
+    if (!missingExistingEvidence) continue;
+    const result = await processDashboardQueueAction({
+      action: "repair-blocked",
+      runId: run.id,
+      workerLimit: "6",
+      workerConcurrency: "1",
+      project: projectDir,
+      reason: "",
+      confirmed: false,
+      actor: "learning-daemon"
+    });
+    return result.ok ? 1 : 0;
+  }
+  return 0;
 }
 
 async function processDashboardApprovalAction(input: {
@@ -42873,6 +42910,7 @@ async function queueWorkflow(input: {
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
   registeredProjectRootUri?: string;
+  includeExactSourceExcerpts?: boolean;
 }): Promise<
   | {
     ok: true;
@@ -42932,6 +42970,7 @@ async function queueWorkflow(input: {
     workflow,
     agents: selectedAgentList,
     sourceSummaries,
+    sourceExcerpts: input.includeExactSourceExcerpts ? await loadExactSourceExcerpts(projectDir, sourceSummaries) : [],
     preferenceNotes: await loadPreferenceNotes(projectDir)
   });
   const runInputSnapshot = await buildRunInputSnapshot({
@@ -42971,6 +43010,25 @@ async function queueWorkflow(input: {
     brief,
     run
   };
+}
+
+async function loadExactSourceExcerpts(projectDir: string, summaries: SourceSummaryWithHash[]): Promise<Array<{ sourceUri: string; content: string }>> {
+  const codeExtensions = new Set([".swift", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".cpp", ".c", ".h"]);
+  const ordered = [...summaries].sort((left, right) => Number(codeExtensions.has(path.extname(right.sourceUri).toLowerCase())) - Number(codeExtensions.has(path.extname(left.sourceUri).toLowerCase())));
+  const excerpts: Array<{ sourceUri: string; content: string }> = [];
+  let remainingChars = 60_000;
+  for (const summary of ordered) {
+    if (excerpts.length >= 8 || remainingChars <= 0) break;
+    const absolutePath = path.resolve(projectDir, summary.sourceUri);
+    const relative = path.relative(projectDir, absolutePath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) continue;
+    const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    if (!raw || raw.includes("\u0000")) continue;
+    const content = raw.slice(0, Math.min(12_000, remainingChars));
+    excerpts.push({ sourceUri: summary.sourceUri, content });
+    remainingChars -= content.length;
+  }
+  return excerpts;
 }
 
 async function indexProjectForRun(input: {

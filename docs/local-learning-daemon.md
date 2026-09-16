@@ -645,3 +645,18 @@ can learn and explain continuously before it is trusted to apply anything.
 Phase 1 is intentionally read-only. Phase 2 adds proposal storage and a
 dashboard approval inbox, while still keeping application disabled until
 explicit user approval exists.
+
+## Blocked-run self-healing
+
+In `apply-approved` mode the daemon may repair one recent context-only blocked
+run per project at a time. It refreshes the registered project index, retrieves
+bounded exact excerpts from selected project files, carries forward the source
+run's task and recorded blocker, and queues a governed `debug-failure` run. The
+source run receives a durable repair receipt and remains available for audit.
+
+Self-healing is limited to blockers that explicitly report missing repository
+context, source, files, diffs, tests, implementation, configuration, or other
+evidence already expected to exist in the registered checkout. It does not act
+when an approval is open, does not retry runs older than seven days, permits
+only one active repair per project, and never bypasses command, write, network,
+secret, deployment, or external-system gates.

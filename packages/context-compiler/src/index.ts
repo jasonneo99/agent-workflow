@@ -16,6 +16,7 @@ export interface CompileInput {
     matchedTerms?: string[];
     selectionReason?: string;
   }>;
+  sourceExcerpts?: Array<{ sourceUri: string; content: string }>;
   preferenceNotes?: string[];
   tuningNotes?: Array<{
     relativePath: string;
@@ -64,6 +65,9 @@ export async function compileContext(input: CompileInput): Promise<string> {
     "## Indexed Source Summaries",
     formatSourceSummaries(input.sourceSummaries ?? []),
     "",
+    "## Exact Source Evidence",
+    formatSourceExcerpts(input.sourceExcerpts ?? []),
+    "",
     "## Adaptive Preference Notes",
     formatPreferenceNotes(input.preferenceNotes ?? []),
     "",
@@ -76,6 +80,11 @@ export async function compileContext(input: CompileInput): Promise<string> {
     "## Agent Instructions",
     input.agents.map(formatAgent).join("\n\n")
   ].join("\n");
+}
+
+function formatSourceExcerpts(excerpts: Array<{ sourceUri: string; content: string }>): string {
+  if (!excerpts.length) return "_No exact source excerpts were requested for this run._";
+  return excerpts.map((excerpt) => `### ${excerpt.sourceUri}\n\`\`\`\n${excerpt.content}\n\`\`\``).join("\n\n");
 }
 
 function formatPreferenceNotes(notes: string[]): string {
