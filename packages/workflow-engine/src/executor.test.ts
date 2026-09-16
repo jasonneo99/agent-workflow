@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
@@ -17,6 +17,12 @@ test("diagnostic stages retain failing commands as evidence while execution gate
   assert.equal(commandFailureIsDiagnosticEvidence({ type: "react" }), true);
   assert.equal(commandFailureIsDiagnosticEvidence({ type: "executor" }), false);
   assert.equal(commandFailureIsDiagnosticEvidence({ type: "verifier" }), false);
+});
+
+test("executor baseline failures may precede governed writes but not empty implementations", () => {
+  assert.equal(commandFailurePrecedesGovernedWrites({ type: "executor" }, { requestedFileWrites: [{ path: "src/fix.ts", content: "fixed\n" }] }), true);
+  assert.equal(commandFailurePrecedesGovernedWrites({ type: "executor" }, { requestedFileWrites: [] }), false);
+  assert.equal(commandFailurePrecedesGovernedWrites({ type: "verifier" }, { requestedFileWrites: [{ path: "src/fix.ts", content: "fixed\n" }] }), false);
 });
 
 test("action idempotency keys are stable for the same normalized action", () => {

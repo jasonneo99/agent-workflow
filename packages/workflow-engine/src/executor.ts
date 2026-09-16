@@ -573,7 +573,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         });
 
-        if ((commandResult.exitCode !== 0 || commandResult.timedOut) && !commandFailureIsDiagnosticEvidence(stagePattern)) {
+        if (
+          (commandResult.exitCode !== 0 || commandResult.timedOut)
+          && !commandFailureIsDiagnosticEvidence(stagePattern)
+          && !commandFailurePrecedesGovernedWrites(stagePattern, output)
+        ) {
           throw new Error(`Requested command failed: ${commandLine}`);
         }
       }
@@ -1108,6 +1112,13 @@ type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
 
 export function commandFailureIsDiagnosticEvidence(stagePattern: Pick<StagePattern, "type">): boolean {
   return stagePattern.type === "planner" || stagePattern.type === "react";
+}
+
+export function commandFailurePrecedesGovernedWrites(
+  stagePattern: Pick<StagePattern, "type">,
+  output: Pick<StageExecutionOutput, "requestedFileWrites">
+): boolean {
+  return stagePattern.type === "executor" && (output.requestedFileWrites?.length ?? 0) > 0;
 }
 
 function normalizeStagePattern(value: unknown): StagePattern {
