@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
+import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
-import { scoreStageOutput } from "../../model-providers/src/quality.js";
+import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
@@ -27,6 +27,7 @@ import {
   assertWorkflowTaskLease,
   requestActionApproval,
   startWorkflowTask,
+  withProjectExecutionLock,
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 
@@ -173,6 +174,28 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let fallbackAttempts: ProviderFallbackAttempt[] = [...execution.attempts];
       let fallbackUsed = execution.fallbackUsed;
       const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+
+      const initialCompletionViolation = unfulfilledCompletionReason(routedStageInput, output);
+      if (initialCompletionViolation) {
+        const contractRetry = await executeWithProviderFallback({
+          providerId: route.providerId,
+          stageInput: routedStageInput,
+          policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
+          providerFactory: providerFromEnv
+        });
+        fallbackAttempts = [...fallbackAttempts, ...contractRetry.attempts];
+        output = contractRetry.output;
+        quality = scoreStageOutput(routedStageInput, output);
+        fallbackUsed = false;
+        fallbackProviderId = undefined;
+        actualProviderId = contractRetry.actualProvider;
+        actualModel = contractRetry.actualModel;
+        const repeatedViolation = unfulfilledCompletionReason(routedStageInput, output);
+        if (repeatedViolation) {
+          output = { ...output, outcome: "blocked", blockedReason: repeatedViolation };
+          quality = scoreStageOutput(routedStageInput, output);
+        }
+      }
 
       if (shouldRetryWeakFallbackBlock({ fallbackUsed, actualProviderId, output, qualityReasons: quality.reasons })) {
         try {
@@ -436,11 +459,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         await assertLeaseOwned();
         let commandResult;
         try {
-          commandResult = await executeAllowedCommand({
-            commandLine,
-            cwd: localProjectRootUri,
-            project
-          });
+          const serializationResource = commandSerializationResource(commandLine, localProjectRootUri);
+          const executeCommand = () => executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project });
+          commandResult = serializationResource
+            ? await withProjectExecutionLock({ projectRootUri: task.projectRootUri, resource: serializationResource }, executeCommand)
+            : await executeCommand();
         } catch (error) {
           const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,

@@ -51,6 +51,8 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
     source,
     /export async function dismissFailedWorkflowRun[\s\S]+select wr\.id::text[\s\S]+failed_run_dismissed/u
   );
+  assert.match(source, /export async function reinstateFailedWorkflowRun[\s\S]+failed_run_reinstated/u);
+  assert.match(source, /export async function listWorkflowQueue[\s\S]+reinstated\.created_at > dismissed\.created_at/u);
 });
 
 test("evaluation failures remain evidence instead of actionable queue items", () => {
@@ -137,6 +139,11 @@ test("side effects are reserved before dispatch and uncertain claims are not rep
   assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedCommand/u);
   assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedFileWrite/u);
   assert.match(executorSource, /type\.includes\("_side_effect_"\)/u);
+});
+
+test("project execution locks serialize conflicting build resources across workers", () => {
+  const source = readFileSync(new URL("./reliability.ts", import.meta.url), "utf8");
+  assert.match(source, /withProjectExecutionLock[\s\S]+pg_advisory_lock\(hashtext\(\$1\)\)[\s\S]+pg_advisory_unlock\(hashtext\(\$1\)\)/u);
 });
 
 test("all run lifecycle writes route through the authoritative transition helper", () => {

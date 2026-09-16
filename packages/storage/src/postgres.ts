@@ -9,7 +9,7 @@ import { findRecentDuplicateRun } from "./run-deduplication.js";
 import { assertWorkflowRunFence, assertWorkflowRunTransition, isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 export { databaseUrl, withClient } from "./client.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
-export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent } from "./reliability.js";
+export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
 export function workflowDefinitionHash(definition: unknown): string {
   return createHash("sha256").update(stableJson(definition)).digest("hex");
 }
@@ -584,6 +584,13 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
            from action_receipts dismissed
            where dismissed.run_id = wr.id
              and dismissed.action_type = 'failed_run_dismissed'
+             and not exists (
+               select 1
+               from action_receipts reinstated
+               where reinstated.run_id = wr.id
+                 and reinstated.action_type = 'failed_run_reinstated'
+                 and reinstated.created_at > dismissed.created_at
+             )
          )
          and (wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           or exists (
@@ -1038,6 +1045,29 @@ export async function dismissFailedWorkflowRun(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+}
+
+export async function reinstateFailedWorkflowRun(input: {
+  runId: string;
+  actor: string;
+  reason: string;
+}): Promise<boolean> {
+  return withClient(async (client) => {
+    const result = await client.query<{ id: string }>(
+      `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+       select wr.id, 'workflow-orchestrator', 'failed_run_reinstated', wr.id::text, $2, $3
+       from workflow_runs wr
+       where wr.id = $1::uuid
+         and wr.status in ('failed', 'blocked', 'cancelled')
+         and exists (
+           select 1 from action_receipts dismissed
+           where dismissed.run_id = wr.id and dismissed.action_type = 'failed_run_dismissed'
+         )
+       returning id::text`,
+      [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason })]
+    );
+    return Boolean(result.rows[0]);
   });
 }
 
@@ -2917,6 +2947,12 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
            from action_receipts dismissed
            where dismissed.run_id = wr.id
              and dismissed.action_type = 'failed_run_dismissed'
+             and not exists (
+               select 1 from action_receipts reinstated
+               where reinstated.run_id = wr.id
+                 and reinstated.action_type = 'failed_run_reinstated'
+                 and reinstated.created_at > dismissed.created_at
+             )
          ) as dismissed
        from workflow_runs wr
        join projects p on p.id = wr.project_id
@@ -3044,6 +3080,12 @@ export async function listWorkflowRunsForProject(input: {
            from action_receipts dismissed
            where dismissed.run_id = wr.id
              and dismissed.action_type = 'failed_run_dismissed'
+             and not exists (
+               select 1 from action_receipts reinstated
+               where reinstated.run_id = wr.id
+                 and reinstated.action_type = 'failed_run_reinstated'
+                 and reinstated.created_at > dismissed.created_at
+             )
          ) as dismissed
        from workflow_runs wr
        join projects p on p.id = wr.project_id

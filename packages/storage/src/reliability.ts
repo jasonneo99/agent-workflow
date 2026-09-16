@@ -2,6 +2,18 @@ import { randomUUID } from "node:crypto";
 import { objectiveHash, workIntentsConflict, type WorkIntent } from "../../reliability-control/src/index.js";
 import { withClient } from "./client.js";
 
+export async function withProjectExecutionLock<T>(input: { projectRootUri: string; resource: string }, execute: () => Promise<T>): Promise<T> {
+  const key = `${input.projectRootUri.trim()}:${input.resource.trim()}`;
+  return withClient(async (client) => {
+    await client.query("select pg_advisory_lock(hashtext($1))", [key]);
+    try {
+      return await execute();
+    } finally {
+      await client.query("select pg_advisory_unlock(hashtext($1))", [key]);
+    }
+  });
+}
+
 export async function acquireWorkIntent(input: { projectId: string; owner: string; objective: string; fileScopes?: string[]; ttlSeconds?: number }): Promise<WorkIntent> {
   return withClient(async (client) => {
     await client.query("begin");

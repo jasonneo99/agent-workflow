@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import path from "node:path";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 
 export interface CommandExecutionResult {
@@ -93,6 +94,19 @@ export async function executeAllowedCommand(input: {
       });
     });
   });
+}
+
+export function commandSerializationResource(commandLine: string, cwd: string): string | null {
+  const tokens = splitCommand(normalizeCommand(commandLine));
+  const runner = tokens[0];
+  if (!runner || !["npm", "pnpm", "yarn", "bun", "next"].includes(runner)) return null;
+  let targetDir = path.resolve(cwd);
+  const prefixIndex = tokens.findIndex((token) => token === "--prefix" || token === "--dir" || token === "-C");
+  if (prefixIndex >= 0 && tokens[prefixIndex + 1]) targetDir = path.resolve(cwd, tokens[prefixIndex + 1]);
+  const isBuild = runner === "next"
+    ? tokens[1] === "build"
+    : tokens.some((token, index) => token === "build" && (tokens[index - 1] === "run" || index === 1));
+  return isBuild ? `build:${targetDir}` : null;
 }
 
 function createProjectCommandEnv(): NodeJS.ProcessEnv {

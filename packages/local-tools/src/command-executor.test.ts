@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
-import { assertCommandAllowed, withDeveloperToolPath } from "./command-executor.js";
+import { assertCommandAllowed, commandSerializationResource, withDeveloperToolPath } from "./command-executor.js";
 
 const project = {
   actions: {
@@ -36,4 +36,12 @@ test("worker command environment prepends common developer tool paths", () => {
   assert.equal(path.split(":").slice(0, 3).join(":"), "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin");
   assert.match(path, /\/custom\/bin/);
   assert.equal(path.split(":").filter((entry) => entry === "/usr/bin").length, 1);
+});
+
+test("build commands share a project-target serialization resource", () => {
+  assert.equal(
+    commandSerializationResource("npm --prefix web run build", "/project"),
+    commandSerializationResource("npm run build", "/project/web")
+  );
+  assert.equal(commandSerializationResource("npm test", "/project/web"), null);
 });

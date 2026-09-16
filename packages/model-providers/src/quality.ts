@@ -8,10 +8,21 @@ export interface StageQualityScore {
   retryRecommended: boolean;
 }
 
+export function unfulfilledCompletionReason(input: StageExecutionInput, output: StageExecutionOutput): string | null {
+  if (output.outcome !== "completed") return null;
+  const implementationStage = input.agentId === "implementation-agent" || /(?:^|[-_])implement(?:ation)?(?:$|[-_])/iu.test(input.stageId);
+  if (!implementationStage) return null;
+  const text = `${output.summary} ${JSON.stringify(output.artifact)}`.toLowerCase();
+  const explicitlyIncomplete = /implementation (?:is|remains) incomplete|no (?:source |code |project )?files? (?:were )?(?:changed|modified)|no (?:code|source) changes|read-only inspection/iu.test(text);
+  return explicitlyIncomplete ? "Implementation stage claimed completion while explicitly reporting that implementation was incomplete or no source changes were made." : null;
+}
+
 export function scoreStageOutput(input: StageExecutionInput, output: StageExecutionOutput): StageQualityScore {
   const threshold = Number(process.env.AGENTFLOW_QUALITY_THRESHOLD ?? 0.62);
   const reasons: string[] = [];
   let score = 0;
+  const completionViolation = unfulfilledCompletionReason(input, output);
+  if (completionViolation) reasons.push(completionViolation);
 
   if (output.summary.trim().length >= 40) {
     score += 0.22;
@@ -54,7 +65,7 @@ export function scoreStageOutput(input: StageExecutionInput, output: StageExecut
     reasons.push("output appears generic");
   }
 
-  const normalizedScore = Math.min(1, Number(score.toFixed(2)));
+  const normalizedScore = completionViolation ? 0 : Math.min(1, Number(score.toFixed(2)));
   return {
     score: normalizedScore,
     threshold,
