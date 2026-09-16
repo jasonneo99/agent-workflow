@@ -60,6 +60,12 @@ test("blocked stage output terminates the run without reporting success", () => 
   assert.match(source, /wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u);
 });
 
+test("checkpoint resume includes blocked runs and cancelled downstream stages", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /status in \('queued', 'running', 'failed', 'blocked'\)/u);
+  assert.match(source, /\["queued", "running", "failed", "blocked", "cancelled"\]/u);
+});
+
 test("stale terminal run reconciliation only repairs terminal child-task runs", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
 

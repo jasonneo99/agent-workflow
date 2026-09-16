@@ -30115,7 +30115,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <tr><td>${escapeHtml(item.workflowId)}<br><span class="muted">${escapeHtml(item.stageId)}</span></td><td>${escapeHtml(item.agentId)}</td><td>${escapeHtml(item.providerId)} / ${escapeHtml(item.modelTier)}</td><td>${item.runs}</td><td>${item.fallbackRate}</td><td>${item.averageLatencyMs ?? "n/a"}</td><td>${escapeHtml(item.recommendation)}</td></tr>
   `).join("");
   const failedRunRows = report.failedRuns.map((run) => `
-    <tr><td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td><td>${escapeHtml(run.workflowId)}</td><td>${escapeHtml(run.task)}</td><td>${renderDashboardDateTime(run.startedAt)}</td></tr>
+    <tr><td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td><td>${escapeHtml(run.workflowId)}</td><td>${escapeHtml(run.task)}</td><td>${renderDashboardDateTime(run.startedAt)}</td><td><div class="actions">${queueRunActionForm(run.runId, "resolve-blocker", "Resolve Blocker")}<a class="button secondary" href="/run?id=${encodeURIComponent(run.runId)}">Inspect</a></div></td></tr>
   `).join("");
   const proposalRows = Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>`).join("");
   const learningRows = (learningQueue?.items ?? []).map((item) => `
@@ -30165,7 +30165,7 @@ function renderLearningReportHtml(report: LearningReport, learningQueue: Learnin
     <section class="panel"><h2>Evaluation Gaps</h2>${list(report.evalGaps)}</section>
     <section class="panel"><h2>Repeated Failure Patterns</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Stage</th><th>Agent</th><th>Failures</th><th>Rate</th></tr></thead><tbody>${failureRows || "<tr><td colspan=\"5\">No repeated failure patterns found.</td></tr>"}</tbody></table></div></section>
     <section class="panel"><h2>Cost And Routing Opportunities</h2><div class="table-wrap"><table><thead><tr><th>Workflow</th><th>Agent</th><th>Provider/Tier</th><th>Runs</th><th>Fallback</th><th>Latency</th><th>Recommendation</th></tr></thead><tbody>${costRows || "<tr><td colspan=\"7\">No cost or routing opportunities found.</td></tr>"}</tbody></table></div></section>
-    <section class="panel"><h2>Recent Failed Runs</h2><div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Task</th><th>Started</th></tr></thead><tbody>${failedRunRows || "<tr><td colspan=\"4\">No failed runs in the inspected window.</td></tr>"}</tbody></table></div></section>
+    <section class="panel"><div class="section-heading"><div><h2>Recent Failed Runs</h2><span class="muted">Refresh context and resume the same durable run without creating a repair chain.</span></div><a class="button secondary" href="/queue">Open Queue</a></div><div class="table-wrap"><table><thead><tr><th>Run</th><th>Workflow</th><th>Task</th><th>Started</th><th>Actions</th></tr></thead><tbody>${failedRunRows || "<tr><td colspan=\"5\">No failed runs in the inspected window.</td></tr>"}</tbody></table></div></section>
     <section class="panel"><h2>Proposal Preview</h2><div class="table-wrap"><table><thead><tr><th>Kind</th><th>Count</th></tr></thead><tbody>${proposalRows || "<tr><td colspan=\"2\">No proposal candidates yet.</td></tr>"}</tbody></table></div></section>
     <section class="panel">
       <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
@@ -35895,6 +35895,45 @@ async function processDashboardQueueAction(input: {
     };
   }
 
+  if (action === "resolve-blocker") {
+    const details = await getWorkflowRunDetails(runId);
+    if (!details.run || (details.run.status !== "blocked" && details.run.status !== "failed")) {
+      return { ok: false, error: `Run is not blocked/failed or does not exist: ${runId}` };
+    }
+    const approvals = await listActionApprovals({ runId, limit: 100 });
+    const openApprovals = approvals.filter(isOpenApproval);
+    if (openApprovals.length) {
+      return {
+        ok: false,
+        error: `This run has ${openApprovals.length} open approval${openApprovals.length === 1 ? "" : "s"}. Review /approvals?status=open&run=${encodeURIComponent(runId)}, then resolve the blocker again.`
+      };
+    }
+    const projectDir = await resolveLocalProjectRootUri(details.run.projectRootUri);
+    await indexProjectForRun({ projectDir, maxFiles: 180, refine: false, forceRefine: false });
+    const staleReport = await assessRunStaleInputs(runId);
+    const result = await resumeWorkflowRunFromCheckpoint({
+      runId,
+      actor: input.actor?.trim() || "dashboard",
+      reason: "Blocker resolved from dashboard after refreshing project context; completed checkpoints preserved.",
+      includeFailed: true
+    });
+    return result.requeuedTasks > 0
+      ? {
+        ok: true,
+        title: "Blocker resolved and workflow resumed",
+        runId,
+        output: [
+          `Run: ${runId}`,
+          `Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`,
+          `Requeued blocked or unfinished stages: ${result.requeuedTasks}`,
+          `Project context refreshed: ${projectDir}`,
+          ...formatStaleInputWarnings(staleReport),
+          `Open: /run?id=${encodeURIComponent(runId)}`
+        ].join("\n")
+      }
+      : { ok: false, error: `No blocked or unfinished stages could be resumed for run ${runId}.` };
+  }
+
   if (action === "resume-checkpoint") {
     const staleReport = await assessRunStaleInputs(runId);
     const result = await resumeWorkflowRunFromCheckpoint({
@@ -39746,7 +39785,8 @@ function queueItemForms(item: DashboardQueueItem): string {
   }
   if (item.failedTasks > 0 || item.runStatus === "failed" || item.runStatus === "blocked") {
     if (item.runStatus === "blocked") {
-      forms.push(queueRunActionForm(item.runId, "repair-blocked", "Repair Blocker"));
+      forms.push(queueRunActionForm(item.runId, "resolve-blocker", "Resolve Blocker"));
+      forms.push(queueRunActionForm(item.runId, "repair-blocked", "Diagnose as New Run"));
     }
     forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
     forms.push(queueDismissRunForm(item.runId));

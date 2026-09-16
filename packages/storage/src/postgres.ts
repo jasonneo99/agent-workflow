@@ -721,7 +721,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         `select id::text
          from workflow_runs
          where id = $1::uuid
-           and status in ('queued', 'running', 'failed')
+           and status in ('queued', 'running', 'failed', 'blocked')
          for update`,
         [input.runId]
       );
@@ -731,7 +731,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
       }
 
       const resumableStatuses = input.includeFailed
-        ? ["queued", "running", "failed"]
+        ? ["queued", "running", "failed", "blocked", "cancelled"]
         : ["queued", "running"];
       const result = await client.query<{ id: string }>(
         `update workflow_tasks
