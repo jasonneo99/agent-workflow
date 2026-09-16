@@ -89,6 +89,7 @@ CREATE TABLE IF NOT EXISTS workflow_tasks (
   executor_snapshot jsonb NOT NULL DEFAULT '{}',
   worker_id text,
   lease_expires_at timestamptz,
+  lease_generation bigint NOT NULL DEFAULT 0,
   available_at timestamptz NOT NULL DEFAULT now(),
   started_at timestamptz,
   finished_at timestamptz,
@@ -212,6 +213,31 @@ WITH (lists = 100);
 
 CREATE INDEX IF NOT EXISTS workflow_tasks_status_available_idx
 ON workflow_tasks(status, available_at);
+
+CREATE TABLE IF NOT EXISTS work_intents (
+  id uuid PRIMARY KEY,
+  project_id text NOT NULL,
+  owner text NOT NULL,
+  objective_hash text NOT NULL,
+  file_scopes jsonb NOT NULL DEFAULT '[]',
+  expires_at timestamptz NOT NULL,
+  fencing_token bigint NOT NULL DEFAULT 1,
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(project_id, owner)
+);
+
+CREATE INDEX IF NOT EXISTS work_intents_active_idx ON work_intents(project_id, expires_at);
+
+CREATE TABLE IF NOT EXISTS side_effect_receipts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id text NOT NULL,
+  idempotency_key text NOT NULL,
+  operation text NOT NULL,
+  target text NOT NULL,
+  receipt jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(project_id, idempotency_key)
+);
 
 CREATE INDEX IF NOT EXISTS artifacts_run_kind_idx
 ON artifacts(run_id, kind, created_at);

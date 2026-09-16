@@ -8,6 +8,7 @@ import { withClient } from "./client.js";
 import { findRecentDuplicateRun } from "./run-deduplication.js";
 export { databaseUrl, withClient } from "./client.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
+export { acquireWorkIntent, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent } from "./reliability.js";
 export function workflowDefinitionHash(definition: unknown): string {
   return createHash("sha256").update(stableJson(definition)).digest("hex");
 }
@@ -88,7 +89,32 @@ export async function migrateStorage(): Promise<void> {
       ALTER TABLE workflow_tasks
       ADD COLUMN IF NOT EXISTS worker_id text,
       ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
+      ADD COLUMN IF NOT EXISTS lease_generation bigint NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS executor_snapshot jsonb NOT NULL DEFAULT '{}'
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS work_intents (
+        id uuid PRIMARY KEY,
+        project_id text NOT NULL,
+        owner text NOT NULL,
+        objective_hash text NOT NULL,
+        file_scopes jsonb NOT NULL DEFAULT '[]',
+        expires_at timestamptz NOT NULL,
+        fencing_token bigint NOT NULL DEFAULT 1,
+        updated_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(project_id, owner)
+      );
+      CREATE INDEX IF NOT EXISTS work_intents_active_idx ON work_intents(project_id, expires_at);
+      CREATE TABLE IF NOT EXISTS side_effect_receipts (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id text NOT NULL,
+        idempotency_key text NOT NULL,
+        operation text NOT NULL,
+        target text NOT NULL,
+        receipt jsonb NOT NULL,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(project_id, idempotency_key)
+      )
     `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -294,6 +320,7 @@ export interface WorkflowQueueItem {
   projectRootUri: string;
   startedAt: string;
   finishedAt: string | null;
+  blockedReason: string | null;
   totalTasks: number;
   queuedTasks: number;
   runningTasks: number;
@@ -323,34 +350,41 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
          wr.finished_at::text as "finishedAt",
+         case when wr.status = 'blocked' then (
+           select coalesce(ar.metadata->>'reason', ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "blockedReason",
          count(wt.*)::int as "totalTasks",
          count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
-         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status in ('leased','running'))::int as "runningTasks",
          count(*) filter (where wt.status = 'completed')::int as "completedTasks",
          count(*) filter (where wt.status in ('failed', 'blocked'))::int as "failedTasks",
          count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks",
          (array_agg(wt.stage_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextStageId",
          (array_agg(wt.agent_id order by wt.available_at asc) filter (where wt.status = 'queued'))[1] as "nextAgentId",
-         (array_agg(wt.stage_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningStageId",
-         (array_agg(wt.agent_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningAgentId",
-         (array_agg(wt.worker_id order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningWorkerId",
-         (array_agg(wt.lease_expires_at::text order by wt.started_at asc nulls last) filter (where wt.status = 'running'))[1] as "runningLeaseExpiresAt",
+         (array_agg(wt.stage_id order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningStageId",
+         (array_agg(wt.agent_id order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningAgentId",
+         (array_agg(wt.worker_id order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningWorkerId",
+         (array_agg(wt.lease_expires_at::text order by wt.started_at asc nulls last) filter (where wt.status in ('leased', 'running')))[1] as "runningLeaseExpiresAt",
          (min(wt.available_at) filter (where wt.status = 'queued'))::text as "oldestQueuedAt",
-         (min(wt.started_at) filter (where wt.status = 'running'))::text as "oldestRunningAt"
+         (min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')))::text as "oldestRunningAt"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
        where ($2::text is null or p.root_uri = $2)
-         and (wr.status in ('queued', 'running', 'failed', 'blocked')
+         and (wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           or exists (
             select 1 from workflow_tasks active
             where active.run_id = wr.id
-              and active.status in ('queued', 'running', 'failed', 'blocked')
+              and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
        group by wr.id, p.id
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
-         coalesce(min(wt.started_at) filter (where wt.status = 'running'), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
+         coalesce(min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
        limit $1`,
       [limit, projectRootUri]
     );
@@ -367,7 +401,7 @@ export async function cancelWorkflowRun(runId: string): Promise<boolean> {
          set status = 'cancelled',
              finished_at = now()
          where id = $1
-           and status in ('queued', 'running')
+           and status in ('queued', 'leased', 'running')
          returning id::text`,
         [runId]
       );
@@ -380,7 +414,7 @@ export async function cancelWorkflowRun(runId: string): Promise<boolean> {
          set status = 'cancelled',
              finished_at = now()
          where run_id = $1::uuid
-           and status in ('queued', 'running')`,
+           and status in ('queued', 'leased', 'running')`,
         [runId]
       );
       await client.query("commit");
@@ -405,7 +439,7 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
              lease_expires_at = null,
              available_at = now()
          where run_id = $1::uuid
-           and status = 'running'
+           and status in ('leased','running')
          returning id::text`,
         [runId]
       );
@@ -415,7 +449,7 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
            set status = 'queued',
                finished_at = null
            where id = $1
-             and status = 'running'`,
+             and status in ('leased','running')`,
           [runId]
         );
       }
@@ -443,7 +477,7 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
            from workflow_tasks wt
            join workflow_runs wr on wr.id = wt.run_id
            join projects p on p.id = wr.project_id
-           where wt.status = 'running'
+           where wt.status in ('leased','running')
              and wt.lease_expires_at is not null
              and wt.lease_expires_at < now()
              and ($1::uuid is null or wt.run_id = $1::uuid)
@@ -472,7 +506,7 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
            set status = 'queued',
                finished_at = null
            where id = any($1::uuid[])
-             and status = 'running'`,
+             and status in ('leased','running')`,
           [runIds]
         );
         for (const runId of runIds) {
@@ -548,17 +582,17 @@ export async function listStaleTerminalWorkflowRuns(limit = 50): Promise<StaleTe
          wr.finished_at::text as "finishedAt",
          count(wt.*)::int as "totalTasks",
          count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
-         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status in ('leased','running'))::int as "runningTasks",
          count(*) filter (where wt.status = 'completed')::int as "completedTasks",
          count(*) filter (where wt.status = 'failed')::int as "failedTasks",
          count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
-       where wr.status in ('queued', 'running')
+       where wr.status in ('queued', 'leased', 'running')
        group by wr.id, p.id
        having count(*) > 0
-          and count(*) filter (where wt.status in ('queued', 'running', 'failed')) = 0
+          and count(*) filter (where wt.status in ('queued', 'leased', 'running', 'failed')) = 0
        order by wr.started_at asc
        limit $1`,
       [limit]
@@ -596,7 +630,7 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
            set status = $2::text,
                finished_at = now()
            where wr.id = $1::uuid
-             and wr.status in ('queued', 'running')
+             and wr.status in ('queued', 'leased', 'running')
              and exists (
                select 1
                from workflow_tasks any_task
@@ -606,7 +640,7 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
                select 1
                from workflow_tasks active
                where active.run_id = wr.id
-                 and active.status in ('queued', 'running', 'failed')
+                 and active.status in ('queued', 'leased', 'running', 'failed')
              )
              and (
                ($2::text = 'completed' and exists (
@@ -721,7 +755,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         `select id::text
          from workflow_runs
          where id = $1::uuid
-           and status in ('queued', 'running', 'failed', 'blocked')
+           and status in ('queued', 'leased', 'running', 'failed', 'blocked')
          for update`,
         [input.runId]
       );
@@ -824,7 +858,7 @@ export async function dismissFailedWorkflowRun(input: {
         `update workflow_tasks
          set status = 'dismissed',
              finished_at = coalesce(finished_at, now())
-         where run_id = $1::uuid and status in ('queued', 'running', 'failed', 'blocked')`,
+         where run_id = $1::uuid and status in ('queued', 'leased', 'running', 'failed', 'blocked')`,
         [input.runId]
       );
       await client.query(
@@ -873,7 +907,7 @@ export async function dismissAllFailedWorkflowRuns(input: {
         `update workflow_tasks
          set status = 'dismissed',
              finished_at = coalesce(finished_at, now())
-         where run_id = any($1::uuid[]) and status in ('queued', 'running', 'failed', 'blocked')`,
+         where run_id = any($1::uuid[]) and status in ('queued', 'leased', 'running', 'failed', 'blocked')`,
         [runIds]
       );
       await client.query(
@@ -963,7 +997,7 @@ export async function listProjectStorageSummaries(limit = 100): Promise<ProjectS
            count(*) filter (where status = 'completed') as completed_runs,
            count(*) filter (where status = 'failed') as failed_runs,
            count(*) filter (where status = 'queued') as queued_runs,
-           count(*) filter (where status = 'running') as running_runs
+           count(*) filter (where status in ('leased', 'running')) as running_runs
          from workflow_runs
          where project_id = p.id
        ) wr on true
@@ -1441,6 +1475,7 @@ export interface ClaimedWorkflowTask {
   providerOverride: string | null;
   workerId: string | null;
   leaseExpiresAt: string | null;
+  fencingToken: string;
   executorSnapshot?: ExecutorSnapshot | null;
   compiledBrief: string;
   priorReceipts: Array<{
@@ -1460,7 +1495,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const workerId = input?.workerId?.trim() || null;
+      const workerId = input?.workerId?.trim() || `worker-${process.pid}`;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
       const projectRootUri = input?.projectRootUri?.trim() || null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
@@ -1473,7 +1508,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality stage(definition, stage_order)
              on stage.definition->>'id' = wt.stage_id
            where wt.status = 'queued'
-             and wr.status in ('queued', 'running')
+             and wr.status in ('queued', 'leased', 'running')
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
              and not exists (
@@ -1496,11 +1531,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            for update of wt skip locked
          )
          update workflow_tasks wt
-         set status = 'running',
+         set status = 'leased',
              attempts = wt.attempts + 1,
              worker_id = $1,
+             lease_generation = wt.lease_generation + 1,
              lease_expires_at = now() + ($2::int * interval '1 second'),
-             started_at = now()
+             started_at = null
          from next_task, workflow_runs wr, workflows wf, agents a, projects p
          where wt.id = next_task.id
            and wr.id = wt.run_id
@@ -1537,6 +1573,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            ), 'default')) as "providerOverride",
            wt.worker_id as "workerId",
            wt.lease_expires_at::text as "leaseExpiresAt",
+           wt.lease_generation::text as "fencingToken",
            nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
            coalesce(wr.model_tier_override, (
              select stage->'routing'->>'model_tier'
@@ -1554,7 +1591,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
 
       await client.query(
         `update workflow_runs
-         set status = 'running'
+         set status = 'leased'
          where id = $1 and status = 'queued'`,
         [result.rows[0].runId]
       );
@@ -1588,10 +1625,30 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
   });
 }
 
+export async function startWorkflowTask(input: { taskId: string; runId: string; workerId: string; fencingToken: string }): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query(`update workflow_tasks set status='running',started_at=coalesce(started_at,now()) where id=$1 and run_id=$2 and status='leased' and worker_id=$3 and lease_generation=$4::bigint and lease_expires_at>now()`, [input.taskId,input.runId,input.workerId,input.fencingToken]);
+      if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
+      await client.query(`update workflow_runs set status='running' where id=$1 and status in ('queued','leased')`, [input.runId]);
+      await client.query("commit");
+    } catch (error) { await client.query("rollback"); throw error; }
+  });
+}
+
 function exactGitRevision(projectRootUri: string): string {
   const revision = execFileSync("git", ["-C", projectRootUri, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Remote executor requires an exact 40-character Git revision.");
   return revision;
+}
+
+async function assertActiveTaskFence(client: pg.Client, input: { taskId: string; workerId: string; fencingToken: string }): Promise<void> {
+  const result = await client.query(
+    `select 1 from workflow_tasks where id=$1 and status='running' and worker_id=$2 and lease_generation=$3::bigint and lease_expires_at>now() for update`,
+    [input.taskId, input.workerId, input.fencingToken]
+  );
+  if (result.rowCount !== 1) throw new Error("Stale workflow fencing token or expired task lease.");
 }
 
 export async function completeWorkflowTask(input: {
@@ -1600,10 +1657,13 @@ export async function completeWorkflowTask(input: {
   agentId: string;
   summary: string;
   artifact: Record<string, unknown>;
+  workerId: string;
+  fencingToken: string;
 }): Promise<void> {
   await withClient(async (client) => {
     await client.query("begin");
     try {
+      await assertActiveTaskFence(client, input);
       const outputUri = `db://workflow_tasks/${input.taskId}/output`;
       await client.query(
         `insert into artifacts (run_id, task_id, kind, uri, content)
@@ -1671,7 +1731,7 @@ export async function completeWorkflowTask(input: {
              select 1
              from workflow_tasks wt
              where wt.run_id = wr.id
-               and wt.status in ('queued', 'running', 'failed', 'blocked')
+               and wt.status in ('queued', 'leased', 'running', 'failed', 'blocked')
            )`,
         [input.runId]
       );
@@ -1691,10 +1751,13 @@ export async function blockWorkflowTask(input: {
   summary: string;
   reason: string;
   artifact: Record<string, unknown>;
+  workerId: string;
+  fencingToken: string;
 }): Promise<void> {
   await withClient(async (client) => {
     await client.query("begin");
     try {
+      await assertActiveTaskFence(client, input);
       const outputUri = `db://workflow_tasks/${input.taskId}/output`;
       await client.query(
         `insert into artifacts (run_id, task_id, kind, uri, content)
@@ -1709,7 +1772,7 @@ export async function blockWorkflowTask(input: {
       await client.query(
         `update workflow_tasks
          set status = 'cancelled', finished_at = now()
-         where run_id = $1 and id <> $2 and status in ('queued', 'running')`,
+         where run_id = $1 and id <> $2 and status in ('queued', 'leased', 'running')`,
         [input.runId, input.taskId]
       );
       await client.query(
@@ -1741,10 +1804,13 @@ export async function failWorkflowTask(input: {
   runId: string;
   agentId: string;
   error: string;
+  workerId: string;
+  fencingToken: string;
 }): Promise<void> {
   await withClient(async (client) => {
     await client.query("begin");
     try {
+      await assertActiveTaskFence(client, input);
       await client.query(
         `update workflow_tasks
          set status = 'failed',
@@ -1788,7 +1854,7 @@ export async function failWorkflowTask(input: {
              finished_at = now()
          where run_id = $1
            and id <> $2
-           and status in ('queued', 'running')`,
+           and status in ('queued', 'leased', 'running')`,
         [input.runId, input.taskId]
       );
 
@@ -1910,6 +1976,7 @@ export interface WorkflowRunStatus {
   projectRootUri: string;
   startedAt: string;
   finishedAt: string | null;
+  blockedReason: string | null;
 }
 
 export interface WorkflowTaskStatus {
@@ -2540,7 +2607,14 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
-         wr.finished_at::text as "finishedAt"
+         wr.finished_at::text as "finishedAt",
+         case when wr.status = 'blocked' then (
+           select coalesce(ar.metadata->>'reason', ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "blockedReason"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        order by wr.started_at desc
@@ -2574,7 +2648,14 @@ export async function listWorkflowRunsForProject(input: {
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
-         wr.finished_at::text as "finishedAt"
+         wr.finished_at::text as "finishedAt",
+         case when wr.status = 'blocked' then (
+           select coalesce(ar.metadata->>'reason', ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "blockedReason"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        where p.root_uri = $1
@@ -2598,7 +2679,7 @@ export async function listWorkflowStageHealthForRuns(input: {
          count(*) filter (where wt.status = 'completed')::int as "completedTasks",
          count(*) filter (where wt.status = 'failed')::int as "failedTasks",
          count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
-         count(*) filter (where wt.status = 'running')::int as "runningTasks",
+         count(*) filter (where wt.status in ('leased','running'))::int as "runningTasks",
          count(*) filter (where wt.status = 'cancelled')::int as "cancelledTasks"
        from workflow_tasks wt
        where wt.run_id = any($1::uuid[])
@@ -2664,7 +2745,14 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
-         wr.finished_at::text as "finishedAt"
+         wr.finished_at::text as "finishedAt",
+         case when wr.status = 'blocked' then (
+           select coalesce(ar.metadata->>'reason', ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "blockedReason"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        where wr.id = $1`,

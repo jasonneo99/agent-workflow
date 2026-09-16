@@ -26,6 +26,7 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 20. [Context Intelligence Gateway](context-gateway.md): measure, cache, evaluate, and safely enforce token-aware context routing.
 21. [Local Learning Daemon](local-learning-daemon.md): autonomous local learning from approved feedback, run history, failures, evals, and research notes.
 22. [Daemon Control Plane](daemon-control-plane.md): supervised evidence, optimization, action, runtime, repository, CI/release, security, and recovery lanes with independent trust ceilings.
+23. [Reliability Control Plane](reliability-control-plane.md): shared work ownership, fenced execution, exactly-once effects, atomic rollback, failure injection, and SLOs.
 23. [Model Boundary](model-boundary.md): what Agent Workflow can plan versus what external/private model systems own.
 24. [Model Improvement Walkthrough](model-improvement-walkthrough.md): end-to-end local evidence, cost-saving, personalization, comparison, and promotion-note flow.
 25. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.

@@ -46,7 +46,7 @@ test("completed retried tasks can finalize runs with cancelled downstream tasks"
 
   assert.match(
     source,
-    /set status = 'completed'[\s\S]+not exists \([\s\S]+wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u
+    /set status = 'completed'[\s\S]+not exists \([\s\S]+wt\.status in \('queued', 'leased', 'running', 'failed', 'blocked'\)/u
   );
 });
 
@@ -57,7 +57,7 @@ test("blocked stage output terminates the run without reporting success", () => 
   assert.match(source, /update workflow_tasks set status = 'blocked'/u);
   assert.match(source, /update workflow_runs set status = 'blocked'/u);
   assert.doesNotMatch(source, /update workflow_handoffs[\s\S]{0,200}note =/u);
-  assert.match(source, /wt\.status in \('queued', 'running', 'failed', 'blocked'\)/u);
+  assert.match(source, /wt\.status in \('queued', 'leased', 'running', 'failed', 'blocked'\)/u);
 });
 
 test("checkpoint resume includes blocked runs and cancelled downstream stages", () => {
@@ -71,12 +71,20 @@ test("stale terminal run reconciliation only repairs terminal child-task runs", 
 
   assert.match(
     source,
-    /export async function listStaleTerminalWorkflowRuns[\s\S]+wr\.status in \('queued', 'running'\)[\s\S]+having count\(\*\) > 0[\s\S]+wt\.status in \('queued', 'running', 'failed'\)\) = 0/u
+    /export async function listStaleTerminalWorkflowRuns[\s\S]+wr\.status in \('queued', 'leased', 'running'\)[\s\S]+having count\(\*\) > 0[\s\S]+wt\.status in \('queued', 'leased', 'running', 'failed'\)\) = 0/u
   );
   assert.match(
     source,
-    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'running', 'failed'\)[\s\S]+'stale_run_reconciled'/u
+    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'leased', 'running', 'failed'\)[\s\S]+'stale_run_reconciled'/u
   );
+});
+
+test("task leases use a distinct leased state and fenced terminal writes", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /set status = 'leased'[\s\S]+lease_generation = wt\.lease_generation \+ 1/u);
+  assert.match(source, /export async function startWorkflowTask[\s\S]+status='leased'[\s\S]+lease_generation=\$4::bigint/u);
+  assert.match(source, /assertActiveTaskFence[\s\S]+status='running'[\s\S]+lease_generation=\$3::bigint[\s\S]+lease_expires_at>now\(\)/u);
+  assert.match(source, /export async function completeWorkflowTask[\s\S]+await assertActiveTaskFence\(client, input\)/u);
 });
 
 function compactSql(sql: string): string {

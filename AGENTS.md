@@ -142,6 +142,10 @@ Use `npm run init-project -- --project /path/to/project --profile enterprise` fo
 
 ## Working Rules
 
+- Before write-capable work, acquire a project-scoped work intent with
+  `npm run reliability -- intent acquire`; renew it while active and release it
+  when finished. Interactive clients, daemon lanes, and workers must treat a
+  conflicting intent as a stop condition rather than duplicating the work.
 - Prefer changing YAML definitions over duplicating instructions in code.
 - Keep agent prompts compact and role-specific.
 - Keep workflow stages narrow and auditable.

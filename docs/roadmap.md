@@ -646,6 +646,14 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
 
 ## Phase 4: Reliable Workflow Operations
 
+Reliability foundation completed: shared cross-client work-intent leases,
+validated run/stage transition contracts, per-claim fencing tokens enforced on
+terminal stage writes, a generic exactly-once side-effect ledger, atomic
+health-gated release rollback, an executable deterministic failure-contract
+matrix, and a machine-readable reliability SLO report. Live dependency-outage
+drills remain evidence-gated, and autonomous authority must remain bounded when
+these controls report attention.
+
 Goal: make long-running, partially automated workflows recoverable, observable,
 and safe under real development conditions.
 

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
-import { executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
+import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
@@ -21,6 +21,7 @@ import {
   failWorkflowTask,
   recordRunAction,
   requestActionApproval,
+  startWorkflowTask,
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 
@@ -62,6 +63,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
     result.claimed += 1;
 
     try {
+      await startWorkflowTask({ taskId: task.taskId, runId: task.runId, workerId: task.workerId!, fencingToken: task.fencingToken });
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
       const localProjectRootUri = (await resolveLocalProjectPath(task.projectRootUri)).localRootUri;
@@ -89,7 +91,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       try {
         execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
       } catch (error) {
-        const failure = error instanceof ProviderExecutionError ? error : new ProviderExecutionError("unknown", "Provider execution failed.");
+        const failure = classifyProviderFailure(error);
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: failure.attempts, latencyMs: Date.now() - startedAt }).catch(() => 0);
         await recordRunAction({
           runId: task.runId,
@@ -98,7 +100,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           target: `${task.workflowId}/${task.stageId}`,
           summary: `${route.providerId} failed (${failure.kind})`,
           artifactKind: "model_route",
-          artifactContent: { workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, status: "failed", failureKind: failure.kind, attempts: failure.attempts, latencyMs: Date.now() - startedAt }
+          artifactContent: { workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, status: "failed", failureKind: failure.kind, failureReason: failure.message, attempts: failure.attempts, latencyMs: Date.now() - startedAt }
         });
         throw failure;
       }
@@ -148,6 +150,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           taskId: task.taskId,
           runId: task.runId,
           agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
           summary: output.summary,
           reason: blockedReason,
           artifact: {
@@ -724,6 +728,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         taskId: task.taskId,
         runId: task.runId,
         agentId: task.agentId,
+        workerId: task.workerId!,
+        fencingToken: task.fencingToken,
         summary: output.summary,
         artifact: {
           ...output.artifact,
@@ -745,6 +751,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         taskId: task.taskId,
         runId: task.runId,
         agentId: task.agentId,
+        workerId: task.workerId!,
+        fencingToken: task.fencingToken,
         error: error instanceof Error ? error.message : String(error)
       });
       result.failed += 1;
@@ -783,6 +791,8 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
         taskId: task.taskId,
         runId: task.runId,
         agentId: task.agentId,
+        workerId: task.workerId!,
+        fencingToken: task.fencingToken,
         summary: `Reused ${task.executorSnapshot.operation} result from ${previous.uri}.`,
         artifact: { executor: task.executorSnapshot, execution: previous.content.execution, actionResults: [{ type: "executor_adapter_reused", artifactUri: previous.uri, reuseArtifactUri }] }
       });
@@ -823,6 +833,8 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
           taskId: task.taskId,
           runId: task.runId,
           agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
           summary: `Approval pending for ${approvalTarget}.`,
           artifact: { executor: task.executorSnapshot, actionResults: [{ type: "executor_adapter_approval_pending", approvalId: approval.approvalId, artifactUri: approval.artifactUri, status: approval.status }] }
         });
@@ -846,6 +858,8 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
       taskId: task.taskId,
       runId: task.runId,
       agentId: task.agentId,
+      workerId: task.workerId!,
+      fencingToken: task.fencingToken,
       summary: `Executed ${task.executorSnapshot.operation} on ${execution.executionHost}.`,
       artifact: { executor: task.executorSnapshot, execution, actionResults: [{ type: "executor_adapter", artifactUri }] }
     });

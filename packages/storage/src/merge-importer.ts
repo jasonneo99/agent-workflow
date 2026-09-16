@@ -411,16 +411,16 @@ async function importWorkflowRuns(sourceClient: pg.Client, targetClient: pg.Clie
 }
 
 async function importWorkflowTasks(sourceClient: pg.Client, targetClient: pg.Client): Promise<number> {
-  const rows = (await sourceClient.query(`select id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key, executor_snapshot, worker_id, lease_expires_at, available_at, started_at, finished_at
+  const rows = (await sourceClient.query(`select id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key, executor_snapshot, worker_id, lease_expires_at, lease_generation, available_at, started_at, finished_at
     from workflow_tasks order by available_at`)).rows;
   let inserted = 0;
   for (const row of rows) {
     inserted += await exec(targetClient, `insert into workflow_tasks (
       id, run_id, stage_id, agent_id, status, input_uri, output_uri, attempts, idempotency_key,
-      executor_snapshot, worker_id, lease_expires_at, available_at, started_at, finished_at
-    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) on conflict do nothing`, [
+      executor_snapshot, worker_id, lease_expires_at, lease_generation, available_at, started_at, finished_at
+    ) values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) on conflict do nothing`, [
       row.id, row.run_id, row.stage_id, row.agent_id, row.status, row.input_uri, row.output_uri, row.attempts, row.idempotency_key,
-      row.executor_snapshot, row.worker_id, row.lease_expires_at, row.available_at, row.started_at, row.finished_at
+      row.executor_snapshot, row.worker_id, row.lease_expires_at, row.lease_generation, row.available_at, row.started_at, row.finished_at
     ]);
   }
   return inserted;
