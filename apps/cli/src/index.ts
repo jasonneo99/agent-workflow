@@ -35,7 +35,7 @@ import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageR
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
-import { prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
+import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
@@ -4471,7 +4471,16 @@ program
         for (const target of targets) {
           const targetProjectDir = target.projectDir;
           try {
-            const update = await runLearningDaemonTick({ projectDir: targetProjectDir, mode: target.mode, limit: target.limit, daemonId, approvalAutopilotOverride });
+            const update = await runLearningDaemonTick({
+              projectDir: targetProjectDir,
+              mode: target.mode,
+              limit: target.limit,
+              daemonId,
+              approvalAutopilotOverride,
+              // Provider comparisons produce fleet-wide evidence. Run them once
+              // from the daemon's control project, not once per registered project.
+              modelComparisonEnabled: isFleetModelComparisonOwner(targetProjectDir, projectDir)
+            });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
             analyzedRuns += update.report.runsAnalyzed;
@@ -23367,6 +23376,7 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
+  modelComparisonEnabled?: boolean;
 }): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
   const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
   await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
@@ -23374,7 +23384,9 @@ async function runLearningDaemonTick(input: {
   const modelRoutingOptimizer = await runModelRoutingOptimizer({ projectDir: input.projectDir, suites: await loadDashboardEvaluations(250, input.projectDir), autoUpdate: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE) });
   const modelComparisonSchedule = await prepareRecurringModelComparison({
     projectDir: input.projectDir,
-    enabled: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_COMPARISON_AUTO_RUN),
+    enabled: input.modelComparisonEnabled !== false
+      && input.mode === "apply-approved"
+      && envFlagEnabled(process.env.AGENTFLOW_MODEL_COMPARISON_AUTO_RUN),
     intervalMs: parsePositiveInteger(process.env.AGENTFLOW_MODEL_COMPARISON_INTERVAL_MS ?? "", 86400000)
   });
   if (modelComparisonSchedule.due) {

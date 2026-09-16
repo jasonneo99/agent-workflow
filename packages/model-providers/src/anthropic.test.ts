@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { configuredAnthropicModelForTier } from "./anthropic.js";
+import { buildAnthropicMessageRequest, configuredAnthropicModelForTier } from "./anthropic.js";
 import { selectModelFromCatalog } from "./catalog.js";
 
 test("Anthropic model configuration supports per-tier overrides", () => {
@@ -22,6 +22,12 @@ test("Anthropic catalog routing selects Claude families by tier", () => {
   assert.equal(selectModelFromCatalog(catalog, "fast", { provider: "anthropic" }), "claude-haiku-4-5-20251001");
   assert.equal(selectModelFromCatalog(catalog, "standard", { provider: "anthropic" }), "claude-sonnet-4-6");
   assert.equal(selectModelFromCatalog(catalog, "reasoning", { provider: "anthropic" }), "claude-opus-4-6");
+});
+
+test("Anthropic message requests avoid sampling fields rejected by current reasoning models", () => {
+  const request = buildAnthropicMessageRequest("claude-opus-5", "system", "prompt");
+  assert.equal("temperature" in request, false);
+  assert.equal(request.model, "claude-opus-5");
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

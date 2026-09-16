@@ -10,6 +10,10 @@ export type ModelComparisonSchedule = { kind: "agentflow_model_comparison_schedu
 const markerStart = "<!-- agentflow:model-routing:start -->";
 const markerEnd = "<!-- agentflow:model-routing:end -->";
 
+export function isFleetModelComparisonOwner(targetProjectDir: string, controlProjectDir: string): boolean {
+  return path.resolve(targetProjectDir) === path.resolve(controlProjectDir);
+}
+
 export async function runModelRoutingOptimizer(input: { projectDir: string; suites: Suite[]; autoUpdate: boolean }): Promise<ModelRoutingOptimizerReport> {
   const recommendations = rankComparedProviders(input.suites);
   const eligible = recommendations

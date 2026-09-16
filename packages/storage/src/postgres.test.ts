@@ -53,6 +53,14 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
   );
 });
 
+test("evaluation failures remain evidence instead of actionable queue items", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /export async function listWorkflowQueue[\s\S]+not \(wr\.status in \('failed', 'blocked'\) and wr\.evaluation_metadata \? 'suiteId'\)/u
+  );
+});
+
 test("completed retried tasks can finalize runs with cancelled downstream tasks", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
 

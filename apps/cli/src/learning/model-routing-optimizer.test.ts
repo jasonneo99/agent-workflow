@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { prepareRecurringModelComparison, rankComparedProviders } from "./model-routing-optimizer.js";
+import { isFleetModelComparisonOwner, prepareRecurringModelComparison, rankComparedProviders } from "./model-routing-optimizer.js";
 
 test("model routing optimizer promotes only comparison leaders with sufficient evidence", () => {
   const recommendations = rankComparedProviders([{ id: "review", workflowId: "review-pr", leader: "claude", latestAt: "2026-01-01", variants: [{ id: "claude", provider: "anthropic", modelTier: "reasoning", runs: 3, completed: 3, averageQuality: 0.92, averageLatencyMs: 900, fallbackRate: 0 }, { id: "openai", provider: "openai", modelTier: "reasoning", runs: 3, completed: 3, averageQuality: 0.85, averageLatencyMs: 700, fallbackRate: 0 }] }]);
@@ -27,4 +27,9 @@ test("recurring comparisons rotate tiers and require the configured interval", a
   const second = await prepareRecurringModelComparison({ projectDir, enabled: true, intervalMs: 1000, now: new Date("2026-01-01T00:00:02Z"), env });
   assert.equal(second.due, true);
   assert.equal(second.tier, "standard");
+});
+
+test("fleet comparisons have exactly one control-project owner", () => {
+  assert.equal(isFleetModelComparisonOwner("/fleet/control", "/fleet/control"), true);
+  assert.equal(isFleetModelComparisonOwner("/fleet/project-a", "/fleet/control"), false);
 });

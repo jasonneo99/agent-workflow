@@ -576,6 +576,9 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
        where ($2::text is null or p.root_uri = $2)
+         -- Evaluation failures are comparison evidence, not actionable workflow
+         -- failures. They remain visible on the Evaluations surface.
+         and not (wr.status in ('failed', 'blocked') and wr.evaluation_metadata ? 'suiteId')
          and not exists (
            select 1
            from action_receipts dismissed

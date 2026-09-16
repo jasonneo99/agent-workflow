@@ -22,6 +22,17 @@ type AnthropicMessageResponse = {
   usage?: { input_tokens?: number; output_tokens?: number };
 };
 
+class AnthropicApiError extends Error {
+  constructor(
+    public readonly status: number,
+    public readonly code: string | undefined,
+    requestId: string | null
+  ) {
+    super(`Anthropic API returned HTTP ${status}${requestId ? ` (request ${requestId})` : ""}`);
+    this.name = "AnthropicApiError";
+  }
+}
+
 export function configuredAnthropicModelForTier(tier: ModelTier | undefined): string {
   if (tier) {
     const tierModel = process.env[`ANTHROPIC_MODEL_${tier.toUpperCase()}`]?.trim();
@@ -134,13 +145,16 @@ export class AnthropicProvider implements ModelProvider {
 }
 
 async function createMessage(model: string, system: string, prompt: string): Promise<AnthropicMessageResponse> {
-  return anthropicRequest<AnthropicMessageResponse>("/messages", {
+  return anthropicRequest<AnthropicMessageResponse>("/messages", buildAnthropicMessageRequest(model, system, prompt));
+}
+
+export function buildAnthropicMessageRequest(model: string, system: string, prompt: string): Record<string, unknown> {
+  return {
     model,
     max_tokens: 4096,
-    temperature: 0.2,
     system,
     messages: [{ role: "user", content: prompt }]
-  });
+  };
 }
 
 async function anthropicRequest<T>(path: string, body?: unknown): Promise<T> {
@@ -157,7 +171,9 @@ async function anthropicRequest<T>(path: string, body?: unknown): Promise<T> {
   });
   if (!response.ok) {
     const requestId = response.headers.get("request-id");
-    throw new Error(`Anthropic API returned HTTP ${response.status}${requestId ? ` (request ${requestId})` : ""}`);
+    const payload = await response.json().catch(() => undefined) as { error?: { type?: unknown } } | undefined;
+    const code = typeof payload?.error?.type === "string" ? payload.error.type : undefined;
+    throw new AnthropicApiError(response.status, code, requestId);
   }
   return await response.json() as T;
 }
