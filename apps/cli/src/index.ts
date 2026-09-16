@@ -1035,12 +1035,12 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "auto, mock, byo, openai, codex-cli, anthropic, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, openai-compatible, bedrock, or kiro")
   .option("--login", "authenticate interactively before selecting a CLI provider")
   .option("--device-auth", "use Codex device-code login for a headless machine")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-    const supported = ["auto", "mock", "byo", "openai", "codex-cli", "anthropic", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -1085,6 +1085,8 @@ program
       console.log("Using auto routing. Agent Workflow will pick a ready provider per stage tier.");
     } else if (providerId === "byo") {
       console.log("Using BYO model provider. Requires BYO_MODEL_BASE_URL and BYO_MODEL_NAME; BYO_MODEL_API_KEY is optional.");
+    } else if (providerId === "local") {
+      console.log("Using the local OpenAI-compatible runtime. Configure LOCAL_MODEL_BASE_URL and LOCAL_MODEL_NAME; LOCAL_MODEL_API_KEY is optional.");
     } else if (providerId === "kiro") {
       console.log("Using Kiro CLI provider. Requires `kiro-cli login` or KIRO_API_KEY, optional KIRO_AGENT.");
     } else if (providerId === "bedrock") {
