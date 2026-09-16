@@ -9,9 +9,11 @@ test("compiled briefs label bounded exact source evidence separately from summar
     project: { project: { name: "fixture", autonomy: 1 }, execution: { policy_profile: "local" }, actions: { allowed_commands: [], blocked_commands: [], command_timeout_ms: 1, max_output_chars: 1, allowed_write_paths: [], blocked_write_paths: [], max_write_bytes: 1, approval_rules: [] } } as never,
     workflow: { id: "fixture", name: "Fixture", lead: "fixture", stages: [] } as never,
     agents: [],
-    sourceExcerpts: [{ sourceUri: "Sources/Feature.swift", content: "struct Feature {}" }]
+    sourceExcerpts: [{ sourceUri: "Sources/Feature.swift", content: "struct Feature {}", kind: "source_file", originalChars: 40, truncated: true, contentSha256: "a".repeat(64) }]
   });
   assert.match(brief, /## Exact Source Evidence/u);
   assert.match(brief, /### Sources\/Feature\.swift/u);
   assert.match(brief, /struct Feature \{\}/u);
+  assert.match(brief, /kind=source_file; completeness=truncated/u);
+  assert.match(brief, /includedChars=17; originalChars=40; omittedChars=23/u);
 });

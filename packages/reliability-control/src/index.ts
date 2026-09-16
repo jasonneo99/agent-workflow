@@ -70,24 +70,56 @@ export const reliabilityFailureScenarios = [
   "duplicate_authenticated_request", "overlapping_codex_and_daemon_write", "release_health_check_failure"
 ] as const;
 
+export const reliabilityProtocolVersions = Object.freeze({ runtime: 1, storage: 1, bundle: 1 });
+export type ReliabilityProtocolVersions = typeof reliabilityProtocolVersions;
+
 export type ReliabilitySample = {
-  totalMutations: number; receiptedMutations: number; duplicateSideEffects: number; stuckRuns: number;
-  recoveryDurationsMs: number[]; fleetFalseCriticals: number; rollbackDurationsMs: number[]; invalidTerminalRuns: number;
+  totalMutations: number; receiptedMutations: number; duplicateSideEffects: number | null; stuckRuns: number;
+  recoveryDurationsMs: number[] | null; fleetFalseCriticals: number | null; rollbackDurationsMs: number[] | null; invalidTerminalRuns: number;
 };
-export type ReliabilitySloReport = { status: "pass" | "attention"; checks: Array<{ id: string; pass: boolean; actual: number; target: string }> };
+export type ReliabilityCheckStatus = "pass" | "attention" | "unknown";
+export type ReliabilitySloCheck = {
+  id: string; status: ReliabilityCheckStatus; pass: boolean | null; actual: number | null; target: string;
+  evidenceCount: number; numerator?: number; denominator?: number;
+};
+export type ReliabilitySloReport = { status: ReliabilityCheckStatus; checks: ReliabilitySloCheck[] };
+
+export type ReliabilityFailureEvidence = {
+  scenario: typeof reliabilityFailureScenarios[number]; outcome: "pass" | "attention"; observedAt: string; artifact?: string;
+};
+
+export function evaluateReliabilityFailureScenarios(evidence: ReliabilityFailureEvidence[] = []) {
+  return reliabilityFailureScenarios.map((id) => {
+    const observations = evidence.filter((entry) => entry.scenario === id);
+    const latest = observations.at(-1);
+    return {
+      id,
+      status: latest?.outcome ?? "unknown",
+      evidenceCount: observations.length,
+      observedAt: latest?.observedAt ?? null,
+      artifact: latest?.artifact ?? null
+    };
+  });
+}
 
 export function evaluateReliabilitySlos(sample: ReliabilitySample): ReliabilitySloReport {
-  const max = (values: number[]) => values.length ? Math.max(...values) : 0;
-  const receiptRate = sample.totalMutations ? sample.receiptedMutations / sample.totalMutations : 1;
-  const checks = [
-    { id: "reliability-evidence", pass: sample.totalMutations > 0 && sample.recoveryDurationsMs.length > 0 && sample.rollbackDurationsMs.length > 0, actual: Number(sample.totalMutations > 0) + Number(sample.recoveryDurationsMs.length > 0) + Number(sample.rollbackDurationsMs.length > 0), target: "3/3 evidence classes" },
-    { id: "duplicate-side-effects", pass: sample.duplicateSideEffects === 0, actual: sample.duplicateSideEffects, target: "0" },
-    { id: "mutation-receipt-rate", pass: receiptRate === 1, actual: receiptRate, target: "100%" },
-    { id: "stuck-runs", pass: sample.stuckRuns === 0, actual: sample.stuckRuns, target: "0 beyond lease" },
-    { id: "recovery-time", pass: max(sample.recoveryDurationsMs) <= 300_000, actual: max(sample.recoveryDurationsMs), target: "<=300000ms" },
-    { id: "fleet-false-criticals", pass: sample.fleetFalseCriticals === 0, actual: sample.fleetFalseCriticals, target: "0" },
-    { id: "rollback-time", pass: max(sample.rollbackDurationsMs) <= 120_000, actual: max(sample.rollbackDurationsMs), target: "<=120000ms" },
-    { id: "invalid-terminal-runs", pass: sample.invalidTerminalRuns === 0, actual: sample.invalidTerminalRuns, target: "0" }
+  const measured = (id: string, actual: number, target: string, pass: boolean, evidenceCount = 1, ratio?: { numerator: number; denominator: number }): ReliabilitySloCheck =>
+    ({ id, status: pass ? "pass" : "attention", pass, actual, target, evidenceCount, ...ratio });
+  const unknown = (id: string, target: string): ReliabilitySloCheck => ({ id, status: "unknown", pass: null, actual: null, target, evidenceCount: 0 });
+  const maxCheck = (id: string, values: number[] | null, limit: number) => values?.length
+    ? measured(id, Math.max(...values), `<=${limit}ms`, Math.max(...values) <= limit, values.length)
+    : unknown(id, `<=${limit}ms`);
+  const checks: ReliabilitySloCheck[] = [
+    sample.duplicateSideEffects === null ? unknown("duplicate-side-effects", "0") : measured("duplicate-side-effects", sample.duplicateSideEffects, "0", sample.duplicateSideEffects === 0),
+    sample.totalMutations > 0
+      ? measured("mutation-receipt-rate", sample.receiptedMutations / sample.totalMutations, "100%", sample.receiptedMutations === sample.totalMutations, sample.totalMutations, { numerator: sample.receiptedMutations, denominator: sample.totalMutations })
+      : unknown("mutation-receipt-rate", "100%"),
+    measured("stuck-runs", sample.stuckRuns, "0 beyond lease", sample.stuckRuns === 0),
+    maxCheck("recovery-time", sample.recoveryDurationsMs, 300_000),
+    sample.fleetFalseCriticals === null ? unknown("fleet-false-criticals", "0") : measured("fleet-false-criticals", sample.fleetFalseCriticals, "0", sample.fleetFalseCriticals === 0),
+    maxCheck("rollback-time", sample.rollbackDurationsMs, 120_000),
+    measured("invalid-terminal-runs", sample.invalidTerminalRuns, "0", sample.invalidTerminalRuns === 0)
   ];
-  return { status: checks.every((check) => check.pass) ? "pass" : "attention", checks };
+  const status = checks.some((check) => check.status === "attention") ? "attention" : checks.some((check) => check.status === "unknown") ? "unknown" : "pass";
+  return { status, checks };
 }

@@ -62,7 +62,7 @@ test("blocked stage output terminates the run without reporting success", () => 
 
 test("checkpoint resume includes blocked runs and cancelled downstream stages", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  assert.match(source, /status in \('queued', 'running', 'failed', 'blocked'\)/u);
+  assert.match(source, /status in \('queued', 'leased', 'running', 'failed', 'blocked'\)/u);
   assert.match(source, /\["queued", "running", "failed", "blocked", "cancelled"\]/u);
 });
 
@@ -85,6 +85,36 @@ test("task leases use a distinct leased state and fenced terminal writes", () =>
   assert.match(source, /export async function startWorkflowTask[\s\S]+status='leased'[\s\S]+lease_generation=\$4::bigint/u);
   assert.match(source, /assertActiveTaskFence[\s\S]+status='running'[\s\S]+lease_generation=\$3::bigint[\s\S]+lease_expires_at>now\(\)/u);
   assert.match(source, /export async function completeWorkflowTask[\s\S]+await assertActiveTaskFence\(client, input\)/u);
+  assert.match(source, /export async function renewWorkflowTaskLease[\s\S]+lease_generation = \$4::bigint[\s\S]+lease_expires_at > now\(\)/u);
+});
+
+test("unified activity query covers workflow, stage, action, and approval evidence", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /export async function listActivityEvents/u);
+  for (const table of ["workflow_runs", "workflow_tasks", "action_receipts", "action_approvals"]) {
+    assert.match(source, new RegExp(`from ${table}`, "u"));
+  }
+  assert.match(source, /order by occurred_at desc/u);
+});
+
+test("approval execution is atomically claimed before dispatch", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /ADD COLUMN IF NOT EXISTS execution_claim_token uuid/u);
+  assert.match(source, /export async function claimActionApprovalExecution/u);
+  assert.match(source, /set status = 'executing'[\s\S]+execution_claim_token = gen_random_uuid\(\)/u);
+  assert.match(source, /aa\.execution_claim_token = \$6::uuid/u);
+});
+
+test("side effects are reserved before dispatch and uncertain claims are not replayed", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /CREATE TABLE IF NOT EXISTS side_effect_receipts[\s\S]+status text NOT NULL DEFAULT 'completed'[\s\S]+claim_token uuid[\s\S]+claim_expires_at timestamptz/u);
+  const reliabilitySource = readFileSync(new URL("./reliability.ts", import.meta.url), "utf8");
+  assert.match(reliabilitySource, /export async function claimSideEffect[\s\S]+status='uncertain'/u);
+  assert.match(reliabilitySource, /export async function finalizeSideEffect[\s\S]+status='pending'[\s\S]+claim_token=\$3::uuid/u);
+  const executorSource = readFileSync(new URL("../../workflow-engine/src/executor.ts", import.meta.url), "utf8");
+  assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedCommand/u);
+  assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedFileWrite/u);
+  assert.match(executorSource, /type\.includes\("_side_effect_"\)/u);
 });
 
 function compactSql(sql: string): string {

@@ -10,6 +10,9 @@ import YAML from "yaml";
 import { supervisedDaemonLaneStatus } from "./supervisor-daemon-lanes.mjs";
 
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const packageMetadata = JSON.parse(await fs.readFile(path.join(rootDir, "package.json"), "utf8"));
+const bundleMetadata = JSON.parse(await fs.readFile(path.join(rootDir, "agent-workflow.bundle.json"), "utf8"));
+const runtimeVersionMetadata = { runtimeVersion: packageMetadata.version ?? "unknown", bundleVersion: bundleMetadata.bundle?.version ?? "unknown", protocolVersions: { runtime: 1, storage: 1, bundle: 1 } };
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
@@ -86,9 +89,11 @@ async function activeSupervisor() {
     const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? Date.parse(heartbeat.lastHeartbeatAt) : 0;
     const staleAfterMs = Math.max(positiveNumber(heartbeat.monitorIntervalMs, monitorIntervalMs) * 3, 15_000);
     if (!pid || pid === process.pid || Date.now() - lastHeartbeatAt > staleAfterMs) return null;
+    assertCompatibleHeartbeat(heartbeat, "supervisor");
     const command = await processCommand(pid);
     return command.includes(rootDir) && command.includes("scripts/dev-agentflow.mjs") ? { pid, command } : null;
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing mixed-version")) throw error;
     return null;
   }
 }
@@ -119,7 +124,8 @@ function isLocalUrl(value) {
   try {
     const host = new URL(value).hostname;
     return host === "localhost" || host === "127.0.0.1" || host === "::1" || host === "0.0.0.0";
-  } catch {
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing mixed-version")) throw error;
     return false;
   }
 }
@@ -293,8 +299,11 @@ async function isWorkerHeartbeatFresh(filePath = workerHeartbeatPath, fallbackIn
     const intervalMs = typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : fallbackIntervalMs;
     const staleAfterMs = Math.max(intervalMs * 3, 15_000);
     const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
-    return Boolean(pid && Date.now() - lastHeartbeatAt <= staleAfterMs && isProcessAlive(pid));
-  } catch {
+    const freshAndAlive = Boolean(pid && Date.now() - lastHeartbeatAt <= staleAfterMs && isProcessAlive(pid));
+    if (freshAndAlive) assertCompatibleHeartbeat(heartbeat, `worker (${filePath})`);
+    return freshAndAlive;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing mixed-version")) throw error;
     return false;
   }
 }
@@ -307,8 +316,11 @@ async function isLearningHeartbeatFresh() {
     const staleAfterMs = Math.max(intervalMs * 3, 30_000);
     const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
     const status = typeof heartbeat.status === "string" ? heartbeat.status : "";
-    return Boolean(pid && Date.now() - lastHeartbeatAt <= staleAfterMs && isProcessAlive(pid) && status !== "stopped" && status !== "stopping" && status !== "failed");
-  } catch {
+    const freshAndAlive = Boolean(pid && Date.now() - lastHeartbeatAt <= staleAfterMs && isProcessAlive(pid) && status !== "stopped" && status !== "stopping" && status !== "failed");
+    if (freshAndAlive) assertCompatibleHeartbeat(heartbeat, "learning daemon");
+    return freshAndAlive;
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("Refusing mixed-version")) throw error;
     return false;
   }
 }
@@ -331,6 +343,7 @@ async function writeHeartbeat(status, message) {
   const workerManaged = [...children.keys()].some((name) => name.startsWith("worker:"));
   const learningManaged = children.has("learning-daemon");
   await fs.writeFile(supervisorHeartbeatPath, `${JSON.stringify({
+    ...runtimeVersionMetadata,
     pid: process.pid,
     status,
     message,
@@ -367,6 +380,14 @@ async function writeHeartbeat(status, message) {
     monitorIntervalMs,
     command: "npm run dev:agentflow"
   }, null, 2)}\n`, "utf8");
+}
+
+function assertCompatibleHeartbeat(heartbeat, source) {
+  const actual = heartbeat?.protocolVersions;
+  const expected = runtimeVersionMetadata.protocolVersions;
+  if (actual?.runtime !== expected.runtime || actual?.storage !== expected.storage || actual?.bundle !== expected.bundle) {
+    throw new Error(`Refusing mixed-version ${source}: expected protocol ${JSON.stringify(expected)}, received ${JSON.stringify(actual ?? null)}.`);
+  }
 }
 
 const supervisorStartedAt = new Date().toISOString();

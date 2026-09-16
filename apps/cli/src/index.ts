@@ -76,6 +76,7 @@ import {
 import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
+  claimActionApprovalExecution,
   createWorkflowRun,
   deleteProjectFiles,
   decideActionApproval,
@@ -89,6 +90,7 @@ import {
   getWorkflowRunDetails,
   findRunActionByIdempotencyKey,
   listActionApprovals,
+  listActivityEvents,
   listArtifactLifecycle,
   listArtifacts,
   listProjectFileSummaries,
@@ -131,7 +133,7 @@ import { buildObservabilityReport, formatObservabilityReport, type Observability
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
-import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
+import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
 import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readContextCacheHealth, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
 import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeHostRead, type ContextHost } from "../../../packages/context-host-adapters/src/index.js";
@@ -150,6 +152,7 @@ import { registerContextCommands } from "./commands/context.js";
 import { formatContractTestReport, runDefinitionContractTests, type ContractTestReport } from "../../../packages/contract-tests/src/index.js";
 import { readFleetUsageReceipts, summarizeFleetUsage, type FleetUsageReceipt } from "../../../packages/fleet-model-gateway/src/index.js";
 import { buildUntrustedConversationBrief, classifyConversationIntent, conversationRequestHash, parseConversationRequest, sanitizeAssistantText, type ConversationRequest } from "../../../packages/conversation-contract/src/index.js";
+import { reliabilityProtocolVersions } from "../../../packages/reliability-control/src/index.js";
 
 const program = new Command();
 registerRepositoryMaintenanceCommand(program);
@@ -157,6 +160,16 @@ registerContextThresholdCommands(program);
 registerAcceptedOutcomeCommands(program);
 registerContextCommands(program);
 const rootDir = findAgentWorkflowRoot(import.meta.url);
+const protocolVersions = reliabilityProtocolVersions;
+type RuntimeVersionMetadata = { runtimeVersion: string; bundleVersion: string; protocolVersions: typeof protocolVersions };
+const runtimeVersionMetadata: Promise<RuntimeVersionMetadata> = Promise.all([
+  fs.readFile(path.join(rootDir, "package.json"), "utf8"),
+  fs.readFile(path.join(rootDir, "agent-workflow.bundle.json"), "utf8")
+]).then(([packageText, bundleText]) => ({
+  runtimeVersion: (JSON.parse(packageText) as { version?: string }).version ?? "unknown",
+  bundleVersion: (JSON.parse(bundleText) as { bundle?: { version?: string } }).bundle?.version ?? "unknown",
+  protocolVersions
+}));
 const packageVersion = readPackageVersion(rootDir);
 
 function readPackageVersion(root: string): string {
@@ -251,6 +264,9 @@ program.hook("preAction", async (_command, actionCommand) => {
 });
 
 type WorkerHeartbeat = {
+  runtimeVersion: string;
+  bundleVersion: string;
+  protocolVersions: typeof protocolVersions;
   pid: number;
   workerId: string;
   projectRootUri: string | null;
@@ -268,6 +284,9 @@ type WorkerHeartbeat = {
 };
 
 type DashboardWorkerStatus = {
+  runtimeVersion: string | null;
+  bundleVersion: string | null;
+  protocolVersions: Partial<typeof protocolVersions> | null;
   heartbeatPath: string;
   configured: boolean;
   workerId: string | null;
@@ -292,6 +311,9 @@ type DashboardWorkerStatus = {
 type DashboardWorkerLane = Omit<DashboardWorkerStatus, "lanes">;
 
 type SupervisorHeartbeat = {
+  runtimeVersion: string;
+  bundleVersion: string;
+  protocolVersions: typeof protocolVersions;
   pid: number;
   status: "starting" | "running" | "stopping" | "stopped" | "failed";
   message: string;
@@ -314,6 +336,9 @@ type SupervisorHeartbeat = {
 };
 
 type DashboardSupervisorStatus = {
+  runtimeVersion: string | null;
+  bundleVersion: string | null;
+  protocolVersions: Partial<typeof protocolVersions> | null;
   heartbeatPath: string;
   configured: boolean;
   status: "running" | "stale" | "stopped" | "missing" | "failed";
@@ -4339,6 +4364,7 @@ program
       }
     ): Promise<LearningDaemonHeartbeat> => {
       const heartbeat: LearningDaemonHeartbeat = {
+        ...await runtimeVersionMetadata,
         kind: "agentflow_learning_daemon_status",
         pid: process.pid,
         daemonId,
@@ -4357,6 +4383,9 @@ program
         roadmapStatus: update?.roadmap.status ?? lastStatus?.roadmapStatus,
         roadmapOpenItems: aggregate?.roadmapOpenItems ?? update?.roadmap.openItems ?? lastStatus?.roadmapOpenItems ?? 0,
         roadmapSuggestions: aggregate?.roadmapSuggestions ?? update?.roadmap.suggestions.length ?? lastStatus?.roadmapSuggestions ?? 0,
+        roadmapSnapshotStatus: update?.roadmapPublication.status ?? lastStatus?.roadmapSnapshotStatus,
+        roadmapSnapshotPublishedAt: update?.roadmapPublication.publishedAt ?? lastStatus?.roadmapSnapshotPublishedAt ?? null,
+        roadmapSnapshotDigest: update?.roadmapPublication.digest ?? lastStatus?.roadmapSnapshotDigest,
         inboxItems: aggregate?.inboxItems ?? update?.approvalQueue.items.length ?? lastStatus?.inboxItems ?? 0,
         applicationActions: aggregate?.applicationActions ?? update?.applicationPlan?.actions.length ?? lastStatus?.applicationActions ?? 0,
         autonomousAppliedActions: aggregate?.autonomousAppliedActions ?? update?.autonomousApplication.appliedActions ?? lastStatus?.autonomousAppliedActions ?? 0,
@@ -6109,6 +6138,7 @@ program
         ticks += 1;
       }
       const heartbeat: WorkerHeartbeat = {
+        ...await runtimeVersionMetadata,
         pid: process.pid,
         workerId,
         projectRootUri: projectRootUri ?? null,
@@ -6909,7 +6939,20 @@ type LearningActionReceiptCompactionResult = {
 
 type LearningDaemonMode = "observe" | "propose" | "apply-approved";
 
+type RoadmapSnapshotPublication = {
+  status: "published" | "unchanged" | "unavailable";
+  projectId: string;
+  source: string;
+  digest: string;
+  sourceModifiedAt: string | null;
+  publishedAt: string;
+  reason: string;
+};
+
 type LearningDaemonHeartbeat = {
+  runtimeVersion: string;
+  bundleVersion: string;
+  protocolVersions: typeof protocolVersions;
   kind: "agentflow_learning_daemon_status";
   pid: number;
   daemonId: string;
@@ -6929,6 +6972,9 @@ type LearningDaemonHeartbeat = {
   roadmapStatus?: RoadmapSuggestionReport["status"];
   roadmapOpenItems?: number;
   roadmapSuggestions?: number;
+  roadmapSnapshotStatus?: RoadmapSnapshotPublication["status"];
+  roadmapSnapshotPublishedAt?: string | null;
+  roadmapSnapshotDigest?: string;
   inboxItems: number;
   applicationActions: number;
   autonomousAppliedActions?: number;
@@ -7073,6 +7119,9 @@ type DashboardLearningDaemonStatus = {
   limit: number | null;
   ticks: number;
   proposals: number;
+  roadmapSnapshotStatus: RoadmapSnapshotPublication["status"] | null;
+  roadmapSnapshotPublishedAt: string | null;
+  roadmapSnapshotDigest: string | null;
   inboxItems: number;
   applicationActions: number;
   autonomousAppliedActions: number;
@@ -8040,7 +8089,7 @@ type ServerOrchestrationStatusReport = {
   generatedAt: string;
   operationId: string;
   projectId: string;
-  status: "queued" | "running" | "completed" | "blocked" | "failed" | "missing";
+  status: "queued" | "leased" | "running" | "completed" | "blocked" | "failed" | "missing";
   runGroup: Array<{ runId: string; workflowId: string; status: string; startedAt: string; finishedAt: string | null }>;
   progress: {
     totalStages: number;
@@ -8231,6 +8280,32 @@ type ServerRequestAuditReport = {
   notes: string[];
 };
 
+type UnifiedActivityEvent = {
+  id: string;
+  occurredAt: string;
+  projectName: string;
+  projectRootUri: string | null;
+  runId: string | null;
+  category: "workflow" | "stage" | "action" | "approval" | "learning" | "daemon" | "roadmap" | "server";
+  eventType: string;
+  severity: "info" | "warning" | "error";
+  status: string;
+  actor: string | null;
+  title: string;
+  detail: string;
+  source: string;
+  href: string | null;
+};
+
+type UnifiedActivityReport = {
+  kind: "agentflow_unified_activity";
+  generatedAt: string;
+  filters: { project: string | null; category: string | null; severity: string | null; status: string | null; query: string | null; limit: number };
+  counts: { returned: number; byCategory: Record<string, number>; bySeverity: Record<string, number>; byStatus: Record<string, number> };
+  events: UnifiedActivityEvent[];
+  notes: string[];
+};
+
 type ServerMutationControlReport = {
   kind: "agentflow_server_mutation_control_report";
   generatedAt: string;
@@ -8408,7 +8483,7 @@ async function loadGovernanceReport(staleMinutes = 15, includeEphemeral = false)
         configDrift = true;
       }
     }
-    const active = runs.filter((run) => run.status === "queued" || run.status === "running");
+    const active = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
     const staleActiveRuns = active.filter((run) => run.status === "running" && Date.parse(run.startedAt) < staleBefore).length;
     return finalizeGovernanceProject({
       id: summary.id,
@@ -10962,6 +11037,7 @@ async function executeObjectMirrorApproval(input: {
   actorRole?: string;
   executionRoleGate: string;
   separationGate: string;
+  executionClaimToken: string;
 }): Promise<DashboardFollowUpResult> {
   const approval = input.approval;
   if (!approval) {
@@ -10979,7 +11055,8 @@ async function executeObjectMirrorApproval(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Object mirror already had an execution artifact: ${previous.uri}`,
-      artifactUri: previous.uri
+      artifactUri: previous.uri,
+      executionClaimToken: input.executionClaimToken
     });
     return {
       ok: true,
@@ -11006,7 +11083,8 @@ async function executeObjectMirrorApproval(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Object mirror approval payload is invalid: ${message}`,
-      error: message
+      error: message,
+      executionClaimToken: input.executionClaimToken
     });
     return { ok: false, error: message };
   }
@@ -11035,7 +11113,8 @@ async function executeObjectMirrorApproval(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: message,
-      error: message
+      error: message,
+      executionClaimToken: input.executionClaimToken
     });
     return { ok: false, error: message };
   }
@@ -11055,7 +11134,8 @@ async function executeObjectMirrorApproval(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Object mirror alias setup failed: ${message}`,
-      error: message
+      error: message,
+      executionClaimToken: input.executionClaimToken
     });
     return { ok: false, error: message };
   }
@@ -11100,7 +11180,8 @@ async function executeObjectMirrorApproval(input: {
     actorRole: input.actorRole,
     summary,
     artifactUri,
-    error: mirrorResult.exitCode === 0 ? undefined : compactDashboardText(mirrorResult.stderr || mirrorResult.stdout, 500)
+    error: mirrorResult.exitCode === 0 ? undefined : compactDashboardText(mirrorResult.stderr || mirrorResult.stdout, 500),
+    executionClaimToken: input.executionClaimToken
   });
   if (mirrorResult.exitCode !== 0) {
     return { ok: false, error: `${summary} ${compactDashboardText(mirrorResult.stderr || mirrorResult.stdout, 500)}` };
@@ -14546,7 +14627,7 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
     .filter((run) => stringValue(run.evaluationMetadata?.source) === "server-orchestration" && stringValue(run.evaluationMetadata?.operationId) === operationId) : [];
   if (!runs.length) return { statusCode: 404, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, cursor: stableHash([operationId, "missing"]), result: null } };
   const statuses = runs.map((run) => run.status);
-  const status: ServerOrchestrationStatusReport["status"] = statuses.includes("blocked") ? "blocked" : statuses.includes("failed") ? "failed" : statuses.some((item) => item === "queued" || item === "running") ? (statuses.includes("running") ? "running" : "queued") : "completed";
+  const status: ServerOrchestrationStatusReport["status"] = statuses.includes("blocked") ? "blocked" : statuses.includes("failed") ? "failed" : statuses.some((item) => item === "queued" || item === "leased" || item === "running") ? (statuses.includes("running") || statuses.includes("leased") ? "running" : "queued") : "completed";
   const latest = runs[0];
   const details = await Promise.all(runs.map((run) => getWorkflowRunDetails(run.id)));
   const tasks = details.flatMap((detail) => detail.tasks.map((task) => ({ ...task, runId: detail.run?.id ?? "" })));
@@ -14566,7 +14647,7 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
     failedStages,
     cancelledStages,
     percent: tasks.length ? Math.round((terminalStages / tasks.length) * 100) : 0,
-    currentStages: tasks.filter((task) => task.status === "running" || task.status === "queued" || task.status === "blocked" || task.status === "failed").slice(0, 8).map((task) => ({ runId: task.runId, stageId: task.stageId, agentId: task.agentId, status: task.status, attempts: task.attempts })),
+    currentStages: tasks.filter((task) => task.status === "running" || task.status === "leased" || task.status === "queued" || task.status === "blocked" || task.status === "failed").slice(0, 8).map((task) => ({ runId: task.runId, stageId: task.stageId, agentId: task.agentId, status: task.status, attempts: task.attempts })),
     pendingApprovals
   };
   const artifacts = await listArtifacts({ runId: latest.id, kind: "stage_output" });
@@ -15334,6 +15415,135 @@ function formatServerRequestAuditReport(report: ServerRequestAuditReport): strin
     "Notes:",
     ...report.notes.map((note) => `- ${note}`)
   ].join("\n");
+}
+
+async function loadUnifiedActivityReport(params: URLSearchParams): Promise<UnifiedActivityReport> {
+  const limit = Math.max(1, Math.min(parsePositiveInteger(params.get("limit") ?? "200", 200), 1_000));
+  const projectFilter = params.get("project")?.trim() || null;
+  const categoryFilter = params.get("category")?.trim() || null;
+  const severityFilter = params.get("severity")?.trim() || null;
+  const statusFilter = params.get("status")?.trim() || null;
+  const queryFilter = params.get("q")?.trim().toLowerCase() || null;
+  const projects = await listProjectStorageSummaries(500);
+  const selectedProjects = projectFilter ? projects.filter((project) => project.rootUri === projectFilter) : projects;
+  const stored = await listActivityEvents({ limit: Math.min(1_000, limit * 4), projectRootUri: projectFilter ?? undefined });
+  const events: UnifiedActivityEvent[] = stored.map((event) => ({
+    ...event,
+    title: redactApprovalCardText(event.title, 180),
+    detail: redactApprovalCardText(event.detail, 500),
+    href: event.runId ? `/run?id=${encodeURIComponent(event.runId)}` : null
+  }));
+
+  for (const project of selectedProjects) {
+    const learningDir = path.join(project.rootUri, ".agent-workflow", "learning");
+    const receipts = await readJsonFile<{ events?: Array<Record<string, unknown>> }>(path.join(learningDir, "action-receipts.json")).catch(() => null);
+    for (const receipt of receipts?.events?.slice(-Math.min(limit, 250)) ?? []) {
+      const occurredAt = stringValue(receipt.createdAt);
+      if (!occurredAt) continue;
+      const status = stringValue(receipt.status) ?? "recorded";
+      events.push({
+        id: `learning:${stringValue(receipt.id) ?? stableHash(receipt).slice(0, 16)}`,
+        occurredAt,
+        projectName: project.name,
+        projectRootUri: project.rootUri,
+        runId: null,
+        category: "learning",
+        eventType: stringValue(receipt.actionType) ?? "learning_action",
+        severity: status === "failed" || status === "blocked" ? "warning" : "info",
+        status,
+        actor: stringValue(receipt.actor) ?? null,
+        title: redactApprovalCardText(stringValue(receipt.title) ?? "Learning action", 180),
+        detail: redactApprovalCardText(stringValue(receipt.note) ?? "Project-local learning receipt.", 500),
+        source: "learning/action-receipts.json",
+        href: `/learning?project=${encodeURIComponent(project.rootUri)}&view=diagnostics`
+      });
+    }
+    const heartbeat = await readJsonFile<Record<string, unknown>>(path.join(learningDir, "daemon-status.json")).catch(() => null);
+    const heartbeatAt = heartbeat ? stringValue(heartbeat.lastHeartbeatAt) : null;
+    if (heartbeat && heartbeatAt) {
+      const status = stringValue(heartbeat.status) ?? "unknown";
+      events.push({
+        id: `daemon:${project.id}:${heartbeatAt}`,
+        occurredAt: heartbeatAt,
+        projectName: project.name,
+        projectRootUri: project.rootUri,
+        runId: null,
+        category: "daemon",
+        eventType: "learning_daemon_heartbeat",
+        severity: status === "failed" ? "error" : status === "stale" ? "warning" : "info",
+        status,
+        actor: stringValue(heartbeat.daemonId) ?? null,
+        title: `Learning daemon ${status}`,
+        detail: redactApprovalCardText(stringValue(heartbeat.lastError) || `Tick ${String(heartbeat.ticks ?? 0)}; roadmap snapshot ${String(heartbeat.roadmapSnapshotStatus ?? "unknown")}.`, 500),
+        source: "learning/daemon-status.json",
+        href: `/learning?project=${encodeURIComponent(project.rootUri)}&view=diagnostics`
+      });
+    }
+    const publication = await readJsonFile<Record<string, unknown>>(path.join(learningDir, "roadmap-snapshot-publication.json")).catch(() => null);
+    const publicationAt = publication ? stringValue(publication.recordedAt) : null;
+    if (publication && publicationAt) {
+      const status = stringValue(publication.status) ?? "unknown";
+      events.push({
+        id: `roadmap:${project.id}:${publicationAt}`,
+        occurredAt: publicationAt,
+        projectName: project.name,
+        projectRootUri: project.rootUri,
+        runId: null,
+        category: "roadmap",
+        eventType: "roadmap_snapshot_publication",
+        severity: status === "unavailable" ? "warning" : "info",
+        status,
+        actor: stringValue(publication.actor) ?? null,
+        title: `Roadmap snapshot ${status}`,
+        detail: redactApprovalCardText(stringValue(publication.reason) ?? "Roadmap publication receipt.", 500),
+        source: "learning/roadmap-snapshot-publication.json",
+        href: "/roadmap"
+      });
+    }
+  }
+
+  const projectById = new Map(projects.map((project) => [project.id, project]));
+  const requestAudit = await loadServerRequestAuditLog(Math.min(limit, 500));
+  for (const event of requestAudit.events) {
+    const project = event.projectId ? projectById.get(event.projectId) : undefined;
+    if (projectFilter && project?.rootUri !== projectFilter) continue;
+    events.push({
+      id: `server:${event.requestId ?? stableHash(event).slice(0, 16)}`,
+      occurredAt: event.generatedAt,
+      projectName: project?.name ?? "Server",
+      projectRootUri: project?.rootUri ?? null,
+      runId: event.queuedRunId,
+      category: "server",
+      eventType: `server_${event.path.replace(/^\/api\//u, "").replaceAll("/", "_")}`,
+      severity: event.status === "rejected" ? "error" : event.status === "blocked" || event.status === "attention" ? "warning" : "info",
+      status: event.status,
+      actor: event.actorRole,
+      title: `${event.method} ${event.path}`,
+      detail: `Auth ${event.auth.accepted ? "accepted" : event.auth.errorCode ?? "rejected"}; execute ${event.executeRequested ? "requested" : "not requested"}.`,
+      source: "runtime/server/request-log.jsonl",
+      href: event.queuedRunId ? `/run?id=${encodeURIComponent(event.queuedRunId)}` : "/server-readiness"
+    });
+  }
+
+  const filtered = events.filter((event) =>
+    (!categoryFilter || event.category === categoryFilter)
+    && (!severityFilter || event.severity === severityFilter)
+    && (!statusFilter || event.status === statusFilter)
+    && (!queryFilter || `${event.title} ${event.detail} ${event.eventType} ${event.actor ?? ""} ${event.projectName}`.toLowerCase().includes(queryFilter))
+  ).sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt)).slice(0, limit);
+  const countBy = (key: "category" | "severity" | "status") => filtered.reduce<Record<string, number>>((counts, event) => ({ ...counts, [event[key]]: (counts[event[key]] ?? 0) + 1 }), {});
+  return {
+    kind: "agentflow_unified_activity",
+    generatedAt: new Date().toISOString(),
+    filters: { project: projectFilter, category: categoryFilter, severity: severityFilter, status: statusFilter, query: queryFilter, limit },
+    counts: { returned: filtered.length, byCategory: countBy("category"), bySeverity: countBy("severity"), byStatus: countBy("status") },
+    events: filtered,
+    notes: [
+      "This is a redacted read model over durable runs, stages, receipts, approvals, learning receipts, daemon state, roadmap publication, and server request audit events.",
+      "Prompt bodies, model response bodies, credentials, private file contents, and raw network identities are excluded.",
+      "Process stdout and stderr remain in component runtime logs and are not duplicated into this structured timeline."
+    ]
+  };
 }
 
 function formatArtifactLifecycleActionPlan(plan: ArtifactLifecycleActionPlan): string[] {
@@ -23157,7 +23367,7 @@ async function runLearningDaemonTick(input: {
   limit: number;
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
-}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
   const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
   await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
@@ -23179,6 +23389,15 @@ async function runLearningDaemonTick(input: {
     fsSync.closeSync(logFd);
   }
   const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir);
+  const roadmapPublication = await publishRoadmapSnapshotIfChanged(input.projectDir, input.daemonId ?? "learning-daemon").catch((error) => ({
+    status: "unavailable" as const,
+    projectId: "",
+    source: roadmap.roadmapPath,
+    digest: "",
+    sourceModifiedAt: null,
+    publishedAt: new Date().toISOString(),
+    reason: `Roadmap snapshot publication is unavailable: ${error instanceof Error ? error.message : String(error)}`
+  }));
   const proposalSet = buildLearningProposalSet(report);
   const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
   const autonomousApplyMaxRisk = await learningAutonomousApplyMaxRisk(input.projectDir);
@@ -23274,7 +23493,7 @@ async function runLearningDaemonTick(input: {
     events: optimizerEvents,
     recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({ id: `workflow-shape:${index}:${report.generatedAt}`, projectId: input.projectDir, kind: "stage" as const, evidence: Math.min(1, report.runsAnalyzed / 10), impact: 0.5, reversibility: 1, risk: "medium" as const, confidence: Math.min(1, report.runsAnalyzed / 5), duplicateKey: JSON.stringify(item) })) ?? []
   });
-  return { report, roadmap, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
+  return { report, roadmap, roadmapPublication, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
 }
 
 async function runLearningFailureTriage(input: {
@@ -25476,6 +25695,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/activity") {
+    const report = await loadUnifiedActivityReport(requestUrl.searchParams);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/evaluations") {
     const suites = await loadDashboardEvaluations();
     const suiteId = requestUrl.searchParams.get("suite");
@@ -26826,6 +27052,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/activity") {
+    const [report, projects] = await Promise.all([
+      loadUnifiedActivityReport(requestUrl.searchParams),
+      listProjectStorageSummaries(100)
+    ]);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+    response.end(renderUnifiedActivityHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
   if (requestUrl.pathname === "/projects") {
     const projects = await listProjectStorageSummaries(100);
     const identities = await loadDashboardProjectIdentityGroups(projects);
@@ -26967,7 +27203,7 @@ function renderDashboardHtml(
   workflows: Awaited<ReturnType<typeof loadWorkflows>>,
   health: DashboardHomeHealth
 ): string {
-  const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "running").slice(0, 5);
+  const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running").slice(0, 5);
   const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 5);
   const pendingApprovals = health.pendingApprovals.length;
   const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
@@ -27099,6 +27335,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
           projectRootUri: item.projectRootUri,
           task: item.task,
           startedAt: item.startedAt,
+          blockedReason: item.blockedReason,
           summary: [taskSummary, `current: ${currentStage}`, leaseDetail]
         })}</div></td>
         <td><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span></td>
@@ -28317,6 +28554,43 @@ function renderRoadmapCaptureForm(report: RoadmapDashboardReport, params: URLSea
   </section>`;
 }
 
+function renderUnifiedActivityHtml(report: UnifiedActivityReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  const option = (value: string, label: string, selected: string | null) => `<option value="${escapeHtml(value)}"${value === selected ? " selected" : ""}>${escapeHtml(label)}</option>`;
+  const projectOptions = projects.map((project) => option(project.rootUri, project.name, report.filters.project)).join("");
+  const categoryOptions = ["workflow", "stage", "action", "approval", "learning", "daemon", "roadmap", "server"].map((value) => option(value, titleCase(value), report.filters.category)).join("");
+  const severityOptions = ["info", "warning", "error"].map((value) => option(value, titleCase(value), report.filters.severity)).join("");
+  const rows = report.events.map((event) => `<tr>
+    <td>${renderDashboardDateTime(event.occurredAt)}<br><span class="muted">${escapeHtml(event.occurredAt)}</span></td>
+    <td><span class="status ${event.severity === "error" ? "failed" : event.severity === "warning" ? "blocked" : "completed"}">${escapeHtml(event.severity)}</span><br><span class="muted">${escapeHtml(event.category)}</span></td>
+    <td>${event.href ? `<a href="${escapeHtml(event.href)}"><strong>${escapeHtml(event.title)}</strong></a>` : `<strong>${escapeHtml(event.title)}</strong>`}<br><span class="muted">${escapeHtml(event.eventType)} · ${escapeHtml(event.source)}</span></td>
+    <td>${escapeHtml(event.projectName)}${event.runId ? `<br><a class="muted" href="/run?id=${encodeURIComponent(event.runId)}">run ${escapeHtml(event.runId.slice(0, 8))}</a>` : ""}</td>
+    <td><span class="status ${escapeHtml(event.status)}">${escapeHtml(event.status)}</span>${event.actor ? `<br><span class="muted">${escapeHtml(event.actor)}</span>` : ""}</td>
+    <td>${escapeHtml(event.detail)}</td>
+  </tr>`).join("");
+  const jsonQuery = params.toString();
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Activity</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("activity")}
+  <main><header><div><p class="eyebrow">Audit</p><h1>Activity</h1><p>One chronological, redacted view of workflow, action, approval, daemon, roadmap, learning, and server events.</p></div><div class="actions"><a class="button secondary" href="/api/activity${jsonQuery ? `?${escapeHtml(jsonQuery)}` : ""}">JSON</a><a class="button secondary" href="/activity">Reset</a></div></header>
+  <section class="panel"><form class="workflow-form" method="get" action="/activity">
+    <label>Project<select name="project"><option value="">All projects</option>${projectOptions}</select></label>
+    <label>Category<select name="category"><option value="">All categories</option>${categoryOptions}</select></label>
+    <label>Severity<select name="severity"><option value="">All severities</option>${severityOptions}</select></label>
+    <label>Status<input name="status" value="${escapeHtml(report.filters.status ?? "")}" placeholder="blocked, completed…"></label>
+    <label class="wide">Search<input name="q" value="${escapeHtml(report.filters.query ?? "")}" placeholder="event, actor, project, or detail"></label>
+    <label>Limit<input type="number" name="limit" min="1" max="1000" value="${report.filters.limit}"></label>
+    <div class="form-actions"><button type="submit">Apply Filters</button></div>
+  </form></section>
+  <section class="metrics">
+    ${metricCard("Events", report.counts.returned, "latest matching events")}
+    ${metricCard("Warnings", report.counts.bySeverity.warning ?? 0, "attention events")}
+    ${metricCard("Errors", report.counts.bySeverity.error ?? 0, "failed or rejected events")}
+    ${metricCard("Sources", Object.keys(report.counts.byCategory).length, formatInlineCounts(report.counts.byCategory))}
+  </section>
+  <section class="panel"><div class="section-heading"><div><h2>Unified Timeline</h2><span class="muted">Newest first · generated ${renderDashboardDateTime(report.generatedAt)}</span></div></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Level</th><th>Event</th><th>Project / Run</th><th>Status / Actor</th><th>Detail</th></tr></thead><tbody>${rows || '<tr><td colspan="6">No activity matches these filters.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Coverage and privacy</h2><ul>${report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></section>
+  </main></body></html>`;
+}
+
 function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
   const rows = runs.map((run) => `
     <tr>
@@ -28328,6 +28602,7 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
         projectRootUri: run.projectRootUri,
         task: run.task,
         startedAt: run.startedAt,
+        blockedReason: run.blockedReason,
         summary: [
           run.finishedAt ? `finished: ${formatDashboardDateTimeText(run.finishedAt)}` : "not finished yet",
           run.providerOverride ? `provider: ${run.providerOverride}` : "provider: default route",
@@ -28597,7 +28872,7 @@ async function loadDashboardWorkflowGraph(params: URLSearchParams): Promise<Dash
         .slice(0, safeRunLimit)
         .map(dashboardWorkflowGraphRunFromStorage);
       stageHealth = await listWorkflowStageHealthForRuns({ runIds: runs.map((run) => run.id) });
-      const activeRunIds = runs.filter((run) => run.status === "queued" || run.status === "running").map((run) => run.id);
+      const activeRunIds = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running").map((run) => run.id);
       if (activeRunIds.length) {
         liveStageRuns = (await Promise.all(report.stages.map((stage) => listWorkflowStageRunsForRuns({ runIds: activeRunIds, stageId: stage.id })))).flat();
       }
@@ -28863,7 +29138,7 @@ function renderWorkflowGraphDashboardHtml(report: DashboardWorkflowGraphReport, 
   const categoryOptions = [`<option value="">all</option>`, ...categories.map((category) => `<option value="${escapeHtml(category)}"${categoryFilter === category ? " selected" : ""}>${escapeHtml(category)}</option>`)].join("");
   const approvalOptions = ["all", "required", "not-required"].map((value) => `<option value="${value}"${approvalFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const policyOptions = ["all", "allowed", "blocked"].map((value) => `<option value="${value}"${policyFilter === value ? " selected" : ""}>${value}</option>`).join("");
-  const runStatusOptions = ["all", "active", "failed", "completed", "queued", "running", "cancelled"].map((value) => `<option value="${value}"${runStatusFilter === value ? " selected" : ""}>${value}</option>`).join("");
+  const runStatusOptions = ["all", "active", "failed", "completed", "queued", "leased", "running", "cancelled"].map((value) => `<option value="${value}"${runStatusFilter === value ? " selected" : ""}>${value}</option>`).join("");
   const runScopeOptions = [
     { value: "project", label: "selected project" },
     { value: "all-projects", label: "all projects" }
@@ -29203,7 +29478,7 @@ function renderFocusedStageRunsHtml(report: DashboardWorkflowGraphReport, projec
       workflowId: report.workflow.id,
       stageId: report.focusedStageId,
       fixRunId: run.id,
-      disabled: run.status === "queued" || run.status === "running"
+      disabled: run.status === "queued" || run.status === "leased" || run.status === "running"
     });
     return `
     <tr>
@@ -29548,7 +29823,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
   runs.forEach((run, index) => {
     const angle = ringAngle(index, Math.max(runs.length, 1), -Math.PI / 2 + Math.PI / Math.max(runs.length, 10));
     const point = isRadial ? radialPoint(angle, runRadius) : { x: runX, y: distributeLayerY(index, Math.max(runs.length, 1), layerTop, layerBottom) };
-    const active = run.status === "queued" || run.status === "running";
+    const active = run.status === "queued" || run.status === "leased" || run.status === "running";
     const runNode: NetworkNode = {
       id: `run:${run.id}`,
       label: active ? run.status.slice(0, 1).toUpperCase() : "",
@@ -30296,6 +30571,9 @@ function renderLearningDaemonStatusHtml(status: DashboardLearningDaemonStatus, s
       <div><strong>Last Report</strong>${renderDashboardDateTime(status.lastReportAt, "none")}</div>
       <div><strong>Ticks</strong>${formatNumber(status.ticks)}</div>
       <div><strong>Proposals</strong>${formatNumber(status.proposals)}</div>
+      <div><strong>Roadmap Snapshot</strong>${escapeHtml(status.roadmapSnapshotStatus ?? "not published")}</div>
+      <div><strong>Snapshot Published</strong>${renderDashboardDateTime(status.roadmapSnapshotPublishedAt, "none")}</div>
+      <div><strong>Snapshot Digest</strong><code>${escapeHtml(status.roadmapSnapshotDigest?.slice(0, 12) ?? "none")}</code></div>
       <div><strong>Inbox Items</strong>${formatNumber(status.inboxItems)}</div>
       <div><strong>Application Actions</strong>${formatNumber(status.applicationActions)}</div>
       <div><strong>Auto-applied</strong>${formatNumber(status.autonomousAppliedActions)}</div>
@@ -33364,8 +33642,8 @@ function renderRunDetailHtml(input: {
 }): string {
   const completedTasks = input.tasks.filter((task) => task.status === "completed").length;
   const failedTasks = input.tasks.filter((task) => task.status === "failed").length;
-  const activeTasks = input.tasks.filter((task) => task.status === "running" || task.status === "queued").length;
-  const shouldRefresh = input.run.status === "queued" || input.run.status === "running";
+  const activeTasks = input.tasks.filter((task) => task.status === "running" || task.status === "leased" || task.status === "queued").length;
+  const shouldRefresh = input.run.status === "queued" || input.run.status === "leased" || input.run.status === "running";
   const summaryBlock = input.summary
     ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
     : "<p>No summary available.</p>";
@@ -33418,6 +33696,7 @@ function renderRunDetailHtml(input: {
         <div><strong>Receipts</strong>${input.receipts.length}</div>
       </div>
       <p>${escapeHtml(input.run.task)}</p>
+      ${input.run.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.run.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; inspect the stage artifacts below.")}</p>` : ""}
       <div class="actions">
         ${workerActionForm(input.run.id, "batch", "Process Next Batch")}
         ${workerActionForm(input.run.id, "watch", "Run Until Complete")}
@@ -33865,6 +34144,9 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
     };
   }
   return {
+    runtimeVersion: null,
+    bundleVersion: null,
+    protocolVersions: null,
     heartbeatPath,
     configured: false,
     workerId: null,
@@ -33926,8 +34208,12 @@ async function loadWorkerHeartbeatLane(heartbeatPath: string): Promise<Dashboard
     const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
     const processAlive = pid ? isProcessAlive(pid) : false;
     const heartbeatStatus = heartbeat.status ?? "stopped";
-    const running = processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping";
+    const compatible = heartbeat.protocolVersions?.runtime === protocolVersions.runtime && heartbeat.protocolVersions?.storage === protocolVersions.storage && heartbeat.protocolVersions?.bundle === protocolVersions.bundle;
+    const running = compatible && processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping";
     return {
+      runtimeVersion: typeof heartbeat.runtimeVersion === "string" ? heartbeat.runtimeVersion : null,
+      bundleVersion: typeof heartbeat.bundleVersion === "string" ? heartbeat.bundleVersion : null,
+      protocolVersions: heartbeat.protocolVersions ?? null,
       heartbeatPath,
       configured: true,
       workerId: typeof heartbeat.workerId === "string" ? heartbeat.workerId : null,
@@ -33963,8 +34249,12 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
     const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
     const processAlive = pid ? isProcessAlive(pid) : false;
     const heartbeatStatus = heartbeat.status ?? "stopped";
-    const running = processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus === "running";
+    const compatible = heartbeat.protocolVersions?.runtime === protocolVersions.runtime && heartbeat.protocolVersions?.storage === protocolVersions.storage && heartbeat.protocolVersions?.bundle === protocolVersions.bundle;
+    const running = compatible && processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus === "running";
     return {
+      runtimeVersion: typeof heartbeat.runtimeVersion === "string" ? heartbeat.runtimeVersion : null,
+      bundleVersion: typeof heartbeat.bundleVersion === "string" ? heartbeat.bundleVersion : null,
+      protocolVersions: heartbeat.protocolVersions ?? null,
       heartbeatPath,
       configured: true,
       status: running ? "running" : heartbeatStatus === "failed" ? "failed" : heartbeatStatus === "stopped" ? "stopped" : "stale",
@@ -33988,6 +34278,9 @@ async function loadDashboardSupervisorStatus(): Promise<DashboardSupervisorStatu
     };
   } catch {
     return {
+      runtimeVersion: null,
+      bundleVersion: null,
+      protocolVersions: null,
       heartbeatPath,
       configured: false,
       status: "missing",
@@ -34363,6 +34656,9 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
       ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
       proposals: typeof heartbeat.proposals === "number" ? heartbeat.proposals : 0,
+      roadmapSnapshotStatus: heartbeat.roadmapSnapshotStatus === "published" || heartbeat.roadmapSnapshotStatus === "unchanged" || heartbeat.roadmapSnapshotStatus === "unavailable" ? heartbeat.roadmapSnapshotStatus : null,
+      roadmapSnapshotPublishedAt: typeof heartbeat.roadmapSnapshotPublishedAt === "string" ? heartbeat.roadmapSnapshotPublishedAt : null,
+      roadmapSnapshotDigest: typeof heartbeat.roadmapSnapshotDigest === "string" ? heartbeat.roadmapSnapshotDigest : null,
       inboxItems: typeof heartbeat.inboxItems === "number" ? heartbeat.inboxItems : 0,
       applicationActions: typeof heartbeat.applicationActions === "number" ? heartbeat.applicationActions : 0,
       autonomousAppliedActions: typeof heartbeat.autonomousAppliedActions === "number" ? heartbeat.autonomousAppliedActions : 0,
@@ -34415,6 +34711,9 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       limit: null,
       ticks: 0,
       proposals: 0,
+      roadmapSnapshotStatus: null,
+      roadmapSnapshotPublishedAt: null,
+      roadmapSnapshotDigest: null,
       inboxItems: 0,
       applicationActions: 0,
       autonomousAppliedActions: 0,
@@ -34462,6 +34761,9 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Last report: ${status.lastReportAt ?? "none"}`,
     `Ticks: ${status.ticks}`,
     `Proposals: ${status.proposals}`,
+    `Roadmap snapshot: ${status.roadmapSnapshotStatus ?? "not published"}`,
+    `Roadmap snapshot published: ${status.roadmapSnapshotPublishedAt ?? "none"}`,
+    `Roadmap snapshot digest: ${status.roadmapSnapshotDigest ?? "none"}`,
     `Inbox items: ${status.inboxItems}`,
     `Application actions: ${status.applicationActions}`,
     `Autonomous applied actions: ${status.autonomousAppliedActions}`,
@@ -36005,7 +36307,7 @@ async function processDashboardQueueAction(input: {
 async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
   if (mode !== "apply-approved") return 0;
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
-  if (runs.some((run) => (run.status === "queued" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
+  if (runs.some((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
   for (const run of runs.filter((item) => item.status === "blocked")) {
     if (stringValue(run.evaluationMetadata?.source) === "blocked-run-repair") continue;
     if (Date.now() - Date.parse(run.startedAt) > 7 * 24 * 60 * 60 * 1000) continue;
@@ -37163,7 +37465,7 @@ async function executeApprovedAction(input: {
       ].join("\n")
     };
   }
-  if (approval.status !== "approved" && approval.status !== "failed") {
+  if (approval.status !== "approved" && approval.status !== "failed" && approval.status !== "executing") {
     return { ok: false, error: `Approval must be approved before execution. Current status: ${approval.status}` };
   }
   const project = await loadApprovalProjectConfig(approval);
@@ -37192,6 +37494,20 @@ async function executeApprovedAction(input: {
       ].join("\n")
     };
   }
+  if (!["artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter"].includes(approval.actionType)) {
+    return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
+  }
+
+  const executionClaim = await claimActionApprovalExecution({
+    approvalId: approval.id,
+    actor: input.actor,
+    actorRole: input.actorRole,
+    claimSeconds: 3600
+  });
+  if (!executionClaim) {
+    return { ok: false, error: "Approved action is already being executed by another caller or is no longer executable." };
+  }
+  const executionClaimToken = executionClaim.claimToken;
 
   if (approval.actionType === "artifact_prune" || approval.actionType === "artifact_archive" || approval.actionType === "artifact_restore") {
     return executeLifecycleApproval({
@@ -37200,7 +37516,8 @@ async function executeApprovedAction(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       executionRoleGate: executionRoleGate.message,
-      separationGate: separationGate.message
+      separationGate: separationGate.message,
+      executionClaimToken
     });
   }
 
@@ -37210,7 +37527,8 @@ async function executeApprovedAction(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       executionRoleGate: executionRoleGate.message,
-      separationGate: separationGate.message
+      separationGate: separationGate.message,
+      executionClaimToken
     });
   }
 
@@ -37231,7 +37549,8 @@ async function executeApprovedAction(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Approved action already had an execution artifact: ${previous.uri}`,
-      artifactUri: previous.uri
+      artifactUri: previous.uri,
+      executionClaimToken
     });
     return {
       ok: true,
@@ -37273,7 +37592,7 @@ async function executeApprovedAction(input: {
         artifactContent: { snapshot, execution, executedFromApprovalId: approval.id }, idempotencyKey: approval.idempotencyKey
       });
       const passed = execution.status === "passed";
-      await markActionApprovalExecution({ approvalId: approval.id, status: passed ? "executed" : "failed", actor: input.actor, actorRole: input.actorRole, summary, artifactUri });
+      await markActionApprovalExecution({ approvalId: approval.id, status: passed ? "executed" : "failed", actor: input.actor, actorRole: input.actorRole, summary, artifactUri, executionClaimToken });
       return passed
         ? { ok: true, title: "Approved executor action executed", runId: approval.runId, output: `Approval: ${approval.id}\n${summary}\nArtifact: ${artifactUri}` }
         : { ok: false, error: `Approved executor action failed. ${summary}` };
@@ -37313,7 +37632,8 @@ async function executeApprovedAction(input: {
           actor: input.actor,
           actorRole: input.actorRole,
           summary: `Approved command failed: ${summary}`,
-          artifactUri
+          artifactUri,
+          executionClaimToken
         });
         return { ok: false, error: `Approved command failed. ${summary}` };
       }
@@ -37323,7 +37643,8 @@ async function executeApprovedAction(input: {
         actor: input.actor,
         actorRole: input.actorRole,
         summary: `Approved command executed. ${summary}`,
-        artifactUri
+        artifactUri,
+        executionClaimToken
       });
       return {
         ok: true,
@@ -37371,7 +37692,8 @@ async function executeApprovedAction(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Approved file write executed. ${summary}`,
-      artifactUri
+      artifactUri,
+      executionClaimToken
     });
     return {
       ok: true,
@@ -37391,7 +37713,8 @@ async function executeApprovedAction(input: {
       actor: input.actor,
       actorRole: input.actorRole,
       summary: `Approved action execution failed: ${message}`,
-      error: message
+      error: message,
+      executionClaimToken
     });
     return { ok: false, error: message };
   }
@@ -37404,6 +37727,7 @@ async function executeLifecycleApproval(input: {
   actorRole?: string;
   executionRoleGate: string;
   separationGate: string;
+  executionClaimToken: string;
 }): Promise<DashboardFollowUpResult> {
   const lifecycleAction = input.approval.actionType.replace(/^artifact_/, "") as ArtifactLifecycleAction;
   const currentPolicy = lifecyclePolicyFromProject(input.project, "project");
@@ -37490,7 +37814,8 @@ async function executeLifecycleApproval(input: {
     actor: input.actor,
     actorRole: input.actorRole,
     summary,
-    artifactUri
+    artifactUri,
+    executionClaimToken: input.executionClaimToken
   });
   return {
     ok: true,
@@ -39040,7 +39365,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Work",
@@ -39051,7 +39376,8 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
         ["studio", "/studio", "Studio", "activity"],
         ["queue", "/queue", "Queue", "list"],
         ["approvals", "/approvals", "Approvals", "shield"],
-        ["runs", "/runs", "Runs", "activity"]
+        ["runs", "/runs", "Runs", "activity"],
+        ["activity", "/activity", "Activity", "list"]
       ]
     },
     {
@@ -39677,6 +40003,7 @@ function renderRunInfoDialog(input: {
   projectRootUri?: string;
   task?: string;
   startedAt?: string | null;
+  blockedReason?: string | null;
   summary?: string[];
 }): string {
   const dialogId = `run-info-${[input.runId, input.idSuffix].filter(Boolean).join("-").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -39704,6 +40031,7 @@ function renderRunInfoDialog(input: {
           <form method="dialog"><button class="secondary" type="submit">${iconLabel("x", "Close")}</button></form>
         </div>
         <div class="meta-grid compact">${rows}</div>
+        ${input.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; open the full run for stage evidence.")}</p>` : ""}
         ${input.task ? `<h3>Task</h3><p>${escapeHtml(input.task)}</p>` : ""}
         <h3>Summary</h3>
         ${summary}
@@ -40505,7 +40833,7 @@ async function queueDashboardStageVerification(input: {
   if (!fixRun.run) {
     return { ok: false, error: `Unknown suggested fix run: ${fixRunId}` };
   }
-  if (fixRun.run.status === "queued" || fixRun.run.status === "running") {
+  if (fixRun.run.status === "queued" || fixRun.run.status === "leased" || fixRun.run.status === "running") {
     return { ok: false, error: "Wait for the suggested fix run to finish before rerunning the source workflow." };
   }
   const metadata = fixRun.run.evaluationMetadata ?? {};
@@ -42902,6 +43230,10 @@ async function queueWorkflow(input: {
     sourceMaxFiles: input.sourceMaxFiles,
     preferImplementationSources: input.preferImplementationSources
   });
+  const exactSourceExcerpts = input.includeExactSourceExcerpts
+    ? await loadExactSourceExcerpts(projectDir, sourceSummaries)
+    : [];
+  const namedCommitEvidence = await loadNamedCommitEvidence(projectDir, input.task);
   const brief = await compileContext({
     task: input.task,
     projectDir,
@@ -42909,7 +43241,7 @@ async function queueWorkflow(input: {
     workflow,
     agents: selectedAgentList,
     sourceSummaries,
-    sourceExcerpts: input.includeExactSourceExcerpts ? await loadExactSourceExcerpts(projectDir, sourceSummaries) : [],
+    sourceExcerpts: [...namedCommitEvidence, ...exactSourceExcerpts],
     preferenceNotes: await loadPreferenceNotes(projectDir)
   });
   const runInputSnapshot = await buildRunInputSnapshot({
@@ -42951,10 +43283,46 @@ async function queueWorkflow(input: {
   };
 }
 
-async function loadExactSourceExcerpts(projectDir: string, summaries: SourceSummaryWithHash[]): Promise<Array<{ sourceUri: string; content: string }>> {
+export async function loadNamedCommitEvidence(projectDir: string, task: string): Promise<Array<{ sourceUri: string; content: string; kind: "named_commit"; originalChars: number; contentSha256: string; truncated: boolean }>> {
+  const candidates = [...new Set(task.match(/(?<![A-Fa-f0-9])[A-Fa-f0-9]{7,40}(?![A-Fa-f0-9])/gu) ?? [])].slice(0, 8);
+  const evidence: Array<{ sourceUri: string; content: string; kind: "named_commit"; originalChars: number; contentSha256: string; truncated: boolean }> = [];
+  let remainingChars = 16_000;
+  for (const candidate of candidates) {
+    if (remainingChars <= 0) break;
+    const exists = await new Promise<boolean>((resolve) => {
+      execFile("git", ["-C", projectDir, "cat-file", "-e", `${candidate}^{commit}`], { timeout: 5_000 }, (error) => resolve(!error));
+    });
+    if (!exists) continue;
+    const content = await new Promise<string>((resolve) => {
+      execFile(
+        "git",
+        ["-C", projectDir, "show", "--format=fuller", "--stat", "--patch", "--no-ext-diff", "--no-color", "--max-count=1", candidate],
+        // Read enough of a large commit for git to exit cleanly, then enforce the
+        // much smaller per-commit context cap below. A subprocess buffer overflow
+        // must not make an existing commit look like missing review evidence.
+        { timeout: 10_000, maxBuffer: 10_000_000 },
+        (error, stdout) => resolve(error ? "" : stdout)
+      );
+    });
+    if (!content) continue;
+    const bounded = content.slice(0, Math.min(8_000, remainingChars));
+    evidence.push({
+      sourceUri: `git-commit/${candidate}.patch`,
+      content: bounded,
+      kind: "named_commit",
+      originalChars: content.length,
+      contentSha256: createHash("sha256").update(content).digest("hex"),
+      truncated: bounded.length < content.length
+    });
+    remainingChars -= bounded.length;
+  }
+  return evidence;
+}
+
+async function loadExactSourceExcerpts(projectDir: string, summaries: SourceSummaryWithHash[]): Promise<Array<{ sourceUri: string; content: string; kind: "source_file"; originalChars: number; contentSha256: string; truncated: boolean }>> {
   const codeExtensions = new Set([".swift", ".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".go", ".rs", ".java", ".kt", ".rb", ".php", ".cs", ".cpp", ".c", ".h"]);
   const ordered = [...summaries].sort((left, right) => Number(codeExtensions.has(path.extname(right.sourceUri).toLowerCase())) - Number(codeExtensions.has(path.extname(left.sourceUri).toLowerCase())));
-  const excerpts: Array<{ sourceUri: string; content: string }> = [];
+  const excerpts: Array<{ sourceUri: string; content: string; kind: "source_file"; originalChars: number; contentSha256: string; truncated: boolean }> = [];
   let remainingChars = 60_000;
   for (const summary of ordered) {
     if (excerpts.length >= 8 || remainingChars <= 0) break;
@@ -42964,7 +43332,14 @@ async function loadExactSourceExcerpts(projectDir: string, summaries: SourceSumm
     const raw = await fs.readFile(absolutePath, "utf8").catch(() => "");
     if (!raw || raw.includes("\u0000")) continue;
     const content = raw.slice(0, Math.min(12_000, remainingChars));
-    excerpts.push({ sourceUri: summary.sourceUri, content });
+    excerpts.push({
+      sourceUri: summary.sourceUri,
+      content,
+      kind: "source_file",
+      originalChars: raw.length,
+      contentSha256: createHash("sha256").update(raw).digest("hex"),
+      truncated: content.length < raw.length
+    });
     remainingChars -= content.length;
   }
   return excerpts;
@@ -43237,6 +43612,10 @@ async function buildStoredRoadmapSnapshot(input: {
 }
 
 async function publishRoadmapSnapshotOnly(projectDir: string): Promise<void> {
+  await publishRoadmapSnapshotIfChanged(projectDir, "project-onboarding");
+}
+
+async function publishRoadmapSnapshotIfChanged(projectDir: string, actor: string): Promise<RoadmapSnapshotPublication> {
   const project = await loadProjectConfig(projectDir);
   const projectId = await upsertProject({
     name: project.project.name,
@@ -43246,13 +43625,53 @@ async function publishRoadmapSnapshotOnly(projectDir: string): Promise<void> {
   });
   const state = await getProjectIndexState({ projectId });
   const roadmapSnapshot = await buildStoredRoadmapSnapshot({ projectId, projectDir, project });
-  await upsertProjectIndexState({
+  const existing = state && "roadmapSnapshot" in state.metadata
+    ? parseRoadmapSnapshot(state.metadata.roadmapSnapshot, projectId)
+    : null;
+  const changed = roadmapSnapshotNeedsPublication(existing, roadmapSnapshot);
+  if (changed) {
+    await upsertProjectIndexState({
+      projectId,
+      headCommit: state?.headCommit ?? undefined,
+      indexedFiles: state?.indexedFiles ?? 0,
+      deletedFiles: state?.deletedFiles ?? 0,
+      metadata: { ...(state?.metadata ?? {}), roadmapSnapshot }
+    });
+  }
+  const publication: RoadmapSnapshotPublication = {
+    status: changed ? "published" : "unchanged",
     projectId,
-    headCommit: state?.headCommit ?? undefined,
-    indexedFiles: state?.indexedFiles ?? 0,
-    deletedFiles: state?.deletedFiles ?? 0,
-    metadata: { ...(state?.metadata ?? {}), roadmapSnapshot }
-  });
+    source: roadmapSnapshot.source,
+    digest: roadmapSnapshot.digest,
+    sourceModifiedAt: roadmapSnapshot.sourceModifiedAt,
+    publishedAt: changed ? roadmapSnapshot.publishedAt : existing?.publishedAt ?? roadmapSnapshot.publishedAt,
+    reason: changed
+      ? existing ? "Configured roadmap source changed since the last durable snapshot." : "No durable roadmap snapshot existed for this project."
+      : "The durable roadmap snapshot already matches the configured source."
+  };
+  const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+  await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+  const receipt = {
+    kind: "agentflow_roadmap_snapshot_publication",
+    recordedAt: new Date().toISOString(),
+    actor,
+    ...publication
+  };
+  await fs.writeFile(path.join(learningDir, "roadmap-snapshot-publication.json"), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(learningDir, "roadmap-snapshot-publication.md"), [
+    "# Roadmap Snapshot Publication",
+    "",
+    `Recorded: ${receipt.recordedAt}`,
+    `Actor: ${actor}`,
+    `Status: ${publication.status}`,
+    `Source: ${publication.source}`,
+    `Source modified: ${publication.sourceModifiedAt ?? "unknown"}`,
+    `Published: ${publication.publishedAt}`,
+    `Digest: ${publication.digest}`,
+    `Reason: ${publication.reason}`,
+    ""
+  ].join("\n"), "utf8");
+  return publication;
 }
 
 function formatIndexResult(result: {
@@ -43540,12 +43959,12 @@ function parseDashboardRunScope(value: string): "project" | "all-projects" {
 }
 
 function parseDashboardRunStatusFilter(value: string): string {
-  return ["all", "active", "failed", "completed", "queued", "running", "cancelled"].includes(value) ? value : "all";
+  return ["all", "active", "failed", "completed", "queued", "leased", "running", "cancelled"].includes(value) ? value : "all";
 }
 
 function dashboardRunMatchesStatus(status: string, filter: string): boolean {
   if (filter === "all") return true;
-  if (filter === "active") return status === "queued" || status === "running";
+  if (filter === "active") return status === "queued" || status === "leased" || status === "running";
   return status === filter;
 }
 

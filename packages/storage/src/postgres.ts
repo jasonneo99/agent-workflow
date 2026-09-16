@@ -8,7 +8,7 @@ import { withClient } from "./client.js";
 import { findRecentDuplicateRun } from "./run-deduplication.js";
 export { databaseUrl, withClient } from "./client.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
-export { acquireWorkIntent, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent } from "./reliability.js";
+export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent } from "./reliability.js";
 export function workflowDefinitionHash(definition: unknown): string {
   return createHash("sha256").update(stableJson(definition)).digest("hex");
 }
@@ -111,10 +111,19 @@ export async function migrateStorage(): Promise<void> {
         idempotency_key text NOT NULL,
         operation text NOT NULL,
         target text NOT NULL,
-        receipt jsonb NOT NULL,
+        receipt jsonb NOT NULL DEFAULT '{}'::jsonb,
+        status text NOT NULL DEFAULT 'completed',
+        claim_token uuid,
+        claim_expires_at timestamptz,
         created_at timestamptz NOT NULL DEFAULT now(),
         UNIQUE(project_id, idempotency_key)
       )
+    `);
+    await client.query(`
+      ALTER TABLE side_effect_receipts
+      ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'completed',
+      ADD COLUMN IF NOT EXISTS claim_token uuid,
+      ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz
     `);
     await client.query(`
       CREATE TABLE IF NOT EXISTS artifacts (
@@ -171,7 +180,9 @@ export async function migrateStorage(): Promise<void> {
     `);
     await client.query(`
       ALTER TABLE action_approvals
-      ADD COLUMN IF NOT EXISTS executed_at timestamptz
+      ADD COLUMN IF NOT EXISTS executed_at timestamptz,
+      ADD COLUMN IF NOT EXISTS execution_claim_token uuid,
+      ADD COLUMN IF NOT EXISTS execution_claim_expires_at timestamptz
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
@@ -1637,6 +1648,38 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
   });
 }
 
+export async function renewWorkflowTaskLease(input: {
+  taskId: string;
+  runId: string;
+  workerId: string;
+  fencingToken: string;
+  leaseSeconds?: number;
+}): Promise<boolean> {
+  const leaseSeconds = Math.max(30, Math.min(3600, input.leaseSeconds ?? 900));
+  return withClient(async (client) => {
+    const result = await client.query(
+      `update workflow_tasks
+       set lease_expires_at = now() + ($5::int * interval '1 second')
+       where id = $1::uuid
+         and run_id = $2::uuid
+         and status = 'running'
+         and worker_id = $3
+         and lease_generation = $4::bigint
+         and lease_expires_at > now()`,
+      [input.taskId, input.runId, input.workerId, input.fencingToken, leaseSeconds]
+    );
+    return result.rowCount === 1;
+  });
+}
+
+export async function assertWorkflowTaskLease(input: {
+  taskId: string;
+  workerId: string;
+  fencingToken: string;
+}): Promise<void> {
+  await withClient(async (client) => assertActiveTaskFence(client, input));
+}
+
 function exactGitRevision(projectRootUri: string): string {
   const revision = execFileSync("git", ["-C", projectRootUri, "rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   if (!/^[0-9a-f]{40}$/.test(revision)) throw new Error("Remote executor requires an exact 40-character Git revision.");
@@ -2235,6 +2278,8 @@ export interface ActionApprovalStatus {
   executedBy: string | null;
   executedRole: string | null;
   executedAt: string | null;
+  executionClaimToken: string | null;
+  executionClaimExpiresAt: string | null;
   decisionNote: string | null;
   createdAt: string;
   updatedAt: string;
@@ -2263,6 +2308,8 @@ const actionApprovalSelect = `
   aa.executed_by as "executedBy",
   aa.executed_role as "executedRole",
   aa.executed_at::text as "executedAt",
+  aa.execution_claim_token::text as "executionClaimToken",
+  aa.execution_claim_expires_at::text as "executionClaimExpiresAt",
   aa.decision_note as "decisionNote",
   aa.created_at::text as "createdAt",
   aa.updated_at::text as "updatedAt",
@@ -2528,6 +2575,7 @@ export async function markActionApprovalExecution(input: {
   summary: string;
   artifactUri?: string;
   error?: string;
+  executionClaimToken?: string;
 }): Promise<ActionApprovalStatus | null> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -2545,15 +2593,21 @@ export async function markActionApprovalExecution(input: {
              updated_at = now()
          from workflow_runs wr, projects p
          where aa.id = $1::uuid
-           and aa.status in ('approved', 'failed')
+           and aa.status in ('approved', 'failed', 'executing')
+           and ($6::uuid is null or (
+             aa.status = 'executing'
+             and aa.execution_claim_token = $6::uuid
+             and aa.execution_claim_expires_at > now()
+           ))
            and wr.id = aa.run_id
            and p.id = wr.project_id
          returning ${actionApprovalSelect}`,
-        [input.approvalId, input.status, input.actor, input.summary, input.actorRole ?? null]
+        [input.approvalId, input.status, input.actor, input.summary, input.actorRole ?? null, input.executionClaimToken ?? null]
       );
       const approval = result.rows[0];
       if (!approval) {
         await client.query("rollback");
+        if (input.executionClaimToken) throw new Error("Approval execution claim was lost before finalization.");
         return null;
       }
       await client.query(
@@ -2584,6 +2638,38 @@ export async function markActionApprovalExecution(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+}
+
+export async function claimActionApprovalExecution(input: {
+  approvalId: string;
+  actor: string;
+  actorRole?: string;
+  claimSeconds?: number;
+}): Promise<{ approval: ActionApprovalStatus; claimToken: string } | null> {
+  const claimSeconds = Math.max(30, Math.min(3600, input.claimSeconds ?? 300));
+  return withClient(async (client) => {
+    const result = await client.query<ActionApprovalStatus>(
+      `update action_approvals aa
+       set status = 'executing',
+           execution_claim_token = gen_random_uuid(),
+           execution_claim_expires_at = now() + ($4::int * interval '1 second'),
+           executed_by = $2,
+           executed_role = $3,
+           updated_at = now()
+       from workflow_runs wr, projects p
+       where aa.id = $1::uuid
+         and (
+           aa.status in ('approved', 'failed')
+           or (aa.status = 'executing' and aa.execution_claim_expires_at <= now())
+         )
+         and wr.id = aa.run_id
+         and p.id = wr.project_id
+       returning ${actionApprovalSelect}`,
+      [input.approvalId, input.actor, input.actorRole ?? null, claimSeconds]
+    );
+    const approval = result.rows[0];
+    return approval?.executionClaimToken ? { approval, claimToken: approval.executionClaimToken } : null;
   });
 }
 
@@ -2620,6 +2706,86 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
        order by wr.started_at desc
        limit $1`,
       [limit]
+    );
+    return result.rows;
+  });
+}
+
+export interface ActivityEventStatus {
+  id: string;
+  occurredAt: string;
+  projectName: string;
+  projectRootUri: string;
+  runId: string | null;
+  category: "workflow" | "stage" | "action" | "approval";
+  eventType: string;
+  severity: "info" | "warning" | "error";
+  status: string;
+  actor: string | null;
+  title: string;
+  detail: string;
+  source: string;
+}
+
+export async function listActivityEvents(input: { limit?: number; projectRootUri?: string }): Promise<ActivityEventStatus[]> {
+  return withClient(async (client) => {
+    const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
+    const projectRootUri = input.projectRootUri?.trim() || null;
+    const result = await client.query<ActivityEventStatus>(
+      `with activity as (
+         select 'run-start:' || wr.id::text as id, wr.started_at as occurred_at,
+                p.name as project_name, p.root_uri as project_root_uri, wr.id as run_id,
+                'workflow'::text as category, 'workflow_started'::text as event_type,
+                'info'::text as severity, 'started'::text as status,
+                null::text as actor, 'Workflow started: ' || wr.workflow_id as title,
+                left(wr.task, 500) as detail, 'workflow_runs'::text as source
+           from workflow_runs wr join projects p on p.id = wr.project_id
+         union all
+         select 'run-finish:' || wr.id::text, wr.finished_at, p.name, p.root_uri, wr.id,
+                'workflow', 'workflow_' || wr.status,
+                case when wr.status = 'failed' then 'error' when wr.status = 'blocked' then 'warning' else 'info' end,
+                wr.status, null, 'Workflow ' || wr.status || ': ' || wr.workflow_id,
+                left(wr.task, 500), 'workflow_runs'
+           from workflow_runs wr join projects p on p.id = wr.project_id where wr.finished_at is not null
+         union all
+         select 'task-start:' || wt.id::text, wt.started_at, p.name, p.root_uri, wr.id,
+                'stage', 'stage_started', 'info', 'started', wt.agent_id,
+                'Stage started: ' || wt.stage_id, 'Agent: ' || wt.agent_id, 'workflow_tasks'
+           from workflow_tasks wt join workflow_runs wr on wr.id = wt.run_id join projects p on p.id = wr.project_id
+          where wt.started_at is not null
+         union all
+         select 'task-finish:' || wt.id::text, wt.finished_at, p.name, p.root_uri, wr.id,
+                'stage', 'stage_' || wt.status,
+                case when wt.status = 'failed' then 'error' when wt.status = 'blocked' then 'warning' else 'info' end,
+                wt.status, wt.agent_id, 'Stage ' || wt.status || ': ' || wt.stage_id,
+                'Agent: ' || wt.agent_id, 'workflow_tasks'
+           from workflow_tasks wt join workflow_runs wr on wr.id = wt.run_id join projects p on p.id = wr.project_id
+          where wt.finished_at is not null
+         union all
+         select 'receipt:' || ar.id::text, ar.created_at, p.name, p.root_uri, wr.id,
+                'action', ar.action_type,
+                case when ar.action_type ~ '(failed|blocked|rejected|denied)' then
+                  case when ar.action_type ~ '(failed|denied)' then 'error' else 'warning' end
+                  else 'info' end,
+                coalesce(ar.metadata->>'status', ar.action_type), ar.agent_id,
+                left(replace(ar.action_type, '_', ' '), 160), left(ar.summary, 500), 'action_receipts'
+           from action_receipts ar join workflow_runs wr on wr.id = ar.run_id join projects p on p.id = wr.project_id
+         union all
+         select 'approval:' || aa.id::text, coalesce(aa.executed_at, aa.decided_at, aa.created_at), p.name, p.root_uri, wr.id,
+                'approval', 'approval_' || aa.status,
+                case when aa.status in ('rejected', 'failed') then 'warning' else 'info' end,
+                aa.status, coalesce(aa.executed_by, aa.decided_by), 'Approval ' || aa.status || ': ' || aa.action_type,
+                left(aa.rationale, 500), 'action_approvals'
+           from action_approvals aa join workflow_runs wr on wr.id = aa.run_id join projects p on p.id = wr.project_id
+       )
+       select id, occurred_at::text as "occurredAt", project_name as "projectName",
+              project_root_uri as "projectRootUri", run_id::text as "runId", category,
+              event_type as "eventType", severity, status, actor, title, detail, source
+         from activity
+        where occurred_at is not null and ($2::text is null or project_root_uri = $2)
+        order by occurred_at desc
+        limit $1`,
+      [limit, projectRootUri]
     );
     return result.rows;
   });

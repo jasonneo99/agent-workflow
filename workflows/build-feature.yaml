@@ -17,6 +17,8 @@ stages:
       load:
         - project_contract
         - recent_decisions
+        - relevant_source_files
+        - recent_changes
       max_tokens: 3000
     output: task_triage
   - id: plan

@@ -175,3 +175,12 @@ export function serverRoadmapSnapshot(snapshot: RoadmapSnapshot, now = Date.now(
   const freshness = snapshot.status === "missing" || snapshot.status === "unavailable" ? "missing" : ageSeconds === null ? "invalid" : ageSeconds > staleAfterSeconds ? "stale" : "current";
   return { ...snapshot, freshness, ageSeconds };
 }
+
+export function roadmapSnapshotNeedsPublication(existing: RoadmapSnapshot | null, candidate: RoadmapSnapshot): boolean {
+  if (!existing) return true;
+  return existing.source !== candidate.source
+    || existing.digest !== candidate.digest
+    || existing.sourceModifiedAt !== candidate.sourceModifiedAt
+    || existing.status !== candidate.status
+    || existing.reason !== candidate.reason;
+}

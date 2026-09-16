@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { buildRoadmapSnapshot, paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, serverRoadmapSnapshot } from "./index.js";
+import { buildRoadmapSnapshot, paginateRoadmapSnapshot, parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot } from "./index.js";
 
 const base = { projectId: "project-1", projectName: "Example", source: "docs/roadmap.md", publishingHost: "host-a" };
 
@@ -13,6 +13,14 @@ test("publishes bounded roadmap metadata without host paths", () => {
   assert.equal(snapshot.totalItems, 2);
   assert.equal(snapshot.items[1].status, "done");
   assert.equal(JSON.stringify(snapshot).includes("/Users/"), false);
+});
+
+test("publishes roadmap snapshots only when durable source state changes", () => {
+  const snapshot = buildRoadmapSnapshot({ ...base, markdown: "# Roadmap\n- [ ] Ship it", sourceModifiedAt: "2026-09-16T12:00:00.000Z", publishedAt: "2026-09-16T12:01:00.000Z" });
+  assert.equal(roadmapSnapshotNeedsPublication(null, snapshot), true);
+  assert.equal(roadmapSnapshotNeedsPublication(snapshot, { ...snapshot, publishedAt: "2026-09-16T12:02:00.000Z" }), false);
+  assert.equal(roadmapSnapshotNeedsPublication(snapshot, { ...snapshot, sourceModifiedAt: "2026-09-16T12:03:00.000Z" }), true);
+  assert.equal(roadmapSnapshotNeedsPublication(snapshot, { ...snapshot, digest: "a".repeat(64) }), true);
 });
 
 test("classifies current, stale, missing, and invalid snapshots explicitly", () => {

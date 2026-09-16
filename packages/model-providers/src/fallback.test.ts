@@ -18,6 +18,51 @@ test("provider failures are classified without preserving provider response bodi
   assert.equal(classifyProviderFailure({ status: 401, message: "secret response" }).message.includes("secret"), false);
 });
 
+test("typed Codex diagnostics preserve only category and digest while retrying transient failures", async () => {
+  resetProviderFallbackCircuits();
+  const transient = Object.assign(new Error("must not persist /Users/example/private token=secret"), {
+    code: "CODEX_CLI_EXIT_1",
+    retryable: true,
+    diagnostic: { source: "codex-cli", category: "transport", digest: "a".repeat(64), retryable: true, exitCode: 1 }
+  });
+  const classified = classifyProviderFailure(transient);
+  assert.equal(classified.kind, "provider_outage");
+  assert.match(classified.message, /transport.*diagnostic a{12}/iu);
+  assert.doesNotMatch(classified.message, /Users|private|secret/iu);
+
+  let calls = 0;
+  const result = await executeWithProviderFallback({
+    providerId: "codex-cli",
+    stageInput,
+    policy: policy({}),
+    providerFactory: () => ({ id: "codex-cli", async executeStage() { calls += 1; if (calls === 1) throw transient; return { summary: "ok", artifact: {} }; } }),
+    delay: async () => undefined,
+    circuitStatePath: null
+  });
+  assert.equal(calls, 2);
+  assert.equal(result.attempts.length, 2);
+  assert.match(result.attempts[0]?.reason ?? "", /diagnostic a{12}/iu);
+});
+
+test("typed non-transient Codex diagnostics do not retry or expose raw output", async () => {
+  resetProviderFallbackCircuits();
+  let calls = 0;
+  const failure = Object.assign(new Error("invalid output schema at /Users/example/private"), {
+    code: "CODEX_CLI_EXIT_2",
+    retryable: false,
+    diagnostic: { source: "codex-cli", category: "schema_or_usage", digest: "b".repeat(64), retryable: false, exitCode: 2 }
+  });
+  await assert.rejects(() => executeWithProviderFallback({
+    providerId: "codex-cli",
+    stageInput,
+    policy: policy({}),
+    providerFactory: () => ({ id: "codex-cli", async executeStage() { calls += 1; throw failure; } }),
+    delay: async () => undefined,
+    circuitStatePath: null
+  }), (error: unknown) => error instanceof ProviderExecutionError && /schema or usage.*diagnostic b{12}/iu.test(error.message) && !/Users|private/iu.test(error.message));
+  assert.equal(calls, 1);
+});
+
 test("outage retries are bounded and preserve deterministic attempt identities before fallback", async () => {
   resetProviderFallbackCircuits();
   const primary = { calls: 0 };

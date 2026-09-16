@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import "dotenv/config";
+import fs from "node:fs/promises";
 import { acquireWorkIntent, listWorkIntents, releaseWorkIntent, renewWorkIntent, withClient } from "../../../packages/storage/src/postgres.js";
-import { evaluateReliabilitySlos, reliabilityFailureScenarios, type ReliabilitySample } from "../../../packages/reliability-control/src/index.js";
+import { evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, type ReliabilityFailureEvidence, type ReliabilitySample } from "../../../packages/reliability-control/src/index.js";
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`); return index >= 0 ? process.argv[index + 1] : undefined;
@@ -10,16 +11,21 @@ function required(name: string): string { const value = arg(name); if (!value) t
 
 async function reliabilitySample(): Promise<ReliabilitySample> {
   return withClient(async (client) => {
-    const result = await client.query<{ totalMutations: number; receiptedMutations: number; duplicateSideEffects: number; stuckRuns: number; invalidTerminalRuns: number }>(`
+    const result = await client.query<{ totalMutations: number; receiptedMutations: number; stuckRuns: number; invalidTerminalRuns: number }>(`
       select
         (select count(*)::int from side_effect_receipts) as "totalMutations",
         (select count(*)::int from side_effect_receipts where receipt <> '{}'::jsonb) as "receiptedMutations",
-        0::int as "duplicateSideEffects",
         (select count(*)::int from workflow_tasks where status in ('leased','running') and lease_expires_at<now()) as "stuckRuns",
         (select count(*)::int from workflow_runs wr where wr.status='completed' and exists(select 1 from workflow_tasks wt where wt.run_id=wr.id and wt.status not in ('completed','cancelled'))) as "invalidTerminalRuns"
     `);
-    return { ...result.rows[0], recoveryDurationsMs: [], fleetFalseCriticals: 0, rollbackDurationsMs: [] };
+    return { ...result.rows[0], duplicateSideEffects: null, recoveryDurationsMs: null, fleetFalseCriticals: null, rollbackDurationsMs: null };
   });
+}
+
+type ReliabilityEvidence = Partial<Pick<ReliabilitySample, "duplicateSideEffects" | "recoveryDurationsMs" | "fleetFalseCriticals" | "rollbackDurationsMs">> & { scenarios?: ReliabilityFailureEvidence[] };
+async function loadEvidence(): Promise<ReliabilityEvidence> {
+  const evidencePath = arg("evidence");
+  return evidencePath ? JSON.parse(await fs.readFile(evidencePath, "utf8")) as ReliabilityEvidence : {};
 }
 
 async function main(): Promise<void> {
@@ -32,9 +38,12 @@ async function main(): Promise<void> {
     return;
   }
   if (command === "chaos") {
-    console.log(JSON.stringify({ kind: "agentflow_reliability_failure_matrix", mode: "contract-simulation", scenarios: reliabilityFailureScenarios.map((id) => ({ id, coverage: "contract", executionRequired: true })) }, null, 2)); return;
+    const evidence = await loadEvidence();
+    const scenarios = evaluateReliabilityFailureScenarios(evidence.scenarios);
+    console.log(JSON.stringify({ kind: "agentflow_reliability_failure_matrix", generatedAt: new Date().toISOString(), status: scenarios.some((entry) => entry.status === "attention") ? "attention" : scenarios.some((entry) => entry.status === "unknown") ? "unknown" : "pass", scenarios }, null, 2)); return;
   }
-  const sample = await reliabilitySample();
+  const [sample, evidence] = await Promise.all([reliabilitySample(), loadEvidence()]);
+  Object.assign(sample, evidence, { scenarios: undefined });
   console.log(JSON.stringify({ kind: "agentflow_reliability_slo_report", generatedAt: new Date().toISOString(), sample, ...evaluateReliabilitySlos(sample) }, null, 2));
 }
 main().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

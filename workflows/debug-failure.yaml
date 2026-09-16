@@ -33,6 +33,7 @@ stages:
       load:
         - commands
         - relevant_source_files
+        - prior_stage_artifacts
       max_tokens: 5000
     output: reproduction_report
   - id: fix
@@ -46,6 +47,7 @@ stages:
       load:
         - diagnosis
         - reproduction_report
+        - requested_actions
       max_tokens: 6000
     output: change_summary
   - id: verify

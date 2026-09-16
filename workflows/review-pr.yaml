@@ -20,6 +20,8 @@ stages:
       load:
         - diff
         - project_contract
+        - named_commits
+        - recent_changes
       max_tokens: 6000
     output: review_context
   - id: specialist-review

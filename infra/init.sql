@@ -234,7 +234,10 @@ CREATE TABLE IF NOT EXISTS side_effect_receipts (
   idempotency_key text NOT NULL,
   operation text NOT NULL,
   target text NOT NULL,
-  receipt jsonb NOT NULL,
+  receipt jsonb NOT NULL DEFAULT '{}'::jsonb,
+  status text NOT NULL DEFAULT 'completed',
+  claim_token uuid,
+  claim_expires_at timestamptz,
   created_at timestamptz NOT NULL DEFAULT now(),
   UNIQUE(project_id, idempotency_key)
 );

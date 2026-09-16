@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertFence, assertTransition, deriveRunState, evaluateReliabilitySlos, objectiveHash, releaseRequiresRollback, reliabilityFailureScenarios, sideEffectKey, workIntentsConflict } from "./index.js";
+import { assertFence, assertTransition, deriveRunState, evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, objectiveHash, releaseRequiresRollback, reliabilityFailureScenarios, sideEffectKey, workIntentsConflict } from "./index.js";
 
 test("authoritative state machine rejects terminal rewrites and derives run state from stages", () => {
   assert.doesNotThrow(() => assertTransition("queued", "leased"));
@@ -26,7 +26,10 @@ test("release rollback and reliability SLOs fail closed", () => {
   const healthy = evaluateReliabilitySlos({ totalMutations: 4, receiptedMutations: 4, duplicateSideEffects: 0, stuckRuns: 0, recoveryDurationsMs: [20_000], fleetFalseCriticals: 0, rollbackDurationsMs: [10_000], invalidTerminalRuns: 0 });
   assert.equal(healthy.status, "pass");
   assert.equal(evaluateReliabilitySlos({ totalMutations: 4, receiptedMutations: 3, duplicateSideEffects: 1, stuckRuns: 1, recoveryDurationsMs: [400_000], fleetFalseCriticals: 1, rollbackDurationsMs: [130_000], invalidTerminalRuns: 1 }).status, "attention");
-  assert.equal(evaluateReliabilitySlos({ totalMutations: 0, receiptedMutations: 0, duplicateSideEffects: 0, stuckRuns: 0, recoveryDurationsMs: [], fleetFalseCriticals: 0, rollbackDurationsMs: [], invalidTerminalRuns: 0 }).status, "attention");
+  const unknown = evaluateReliabilitySlos({ totalMutations: 0, receiptedMutations: 0, duplicateSideEffects: null, stuckRuns: 0, recoveryDurationsMs: null, fleetFalseCriticals: null, rollbackDurationsMs: null, invalidTerminalRuns: 0 });
+  assert.equal(unknown.status, "unknown");
+  assert.equal(unknown.checks.find((check) => check.id === "mutation-receipt-rate")?.actual, null);
+  assert.deepEqual(evaluateReliabilityFailureScenarios().map((entry) => entry.status), reliabilityFailureScenarios.map(() => "unknown"));
 });
 
 test("the deterministic failure matrix covers every reliability boundary", () => {

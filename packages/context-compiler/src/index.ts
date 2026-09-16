@@ -16,12 +16,21 @@ export interface CompileInput {
     matchedTerms?: string[];
     selectionReason?: string;
   }>;
-  sourceExcerpts?: Array<{ sourceUri: string; content: string }>;
+  sourceExcerpts?: SourceExcerptEvidence[];
   preferenceNotes?: string[];
   tuningNotes?: Array<{
     relativePath: string;
     content: string;
   }>;
+}
+
+export interface SourceExcerptEvidence {
+  sourceUri: string;
+  content: string;
+  kind?: "named_commit" | "source_file";
+  originalChars?: number;
+  contentSha256?: string;
+  truncated?: boolean;
 }
 
 export async function compileContext(input: CompileInput): Promise<string> {
@@ -56,35 +65,55 @@ export async function compileContext(input: CompileInput): Promise<string> {
     `Lead: ${input.workflow.lead}${lead ? ` (${lead.display_name})` : ""}`,
     `Project autonomy: ${input.project.project.autonomy}`,
     "",
+    "<!-- agentflow-section:Action Policy -->",
     "## Action Policy",
     formatActionPolicy(input.project),
     "",
+    "<!-- agentflow-section:Project Context -->",
     "## Project Context",
     projectFiles,
     "",
+    "<!-- agentflow-section:Indexed Source Summaries -->",
     "## Indexed Source Summaries",
     formatSourceSummaries(input.sourceSummaries ?? []),
     "",
+    "<!-- agentflow-section:Exact Source Evidence -->",
     "## Exact Source Evidence",
     formatSourceExcerpts(input.sourceExcerpts ?? []),
     "",
+    "<!-- agentflow-section:Adaptive Preference Notes -->",
     "## Adaptive Preference Notes",
     formatPreferenceNotes(input.preferenceNotes ?? []),
     "",
+    "<!-- agentflow-section:Applied Local Tuning Notes -->",
     "## Applied Local Tuning Notes",
     formatAppliedTuningNotes(tuningNotes),
     "",
+    "<!-- agentflow-section:Workflow Stages -->",
     "## Workflow Stages",
     stageBriefs.join("\n\n"),
     "",
+    "<!-- agentflow-section:Agent Instructions -->",
     "## Agent Instructions",
     input.agents.map(formatAgent).join("\n\n")
   ].join("\n");
 }
 
-function formatSourceExcerpts(excerpts: Array<{ sourceUri: string; content: string }>): string {
+function formatSourceExcerpts(excerpts: SourceExcerptEvidence[]): string {
   if (!excerpts.length) return "_No exact source excerpts were requested for this run._";
-  return excerpts.map((excerpt) => `### ${excerpt.sourceUri}\n\`\`\`\n${excerpt.content}\n\`\`\``).join("\n\n");
+  return excerpts.map((excerpt) => {
+    const originalChars = Math.max(excerpt.content.length, excerpt.originalChars ?? excerpt.content.length);
+    const truncated = excerpt.truncated === true || excerpt.content.length < originalChars;
+    const metadata = [
+      `kind=${excerpt.kind ?? "source_file"}`,
+      `completeness=${truncated ? "truncated" : "complete"}`,
+      `includedChars=${excerpt.content.length}`,
+      `originalChars=${originalChars}`,
+      `omittedChars=${Math.max(0, originalChars - excerpt.content.length)}`,
+      excerpt.contentSha256 ? `sha256=${excerpt.contentSha256}` : ""
+    ].filter(Boolean).join("; ");
+    return `### ${excerpt.sourceUri}\nEvidence metadata: ${metadata}\n\`\`\`\n${excerpt.content}\n\`\`\``;
+  }).join("\n\n");
 }
 
 function formatPreferenceNotes(notes: string[]): string {

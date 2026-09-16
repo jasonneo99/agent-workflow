@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { CodexCliProvider, configuredCodexCliModelForTier, type CodexCliRunner } from "./codex-cli.js";
+import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -47,7 +47,9 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.equal(result.artifact.provider, "codex-cli");
     assert.equal(result.artifact.model, "codex-test-model");
     assert.equal(calls[0]?.model, "codex-test-model");
-    assert.match(calls[0]?.prompt ?? "", /inspect the supplied project checkout/);
+    assert.match(calls[0]?.prompt ?? "", /inspect the supplied project checkout/i);
+    assert.match(calls[0]?.prompt ?? "", /Resolve named commits with git show\/diff/);
+    assert.match(calls[0]?.prompt ?? "", /Block only after those sources are genuinely absent or ambiguous/);
     assert.equal(calls[0]?.workingDirectory, "/tmp/synthetic-project");
   } finally {
     if (previous === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
@@ -90,4 +92,15 @@ test("Codex CLI model selection honors override, tier, base, then CLI default", 
     if (previousFast === undefined) delete process.env.CODEX_CLI_MODEL_FAST;
     else process.env.CODEX_CLI_MODEL_FAST = previousFast;
   }
+});
+
+test("Codex CLI diagnostics retain only an allowlisted type and digest", () => {
+  const rawDetail = "failed in /Users/example/Private Project with token=ghp_supersecret and postgres://user:pass@localhost/db; stream disconnected";
+  const diagnostic = buildCodexCliDiagnostic({ rawDetail, errorCode: "CODEX_CLI_EXIT_1", exitCode: 1 });
+  const serialized = JSON.stringify(diagnostic);
+
+  assert.equal(diagnostic.category, "transport");
+  assert.equal(diagnostic.retryable, true);
+  assert.match(diagnostic.digest, /^[a-f0-9]{64}$/u);
+  assert.doesNotMatch(serialized, /Users|Private Project|supersecret|postgres|user:pass/u);
 });

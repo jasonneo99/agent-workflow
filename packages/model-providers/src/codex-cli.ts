@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +17,17 @@ import {
 
 type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string };
 type CodexCliRunResult = { output: string; model: string };
+export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
+export interface CodexCliDiagnostic {
+  source: "codex-cli";
+  category: CodexCliDiagnosticCategory;
+  digest: string;
+  retryable: boolean;
+  exitCode?: number;
+  errorCode?: string;
+  signal?: NodeJS.Signals;
+}
+type CodexCliProcessError = Error & { code?: string; retryable?: boolean; diagnostic?: CodexCliDiagnostic };
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
   execute(input: CodexCliRunInput): Promise<CodexCliRunResult>;
@@ -87,7 +99,7 @@ export class CodexCliProvider implements ModelProvider {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
         input.projectRootUri
-          ? "You may inspect the supplied project checkout and run read-only discovery commands to ground the response in current source. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
+          ? "Inspect the supplied project checkout with bounded read-only discovery before reporting missing context. Resolve named commits with git show/diff, locate task-relevant source and tests, and reuse authoritative project files or prior artifacts when they already contain the needed evidence. Block only after those sources are genuinely absent or ambiguous. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
           : "No project checkout is available. Do not inspect unrelated filesystem locations, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
@@ -190,20 +202,73 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let bytes = 0;
-    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
+    let terminationReason: "timeout" | "output_limit" | undefined;
+    const timer = setTimeout(() => {
+      terminationReason = "timeout";
+      child.kill("SIGTERM");
+    }, timeoutMs);
     const collect = (target: Buffer[], chunk: Buffer) => {
       bytes += chunk.length;
-      if (bytes > maxBytes) child.kill("SIGTERM");
+      if (bytes > maxBytes) {
+        terminationReason = "output_limit";
+        child.kill("SIGTERM");
+      }
       else target.push(chunk);
     };
     child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
     child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
-    child.on("error", () => { clearTimeout(timer); reject(new Error("Codex CLI could not be started.")); });
-    child.on("close", (code) => {
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(codexCliProcessError({ rawDetail: error.message, errorCode: (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED", forcedCategory: "spawn_unavailable" }));
+    });
+    child.on("close", (code, signal) => {
       clearTimeout(timer);
       if (code === 0 && bytes <= maxBytes) resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
-      else reject(new Error(code === null ? "Codex CLI execution timed out or exceeded its output limit." : `Codex CLI execution failed with exit code ${code}.`));
+      else {
+        const rawDetail = Buffer.concat(stderr).toString("utf8") || Buffer.concat(stdout).toString("utf8");
+        const errorCode = terminationReason === "output_limit"
+          ? "CODEX_CLI_OUTPUT_LIMIT"
+          : terminationReason === "timeout"
+            ? "CODEX_CLI_TIMEOUT"
+            : code === null ? "CODEX_CLI_SIGNAL" : `CODEX_CLI_EXIT_${code}`;
+        reject(codexCliProcessError({ rawDetail, errorCode, exitCode: code ?? undefined, signal: signal ?? undefined, forcedCategory: terminationReason }));
+      }
     });
     child.stdin.end(input);
   });
+}
+
+export function buildCodexCliDiagnostic(input: { rawDetail: string; errorCode?: string; exitCode?: number; signal?: NodeJS.Signals; forcedCategory?: "spawn_unavailable" | "timeout" | "output_limit" }): CodexCliDiagnostic {
+  const normalized = input.rawDetail.replace(/\s+/gu, " ").trim();
+  const label = `${input.errorCode ?? ""} ${normalized}`.toLowerCase();
+  const category: CodexCliDiagnosticCategory = input.forcedCategory
+    ?? (/invalid[_ -]?api[_ -]?key|unauthorized|authentication|credential/iu.test(label) ? "authentication"
+      : /insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|quota.*exhaust/iu.test(label) ? "account_quota"
+        : /rate.?limit|too many requests|throttl/iu.test(label) ? "rate_limited"
+          : /model.*(?:not found|unavailable|does not exist|unsupported)/iu.test(label) ? "model_unavailable"
+            : /required environment|missing configuration|unsupported provider adapter/iu.test(label) ? "configuration"
+              : /econn|enotfound|etimedout|connection|network|socket|stream.*(?:closed|disconnect)/iu.test(label) ? "transport"
+                : /temporar|try again|overload|service unavailable|internal server/iu.test(label) ? "service_unavailable"
+                  : /schema|usage|unknown (?:argument|option)|invalid (?:argument|option)/iu.test(label) ? "schema_or_usage"
+                    : "process_exit");
+  const retryable = category === "timeout" || category === "transport" || category === "service_unavailable"
+    || (category === "spawn_unavailable" && /EAGAIN|EBUSY|ECONN|ETIMEDOUT/iu.test(input.errorCode ?? ""));
+  return {
+    source: "codex-cli",
+    category,
+    digest: createHash("sha256").update([input.errorCode ?? "", String(input.exitCode ?? ""), input.signal ?? "", normalized].join("\u001f")).digest("hex"),
+    retryable,
+    ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
+    ...(input.errorCode ? { errorCode: input.errorCode } : {}),
+    ...(input.signal ? { signal: input.signal } : {})
+  };
+}
+
+function codexCliProcessError(input: Parameters<typeof buildCodexCliDiagnostic>[0]): CodexCliProcessError {
+  const diagnostic = buildCodexCliDiagnostic(input);
+  const failure = new Error(`Codex CLI ${diagnostic.category.replaceAll("_", " ")} (diagnostic ${diagnostic.digest.slice(0, 12)}).`) as CodexCliProcessError;
+  failure.code = diagnostic.errorCode ?? `CODEX_CLI_${diagnostic.category.toUpperCase()}`;
+  failure.retryable = diagnostic.retryable;
+  failure.diagnostic = diagnostic;
+  return failure;
 }

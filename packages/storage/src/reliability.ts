@@ -39,3 +39,47 @@ export async function recordSideEffectOnce(input: { projectId: string; idempoten
     return { reused: true, receipt: existing.rows[0]?.receipt ?? {} };
   });
 }
+
+export async function claimSideEffect(input: { projectId: string; idempotencyKey: string; operation: string; target: string; claimSeconds?: number }): Promise<{ status: "claimed" | "in_progress" | "completed" | "uncertain"; claimToken?: string; receipt: Record<string, unknown> }> {
+  const claimSeconds = Math.max(30, Math.min(3600, input.claimSeconds ?? 300));
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const token = randomUUID();
+      const inserted = await client.query<{ claimToken: string }>(
+        `insert into side_effect_receipts(project_id,idempotency_key,operation,target,receipt,status,claim_token,claim_expires_at)
+         values($1,$2,$3,$4,'{}'::jsonb,'pending',$5::uuid,now()+($6::int*interval '1 second'))
+         on conflict(project_id,idempotency_key) do nothing returning claim_token::text as "claimToken"`,
+        [input.projectId, input.idempotencyKey, input.operation, input.target, token, claimSeconds]
+      );
+      if (inserted.rows[0]) {
+        await client.query("commit");
+        return { status: "claimed" as const, claimToken: inserted.rows[0].claimToken, receipt: {} };
+      }
+      const existing = await client.query<{ status: string; receipt: Record<string, unknown>; expired: boolean }>(
+        `select status, receipt, (claim_expires_at is not null and claim_expires_at <= now()) as expired
+         from side_effect_receipts where project_id=$1 and idempotency_key=$2 for update`,
+        [input.projectId, input.idempotencyKey]
+      );
+      const row = existing.rows[0];
+      if (row?.status === "pending" && row.expired) {
+        await client.query(`update side_effect_receipts set status='uncertain' where project_id=$1 and idempotency_key=$2`, [input.projectId, input.idempotencyKey]);
+        await client.query("commit");
+        return { status: "uncertain" as const, receipt: row.receipt ?? {} };
+      }
+      await client.query("commit");
+      return { status: row?.status === "completed" ? "completed" as const : row?.status === "uncertain" ? "uncertain" as const : "in_progress" as const, receipt: row?.receipt ?? {} };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function finalizeSideEffect(input: { projectId: string; idempotencyKey: string; claimToken: string; receipt: Record<string, unknown> }): Promise<boolean> {
+  return withClient(async (client) => (await client.query(
+    `update side_effect_receipts set status='completed',receipt=$4::jsonb,claim_expires_at=null
+     where project_id=$1 and idempotency_key=$2 and status='pending' and claim_token=$3::uuid and claim_expires_at>now()`,
+    [input.projectId, input.idempotencyKey, input.claimToken, JSON.stringify(input.receipt)]
+  )).rowCount === 1);
+}

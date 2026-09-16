@@ -37,7 +37,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     formatActionPolicy(input.projectConfig),
     "",
     "Compiled project/workflow brief:",
-    truncate(input.compiledBrief, 8000),
+    selectCompiledBriefForPrompt(input.compiledBrief, 8000),
     "",
     "Prior stage receipts:",
     input.priorReceipts.length
@@ -54,7 +54,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
       : "None yet.",
     "",
     "Return JSON with:",
-    "- outcome: completed only when the stage goal was actually achieved; blocked when required context, authority, implementation, or verification is missing",
+    "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
     "- blockedReason: concise reason when outcome is blocked; otherwise an empty string",
     "- summary: one or two sentences describing the stage result",
     "- findings: concrete observations, risks, or decisions",
@@ -62,6 +62,59 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- requestedCommands: exact commands from the allowed command policy only; do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
     "- requestedFileWrites: project-relative files under allowed write paths only, each with path and full content; use [] unless a file edit is necessary and keep content compact"
   ].join("\n");
+}
+
+export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8000): string {
+  const safeMax = Math.max(1000, maxChars);
+  const completeMetadata = `Compiled brief selection metadata: strategy=section-budgeted; completeness=complete; originalChars=${compiledBrief.length}; promptBudget=${safeMax}`;
+  if (compiledBrief.length + completeMetadata.length + 1 <= safeMax) {
+    return `${completeMetadata}\n${compiledBrief}`;
+  }
+
+  const sentinelMatches = [...compiledBrief.matchAll(/^<!-- agentflow-section:([^\n]+) -->\n/gmu)];
+  const matches = sentinelMatches.length ? sentinelMatches : [...compiledBrief.matchAll(/^## ([^\n]+)\n/gmu)];
+  const preambleEnd = matches[0]?.index ?? compiledBrief.length;
+  const preamble = compiledBrief.slice(0, preambleEnd).trim();
+  const sections = new Map<string, string>();
+  for (const [index, match] of matches.entries()) {
+    const start = match.index ?? 0;
+    const end = matches[index + 1]?.index ?? compiledBrief.length;
+    sections.set(match[1].trim(), compiledBrief.slice(start, end).trim());
+  }
+
+  const metadata = `Compiled brief selection metadata: strategy=section-budgeted; completeness=truncated; originalChars=${compiledBrief.length}; promptBudget=${safeMax}`;
+  const allocations: Array<[string, number]> = [
+    ["Exact Source Evidence", 3600],
+    ["Project Context", 850],
+    ["Indexed Source Summaries", 950],
+    ["Action Policy", 650],
+    ["Adaptive Preference Notes", 350],
+    ["Applied Local Tuning Notes", 300],
+    ["Workflow Stages", 450],
+    ["Agent Instructions", 300]
+  ];
+  const selected: string[] = [metadata];
+  let remaining = safeMax - metadata.length - 2;
+  const append = (value: string, requested: number) => {
+    if (!value || remaining < 160) return;
+    const fragment = budgetBriefFragment(value, Math.min(requested, remaining));
+    selected.push(fragment);
+    remaining -= fragment.length + 2;
+  };
+  append(preamble, 650);
+  for (const [name, budget] of allocations) append(sections.get(name) ?? "", budget);
+
+  return selected.join("\n\n").slice(0, safeMax);
+}
+
+function budgetBriefFragment(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  const newline = value.indexOf("\n");
+  const label = newline >= 0 ? value.slice(0, newline) : "Brief fragment";
+  const marker = `\nSelection metadata: completeness=truncated; includedChars=${maxChars}; originalChars=${value.length}; omittedChars=${Math.max(0, value.length - maxChars)}`;
+  const available = Math.max(0, maxChars - marker.length);
+  const content = value.slice(0, available).trimEnd();
+  return `${content || label}${marker}`.slice(0, maxChars);
 }
 
 export function buildFileSummaryPrompt(input: {
@@ -85,19 +138,23 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
   const summary = typeof value.summary === "string" ? value.summary : "Stage completed.";
   const explicitlyBlocked = value.outcome === "blocked";
   const legacyBlocked = value.outcome === undefined && /\b(blocked|could not|cannot proceed|no (?:changes|tests) (?:were )?(?:made|run|applied)|not supplied)\b/iu.test(`${summary} ${blockedReason}`);
+  const requestedCommands = Array.isArray(value.requestedCommands)
+    ? value.requestedCommands.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    : [];
+  const requestedFileWrites = Array.isArray(value.requestedFileWrites)
+    ? value.requestedFileWrites
+      .filter((item): item is { path: string; content: string } => Boolean(item) && typeof item.path === "string" && item.path.trim().length > 0 && typeof item.content === "string")
+    : [];
+  const hasActionableRecovery = requestedCommands.length > 0 || requestedFileWrites.length > 0;
+  const outcome = (explicitlyBlocked || legacyBlocked) && !hasActionableRecovery ? "blocked" : "completed";
   return {
-    outcome: explicitlyBlocked || legacyBlocked ? "blocked" : "completed",
-    blockedReason: explicitlyBlocked || legacyBlocked ? (blockedReason || summary) : "",
+    outcome,
+    blockedReason: outcome === "blocked" ? (blockedReason || summary) : "",
     summary,
     findings: Array.isArray(value.findings) ? value.findings.filter((item): item is string => typeof item === "string") : [],
     nextAction: typeof value.nextAction === "string" ? value.nextAction : "",
-    requestedCommands: Array.isArray(value.requestedCommands)
-      ? value.requestedCommands.filter((item): item is string => typeof item === "string")
-      : [],
-    requestedFileWrites: Array.isArray(value.requestedFileWrites)
-      ? value.requestedFileWrites
-        .filter((item): item is { path: string; content: string } => Boolean(item) && typeof item.path === "string" && typeof item.content === "string")
-      : []
+    requestedCommands,
+    requestedFileWrites
   };
 }
 

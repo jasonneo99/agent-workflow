@@ -24,18 +24,43 @@ export class ProviderExecutionError extends Error {
 
 export function classifyProviderFailure(error: unknown): ProviderExecutionError {
   if (error instanceof ProviderExecutionError) return error;
-  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown; error?: { code?: unknown; type?: unknown }; message?: unknown };
+  const candidate = error as { status?: unknown; statusCode?: unknown; code?: unknown; error?: { code?: unknown; type?: unknown }; message?: unknown; retryable?: unknown; diagnostic?: unknown };
   const status = numberValue(candidate?.status ?? candidate?.statusCode);
   const code = stringValue(candidate?.code ?? candidate?.error?.code ?? candidate?.error?.type).toLowerCase();
   const message = stringValue(candidate?.message ?? error).toLowerCase();
   const label = `${code} ${message}`;
+  const codexDiagnostic = readCodexDiagnostic(candidate?.diagnostic);
+  if (codexDiagnostic) {
+    const kind = codexDiagnosticKind(codexDiagnostic.category);
+    return new ProviderExecutionError(kind, `Codex CLI ${codexDiagnostic.category.replaceAll("_", " ")} (diagnostic ${codexDiagnostic.digest.slice(0, 12)}).`, status, code);
+  }
   if (status === 401 || status === 403 || /invalid[_ -]?api[_ -]?key|unauthorized|authentication|credential/.test(label)) return new ProviderExecutionError("authentication", "Provider authentication failed.", status, code);
   if (/insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|exceeded.*quota|quota.*exhaust/.test(label)) return new ProviderExecutionError("account_quota", "Provider account quota is exhausted.", status, code);
   if (status === 429 || /rate[_ -]?limit|too many requests|throttl/.test(label)) return new ProviderExecutionError("rate_limited", "Provider rate limit was reached.", status, code);
   if (status === 404 || /model.*(not found|unavailable|does not exist|unsupported)|deployment.*not found/.test(label)) return new ProviderExecutionError("model_unavailable", "Requested provider model is unavailable.", status, code);
-  if ((status !== undefined && status >= 500) || /econnreset|econnrefused|enotfound|etimedout|connection error|fetch failed|socket hang up|service unavailable/.test(label)) return new ProviderExecutionError("provider_outage", "Provider service is unavailable.", status, code);
+  if (candidate?.retryable === true || (status !== undefined && status >= 500) || /econnreset|econnrefused|enotfound|etimedout|connection error|fetch failed|socket hang up|service unavailable/.test(label)) return new ProviderExecutionError("provider_outage", "Provider service is unavailable.", status, code);
   if (/required when default_model_provider|is not configured|required environment|missing configuration|unsupported provider adapter/.test(label)) return new ProviderExecutionError("configuration", "Provider configuration is incomplete.", status, code);
   return new ProviderExecutionError("unknown", "Provider execution failed.", status, code);
+}
+
+const codexDiagnosticCategories = new Set(["spawn_unavailable", "timeout", "output_limit", "authentication", "account_quota", "rate_limited", "model_unavailable", "configuration", "transport", "service_unavailable", "schema_or_usage", "process_exit"]);
+
+function readCodexDiagnostic(value: unknown): { category: string; digest: string } | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const record = value as Record<string, unknown>;
+  if (record.source !== "codex-cli" || typeof record.category !== "string" || !codexDiagnosticCategories.has(record.category)) return undefined;
+  if (typeof record.digest !== "string" || !/^[a-f0-9]{64}$/u.test(record.digest)) return undefined;
+  return { category: record.category, digest: record.digest };
+}
+
+function codexDiagnosticKind(category: string): ProviderFailureKind {
+  if (category === "authentication") return "authentication";
+  if (category === "account_quota") return "account_quota";
+  if (category === "rate_limited") return "rate_limited";
+  if (category === "model_unavailable") return "model_unavailable";
+  if (category === "configuration") return "configuration";
+  if (["spawn_unavailable", "timeout", "transport", "service_unavailable"].includes(category)) return "provider_outage";
+  return "unknown";
 }
 
 export function providerFallbackPolicyFromEnv(): ProviderFallbackPolicy {

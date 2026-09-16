@@ -19,7 +19,8 @@ const run: WorkflowRunStatus = {
   projectName: "Example",
   projectRootUri: "/repo",
   startedAt: "2026-08-28T10:00:00.000Z",
-  finishedAt: "2026-08-28T10:00:05.000Z"
+  finishedAt: "2026-08-28T10:00:05.000Z",
+  blockedReason: null
 };
 
 const tasks: WorkflowTaskStatus[] = [{

@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "a479e6af6893c64c87891ceeb0eaeff3debff60d6c14e4eb20fea75b260e5e46"
+    "value": "2f2488ce5a384a1632187ce25c3fc61d7a16115d76a711db4bd1d7537528c39c"
   },
   "agents": [
     {
@@ -162,7 +162,7 @@
     {
       "id": "build-feature",
       "path": "workflows/build-feature.yaml",
-      "checksum": "b984515e3da1a257c5d87be56b2f18a1b7897a0f6167c66432e7f95fe764ce22"
+      "checksum": "568f3419256964b327be6d55d3abd838f4b74f5a3811f754acceddf06347d79e"
     },
     {
       "id": "ci-triage",
@@ -177,7 +177,7 @@
     {
       "id": "debug-failure",
       "path": "workflows/debug-failure.yaml",
-      "checksum": "f1e0f576dcabe25858d5ae81e9f3ba44a837b4d376902b2af063a3cfe91b073d"
+      "checksum": "6ea8baf5a1157d1623896d9224cb111a7b303d333fcd6f3449056da51c620abc"
     },
     {
       "id": "dependency-upgrade",
@@ -227,7 +227,7 @@
     {
       "id": "review-pr",
       "path": "workflows/review-pr.yaml",
-      "checksum": "a2a05368c8d185ebe0d8a199f18ea70679e2511ab80bc94c41a549578bbfc207"
+      "checksum": "6102f3fac71089dab8496c5e4e16b6fdd5b63302a96f687d84853cb4e86e3398"
     },
     {
       "id": "roadmap-curation",
@@ -361,7 +361,7 @@
     },
     {
       "path": "workflows/build-feature.yaml",
-      "checksum": "b984515e3da1a257c5d87be56b2f18a1b7897a0f6167c66432e7f95fe764ce22"
+      "checksum": "568f3419256964b327be6d55d3abd838f4b74f5a3811f754acceddf06347d79e"
     },
     {
       "path": "workflows/ci-triage.yaml",
@@ -373,7 +373,7 @@
     },
     {
       "path": "workflows/debug-failure.yaml",
-      "checksum": "f1e0f576dcabe25858d5ae81e9f3ba44a837b4d376902b2af063a3cfe91b073d"
+      "checksum": "6ea8baf5a1157d1623896d9224cb111a7b303d333fcd6f3449056da51c620abc"
     },
     {
       "path": "workflows/dependency-upgrade.yaml",
@@ -413,7 +413,7 @@
     },
     {
       "path": "workflows/review-pr.yaml",
-      "checksum": "a2a05368c8d185ebe0d8a199f18ea70679e2511ab80bc94c41a549578bbfc207"
+      "checksum": "6102f3fac71089dab8496c5e4e16b6fdd5b63302a96f687d84853cb4e86e3398"
     },
     {
       "path": "workflows/roadmap-curation.yaml",

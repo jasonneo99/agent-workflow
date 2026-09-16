@@ -41,7 +41,7 @@ export async function findRecentDuplicateRun(client: pg.Client, input: RunDedupl
        )) or exists (
          select 1 from artifacts a where a.run_id = wr.id and a.kind = 'compiled_brief' and a.content = $13::jsonb
        ))
-       and (wr.status in ('queued', 'running') or (wr.status = 'completed' and wr.started_at >= now() - interval '15 minutes'))
+       and (wr.status in ('queued', 'leased', 'running') or (wr.status = 'completed' and wr.started_at >= now() - interval '15 minutes'))
      group by wr.id, wr.started_at
      order by wr.started_at desc
      limit 1`,

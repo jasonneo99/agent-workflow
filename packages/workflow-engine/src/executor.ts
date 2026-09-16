@@ -15,11 +15,15 @@ import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
 import {
   blockWorkflowTask,
+  claimSideEffect,
   claimNextWorkflowTask,
   completeWorkflowTask,
   findRunActionByIdempotencyKey,
   failWorkflowTask,
+  finalizeSideEffect,
   recordRunAction,
+  renewWorkflowTaskLease,
+  assertWorkflowTaskLease,
   requestActionApproval,
   startWorkflowTask,
   type ClaimedWorkflowTask
@@ -37,6 +41,17 @@ export type WorkerRunOptions = {
   projectRootUri?: string;
   concurrency?: number;
 };
+
+export class LostWorkflowTaskLeaseError extends Error {
+  constructor(taskId: string) {
+    super(`Worker lost ownership of workflow task ${taskId}; no further side effects may be dispatched.`);
+    this.name = "LostWorkflowTaskLeaseError";
+  }
+}
+
+function isStaleLeaseError(error: unknown): boolean {
+  return error instanceof Error && /stale workflow fencing token|expired task lease/iu.test(error.message);
+}
 
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
   const safeLimit = Math.max(0, Math.floor(limit));
@@ -62,8 +77,29 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
     result.claimed += 1;
 
+    let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       await startWorkflowTask({ taskId: task.taskId, runId: task.runId, workerId: task.workerId!, fencingToken: task.fencingToken });
+      const leaseSeconds = Math.max(30, Math.min(3600, options?.leaseSeconds ?? 900));
+      let leaseLost = false;
+      leaseHeartbeat = setInterval(() => {
+        void renewWorkflowTaskLease({
+          taskId: task.taskId,
+          runId: task.runId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          leaseSeconds
+        }).then((renewed) => {
+          if (!renewed) leaseLost = true;
+        }).catch(() => {
+          leaseLost = true;
+        });
+      }, Math.max(10_000, Math.floor(leaseSeconds * 1000 / 3)));
+      leaseHeartbeat.unref();
+      const assertLeaseOwned = async (): Promise<void> => {
+        if (leaseLost) throw new LostWorkflowTaskLeaseError(task.taskId);
+        await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
+      };
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
       const localProjectRootUri = (await resolveLocalProjectPath(task.projectRootUri)).localRootUri;
@@ -76,7 +112,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
       if (task.executorSnapshot) {
-        await executeBoundExecutorStage(task, project);
+        await executeBoundExecutorStage(task, project, assertLeaseOwned);
+        clearInterval(leaseHeartbeat);
         result.completed += 1;
         continue;
       }
@@ -177,6 +214,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);
       let reactIteration = 0;
       for (const commandLine of output.requestedCommands ?? []) {
+        await assertLeaseOwned();
         reactIteration += 1;
         const commandIdempotencyKey = actionIdempotencyKey({
           taskId: task.taskId,
@@ -343,6 +381,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         }
 
+        const commandSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, operation: "local_command", target: commandLine, claimSeconds: 3600 });
+        if (commandSideEffect.status !== "claimed" || !commandSideEffect.claimToken) {
+          actionResults.push({ type: `local_command_side_effect_${commandSideEffect.status}`, commandLine, receipt: commandSideEffect.receipt });
+          continue;
+        }
+        await assertLeaseOwned();
         let commandResult;
         try {
           commandResult = await executeAllowedCommand({
@@ -416,6 +460,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           },
           idempotencyKey: commandIdempotencyKey
         });
+        const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
+        if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
         actionResults.push({
           commandLine,
           artifactUri,
@@ -451,6 +497,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         }
       }
       for (const fileWrite of output.requestedFileWrites ?? []) {
+        await assertLeaseOwned();
         reactIteration += 1;
         const fileWriteIdempotencyKey = actionIdempotencyKey({
           taskId: task.taskId,
@@ -618,6 +665,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         }
 
+        const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
+        if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
+          actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });
+          continue;
+        }
+        await assertLeaseOwned();
         let writeResult;
         try {
           writeResult = await executeAllowedFileWrite({
@@ -692,6 +745,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           },
           idempotencyKey: fileWriteIdempotencyKey
         });
+        const fileWriteFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, claimToken: fileSideEffect.claimToken, receipt: { artifactUri, path: writeResult.relativePath, nextHash: writeResult.nextHash } });
+        if (!fileWriteFinalized) throw new Error(`File-write side-effect claim could not be finalized for ${fileWrite.path}.`);
         actionResults.push({
           type: "file_write",
           path: writeResult.relativePath,
@@ -724,6 +779,31 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         });
       }
+      const incompleteActions = actionResults.filter((action) => {
+        const type = typeof action === "object" && action && "type" in action ? String(action.type) : "";
+        return type.endsWith("_approval_pending") || type.endsWith("_rejected") || type.includes("_side_effect_");
+      });
+      if (incompleteActions.length > 0) {
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          summary: `Stage is waiting on ${incompleteActions.length} required action${incompleteActions.length === 1 ? "" : "s"}.`,
+          reason: "Required actions were rejected or are awaiting approval; the stage cannot complete until they have durable successful receipts.",
+          artifact: {
+            ...output.artifact,
+            outcome: "blocked",
+            blockedReason: "Required actions were rejected or are awaiting approval.",
+            actionResults
+          }
+        });
+        clearInterval(leaseHeartbeat);
+        result.failed += 1;
+        continue;
+      }
+      await assertLeaseOwned();
       await completeWorkflowTask({
         taskId: task.taskId,
         runId: task.runId,
@@ -745,24 +825,32 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           actionResults
         }
       });
+      clearInterval(leaseHeartbeat);
       result.completed += 1;
     } catch (error) {
-      await failWorkflowTask({
-        taskId: task.taskId,
-        runId: task.runId,
-        agentId: task.agentId,
-        workerId: task.workerId!,
-        fencingToken: task.fencingToken,
-        error: error instanceof Error ? error.message : String(error)
-      });
+      if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+      if (!(error instanceof LostWorkflowTaskLeaseError) && !isStaleLeaseError(error)) {
+        await failWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          error: error instanceof Error ? error.message : String(error)
+        }).catch((failureError) => {
+          if (!isStaleLeaseError(failureError)) throw failureError;
+        });
+      }
       result.failed += 1;
+    } finally {
+      if (leaseHeartbeat) clearInterval(leaseHeartbeat);
     }
   }
 
   return result;
 }
 
-async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNextWorkflowTask>> & {}, project: ReturnType<typeof projectConfigSchema.parse>): Promise<void> {
+async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNextWorkflowTask>> & {}, project: ReturnType<typeof projectConfigSchema.parse>, assertLeaseOwned: () => Promise<void> = async () => {}): Promise<void> {
   if (!task?.executorSnapshot) throw new Error("Executor stage is missing immutable executor evidence.");
   if (task.executorSnapshot.registeredProjectRoot !== task.projectRootUri) throw new Error("Executor snapshot project root does not match the registered workflow project.");
   assertExecutorRegistration(task.executorSnapshot, project, task.projectRootUri);
@@ -777,6 +865,7 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
     });
     const previousExecution = previous?.content.execution as { status?: string } | undefined;
     if (previous && previousExecution?.status === "passed") {
+      await assertLeaseOwned();
       const reuseArtifactUri = await recordRunAction({
         runId: task.runId,
         taskId: task.taskId,
@@ -798,6 +887,7 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
       });
       return;
     }
+    await assertLeaseOwned();
     const gated = await runExecutorApprovalGate({
       project,
       target: approvalTarget,
@@ -829,18 +919,20 @@ async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNe
           },
           idempotencyKey: task.executorSnapshot.snapshotHash
         });
-        await completeWorkflowTask({
+        await blockWorkflowTask({
           taskId: task.taskId,
           runId: task.runId,
           agentId: task.agentId,
           workerId: task.workerId!,
           fencingToken: task.fencingToken,
           summary: `Approval pending for ${approvalTarget}.`,
+          reason: `Required executor action ${approvalTarget} is awaiting approval.`,
           artifact: { executor: task.executorSnapshot, actionResults: [{ type: "executor_adapter_approval_pending", approvalId: approval.approvalId, artifactUri: approval.artifactUri, status: approval.status }] }
         });
         return;
     }
     const executorApprovalRule = gated.approvalRule;
+    await assertLeaseOwned();
     const execution = gated.result;
     const artifactUri = await recordRunAction({
       runId: task.runId,
