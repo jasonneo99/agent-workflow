@@ -26,7 +26,7 @@ import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfi
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
 import { selectRelevantSourceSummaries } from "../../../packages/context-selector/src/index.js";
 import { authenticateSharedBrainRequest, createAssistantIntent, fairProjectOrder, optimizerDashboardReport, previewAssistantPlan, readOptimizerEvents, readOptimizerState, runOptimizerCycle, sharedBrainSummary } from "../../../packages/workflow-optimizer/src/index.js";
-import { daemonLanes, defaultDaemonTrustSettings, normalizeDaemonTrustSettings, type DaemonTrustSettings } from "../../../packages/daemon-control/src/index.js";
+import { classifyFleetProject, daemonLanes, defaultDaemonTrustSettings, fleetProjectAvailable, normalizeDaemonTrustSettings, type DaemonTrustSettings, type FleetProjectScope } from "../../../packages/daemon-control/src/index.js";
 import { lowerTrustLevel } from "../../../packages/daemon-control/src/settings.js";
 import { buildDaemonControlStatus } from "../../../packages/daemon-control/src/status.js";
 import { buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals, type LearningApplicationAction, type LearningApplicationPlan, type LearningApprovalDecisionResult, type LearningApprovalItem, type LearningApprovalQueue, type LearningApprovalStatus, type LearningProposal, type LearningProposalKind, type LearningProposalPriority, type LearningProposalSet, type LearningRiskLevel } from "../../../packages/learning-governance/src/index.js";
@@ -36,6 +36,7 @@ import { buildLearningProposalSet, formatLearningProposalSet, writeLearningPropo
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
 import { prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
+import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -529,22 +530,6 @@ type WorkflowPreset = {
   task: string;
   kind: "agent" | "workflow";
   target: string;
-};
-
-type OrchestrationStep = {
-  id: string;
-  title: string;
-  reason: string;
-  kind: "agent" | "workflow" | "preset";
-  target: string;
-  task: string;
-  skipIfPriorEmpty?: boolean;
-};
-
-type OrchestrationPlan = {
-  projectDir: string;
-  task: string;
-  steps: OrchestrationStep[];
 };
 
 const workflowPresets: WorkflowPreset[] = [
@@ -7000,11 +6985,11 @@ type ServerDaemonFleetHealthReport = {
   kind: "agentflow_server_daemon_fleet_health";
   generatedAt: string;
   status: "healthy" | "attention";
-  counts: { projects: number; running: number; paused: number; disabled: number; unavailable: number; workerLanes: number; activeWorkerLanes: number; daemonLanes: number; attention: number };
+  counts: { projects: number; tracked: number; excluded: number; remote: number; ephemeral: number; running: number; paused: number; disabled: number; unavailable: number; workerLanes: number; activeWorkerLanes: number; daemonLanes: number; attention: number };
   supervisor: { status: DashboardSupervisorStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; message: string };
   worker: { status: DashboardWorkerStatus["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; lanes: Array<{ id: string; status: DashboardWorkerLane["status"]; lastHeartbeatAt: string | null; heartbeatAgeMs: number | null; claimed: number; completed: number; failed: number }> };
   daemonLanes: Array<{ id: string; name: string; purpose: string; trust: "low" | "medium" | "high"; status: "running" | "attention" }>;
-  projects: Array<{ projectId: string; name: string; scheduling: "enabled" | "paused" | "disabled"; daemonStatus: DashboardLearningDaemonStatus["status"]; mode: LearningDaemonMode; runLimit: number; heartbeatAgeMs: number | null; lastHeartbeatAt: string | null; lastError: string | null }>;
+  projects: Array<{ projectId: string; name: string; scheduling: "enabled" | "paused" | "disabled"; scope: FleetProjectScope; availabilityTracked: boolean; available: boolean; availabilityReason: string; daemonStatus: DashboardLearningDaemonStatus["status"]; mode: LearningDaemonMode; runLimit: number; heartbeatAgeMs: number | null; lastHeartbeatAt: string | null; lastError: string | null }>;
   attention: Array<{ eventId: string; severity: "warning" | "critical"; projectId: string; projectName: string; category: string; title: string; summary: string; action: string; generatedAt: string }>;
 };
 
@@ -13361,8 +13346,13 @@ async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthRep
     loadDashboardSupervisorStatus(),
     loadDashboardWorkerStatus()
   ]);
-  const projectResults = await Promise.all(registry.projects.filter((project) => project.rootUri).map(async (project) => {
-    const localRoot = await resolveLocalProjectRootUri(project.rootUri as string);
+  const resolvedProjects = await Promise.all(registry.projects.filter((project) => project.rootUri).map(async (project) => ({
+    project,
+    resolution: await resolveDashboardProjectPath(project.rootUri as string)
+  })));
+  const uniqueProjects = [...new Map(resolvedProjects.map((item) => [item.resolution.localPathExists ? item.resolution.localRootUri : item.resolution.storageRootUri, item])).values()];
+  const projectResults = await Promise.all(uniqueProjects.map(async ({ project, resolution }) => {
+    const localRoot = resolution.localRootUri;
     const [settings, heartbeat, triage] = await Promise.all([
       readLearningSettings(localRoot).catch(() => null),
       loadLearningDaemonStatus(localRoot),
@@ -13370,10 +13360,16 @@ async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthRep
     ]);
     const enabled = settings?.daemonEnabled ?? true;
     const paused = settings?.daemonPaused ?? false;
+    const availability = classifyFleetProject({ name: project.name, rootUri: project.rootUri as string, localPathExists: resolution.localPathExists, enabled, paused });
+    const available = fleetProjectAvailable({ availabilityTracked: availability.availabilityTracked, daemonStatus: heartbeat.status, heartbeatAgeMs: heartbeat.ageMs });
     const projectHealth = {
       projectId: project.projectId,
       name: project.name,
       scheduling: (!enabled ? "disabled" : paused ? "paused" : "enabled") as "enabled" | "paused" | "disabled",
+      scope: availability.scope,
+      availabilityTracked: availability.availabilityTracked,
+      available,
+      availabilityReason: availability.reason,
       daemonStatus: heartbeat.status,
       mode: settings?.daemonMode ?? heartbeat.mode ?? "apply-approved",
       runLimit: settings?.daemonRunLimit ?? heartbeat.limit ?? 50,
@@ -13400,10 +13396,14 @@ async function loadServerDaemonFleetHealth(): Promise<ServerDaemonFleetHealthRep
   const attention = projectResults.flatMap((result) => result.attention).sort((left, right) => right.generatedAt.localeCompare(left.generatedAt)).slice(0, 50);
   const counts = {
     projects: projects.length,
-    running: projects.filter((project) => project.daemonStatus === "running").length,
+    tracked: projects.filter((project) => project.availabilityTracked).length,
+    excluded: projects.filter((project) => !project.availabilityTracked).length,
+    remote: projects.filter((project) => project.scope === "remote").length,
+    ephemeral: projects.filter((project) => project.scope === "ephemeral").length,
+    running: projects.filter((project) => project.availabilityTracked && project.available).length,
     paused: projects.filter((project) => project.scheduling === "paused").length,
     disabled: projects.filter((project) => project.scheduling === "disabled").length,
-    unavailable: projects.filter((project) => project.scheduling === "enabled" && project.daemonStatus !== "running").length,
+    unavailable: projects.filter((project) => project.availabilityTracked && !project.available).length,
     workerLanes: worker.lanes.length,
     activeWorkerLanes: worker.lanes.filter((lane) => lane.status === "running").length,
     daemonLanes: daemonLanes.length,
@@ -41169,111 +41169,6 @@ async function runWorkflowPreset(input: {
     timeoutMs: input.timeoutMs,
     outDir: input.outDir
   });
-}
-
-function createOrchestrationPlan(input: { projectDir: string; task: string }): OrchestrationPlan {
-  const normalizedTask = normalizeLookup(input.task);
-  const steps: OrchestrationStep[] = [];
-  const addStep = (step: Omit<OrchestrationStep, "id">): void => {
-    const duplicate = steps.some((existing) => existing.kind === step.kind && existing.target === step.target);
-    if (!duplicate) {
-      steps.push({ ...step, id: `step-${steps.length + 1}` });
-    }
-  };
-  const includesAny = (terms: string[]): boolean => terms.some((term) => normalizedTask.includes(normalizeLookup(term)));
-
-  if (includesAny(["ux", "user experience", "design", "layout", "visual", "accessibility", "mobile", "responsive", "conversion", "onboarding", "homepage"])) {
-    addStep({
-      title: "UX review",
-      reason: "The request touches user experience, visual quality, conversion, accessibility, or responsive behavior.",
-      kind: "agent",
-      target: "Mira",
-      task: `Review UX for this request and produce prioritized findings: ${input.task}`
-    });
-  }
-
-  if (includesAny(["frontend", "ui", "css", "html", "javascript", "component", "page", "site", "mobile", "responsive", "layout"])) {
-    addStep({
-      title: "Frontend implementation review",
-      reason: "The request likely involves browser-facing code or static site implementation details.",
-      kind: "agent",
-      target: "frontend",
-      task: `Review frontend implementation needs, risks, and concrete fixes for: ${input.task}`
-    });
-  }
-
-  if (includesAny(["security", "auth", "permission", "secret", "xss", "production", "wordpress", "external"])) {
-    addStep({
-      title: "Security and production risk review",
-      reason: "The request mentions production, external systems, WordPress, or security-sensitive areas.",
-      kind: "agent",
-      target: "security",
-      task: `Review security and production risks for: ${input.task}`
-    });
-  }
-
-  if (includesAny(["test", "tests", "failing", "failure", "bug", "error", "ci", "build failed", "broken"])) {
-    const requestsRepair = includesAny(["fix", "implement", "repair", "patch", "resolve"]);
-    const requestsInvestigationOnly = includesAny(["read-only", "investigate", "audit", "diagnose", "analyze", "analyse", "inspect", "validate"]);
-    addStep({
-      title: requestsInvestigationOnly && !requestsRepair ? "Issue investigation" : "Failure diagnosis and repair",
-      reason: requestsInvestigationOnly && !requestsRepair
-        ? "The request asks for investigation without authorizing a repair."
-        : "The request identifies a failure and asks for diagnosis or repair.",
-      kind: "workflow",
-      target: requestsInvestigationOnly && !requestsRepair ? "investigate-issue" : "debug-failure",
-      task: requestsInvestigationOnly && !requestsRepair
-        ? `Investigate and classify the issue without making changes: ${input.task}`
-        : `Diagnose, fix, and verify the confirmed failure: ${input.task}`
-    });
-  }
-
-  if (includesAny(["review", "audit", "risk", "production", "deploy", "launch", "ship", "seo", "content", "site"])) {
-    addStep({
-      title: "Change review",
-      reason: "The request calls for review, launch readiness, production confidence, SEO, or site-wide risk assessment.",
-      kind: "workflow",
-      target: "review-pr",
-      task: `Review the project for risks, regressions, missing checks, and recommended actions related to: ${input.task}`,
-      skipIfPriorEmpty: true
-    });
-  }
-
-  if (includesAny(["implement", "fix", "add", "build", "change", "update", "create"]) && !includesAny(["review", "audit", "pass"])) {
-    addStep({
-      title: "Feature implementation plan",
-      reason: "The request asks for implementation or changes, so the build-feature workflow should plan and execute within policy.",
-      kind: "workflow",
-      target: "build-feature",
-      task: `Implement or plan the requested change within project policy: ${input.task}`
-    });
-  }
-
-  if (includesAny(["context", "memory", "docs", "documentation", "remember", "decisions"])) {
-    addStep({
-      title: "Context maintenance",
-      reason: "The request mentions durable memory, docs, context, or decisions.",
-      kind: "workflow",
-      target: "maintain-context",
-      task: `Update durable project context and decisions for: ${input.task}`
-    });
-  }
-
-  if (!steps.length) {
-    addStep({
-      title: "General project review",
-      reason: "No narrow route matched, so start with a conservative project review.",
-      kind: "workflow",
-      target: "review-pr",
-      task: `Review and recommend the next action for: ${input.task}`
-    });
-  }
-
-  return {
-    projectDir: input.projectDir,
-    task: input.task,
-    steps
-  };
 }
 
 function primaryWorkflowStep(plan: OrchestrationPlan): OrchestrationStep | null {

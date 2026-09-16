@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { daemonLanes, daemonMayAct, defaultDaemonTrustSettings, normalizeDaemonTrustSettings } from "./index.js";
+import { classifyFleetProject, daemonLanes, daemonMayAct, defaultDaemonTrustSettings, fleetProjectAvailable, isEphemeralFleetProject, normalizeDaemonTrustSettings } from "./index.js";
 import { lowerTrustLevel, trustSettingsFromForm } from "./settings.js";
 import { buildDaemonControlStatus } from "./status.js";
 import { renderDaemonControl } from "../../../apps/cli/src/dashboard/daemon-control.js";
@@ -35,4 +35,17 @@ test("trust never bypasses policy or validation", () => {
   assert.equal(daemonMayAct({ trust: "high", risk: "high", policyAllowed: true, validationPassed: true }), true);
   assert.equal(daemonMayAct({ trust: "high", risk: "low", policyAllowed: false, validationPassed: true }), false);
   assert.equal(daemonMayAct({ trust: "high", risk: "low", policyAllowed: true, validationPassed: false }), false);
+});
+test("fleet health excludes ephemeral, disabled, paused, and remote projects from local availability", () => {
+  assert.equal(isEphemeralFleetProject({ name: "Provider Smoke Project", rootUri: "/tmp/agentflow-provider-smoke.123" }), true);
+  assert.equal(isEphemeralFleetProject({ name: "Example Project", rootUri: "/releases/agent-workflow/abc/templates/project" }), true);
+  assert.deepEqual(classifyFleetProject({ name: "App", rootUri: "/projects/app", localPathExists: true, enabled: true, paused: false }), {
+    scope: "local", availabilityTracked: true, reason: "Local enabled project."
+  });
+  assert.equal(classifyFleetProject({ name: "Remote", rootUri: "/srv/projects/app", localPathExists: false, enabled: true, paused: false }).availabilityTracked, false);
+  assert.equal(classifyFleetProject({ name: "Disabled", rootUri: "/projects/disabled", localPathExists: true, enabled: false, paused: false }).availabilityTracked, false);
+  assert.equal(classifyFleetProject({ name: "Paused", rootUri: "/projects/paused", localPathExists: true, enabled: true, paused: true }).availabilityTracked, false);
+  assert.equal(fleetProjectAvailable({ availabilityTracked: true, daemonStatus: "stale", heartbeatAgeMs: 3 * 60_000 }), true);
+  assert.equal(fleetProjectAvailable({ availabilityTracked: true, daemonStatus: "stale", heartbeatAgeMs: 11 * 60_000 }), false);
+  assert.equal(fleetProjectAvailable({ availabilityTracked: false, daemonStatus: "missing", heartbeatAgeMs: null }), true);
 });

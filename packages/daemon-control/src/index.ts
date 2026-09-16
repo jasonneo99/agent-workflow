@@ -2,6 +2,52 @@ export type DaemonTrustLevel = "low" | "medium" | "high";
 export type DaemonLaneId = "evidence-collector" | "workflow-optimizer" | "action-executor" | "runtime-maintenance" | "repository-steward" | "release-ci-guardian" | "security-sentinel" | "backup-recovery-verifier";
 export type DaemonLaneDefinition = { id: DaemonLaneId; name: string; purpose: string; capabilities: string[]; defaultTrust: DaemonTrustLevel; mutationClass: "read-only" | "project-local" | "operational" };
 export type DaemonTrustSettings = Record<DaemonLaneId, DaemonTrustLevel>;
+export type FleetProjectScope = "local" | "remote" | "ephemeral";
+
+export function isEphemeralFleetProject(input: { name: string; rootUri: string }): boolean {
+  const name = input.name.trim().toLowerCase();
+  const rootUri = input.rootUri.replaceAll("\\", "/").toLowerCase();
+  return name === "provider smoke project"
+    || name === "example project"
+    || name.includes("bootstrap-canary")
+    || rootUri.includes("agentflow-provider-smoke.")
+    || /\/releases\/agent-workflow\/[^/]+\/templates\/project$/u.test(rootUri);
+}
+
+export function classifyFleetProject(input: {
+  name: string;
+  rootUri: string;
+  localPathExists: boolean;
+  enabled: boolean;
+  paused: boolean;
+}): { scope: FleetProjectScope; availabilityTracked: boolean; reason: string } {
+  if (isEphemeralFleetProject(input)) {
+    return { scope: "ephemeral", availabilityTracked: false, reason: "Temporary smoke, canary, or example project." };
+  }
+  if (!input.enabled) {
+    return { scope: input.localPathExists ? "local" : "remote", availabilityTracked: false, reason: "Daemon scheduling is disabled." };
+  }
+  if (input.paused) {
+    return { scope: input.localPathExists ? "local" : "remote", availabilityTracked: false, reason: "Daemon scheduling is paused." };
+  }
+  if (!input.localPathExists) {
+    return { scope: "remote", availabilityTracked: false, reason: "Project belongs to another host; local heartbeat is not authoritative." };
+  }
+  return { scope: "local", availabilityTracked: true, reason: "Local enabled project." };
+}
+
+export function fleetProjectAvailable(input: {
+  availabilityTracked: boolean;
+  daemonStatus: "running" | "stale" | "stopped" | "missing" | "failed";
+  heartbeatAgeMs: number | null;
+  staleGraceMs?: number;
+}): boolean {
+  if (!input.availabilityTracked) return true;
+  if (input.daemonStatus === "running") return true;
+  return input.daemonStatus === "stale"
+    && input.heartbeatAgeMs !== null
+    && input.heartbeatAgeMs <= (input.staleGraceMs ?? 10 * 60_000);
+}
 
 export const daemonLanes: DaemonLaneDefinition[] = [
   { id: "evidence-collector", name: "Evidence Collector", purpose: "Collect and normalize local run, feedback, evaluation, provider, cost, and context evidence.", capabilities: ["evidence ingestion", "staleness and anomaly detection", "scrubbed evidence digests"], defaultTrust: "low", mutationClass: "read-only" },
