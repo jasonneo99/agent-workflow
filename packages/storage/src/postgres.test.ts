@@ -96,6 +96,8 @@ test("replay never restores stale project configuration over current policy", ()
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"));
   const projectUpsert = replay.slice(replay.indexOf("insert into projects"), replay.indexOf("returning id"));
   assert.doesNotMatch(projectUpsert, /config = excluded\.config/u);
+  assert.match(replay, /resolveExecutionPolicy\(sourceRun\.projectConfig as ProjectConfig, sourceRun\.policyProfile\)/u);
+  assert.match(replay, /JSON\.stringify\(replayPolicy\.snapshot\)[\s\S]{0,100}replayPolicy\.snapshotHash/u);
 });
 
 test("retry dismisses superseded terminal history after creating its replacement", () => {

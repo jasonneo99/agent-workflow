@@ -2,6 +2,7 @@ import type pg from "pg";
 import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
+import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
@@ -1488,6 +1489,7 @@ export async function replayWorkflowRun(input: {
       if (!workflow) {
         throw new Error(`Source run workflow is unavailable: ${input.sourceRunId}`);
       }
+      const replayPolicy = resolveExecutionPolicy(sourceRun.projectConfig as ProjectConfig, sourceRun.policyProfile);
 
       const projectResult = await client.query<{ id: string }>(
         `insert into projects (name, root_uri, profile, config, updated_at)
@@ -1526,8 +1528,8 @@ export async function replayWorkflowRun(input: {
           sourceRun.task,
           sourceRun.autonomy,
           sourceRun.policyProfile,
-          JSON.stringify(sourceRun.policySnapshot),
-          sourceRun.policySnapshotHash,
+          JSON.stringify(replayPolicy.snapshot),
+          replayPolicy.snapshotHash,
           sourceRun.modelTierOverride,
           sourceRun.providerOverride,
           JSON.stringify(replayMetadata),
