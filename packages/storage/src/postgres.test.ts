@@ -41,6 +41,18 @@ test("queue action receipt inserts use separate uuid and text parameters", () =>
   );
 });
 
+test("dismissed terminal runs remain immutable history but leave the actionable queue", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(
+    source,
+    /export async function listWorkflowQueue[\s\S]+not exists \([\s\S]+dismissed\.run_id = wr\.id[\s\S]+dismissed\.action_type = 'failed_run_dismissed'/u
+  );
+  assert.match(
+    source,
+    /export async function dismissFailedWorkflowRun[\s\S]+select wr\.id::text[\s\S]+failed_run_dismissed/u
+  );
+});
+
 test("completed retried tasks can finalize runs with cancelled downstream tasks", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
 

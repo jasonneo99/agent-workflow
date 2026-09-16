@@ -576,6 +576,12 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
        where ($2::text is null or p.root_uri = $2)
+         and not exists (
+           select 1
+           from action_receipts dismissed
+           where dismissed.run_id = wr.id
+             and dismissed.action_type = 'failed_run_dismissed'
+         )
          and (wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           or exists (
             select 1 from workflow_tasks active

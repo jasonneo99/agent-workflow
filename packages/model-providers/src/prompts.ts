@@ -53,6 +53,11 @@ export function buildStagePrompt(input: StageExecutionInput): string {
       ].join("\n")).join("\n\n")
       : "None yet.",
     "",
+    "Outcome rules:",
+    "- Prior receipts and artifacts are historical evidence. Words such as blocked, failed, or could not inside a completed prior-stage artifact do not make the current stage blocked.",
+    "- Do not claim project context is missing when the compiled brief or prior artifacts contain project-specific evidence. Use the available evidence and name any narrow verification gap as a finding.",
+    "- A terminal blocker must identify the specific unavailable authority, external dependency, approval, or required input and explain why no allowed action or existing artifact can resolve it.",
+    "",
     "Return JSON with:",
     "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
     "- blockedReason: concise reason when outcome is blocked; otherwise an empty string",

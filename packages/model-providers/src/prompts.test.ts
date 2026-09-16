@@ -113,6 +113,27 @@ test("actionable blocked output continues through the governed action runner", (
   assert.equal(result.requestedFileWrites.length, 1);
 });
 
+test("stage prompts distinguish historical failure language from a current blocker", () => {
+  const prompt = buildStagePrompt({
+    runId: "run-final",
+    taskId: "task-final",
+    projectConfig: project,
+    workflowId: "review-pr",
+    workflowTask: "Finalize the review.",
+    stageId: "final-review",
+    agentId: "pr-preparer",
+    agentName: "PR Preparer",
+    agentPrompt: "Summarize actionable findings.",
+    stageGoal: "Produce the final review.",
+    compiledBrief: "Project-specific source and diff evidence.",
+    priorReceipts: [{ agentId: "reviewer", actionType: "stage_completed", summary: "Delegation failed, so the review continued locally." }],
+    priorStageArtifacts: [{ stageId: "review", agentId: "reviewer", summary: "Review completed.", artifact: { outcome: "completed", findings: ["Concrete issue"] } }]
+  });
+  assert.match(prompt, /historical evidence/u);
+  assert.match(prompt, /do not make the current stage blocked/u);
+  assert.match(prompt, /Do not claim project context is missing/u);
+});
+
 test("empty action placeholders cannot turn a blocked stage into completed work", () => {
   const result = normalizeStageArtifact({ outcome: "blocked", blockedReason: "Authority is missing.", requestedCommands: ["  "], requestedFileWrites: [{ path: "", content: "" }] });
   assert.equal(result.outcome, "blocked");

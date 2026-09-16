@@ -5,7 +5,7 @@ import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-too
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
-import type { StageExecutionInput } from "../../model-providers/src/types.js";
+import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
@@ -51,6 +51,19 @@ export class LostWorkflowTaskLeaseError extends Error {
 
 function isStaleLeaseError(error: unknown): boolean {
   return error instanceof Error && /stale workflow fencing token|expired task lease/iu.test(error.message);
+}
+
+export function shouldRetryWeakFallbackBlock(input: {
+  fallbackUsed: boolean;
+  actualProviderId: string;
+  output: StageExecutionOutput;
+  qualityReasons: string[];
+}): boolean {
+  if (!input.fallbackUsed || input.output.outcome !== "blocked") return false;
+  if (input.actualProviderId !== "local" && input.actualProviderId !== "byo" && input.actualProviderId !== "openai-compatible") return false;
+  const reason = `${input.output.blockedReason ?? ""} ${input.output.summary}`.toLowerCase();
+  const genericBlocker = /missing (?:project )?context|working tree details|collaboration service|could not resolve (?:this )?thread|insufficient context|more context is needed/u.test(reason);
+  return genericBlocker || input.qualityReasons.includes("no concrete findings") || input.qualityReasons.includes("limited project-specific evidence");
 }
 
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
@@ -150,6 +163,30 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let fallbackAttempts: ProviderFallbackAttempt[] = [...execution.attempts];
       let fallbackUsed = execution.fallbackUsed;
       const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+
+      if (shouldRetryWeakFallbackBlock({ fallbackUsed, actualProviderId, output, qualityReasons: quality.reasons })) {
+        try {
+          const primaryRetry = await executeWithProviderFallback({
+            providerId: route.providerId,
+            stageInput: routedStageInput,
+            policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
+            providerFactory: providerFromEnv
+          });
+          fallbackAttempts = [...fallbackAttempts, ...primaryRetry.attempts];
+          output = primaryRetry.output;
+          quality = scoreStageOutput(routedStageInput, output);
+          fallbackUsed = false;
+          fallbackProviderId = undefined;
+          actualProviderId = primaryRetry.actualProvider;
+          actualModel = primaryRetry.actualModel;
+        } catch (error) {
+          const failure = classifyProviderFailure(error);
+          fallbackAttempts = [...fallbackAttempts, ...failure.attempts];
+          const rejected = new ProviderExecutionError(failure.kind, "Primary provider retry failed after a fallback returned an unsubstantiated terminal blocker.");
+          rejected.attempts = fallbackAttempts;
+          throw rejected;
+        }
+      }
 
       if (!quality.passed && qualityFallbackProviderId && qualityFallbackProviderId !== actualProviderId) {
         try {

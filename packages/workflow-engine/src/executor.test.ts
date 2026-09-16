@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./executor.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 
@@ -35,6 +35,27 @@ test("action idempotency keys change when the payload changes", () => {
     actionIdempotencyKey(base),
     actionIdempotencyKey({ ...base, payload: "second version" })
   );
+});
+
+test("weak local fallback blockers require one primary-provider retry", () => {
+  assert.equal(shouldRetryWeakFallbackBlock({
+    fallbackUsed: true,
+    actualProviderId: "local",
+    output: { outcome: "blocked", blockedReason: "Missing project context and working tree details.", summary: "Cannot continue.", artifact: {} },
+    qualityReasons: ["no concrete findings"]
+  }), true);
+  assert.equal(shouldRetryWeakFallbackBlock({
+    fallbackUsed: false,
+    actualProviderId: "codex-cli",
+    output: { outcome: "blocked", blockedReason: "Deployment approval is required.", summary: "Await approval.", artifact: {} },
+    qualityReasons: []
+  }), false);
+  assert.equal(shouldRetryWeakFallbackBlock({
+    fallbackUsed: true,
+    actualProviderId: "local",
+    output: { outcome: "completed", summary: "Review completed with concrete evidence.", artifact: {} },
+    qualityReasons: []
+  }), false);
 });
 
 test("bounded ReAct loop receipts capture action, policy, result, and stop reason", () => {
