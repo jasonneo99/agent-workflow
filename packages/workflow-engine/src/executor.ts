@@ -68,6 +68,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const stagePattern = normalizeStagePattern(task.stagePattern);
       const stageInput = {
         ...task,
+        projectRootUri: localProjectRootUri,
         stagePattern,
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined

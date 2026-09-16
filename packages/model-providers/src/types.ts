@@ -5,6 +5,8 @@ export type ModelTier = "fast" | "standard" | "reasoning";
 export interface StageExecutionInput {
   runId: string;
   taskId: string;
+  /** Resolved local checkout used only by providers that support governed read-only inspection. */
+  projectRootUri?: string;
   projectConfig: ProjectConfig;
   workflowId: string;
   workflowTask: string;

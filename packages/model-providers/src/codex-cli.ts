@@ -14,7 +14,7 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string };
+type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string };
 type CodexCliRunResult = { output: string; model: string };
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
@@ -86,11 +86,14 @@ export class CodexCliProvider implements ModelProvider {
     const result = await this.runner.execute({
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
-        "Do not inspect the filesystem, execute commands, or claim side effects.",
+        input.projectRootUri
+          ? "You may inspect the supplied project checkout and run read-only discovery commands to ground the response in current source. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
+          : "No project checkout is available. Do not inspect unrelated filesystem locations, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
       schema: stageSchema,
-      model
+      model,
+      workingDirectory: input.projectRootUri
     });
     const parsed = normalizeStageArtifact(extractJsonObject(result.output) as StageJsonArtifact);
     return buildStageExecutionOutput(input, parsed, {
@@ -154,19 +157,20 @@ export function createCodexCliRunner(): CodexCliRunner {
       const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
       return `${result.stdout}\n${result.stderr}`.trim();
     },
-    execute: async ({ prompt, schema, model }) => {
+    execute: async ({ prompt, schema, model, workingDirectory }) => {
       const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
       const schemaPath = path.join(temporaryDir, "output-schema.json");
       const outputPath = path.join(temporaryDir, "last-message.json");
       try {
         await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
+        const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
         const args = [
           "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-          "--skip-git-repo-check", "--sandbox", "read-only", "--cd", temporaryDir,
+          "--skip-git-repo-check", "--sandbox", "read-only", "--cd", executionDirectory,
           "--output-schema", schemaPath, "--output-last-message", outputPath,
           "--color", "never", ...(model ? ["--model", model] : []), "-"
         ];
-        await runProcess(binary, args, prompt, temporaryDir);
+        await runProcess(binary, args, prompt, executionDirectory);
         return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default" };
       } finally {
         await fs.rm(temporaryDir, { recursive: true, force: true });

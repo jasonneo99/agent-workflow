@@ -6,6 +6,7 @@ import type { StageExecutionInput } from "./types.js";
 const stageInput = {
   runId: "run-codex-cli",
   taskId: "task-codex-cli",
+  projectRootUri: "/tmp/synthetic-project",
   projectConfig: {
     actions: {
       allowed_commands: [], blocked_commands: [], allowed_write_paths: [], blocked_write_paths: [],
@@ -25,11 +26,11 @@ const stageInput = {
 } as unknown as StageExecutionInput;
 
 test("Codex CLI provider requires ChatGPT auth by default and normalizes structured stage output", async () => {
-  const calls: Array<{ prompt: string; model?: string }> = [];
+  const calls: Array<{ prompt: string; model?: string; workingDirectory?: string }> = [];
   const runner: CodexCliRunner = {
     async authStatus() { return "Logged in using ChatGPT"; },
     async execute(input) {
-      calls.push({ prompt: input.prompt, model: input.model });
+      calls.push({ prompt: input.prompt, model: input.model, workingDirectory: input.workingDirectory });
       return {
         model: input.model ?? "codex-default",
         output: JSON.stringify({ summary: "Plan ready.", findings: ["bounded"], nextAction: "review", requestedCommands: [], requestedFileWrites: [] })
@@ -46,7 +47,8 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.equal(result.artifact.provider, "codex-cli");
     assert.equal(result.artifact.model, "codex-test-model");
     assert.equal(calls[0]?.model, "codex-test-model");
-    assert.match(calls[0]?.prompt ?? "", /Do not inspect the filesystem/);
+    assert.match(calls[0]?.prompt ?? "", /inspect the supplied project checkout/);
+    assert.equal(calls[0]?.workingDirectory, "/tmp/synthetic-project");
   } finally {
     if (previous === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
     else process.env.CODEX_CLI_MODEL_STANDARD = previous;
