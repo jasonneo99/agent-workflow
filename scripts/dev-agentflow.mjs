@@ -16,6 +16,7 @@ const runtimeVersionMetadata = { runtimeVersion: packageMetadata.version ?? "unk
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
+const supervisorLockPath = path.join(runtimeDir, "supervisor.lock");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
@@ -48,9 +49,15 @@ let ticks = 0;
 
 async function main() {
   await fs.mkdir(runtimeDir, { recursive: true });
+  const lockOwner = await acquireSupervisorLock();
+  if (lockOwner) {
+    console.log(`Agent Workflow supervisor is already starting or running (pid ${lockOwner.pid}); leaving it in control.`);
+    return;
+  }
   const existingSupervisor = await activeSupervisor();
   if (existingSupervisor) {
     console.log(`Agent Workflow supervisor is already running (pid ${existingSupervisor.pid}); leaving it in control.`);
+    await releaseSupervisorLock();
     return;
   }
   if (shouldStartLocalStorageServices()) {
@@ -66,6 +73,7 @@ async function main() {
 
   if (once) {
     await writeHeartbeat("stopped", "one-shot service check complete");
+    await releaseSupervisorLock();
     return;
   }
 
@@ -82,13 +90,48 @@ async function main() {
   }
 }
 
+async function acquireSupervisorLock() {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const handle = await fs.open(supervisorLockPath, "wx");
+      await handle.writeFile(`${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`, "utf8");
+      await handle.close();
+      return null;
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      try {
+        const lock = JSON.parse(await fs.readFile(supervisorLockPath, "utf8"));
+        const pid = typeof lock.pid === "number" ? lock.pid : null;
+        const command = pid ? await processCommand(pid) : "";
+        if (pid && command.includes("scripts/dev-agentflow.mjs")) {
+          return { pid, command };
+        }
+      } catch {
+        // An incomplete or stale lock is safe to replace after process verification.
+      }
+      await fs.unlink(supervisorLockPath).catch(() => {});
+    }
+  }
+  throw new Error("Could not acquire the Agent Workflow supervisor lock.");
+}
+
+async function releaseSupervisorLock() {
+  try {
+    const lock = JSON.parse(await fs.readFile(supervisorLockPath, "utf8"));
+    if (lock.pid === process.pid) await fs.unlink(supervisorLockPath);
+  } catch {
+    // Missing or replaced locks do not require cleanup by this process.
+  }
+}
+
 async function activeSupervisor() {
   try {
     const heartbeat = JSON.parse(await fs.readFile(supervisorHeartbeatPath, "utf8"));
     const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+    const status = typeof heartbeat.status === "string" ? heartbeat.status : "";
     const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? Date.parse(heartbeat.lastHeartbeatAt) : 0;
     const staleAfterMs = Math.max(positiveNumber(heartbeat.monitorIntervalMs, monitorIntervalMs) * 3, 15_000);
-    if (!pid || pid === process.pid || Date.now() - lastHeartbeatAt > staleAfterMs) return null;
+    if (!pid || pid === process.pid || status === "stopped" || status === "stopping" || status === "failed" || Date.now() - lastHeartbeatAt > staleAfterMs) return null;
     assertCompatibleHeartbeat(heartbeat, "supervisor");
     const command = await processCommand(pid);
     return command.includes(rootDir) && command.includes("scripts/dev-agentflow.mjs") ? { pid, command } : null;
@@ -336,6 +379,7 @@ async function stop() {
   }
   await sleep(750);
   await writeHeartbeat("stopped", "supervisor stopped");
+  await releaseSupervisorLock();
 }
 
 async function writeHeartbeat(status, message) {
@@ -545,6 +589,7 @@ function sleep(ms) {
 
 main().catch(async (error) => {
   await writeHeartbeat("failed", error instanceof Error ? error.message : String(error)).catch(() => {});
+  await releaseSupervisorLock();
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;
 });

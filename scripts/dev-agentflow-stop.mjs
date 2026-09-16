@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
+const supervisorLockPath = path.join(runtimeDir, "supervisor.lock");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
 const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
@@ -62,6 +63,7 @@ async function main() {
     console.log(`Force-stopped remaining processes: ${survivors.join(", ")}`);
   }
   await writeStoppedHeartbeat("stopped", "Stopped by npm run dev:agentflow:stop.");
+  await fs.unlink(supervisorLockPath).catch(() => {});
   console.log("Agent Workflow dashboard, worker, and learning daemon stopped. Docker services were left running.");
 }
 
