@@ -35867,6 +35867,7 @@ async function processDashboardQueueAction(input: {
       sourceTokenBudget: "12000",
       sourceMaxFiles: "180",
       includeExactSourceExcerpts: true,
+      preferImplementationSources: true,
       evaluationMetadata: { source: "blocked-run-repair", sourceRunId: runId, actor: repairActor }
     });
     if (!queued.ok) return { ok: false, error: queued.error };
@@ -35967,6 +35968,7 @@ async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMod
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 50 });
   if (runs.some((run) => (run.status === "queued" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
   for (const run of runs.filter((item) => item.status === "blocked")) {
+    if (stringValue(run.evaluationMetadata?.source) === "blocked-run-repair") continue;
     if (Date.now() - Date.parse(run.startedAt) > 7 * 24 * 60 * 60 * 1000) continue;
     const details = await getWorkflowRunDetails(run.id);
     if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued")) continue;
@@ -42911,6 +42913,7 @@ async function queueWorkflow(input: {
   sourceMaxFiles?: string;
   registeredProjectRootUri?: string;
   includeExactSourceExcerpts?: boolean;
+  preferImplementationSources?: boolean;
 }): Promise<
   | {
     ok: true;
@@ -42961,7 +42964,8 @@ async function queueWorkflow(input: {
     agents: selectedAgentList,
     task: input.task,
     sourceTokenBudget: input.sourceTokenBudget,
-    sourceMaxFiles: input.sourceMaxFiles
+    sourceMaxFiles: input.sourceMaxFiles,
+    preferImplementationSources: input.preferImplementationSources
   });
   const brief = await compileContext({
     task: input.task,
@@ -44507,6 +44511,7 @@ async function loadSourceSummaries(input: {
   task: string;
   sourceTokenBudget?: string;
   sourceMaxFiles?: string;
+  preferImplementationSources?: boolean;
 }): Promise<SourceSummaryWithHash[]> {
   try {
     const summaries = await listProjectFileSummaries({
@@ -44515,12 +44520,15 @@ async function loadSourceSummaries(input: {
     });
     const tokenBudget = Number.parseInt(input.sourceTokenBudget ?? "", 10);
     const maxFiles = Number.parseInt(input.sourceMaxFiles ?? "", 10);
+    const eligibleSummaries = input.preferImplementationSources
+      ? summaries.filter((summary) => !/^\.agent-workflow\/(?:exports|receipts|reports|runs)\//u.test(summary.sourceUri))
+      : summaries;
     return selectRelevantSourceSummaries({
       task: input.task,
       project: input.project,
       workflow: input.workflow,
       agents: input.agents,
-      summaries,
+      summaries: eligibleSummaries,
       maxTokens: Number.isFinite(tokenBudget) && tokenBudget > 0 ? tokenBudget : undefined,
       maxFiles: Number.isFinite(maxFiles) && maxFiles > 0 ? maxFiles : undefined
     });

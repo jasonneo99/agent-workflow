@@ -25,4 +25,6 @@ test("learning daemon auto-heals only recent context-only blockers", () => {
   assert.match(source, /7 \* 24 \* 60 \* 60 \* 1000/u);
   assert.match(source, /approvals\.some\(isOpenApproval\)/u);
   assert.match(source, /missingExistingEvidence/u);
+  assert.match(source, /evaluationMetadata\?\.source\) === "blocked-run-repair"/u);
+  assert.match(source, /preferImplementationSources: true/u);
 });
