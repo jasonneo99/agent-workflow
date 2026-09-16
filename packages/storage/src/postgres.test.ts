@@ -87,6 +87,15 @@ test("checkpoint resume preserves terminal history by replaying into a new run",
   assert.match(source, /terminal === "failed" \|\| terminal === "blocked" \|\| terminal === "cancelled"/u);
   assert.match(source, /replayWorkflowRun\(\{ sourceRunId: input\.runId/u);
   assert.doesNotMatch(source, /update workflow_runs[\s\S]{0,120}set status = 'queued'/u);
+  assert.match(source, /replacementRunId: replay\?\.runId/u);
+  assert.match(source, /Superseded by replacement run \$\{replay\.runId\}/u);
+});
+
+test("replay never restores stale project configuration over current policy", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const replay = source.slice(source.indexOf("export async function replayWorkflowRun"));
+  const projectUpsert = replay.slice(replay.indexOf("insert into projects"), replay.indexOf("returning id"));
+  assert.doesNotMatch(projectUpsert, /config = excluded\.config/u);
 });
 
 test("retry dismisses superseded terminal history after creating its replacement", () => {

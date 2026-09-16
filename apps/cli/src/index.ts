@@ -36240,9 +36240,10 @@ async function processDashboardQueueAction(input: {
       ? {
         ok: true,
         title: "Blocker resolved and workflow resumed",
-        runId,
+        runId: result.replacementRunId ?? runId,
         output: [
-          `Run: ${runId}`,
+          `Run: ${result.replacementRunId ?? runId}`,
+          ...(result.replacementRunId ? [`Superseded blocked run: ${runId}`] : []),
           `Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`,
           `Requeued blocked or unfinished stages: ${result.requeuedTasks}`,
           `Project context refreshed: ${projectDir}`,
@@ -36265,9 +36266,10 @@ async function processDashboardQueueAction(input: {
       ? {
         ok: true,
         title: "Run resumed from checkpoint",
-        runId,
+        runId: result.replacementRunId ?? runId,
         output: [
-          `Run: ${runId}`,
+          `Run: ${result.replacementRunId ?? runId}`,
+          ...(result.replacementRunId ? [`Superseded terminal run: ${runId}`] : []),
           `Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`,
           `Requeued unfinished stages: ${result.requeuedTasks}`,
           ...formatStaleInputWarnings(staleReport),

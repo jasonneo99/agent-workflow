@@ -939,6 +939,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
   requeuedTasks: number;
   completedTasks: number;
   totalTasks: number;
+  replacementRunId?: string;
 }> {
   if (input.includeFailed) {
     const terminal = await withClient(async (client) => {
@@ -947,7 +948,14 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
     });
     if (terminal === "failed" || terminal === "blocked" || terminal === "cancelled") {
       const replay = await replayWorkflowRun({ sourceRunId: input.runId, actor: input.actor, reason: input.reason });
-      return { requeuedTasks: replay?.tasks ?? 0, completedTasks: 0, totalTasks: replay?.tasks ?? 0 };
+      if (replay) {
+        await dismissFailedWorkflowRun({
+          runId: input.runId,
+          actor: input.actor,
+          reason: `Superseded by replacement run ${replay.runId}; immutable history and receipts preserved.`
+        });
+      }
+      return { requeuedTasks: replay?.tasks ?? 0, completedTasks: 0, totalTasks: replay?.tasks ?? 0, replacementRunId: replay?.runId };
     }
   }
   return withClient(async (client) => {
@@ -1487,7 +1495,6 @@ export async function replayWorkflowRun(input: {
          on conflict (root_uri) do update
          set name = excluded.name,
              profile = excluded.profile,
-             config = excluded.config,
              updated_at = now()
          returning id`,
         [
