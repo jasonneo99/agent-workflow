@@ -12,6 +12,7 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (output.outcome !== "completed") return null;
   const implementationStage = input.agentId === "implementation-agent" || /(?:^|[-_])implement(?:ation)?(?:$|[-_])/iu.test(input.stageId);
   if (!implementationStage) return null;
+  if ((output.requestedFileWrites?.length ?? 0) > 0) return null;
   const text = `${output.summary} ${JSON.stringify(output.artifact)}`.toLowerCase();
   const explicitlyIncomplete = /implementation (?:is|remains) incomplete|no (?:source |code |project )?files? (?:were )?(?:changed|modified)|no (?:code|source) changes|read-only inspection/iu.test(text);
   return explicitlyIncomplete ? "Implementation stage claimed completion while explicitly reporting that implementation was incomplete or no source changes were made." : null;

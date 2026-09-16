@@ -31,3 +31,14 @@ test("review stages may correctly report that they made no source changes", () =
   } as StageExecutionOutput;
   assert.equal(unfulfilledCompletionReason({ ...input, stageId: "review", agentId: "security-reviewer" }, output), null);
 });
+
+test("implementation may report a read-only model stage when governed writes are requested", () => {
+  const output = {
+    outcome: "completed",
+    summary: "Prepared the fix; no files were modified in the read-only model stage.",
+    artifact: { findings: ["A bounded source edit is required."], nextAction: "Execute the governed write." },
+    requestedCommands: [],
+    requestedFileWrites: [{ path: "src/example.py", content: "fixed = True\n" }]
+  } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(input, output), null);
+});
