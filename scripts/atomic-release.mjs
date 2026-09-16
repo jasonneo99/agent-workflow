@@ -32,10 +32,24 @@ async function switchLink(target) {
 }
 async function health() {
   if (!healthUrl) return true;
-  const controller = new AbortController(); const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try { const response = await fetch(healthUrl, { signal: controller.signal, headers: process.env.AGENTFLOW_SERVER_TOKEN ? { authorization: `Bearer ${process.env.AGENTFLOW_SERVER_TOKEN}` } : {} }); if (!response.ok) throw new Error(`Health check returned ${response.status}`); }
-  finally { clearTimeout(timer); }
-  return true;
+  const deadline = Date.now() + timeoutMs;
+  let lastError = new Error("Health check did not run.");
+  while (Date.now() < deadline) {
+    const controller = new AbortController();
+    const remainingMs = Math.max(1, deadline - Date.now());
+    const timer = setTimeout(() => controller.abort(), Math.min(5_000, remainingMs));
+    try {
+      const response = await fetch(healthUrl, { signal: controller.signal, headers: process.env.AGENTFLOW_SERVER_TOKEN ? { authorization: `Bearer ${process.env.AGENTFLOW_SERVER_TOKEN}` } : {} });
+      if (response.ok) return true;
+      lastError = new Error(`Health check returned ${response.status}`);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+    } finally {
+      clearTimeout(timer);
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(1_000, Math.max(0, deadline - Date.now()))));
+  }
+  throw new Error(`Health check did not pass within ${timeoutMs}ms: ${lastError.message}`);
 }
 async function writeReceipt() {
   await fsp.mkdir(receiptDirectory, { recursive: true, mode: 0o700 });
