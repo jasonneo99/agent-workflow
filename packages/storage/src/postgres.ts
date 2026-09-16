@@ -920,6 +920,13 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
     actor: "retry-failed-run",
     reason: "Retry requested; terminal history is immutable, so a new run was created."
   });
+  if (replay) {
+    await dismissFailedWorkflowRun({
+      runId,
+      actor: "retry-failed-run",
+      reason: `Superseded by replacement run ${replay.runId}; immutable history and receipts preserved.`
+    });
+  }
   return replay?.tasks ?? 0;
 }
 

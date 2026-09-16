@@ -89,6 +89,11 @@ test("checkpoint resume preserves terminal history by replaying into a new run",
   assert.doesNotMatch(source, /update workflow_runs[\s\S]{0,120}set status = 'queued'/u);
 });
 
+test("retry dismisses superseded terminal history after creating its replacement", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /retryFailedWorkflowRun[\s\S]+replayWorkflowRun[\s\S]+dismissFailedWorkflowRun[\s\S]+Superseded by replacement run/u);
+});
+
 test("stale terminal run reconciliation only repairs terminal child-task runs", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
 
