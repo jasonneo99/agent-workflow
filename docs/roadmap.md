@@ -207,19 +207,7 @@ and daemon paths.
      recovery or switchover between independent hosts.
    - Exit gate: repeatable two-host recovery evidence with no split-brain writes,
      lost receipts, or ambiguous project identity.
-3. **Automate dashboard performance regression gates.**
-   - Priority: high
-   - Why next: manual SLA audits found cold diagnostic routes taking roughly
-     10–17 seconds and the restart cache now provides a stable optimization seam.
-   - Exit gate: CI or a repeatable local canary measures critical routes, records
-     warm/cold evidence, and fails on agreed navigation-budget regressions.
-4. **Publish a versioned client capability contract.**
-   - Priority: medium
-   - Why next: Studio, IDE, MCP, and dashboard clients need one truthful source
-     for supported actions, review semantics, and runtime compatibility.
-   - Exit gate: clients can negotiate capabilities and disable or relabel
-     unsupported controls without duplicating orchestration behavior.
-5. **Continue cohesive source-module extraction.**
+3. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
      established, while repository maintenance still reports five production
@@ -1032,24 +1020,28 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
     match, but source and target resolve to the same endpoints. This proves one
     healthy state plane, not independent-host recovery or switchover.
 
-- [ ] Task: automate dashboard performance regression gates.
+- [x] Task: automate dashboard performance regression gates.
   - Milestone: 3 Developer Dashboard
   - Priority: high
   - Execution order: 3
-  - Status: open; added from the dashboard SLA task after manual audits exposed
-    repeatable cold-start regressions on diagnostic routes.
+  - Status: implemented after the dashboard SLA task exposed repeatable
+    cold-start regressions on diagnostic routes.
   - Scope: measure critical dashboard routes in cold, persisted-warm, and
     in-process-warm states; retain bounded timing evidence and compare it with
     explicit route budgets.
   - Validation: the canary fails on regression, identifies the route and cache
     state, and proves `/model-improvement` and `/server-readiness` persisted-warm
     navigation remains below 800 ms.
+  - Evidence: `npm run dashboard:sla -- --project .` starts a fresh dashboard,
+    populates unique cold snapshots, restarts the process, writes a bounded local
+    timing receipt, and fails non-zero on status or budget regression. The first
+    verified run measured 41.4 ms and 5.6 ms after restart.
 
-- [ ] Task: publish a versioned client capability and compatibility contract.
+- [x] Task: publish a versioned client capability and compatibility contract.
   - Milestone: 12 Ecosystem Fit
   - Priority: medium
   - Execution order: 4
-  - Status: open; added after Studio and IDE work exposed drift between visible
+  - Status: implemented after Studio and IDE work exposed drift between visible
     controls and the actions supported by the connected Agent Workflow runtime.
   - Scope: expose runtime version, action capabilities, review semantics,
     streaming support, and compatibility bounds through CLI, MCP, and server
@@ -1057,6 +1049,10 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Validation: a client can negotiate the contract, disable or relabel
     unsupported controls, and report an actionable version mismatch before a
     user starts work.
+  - Done: publish the same schema-versioned contract through CLI, dashboard API,
+    and MCP with runtime version, compatibility bounds, supported review and
+    streaming behavior, and explicit unsupported client-side execution and
+    remote mutation semantics.
 
 - [x] Task: expose authenticated fleet model-gateway readiness.
   - Milestone: 10 Model / Provider Intelligence

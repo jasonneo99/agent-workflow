@@ -142,6 +142,7 @@ import { formatHostDecision, hostHookDefinition, mergeHostHookConfig, normalizeH
 import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan } from "../../../packages/governed-codegen/src/index.js";
 import { inferContextLanguage, readLatestCalibration, resolveSegmentedThresholdPolicy } from "../../../packages/context-calibration/src/index.js";
 import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../packages/dashboard-report-cache/src/index.js";
+import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
 import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
@@ -4876,6 +4877,16 @@ program
       console.log("");
       console.log("Dry run only. Re-run with --write to refresh Agent Workflow-owned holdout eval files.");
     }
+  });
+
+program
+  .command("client-capabilities")
+  .description("Print the versioned runtime capability contract for dashboard, IDE, MCP, and Studio clients")
+  .option("--json", "print machine-readable capability JSON")
+  .action((options: { json?: boolean }) => {
+    const contract = buildClientCapabilityContract(packageVersion);
+    if (options.json) console.log(JSON.stringify(contract, null, 2));
+    else console.log(Object.entries(contract.capabilities).map(([id, capability]) => `${capability.supported ? "SUPPORTED" : "UNSUPPORTED"} ${id}: ${capability.semantics}`).join("\n"));
   });
 
 program
@@ -26344,6 +26355,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/client-capabilities") {
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(buildClientCapabilityContract(packageVersion), null, 2));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/fleet-model-usage") {
     const report = await loadDashboardFleetUsageReport();
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
@@ -26889,7 +26906,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
     const report = project
-      ? await loadCachedDashboardReport(`model-improvement:${project}:${requestUrl.searchParams.get("limit") ?? "50"}`, () => loadDashboardModelImprovementReport({
+      ? await loadCachedDashboardReport(`model-improvement:${project}:${requestUrl.searchParams.get("limit") ?? "50"}:${requestUrl.searchParams.get("canary") ?? "default"}`, () => loadDashboardModelImprovementReport({
         projectDir: project,
         limit: parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "50", 50)
       }))

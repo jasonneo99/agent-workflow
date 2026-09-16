@@ -10,6 +10,7 @@ import { z } from "zod/v3";
 import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.js";
 import { registerContextThresholdTool } from "./tools/context.js";
 import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
+import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
 
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const packageVersion = readPackageVersion(rootDir);
@@ -79,6 +80,15 @@ const server = new McpServer(
 const executeTool = async (args: string[], timeoutMs: number) => toolResult(await runAgentflow(args, { timeoutMs }));
 registerContextThresholdTool(server, executeTool);
 registerAcceptedOutcomeTool(server, executeTool);
+
+server.registerTool(
+  "agentflow_client_capabilities",
+  {
+    title: "AgentFlow client capabilities",
+    description: "Read the versioned runtime capability and compatibility contract before rendering or invoking client actions."
+  },
+  async () => ({ content: [{ type: "text", text: JSON.stringify(buildClientCapabilityContract(packageVersion), null, 2) }] })
+);
 
 server.registerTool(
   "agentflow_doctor",
