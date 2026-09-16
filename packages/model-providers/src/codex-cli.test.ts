@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, type CodexCliRunner } from "./codex-cli.js";
+import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliTimeoutMs, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -91,6 +91,23 @@ test("Codex CLI model selection honors override, tier, base, then CLI default", 
     else process.env.CODEX_CLI_MODEL = previousBase;
     if (previousFast === undefined) delete process.env.CODEX_CLI_MODEL_FAST;
     else process.env.CODEX_CLI_MODEL_FAST = previousFast;
+  }
+});
+
+test("Codex CLI timeout supports long implementation stages with safe bounds", () => {
+  const previous = process.env.CODEX_CLI_TIMEOUT_MS;
+  try {
+    delete process.env.CODEX_CLI_TIMEOUT_MS;
+    assert.equal(configuredCodexCliTimeoutMs(), 900_000);
+    process.env.CODEX_CLI_TIMEOUT_MS = "1800000";
+    assert.equal(configuredCodexCliTimeoutMs(), 1_800_000);
+    process.env.CODEX_CLI_TIMEOUT_MS = "1";
+    assert.equal(configuredCodexCliTimeoutMs(), 5_000);
+    process.env.CODEX_CLI_TIMEOUT_MS = "99999999";
+    assert.equal(configuredCodexCliTimeoutMs(), 3_600_000);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_CLI_TIMEOUT_MS;
+    else process.env.CODEX_CLI_TIMEOUT_MS = previous;
   }
 });
 

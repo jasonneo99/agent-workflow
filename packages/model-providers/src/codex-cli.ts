@@ -191,8 +191,12 @@ export function createCodexCliRunner(): CodexCliRunner {
   };
 }
 
+export function configuredCodexCliTimeoutMs(): number {
+  return Math.max(5_000, Math.min(3_600_000, Number(process.env.CODEX_CLI_TIMEOUT_MS) || 900_000));
+}
+
 async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string): Promise<{ stdout: string; stderr: string }> {
-  const timeoutMs = Math.max(5_000, Math.min(900_000, Number(process.env.CODEX_CLI_TIMEOUT_MS) || 300_000));
+  const timeoutMs = configuredCodexCliTimeoutMs();
   const maxBytes = 1_000_000;
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
   delete environment.OPENAI_API_KEY;
