@@ -27329,16 +27329,16 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
   const failed = queue.filter((item) => item.runStatus === "failed");
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
   const rows = queue.map((item) => {
-    const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} running, ${item.failedTasks} failed`;
+    const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
       ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
       : item.nextStageId
         ? `${item.nextStageId} (${item.nextAgentId ?? "unknown"})`
         : "none";
     const leaseDetail = item.runningWorkerId
-      ? `worker: ${item.runningWorkerId}${item.runningLeaseExpiresAt ? `; lease expires ${renderDashboardDateTime(item.runningLeaseExpiresAt)}` : ""}`
+      ? `execution unconfirmed; worker lease: ${item.runningWorkerId}${item.runningLeaseExpiresAt ? `; expires ${renderDashboardDateTime(item.runningLeaseExpiresAt)}` : ""}`
       : item.runningTasks > 0
-        ? "worker: unknown"
+        ? "execution unconfirmed; worker lease owner unknown"
         : "worker: none";
     return `
       <tr>
@@ -36707,6 +36707,7 @@ async function runApprovalAutopilot(input: {
     .filter((approval) => approval.status === "pending" || approval.status === "approved" && isExecutableApprovalAction(approval.actionType) && !approval.executedAt)
     .slice(0, input.limit);
   const items: ApprovalAutopilotResult["items"] = [];
+  const resumedRuns = new Set<string>();
   const generatedAt = new Date().toISOString();
   for (const approval of approvals) {
     const project = await loadLocalProjectConfig(approval.projectRootUri);
@@ -36775,6 +36776,17 @@ async function runApprovalAutopilot(input: {
       summary: result.ok ? result.title : result.error,
       reasons: result.ok ? classification.reasons : [...classification.reasons, result.error]
     });
+    if (result.ok && !resumedRuns.has(approval.runId)) {
+      const details = await getWorkflowRunDetails(approval.runId);
+      if (details.run?.status === "blocked") {
+        const unresolved = (await listActionApprovals({ runId: approval.runId, status: "all", limit: 500 }))
+          .some((item) => item.status === "pending" || item.status === "approved" && !item.executedAt);
+        if (!unresolved) {
+          const replayedTasks = await retryFailedWorkflowRun(approval.runId);
+          if (replayedTasks > 0) resumedRuns.add(approval.runId);
+        }
+      }
+    }
   }
   return {
     kind: "agentflow_approval_autopilot_result",
