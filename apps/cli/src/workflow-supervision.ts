@@ -115,3 +115,9 @@ export function workflowDeliveryRepairReason(
   }
   return null;
 }
+
+export function supervisedRepairWorkflowId(run: SupervisedRun, reason: string): "build-feature" | "debug-failure" {
+  const deliveryGap = DELIVERY_WORD.test(run.task)
+    && /stopped before implementation|without governed product-write evidence|without executed verification evidence|missing implementation|delivery .* incomplete/iu.test(reason);
+  return deliveryGap ? "build-feature" : "debug-failure";
+}

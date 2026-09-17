@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -32,6 +32,17 @@ test("delivery with governed writes and executed verification needs no repair", 
 
 test("blocked authority and policy mismatch is routed to repair", () => {
   assert.match(workflowDeliveryRepairReason({ ...run, status: "blocked" }, [{ stageId: "implement", summary: "Implementation remains blocked by scoped authority; no product files changed." }]) ?? "", /queue a governed repair/iu);
+});
+
+test("delivery-gap repairs route to build-feature while concrete failures stay diagnostic", () => {
+  assert.equal(supervisedRepairWorkflowId(
+    { workflowId: "debug-failure", task: "Finish and implement roadmap milestone 7", status: "blocked" },
+    "Delivery run stopped before implementation or verification; queue a governed repair within the existing project policy."
+  ), "build-feature");
+  assert.equal(supervisedRepairWorkflowId(
+    { workflowId: "debug-failure", task: "Fix the TypeError in the queue worker", status: "failed" },
+    "The test command failed with a reproducible exception."
+  ), "debug-failure");
 });
 
 test("repair runs do not recursively repair themselves", () => {

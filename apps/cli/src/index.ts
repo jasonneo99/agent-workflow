@@ -39,7 +39,7 @@ import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelR
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
 import { probeWorkerProviderCapabilities } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -37101,6 +37101,7 @@ async function queueSupervisedWorkflowRepair(input: {
   } catch {
     return false;
   }
+  const repairWorkflowId = supervisedRepairWorkflowId(input.run, input.reason);
   const repairTask = [
     `Repair supervised Agent Workflow run ${input.run.id}.`,
     `Original workflow: ${input.run.workflowId}.`,
@@ -37109,7 +37110,7 @@ async function queueSupervisedWorkflowRepair(input: {
     "Preserve the original acceptance contract and completed checkpoints. Work only within the current project policy; do not edit policy to grant yourself authority. If policy prevents required product work, remain blocked and identify the exact missing permission or approval. Otherwise implement the missing product work, execute verification, and produce the requested package or installable delivery rather than reporting plans as completion."
   ].join("\n\n");
   const queued = await queueWorkflow({
-    workflowId: "debug-failure",
+    workflowId: repairWorkflowId,
     projectPath: input.projectDir,
     registeredProjectRootUri: input.run.projectRootUri,
     task: repairTask,
@@ -37117,7 +37118,7 @@ async function queueSupervisedWorkflowRepair(input: {
     sourceMaxFiles: "180",
     includeExactSourceExcerpts: true,
     preferImplementationSources: true,
-    evaluationMetadata: { ...inheritedCodexOrigin(input.run.evaluationMetadata), source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor }
+    evaluationMetadata: { ...inheritedCodexOrigin(input.run.evaluationMetadata), source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor, repairWorkflowId }
   });
   if (!queued.ok) return false;
   await recordRunAction({
