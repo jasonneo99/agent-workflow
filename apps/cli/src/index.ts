@@ -4485,7 +4485,49 @@ program
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
+        const runFastRecoverySweep = async (): Promise<void> => {
+          for (const recoveryTarget of targets) {
+            if (recoveryTarget.mode !== "apply-approved") continue;
+            try {
+              const targetAutopilotEnabled = approvalAutopilotOverride
+                ?? await learningApprovalAutopilotEnabled(recoveryTarget.projectDir);
+              if (targetAutopilotEnabled) {
+                await dismissDuplicateBlockedWorkflowRuns(recoveryTarget.projectDir, daemonId);
+                const targetMaxRisk = await learningApprovalAutopilotMaxRisk(recoveryTarget.projectDir);
+                const autopilot = await runApprovalAutopilot({
+                  projectRootUri: recoveryTarget.projectDir,
+                  limit: 100,
+                  maxRisk: targetMaxRisk,
+                  execute: true,
+                  actor: daemonId,
+                  actorRole: "approver"
+                });
+                approvalAutopilotEnabled = true;
+                approvalAutopilotMaxRisk = targetMaxRisk;
+                approvalAutopilotExecuted += autopilot.executed;
+                approvalAutopilotSkipped += autopilot.skipped;
+                autonomousAppliedActions += autopilot.executed;
+              }
+              const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
+                projectRootUri: recoveryTarget.projectDir,
+                actor: "learning-daemon",
+                reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
+              });
+              blockedRunsAutoHealed += leaseRecovery.affectedRuns;
+              await writeStatus(stop ? "stopping" : "running", undefined, undefined, recoveryTarget.projectDir);
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error);
+              projectErrors.push(`${recoveryTarget.projectDir} fast recovery: ${message}`);
+            }
+          }
+        };
+
+        // Expensive project analysis must never make another project's queue wait
+        // for an entire all-project cycle. Sweep every enabled queue before each
+        // heavy target and once more at the end so new low-risk approvals and
+        // expired leases are recovered within at most one project's analysis.
         for (const target of targets) {
+          await runFastRecoverySweep();
           const targetProjectDir = target.projectDir;
           try {
             const update = await runLearningDaemonTick({
@@ -4539,6 +4581,7 @@ program
             await writeStatus("failed", undefined, message, targetProjectDir);
           }
         }
+        await runFastRecoverySweep();
         mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
         staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
         await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
