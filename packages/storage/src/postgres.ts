@@ -523,6 +523,7 @@ export interface WorkflowQueueItem {
   startedAt: string;
   finishedAt: string | null;
   blockedReason?: string | null;
+  failedReason?: string | null;
   totalTasks: number;
   queuedTasks: number;
   runningTasks: number;
@@ -567,6 +568,13 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
            order by ar.created_at desc
            limit 1
          ) else null end as "blockedReason",
+         case when wr.status = 'failed' then (
+           select coalesce(nullif(ar.metadata->>'failureReason', ''), nullif(ar.metadata->>'reason', ''), ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_failed'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "failedReason",
          count(wt.*)::int as "totalTasks",
          count(*) filter (where wt.status = 'queued')::int as "queuedTasks",
          count(*) filter (where wt.status in ('leased','running'))::int as "runningTasks",
@@ -2448,6 +2456,7 @@ export interface WorkflowRunStatus {
   startedAt: string;
   finishedAt: string | null;
   blockedReason?: string | null;
+  failedReason?: string | null;
   dismissed?: boolean;
   stateVersion?: string;
   leaseEpoch?: string;
@@ -3135,6 +3144,13 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
            order by ar.created_at desc
            limit 1
          ) else null end as "blockedReason",
+         case when wr.status = 'failed' then (
+           select coalesce(nullif(ar.metadata->>'failureReason', ''), nullif(ar.metadata->>'reason', ''), ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_failed'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "failedReason",
          exists (
            select 1
            from action_receipts dismissed
@@ -3271,6 +3287,13 @@ export async function listWorkflowRunsForProject(input: {
            order by ar.created_at desc
            limit 1
          ) else null end as "blockedReason",
+         case when wr.status = 'failed' then (
+           select coalesce(nullif(ar.metadata->>'failureReason', ''), nullif(ar.metadata->>'reason', ''), ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_failed'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "failedReason",
          exists (
            select 1
            from action_receipts dismissed
@@ -3382,7 +3405,14 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
            where ar.run_id = wr.id and ar.action_type = 'stage_blocked'
            order by ar.created_at desc
            limit 1
-         ) else null end as "blockedReason"
+         ) else null end as "blockedReason",
+         case when wr.status = 'failed' then (
+           select coalesce(nullif(ar.metadata->>'failureReason', ''), nullif(ar.metadata->>'reason', ''), ar.summary)
+           from action_receipts ar
+           where ar.run_id = wr.id and ar.action_type = 'stage_failed'
+           order by ar.created_at desc
+           limit 1
+         ) else null end as "failedReason"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        left join lateral (

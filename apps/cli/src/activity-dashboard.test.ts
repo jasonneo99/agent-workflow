@@ -79,6 +79,16 @@ test("queue presents active recovery chains without counting source failures twi
   assert.match(source, /!recoveringRunIds\.has\(item\.runId\)/u);
 });
 
+test("failed runs expose their reason and root-cause resolution controls", () => {
+  assert.match(source, /Reason Failed/u);
+  assert.match(source, /failedRunResolution\(run\.failedReason\)/u);
+  assert.match(source, /Retry Failed Stages/u);
+  assert.match(source, /Diagnose & Fix/u);
+  assert.match(source, /Open Providers/u);
+  assert.match(source, /Open Approvals/u);
+  assert.match(source, /provider-use codex-cli --login --check/u);
+});
+
 test("blocked runs explain resolution choices and allow an audited skip", () => {
   assert.match(source, /How to move this run forward/u);
   assert.match(source, /Skip blocked stage &amp; continue/u);

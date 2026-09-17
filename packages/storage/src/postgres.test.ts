@@ -71,6 +71,13 @@ test("queue items expose replay and repair recovery relationships without rewrit
   assert.match(source, /parent\.depth < 20 and not child\.id = any\(parent\.path\)/u);
 });
 
+test("queue and run detail expose the latest recorded stage failure reason", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /ar\.action_type = 'stage_failed'[\s\S]+as "failedReason"/u);
+  assert.match(source, /metadata->>'failureReason'/u);
+  assert.match(source, /failedReason\?: string \| null/u);
+});
+
 test("evaluation failures remain evidence instead of actionable queue items", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(

@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
+const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
 test("completed delivery without product writes is automatically repairable", () => {
   assert.match(workflowDeliveryRepairReason(run, [{ stageId: "implement", agentId: "implementation-agent", summary: "Read-only discovery complete." }]) ?? "", /without governed product-write evidence/iu);
@@ -78,4 +80,11 @@ test("automatic repair only covers newly finished runs", () => {
   assert.equal(isWithinAutomaticWorkflowRepairWindow("2026-09-16T19:45:00.000Z", now), true);
   assert.equal(isWithinAutomaticWorkflowRepairWindow("2026-09-16T19:29:59.000Z", now), false);
   assert.equal(isWithinAutomaticWorkflowRepairWindow("not-a-date", now), false);
+});
+
+test("automatic repair diagnoses bounded internal failures but leaves provider and authority prerequisites to operators", () => {
+  assert.match(cliSource, /const recordedFailure = \[\.\.\.details\.receipts\]/u);
+  assert.match(cliSource, /const externallyManagedFailure = \/\\b\(\?:auth/u);
+  assert.match(cliSource, /const repairableFailure = run\.status === "failed"/u);
+  assert.match(cliSource, /The failed stage recorded this cause/u);
 });

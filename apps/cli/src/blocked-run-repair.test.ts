@@ -5,7 +5,7 @@ import test from "node:test";
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
 test("blocked queue items expose a governed repair action", () => {
-  assert.match(source, /queueRunActionForm\(item\.runId, "resolve-blocker", "Resolve Blocker"\)/u);
+  assert.match(source, /queueRunActionForm\(item\.runId, "resolve-blocker", "Resolve blocker"\)/u);
   assert.match(source, /queueRunActionForm\(item\.runId, "repair-blocked", "Diagnose as New Run"\)/u);
   assert.match(source, /if \(action === "resolve-blocker"\)/u);
   assert.match(source, /Blocker resolved and workflow resumed/u);

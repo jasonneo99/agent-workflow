@@ -27549,7 +27549,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
     const attention = item.runStatus === "blocked"
       ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Blocked</strong><small>${escapeHtml(item.blockedReason ?? "This run needs a decision or resolved dependency before it can continue.")}</small></span></div>`
       : item.failedTasks > 0 || item.runStatus === "failed"
-      ? `<div class="queue-card-callout bad">${dashboardIcon("warning")}<span><strong>Needs attention</strong><small>${formatNumber(item.failedTasks || 1)} failed stage${(item.failedTasks || 1) === 1 ? "" : "s"}. Open the run for evidence before retrying.</small></span></div>`
+      ? `<div class="queue-card-callout bad">${dashboardIcon("warning")}<span><strong>Failed</strong><small>${escapeHtml(item.failedReason?.trim() || `${formatNumber(item.failedTasks || 1)} stage${(item.failedTasks || 1) === 1 ? "" : "s"} failed without a recorded reason.`)}</small></span></div>`
       : hasExpiredLease(item)
         ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Worker lease expired</strong><small>Recovery is available without losing completed stages.</small></span></div>`
         : "";
@@ -27585,6 +27585,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
           task: item.task,
           startedAt: item.startedAt,
           blockedReason: item.blockedReason,
+          failedReason: item.failedReason,
           summary: [taskSummary, `current: ${currentStage}`, leaseDetail]
         })}</div></details>
         </div>
@@ -34002,6 +34003,7 @@ function renderRunDetailHtml(input: {
       </div>
       <p>${escapeHtml(input.run.task)}</p>
       ${input.run.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.run.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; inspect the stage artifacts below.")}</p>` : ""}
+      ${input.run.status === "failed" ? renderFailedRunResolutionPanel(input.run) : ""}
       <details class="governance-details"><summary>Follow-up workflows</summary><div class="actions quick-actions">
         ${runActionForm(input.run.id, "summarize", "Summarize Run")}
         ${runActionForm(input.run.id, "debug-failure", "Diagnose & Fix")}
@@ -34254,6 +34256,105 @@ function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunD
     <div class="run-stage-timeline-scroll"><ol class="run-stage-timeline" aria-label="Workflow stage progress">${steps || '<li class="run-stage-empty">No stages were created for this run.</li>'}</ol></div>`;
 }
 
+type FailedRunResolution = {
+  headline: string;
+  summary: string;
+  instructions: string[];
+  automaticRepair: "eligible" | "operator-required";
+};
+
+function failedRunResolution(reason?: string | null): FailedRunResolution {
+  const normalized = reason?.trim().toLowerCase() ?? "";
+  if (/auth(?:entication|orization)?|not authenticated|credential/u.test(normalized)) {
+    return {
+      headline: "Provider authentication failed",
+      summary: "Authentication must be repaired on the worker that will claim the retry before execution can safely continue.",
+      instructions: [
+        "Open Providers and verify the configured provider on the intended worker.",
+        "For Codex CLI, run: npm run agentflow -- provider-use codex-cli --login --check",
+        "After the provider check succeeds on that worker, choose Retry Failed Stages."
+      ],
+      automaticRepair: "operator-required"
+    };
+  }
+  if (/fallback|provider retry|provider.*failed|model route/u.test(normalized)) {
+    return {
+      headline: "Provider routing failed",
+      summary: "Agent Workflow will preserve the failure and can retry only after a healthy provider route or worker is available.",
+      instructions: [
+        "Open Providers and confirm at least one eligible route reports ready.",
+        "If a remote worker is unhealthy, route the retry to an authenticated worker or repair that node's provider configuration.",
+        "Choose Retry Failed Stages, or Diagnose & Fix when the provider is healthy but the stage still fails."
+      ],
+      automaticRepair: "operator-required"
+    };
+  }
+  if (/policy|permission|not allowed|approval/u.test(normalized)) {
+    return {
+      headline: "Policy or approval prevented execution",
+      summary: "The workflow cannot broaden its own authority; review the denied action and grant only the narrow permission actually required.",
+      instructions: [
+        "Open Approvals and inspect the exact denied command or file write.",
+        "Approve the bounded action or repair the project's policy from Settings.",
+        "Return here and choose Retry Failed Stages."
+      ],
+      automaticRepair: "operator-required"
+    };
+  }
+  if (/enoent|missing executable|command not found/u.test(normalized)) {
+    return {
+      headline: "Required executable is unavailable",
+      summary: "Install or configure the missing executable on the worker, then retry the failed stage.",
+      instructions: [
+        "Inspect the failure evidence below for the missing executable name.",
+        "Install it or update the worker PATH without storing credentials in the repository.",
+        "Choose Retry Failed Stages after the command is available."
+      ],
+      automaticRepair: "operator-required"
+    };
+  }
+  if (/lease|worker.*stale|worker.*stopped/u.test(normalized)) {
+    return {
+      headline: "Worker execution was interrupted",
+      summary: "Expired leases can be safely recovered while preserving completed checkpoints.",
+      instructions: [
+        "Confirm a healthy worker is running in Settings.",
+        "Use Recover Expired Leases on the Queue page if the lease remains active past its deadline.",
+        "Retry the failed stage after ownership is released."
+      ],
+      automaticRepair: "eligible"
+    };
+  }
+  return {
+    headline: "Workflow failed",
+    summary: "Agent Workflow will attempt bounded diagnosis when evidence supports it; otherwise start a focused repair run from the preserved failure evidence.",
+    instructions: [
+      "Review the failed stage and receipts below for the last confirmed cause.",
+      "Choose Retry Failed Stages when the prerequisite is already fixed.",
+      "Choose Diagnose & Fix to create a governed root-cause repair with refreshed project context."
+    ],
+    automaticRepair: "eligible"
+  };
+}
+
+function renderFailedRunResolutionPanel(run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>): string {
+  const resolution = failedRunResolution(run.failedReason);
+  return `<section class="failure-resolution" aria-labelledby="failure-resolution-title">
+    <h3 id="failure-resolution-title">Reason Failed</h3>
+    <p class="warn-box">${escapeHtml(run.failedReason?.trim() || "No specific failure reason was recorded. This is a workflow defect; use Diagnose & Fix to gather fresh evidence.")}</p>
+    <h3>How to resolve</h3>
+    <p>${escapeHtml(resolution.summary)}</p>
+    <ol>${resolution.instructions.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol>
+    <p class="muted">Automatic root repair: ${resolution.automaticRepair === "eligible" ? "eligible when policy and evidence permit" : "waiting for an operator-managed prerequisite"}.</p>
+    <div class="actions">
+      ${queueRunActionForm(run.id, "retry-failed", "Retry Failed Stages")}
+      ${queueRunActionForm(run.id, "repair-blocked", "Diagnose & Fix")}
+      <a class="button secondary" href="/providers">Open Providers</a>
+      <a class="button secondary" href="/approvals?status=open&run=${encodeURIComponent(run.id)}">Open Approvals</a>
+    </div>
+  </section>`;
+}
+
 function renderRunCommandCenterBody(
   run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
   tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"],
@@ -34266,6 +34367,7 @@ function renderRunCommandCenterBody(
   const active = tasks.filter((task) => task.status === "queued" || task.status === "leased" || task.status === "running").length;
   const blocked = run.status === "blocked";
   const failedRun = run.status === "failed";
+  const failureResolution = failedRunResolution(run.failedReason);
   const superseded = Boolean(run.replacementRunId);
   const attention = !superseded && (openApprovals.length > 0 || blocked || failedRun);
   const headline = superseded
@@ -34275,7 +34377,7 @@ function renderRunCommandCenterBody(
     : blocked
       ? "Workflow is blocked"
       : failedRun
-        ? "Workflow failed"
+        ? failureResolution.headline
         : run.status === "completed"
           ? skipped > 0 ? "Workflow completed with exceptions" : "Workflow completed"
           : "Workflow is progressing";
@@ -34286,7 +34388,7 @@ function renderRunCommandCenterBody(
     : blocked
       ? escapeHtml(run.blockedReason?.trim() || "No open approval remains. Resolve the blocker, resume from a checkpoint, or start a focused diagnosis.")
       : failedRun
-        ? "Retry the failed stages when the cause is fixed, or start a focused diagnosis from this run."
+        ? escapeHtml(`${run.failedReason?.trim() || "No specific failure reason was recorded."} ${failureResolution.summary}`)
         : run.status === "completed"
           ? skipped > 0
             ? `${skipped} stage${skipped === 1 ? " was" : "s were"} explicitly skipped. Review the missing evidence before treating this run as a fully verified delivery.`
@@ -37124,15 +37226,20 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     const artifacts = await listArtifacts({ runId: run.id, kind: "stage_output" });
     const outputs = artifacts.map((artifact) => artifact.content);
     const output = outputs.at(-1) ?? {};
-    const reason = `${stringValue(output.blockedReason) ?? ""} ${stringValue(output.summary) ?? ""}`.toLowerCase();
+    const recordedFailure = [...details.receipts].reverse().find((receipt) => receipt.actionType === "stage_failed")?.summary?.trim() ?? "";
+    const reason = `${stringValue(output.blockedReason) ?? ""} ${stringValue(output.summary) ?? ""} ${recordedFailure}`.toLowerCase();
     const missingExistingEvidence = /\b(?:missing|not supplied|not provided|unavailable|omits?)\b/u.test(reason)
       && /\b(?:context|source|files?|diff|tests?|evidence|repository|implementation|configuration)\b/u.test(reason);
     const deliveryReason = workflowDeliveryRepairReason(run, outputs);
-    if (!missingExistingEvidence && !deliveryReason) continue;
+    const externallyManagedFailure = /\b(?:auth(?:entication|orization)?|credential|quota|policy|permission|approval|provider|fallback|model route)\b/u.test(reason);
+    const repairableFailure = run.status === "failed" && Boolean(recordedFailure) && !externallyManagedFailure;
+    if (!missingExistingEvidence && !deliveryReason && !repairableFailure) continue;
     const repaired = await queueSupervisedWorkflowRepair({
       run,
       projectDir,
-      reason: deliveryReason ?? "The blocked run is missing project evidence that now exists or can be refreshed.",
+      reason: deliveryReason ?? (repairableFailure
+        ? `The failed stage recorded this cause: ${recordedFailure}`
+        : "The blocked run is missing project evidence that now exists or can be refreshed."),
       actor: "learning-daemon"
     });
     return repaired ? 1 : 0;
@@ -40951,6 +41058,7 @@ function renderRunInfoDialog(input: {
   task?: string;
   startedAt?: string | null;
   blockedReason?: string | null;
+  failedReason?: string | null;
   summary?: string[];
 }): string {
   const dialogId = `run-info-${[input.runId, input.idSuffix].filter(Boolean).join("-").replace(/[^a-zA-Z0-9_-]/g, "-")}`;
@@ -40979,6 +41087,7 @@ function renderRunInfoDialog(input: {
         </div>
         <div class="meta-grid compact">${rows}</div>
         ${input.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; open the full run for stage evidence.")}</p>` : ""}
+        ${input.status === "failed" ? `<h3>Reason Failed</h3><p class="warn-box">${escapeHtml(input.failedReason?.trim() || "No specific failure reason was recorded. Open the full run for stage evidence.")}</p><h3>How to resolve</h3><ol>${failedRunResolution(input.failedReason).instructions.map((instruction) => `<li>${escapeHtml(instruction)}</li>`).join("")}</ol>` : ""}
         ${input.task ? `<h3>Task</h3><p>${escapeHtml(input.task)}</p>` : ""}
         <h3>Summary</h3>
         ${summary}
