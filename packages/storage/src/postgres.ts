@@ -537,6 +537,10 @@ export interface WorkflowQueueItem {
   runningLeaseExpiresAt: string | null;
   oldestQueuedAt: string | null;
   oldestRunningAt: string | null;
+  recoveryRunId: string | null;
+  recoveryRunStatus: string | null;
+  recoveryStartedAt: string | null;
+  recoveryRelation: "replay" | "repair" | null;
 }
 
 export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string }): Promise<WorkflowQueueItem[]> {
@@ -552,6 +556,10 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
          wr.finished_at::text as "finishedAt",
+         recovery.id as "recoveryRunId",
+         recovery.status as "recoveryRunStatus",
+         recovery.started_at as "recoveryStartedAt",
+         recovery.relation as "recoveryRelation",
          case when wr.status = 'blocked' then (
            select coalesce(ar.metadata->>'reason', ar.summary)
            from action_receipts ar
@@ -576,6 +584,30 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
+       left join lateral (
+         with recursive descendants as (
+           select
+             next_run.id,
+             next_run.status,
+             next_run.started_at,
+             case when next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text then 'replay' else 'repair' end as relation,
+             1 as depth,
+             array[wr.id, next_run.id] as path
+           from workflow_runs next_run
+           where next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
+              or next_run.evaluation_metadata->>'sourceRunId' = wr.id::text
+           union all
+           select child.id, child.status, child.started_at, parent.relation, parent.depth + 1, parent.path || child.id
+           from workflow_runs child
+           join descendants parent on child.evaluation_metadata->>'replayOfRunId' = parent.id::text
+             or child.evaluation_metadata->>'sourceRunId' = parent.id::text
+           where parent.depth < 20 and not child.id = any(parent.path)
+         )
+         select id::text, status, started_at::text, relation
+         from descendants
+         order by depth desc, started_at desc
+         limit 1
+       ) recovery on true
        where ($2::text is null or p.root_uri = $2)
          -- Evaluation failures are comparison evidence, not actionable workflow
          -- failures. They remain visible on the Evaluations surface.
@@ -599,7 +631,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
             where active.run_id = wr.id
               and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
-       group by wr.id, p.id
+       group by wr.id, p.id, recovery.id, recovery.status, recovery.started_at, recovery.relation
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
          coalesce(min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
@@ -3342,13 +3374,21 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        left join lateral (
-         select
-           next_run.id::text as id,
-           next_run.status,
-           next_run.started_at::text as started_at
-         from workflow_runs next_run
-         where next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
-         order by next_run.started_at desc
+         with recursive descendants as (
+           select next_run.id, next_run.status, next_run.started_at, 1 as depth, array[wr.id, next_run.id] as path
+           from workflow_runs next_run
+           where next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
+              or next_run.evaluation_metadata->>'sourceRunId' = wr.id::text
+           union all
+           select child.id, child.status, child.started_at, parent.depth + 1, parent.path || child.id
+           from workflow_runs child
+           join descendants parent on child.evaluation_metadata->>'replayOfRunId' = parent.id::text
+             or child.evaluation_metadata->>'sourceRunId' = parent.id::text
+           where parent.depth < 20 and not child.id = any(parent.path)
+         )
+         select id::text, status, started_at::text
+         from descendants
+         order by depth desc, started_at desc
          limit 1
        ) replacement on true
        where wr.id = $1`,

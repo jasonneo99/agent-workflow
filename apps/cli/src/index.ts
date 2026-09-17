@@ -27492,9 +27492,16 @@ function renderDashboardHtml(
 function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): string {
   const projectFilter = params.get("project")?.trim() || "";
   const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
-  const failed = queue.filter((item) => item.runStatus === "failed");
+  const recoveryActiveStatuses = new Set(["queued", "leased", "running"]);
+  const recovering = queue.filter((item) =>
+    (item.runStatus === "failed" || item.runStatus === "blocked")
+    && Boolean(item.recoveryRunId)
+    && recoveryActiveStatuses.has(item.recoveryRunStatus ?? "")
+  );
+  const recoveringRunIds = new Set(recovering.map((item) => item.runId));
+  const failed = queue.filter((item) => item.runStatus === "failed" && !recoveringRunIds.has(item.runId));
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
-  const rows = queue.map((item) => {
+  const rows = queue.filter((item) => !recoveringRunIds.has(item.runId)).map((item) => {
     const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
       ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
@@ -27553,6 +27560,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
     <section class="panel">
       <div class="meta-grid">
         <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
+        <div><strong>Recovering</strong>${formatNumber(recovering.length)}</div>
         <div><strong>Failed Runs</strong>${formatNumber(failed.length)}</div>
         <div><strong>Queued Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0))}</div>
         <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
@@ -27570,6 +27578,19 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
       <h2>Clear Failed Queue Items</h2>
       <p class="muted">Dismissal removes failed runs from this queue without deleting their history, artifacts, or receipts.</p>
       ${queueDismissAllForm()}
+    </section>` : ""}
+    ${recovering.length ? `<section class="panel">
+      <div class="section-heading"><div><h2>Recovery in Progress</h2><span class="muted">Source failures remain immutable history. Current work is counted once through the active recovery run.</span></div></div>
+      <div class="table-wrap"><table>
+        <thead><tr><th>Source run</th><th>Derived status</th><th>Current recovery</th><th>Project</th><th>Started</th></tr></thead>
+        <tbody>${recovering.map((item) => `<tr>
+          <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.runStatus)} · ${escapeHtml(item.workflowId)}</span></td>
+          <td><span class="status running">${item.runStatus === "blocked" ? "continuation running" : "recovery running"}</span></td>
+          <td><a href="/run?id=${encodeURIComponent(item.recoveryRunId ?? "")}">${escapeHtml(item.recoveryRunId?.slice(0, 8) ?? "unknown")}</a><br><span class="muted">${escapeHtml(item.recoveryRunStatus ?? "unknown")} · ${escapeHtml(item.recoveryRelation ?? "recovery")}</span></td>
+          <td>${escapeHtml(item.projectName)}</td>
+          <td>${renderDashboardDateTime(item.recoveryStartedAt ?? item.startedAt)}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
     </section>` : ""}
     <section class="panel">
       <h2>Runs Needing Attention</h2>
@@ -34107,14 +34128,28 @@ function renderRunContinuationBanner(
 ): string {
   const sourceRunId = typeof run.evaluationMetadata?.replayOfRunId === "string"
     ? run.evaluationMetadata.replayOfRunId.trim()
-    : "";
+    : typeof run.evaluationMetadata?.sourceRunId === "string"
+      ? run.evaluationMetadata.sourceRunId.trim()
+      : "";
   if (run.replacementRunId) {
+    const replacementActive = run.replacementRunStatus === "queued" || run.replacementRunStatus === "leased" || run.replacementRunStatus === "running";
+    const replacementCompleted = run.replacementRunStatus === "completed";
+    const recoveryHeadline = replacementActive
+      ? "This run has active follow-up work"
+      : replacementCompleted
+        ? "This run was recovered by follow-up work"
+        : "The latest follow-up needs attention";
+    const recoveryDetail = replacementActive
+      ? `Current work is happening in run <strong>${escapeHtml(run.replacementRunId.slice(0, 8))}</strong>${run.replacementRunStartedAt ? `, started ${renderDashboardDateTime(run.replacementRunStartedAt)}` : ""}.`
+      : replacementCompleted
+        ? `Recovery run <strong>${escapeHtml(run.replacementRunId.slice(0, 8))}</strong> completed successfully.`
+        : `Latest follow-up run <strong>${escapeHtml(run.replacementRunId.slice(0, 8))}</strong> is ${escapeHtml(run.replacementRunStatus ?? "unavailable")}; review that run before taking further action.`;
     return `<section class="run-continuation-banner source-run" aria-labelledby="run-continuation-title">
       <div class="run-continuation-icon" aria-hidden="true">→</div>
       <div class="run-continuation-copy">
-        <p class="eyebrow">Run continued</p>
-        <h2 id="run-continuation-title">This run continued in a new run</h2>
-        <p>Completed checkpoints were preserved. Current work is happening in run <strong>${escapeHtml(run.replacementRunId.slice(0, 8))}</strong>${run.replacementRunStartedAt ? `, started ${renderDashboardDateTime(run.replacementRunStartedAt)}` : ""}.</p>
+        <p class="eyebrow">Recovery chain</p>
+        <h2 id="run-continuation-title">${recoveryHeadline}</h2>
+        <p>The original ${escapeHtml(run.status)} result remains immutable history. ${recoveryDetail}</p>
       </div>
       <div class="run-continuation-action">
         ${run.replacementRunStatus ? `<span class="status ${escapeHtml(run.replacementRunStatus)}">${escapeHtml(run.replacementRunStatus)}</span>` : ""}
@@ -34126,9 +34161,9 @@ function renderRunContinuationBanner(
     return `<section class="run-continuation-banner replacement-run" aria-labelledby="run-continuation-title">
       <div class="run-continuation-icon" aria-hidden="true">✓</div>
       <div class="run-continuation-copy">
-        <p class="eyebrow">Continuation active</p>
-        <h2 id="run-continuation-title">New continuation run started</h2>
-        <p>This run resumed from completed checkpoints in source run <strong>${escapeHtml(sourceRunId.slice(0, 8))}</strong>; it did not restart from stage 1.</p>
+        <p class="eyebrow">Recovery active</p>
+        <h2 id="run-continuation-title">Follow-up run in progress</h2>
+        <p>This run continues or repairs source run <strong>${escapeHtml(sourceRunId.slice(0, 8))}</strong>. The source history and evidence remain available.</p>
       </div>
       <div class="run-continuation-action">
         <span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span>

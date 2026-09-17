@@ -64,11 +64,19 @@ test("run detail renders a live numbered stage timeline", () => {
 test("run detail clearly links checkpoint continuation runs in both directions", () => {
   assert.match(source, /id="run-continuation"/u);
   assert.match(source, /renderRunContinuationBanner/u);
-  assert.match(source, /This run continued in a new run/u);
+  assert.match(source, /This run has active follow-up work/u);
   assert.match(source, /Open continuation run/u);
-  assert.match(source, /New continuation run started/u);
-  assert.match(source, /it did not restart from stage 1/u);
+  assert.match(source, /Follow-up run in progress/u);
+  assert.match(source, /evaluationMetadata\?\.sourceRunId/u);
   assert.match(source, /continuationHtml/u);
+});
+
+test("queue presents active recovery chains without counting source failures twice", () => {
+  assert.match(source, /const recovering = queue\.filter/u);
+  assert.match(source, /<strong>Recovering<\/strong>/u);
+  assert.match(source, /Recovery in Progress/u);
+  assert.match(source, /recovery running/u);
+  assert.match(source, /!recoveringRunIds\.has\(item\.runId\)/u);
 });
 
 test("blocked runs explain resolution choices and allow an audited skip", () => {
