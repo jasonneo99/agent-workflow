@@ -39,7 +39,7 @@ import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelR
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
 import { probeWorkerProviderCapabilities } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -4584,6 +4584,7 @@ program
               });
               blockedRunsAutoHealed += leaseRecovery.affectedRuns;
             }
+            await learnFromWorkflowRepairs(targetProjectDir);
             blockedRunsAutoHealed += await autoRepairOneWorkflowRun(targetProjectDir, target.mode);
             await notifyOriginatingCodexTask(targetProjectDir);
           } catch (error) {
@@ -37208,6 +37209,61 @@ async function dismissDuplicateBlockedWorkflowRuns(projectDir: string, actor: st
     if (await dismissFailedWorkflowRun({ runId: run.id, actor, reason })) dismissed += 1;
   }
   return dismissed;
+}
+
+async function learnFromWorkflowRepairs(projectDir: string): Promise<number> {
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
+  const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
+  let learned = 0;
+  for (const run of runs) {
+    const source = stringValue(run.evaluationMetadata?.source) ?? "";
+    if (!repairSources.has(source) || !["completed", "blocked", "failed", "cancelled"].includes(run.status)) continue;
+    const details = await getWorkflowRunDetails(run.id);
+    if (details.receipts.some((receipt) => receipt.actionType === "workflow_repair_learning")) continue;
+    const completedTasks = details.tasks.filter((task) => task.status === "completed").length;
+    const failedTasks = details.tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;
+    const strategy = stringValue(run.evaluationMetadata?.rootRepairKind)
+      ?? stringValue(run.evaluationMetadata?.repairWorkflowId)
+      ?? (run.workflowId === "build-feature" ? "build-feature" : run.workflowId === "debug-failure" ? "debug-failure" : "replay-original");
+    const lesson = workflowRepairLesson({ strategy, repairStatus: run.status, completedTasks, failedTasks });
+    const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId) ?? "unknown";
+    await recordRunAction({
+      runId: run.id,
+      agentId: "workflow-orchestrator",
+      actionType: "workflow_repair_learning",
+      target: strategy,
+      summary: `${lesson.outcome}: ${lesson.futureAction}`,
+      artifactKind: "workflow_repair_learning",
+      artifactContent: {
+        sourceRunId,
+        repairRunId: run.id,
+        rootCauseClass: strategy,
+        repairStatus: run.status,
+        completedTasks,
+        failedTasks,
+        outcome: lesson.outcome,
+        futureAction: lesson.futureAction,
+        confidence: lesson.confidence
+      },
+      idempotencyKey: `workflow-repair-learning-${run.id}-${run.status}`
+    });
+    await upsertMemoryItem({
+      projectRootUri: projectDir,
+      sourceUri: `agentflow://repair-learning/${run.id}`,
+      summary: `Workflow repair lesson (${strategy}): ${lesson.outcome}. ${lesson.futureAction}`,
+      metadata: {
+        kind: "workflow_repair_learning",
+        sourceRunId,
+        repairRunId: run.id,
+        rootCauseClass: strategy,
+        repairStatus: run.status,
+        outcome: lesson.outcome,
+        confidence: lesson.confidence
+      }
+    });
+    learned += 1;
+  }
+  return learned;
 }
 
 async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {

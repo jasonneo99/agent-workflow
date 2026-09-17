@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRootRepairAction } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -14,6 +14,13 @@ test("learning daemon replays review evidence gaps with explicit root-repair lin
   assert.match(cliSource, /workflowRootRepairAction\([\s\S]+rootRepairAction === "replay-original"/u);
   assert.match(cliSource, /evaluationMetadataPatch:[\s\S]+source: "workflow-root-repair"[\s\S]+rootRepairKind: "review-evidence-gap"/u);
   assert.match(cliSource, /workflow_root_repair_replayed/u);
+});
+
+test("learning daemon closes every terminal repair with a reusable local lesson", () => {
+  assert.match(cliSource, /learnFromWorkflowRepairs\(targetProjectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
+  assert.match(cliSource, /actionType: "workflow_repair_learning"/u);
+  assert.match(cliSource, /sourceUri: `agentflow:\/\/repair-learning\/\$\{run\.id\}`/u);
+  assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks \}\)/u);
 });
 
 test("completed delivery without product writes is automatically repairable", () => {
@@ -66,6 +73,16 @@ test("root repair playbook distinguishes review evidence, delivery, approvals, a
     reason: "Queue crashed.",
     recordedFailure: "TypeError in queue worker"
   }), "debug-failure");
+});
+
+test("repair outcomes reinforce successful strategies and avoid failed ones", () => {
+  assert.deepEqual(workflowRepairLesson({ strategy: "replay-original", repairStatus: "completed", completedTasks: 3, failedTasks: 0 }), {
+    outcome: "reinforce",
+    futureAction: "Reuse replay-original for the same root-cause class when policy and evidence still match.",
+    confidence: 0.9
+  });
+  assert.equal(workflowRepairLesson({ strategy: "debug-failure", repairStatus: "blocked", completedTasks: 0, failedTasks: 1 }).outcome, "avoid");
+  assert.equal(workflowRepairLesson({ strategy: "build-feature", repairStatus: "running", completedTasks: 1, failedTasks: 0 }).outcome, "observe");
 });
 
 test("repair runs do not recursively repair themselves", () => {

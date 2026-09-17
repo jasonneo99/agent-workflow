@@ -124,6 +124,39 @@ export function supervisedRepairWorkflowId(run: SupervisedRun, reason: string): 
 
 export type WorkflowRootRepairAction = "replay-original" | "build-feature" | "debug-failure" | "wait-approval" | "operator-provider" | "none";
 
+export type WorkflowRepairLesson = {
+  outcome: "reinforce" | "avoid" | "observe";
+  futureAction: string;
+  confidence: number;
+};
+
+export function workflowRepairLesson(input: {
+  strategy: string;
+  repairStatus: string;
+  completedTasks: number;
+  failedTasks: number;
+}): WorkflowRepairLesson {
+  if (input.repairStatus === "completed" && input.completedTasks > 0 && input.failedTasks === 0) {
+    return {
+      outcome: "reinforce",
+      futureAction: `Reuse ${input.strategy} for the same root-cause class when policy and evidence still match.`,
+      confidence: 0.9
+    };
+  }
+  if (input.repairStatus === "blocked" || input.repairStatus === "failed" || input.failedTasks > 0) {
+    return {
+      outcome: "avoid",
+      futureAction: `Do not blindly repeat ${input.strategy}; reclassify the root cause or surface the unmet prerequisite.`,
+      confidence: 0.85
+    };
+  }
+  return {
+    outcome: "observe",
+    futureAction: `Keep ${input.strategy} under observation until the successor reaches a verified terminal state.`,
+    confidence: 0.5
+  };
+}
+
 export function workflowRootRepairAction(input: {
   run: SupervisedRun;
   reason: string;
