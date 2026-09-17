@@ -210,7 +210,7 @@ export function reviewEvidenceGapIsFinding(input: StageExecutionInput, parsed: S
     || /(?:^|[-_])(?:review|audit|inspect)(?:$|[-_])/iu.test(input.stageId);
   if (!reviewStage) return false;
   const reason = `${parsed.blockedReason} ${parsed.summary}`;
-  const evidenceGap = /(?:missing|insufficient|lacks?|no) (?:implementation |project |product |acceptance |verification )?(?:evidence|proof|context)|evidence .* (?:missing|insufficient|absent|unproven)|implementation .* (?:incomplete|absent|unproven)/iu.test(reason);
+  const evidenceGap = /(?:missing|insufficient|lacks?|no) (?:implementation |project |product |acceptance |verification )?(?:evidence|proof|context)|evidence .* (?:missing|insufficient|absent|unproven)|implementation .* (?:incomplete|absent|unproven)|no (?:specific )?platform(?:-specific)? guidance|(?:platform(?:-specific)? guidance|design system) .* (?:not provided|missing|absent|unavailable)/iu.test(reason);
   const realExternalBlocker = /(?:approval|permission|credential|authentication|quota|provider outage|network unavailable|external dependency|authority) (?:is |was )?(?:required|missing|unavailable|denied|exhausted)/iu.test(reason);
   return evidenceGap && !realExternalBlocker;
 }

@@ -75,6 +75,17 @@ test("review evidence gaps become findings while real authority blockers remain 
     requestedFileWrites: []
   });
   assert.equal(reviewEvidenceGapIsFinding(reviewInput, authorityBlocker), false);
+
+  const missingDesignSystem = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "No specific platform guidance or design system has been provided for review.",
+    summary: "The UX review cannot proceed without a design system.",
+    findings: ["Use the repository standards registry as the baseline."],
+    nextAction: "Review against the registered platform standards.",
+    requestedCommands: [],
+    requestedFileWrites: []
+  });
+  assert.equal(reviewEvidenceGapIsFinding(reviewInput, missingDesignSystem), true);
 });
 
 test("stage prompt reserves a bounded section for named commit evidence", () => {
