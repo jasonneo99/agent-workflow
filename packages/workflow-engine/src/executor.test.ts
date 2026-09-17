@@ -15,8 +15,14 @@ test("workers recover expired leases before claiming new work", () => {
 test("worker provider capabilities flow into durable queue claims", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /providerIds\?: string\[\]/u);
-  assert.match(source, /claimNextWorkflowTask\(options\)/u);
+  assert.match(source, /claimNextWorkflowTask\(\{[\s\S]+excludedProjectRootUris/u);
   assert.match(source, /providerIds: input\.providerIds/u);
+});
+
+test("workers release tasks for unavailable host checkouts and stop reclaiming them", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /projectResolution\.localPathExists[\s\S]+unavailableProjectRootUris\?\.add[\s\S]+requeueRunningWorkflowTasks[\s\S]+worker_project_unavailable/u);
+  assert.match(source, /const unavailableProjectRootUris = new Set<string>\(\)[\s\S]+unavailableProjectRootUris/u);
 });
 
 test("diagnostic stages retain failing commands as evidence while execution gates fail closed", () => {

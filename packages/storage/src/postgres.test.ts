@@ -45,7 +45,12 @@ test("workers claim only tasks whose pinned provider they advertise", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /claimNextWorkflowTask\(input\?: \{[^}]*providerIds\?: string\[\]/u);
   assert.match(source, /\$4::text\[\] is null[\s\S]+?= any\(\$4::text\[\]\)/u);
-  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds\]/u);
+  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris\]/u);
+});
+
+test("workers can exclude project checkouts unavailable on their host", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /excludedProjectRootUris[\s\S]+not \(p\.root_uri = any\(\$5::text\[\]\)\)/u);
 });
 
 test("dismissed terminal runs remain immutable history but leave the actionable queue", () => {

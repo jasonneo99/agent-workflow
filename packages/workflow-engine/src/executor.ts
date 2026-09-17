@@ -23,6 +23,7 @@ import {
   finalizeSideEffect,
   recordRunAction,
   requeueExpiredWorkflowTaskLeases,
+  requeueRunningWorkflowTasks,
   renewWorkflowTaskLease,
   assertWorkflowTaskLease,
   requestActionApproval,
@@ -44,6 +45,7 @@ export type WorkerRunOptions = {
   concurrency?: number;
   recoverExpiredLeases?: boolean;
   providerIds?: string[];
+  unavailableProjectRootUris?: Set<string>;
 };
 
 export class LostWorkflowTaskLeaseError extends Error {
@@ -109,7 +111,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
   };
 
   for (let i = 0; i < safeLimit; i += 1) {
-    const task = await claimNextWorkflowTask(options);
+    const task = await claimNextWorkflowTask({
+      ...options,
+      excludedProjectRootUris: [...(options?.unavailableProjectRootUris ?? [])]
+    });
     if (!task) {
       break;
     }
@@ -118,6 +123,22 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
     let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     try {
+      const projectResolution = await resolveLocalProjectPath(task.projectRootUri);
+      if (!projectResolution.localPathExists) {
+        options?.unavailableProjectRootUris?.add(task.projectRootUri);
+        await requeueRunningWorkflowTasks(task.runId);
+        await recordRunAction({
+          runId: task.runId,
+          agentId: "workflow-orchestrator",
+          actionType: "worker_project_unavailable",
+          target: task.projectRootUri,
+          summary: `Worker ${task.workerId ?? "unknown"} released the task because this project checkout is unavailable on that host.`,
+          artifactKind: "worker_capability",
+          artifactContent: { workerId: task.workerId, storageRootUri: task.projectRootUri, localPathExists: false },
+          idempotencyKey: `worker-project-unavailable-${task.taskId}-${task.workerId ?? "unknown"}`
+        });
+        continue;
+      }
       await startWorkflowTask({ taskId: task.taskId, runId: task.runId, workerId: task.workerId!, fencingToken: task.fencingToken });
       const leaseSeconds = Math.max(30, Math.min(3600, options?.leaseSeconds ?? 120));
       let leaseLost = false;
@@ -141,7 +162,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       };
       const actionResults = [];
       const project = projectConfigSchema.parse(task.projectConfig);
-      const localProjectRootUri = (await resolveLocalProjectPath(task.projectRootUri)).localRootUri;
+      const localProjectRootUri = projectResolution.localRootUri;
       const stagePattern = normalizeStagePattern(task.stagePattern);
       const stageInput = {
         ...task,
@@ -1227,13 +1248,15 @@ export async function runWorkerWatch(input: {
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
+  const unavailableProjectRootUris = new Set<string>();
   while (!input.shouldStop()) {
     const result = await runWorkerOnce(input.limitPerTick, {
       workerId: input.workerId,
       leaseSeconds: input.leaseSeconds,
       projectRootUri: input.projectRootUri,
       concurrency: input.concurrency,
-      providerIds: input.providerIds
+      providerIds: input.providerIds,
+      unavailableProjectRootUris
     });
     await input.onTick(result);
     await sleep(input.intervalMs);

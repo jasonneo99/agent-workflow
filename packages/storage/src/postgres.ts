@@ -1905,7 +1905,7 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[] }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; excludedProjectRootUris?: string[] }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -1913,6 +1913,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 120));
       const projectRootUri = input?.projectRootUri?.trim() || null;
       const providerIds = input?.providerIds?.length ? [...new Set(input.providerIds)] : null;
+      const excludedProjectRootUris = input?.excludedProjectRootUris?.length ? [...new Set(input.excludedProjectRootUris)] : null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
         `with next_task as (
            select wt.id
@@ -1926,6 +1927,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and wr.status in ('queued', 'leased', 'running')
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
+             and ($5::text[] is null or not (p.root_uri = any($5::text[])))
              and (
                $4::text[] is null
                or coalesce(
@@ -2011,7 +2013,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id limit 1
            ), a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds, projectRootUri, providerIds]
+        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris]
       );
 
       if (!result.rows[0]) {
