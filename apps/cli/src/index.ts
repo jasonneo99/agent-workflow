@@ -37497,6 +37497,12 @@ async function runApprovalAutopilot(input: {
       summary: result.ok ? result.title : result.error,
       reasons: result.ok ? classification.reasons : [...classification.reasons, result.error]
     });
+    // approveAndExecuteAction already creates the checkpoint-preserving
+    // replacement after the final approval. Remember that result so the
+    // autopilot does not replay the same blocked source run a second time.
+    if (result.ok && "runId" in result && result.runId && result.runId !== approval.runId) {
+      resumedRuns.add(approval.runId);
+    }
     if (result.ok && !resumedRuns.has(approval.runId)) {
       const details = await getWorkflowRunDetails(approval.runId);
       if (details.run?.status === "blocked") {
