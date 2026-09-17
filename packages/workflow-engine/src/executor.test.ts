@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldRetryWeakFallbackBlock } from "./executor.js";
+import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
@@ -83,6 +83,21 @@ test("weak local fallback blockers require one primary-provider retry", () => {
     actualProviderId: "local",
     output: { outcome: "completed", summary: "Review completed with concrete evidence.", artifact: {} },
     qualityReasons: []
+  }), false);
+});
+
+test("planning stages treat missing requested deliverables as implementation scope", () => {
+  assert.equal(shouldContinuePlanningDeliverableGap({
+    stageId: "orient",
+    output: { outcome: "blocked", blockedReason: "Missing project map and memory records", summary: "The requested architecture details are not present.", artifact: {} }
+  }), true);
+  assert.equal(shouldContinuePlanningDeliverableGap({
+    stageId: "plan",
+    output: { outcome: "blocked", blockedReason: "Deployment approval is required", summary: "Waiting for approval.", artifact: {} }
+  }), false);
+  assert.equal(shouldContinuePlanningDeliverableGap({
+    stageId: "implement",
+    output: { outcome: "blocked", blockedReason: "Missing implementation", summary: "No product files exist.", artifact: {} }
   }), false);
 });
 
