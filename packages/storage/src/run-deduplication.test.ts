@@ -33,6 +33,22 @@ test("run deduplication binds the advisory lock and query to the complete execut
   assert.match(calls[1]?.text ?? "", /policy_snapshot_hash = \$6/);
   assert.match(calls[1]?.text ?? "", /workflow_definition_hash = \$10/);
   assert.match(calls[1]?.text ?? "", /a\.content = \$13::jsonb/);
+  assert.match(calls[1]?.text ?? "", /wr\.status in \('queued', 'leased', 'running', 'blocked', 'failed'\)/);
   assert.deepEqual(JSON.parse(String(calls[1]?.values[12])), { text: "brief", metadata: {} });
   assert.match(String(calls[0]?.values[0]), /policy-hash/);
+});
+
+test("run deduplication keeps explicit retries separate from ordinary duplicate submissions", async () => {
+  const calls: Array<{ text: string; values: unknown[] }> = [];
+  const client = {
+    async query(text: string, values: unknown[]) {
+      calls.push({ text, values });
+      return { rows: [] };
+    }
+  };
+
+  await findRecentDuplicateRun(client as never, contract);
+
+  assert.match(calls[1]?.text ?? "", /wr\.status in \('queued', 'leased', 'running', 'blocked', 'failed'\)/);
+  assert.doesNotMatch(calls[1]?.text ?? "", /replayOfRunId/);
 });
