@@ -1039,6 +1039,7 @@ server.registerTool(
       project: z.string().describe("Absolute or relative project directory."),
       task: z.string().describe("Natural-language task description."),
       dryRun: z.boolean().optional().describe("Print the orchestration plan without running it."),
+      executionProfile: z.enum(["adaptive", "full"]).optional().describe("Adaptive uses one risk-scaled run and is the default. Full preserves exhaustive multi-step orchestration."),
       indexMaxFiles: z.number().int().positive().optional().describe("Maximum project files to index before each step."),
       refineIndex: z.boolean().optional().describe("Refine indexed summaries with the selected provider."),
       forceRefine: z.boolean().optional().describe("Refresh refined summaries even when content hashes are unchanged."),
@@ -1047,8 +1048,11 @@ server.registerTool(
       out: z.string().optional().describe("Export directory.")
     }
   },
-  async ({ project, task, dryRun, indexMaxFiles, refineIndex, forceRefine, workerLimit, timeoutMs, out }) => {
+  async ({ project, task, dryRun, executionProfile, indexMaxFiles, refineIndex, forceRefine, workerLimit, timeoutMs, out }) => {
     const args = ["orchestrate", "--project", project, "--task", task];
+    if (executionProfile) {
+      args.push("--execution-profile", executionProfile);
+    }
     if (dryRun) {
       args.push("--dry-run");
     }

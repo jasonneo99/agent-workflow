@@ -983,6 +983,8 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: generate the smallest validated stage graph for simple work, remove redundant ceremony for broader work, and parallelize independent frontend/backend branches behind a real join.
   - Done: preserve mandatory policy controls and verifier coverage in every adaptive plan.
   - Done: publish the execution profile, complexity, latency budget, direct-speed target, and construction rationale in the Studio route API and task dialog.
+  - Done: make Codex/MCP orchestration adaptive by default, collapsing overlapping specialist passes into one risk-scaled governed run; retain `--execution-profile full` for deliberate exhaustive orchestration.
+  - Done: make CLI dynamic plans, dynamic runs, and governed server orchestration use the same adaptive contract by default.
   - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
   - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
 

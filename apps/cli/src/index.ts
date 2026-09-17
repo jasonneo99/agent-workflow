@@ -2431,11 +2431,13 @@ program
   .description("Construct and validate a policy-bounded workflow DAG from a natural-language goal")
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "natural-language goal")
+  .option("--execution-profile <profile>", "adaptive or full", "adaptive")
   .option("--json", "print the generated workflow JSON")
-  .action(async (options: { project: string; task: string; json?: boolean }) => {
+  .action(async (options: { project: string; task: string; executionProfile: string; json?: boolean }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
     const project = await loadProjectConfig(projectDir);
-    const workflow = constructDynamicWorkflow({ goal: options.task, project, agents: await loadAgentsForProject(projectDir) });
+    const executionProfile = parseExecutionProfile(options.executionProfile);
+    const workflow = constructDynamicWorkflow({ goal: options.task, project, agents: await loadAgentsForProject(projectDir), executionProfile });
     if (options.json) {
       console.log(JSON.stringify(workflow, null, 2));
       return;
@@ -2453,11 +2455,13 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "natural-language goal")
   .option("--policy-profile <name>", "execution policy profile")
+  .option("--execution-profile <profile>", "adaptive or full", "adaptive")
   .option("--no-brief", "queue without printing the compiled brief")
-  .action(async (options: { project: string; task: string; policyProfile?: string; brief?: boolean }) => {
+  .action(async (options: { project: string; task: string; policyProfile?: string; executionProfile: string; brief?: boolean }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
     const configuredProject = await loadProjectConfig(projectDir);
-    const workflow = constructDynamicWorkflow({ goal: options.task, project: configuredProject, agents: await loadAgentsForProject(projectDir) });
+    const executionProfile = parseExecutionProfile(options.executionProfile);
+    const workflow = constructDynamicWorkflow({ goal: options.task, project: configuredProject, agents: await loadAgentsForProject(projectDir), executionProfile });
     await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
     const result = await queueWorkflow({ workflowId: workflow.id, projectPath: projectDir, task: options.task, policyProfile: options.policyProfile, workflowOverride: workflow });
     if (!result.ok) {
@@ -2821,6 +2825,7 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "natural-language task description")
   .option("--dry-run", "print the orchestration plan without running it")
+  .option("--execution-profile <profile>", "adaptive for one risk-scaled run, or full for exhaustive orchestration", "adaptive")
   .option("--index-max-files <number>", "maximum project files to index before each step", "100")
   .option("--refine-index", "refine indexed summaries with the selected provider")
   .option("--force-refine", "refresh refined summaries even when content hash is unchanged")
@@ -2832,6 +2837,7 @@ program
     project: string;
     task: string;
     dryRun?: boolean;
+    executionProfile: string;
     indexMaxFiles: string;
     refineIndex?: boolean;
     forceRefine?: boolean;
@@ -2853,7 +2859,7 @@ program
     }
 
     const projectDir = path.resolve(process.cwd(), options.project);
-    const plan = createOrchestrationPlan({ projectDir, task: options.task });
+    const plan = createOrchestrationPlan({ projectDir, task: options.task, executionProfile: parseExecutionProfile(options.executionProfile) });
     if (options.dryRun) {
       console.log(formatOrchestrationPlan(plan));
       return;
@@ -14659,7 +14665,7 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
       reused = true;
     } else {
       const project = await loadProjectConfig(localProjectRoot as string);
-      const dynamic = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(localProjectRoot as string) });
+      const dynamic = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(localProjectRoot as string), executionProfile: "adaptive" });
       workflowId = dynamic.id;
       const queued = await queueWorkflow({
         workflowId: dynamic.id,
@@ -42641,6 +42647,7 @@ function formatOrchestrationPlan(plan: OrchestrationPlan): string {
     "Orchestration Plan",
     `Project: ${plan.projectDir}`,
     `Task: ${plan.task}`,
+    `Execution profile: ${plan.executionProfile}`,
     "",
     ...plan.steps.map((step, index) => [
       `${index + 1}. ${step.title}`,
@@ -42708,7 +42715,9 @@ async function runOrchestrationPlan(plan: OrchestrationPlan, options: {
           workerLimit: options.workerLimit,
           workerConcurrency: options.workerConcurrency,
           timeoutMs: options.timeoutMs,
-          outDir: options.outDir
+          outDir: options.outDir,
+          adaptive: step.adaptive,
+          evaluationSource: step.adaptive ? "codex-adaptive-orchestration" : "codex-full-orchestration"
         });
 
     if (!result.ok) {
@@ -42764,6 +42773,8 @@ async function runDashboardWorkflow(input: {
   workerConcurrency?: number;
   timeoutMs?: number;
   outDir?: string;
+  adaptive?: boolean;
+  evaluationSource?: string;
 }): Promise<DashboardFollowUpResult> {
   await indexProjectForRun({
     projectDir: input.projectDir,
@@ -42771,10 +42782,20 @@ async function runDashboardWorkflow(input: {
     refine: input.refineIndex ?? false,
     forceRefine: input.forceRefine ?? false
   });
+  const configuredProject = input.adaptive ? await loadProjectConfig(input.projectDir) : null;
+  const dynamic = configuredProject ? constructDynamicWorkflow({
+    goal: input.task,
+    project: configuredProject,
+    agents: await loadAgentsForProject(input.projectDir),
+    executionProfile: "adaptive"
+  }) : null;
+  if (dynamic) await seedRegistry([], [{ path: `runtime/${dynamic.id}.yaml`, value: dynamic }]);
   const queued = await queueWorkflow({
-    workflowId: input.workflow,
+    workflowId: dynamic?.id ?? input.workflow,
+    workflowOverride: dynamic ?? undefined,
     projectPath: input.projectDir,
-    task: input.task
+    task: input.task,
+    evaluationMetadata: { source: input.evaluationSource ?? "dashboard", executionProfile: input.adaptive ? "adaptive" : "full" }
   });
   if (!queued.ok) {
     return { ok: false, error: queued.error };
@@ -44917,6 +44938,11 @@ function templateNameForProfile(profile: string): string {
     return "project-simple";
   }
   return "project";
+}
+
+function parseExecutionProfile(value: string): "adaptive" | "full" {
+  if (value === "adaptive" || value === "full") return value;
+  throw new Error("Execution profile must be 'adaptive' or 'full'.");
 }
 
 function parsePositiveInteger(value: string, fallback: number): number {

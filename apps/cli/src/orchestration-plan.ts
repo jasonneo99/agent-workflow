@@ -5,16 +5,19 @@ export type OrchestrationStep = {
   kind: "agent" | "workflow" | "preset";
   target: string;
   task: string;
+  adaptive?: boolean;
   skipIfPriorEmpty?: boolean;
 };
 
 export type OrchestrationPlan = {
   projectDir: string;
   task: string;
+  executionProfile: "adaptive" | "full";
   steps: OrchestrationStep[];
 };
 
-export function createOrchestrationPlan(input: { projectDir: string; task: string }): OrchestrationPlan {
+export function createOrchestrationPlan(input: { projectDir: string; task: string; executionProfile?: "adaptive" | "full" }): OrchestrationPlan {
+  const executionProfile = input.executionProfile ?? "adaptive";
   const normalizedTask = normalizeLookup(input.task);
   const steps: OrchestrationStep[] = [];
   const addStep = (step: Omit<OrchestrationStep, "id">): void => {
@@ -36,7 +39,23 @@ export function createOrchestrationPlan(input: { projectDir: string; task: strin
       target: "technical-architect",
       task: `Inspect the project's durable context and relevant source files, then answer this question directly without making changes: ${input.task}`
     });
-    return { projectDir: input.projectDir, task: input.task, steps };
+    return { projectDir: input.projectDir, task: input.task, executionProfile, steps };
+  }
+
+  if (executionProfile === "adaptive") {
+    const failure = includesAny(["test", "tests", "failing", "failure", "bug", "error", "ci", "build failed", "broken", "fix", "repair", "resolve"]);
+    const documentation = includesAny(["docs", "documentation", "readme", "guide", "tutorial"]);
+    const review = !requestsMutation || includesAny(["review", "audit", "inspect", "analyze", "analyse"]);
+    const target = failure ? "debug-failure" : documentation ? "maintain-context" : review ? "review-pr" : "build-feature";
+    addStep({
+      title: failure ? "Adaptive diagnosis and repair" : documentation ? "Adaptive documentation update" : review ? "Adaptive project review" : "Adaptive implementation",
+      reason: "Codex uses one risk-scaled workflow graph so specialists do not repeat the same discovery and review work.",
+      kind: "workflow",
+      target,
+      task: input.task,
+      adaptive: true
+    });
+    return { projectDir: input.projectDir, task: input.task, executionProfile, steps };
   }
 
   if (includesAny(["ux", "user experience", "design", "layout", "visual", "accessibility", "mobile", "responsive", "conversion", "onboarding", "homepage"])) {
@@ -82,7 +101,7 @@ export function createOrchestrationPlan(input: { projectDir: string; task: strin
   if (!steps.length) {
     addStep({ title: "General project review", reason: "No narrow route matched, so start with a conservative project review.", kind: "workflow", target: "review-pr", task: `Review and recommend the next action for: ${input.task}` });
   }
-  return { projectDir: input.projectDir, task: input.task, steps };
+  return { projectDir: input.projectDir, task: input.task, executionProfile, steps };
 }
 
 function normalizeLookup(value: string): string {
