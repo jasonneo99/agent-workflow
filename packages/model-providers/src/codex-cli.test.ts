@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliTimeoutMs, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
@@ -120,4 +121,9 @@ test("Codex CLI diagnostics retain only an allowlisted type and digest", () => {
   assert.equal(diagnostic.retryable, true);
   assert.match(diagnostic.digest, /^[a-f0-9]{64}$/u);
   assert.doesNotMatch(serialized, /Users|Private Project|supersecret|postgres|user:pass/u);
+});
+
+test("Codex CLI process launches are serialized across daemon and worker processes", () => {
+  const source = readFileSync(new URL("./codex-cli.ts", import.meta.url), "utf8");
+  assert.match(source, /withCodexCliProcessLock[\s\S]+fs\.open\(lockPath, "wx", 0o600\)[\s\S]+process\.kill\(pid, 0\)[\s\S]+await operation\(\)/u);
 });

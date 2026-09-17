@@ -170,25 +170,70 @@ export function createCodexCliRunner(): CodexCliRunner {
       return `${result.stdout}\n${result.stderr}`.trim();
     },
     execute: async ({ prompt, schema, model, workingDirectory }) => {
-      const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
-      const schemaPath = path.join(temporaryDir, "output-schema.json");
-      const outputPath = path.join(temporaryDir, "last-message.json");
-      try {
-        await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
-        const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
-        const args = [
-          "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
-          "--skip-git-repo-check", "--sandbox", "read-only", "--cd", executionDirectory,
-          "--output-schema", schemaPath, "--output-last-message", outputPath,
-          "--color", "never", ...(model ? ["--model", model] : []), "-"
-        ];
-        await runProcess(binary, args, prompt, executionDirectory);
-        return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default" };
-      } finally {
-        await fs.rm(temporaryDir, { recursive: true, force: true });
-      }
+      return withCodexCliProcessLock(async () => {
+        const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
+        const schemaPath = path.join(temporaryDir, "output-schema.json");
+        const outputPath = path.join(temporaryDir, "last-message.json");
+        try {
+          await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
+          const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
+          const args = [
+            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "--skip-git-repo-check", "--sandbox", "read-only", "--cd", executionDirectory,
+            "--output-schema", schemaPath, "--output-last-message", outputPath,
+            "--color", "never", ...(model ? ["--model", model] : []), "-"
+          ];
+          await runProcess(binary, args, prompt, executionDirectory);
+          return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default" };
+        } finally {
+          await fs.rm(temporaryDir, { recursive: true, force: true });
+        }
+      });
     }
   };
+}
+
+async function withCodexCliProcessLock<T>(operation: () => Promise<T>): Promise<T> {
+  const lockPath = path.join(os.tmpdir(), `agentflow-codex-cli-${typeof process.getuid === "function" ? process.getuid() : "user"}.lock`);
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const deadline = Date.now() + configuredCodexCliTimeoutMs();
+  let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
+  while (!handle) {
+    try {
+      handle = await fs.open(lockPath, "wx", 0o600);
+      await handle.writeFile(`${JSON.stringify({ token, pid: process.pid, createdAt: Date.now() })}\n`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      try {
+        const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as { pid?: unknown; createdAt?: unknown };
+        const pid = typeof owner.pid === "number" ? owner.pid : 0;
+        const createdAt = typeof owner.createdAt === "number" ? owner.createdAt : 0;
+        let alive = pid > 0;
+        if (alive) {
+          try { process.kill(pid, 0); } catch { alive = false; }
+        }
+        if (!alive || Date.now() - createdAt > configuredCodexCliTimeoutMs() + 60_000) {
+          await fs.unlink(lockPath).catch(() => undefined);
+          continue;
+        }
+      } catch (readError) {
+        if ((readError as NodeJS.ErrnoException).code === "ENOENT") continue;
+      }
+      if (Date.now() >= deadline) throw new Error("Timed out waiting for another Agent Workflow Codex CLI invocation to finish.");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+  }
+  try {
+    return await operation();
+  } finally {
+    await handle.close().catch(() => undefined);
+    try {
+      const owner = JSON.parse(await fs.readFile(lockPath, "utf8")) as { token?: unknown };
+      if (owner.token === token) await fs.unlink(lockPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
 }
 
 export function configuredCodexCliTimeoutMs(): number {
