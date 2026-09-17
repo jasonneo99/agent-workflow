@@ -869,8 +869,8 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
     await client.query("begin");
     try {
       for (const candidate of candidates) {
-        const eligible = await client.query<{ id: string }>(
-          `select wr.id::text
+        const eligible = await client.query<{ id: string; status: WorkflowRunState }>(
+          `select wr.id::text, wr.status
            from workflow_runs wr
            where wr.id = $1::uuid
              and wr.status in ('queued', 'leased', 'running')
@@ -905,6 +905,29 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
         );
         let updated = false;
         if (eligible.rows[0]) {
+          const currentStatus = eligible.rows[0].status;
+          // Reconciliation must preserve the authoritative lifecycle even when
+          // an interrupted worker left a queued/leased parent behind terminal
+          // child tasks. Advance through the missing non-terminal states rather
+          // than attempting the forbidden queued -> completed shortcut.
+          if (candidate.recommendedStatus === "completed" && currentStatus === "queued") {
+            await transitionWorkflowRun(client, {
+              runId: candidate.runId,
+              to: "leased",
+              actor: input.actor ?? "system",
+              reason: "Reconciliation restored the missing parent lease state for terminal child tasks.",
+              idempotencyKey: "stale-run-reconcile:leased"
+            });
+          }
+          if (candidate.recommendedStatus === "completed" && (currentStatus === "queued" || currentStatus === "leased")) {
+            await transitionWorkflowRun(client, {
+              runId: candidate.runId,
+              to: "running",
+              actor: input.actor ?? "system",
+              reason: "Reconciliation restored the missing parent running state for terminal child tasks.",
+              idempotencyKey: "stale-run-reconcile:running"
+            });
+          }
           await transitionWorkflowRun(client, {
             runId: candidate.runId,
             to: candidate.recommendedStatus,

@@ -23,7 +23,7 @@ test("blocked repair preserves governance and truthful terminal semantics", () =
 });
 
 test("learning daemon supervises recent delivery failures without expanding policy", () => {
-  assert.match(source, /autoRepairOneWorkflowRun\(targetProjectDir, target\.mode\)/u);
+  assert.match(source, /autoRepairOneWorkflowRun\(recoveryTarget\.projectDir, recoveryTarget\.mode\)/u);
   assert.match(source, /requeueExpiredWorkflowTaskLeases\(\{/u);
   assert.match(source, /mode !== "apply-approved"/u);
   assert.match(source, /isWithinAutomaticWorkflowRepairWindow\(repairReferenceTime\)/u);

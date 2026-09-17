@@ -16,8 +16,12 @@ test("learning daemon replays review evidence gaps with explicit root-repair lin
   assert.match(cliSource, /workflow_root_repair_replayed/u);
 });
 
+test("learning daemon health-gates one replay after a typed provider outage", () => {
+  assert.match(cliSource, /transientProviderOutage[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+rootRepairKind: "provider-recovered"[\s\S]+workflow_provider_recovery_replayed/u);
+});
+
 test("learning daemon closes every terminal repair with a reusable local lesson", () => {
-  assert.match(cliSource, /learnFromWorkflowRepairs\(targetProjectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
+  assert.match(cliSource, /learnFromWorkflowRepairs\(recoveryTarget\.projectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
   assert.match(cliSource, /actionType: "workflow_repair_learning"/u);
   assert.match(cliSource, /sourceUri: `agentflow:\/\/repair-learning\/\$\{run\.id\}`/u);
   assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks \}\)/u);
@@ -137,7 +141,7 @@ test("automatic repair only covers newly finished runs", () => {
   assert.equal(isWithinAutomaticWorkflowRepairWindow("not-a-date", now), false);
 });
 
-test("automatic repair diagnoses bounded internal failures but leaves provider and authority prerequisites to operators", () => {
+test("automatic repair diagnoses bounded internal failures while retaining provider prerequisite classification", () => {
   assert.match(cliSource, /const recordedFailure = \[\.\.\.details\.receipts\]/u);
   assert.match(cliSource, /const externallyManagedFailure = \/\\b\(\?:auth/u);
   assert.match(cliSource, /const repairableFailure = run\.status === "failed"/u);

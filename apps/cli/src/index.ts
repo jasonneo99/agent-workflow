@@ -4497,6 +4497,16 @@ program
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
         const projectErrors: string[] = [];
         const runFastRecoverySweep = async (): Promise<void> => {
+          // Parent run state and repair supervision are queue-health work, not
+          // learning analysis. Do them first so a slow all-project learning
+          // pass cannot leave completed work shown as queued or actionable
+          // blockers unattended for several minutes.
+          try {
+            staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            projectErrors.push(`${projectDir} stale run reconciliation: ${message}`);
+          }
           for (const recoveryTarget of targets) {
             if (recoveryTarget.mode !== "apply-approved") continue;
             try {
@@ -4525,6 +4535,8 @@ program
                 reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
               });
               blockedRunsAutoHealed += leaseRecovery.affectedRuns;
+              await learnFromWorkflowRepairs(recoveryTarget.projectDir);
+              blockedRunsAutoHealed += await autoRepairOneWorkflowRun(recoveryTarget.projectDir, recoveryTarget.mode);
               await writeStatus(stop ? "stopping" : "running", undefined, undefined, recoveryTarget.projectDir);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
@@ -4576,16 +4588,6 @@ program
             approvalBacklogScanned += update.approvalBacklog.scanned;
             approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
             approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
-            if (target.mode === "apply-approved") {
-              const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
-                projectRootUri: targetProjectDir,
-                actor: "learning-daemon",
-                reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
-              });
-              blockedRunsAutoHealed += leaseRecovery.affectedRuns;
-            }
-            await learnFromWorkflowRepairs(targetProjectDir);
-            blockedRunsAutoHealed += await autoRepairOneWorkflowRun(targetProjectDir, target.mode);
             await notifyOriginatingCodexTask(targetProjectDir);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -4595,7 +4597,7 @@ program
         }
         await runFastRecoverySweep();
         mcpCleanup = await runLearningDaemonMcpCleanup(projectDir);
-        staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
+        staleRunReconciliation ??= await runLearningDaemonStaleRunReconciliation(projectDir);
         await writeStatus(targets.length > 0 && projectErrors.length === targets.length ? "failed" : stop ? "stopping" : "running", lastUpdate, projectErrors.join("\n"), projectDir, {
           proposals: proposalCount,
           inboxItems: inboxCount,
@@ -37332,7 +37334,45 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       hasOpenApproval,
       recordedFailure
     });
-    if (rootRepairAction === "operator-provider" || rootRepairAction === "wait-approval" || rootRepairAction === "none") continue;
+    if (rootRepairAction === "operator-provider") {
+      // Authentication, quota, and configuration failures remain operator
+      // prerequisites. A typed transient outage may be replayed once only after
+      // the exact pinned/default provider reports healthy again.
+      const transientProviderOutage = /\bprovider_outage\b|\bprovider outage\b/u.test(reason);
+      if (!transientProviderOutage) continue;
+      const provider = providerFromEnv(run.providerOverride ?? undefined);
+      const health = provider.check ? await provider.check().catch(() => ({ ready: false, details: [] })) : { ready: false, details: [] };
+      if (!health.ready) continue;
+      const replay = await replayWorkflowRun({
+        sourceRunId: run.id,
+        actor: "learning-daemon",
+        reason: `Provider ${provider.id} recovered after a typed transient outage; replaying the original workflow once.`,
+        preserveCompletedCheckpoints: true,
+        evaluationMetadataPatch: {
+          source: "workflow-root-repair",
+          sourceRunId: run.id,
+          rootRepairKind: "provider-recovered"
+        }
+      });
+      if (!replay) return 0;
+      await recordRunAction({
+        runId: run.id,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_provider_recovery_replayed",
+        target: replay.runId,
+        summary: `Learning daemon verified provider ${provider.id} was healthy and replayed the transient outage once.`,
+        artifactKind: "workflow_root_repair",
+        artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, providerId: provider.id },
+        idempotencyKey: `workflow-provider-recovery-${run.id}-${replay.runId}`
+      });
+      await dismissFailedWorkflowRun({
+        runId: run.id,
+        actor: "learning-daemon",
+        reason: `Superseded by provider-recovery replay ${replay.runId}; immutable history preserved.`
+      });
+      return 1;
+    }
+    if (rootRepairAction === "wait-approval" || rootRepairAction === "none") continue;
     if (rootRepairAction === "replay-original") {
       try {
         await indexProjectForRun({ projectDir, maxFiles: 180, refine: false, forceRefine: false });

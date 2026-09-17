@@ -167,7 +167,7 @@ test("stale terminal run reconciliation only repairs terminal child-task runs", 
   );
   assert.match(
     source,
-    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'leased', 'running', 'failed'\)[\s\S]+'stale_run_reconciled'/u
+    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'leased', 'running', 'failed'\)[\s\S]+to: "leased"[\s\S]+to: "running"[\s\S]+'stale_run_reconciled'/u
   );
 });
 
