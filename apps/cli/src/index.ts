@@ -23417,6 +23417,20 @@ async function runLearningDaemonTick(input: {
   approvalAutopilotOverride?: boolean;
   modelComparisonEnabled?: boolean;
 }): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+  const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
+  const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
+  let approvalAutopilot: ApprovalAutopilotResult = emptyApprovalAutopilotResult(approvalAutopilotMaxRisk);
+  if (input.mode === "apply-approved" && approvalAutopilotEnabled) {
+    await dismissDuplicateBlockedWorkflowRuns(input.projectDir, input.daemonId ?? "learning-daemon");
+    approvalAutopilot = await runApprovalAutopilot({
+      projectRootUri: input.projectDir,
+      limit: 100,
+      maxRisk: approvalAutopilotMaxRisk,
+      execute: true,
+      actor: input.daemonId ?? "learning-daemon",
+      actorRole: "approver"
+    });
+  }
   const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
   await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
@@ -23468,10 +23482,7 @@ async function runLearningDaemonTick(input: {
   const agentImprovementEvalPlan = await buildAgentImprovementEvalPlan(input.projectDir, agentImprovementPatchPlan, "all", input.limit);
   const existingAgentPromotionQueue = await readAgentImprovementPromotionQueue(input.projectDir).catch(() => undefined);
   let agentImprovementPromotionQueue = buildAgentImprovementPromotionQueue(input.projectDir, agentImprovementPatchPlan, agentImprovementEvalPlan, "all", existingAgentPromotionQueue);
-  const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
-  const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
   let autonomousApplication = emptyLearningAutonomousApplicationResult(input.projectDir);
-  let approvalAutopilot: ApprovalAutopilotResult = emptyApprovalAutopilotResult(approvalAutopilotMaxRisk);
   report.failureTriage = await runLearningFailureTriage({
     projectDir: input.projectDir,
     failedRuns: report.failedRuns,
@@ -23508,14 +23519,6 @@ async function runLearningDaemonTick(input: {
     await recordLearningApplicationPlanReceipts(input.projectDir, applicationPlan, "learning-daemon", "apply-approved planning tick");
     autonomousApplication = await applyAutonomousLearningApplicationPlan(input.projectDir, applicationPlan);
     if (approvalAutopilotEnabled) {
-      approvalAutopilot = await runApprovalAutopilot({
-        projectRootUri: input.projectDir,
-        limit: 100,
-        maxRisk: approvalAutopilotMaxRisk,
-        execute: true,
-        actor: input.daemonId ?? "learning-daemon",
-        actorRole: "approver"
-      });
       const maintenanceFiles = approvalAutopilot.items.filter((item) => item.status === "executed" && item.actionType === "file_write").map((item) => item.target);
       const validationCommand = process.env.AGENTFLOW_DAEMON_MAINTENANCE_VALIDATION_COMMAND?.trim();
       if (maintenanceFiles.length && envFlagEnabled(process.env.AGENTFLOW_DAEMON_MAINTENANCE_COMMITS) && validationCommand) {
@@ -36895,6 +36898,46 @@ async function dismissRunSupersededByReceipt(input: {
   if (input.run.status === "blocked" || input.run.status === "failed") {
     await dismissFailedWorkflowRun({ runId: input.run.id, actor: "learning-daemon", reason });
   }
+}
+
+async function dismissDuplicateBlockedWorkflowRuns(projectDir: string, actor: string): Promise<number> {
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
+  const terminal = runs
+    .filter((run) => !run.dismissed && (run.status === "blocked" || run.status === "failed"))
+    .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
+  const newestByContract = new Map<string, WorkflowRunStatus>();
+  let dismissed = 0;
+  for (const run of terminal) {
+    const contract = `${run.workflowId}\u0000${run.task.trim()}`;
+    const newest = newestByContract.get(contract);
+    if (!newest) {
+      newestByContract.set(contract, run);
+      continue;
+    }
+    const reason = `Superseded by newer equivalent run ${newest.id}; duplicate self-healing work was not executed.`;
+    const approvals = await listActionApprovals({ runId: run.id, status: "all", limit: 500 });
+    for (const approval of approvals) {
+      if (approval.status === "pending") {
+        await decideActionApproval({
+          approvalId: approval.id,
+          decision: "rejected",
+          actor,
+          actorRole: "approver",
+          note: reason
+        });
+      } else if (approval.status === "approved" && !approval.executedAt) {
+        await markActionApprovalExecution({
+          approvalId: approval.id,
+          status: "dismissed",
+          actor,
+          actorRole: "operator",
+          summary: reason
+        });
+      }
+    }
+    if (await dismissFailedWorkflowRun({ runId: run.id, actor, reason })) dismissed += 1;
+  }
+  return dismissed;
 }
 
 async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
