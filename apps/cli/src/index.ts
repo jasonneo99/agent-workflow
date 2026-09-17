@@ -40,6 +40,7 @@ import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -4531,6 +4532,7 @@ program
               blockedRunsAutoHealed += leaseRecovery.affectedRuns;
             }
             blockedRunsAutoHealed += await autoRepairOneWorkflowRun(targetProjectDir, target.mode);
+            await notifyOriginatingCodexTask(targetProjectDir);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${targetProjectDir}: ${message}`);
@@ -36628,7 +36630,7 @@ async function processDashboardQueueAction(input: {
       sourceMaxFiles: "180",
       includeExactSourceExcerpts: true,
       preferImplementationSources: true,
-      evaluationMetadata: { source: "blocked-run-repair", sourceRunId: runId, actor: repairActor }
+      evaluationMetadata: { ...inheritedCodexOrigin(details.run.evaluationMetadata), source: "blocked-run-repair", sourceRunId: runId, actor: repairActor }
     });
     if (!queued.ok) return { ok: false, error: queued.error };
     await recordRunAction({
@@ -36843,7 +36845,7 @@ async function queueSupervisedWorkflowRepair(input: {
     sourceMaxFiles: "180",
     includeExactSourceExcerpts: true,
     preferImplementationSources: true,
-    evaluationMetadata: { source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor }
+    evaluationMetadata: { ...inheritedCodexOrigin(input.run.evaluationMetadata), source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor }
   });
   if (!queued.ok) return false;
   await recordRunAction({
@@ -36958,6 +36960,97 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       actor: "learning-daemon"
     });
     return repaired ? 1 : 0;
+  }
+  return 0;
+}
+
+async function deliverCodexWorkflowCallback(input: {
+  threadId: string;
+  projectDir: string;
+  prompt: string;
+}): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      process.env.CODEX_CLI_PATH?.trim() || "codex",
+      ["exec", "resume", "--all", input.threadId, input.prompt],
+      { cwd: input.projectDir, env: process.env, timeout: 90_000, maxBuffer: 1024 * 1024 },
+      (error) => resolve(!error)
+    );
+  });
+}
+
+async function notifyOriginatingCodexTask(projectDir: string): Promise<number> {
+  const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 200 });
+  const originated = runs.filter((run) => !run.dismissed && codexThreadId(run.evaluationMetadata));
+
+  for (const run of originated) {
+    const threadId = codexThreadId(run.evaluationMetadata);
+    if (!threadId) continue;
+    const details = await getWorkflowRunDetails(run.id);
+    const deliveredTargets = new Set(details.receipts
+      .filter((receipt) => receipt.actionType === CODEX_CALLBACK_RECEIPT)
+      .map((receipt) => receipt.target));
+    const approvals = await listActionApprovals({ runId: run.id, status: "pending", limit: 20 });
+    const approval = approvals.find((item) => !deliveredTargets.has(`approval:${item.id}`)
+      && isWithinAutomaticWorkflowRepairWindow(item.createdAt));
+    if (approval) {
+      const target = `approval:${approval.id}`;
+      const delivered = await deliverCodexWorkflowCallback({
+        threadId,
+        projectDir,
+        prompt: approvalCallbackPrompt({
+          runId: run.id,
+          workflowId: run.workflowId,
+          projectName: run.projectName,
+          approvalId: approval.id,
+          actionType: approval.actionType,
+          target: approval.target,
+          rationale: approval.rationale
+        })
+      });
+      if (!delivered) return 0;
+      await recordRunAction({
+        runId: run.id,
+        agentId: "workflow-orchestrator",
+        actionType: CODEX_CALLBACK_RECEIPT,
+        target,
+        summary: "Delivered an approval request to the originating Codex task.",
+        artifactKind: "codex_attention_delivery",
+        artifactContent: { kind: "approval", approvalId: approval.id, threadId },
+        idempotencyKey: `codex-approval-${approval.id}`
+      });
+      return 1;
+    }
+
+    if (!["blocked", "failed"].includes(run.status) || !run.finishedAt
+      || !isWithinAutomaticWorkflowRepairWindow(run.finishedAt)
+      || deliveredTargets.has(`failure:${run.status}`)
+      || approvals.length > 0
+      || details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued" || receipt.actionType === "workflow_supervisor_repair_queued")) continue;
+    const target = `failure:${run.status}`;
+    const delivered = await deliverCodexWorkflowCallback({
+      threadId,
+      projectDir,
+      prompt: failureCallbackPrompt({
+        runId: run.id,
+        workflowId: run.workflowId,
+        projectName: run.projectName,
+        status: run.status,
+        task: run.task.slice(0, 2000)
+      })
+    });
+    if (!delivered) return 0;
+    await recordRunAction({
+      runId: run.id,
+      agentId: "workflow-orchestrator",
+      actionType: CODEX_CALLBACK_RECEIPT,
+      target,
+      summary: "Delivered a workflow failure to the originating Codex task.",
+      artifactKind: "codex_attention_delivery",
+      artifactContent: { kind: "failure", status: run.status, threadId },
+      idempotencyKey: `codex-failure-${run.id}-${run.status}`
+    });
+    return 1;
   }
   return 0;
 }
@@ -43937,7 +44030,7 @@ async function queueWorkflow(input: {
     constructionRationale: workflow.dynamic?.construction_rationale,
     modelTierOverride: input.modelTierOverride,
     providerOverride: input.providerOverride,
-    evaluationMetadata: input.evaluationMetadata,
+    evaluationMetadata: attachCodexOrigin(input.evaluationMetadata),
     compiledBrief: brief,
     compiledBriefMetadata: {
       runInputSnapshot

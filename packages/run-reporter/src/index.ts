@@ -2160,7 +2160,7 @@ function formatActionRejection(artifact: ArtifactStatus): string {
 
 function buildRedactedRunExport(input: RunExportInput): RunExportInput {
   const projectRoot = input.run.projectRootUri;
-  const redactedRun = redactRecord(input.run, projectRoot) as WorkflowRunStatus;
+  const redactedRun = redactRecord(input.run, projectRoot, new Set(["codexThreadId", "threadId"])) as WorkflowRunStatus;
   return {
     ...input,
     run: {
@@ -2207,7 +2207,9 @@ function scrubArtifactContent(kind: string, content: Record<string, unknown>, pr
     "tenant",
     "tenantId",
     "customer",
-    "customerId"
+    "customerId",
+    "codexThreadId",
+    "threadId"
   ]);
 
   return redactRecord(content, projectRoot, highRiskKeys) as Record<string, unknown>;

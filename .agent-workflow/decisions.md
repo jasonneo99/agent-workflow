@@ -34,3 +34,7 @@
 - Automatic workflow repair is a live safety net, not a historical backlog
   processor. Only runs finished within the last 30 minutes are eligible; older
   runs require explicit review and delivery proof before suppression.
+- Codex-originated workflow runs retain a local callback task ID. New pending
+  approvals and unrecovered failures are delivered back to that task with a
+  durable deduplication receipt; callbacks may ask for a decision but cannot
+  manufacture approval or execute an action.

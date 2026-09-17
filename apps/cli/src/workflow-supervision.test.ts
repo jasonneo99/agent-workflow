@@ -37,9 +37,9 @@ test("ordinary completed maintenance does not inherit the strict build delivery 
 });
 
 test("installed fan delivery receipt supersedes an older blocked build", () => {
-  const receipt = findSupersedingDeliveryReceipt("BUILD and DELIVER the installable Jarvis macOS fan telemetry product", [{
+  const receipt = findSupersedingDeliveryReceipt("BUILD and DELIVER the installable desktop fan telemetry collector package", [{
     path: ".agent-workflow/receipts/fan-telemetry-delivery.md",
-    content: "# Fan telemetry delivery\nProduct: installable Jarvis macOS fan telemetry\n## Completed\nCollector and package delivered.\n## Verification\n87 tests passed.\n## Installed verification\nService installed."
+    content: "# Fan telemetry delivery\nProduct: installable desktop fan telemetry collector package\n## Completed\nCollector and package delivered.\n## Verification\n87 tests passed.\n## Installed verification\nService installed."
   }]);
   assert.equal(receipt?.path, ".agent-workflow/receipts/fan-telemetry-delivery.md");
 });
@@ -61,7 +61,7 @@ test("plans and inspection-only receipts cannot suppress a required repair", () 
 });
 
 test("generic completion receipts cannot suppress unrelated delivery work", () => {
-  assert.equal(findSupersedingDeliveryReceipt("Build and deliver the JobSearchOS recruiter login interface", [{
+  assert.equal(findSupersedingDeliveryReceipt("Build and deliver the recruiting application login interface", [{
     path: ".agent-workflow/receipts/milestone-release-complete.md",
     content: "# Milestone release\n## Completed\nThe project milestone was delivered.\n## Verification\nRelease checks passed and the package was verified."
   }]), null);

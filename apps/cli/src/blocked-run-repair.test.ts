@@ -33,6 +33,8 @@ test("learning daemon supervises recent delivery failures without expanding poli
   assert.match(source, /findSupersedingDeliveryReceipt\(run\.task, deliveryReceipts\)/u);
   assert.match(source, /!item\.dismissed/u);
   assert.match(source, /workflow_supervisor_repair_suppressed/u);
+  assert.match(source, /notifyOriginatingCodexTask\(targetProjectDir\)/u);
+  assert.match(source, /CODEX_CALLBACK_RECEIPT/u);
   assert.match(source, /source: "workflow-supervisor-repair"/u);
   assert.match(source, /do not edit policy to grant yourself authority/u);
   assert.match(source, /preferImplementationSources: true/u);

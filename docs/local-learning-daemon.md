@@ -669,6 +669,16 @@ with an exact approval or policy requirement instead of becoming false success.
 Older history is an audit backlog and requires explicit operator review; the
 daemon does not walk backward through it and manufacture new work.
 
+Runs launched from Codex retain the originating Codex task identifier in local
+run metadata. When a new approval remains pending or a new failure cannot be
+self-healed, the daemon resumes that exact Codex task with a bounded callback.
+Approval callbacks instruct Codex to ask the user for approve-and-execute,
+approve-only, reject, or dismiss; they never grant approval themselves. Failure
+callbacks ask whether Codex should inspect and repair, retry, or dismiss the
+run. Successful callback delivery is recorded as an idempotent
+`codex_attention_delivered` receipt, so daemon polling cannot repeatedly message
+the same task. Callback identifiers are removed from scrubbed run exports.
+
 An operator may also record a durable `workflow_supervisor_repair_suppressed`
 receipt on the original source run after reviewing a stale or externally
 superseded lineage. The supervisor treats that original receipt as a permanent
