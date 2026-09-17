@@ -6,6 +6,10 @@ import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
+test("queueing hydrates an empty project index before compiling evidence", () => {
+  assert.match(cliSource, /if \(sourceSummaries\.length === 0\)[\s\S]+indexProjectForRun[\s\S]+sourceSummaries = await loadSourceSummaries/u);
+});
+
 test("completed delivery without product writes is automatically repairable", () => {
   assert.match(workflowDeliveryRepairReason(run, [{ stageId: "implement", agentId: "implementation-agent", summary: "Read-only discovery complete." }]) ?? "", /without governed product-write evidence/iu);
 });

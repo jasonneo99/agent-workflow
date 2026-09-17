@@ -60,6 +60,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- An implementation or finalizer stage must return blocked when required product changes or verification are still absent and no policy-allowed requested action will produce them.",
     "- Prior receipts and artifacts are historical evidence. Words such as blocked, failed, or could not inside a completed prior-stage artifact do not make the current stage blocked.",
     "- Do not claim project context is missing when the compiled brief or prior artifacts contain project-specific evidence. Use the available evidence and name any narrow verification gap as a finding.",
+    "- Review, audit, and advisory stages must report missing implementation proof or incomplete acceptance evidence as findings with recommended follow-up. Those evidence gaps do not block the review itself; block only for a real unavailable authority, external dependency, approval, or required input that prevents producing any useful review result.",
     "- A terminal blocker must identify the specific unavailable authority, external dependency, approval, or required input and explain why no allowed action or existing artifact can resolve it.",
     "",
     "Return JSON with:",
@@ -168,9 +169,12 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
 }
 
 export function buildStageExecutionOutput(input: StageExecutionInput, parsed: StageJsonArtifact, provider: Record<string, unknown>): StageExecutionOutput {
+  const evidenceGapFinding = reviewEvidenceGapIsFinding(input, parsed);
+  const outcome = evidenceGapFinding ? "completed" : parsed.outcome;
+  const blockedReason = evidenceGapFinding ? "" : parsed.blockedReason;
   return {
-    outcome: parsed.outcome,
-    blockedReason: parsed.blockedReason || undefined,
+    outcome,
+    blockedReason: blockedReason || undefined,
     summary: parsed.summary,
     requestedCommands: parsed.requestedCommands,
     requestedFileWrites: parsed.requestedFileWrites,
@@ -186,13 +190,29 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
       stageGoal: input.stageGoal,
       findings: parsed.findings,
       nextAction: parsed.nextAction,
-      outcome: parsed.outcome,
-      blockedReason: parsed.blockedReason,
+      outcome,
+      blockedReason,
+      evidenceGapReclassifiedAsFinding: evidenceGapFinding,
       requestedCommands: parsed.requestedCommands,
       requestedFileWrites: parsed.requestedFileWrites,
       summary: parsed.summary
     }
   };
+}
+
+export function reviewEvidenceGapIsFinding(input: StageExecutionInput, parsed: StageJsonArtifact): boolean {
+  if (parsed.outcome !== "blocked") return false;
+  const reviewStage = input.workflowId === "review-pr"
+    || input.workflowId === "security-audit"
+    || input.workflowId === "accessibility-review"
+    || input.workflowId.startsWith("agent-task-ux-reviewer")
+    || ["ux-reviewer", "security-reviewer", "pr-preparer"].includes(input.agentId)
+    || /(?:^|[-_])(?:review|audit|inspect)(?:$|[-_])/iu.test(input.stageId);
+  if (!reviewStage) return false;
+  const reason = `${parsed.blockedReason} ${parsed.summary}`;
+  const evidenceGap = /(?:missing|insufficient|lacks?|no) (?:implementation |project |product |acceptance |verification )?(?:evidence|proof|context)|evidence .* (?:missing|insufficient|absent|unproven)|implementation .* (?:incomplete|absent|unproven)/iu.test(reason);
+  const realExternalBlocker = /(?:approval|permission|credential|authentication|quota|provider outage|network unavailable|external dependency|authority) (?:is |was )?(?:required|missing|unavailable|denied|exhausted)/iu.test(reason);
+  return evidenceGap && !realExternalBlocker;
 }
 
 export function normalizeFileSummaryArtifact(value: Partial<FileSummaryJsonArtifact>): FileSummaryJsonArtifact {

@@ -44331,7 +44331,7 @@ async function queueWorkflow(input: {
   }
 
   const selectedAgentList = [...selectedAgents.values()];
-  const sourceSummaries = await loadSourceSummaries({
+  let sourceSummaries = await loadSourceSummaries({
     projectDir,
     project,
     workflow,
@@ -44341,6 +44341,24 @@ async function queueWorkflow(input: {
     sourceMaxFiles: input.sourceMaxFiles,
     preferImplementationSources: input.preferImplementationSources
   });
+  if (sourceSummaries.length === 0) {
+    await indexProjectForRun({
+      projectDir,
+      maxFiles: parsePositiveInteger(input.sourceMaxFiles || "120", 120),
+      refine: false,
+      forceRefine: false
+    });
+    sourceSummaries = await loadSourceSummaries({
+      projectDir,
+      project,
+      workflow,
+      agents: selectedAgentList,
+      task: input.task,
+      sourceTokenBudget: input.sourceTokenBudget,
+      sourceMaxFiles: input.sourceMaxFiles,
+      preferImplementationSources: input.preferImplementationSources
+    });
+  }
   const exactSourceExcerpts = input.includeExactSourceExcerpts
     ? await loadExactSourceExcerpts(projectDir, sourceSummaries)
     : [];

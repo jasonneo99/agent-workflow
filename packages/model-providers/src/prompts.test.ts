@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { buildStagePrompt, normalizeStageArtifact } from "./prompts.js";
+import { buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding } from "./prompts.js";
 
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
 
@@ -32,6 +32,49 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
   assert.match(prompt, /Edit packages\/runtime\.ts/u);
   assert.match(prompt, /outcome: completed when the stage goal was achieved/u);
   assert.match(prompt, /PINNED KEYWORD CONTRACT: BUILD means create, verify, package, and deliver a usable product/u);
+  assert.match(prompt, /evidence gaps do not block the review itself/u);
+});
+
+test("review evidence gaps become findings while real authority blockers remain blocked", () => {
+  const reviewInput = {
+    runId: "run-1",
+    taskId: "task-1",
+    projectConfig: project,
+    workflowId: "review-pr",
+    workflowTask: "Review the implementation.",
+    stageId: "specialist-review",
+    agentId: "ux-reviewer",
+    agentName: "UX Reviewer",
+    agentPrompt: "Review the product.",
+    stageGoal: "Report prioritized findings.",
+    compiledBrief: "Project evidence.",
+    priorReceipts: []
+  };
+  const evidenceGap = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "Missing implementation evidence for exact recovery and draft retention.",
+    summary: "Production acceptance remains unproven.",
+    findings: ["Exact recovery proof is absent."],
+    nextAction: "Add a focused recovery test.",
+    requestedCommands: [],
+    requestedFileWrites: []
+  });
+  assert.equal(reviewEvidenceGapIsFinding(reviewInput, evidenceGap), true);
+  const output = buildStageExecutionOutput(reviewInput, evidenceGap, { provider: "test" });
+  assert.equal(output.outcome, "completed");
+  assert.equal(output.blockedReason, undefined);
+  assert.equal(output.artifact.evidenceGapReclassifiedAsFinding, true);
+
+  const authorityBlocker = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "Deployment approval is required and unavailable.",
+    summary: "Cannot inspect the protected deployment.",
+    findings: [],
+    nextAction: "Request approval.",
+    requestedCommands: [],
+    requestedFileWrites: []
+  });
+  assert.equal(reviewEvidenceGapIsFinding(reviewInput, authorityBlocker), false);
 });
 
 test("stage prompt reserves a bounded section for named commit evidence", () => {
