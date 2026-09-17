@@ -14674,7 +14674,7 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
         registeredProjectRootUri: summary.rootUri,
         task: goal,
         policyProfile: project.execution.policy_profile,
-        evaluationMetadata: { source: "server-orchestration", operationId, idempotencyKey, actor, actorRole, projectId: summary.id }
+        evaluationMetadata: { source: "server-orchestration", operationId, idempotencyKey, actor, actorRole, projectId: summary.id, executionProfile: "adaptive" }
       });
       if (queued.ok) {
         runId = queued.run.runId;
@@ -14685,7 +14685,7 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
           target: summary.id,
           summary: `Accepted one-goal orchestration request for ${summary.name}.`,
           artifactKind: "server_orchestration_request",
-          artifactContent: { operationId, projectId: summary.id, projectName: summary.name, goalHash: stableHash(goal), actor, actorRole, workflowId: dynamic.id, receivedAt: new Date().toISOString() },
+          artifactContent: { operationId, projectId: summary.id, projectName: summary.name, goalHash: stableHash(goal), actor, actorRole, workflowId: dynamic.id, executionProfile: "adaptive", receivedAt: new Date().toISOString() },
           idempotencyKey: `server-orchestration-${stableHash(idempotencyKey).slice(0, 24)}`
         });
       } else {
@@ -14774,6 +14774,7 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
 async function processServerQueueRequest(request: http.IncomingMessage, body: unknown, limits = serverRequestLimits()): Promise<ServerQueueReport> {
   const payload = objectValue(body);
   const executeRequested = payload.execute === true;
+  const requestedExecutionProfile = stringValue(payload.executionProfile) === "full" ? "full" : "adaptive";
   const routePreview = await loadServerRoutePreview({
     projectId: stringValue(payload.projectId) ?? "",
     workflowId: stringValue(payload.workflow) ?? stringValue(payload.workflowId) ?? "",
@@ -14793,6 +14794,13 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
   });
   const checks: ServerQueueReport["checks"] = [
     ...routePreview.checks,
+    {
+      label: "Execution profile",
+      status: "pass",
+      detail: requestedExecutionProfile === "adaptive"
+        ? "Adaptive execution selected; the server will construct the smallest policy-valid workflow graph."
+        : "Full execution explicitly selected; the named exhaustive workflow will be preserved."
+    },
     {
       label: "Authenticated mutation",
       status: auth.ok ? "pass" : "fail",
@@ -14835,10 +14843,19 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
     && clientProvidedIdempotency
     && rateLimit.ok;
   if (canQueue && routePreview.route) {
+    const configuredProject = requestedExecutionProfile === "adaptive" ? await loadProjectConfig(routePreview.route.projectRootUri) : null;
+    const adaptiveWorkflow = configuredProject ? constructDynamicWorkflow({
+      goal: routePreview.route.task,
+      project: configuredProject,
+      agents: await loadAgentsForProject(routePreview.route.projectRootUri),
+      executionProfile: "adaptive"
+    }) : null;
+    const selectedWorkflowId = adaptiveWorkflow?.id ?? routePreview.route.workflowId;
+    if (adaptiveWorkflow) await seedRegistry([], [{ path: `runtime/${adaptiveWorkflow.id}.yaml`, value: adaptiveWorkflow }]);
     const existingRun = await findServerQueueRunByIdempotency({
       projectId: routePreview.route.projectId,
       projectRootUri: routePreview.route.projectRootUri,
-      workflowId: routePreview.route.workflowId,
+      workflowId: selectedWorkflowId,
       idempotencyKey: routePreview.envelope.idempotencyKey
     });
     if (existingRun) {
@@ -14859,7 +14876,8 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
       });
     } else {
       const queued = await queueWorkflow({
-        workflowId: routePreview.route.workflowId,
+        workflowId: selectedWorkflowId,
+        workflowOverride: adaptiveWorkflow ?? undefined,
         projectPath: routePreview.route.projectRootUri,
         task: routePreview.route.task,
         policyProfile: routePreview.route.policyProfile,
@@ -14869,7 +14887,9 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
           idempotencyKey: routePreview.envelope.idempotencyKey,
           actor: routePreview.envelope.actor,
           actorRole: routePreview.envelope.actorRole,
-          authMethod: auth.method
+          authMethod: auth.method,
+          executionProfile: adaptiveWorkflow ? "adaptive" : "full",
+          requestedWorkflowId: routePreview.route.workflowId
         }
       });
       if (queued.ok) {
@@ -14887,7 +14907,9 @@ async function processServerQueueRequest(request: http.IncomingMessage, body: un
             actorRole: routePreview.envelope.actorRole,
             authMethod: auth.method,
             projectId: routePreview.route.projectId,
-            workflowId: routePreview.route.workflowId,
+            workflowId: queued.workflow.id,
+            requestedWorkflowId: routePreview.route.workflowId,
+            executionProfile: adaptiveWorkflow ? "adaptive" : "full",
             policyProfile: routePreview.route.policyProfile,
             receivedAt: new Date().toISOString()
           },

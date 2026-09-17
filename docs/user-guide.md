@@ -147,6 +147,10 @@ auth method, project id, workflow id, and idempotency details as run receipts;
 repeat requests with the same idempotency key reuse the existing run. The queue
 endpoint also enforces `AGENTFLOW_SERVER_MAX_BODY_BYTES` and
 `AGENTFLOW_SERVER_RATE_LIMIT_PER_MINUTE` before queueing.
+Assistant requests receive adaptive execution on both the preferred orchestration
+endpoint and the legacy named-workflow queue endpoint. The compatibility path
+records the originally requested workflow id alongside the selected adaptive
+workflow id; `executionProfile: "full"` is the explicit exhaustive-mode opt-out.
 `server-approval-preview` and `/api/server-approval-preview` provide the same
 dry-run contract for future approval decisions and action execution. They check
 registered project ownership, actor role capability, separation of duties,

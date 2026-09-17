@@ -619,6 +619,11 @@ provides an idempotency key, and the request body sets `execute=true`.
 
 Successful queue mutations write a `server_queue_request` receipt. Repeated
 requests with the same idempotency key reuse the existing workflow run.
+Assistant callers are compatibility-upgraded to the same adaptive dynamic
+execution used by `/api/server-orchestrations`, even when an older client supplies
+a predefined workflow id. The receipt preserves both the requested workflow and
+the selected adaptive workflow. Send `executionProfile: "full"` only when the
+named exhaustive workflow is intentionally required.
 
 Two lightweight server guardrails are enforced before queueing:
 

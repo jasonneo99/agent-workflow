@@ -12,6 +12,13 @@ test("server orchestration accepts one goal and queues one dynamic lifecycle", (
   assert.match(source, /projectRootUri: input\.registeredProjectRootUri \?\? projectDir/u);
   assert.match(source, /actionType: "server_orchestration_requested"/u);
   assert.match(source, /source: "server-orchestration"/u);
+  assert.match(source, /executionProfile: "adaptive"/u);
+});
+
+test("legacy server queue requests default to adaptive execution", () => {
+  assert.match(source, /const requestedExecutionProfile = stringValue\(payload\.executionProfile\) === "full" \? "full" : "adaptive"/u);
+  assert.match(source, /workflowOverride: adaptiveWorkflow \?\? undefined/u);
+  assert.match(source, /requestedWorkflowId: routePreview\.route\.workflowId/u);
 });
 
 test("orchestration status propagates blocked runs to the aggregate", () => {
