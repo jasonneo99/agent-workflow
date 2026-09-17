@@ -6171,7 +6171,7 @@ program
   .option("--watch", "keep polling for queued workflow tasks")
   .option("--interval-ms <number>", "watch polling interval in milliseconds", "2000")
   .option("--worker-id <id>", "stable worker identity for leases and dashboard visibility")
-  .option("--lease-seconds <number>", "running task lease duration in seconds", "900")
+  .option("--lease-seconds <number>", "renewable running-task lease duration in seconds", "120")
   .option("-p, --project <dir>", "only claim queued tasks for one project root")
   .option("--all-projects", "use project worker-pool defaults without restricting queue claims to that project")
   .option("--concurrency <number>", "maximum tasks this worker may execute at the same time", "1")
@@ -6198,7 +6198,7 @@ program
       return;
     }
     const workerId = normalizeWorkerId(cliOptionValue(options.workerId, ["--worker-id"], workerDefaults.workerId));
-    const leaseSeconds = Number.parseInt(cliOptionValue(options.leaseSeconds, ["--lease-seconds"], String(workerDefaults.leaseSeconds ?? 900)), 10);
+    const leaseSeconds = Number.parseInt(cliOptionValue(options.leaseSeconds, ["--lease-seconds"], String(workerDefaults.leaseSeconds ?? 120)), 10);
     if (!Number.isFinite(leaseSeconds) || leaseSeconds < 30) {
       console.error("--lease-seconds must be an integer >= 30");
       process.exitCode = 1;
@@ -45367,7 +45367,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         worker_id: "local-dev",
         limit: 6,
         concurrency: 1,
-        lease_seconds: 900,
+        lease_seconds: 120,
         interval_ms: 2000,
         project_scoped: true,
         default_profile: "local",

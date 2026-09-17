@@ -111,7 +111,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
     let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     try {
       await startWorkflowTask({ taskId: task.taskId, runId: task.runId, workerId: task.workerId!, fencingToken: task.fencingToken });
-      const leaseSeconds = Math.max(30, Math.min(3600, options?.leaseSeconds ?? 900));
+      const leaseSeconds = Math.max(30, Math.min(3600, options?.leaseSeconds ?? 120));
       let leaseLost = false;
       leaseHeartbeat = setInterval(() => {
         void renewWorkflowTaskLease({

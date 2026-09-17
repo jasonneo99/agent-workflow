@@ -445,7 +445,7 @@ async function loadWorkerLanes() {
       projectScoped: false,
       limit: positiveNumber(workerLimit, 6),
       concurrency: boundedPositiveNumber(workerConcurrency, 1, 16),
-      leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "900", 10), 900),
+      leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "120", 10), 120),
       intervalMs: positiveNumber(workerIntervalMs, 2000),
       heartbeatPath: workerHeartbeatPath
     }];
@@ -470,7 +470,7 @@ async function loadWorkerLanes() {
         projectScoped,
         limit: positiveNumber(numberValue(lane.limit) ?? numberValue(profile.limit) ?? numberValue(pool.limit) ?? workerLimit, 6),
         concurrency: boundedPositiveNumber(numberValue(lane.concurrency) ?? numberValue(profile.concurrency) ?? numberValue(pool.concurrency) ?? workerConcurrency, 1, 16),
-        leaseSeconds: positiveNumber(numberValue(lane.lease_seconds) ?? numberValue(profile.lease_seconds) ?? numberValue(pool.lease_seconds) ?? 900, 900),
+        leaseSeconds: positiveNumber(numberValue(lane.lease_seconds) ?? numberValue(profile.lease_seconds) ?? numberValue(pool.lease_seconds) ?? 120, 120),
         intervalMs,
         heartbeatPath: laneHeartbeatPath(laneWorkerId, index)
       };
@@ -484,7 +484,7 @@ async function loadWorkerLanes() {
       projectScoped: true,
       limit: positiveNumber(workerLimit, 6),
       concurrency: boundedPositiveNumber(workerConcurrency, 1, 16),
-      leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "900", 10), 900),
+      leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "120", 10), 120),
       intervalMs: positiveNumber(workerIntervalMs, 2000),
       heartbeatPath: workerHeartbeatPath
     }];

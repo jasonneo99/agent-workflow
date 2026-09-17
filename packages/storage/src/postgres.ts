@@ -1857,7 +1857,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
     await client.query("begin");
     try {
       const workerId = input?.workerId?.trim() || `worker-${process.pid}`;
-      const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
+      const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 120));
       const projectRootUri = input?.projectRootUri?.trim() || null;
       const providerIds = input?.providerIds?.length ? [...new Set(input.providerIds)] : null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
@@ -2063,7 +2063,7 @@ export async function renewWorkflowTaskLease(input: {
   fencingToken: string;
   leaseSeconds?: number;
 }): Promise<boolean> {
-  const leaseSeconds = Math.max(30, Math.min(3600, input.leaseSeconds ?? 900));
+  const leaseSeconds = Math.max(30, Math.min(3600, input.leaseSeconds ?? 120));
   return withClient(async (client) => {
     await client.query("begin");
     try {

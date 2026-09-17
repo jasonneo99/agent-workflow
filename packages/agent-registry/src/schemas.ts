@@ -182,12 +182,12 @@ const workerPoolSchema = z.object({
   worker_id: z.string().min(1).optional(),
   limit: z.number().int().positive().max(100).default(6),
   concurrency: z.number().int().positive().max(16).default(1),
-  lease_seconds: z.number().int().min(30).max(3600).default(900),
+  lease_seconds: z.number().int().min(30).max(3600).default(120),
   interval_ms: z.number().int().min(250).default(2000),
   project_scoped: z.boolean().default(true),
   default_profile: z.string().min(1).default("local"),
   profiles: z.record(z.string(), workerPoolProfileSchema).default({})
-}).default({ limit: 6, concurrency: 1, lease_seconds: 900, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
+}).default({ limit: 6, concurrency: 1, lease_seconds: 120, interval_ms: 2000, project_scoped: true, default_profile: "local", profiles: {} });
 
 const executorAdapterRegistrationSchema = z.object({
   type: z.literal("ssh-exact-revision"),

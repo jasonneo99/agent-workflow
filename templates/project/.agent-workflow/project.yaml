@@ -46,7 +46,7 @@ execution:
     worker_id: local-dev
     limit: 6
     concurrency: 1
-    lease_seconds: 900
+    lease_seconds: 120
     interval_ms: 2000
     project_scoped: true
     default_profile: local
