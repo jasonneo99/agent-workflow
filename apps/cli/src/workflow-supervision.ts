@@ -24,6 +24,15 @@ const DELIVERY_WORD = /\b(?:build|implement|create|develop|deliver|ship|install|
 const COMPLETION_CONTRACT = /\b(?:build|deliver|ship|install)\b/iu;
 const IMPLEMENTATION_STAGE = /(?:^|[-_])(?:implement(?:ation)?|backend|frontend|database|fix)(?:$|[-_])/iu;
 const VERIFICATION_STAGE = /(?:^|[-_])(?:verify|test|validation)(?:$|[-_])/iu;
+const PRODUCT_DELIVERY_WORKFLOWS = new Set([
+  "accessibility-review",
+  "build-feature",
+  "data-migration",
+  "debug-failure",
+  "dependency-upgrade",
+  "performance-investigation",
+  "wide-open-automation"
+]);
 export const AUTOMATIC_WORKFLOW_REPAIR_WINDOW_MS = 30 * 60 * 1000;
 const RECEIPT_STOP_WORDS = new Set([
   "about", "after", "against", "also", "before", "build", "completed", "create", "deliver", "from", "have", "implement", "into", "local", "original", "preserve", "product", "project", "should", "tests", "that", "their", "these", "this", "through", "verify", "while", "with", "workflow"
@@ -68,6 +77,11 @@ export function workflowDeliveryRepairReason(
   run: SupervisedRun,
   outputs: SupervisedStageArtifact[]
 ): string | null {
+  // Auxiliary workflows can carry the original delivery task text, but their
+  // contract is review, context, or coordination rather than product writes.
+  // Supervising them as deliveries creates repair loops for correctly scoped
+  // completions such as maintain-context and review-pr.
+  if (!PRODUCT_DELIVERY_WORKFLOWS.has(run.workflowId)) return null;
   if (!DELIVERY_WORD.test(run.task)) return null;
   if (String(run.evaluationMetadata?.source ?? "") === "workflow-supervisor-repair") return null;
   if (run.status === "completed" && run.workflowId !== "build-feature" && !COMPLETION_CONTRACT.test(run.task)) return null;

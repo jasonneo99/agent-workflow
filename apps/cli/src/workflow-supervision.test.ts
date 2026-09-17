@@ -36,6 +36,12 @@ test("ordinary completed maintenance does not inherit the strict build delivery 
   assert.equal(workflowDeliveryRepairReason({ workflowId: "maintain-context", task: "Fix stale context metadata", status: "completed" }, []), null);
 });
 
+test("auxiliary workflows do not inherit delivery supervision from the original task text", () => {
+  const task = "Build a local project map and implement typed memory records";
+  assert.equal(workflowDeliveryRepairReason({ workflowId: "maintain-context", task, status: "completed" }, []), null);
+  assert.equal(workflowDeliveryRepairReason({ workflowId: "review-pr", task, status: "completed" }, []), null);
+});
+
 test("installed fan delivery receipt supersedes an older blocked build", () => {
   const receipt = findSupersedingDeliveryReceipt("BUILD and DELIVER the installable desktop fan telemetry collector package", [{
     path: ".agent-workflow/receipts/fan-telemetry-delivery.md",
