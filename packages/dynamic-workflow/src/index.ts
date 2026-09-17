@@ -69,8 +69,68 @@ export type ConstructDynamicWorkflowInput = {
   project: ProjectConfig;
   agents?: AgentCard[];
   changes?: DynamicPlanChanges;
+  executionProfile?: "full" | "adaptive";
   now?: string;
 };
+
+export type AdaptiveExecutionPlan = {
+  complexity: "simple" | "medium" | "complex";
+  latencyBudgetMs: number;
+  targetDirectRatio: number;
+  changes: DynamicPlanChanges;
+  rationale: string[];
+};
+
+const HIGH_RISK_GOAL = /\b(?:auth(?:entication|orization)?|permission|security|vulnerability|migration|schema|database|deploy|release|payment|billing|secret|credential|production)\b/iu;
+const BROAD_SCOPE_GOAL = /\b(?:cohesive|across|end[- ]to[- ]end|multiple|all|roadmap|platform|architecture|frontend|backend)\b/iu;
+
+export function recommendAdaptiveExecution(goal: string, archetype = selectWorkflowArchetype(goal)): AdaptiveExecutionPlan {
+  const words = goal.trim().split(/\s+/u).filter(Boolean).length;
+  const highRisk = HIGH_RISK_GOAL.test(goal);
+  const broad = BROAD_SCOPE_GOAL.test(goal) || (goal.match(/[;:]/gu)?.length ?? 0) > 1;
+  const complexity: AdaptiveExecutionPlan["complexity"] = highRisk || words > 90 || broad && words > 45
+    ? "complex"
+    : words <= 24 && !broad
+      ? "simple"
+      : "medium";
+  const stages = new Set(archetype.stages);
+  const remove: string[] = [];
+  const parallel: string[][] = [];
+
+  if (complexity === "simple") {
+    const preferredExecutor = /\b(?:api|backend|service|endpoint|webhook)\b/iu.test(goal) ? "backend" : "frontend";
+    const essentialsByArchetype: Record<string, string[]> = {
+      "web-app": [preferredExecutor, "verify"],
+      "api-service": ["backend", "verify"],
+      "debug-failure": ["diagnose", "implement", "verify"],
+      documentation: ["docs", "verify"],
+      maintenance: ["implement", "verify"],
+      "code-review": ["architecture", "test"],
+      "product-discovery": ["ux", "architecture", "security"]
+    };
+    const essentials = new Set(essentialsByArchetype[archetype.id] ?? ["implement", "verify"]);
+    for (const stage of archetype.stages) {
+      if (!essentials.has(stage)) remove.push(stage);
+    }
+  } else {
+    if (stages.has("triage")) remove.push("triage");
+    if (stages.has("docs") && archetype.id !== "documentation") remove.push("docs");
+    if (stages.has("package") && complexity === "medium") remove.push("package");
+    if (stages.has("frontend") && stages.has("backend")) parallel.push(["frontend", "backend"]);
+  }
+
+  return {
+    complexity,
+    latencyBudgetMs: complexity === "simple" ? 90_000 : complexity === "medium" ? 240_000 : 480_000,
+    targetDirectRatio: complexity === "simple" ? 1.2 : complexity === "medium" ? 1.5 : 2,
+    changes: { remove: [...new Set(remove)], ...(parallel.length ? { parallel } : {}) },
+    rationale: [
+      `Classified the goal as ${complexity} from scope, risk, and length signals.`,
+      complexity === "simple" ? "Selected one owning execution stage plus deterministic verification." : "Removed redundant triage/documentation ceremony while preserving implementation and verification.",
+      parallel.length ? `Parallelized independent branches: ${parallel.map((group) => group.join(" + ")).join(", ")}.` : "Kept dependency order because no safe parallel branch was identified."
+    ]
+  };
+}
 
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
@@ -82,7 +142,9 @@ export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
 export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): WorkflowDefinition {
   if (!input.goal.trim()) throw new Error("Dynamic workflow goal must not be empty.");
   const selected = selectWorkflowArchetype(input.goal);
-  const changes = input.changes ?? {};
+  const executionProfile = input.executionProfile ?? "full";
+  const adaptive = executionProfile === "adaptive" ? recommendAdaptiveExecution(input.goal, selected) : null;
+  const changes = mergePlanChanges(adaptive?.changes, input.changes);
   let templateIds = [...selected.stages];
   for (const requested of changes.remove ?? []) {
     if (requested === "verify" || requested === "security" && selected.id === "security-hardening") {
@@ -167,10 +229,12 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
       version: 1,
       definition_hash: "0".repeat(64),
       goal: input.goal.trim(),
-      construction_rationale: [`Selected '${selected.id}' from goal keyword evidence.`, `Applied ${stages.length} validated stage bindings.`, "Inherited mandatory project policy controls without modification."],
+      construction_rationale: [`Selected '${selected.id}' from goal keyword evidence.`, ...(adaptive?.rationale ?? []), `Applied ${stages.length} validated stage bindings.`, "Inherited mandatory project policy controls without modification."],
       generated_at: generatedAt,
       policy_hash: policyHash,
-      mandatory_controls: controls
+      mandatory_controls: controls,
+      execution_profile: executionProfile,
+      ...(adaptive ? { complexity: adaptive.complexity, latency_budget_ms: adaptive.latencyBudgetMs, target_direct_ratio: adaptive.targetDirectRatio } : {})
     },
     stages
   };
@@ -212,6 +276,17 @@ function sortValue(value: unknown): unknown { if (Array.isArray(value)) return v
 function sameMultiset(left: string[], right: string[]): boolean { return [...left].sort().join("\0") === [...right].sort().join("\0"); }
 function stageIdAt(ids: string[], index: number): string { const id = ids[index]; const occurrence = ids.slice(0, index + 1).filter((item) => item === id).length; return occurrence === 1 ? id : `${id}-${occurrence}`; }
 function parallelDependencies(ids: string[], index: number, group: string[]): string[] { const firstIndex = Math.min(...group.map((id) => ids.findIndex((_template, candidateIndex) => stageIdAt(ids, candidateIndex) === id)).filter((item) => item >= 0)); return firstIndex <= 0 || index < firstIndex ? [] : [stageIdAt(ids, firstIndex - 1)]; }
+function mergePlanChanges(base: DynamicPlanChanges | undefined, override: DynamicPlanChanges | undefined): DynamicPlanChanges {
+  if (!base) return override ?? {};
+  if (!override) return base;
+  return {
+    ...base,
+    ...override,
+    add: [...(base.add ?? []), ...(override.add ?? [])],
+    remove: [...new Set([...(base.remove ?? []), ...(override.remove ?? [])])],
+    parallel: override.parallel ?? base.parallel
+  };
+}
 function assertAcyclic(workflow: WorkflowDefinition): void {
   const dependencies = new Map(workflow.stages.map((stage) => [stage.id, stage.depends_on ?? []]));
   const visiting = new Set<string>();

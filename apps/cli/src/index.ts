@@ -25361,7 +25361,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       const projectDir = path.resolve(process.cwd(), project);
       try {
         const configuredProject = await loadProjectConfig(projectDir);
-        const generated = constructDynamicWorkflow({ goal: task, project: configuredProject, agents: await loadAgentsForProject(projectDir) });
+        const generated = constructDynamicWorkflow({ goal: task, project: configuredProject, agents: await loadAgentsForProject(projectDir), executionProfile: "adaptive" });
         const requestedStages = splitCommaList(form.get("planStages") ?? "");
         const generatedIds = generated.stages.map((stage) => stage.id);
         const selectedIds = requestedStages.length ? requestedStages : generatedIds;
@@ -25372,6 +25372,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
           goal: task,
           project: configuredProject,
           agents: await loadAgentsForProject(projectDir),
+          executionProfile: "adaptive",
           changes: { remove: [...new Set(removed)], order: templateOrder }
         });
         await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
@@ -25418,7 +25419,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const plan = createOrchestrationPlan({ projectDir, task });
     const primary = primaryWorkflowStep(plan);
     const configuredProject = await loadProjectConfig(projectDir);
-    const workflow = constructDynamicWorkflow({ goal: task, project: configuredProject, agents: await loadAgentsForProject(projectDir) });
+    const workflow = constructDynamicWorkflow({ goal: task, project: configuredProject, agents: await loadAgentsForProject(projectDir), executionProfile: "adaptive" });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify({
       workflowId: primary?.target ?? "review-pr",
@@ -25426,7 +25427,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       reason: primary?.reason ?? "No narrow route matched, so Agent Workflow selected a conservative project review.",
       steps: plan.steps.map((step) => ({ kind: step.kind, target: step.target, title: step.title, reason: step.reason })),
       archetype: workflow.dynamic?.archetype,
-      stages: workflow.stages.map((stage) => ({ id: stage.id, agent: stage.agent, goal: stage.goal, modelTier: stage.routing?.model_tier ?? "standard", contextTokens: stage.context.max_tokens, approvalRequired: stage.approval_required, removable: stage.id !== "verify" && !(workflow.dynamic?.archetype === "security-hardening" && stage.id.startsWith("security")) }))
+      executionProfile: workflow.dynamic?.execution_profile,
+      complexity: workflow.dynamic?.complexity,
+      latencyBudgetMs: workflow.dynamic?.latency_budget_ms,
+      targetDirectRatio: workflow.dynamic?.target_direct_ratio,
+      constructionRationale: workflow.dynamic?.construction_rationale,
+      stages: workflow.stages.map((stage) => ({ id: stage.id, agent: stage.agent, goal: stage.goal, modelTier: stage.routing?.model_tier ?? "standard", contextTokens: stage.context.max_tokens, approvalRequired: stage.approval_required, parallelGroup: stage.parallel_group, removable: stage.id !== "verify" && !(workflow.dynamic?.archetype === "security-hardening" && stage.id.startsWith("security")) }))
     }));
     return;
   }
@@ -26403,7 +26409,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projectDir = path.resolve(process.cwd(), requestUrl.searchParams.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
     const goal = requestUrl.searchParams.get("task")?.trim() || "Create a local web app";
     const project = await loadProjectConfig(projectDir);
-    const workflow = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(projectDir) });
+    const workflow = constructDynamicWorkflow({ goal, project, agents: await loadAgentsForProject(projectDir), executionProfile: "adaptive" });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(workflow, null, 2));
     return;

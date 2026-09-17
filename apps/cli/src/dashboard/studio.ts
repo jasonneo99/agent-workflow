@@ -131,7 +131,7 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
 function studioScript(): string {
   return String.raw`
     (() => {
-      const state = { runs: [], approvals: [], projects: [], details: null, workspace: null, plan: [], tab: "changes", query: "", refreshTimer: null };
+      const state = { runs: [], approvals: [], projects: [], details: null, workspace: null, plan: [], planMeta: null, tab: "changes", query: "", refreshTimer: null };
       const $ = (id) => document.getElementById(id);
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[char]);
       const short = (value, length = 78) => value && value.length > length ? value.slice(0, length - 1) + "…" : value || "Untitled task";
@@ -341,13 +341,17 @@ function studioScript(): string {
         const task = $("dialog-task").value.trim();
         const routing = $("dialog-routing").value;
         const preview = $("routing-preview");
-        if (routing !== "auto" || task.length < 8) { preview.hidden = true; return; }
+        if (routing !== "auto" || task.length < 8) { preview.hidden = true; state.planMeta = null; return; }
         preview.hidden = false;
         preview.innerHTML = '<span class="routing-pulse"></span><span><strong>Finding the right workflow…</strong><small>Using the local orchestration contract.</small></span>';
         try {
           const route = await fetchJson("/api/studio-route?project=" + encodeURIComponent($("dialog-project").value) + "&task=" + encodeURIComponent(task));
           state.plan = route.stages || [];
-          preview.innerHTML = '<span class="routing-mark">→</span><span><strong>' + esc(label(route.archetype) + " · " + state.plan.length + " stages") + '</strong><small>' + esc(route.reason) + '</small></span>';
+          state.planMeta = route;
+          const budget = route.latencyBudgetMs ? Math.round(route.latencyBudgetMs / 1000) + "s budget" : "";
+          const ratio = route.targetDirectRatio ? "target ≤" + route.targetDirectRatio + "× direct" : "";
+          const profile = [label(route.executionProfile), label(route.complexity), budget, ratio].filter(Boolean).join(" · ");
+          preview.innerHTML = '<span class="routing-mark">→</span><span><strong>' + esc(label(route.archetype) + " · " + state.plan.length + " stages") + '</strong><small class="routing-metrics">' + esc(profile) + '</small><small>' + esc((route.constructionRationale || []).slice(1, 3).join(" ") || route.reason) + '</small></span>';
           renderPlan();
         } catch (error) {
           preview.innerHTML = '<span class="routing-mark">!</span><span><strong>Could not preview routing</strong><small>' + esc(error.message) + '</small></span>';
@@ -355,7 +359,8 @@ function studioScript(): string {
       }
       function renderPlan() {
         $("plan-editor").hidden = !state.plan.length || $("dialog-routing").value !== "auto";
-        $("plan-summary").textContent = state.plan.length + " agents · editable";
+        const parallel = state.plan.filter((stage) => stage.parallelGroup).length;
+        $("plan-summary").textContent = state.plan.length + " agents" + (parallel ? " · " + parallel + " parallel" : "") + " · editable";
         $("plan-stages").value = state.plan.map((stage) => stage.id).join(",");
         $("plan-stage-list").innerHTML = state.plan.map((stage, index) => '<article class="plan-stage"><span>' + (index + 1) + '</span><div><strong>' + esc(label(stage.id)) + '</strong><small>' + esc(label(stage.agent)) + ' · ' + esc(stage.modelTier) + ' · ' + stage.contextTokens + ' tokens' + (stage.approvalRequired ? ' · approval' : '') + '</small></div><button type="button" data-plan-up="' + index + '">↑</button><button type="button" data-plan-down="' + index + '">↓</button><button type="button" data-plan-remove="' + index + '" ' + (stage.removable ? '' : 'disabled') + '>×</button></article>').join("");
         document.querySelectorAll("[data-plan-up]").forEach((button) => button.onclick = () => movePlan(Number(button.dataset.planUp), -1));
@@ -565,6 +570,7 @@ function studioCss(): string {
     .routing-preview strong, .routing-preview small { display: block; }
     .routing-preview strong { color: #cceec5; font-size: 10px; }
     .routing-preview small { margin-top: 4px; color: #839087; font-size: 9px; line-height: 1.4; }
+    .routing-preview .routing-metrics { color: var(--lime); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     .routing-mark { color: var(--lime); font: 16px ui-monospace, monospace; }
     .routing-pulse { width: 8px; height: 8px; margin: 4px; border-radius: 50%; background: var(--lime); animation: routing-pulse 1s ease-in-out infinite alternate; }
     .plan-editor { max-height: 280px; overflow: auto; border: 1px solid var(--line); }

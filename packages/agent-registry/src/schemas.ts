@@ -67,7 +67,11 @@ const dynamicWorkflowMetadataSchema = z.object({
   construction_rationale: z.array(z.string().min(1)).min(1),
   generated_at: z.string().datetime(),
   policy_hash: z.string().regex(/^[a-f0-9]{64}$/),
-  mandatory_controls: z.array(z.string().min(1)).min(1)
+  mandatory_controls: z.array(z.string().min(1)).min(1),
+  execution_profile: z.enum(["full", "adaptive"]).optional(),
+  complexity: z.enum(["simple", "medium", "complex"]).optional(),
+  latency_budget_ms: z.number().int().positive().optional(),
+  target_direct_ratio: z.number().positive().optional()
 });
 
 export const workflowSchema = z.object({

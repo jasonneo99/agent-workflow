@@ -975,6 +975,17 @@ visible even when the detailed roadmap sections move around. The dashboard reads
 this file directly, so roadmap updates automatically flow into `/roadmap` and
 `/api/roadmap`.
 
+- [x] Task: bring Studio execution latency closer to direct Codex work.
+  - Milestone: 3 Developer Dashboard
+  - Priority: critical
+  - Status: first adaptive-execution slice implemented for Studio auto-routing.
+  - Done: classify each natural-language task as simple, medium, or complex from bounded scope and risk signals.
+  - Done: generate the smallest validated stage graph for simple work, remove redundant ceremony for broader work, and parallelize independent frontend/backend branches behind a real join.
+  - Done: preserve mandatory policy controls and verifier coverage in every adaptive plan.
+  - Done: publish the execution profile, complexity, latency budget, direct-speed target, and construction rationale in the Studio route API and task dialog.
+  - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
+  - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
+
 - [x] Task: create a live roadmap dashboard with list and Gantt-style views.
   - Milestone: 3 Developer Dashboard
   - Priority: medium

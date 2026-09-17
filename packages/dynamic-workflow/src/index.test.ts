@@ -4,6 +4,7 @@ import { projectConfigSchema, workflowHandoffSchema } from "../../agent-registry
 import {
   constructDynamicWorkflow,
   definitionHash,
+  recommendAdaptiveExecution,
   selectWorkflowArchetype,
   stageTemplates,
   validateDynamicWorkflow,
@@ -57,6 +58,36 @@ test("constructs a reproducible validated plan with policy controls and routing"
   assert.equal(plan.stages.find((stage) => stage.id === "security")?.approval_required, true);
   assert.deepEqual(constructDynamicWorkflow({ goal: plan.dynamic!.goal, project, now: plan.dynamic!.generated_at }).dynamic?.definition_hash,
     constructDynamicWorkflow({ goal: plan.dynamic!.goal, project, now: plan.dynamic!.generated_at }).dynamic?.definition_hash);
+});
+
+test("adaptive execution keeps simple work close to direct-agent latency", () => {
+  const recommendation = recommendAdaptiveExecution("Fix the dashboard button spacing");
+  const plan = constructDynamicWorkflow({
+    goal: "Fix the dashboard button spacing",
+    project,
+    executionProfile: "adaptive",
+    now: "2026-01-02T03:04:05.000Z"
+  });
+  assert.equal(recommendation.complexity, "simple");
+  assert.equal(plan.dynamic?.execution_profile, "adaptive");
+  assert.equal(plan.dynamic?.target_direct_ratio, 1.2);
+  assert.ok(plan.stages.length <= 3);
+  assert.ok(plan.stages.some((stage) => stage.pattern.type === "executor"));
+  assert.ok(plan.stages.some((stage) => stage.pattern.type === "verifier"));
+});
+
+test("adaptive execution parallelizes broad frontend and backend work", () => {
+  const plan = constructDynamicWorkflow({
+    goal: "Implement a cohesive frontend and backend dashboard experience across the platform with tests and production security controls",
+    project,
+    executionProfile: "adaptive",
+    now: "2026-01-02T03:04:05.000Z"
+  });
+  assert.equal(plan.dynamic?.complexity, "complex");
+  assert.equal(plan.stages.find((stage) => stage.id === "frontend")?.parallel_group, "parallel-1");
+  assert.equal(plan.stages.find((stage) => stage.id === "backend")?.parallel_group, "parallel-1");
+  assert.ok(!plan.stages.some((stage) => stage.id === "triage"));
+  assert.ok(!plan.stages.some((stage) => stage.id === "docs"));
 });
 
 test("allows bounded add, remove, repeat, reorder changes", () => {
