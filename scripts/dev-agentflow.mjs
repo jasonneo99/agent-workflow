@@ -70,6 +70,7 @@ async function main() {
     console.log("Configured storage points at a shared/non-local host; leaving local Docker storage services stopped.");
   }
   workerLanes = await loadWorkerLanes();
+  await pruneDeadWorkerHeartbeatRegistry();
 
   if (once) {
     await writeHeartbeat("stopped", "one-shot service check complete");
@@ -247,7 +248,30 @@ async function monitor() {
     console.log("Learning daemon heartbeat is stale or missing; starting learning daemon.");
     startLearningDaemon();
   }
+  await pruneDeadWorkerHeartbeatRegistry();
   await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
+}
+
+async function pruneDeadWorkerHeartbeatRegistry() {
+  let entries;
+  try {
+    entries = await fs.readdir(workerHeartbeatDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const heartbeatPath = path.join(workerHeartbeatDir, entry.name);
+    try {
+      const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8"));
+      const pid = typeof heartbeat.pid === "number" ? heartbeat.pid : null;
+      const command = pid ? await processCommand(pid) : "";
+      const ownsLiveWorker = command.includes(rootDir) && /apps\/cli\/src\/index\.ts\s+worker\b/u.test(command);
+      if (!ownsLiveWorker) await fs.unlink(heartbeatPath);
+    } catch {
+      await fs.unlink(heartbeatPath).catch(() => {});
+    }
+  }
 }
 
 async function startDashboardIfNeeded() {
