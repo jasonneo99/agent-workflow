@@ -39,7 +39,7 @@ import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelR
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
 import { probeWorkerProviderCapabilities } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -37213,7 +37213,7 @@ async function dismissDuplicateBlockedWorkflowRuns(projectDir: string, actor: st
 async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
   if (mode !== "apply-approved") return 0;
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
-  const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair"]);
+  const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
   const deliveryReceipts = await loadProjectDeliveryReceipts(projectDir);
   const activeRepair = runs.find((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && repairSources.has(stringValue(run.evaluationMetadata?.source) ?? ""));
   if (activeRepair) {
@@ -37257,7 +37257,8 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       || receipt.actionType === "workflow_supervisor_repair_queued"
       || receipt.actionType === "workflow_supervisor_repair_suppressed")) continue;
     const approvals = await listActionApprovals({ runId: run.id, limit: 100 });
-    if (approvals.some(isOpenApproval)) continue;
+    const hasOpenApproval = approvals.some(isOpenApproval);
+    if (hasOpenApproval) continue;
     const artifacts = await listArtifacts({ runId: run.id, kind: "stage_output" });
     const outputs = artifacts.map((artifact) => artifact.content);
     const output = outputs.at(-1) ?? {};
@@ -37268,6 +37269,49 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     const deliveryReason = workflowDeliveryRepairReason(run, outputs);
     const externallyManagedFailure = /\b(?:auth(?:entication|orization)?|credential|quota|policy|permission|approval|provider|fallback|model route)\b/u.test(reason);
     const repairableFailure = run.status === "failed" && Boolean(recordedFailure) && !externallyManagedFailure;
+    const rootRepairAction = workflowRootRepairAction({
+      run,
+      reason,
+      deliveryReason,
+      hasOpenApproval,
+      recordedFailure
+    });
+    if (rootRepairAction === "operator-provider" || rootRepairAction === "wait-approval" || rootRepairAction === "none") continue;
+    if (rootRepairAction === "replay-original") {
+      try {
+        await indexProjectForRun({ projectDir, maxFiles: 180, refine: false, forceRefine: false });
+      } catch {
+        continue;
+      }
+      const replay = await replayWorkflowRun({
+        sourceRunId: run.id,
+        actor: "learning-daemon",
+        reason: "Root repair refreshed project evidence and replayed the original review contract.",
+        preserveCompletedCheckpoints: true,
+        evaluationMetadataPatch: {
+          source: "workflow-root-repair",
+          sourceRunId: run.id,
+          rootRepairKind: "review-evidence-gap"
+        }
+      });
+      if (!replay) return 0;
+      await recordRunAction({
+        runId: run.id,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_root_repair_replayed",
+        target: replay.runId,
+        summary: "Learning daemon refreshed indexed evidence and replayed the original review workflow instead of launching a diagnostic loop.",
+        artifactKind: "workflow_root_repair",
+        artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, action: rootRepairAction },
+        idempotencyKey: `workflow-root-repair-${run.id}-${replay.runId}`
+      });
+      await dismissFailedWorkflowRun({
+        runId: run.id,
+        actor: "learning-daemon",
+        reason: `Superseded by root-repair replay ${replay.runId}; immutable history preserved.`
+      });
+      return 1;
+    }
     if (!missingExistingEvidence && !deliveryReason && !repairableFailure) continue;
     const repaired = await queueSupervisedWorkflowRepair({
       run,

@@ -1,13 +1,19 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRootRepairAction } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
 test("queueing hydrates an empty project index before compiling evidence", () => {
   assert.match(cliSource, /if \(sourceSummaries\.length === 0\)[\s\S]+indexProjectForRun[\s\S]+sourceSummaries = await loadSourceSummaries/u);
+});
+
+test("learning daemon replays review evidence gaps with explicit root-repair lineage", () => {
+  assert.match(cliSource, /workflowRootRepairAction\([\s\S]+rootRepairAction === "replay-original"/u);
+  assert.match(cliSource, /evaluationMetadataPatch:[\s\S]+source: "workflow-root-repair"[\s\S]+rootRepairKind: "review-evidence-gap"/u);
+  assert.match(cliSource, /workflow_root_repair_replayed/u);
 });
 
 test("completed delivery without product writes is automatically repairable", () => {
@@ -43,6 +49,23 @@ test("delivery-gap repairs route to build-feature while concrete failures stay d
     { workflowId: "debug-failure", task: "Fix the TypeError in the queue worker", status: "failed" },
     "The test command failed with a reproducible exception."
   ), "debug-failure");
+});
+
+test("root repair playbook distinguishes review evidence, delivery, approvals, and providers", () => {
+  const review = { workflowId: "review-pr", task: "Review recovery UX", status: "blocked" };
+  assert.equal(workflowRootRepairAction({ run: review, reason: "Missing implementation evidence for recovery." }), "replay-original");
+  assert.equal(workflowRootRepairAction({ run: review, reason: "Required actions are awaiting approval.", hasOpenApproval: true }), "wait-approval");
+  assert.equal(workflowRootRepairAction({ run: review, reason: "Codex provider outage after fallback failed." }), "operator-provider");
+  assert.equal(workflowRootRepairAction({
+    run: { workflowId: "debug-failure", task: "Implement milestone 7", status: "blocked" },
+    reason: "No product write was recorded.",
+    deliveryReason: "Delivery run stopped before implementation or verification."
+  }), "build-feature");
+  assert.equal(workflowRootRepairAction({
+    run: { workflowId: "debug-failure", task: "Fix queue crash", status: "failed" },
+    reason: "Queue crashed.",
+    recordedFailure: "TypeError in queue worker"
+  }), "debug-failure");
 });
 
 test("repair runs do not recursively repair themselves", () => {

@@ -121,3 +121,32 @@ export function supervisedRepairWorkflowId(run: SupervisedRun, reason: string): 
     && /stopped before implementation|without governed product-write evidence|without executed verification evidence|missing implementation|delivery .* incomplete/iu.test(reason);
   return deliveryGap ? "build-feature" : "debug-failure";
 }
+
+export type WorkflowRootRepairAction = "replay-original" | "build-feature" | "debug-failure" | "wait-approval" | "operator-provider" | "none";
+
+export function workflowRootRepairAction(input: {
+  run: SupervisedRun;
+  reason: string;
+  deliveryReason?: string | null;
+  hasOpenApproval?: boolean;
+  recordedFailure?: string;
+}): WorkflowRootRepairAction {
+  const reason = `${input.reason} ${input.recordedFailure ?? ""}`.toLowerCase();
+  if (input.hasOpenApproval || /awaiting approval|required actions .* awaiting approval|approval .* pending/u.test(reason)) {
+    return "wait-approval";
+  }
+  if (/auth(?:entication|orization)?|credential|quota|provider outage|model route|fallback .* failed/u.test(reason)) {
+    return "operator-provider";
+  }
+  const reviewWorkflow = input.run.workflowId === "review-pr"
+    || input.run.workflowId === "security-audit"
+    || input.run.workflowId === "accessibility-review"
+    || input.run.workflowId.startsWith("agent-task-ux-reviewer");
+  const evidenceGap = /missing|not supplied|not provided|unavailable|omits?|insufficient|lacks?|unproven/u.test(reason)
+    && /context|source|files?|diff|tests?|evidence|repository|implementation|configuration|design system|platform guidance/u.test(reason);
+  if (reviewWorkflow && evidenceGap) return "replay-original";
+  if (input.deliveryReason) return supervisedRepairWorkflowId(input.run, input.deliveryReason);
+  if (input.recordedFailure?.trim()) return "debug-failure";
+  if (evidenceGap) return "debug-failure";
+  return "none";
+}

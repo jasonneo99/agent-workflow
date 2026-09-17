@@ -1475,6 +1475,7 @@ export async function replayWorkflowRun(input: {
   reason: string;
   preserveCompletedCheckpoints?: boolean;
   skipStageIds?: string[];
+  evaluationMetadataPatch?: Record<string, unknown>;
 }): Promise<{ projectId: string; runId: string; tasks: number; completedTasks: number; skippedTasks: number; queuedTasks: number } | null> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -1592,6 +1593,7 @@ export async function replayWorkflowRun(input: {
       const projectId = projectResult.rows[0].id;
       const replayMetadata = {
         ...sourceRun.evaluationMetadata,
+        ...input.evaluationMetadataPatch,
         replayOfRunId: input.sourceRunId,
         replayedBy: input.actor,
         replayReason: input.reason,

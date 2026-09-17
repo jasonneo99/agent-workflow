@@ -124,6 +124,7 @@ test("checkpoint replacement preserves completed stages and queues only unfinish
   assert.match(replay, /completedTasks[\s\S]+queuedTasks: workflow\.stages\.length - completedTasks - skippedTasks/u);
   assert.match(source, /retryFailedWorkflowRun[\s\S]+preserveCompletedCheckpoints: true/u);
   assert.match(source, /return replay\?\.queuedTasks \?\? 0/u);
+  assert.match(replay, /\.\.\.input\.evaluationMetadataPatch[\s\S]+replayOfRunId: input\.sourceRunId/u);
 });
 
 test("operator-approved blocker skipping is explicit, receipted, and dependency-compatible", () => {
