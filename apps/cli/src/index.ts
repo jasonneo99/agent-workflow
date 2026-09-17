@@ -26122,7 +26122,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
   const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
   const failed = queue.filter((item) => item.runStatus === "failed");
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
-  const rows = queue.map((item) => {
+  const cards = queue.map((item) => {
     const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} running, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
       ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
@@ -26134,9 +26134,54 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
       : item.runningTasks > 0
         ? "worker: unknown"
         : "worker: none";
+    const activeLabel = item.runningStageId
+      ? `Running ${item.runningStageId}`
+      : item.nextStageId
+        ? `Up next: ${item.nextStageId}`
+        : item.runStatus === "failed"
+          ? "Needs review"
+          : "Waiting to start";
+    const activeAgent = item.runningAgentId ?? item.nextAgentId;
+    const stageDots = Array.from({ length: Math.max(item.totalTasks, 1) }, (_, index) => {
+      const step = index + 1;
+      const state = index < item.completedTasks
+        ? "completed"
+        : item.failedTasks > 0 && index === item.completedTasks
+          ? "failed"
+          : item.runningTasks > 0 && index === item.completedTasks
+            ? "running"
+            : "pending";
+      return `<span class="queue-stage-dot ${state}" title="Stage ${step}: ${state}"><span>${step}</span></span>`;
+    }).join("");
+    const attention = item.failedTasks > 0 || item.runStatus === "failed"
+      ? `<div class="queue-card-callout bad">${dashboardIcon("warning")}<span><strong>Needs attention</strong><small>${formatNumber(item.failedTasks || 1)} failed stage${(item.failedTasks || 1) === 1 ? "" : "s"}. Open the run for evidence before retrying.</small></span></div>`
+      : hasExpiredLease(item)
+        ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Worker lease expired</strong><small>Recovery is available without losing completed stages.</small></span></div>`
+        : "";
     return `
-      <tr>
-        <td><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.runId.slice(0, 8))}</a><br><span class="muted">${escapeHtml(item.workflowId)}</span><div class="row-tools">${renderRunInfoDialog({
+      <article class="queue-card ${escapeHtml(item.runStatus)}">
+        <div class="queue-card-header">
+          <div class="queue-card-title">
+            <div class="queue-card-eyebrow"><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span><span>${escapeHtml(item.projectName)}</span><span>${escapeHtml(item.workflowId)}</span></div>
+            <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.task)}</a></h2>
+            <p class="muted">Run ${escapeHtml(item.runId.slice(0, 8))} · started ${renderDashboardDateTime(item.startedAt)}</p>
+          </div>
+          <a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a>
+        </div>
+        ${attention}
+        <div class="queue-stage-summary">
+          <div class="queue-stage-heading"><span><strong>${formatNumber(item.completedTasks)} of ${formatNumber(item.totalTasks)} stages complete</strong><small>${escapeHtml(activeLabel)}${activeAgent ? ` · ${escapeHtml(activeAgent)}` : ""}</small></span><span class="queue-stage-count">${Math.round((item.completedTasks / Math.max(item.totalTasks, 1)) * 100)}%</span></div>
+          <div class="queue-stage-rail" role="img" aria-label="${escapeHtml(`${item.completedTasks} of ${item.totalTasks} stages complete; ${activeLabel}`)}">${stageDots}</div>
+        </div>
+        <div class="queue-card-facts">
+          <div><strong>Current work</strong><span>${escapeHtml(currentStage)}</span></div>
+          <div><strong>Queue</strong><span>${formatNumber(item.runningTasks)} running · ${formatNumber(item.queuedTasks)} waiting</span></div>
+          <div><strong>Worker</strong><span>${escapeHtml(item.runningWorkerId ?? "Not leased")}</span></div>
+          <div><strong>Oldest active</strong><span>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</span></div>
+        </div>
+        <div class="queue-card-footer">
+          <div class="queue-primary-actions">${queueItemPrimaryForms(item)}</div>
+          <details class="queue-more-actions"><summary>More actions</summary><div class="actions">${queueItemSecondaryForms(item)}${renderRunInfoDialog({
           runId: item.runId,
           workflowId: item.workflowId,
           status: item.runStatus,
@@ -26145,14 +26190,9 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
           task: item.task,
           startedAt: item.startedAt,
           summary: [taskSummary, `current: ${currentStage}`, leaseDetail]
-        })}</div></td>
-        <td><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span></td>
-        <td>${escapeHtml(item.projectName)}<br><span class="muted">${escapeHtml(item.projectRootUri)}</span></td>
-        <td>${escapeHtml(item.task)}</td>
-        <td>${escapeHtml(taskSummary)}<br><span class="muted">current: ${escapeHtml(currentStage)}</span><br><span class="muted">${escapeHtml(leaseDetail)}</span></td>
-        <td>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</td>
-        <td><div class="actions">${queueItemForms(item)}</div></td>
-      </tr>
+        })}</div></details>
+        </div>
+      </article>
     `;
   }).join("");
 
@@ -26198,12 +26238,9 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
       <p class="muted">Dismissal removes failed runs from this queue without deleting their history, artifacts, or receipts.</p>
       ${queueDismissAllForm()}
     </section>` : ""}
-    <section class="panel">
-      <h2>Runs Needing Attention</h2>
-      <table>
-        <thead><tr><th>Run</th><th>Status</th><th>Project</th><th>Task</th><th>Stage Tasks</th><th>Oldest Active</th><th>Actions</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan=\"7\">Queue is clear.</td></tr>"}</tbody>
-      </table>
+    <section class="queue-section" aria-labelledby="queue-runs-heading">
+      <div class="section-heading"><div><h2 id="queue-runs-heading">Work in the queue</h2><span class="muted">Follow progress, understand blockers, and act without losing run history.</span></div></div>
+      <div class="queue-card-list">${cards || '<div class="panel human-empty"><strong>The queue is clear</strong><span>New and active work will appear here.</span></div>'}</div>
     </section>
   </main>
   <script>
@@ -38528,21 +38565,25 @@ function queueRecoverExpiredLeasesForm(): string {
   return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="recover-expired-leases"><button type="submit">${iconLabel("refresh", "Recover Expired Leases")}</button></form>`;
 }
 
-function queueItemForms(item: DashboardQueueItem): string {
-  const forms = [
-    `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open")}</a>`
-  ];
+function queueItemPrimaryForms(item: DashboardQueueItem): string {
+  if (hasExpiredLease(item)) {
+    return queueRunActionForm(item.runId, "recover-expired-leases", "Recover expired lease");
+  }
+  if (item.failedTasks > 0 || item.runStatus === "failed") {
+    return queueRunActionForm(item.runId, "retry-failed", "Retry failed stages");
+  }
+  return `<a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", item.runningTasks > 0 ? "Watch progress" : "Review run")}</a>`;
+}
+
+function queueItemSecondaryForms(item: DashboardQueueItem): string {
+  const forms: string[] = [];
   if (item.runningTasks > 0) {
     forms.push(queueRunActionForm(item.runId, "requeue-running", "Requeue Running"));
-  }
-  if (hasExpiredLease(item)) {
-    forms.push(queueRunActionForm(item.runId, "recover-expired-leases", "Recover Expired Lease"));
   }
   if (item.queuedTasks > 0 || item.runningTasks > 0 || item.failedTasks > 0 || item.runStatus === "failed") {
     forms.push(queueRunActionForm(item.runId, "resume-checkpoint", "Resume Checkpoint"));
   }
   if (item.failedTasks > 0 || item.runStatus === "failed") {
-    forms.push(queueRunActionForm(item.runId, "retry-failed", "Retry Failed"));
     forms.push(queueDismissRunForm(item.runId));
   }
   if (item.runStatus === "queued" || item.runStatus === "running") {
