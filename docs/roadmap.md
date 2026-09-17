@@ -630,6 +630,7 @@ Goal: make Agent Workflow easy to install, operate, and govern across projects.
   - Done: add a packaged MCP launcher that resolves the local repo, prefers the compiled MCP server when available, writes metadata-only launcher events, and avoids logging secrets.
   - Done: add runtime-monitor MCP pipeline readiness with plugin, launcher, repo, built-server, recent lifecycle events, dashboard status, and `npm run runtime-monitor -- --check-mcp` smoke verification.
   - Done: return new workflow failures and pending approvals to the originating Codex task through idempotent, user-decision-only callbacks.
+  - Done: advertise per-worker provider readiness and prevent workers from claiming explicitly pinned provider work they cannot execute.
   - Recorded: recurring Codex-side `Transport closed` failures can still happen at approval calls after the launcher smoke check passes, because Codex owns the private stdio subprocess and can retain a stale pipe while Agent Workflow services remain healthy.
   - Done: add Codex/IDE reload guidance to runtime-monitor CLI output, dashboard Runtime Monitor, MCP docs, and client docs when launcher smoke passes but the client still reports `Transport closed`.
   - Done: add dedicated MCP approval-call diagnostics that correlate `agentflow_approvals` invocations with launcher lifecycle events, stderr/output byte counts, exit status, timeout state, client reload guidance, and CLI fallback receipts without logging secrets or prompt/artifact bodies.

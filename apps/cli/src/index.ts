@@ -41,6 +41,7 @@ import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
+import { probeWorkerProviderCapabilities } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -294,6 +295,8 @@ type WorkerHeartbeat = {
   claimed: number;
   completed: number;
   failed: number;
+  providerIds: string[];
+  unavailableProviderIds: string[];
   status: "starting" | "running" | "stopping" | "stopped";
   command: string;
 };
@@ -320,6 +323,8 @@ type DashboardWorkerStatus = {
   failed: number;
   processAlive: boolean;
   command: string;
+  providerIds?: string[];
+  unavailableProviderIds?: string[];
   lanes: DashboardWorkerLane[];
 };
 
@@ -6198,7 +6203,8 @@ program
     const projectRootUri = configuredProjectRootUri && projectScoped ? configuredProjectRootUri : undefined;
 
     if (!options.watch) {
-      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency });
+      const capabilities = await probeWorkerProviderCapabilities();
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, providerIds: capabilities.ready });
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
       console.log(`Concurrency: ${concurrency}`);
@@ -6220,6 +6226,7 @@ program
     let stop = false;
     let ticks = 0;
     const startedAt = new Date().toISOString();
+    const capabilities = await probeWorkerProviderCapabilities();
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
     const registryHeartbeatFile = path.join(defaultWorkerHeartbeatDir, `${safeWorkerHeartbeatFileSegment(workerId)}-${process.pid}.json`);
     const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>): Promise<void> => {
@@ -6240,6 +6247,8 @@ program
         claimed: tick?.claimed ?? 0,
         completed: tick?.completed ?? 0,
         failed: tick?.failed ?? 0,
+        providerIds: capabilities.ready,
+        unavailableProviderIds: capabilities.unavailable.map((item) => item.providerId),
         status,
         command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency}`
       };
@@ -6266,6 +6275,7 @@ program
       leaseSeconds,
       projectRootUri,
       concurrency,
+      providerIds: capabilities.ready,
       shouldStop: () => stop,
       onTick: async (result) => {
         await writeHeartbeat(stop ? "stopping" : "running", result);
@@ -34771,6 +34781,8 @@ async function loadWorkerHeartbeatLane(heartbeatPath: string): Promise<Dashboard
       claimed: typeof heartbeat.claimed === "number" ? heartbeat.claimed : 0,
       completed: typeof heartbeat.completed === "number" ? heartbeat.completed : 0,
       failed: typeof heartbeat.failed === "number" ? heartbeat.failed : 0,
+      providerIds: Array.isArray(heartbeat.providerIds) ? heartbeat.providerIds.filter((item): item is string => typeof item === "string") : [],
+      unavailableProviderIds: Array.isArray(heartbeat.unavailableProviderIds) ? heartbeat.unavailableProviderIds.filter((item): item is string => typeof item === "string") : [],
       processAlive,
       command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run worker:daemon"
     };
@@ -39754,13 +39766,15 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus, options: { compac
       <div><strong>Project Scope</strong>${escapeHtml(worker.projectRootUri ?? "all projects")}</div>
       <div><strong>Concurrency</strong>${worker.concurrency ?? "n/a"}</div>
       <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
+      <div><strong>Ready Providers</strong>${escapeHtml(worker.providerIds?.join(", ") || "legacy/unknown")}</div>
+      <div><strong>Unavailable Providers</strong>${escapeHtml(worker.unavailableProviderIds?.join(", ") || "none")}</div>
     </div>
     <div class="meta-grid compact">
       <div><strong>Last Tick</strong>${worker.claimed} claimed / ${worker.completed} completed / ${worker.failed} failed</div>
       <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
       <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
     </div>
-    ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Providers</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.providerIds?.join(", ") || "legacy/unknown")}</td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
     ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(displayedLanes.length)} of ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry${hiddenLanes ? `; ${formatNumber(hiddenLanes)} older inactive lane${hiddenLanes === 1 ? "" : "s"} hidden.` : "."}</p>` : ""}
   `;
   if (!options.compact) return detail;

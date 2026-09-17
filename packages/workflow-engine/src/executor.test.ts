@@ -12,6 +12,13 @@ test("workers recover expired leases before claiming new work", () => {
   assert.match(source, /recoverExpiredLeases: false/u);
 });
 
+test("worker provider capabilities flow into durable queue claims", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /providerIds\?: string\[\]/u);
+  assert.match(source, /claimNextWorkflowTask\(options\)/u);
+  assert.match(source, /providerIds: input\.providerIds/u);
+});
+
 test("diagnostic stages retain failing commands as evidence while execution gates fail closed", () => {
   assert.equal(commandFailureIsDiagnosticEvidence({ type: "planner" }), true);
   assert.equal(commandFailureIsDiagnosticEvidence({ type: "react" }), true);

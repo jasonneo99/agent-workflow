@@ -1844,13 +1844,14 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[] }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
       const workerId = input?.workerId?.trim() || `worker-${process.pid}`;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 900));
       const projectRootUri = input?.projectRootUri?.trim() || null;
+      const providerIds = input?.providerIds?.length ? [...new Set(input.providerIds)] : null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
         `with next_task as (
            select wt.id
@@ -1864,6 +1865,17 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and wr.status in ('queued', 'leased', 'running')
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
+             and (
+               $4::text[] is null
+               or coalesce(
+                 nullif(nullif(wr.provider_override, 'auto'), 'default'),
+                 nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+               ) is null
+               or coalesce(
+                 nullif(nullif(wr.provider_override, 'auto'), 'default'),
+                 nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+               ) = any($4::text[])
+             )
              and not exists (
                select 1 from workflow_tasks active
                where active.run_id = wt.run_id
@@ -1938,7 +1950,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id limit 1
            ), a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds, projectRootUri]
+        [workerId, leaseSeconds, projectRootUri, providerIds]
       );
 
       if (!result.rows[0]) {

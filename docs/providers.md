@@ -578,6 +578,21 @@ npm run provider-check
 This provider uses the OpenAI chat-completions shape and requests `response_format: { "type": "json_object" }`.
 `npm run provider-check` calls the endpoint's models API and shows the tier models selected from the catalog.
 
+## Worker capability standardization
+
+Long-running workers probe every supported provider when they start and publish
+only the ready provider IDs in their heartbeat. Queue leasing honors that
+capability set for runs or stages with a pinned provider. For example, an
+Anthropic comparison remains queued when a worker lacks a valid Anthropic
+configuration; it is not claimed and converted into a misleading project or
+evaluation failure. Unpinned adaptive work remains eligible and is routed using
+the worker's normal provider policy.
+
+After changing credentials, provider endpoints, or model access, restart that
+worker and confirm its provider list on the Settings worker-lanes table. Keep
+secrets in each host's private environment; standardize readiness contracts and
+model-tier settings in the portable runtime, not secret values in the repository.
+
 Examples:
 
 ```bash

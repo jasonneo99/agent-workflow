@@ -43,6 +43,7 @@ export type WorkerRunOptions = {
   projectRootUri?: string;
   concurrency?: number;
   recoverExpiredLeases?: boolean;
+  providerIds?: string[];
 };
 
 export class LostWorkflowTaskLeaseError extends Error {
@@ -1203,6 +1204,7 @@ export async function runWorkerWatch(input: {
   leaseSeconds?: number;
   projectRootUri?: string;
   concurrency?: number;
+  providerIds?: string[];
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
@@ -1211,7 +1213,8 @@ export async function runWorkerWatch(input: {
       workerId: input.workerId,
       leaseSeconds: input.leaseSeconds,
       projectRootUri: input.projectRootUri,
-      concurrency: input.concurrency
+      concurrency: input.concurrency,
+      providerIds: input.providerIds
     });
     await input.onTick(result);
     await sleep(input.intervalMs);
