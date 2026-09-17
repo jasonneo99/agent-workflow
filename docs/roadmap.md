@@ -1149,6 +1149,22 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: require Codex clients to surface terminal blocked evidence instead of duplicating work; let the learning daemon refresh project context, retrieve bounded exact source excerpts, and queue one governed repair per project when the missing evidence already exists locally.
   - Safety: open approvals, policy restrictions, credentials, network/deployment authority, unavailable external systems, old runs, and repeated repair attempts remain terminal blockers requiring explicit resolution.
 
+- [x] Task: pin `build` as a create-and-deliver acceptance contract.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: implemented
+  - Done: preserve build intent through orchestration and stage prompts, require governed product-write evidence before verification, and require both creation and verification evidence before packaging can complete.
+  - Rule: analysis, plans, documentation, prototypes, or handoffs may support a build but can never be reported as the completed build.
+
+- [x] Task: supervise and repair stalled or falsely completed delivery workflows.
+  - Milestone: 12 Ecosystem Fit
+  - Priority: high
+  - Status: implemented
+  - Done: recover expired worker leases, detect recent build/delivery runs whose artifacts lack governed product writes or executed verification, and queue one context-refreshed repair per project from the original acceptance contract.
+  - Safety: repairs retain current project policy, never self-grant authority, remain blocked on genuine permission or approval gaps, preserve source-run evidence, and cannot recursively repair repair runs.
+  - Done: reconcile blocked history and active repairs against verified project-local completion/delivery receipts, cancel duplicates when direct implementation already delivered the task, and exclude dismissed history from future repair selection.
+  - Done: persist operator-reviewed repair suppression on the immutable original run so cancelling a stale child repair cannot regenerate the same work on a later daemon tick.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

@@ -85,10 +85,39 @@ test("blocked stage output terminates the run without reporting success", () => 
 test("checkpoint resume preserves terminal history by replaying into a new run", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /terminal === "failed" \|\| terminal === "blocked" \|\| terminal === "cancelled"/u);
-  assert.match(source, /replayWorkflowRun\(\{ sourceRunId: input\.runId/u);
+  assert.match(source, /replayWorkflowRun\(\{[\s\S]+sourceRunId: input\.runId[\s\S]+preserveCompletedCheckpoints: true/u);
   assert.doesNotMatch(source, /update workflow_runs[\s\S]{0,120}set status = 'queued'/u);
   assert.match(source, /replacementRunId: replay\?\.runId/u);
   assert.match(source, /Superseded by replacement run \$\{replay\.runId\}/u);
+});
+
+test("checkpoint replacement preserves completed stages and queues only unfinished work", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("async function createWorkflowHandoffsForRun"));
+  assert.match(replay, /sourceTask\?\.status === "completed" && sourceTask\.artifactContent !== null/u);
+  assert.match(replay, /preserveCheckpoint \|\| skipStage \? "completed" : "queued"/u);
+  assert.match(replay, /stage_checkpoint_preserved/u);
+  assert.match(replay, /checkpointPreservedFromRunId/u);
+  assert.match(replay, /completedTasks[\s\S]+queuedTasks: workflow\.stages\.length - completedTasks - skippedTasks/u);
+  assert.match(source, /retryFailedWorkflowRun[\s\S]+preserveCompletedCheckpoints: true/u);
+  assert.match(source, /return replay\?\.queuedTasks \?\? 0/u);
+});
+
+test("operator-approved blocker skipping is explicit, receipted, and dependency-compatible", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /skipStageIds\?: string\[\]/u);
+  assert.match(source, /preserveCheckpoint \|\| skipStage \? "completed" : "queued"/u);
+  assert.match(source, /'stage_blocker_ignored'/u);
+  assert.match(source, /skipReason: input\.reason/u);
+  assert.match(source, /queuedTasks: workflow\.stages\.length - completedTasks - skippedTasks/u);
+});
+
+test("run details preserve immutable workflow stage order", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const details = source.slice(source.indexOf("export async function getWorkflowRunDetails"));
+  assert.match(details, /jsonb_array_elements\(coalesce\(nullif\(wr\.workflow_snapshot/u);
+  assert.match(details, /with ordinality stage\(definition, stage_order\)/u);
+  assert.match(details, /order by stage\.stage_order asc/u);
 });
 
 test("replay never restores stale project configuration over current policy", () => {
@@ -135,6 +164,7 @@ test("unified activity query covers workflow, stage, action, and approval eviden
     assert.match(source, new RegExp(`from ${table}`, "u"));
   }
   assert.match(source, /order by occurred_at desc/u);
+  assert.match(source, /\(\$3::uuid is null or run_id = \$3::uuid\)/u);
 });
 
 test("approval execution is atomically claimed before dispatch", () => {

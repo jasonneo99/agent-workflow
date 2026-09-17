@@ -1,6 +1,6 @@
 id: build-feature
 name: Build Feature
-description: Plan, implement, verify, document, and package a feature change.
+description: Create, verify, package, and deliver a usable feature change. The keyword build never means analysis or planning alone.
 lead: workflow-orchestrator
 default_autonomy: 3
 triggers:
@@ -40,7 +40,7 @@ stages:
     output: implementation_plan
   - id: implement
     agent: implementation-agent
-    goal: Apply the approved implementation plan locally.
+    goal: Create the requested product locally; a build stage cannot complete with analysis, planning, documentation, or a handoff alone.
     pattern:
       type: executor
       requires_verifier: true
@@ -81,7 +81,7 @@ stages:
     output: automated_docs_update
   - id: package
     agent: pr-preparer
-    goal: Prepare review summary, PR notes, test evidence, and residual risk.
+    goal: Package the created and verified product for delivery, and block if implementation or verification evidence is absent.
     pattern:
       type: finalizer
       promotion_gate: approval

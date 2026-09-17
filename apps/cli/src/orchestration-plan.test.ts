@@ -14,3 +14,11 @@ test("does not downgrade an implementation request containing roadmap", () => {
   const plan = createOrchestrationPlan({ projectDir: "/tmp/project", task: "Implement the next roadmap item" });
   assert.ok(plan.steps.some((step) => step.kind === "workflow" && step.target === "build-feature"));
 });
+
+test("pins build to product creation and delivery instead of planning", () => {
+  const plan = createOrchestrationPlan({ projectDir: "/tmp/project", task: "Build a finished fan telemetry module" });
+  const step = plan.steps.find((item) => item.target === "build-feature");
+  assert.equal(step?.title, "Build and deliver product");
+  assert.match(step?.task ?? "", /create, verify, package, and deliver/iu);
+  assert.doesNotMatch(step?.task ?? "", /implement or plan/iu);
+});

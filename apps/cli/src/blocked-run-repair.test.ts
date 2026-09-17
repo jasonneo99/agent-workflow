@@ -22,13 +22,19 @@ test("blocked repair preserves governance and truthful terminal semantics", () =
   assert.match(source, /includeExactSourceExcerpts: true/u);
 });
 
-test("learning daemon auto-heals only recent context-only blockers", () => {
-  assert.match(source, /autoHealOneBlockedRun\(targetProjectDir, target\.mode\)/u);
+test("learning daemon supervises recent delivery failures without expanding policy", () => {
+  assert.match(source, /autoRepairOneWorkflowRun\(targetProjectDir, target\.mode\)/u);
+  assert.match(source, /requeueExpiredWorkflowTaskLeases\(\{/u);
   assert.match(source, /mode !== "apply-approved"/u);
-  assert.match(source, /7 \* 24 \* 60 \* 60 \* 1000/u);
+  assert.match(source, /isWithinAutomaticWorkflowRepairWindow\(repairReferenceTime\)/u);
   assert.match(source, /approvals\.some\(isOpenApproval\)/u);
   assert.match(source, /missingExistingEvidence/u);
-  assert.match(source, /evaluationMetadata\?\.source\) === "blocked-run-repair"/u);
+  assert.match(source, /workflowDeliveryRepairReason\(run, outputs\)/u);
+  assert.match(source, /findSupersedingDeliveryReceipt\(run\.task, deliveryReceipts\)/u);
+  assert.match(source, /!item\.dismissed/u);
+  assert.match(source, /workflow_supervisor_repair_suppressed/u);
+  assert.match(source, /source: "workflow-supervisor-repair"/u);
+  assert.match(source, /do not edit policy to grant yourself authority/u);
   assert.match(source, /preferImplementationSources: true/u);
 });
 

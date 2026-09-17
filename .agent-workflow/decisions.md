@@ -15,3 +15,22 @@
 - Executor snapshot hashes use recursively key-sorted canonical JSON. PostgreSQL
   `jsonb` may reorder object keys during persistence, so ordinary
   `JSON.stringify` insertion order cannot be part of immutable evidence identity.
+- `build` is a pinned delivery keyword. A build request means create, verify,
+  package, and deliver a usable product; analysis, planning, documentation,
+  prototyping, or handoff alone cannot satisfy or complete that request.
+- The learning daemon in `apply-approved` mode is also the workflow supervisor:
+  it recovers expired stage leases and may queue one policy-bounded repair for a
+  recent blocked, failed, or falsely completed delivery run. Product-write and
+  executed-verification receipts, not narrative claims, determine completion.
+  Repairs preserve the original acceptance contract and may never edit policy
+  to grant themselves authority.
+- Workflow supervision treats verified project-local completion and delivery
+  receipts as durable reconciliation evidence when they match the task by exact
+  lineage or distinctive terms. That evidence supersedes stale blocked history
+  and active duplicate repairs; dismissed runs are never repair candidates.
+- Operator-reviewed stale lineages are closed on the original immutable run by
+  appending a `workflow_supervisor_repair_suppressed` receipt. The supervisor
+  must never create or continue an automatic repair from that source afterward.
+- Automatic workflow repair is a live safety net, not a historical backlog
+  processor. Only runs finished within the last 30 minutes are eligible; older
+  runs require explicit review and delivery proof before suppression.

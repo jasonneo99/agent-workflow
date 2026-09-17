@@ -646,17 +646,38 @@ Phase 1 is intentionally read-only. Phase 2 adds proposal storage and a
 dashboard approval inbox, while still keeping application disabled until
 explicit user approval exists.
 
-## Blocked-run self-healing
+## Workflow supervision and self-healing
 
-In `apply-approved` mode the daemon may repair one recent context-only blocked
-run per project at a time. It refreshes the registered project index, retrieves
-bounded exact excerpts from selected project files, carries forward the source
-run's task and recorded blocker, and queues a governed `debug-failure` run. The
-source run receives a durable repair receipt and remains available for audit.
+In `apply-approved` mode the daemon acts as a bounded workflow supervisor. Each
+project tick first requeues unfinished stages whose worker leases expired. It
+may then repair one recent blocked, failed, or falsely completed delivery run
+per project at a time. A completed build is repairable when its stage artifacts
+contain no governed product-write evidence or no executed verification evidence.
+The daemon refreshes the registered project index, retrieves bounded exact
+excerpts, carries forward the source task and supervisor finding, and queues a
+governed `debug-failure` run. The source run receives a durable repair receipt
+and remains available for audit.
 
-Self-healing is limited to blockers that explicitly report missing repository
-context, source, files, diffs, tests, implementation, configuration, or other
-evidence already expected to exist in the registered checkout. It does not act
-when an approval is open, does not retry runs older than seven days, permits
-only one active repair per project, and never bypasses command, write, network,
-secret, deployment, or external-system gates.
+Self-healing also covers delivery runs that stopped at read-only discovery or a
+policy/authority mismatch. A repair must operate inside the current project
+policy and is explicitly forbidden from editing policy to grant itself more
+authority. It does not act when an approval is open, only auto-repairs runs
+within 30 minutes of their finish time, permits only one active repair per project, prevents recursive
+repair runs, and never bypasses command, write, network, secret, deployment, or
+external-system gates. A genuine missing permission therefore remains blocked
+with an exact approval or policy requirement instead of becoming false success.
+Older history is an audit backlog and requires explicit operator review; the
+daemon does not walk backward through it and manufacture new work.
+
+An operator may also record a durable `workflow_supervisor_repair_suppressed`
+receipt on the original source run after reviewing a stale or externally
+superseded lineage. The supervisor treats that original receipt as a permanent
+stop condition and cancels any still-active automatic repair linked to it.
+
+Before queueing or continuing a repair, the supervisor also reconciles the run
+against bounded project-local completion and delivery receipts. A receipt must
+contain completion plus executed verification evidence and match the task by an
+exact lineage identifier or several distinctive task terms; plans and
+inspection-only receipts cannot qualify. Matching evidence cancels an active
+duplicate repair and dismisses the stale source as superseded. Already dismissed
+history is never eligible for another repair.

@@ -39,6 +39,7 @@ import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelR
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, workflowDeliveryRepairReason, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -119,7 +120,8 @@ import {
   upsertMemoryItem,
   upsertProject,
   upsertProjectIndexState,
-  upsertProjectFiles
+  upsertProjectFiles,
+  type WorkflowRunStatus
 } from "../../../packages/storage/src/postgres.js";
 import { executorApprovalTarget, runExecutorApprovalGate, runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot, type ExecutorResult, type ExecutorSnapshot } from "../../../packages/executor-adapters/src/index.js";
@@ -4520,7 +4522,15 @@ program
             approvalBacklogScanned += update.approvalBacklog.scanned;
             approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
             approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
-            blockedRunsAutoHealed += await autoHealOneBlockedRun(targetProjectDir, target.mode);
+            if (target.mode === "apply-approved") {
+              const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
+                projectRootUri: targetProjectDir,
+                actor: "learning-daemon",
+                reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
+              });
+              blockedRunsAutoHealed += leaseRecovery.affectedRuns;
+            }
+            blockedRunsAutoHealed += await autoRepairOneWorkflowRun(targetProjectDir, target.mode);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${targetProjectDir}: ${message}`);
@@ -26398,6 +26408,43 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/run-progress") {
+    const runId = requestUrl.searchParams.get("id")?.trim();
+    if (!runId) {
+      response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "Missing id" }));
+      return;
+    }
+    const [details, events, approvals] = await Promise.all([
+      getWorkflowRunDetails(runId),
+      listActivityEvents({ runId, limit: 250 }),
+      listActionApprovals({ runId, limit: 100 })
+    ]);
+    if (!details.run) {
+      response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "Run not found" }));
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      run: { status: details.run.status, finishedAt: details.run.finishedAt },
+      tasks: details.tasks.map((task) => ({
+        stageId: task.stageId,
+        agentId: task.agentId,
+        status: task.status,
+        skipped: task.skipped === true,
+        attempts: task.attempts,
+        executor: task.executorSnapshot ? `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}@${task.executorSnapshot.requestedHost}` : "local model"
+      })),
+      stageTimelineHtml: renderRunStageTimeline(details.tasks),
+      continuationHtml: renderRunContinuationBanner(details.run),
+      commandCenterHtml: renderRunCommandCenterBody(details.run, details.tasks, approvals),
+      events: events.reverse()
+    }));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/quality") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -26786,7 +26833,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end("Run not found");
       return;
     }
-    const artifacts = await listArtifacts({ runId });
+    const [artifacts, approvals] = await Promise.all([
+      listArtifacts({ runId }),
+      listActionApprovals({ runId, limit: 100 })
+    ]);
     const summary = await summarizeWorkflowRun(runId);
     const qualityReport = await loadCostQualityReport(runId);
     const observabilityReport = buildObservabilityReport({
@@ -26817,6 +26867,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       tasks: details.tasks,
       receipts: details.receipts,
       artifacts,
+      approvals,
+      params: requestUrl.searchParams,
       summary: summary.ok ? summary.value : null,
       qualityReport,
       observabilityReport,
@@ -33739,6 +33791,8 @@ function renderRunDetailHtml(input: {
   tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"];
   receipts: Awaited<ReturnType<typeof getWorkflowRunDetails>>["receipts"];
   artifacts: Awaited<ReturnType<typeof listArtifacts>>;
+  approvals: Awaited<ReturnType<typeof listActionApprovals>>;
+  params: URLSearchParams;
   summary: RunSummary | null;
   qualityReport: CostQualityReport | null;
   observabilityReport: ObservabilityReport | null;
@@ -33746,7 +33800,7 @@ function renderRunDetailHtml(input: {
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
 }): string {
-  const completedTasks = input.tasks.filter((task) => task.status === "completed").length;
+  const completedTasks = input.tasks.filter((task) => task.status === "completed" && !task.skipped).length;
   const failedTasks = input.tasks.filter((task) => task.status === "failed").length;
   const activeTasks = input.tasks.filter((task) => task.status === "running" || task.status === "leased" || task.status === "queued").length;
   const shouldRefresh = input.run.status === "queued" || input.run.status === "leased" || input.run.status === "running";
@@ -33772,7 +33826,6 @@ function renderRunDetailHtml(input: {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  ${shouldRefresh ? "<meta http-equiv=\"refresh\" content=\"5\">" : ""}
   <title>Run ${escapeHtml(input.run.id.slice(0, 8))}</title>
   <style>${dashboardCss()}</style>
 </head>
@@ -33790,31 +33843,51 @@ function renderRunDetailHtml(input: {
       <a class="button secondary" href="/api/preferences?project=${encodeURIComponent(input.run.projectRootUri)}">Preference JSON</a>
       <a class="button secondary" href="/api/tuning?project=${encodeURIComponent(input.run.projectRootUri)}">Tuning JSON</a>
     </div>
+    ${renderDashboardFlash(input.params)}
+    ${renderDashboardActionHistory()}
+    <div id="run-continuation">${renderRunContinuationBanner(input.run)}</div>
+    <section id="run-stage-timeline" class="panel run-stage-timeline-panel">
+      ${renderRunStageTimeline(input.tasks)}
+    </section>
+    <section id="run-command-center" class="panel run-command-center">
+      ${renderRunCommandCenterBody(input.run, input.tasks, input.approvals)}
+    </section>
+    <section class="panel run-live-panel" data-run-active="${shouldRefresh ? "true" : "false"}">
+      <div class="section-heading">
+        <div>
+          <h2>Live Progress</h2>
+          <span id="run-live-connection" class="muted" aria-live="polite">${shouldRefresh ? "Connecting to run activity…" : "Loading recorded activity…"}</span>
+        </div>
+        <div class="actions">
+          <span id="run-live-indicator" class="run-live-indicator ${shouldRefresh ? "active" : ""}" aria-hidden="true"></span>
+          <button id="run-live-toggle" class="secondary compact-button" type="button">Pause updates</button>
+        </div>
+      </div>
+      <ol id="run-live-log" class="run-live-log" aria-label="Run progress log">
+        <li class="run-live-empty">Waiting for activity…</li>
+      </ol>
+    </section>
     <section class="panel">
       <div class="meta-grid">
-        <div><strong>Status</strong><span class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span></div>
+        <div><strong>Status</strong><span id="run-live-status" class="status ${escapeHtml(input.run.status)}">${escapeHtml(input.run.status)}</span></div>
         <div><strong>Workflow</strong>${escapeHtml(workflowDisplayName(input.run.workflowId))}<br><span class="muted">${escapeHtml(input.run.workflowId)}</span></div>
         <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
         <div><strong>Started</strong>${renderDashboardDateTime(input.run.startedAt)}</div>
-        <div><strong>Tasks</strong>${completedTasks}/${input.tasks.length} completed</div>
-        <div><strong>Failed</strong>${failedTasks}</div>
-        <div><strong>Active</strong>${activeTasks}</div>
+        <div><strong>Tasks</strong><span id="run-live-completed">${completedTasks}/${input.tasks.length} completed</span></div>
+        <div><strong>Failed</strong><span id="run-live-failed">${failedTasks}</span></div>
+        <div><strong>Active</strong><span id="run-live-active">${activeTasks}</span></div>
         <div><strong>Receipts</strong>${input.receipts.length}</div>
       </div>
       <p>${escapeHtml(input.run.task)}</p>
       ${input.run.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.run.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; inspect the stage artifacts below.")}</p>` : ""}
-      <div class="actions">
-        ${workerActionForm(input.run.id, "batch", "Process Next Batch")}
-        ${workerActionForm(input.run.id, "watch", "Run Until Complete")}
-        ${queueRunActionForm(input.run.id, "resume-checkpoint", "Resume Checkpoint")}
-        ${queueRunActionForm(input.run.id, "replay-run", "Replay Run")}
+      <details class="governance-details"><summary>Follow-up workflows</summary><div class="actions quick-actions">
         ${runActionForm(input.run.id, "summarize", "Summarize Run")}
         ${runActionForm(input.run.id, "debug-failure", "Diagnose & Fix")}
         ${runActionForm(input.run.id, "investigate-issue", "Investigate Issue")}
         ${runActionForm(input.run.id, "mira-ux-pass", "Ask Mira")}
         ${runActionForm(input.run.id, "frontend-pass", "Frontend Pass")}
         ${runActionForm(input.run.id, "maintain-context", "Maintain Context")}
-      </div>
+      </div></details>
     </section>
     <section class="panel">
       <h2>Feedback</h2>
@@ -33847,7 +33920,7 @@ function renderRunDetailHtml(input: {
     </section>
     <section class="panel">
       <h2>Stages</h2>
-      <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th><th>Executor</th></tr></thead><tbody>${taskRows}</tbody></table>
+      <table><thead><tr><th>Stage</th><th>Agent</th><th>Status</th><th>Attempts</th><th>Executor</th></tr></thead><tbody id="run-live-stages">${taskRows}</tbody></table>
     </section>
     <section class="panel">
       <h2>Receipts</h2>
@@ -33858,8 +33931,287 @@ function renderRunDetailHtml(input: {
       ${artifactBlocks || "<p>No artifacts.</p>"}
     </section>
   </main>
+  <script>${renderRunLiveProgressScript(input.run.id, shouldRefresh)}</script>
 </body>
 </html>`;
+}
+
+function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): string {
+  return `(() => {
+    const runId = ${JSON.stringify(runId)};
+    const terminal = new Set(['completed', 'failed', 'blocked', 'cancelled', 'dismissed']);
+    const log = document.getElementById('run-live-log');
+    const connection = document.getElementById('run-live-connection');
+    const indicator = document.getElementById('run-live-indicator');
+    const toggle = document.getElementById('run-live-toggle');
+    const stages = document.getElementById('run-live-stages');
+    const continuation = document.getElementById('run-continuation');
+    const stageTimeline = document.getElementById('run-stage-timeline');
+    const commandCenter = document.getElementById('run-command-center');
+    let paused = false;
+    let stopped = ${initiallyActive ? "false" : "true"};
+    let loaded = false;
+    let failures = 0;
+
+    const text = (tag, value, className) => {
+      const node = document.createElement(tag);
+      node.textContent = value == null ? '' : String(value);
+      if (className) node.className = className;
+      return node;
+    };
+    const formatTime = (value) => {
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    };
+    const statusClass = (value) => ['queued', 'leased', 'running', 'completed', 'failed', 'blocked', 'cancelled'].includes(value) ? value : 'queued';
+
+    function renderEvents(events) {
+      const followTail = !loaded || log.scrollHeight - log.scrollTop - log.clientHeight < 64;
+      log.replaceChildren();
+      if (!events.length) log.append(text('li', 'No run activity has been recorded yet.', 'run-live-empty'));
+      for (const event of events) {
+        const item = document.createElement('li');
+        item.className = 'run-live-entry ' + (event.severity || 'info');
+        const time = text('time', formatTime(event.occurredAt), 'run-live-time');
+        time.dateTime = event.occurredAt || '';
+        const body = document.createElement('div');
+        body.append(text('strong', event.title || event.eventType || 'Activity'));
+        if (event.detail) body.append(text('span', event.detail));
+        const badge = text('span', event.status || event.category || 'info', 'status ' + statusClass(event.status));
+        item.append(time, body, badge);
+        log.append(item);
+      }
+      if (followTail) log.scrollTop = log.scrollHeight;
+      loaded = true;
+    }
+
+    function renderStages(tasks) {
+      stages.replaceChildren();
+      for (const task of tasks) {
+        const row = document.createElement('tr');
+        for (const value of [task.stageId, task.agentId]) row.append(text('td', value));
+        const statusCell = document.createElement('td');
+        statusCell.append(text('span', task.skipped ? 'skipped' : task.status, 'status ' + (task.skipped ? 'skipped' : statusClass(task.status))));
+        row.append(statusCell, text('td', task.attempts), text('td', task.executor));
+        stages.append(row);
+      }
+    }
+
+    async function refresh() {
+      if (paused) return schedule();
+      try {
+        const response = await fetch('/api/run-progress?id=' + encodeURIComponent(runId), { cache: 'no-store', headers: { accept: 'application/json' } });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const payload = await response.json();
+        failures = 0;
+        renderEvents(Array.isArray(payload.events) ? payload.events : []);
+        renderStages(Array.isArray(payload.tasks) ? payload.tasks : []);
+        if (typeof payload.continuationHtml === 'string' && continuation.innerHTML !== payload.continuationHtml) {
+          continuation.innerHTML = payload.continuationHtml;
+        }
+        if (typeof payload.stageTimelineHtml === 'string' && stageTimeline.innerHTML !== payload.stageTimelineHtml) {
+          stageTimeline.innerHTML = payload.stageTimelineHtml;
+        }
+        if (typeof payload.commandCenterHtml === 'string' && commandCenter.innerHTML !== payload.commandCenterHtml) {
+          commandCenter.innerHTML = payload.commandCenterHtml;
+        }
+        const tasks = Array.isArray(payload.tasks) ? payload.tasks : [];
+        const completed = tasks.filter((task) => task.status === 'completed' && !task.skipped).length;
+        const failed = tasks.filter((task) => task.status === 'failed').length;
+        const active = tasks.filter((task) => ['queued', 'leased', 'running'].includes(task.status)).length;
+        document.getElementById('run-live-completed').textContent = completed + '/' + tasks.length + ' completed';
+        document.getElementById('run-live-failed').textContent = String(failed);
+        document.getElementById('run-live-active').textContent = String(active);
+        const status = document.getElementById('run-live-status');
+        status.textContent = payload.run.status;
+        status.className = 'status ' + statusClass(payload.run.status);
+        stopped = terminal.has(payload.run.status);
+        indicator.classList.toggle('active', !stopped);
+        connection.textContent = stopped
+          ? 'Run ' + payload.run.status + ' · final activity loaded ' + formatTime(payload.generatedAt)
+          : 'Live · updated ' + formatTime(payload.generatedAt) + ' · next update in 2s';
+        toggle.hidden = stopped;
+        if (stopped && ${initiallyActive ? "true" : "false"}) window.setTimeout(() => window.location.reload(), 1200);
+      } catch (error) {
+        failures += 1;
+        connection.textContent = 'Live update unavailable (' + (error instanceof Error ? error.message : 'request failed') + ') · retrying';
+        indicator.classList.remove('active');
+      }
+      schedule();
+    }
+
+    function schedule() {
+      if (!stopped) window.setTimeout(refresh, failures ? Math.min(15000, 2000 * failures) : (document.hidden ? 5000 : 2000));
+    }
+    toggle.addEventListener('click', () => {
+      paused = !paused;
+      toggle.textContent = paused ? 'Resume updates' : 'Pause updates';
+      indicator.classList.toggle('active', !paused && !stopped);
+      connection.textContent = paused ? 'Live updates paused' : 'Resuming live updates…';
+      if (!paused) refresh();
+    });
+    refresh();
+  })();`;
+}
+
+function renderRunContinuationBanner(
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>
+): string {
+  const sourceRunId = typeof run.evaluationMetadata?.replayOfRunId === "string"
+    ? run.evaluationMetadata.replayOfRunId.trim()
+    : "";
+  if (run.replacementRunId) {
+    return `<section class="run-continuation-banner source-run" aria-labelledby="run-continuation-title">
+      <div class="run-continuation-icon" aria-hidden="true">→</div>
+      <div class="run-continuation-copy">
+        <p class="eyebrow">Run continued</p>
+        <h2 id="run-continuation-title">This run continued in a new run</h2>
+        <p>Completed checkpoints were preserved. Current work is happening in run <strong>${escapeHtml(run.replacementRunId.slice(0, 8))}</strong>${run.replacementRunStartedAt ? `, started ${renderDashboardDateTime(run.replacementRunStartedAt)}` : ""}.</p>
+      </div>
+      <div class="run-continuation-action">
+        ${run.replacementRunStatus ? `<span class="status ${escapeHtml(run.replacementRunStatus)}">${escapeHtml(run.replacementRunStatus)}</span>` : ""}
+        <a class="button" href="/run?id=${encodeURIComponent(run.replacementRunId)}">Open continuation run →</a>
+      </div>
+    </section>`;
+  }
+  if (sourceRunId) {
+    return `<section class="run-continuation-banner replacement-run" aria-labelledby="run-continuation-title">
+      <div class="run-continuation-icon" aria-hidden="true">✓</div>
+      <div class="run-continuation-copy">
+        <p class="eyebrow">Continuation active</p>
+        <h2 id="run-continuation-title">New continuation run started</h2>
+        <p>This run resumed from completed checkpoints in source run <strong>${escapeHtml(sourceRunId.slice(0, 8))}</strong>; it did not restart from stage 1.</p>
+      </div>
+      <div class="run-continuation-action">
+        <span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span>
+        <a class="button secondary" href="/run?id=${encodeURIComponent(sourceRunId)}">View source run</a>
+      </div>
+    </section>`;
+  }
+  return "";
+}
+
+function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"]): string {
+  const steps = tasks.map((task, index) => {
+    const state = task.skipped
+      ? "skipped"
+      : task.status === "completed"
+      ? "completed"
+      : task.status === "running" || task.status === "leased"
+        ? "active"
+        : task.status === "failed" || task.status === "blocked"
+          ? "failed"
+          : task.status === "cancelled"
+            ? "cancelled"
+            : "pending";
+    const stateLabel = state === "active" ? "in progress" : state;
+    return `<li class="run-stage-step ${state}" aria-label="Stage ${index + 1}: ${escapeHtml(task.stageId)}, ${escapeHtml(stateLabel)}">
+      <div class="run-stage-track"><span class="run-stage-circle">${index + 1}</span></div>
+      <strong>${escapeHtml(task.stageId)}</strong>
+      <span>${escapeHtml(task.agentId)}</span>
+      <small>${escapeHtml(stateLabel)}</small>
+    </li>`;
+  }).join("");
+  const completed = tasks.filter((task) => task.status === "completed" && !task.skipped).length;
+  const skipped = tasks.filter((task) => task.skipped).length;
+  return `<div class="section-heading"><div><p class="eyebrow">Stage Timeline</p><h2>${formatNumber(completed)} of ${formatNumber(tasks.length)} complete${skipped ? ` · ${formatNumber(skipped)} skipped` : ""}</h2></div><span class="muted">Updates live</span></div>
+    <div class="run-stage-timeline-scroll"><ol class="run-stage-timeline" aria-label="Workflow stage progress">${steps || '<li class="run-stage-empty">No stages were created for this run.</li>'}</ol></div>`;
+}
+
+function renderRunCommandCenterBody(
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
+  tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"],
+  approvals: Awaited<ReturnType<typeof listActionApprovals>>
+): string {
+  const openApprovals = approvals.filter(isOpenApproval);
+  const completed = tasks.filter((task) => task.status === "completed" && !task.skipped).length;
+  const skipped = tasks.filter((task) => task.skipped).length;
+  const failed = tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;
+  const active = tasks.filter((task) => task.status === "queued" || task.status === "leased" || task.status === "running").length;
+  const blocked = run.status === "blocked";
+  const failedRun = run.status === "failed";
+  const superseded = Boolean(run.replacementRunId);
+  const attention = !superseded && (openApprovals.length > 0 || blocked || failedRun);
+  const headline = superseded
+    ? "This run is read-only history"
+    : openApprovals.length
+    ? `${openApprovals.length} approval${openApprovals.length === 1 ? "" : "s"} need attention`
+    : blocked
+      ? "Workflow is blocked"
+      : failedRun
+        ? "Workflow failed"
+        : run.status === "completed"
+          ? skipped > 0 ? "Workflow completed with exceptions" : "Workflow completed"
+          : "Workflow is progressing";
+  const guidance = superseded
+    ? `Do not act on blockers here. Work continued in replacement run ${escapeHtml(run.replacementRunId?.slice(0, 8) ?? "")}.`
+    : openApprovals.length
+    ? "Review each requested side effect below. Approve and run, approve only, reject, or create an exact recurring rule. The workflow resumes automatically after its final required action is resolved."
+    : blocked
+      ? escapeHtml(run.blockedReason?.trim() || "No open approval remains. Resolve the blocker, resume from a checkpoint, or start a focused diagnosis.")
+      : failedRun
+        ? "Retry the failed stages when the cause is fixed, or start a focused diagnosis from this run."
+        : run.status === "completed"
+          ? skipped > 0
+            ? `${skipped} stage${skipped === 1 ? " was" : "s were"} explicitly skipped. Review the missing evidence before treating this run as a fully verified delivery.`
+            : "Review the outcome, summarize it, or replay the run with current project state."
+          : "No operator decision is required right now. Keep this page open to watch progress, or run the worker until completion.";
+  const runPath = `/run?id=${encodeURIComponent(run.id)}`;
+  const primaryActions = superseded
+    ? `<a class="button" href="/run?id=${encodeURIComponent(run.replacementRunId ?? run.id)}">Open current continuation →</a>`
+    : blocked
+    ? `${queueRunActionForm(run.id, "resolve-blocker", "Retry After Fix")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run")}${queueRunActionForm(run.id, "resume-checkpoint", "Resume Checkpoint")}${queueRunActionForm(run.id, "replay-run", "Replay Run")}`
+    : failedRun
+      ? `${queueRunActionForm(run.id, "retry-failed", "Retry Failed Stages")}${queueRunActionForm(run.id, "repair-blocked", "Diagnose as New Run")}${queueRunActionForm(run.id, "replay-run", "Replay Run")}`
+      : run.status === "completed"
+        ? `${queueRunActionForm(run.id, "replay-run", "Replay Run")}${runActionForm(run.id, "summarize", "Summarize Run")}`
+        : `${workerActionForm(run.id, "batch", "Process Next Batch")}${workerActionForm(run.id, "watch", "Run Until Complete")}${queueRunActionForm(run.id, "cancel", "Cancel Run")}`;
+  const approvalCards = openApprovals.map((approval) => renderMobileApprovalCard(approval)).join("");
+  const approvalHistory = approvals.filter((approval) => !isOpenApproval(approval)).slice(0, 5).map((approval) => `
+    <tr><td>${escapeHtml(approval.actionType)}</td><td><span class="status ${escapeHtml(approval.status)}">${escapeHtml(approval.status)}</span></td><td>${escapeHtml(truncateMiddle(approval.target, 92))}</td><td>${renderDashboardDateTime(approval.updatedAt)}</td></tr>
+  `).join("");
+  return `
+    <div class="section-heading run-command-heading">
+      <div><p class="eyebrow">Command Center</p><h2>${escapeHtml(headline)}</h2><span class="muted">${guidance}</span></div>
+      <span class="status ${attention ? "blocked" : escapeHtml(run.status)}">${attention ? "attention" : escapeHtml(run.status)}</span>
+    </div>
+    <div class="run-command-metrics">
+      <div><strong>${formatNumber(completed)}/${formatNumber(tasks.length)}</strong><span>stages complete${skipped ? ` · ${formatNumber(skipped)} skipped` : ""}</span></div>
+      <div><strong>${formatNumber(active)}</strong><span>active or queued</span></div>
+      <div><strong>${formatNumber(failed)}</strong><span>blocked or failed</span></div>
+      <div class="${openApprovals.length ? "needs-attention" : ""}"><strong>${formatNumber(openApprovals.length)}</strong><span>open approvals</span></div>
+    </div>
+    <div class="actions run-command-actions">${primaryActions}<a class="button secondary" href="/approvals?status=open&run=${encodeURIComponent(run.id)}">All Run Approvals</a></div>
+    ${blocked && !superseded ? renderRunBlockerGuide(run, tasks) : ""}
+    ${openApprovals.length && !superseded ? `<div class="run-approval-section"><div class="section-heading"><div><h3>Decisions Required</h3><span class="muted">These controls use the same project role gates, execution claims, receipts, and policy checks as the Approvals page.</span></div></div><div class="run-approval-grid">${approvalCards}</div></div>` : ""}
+    ${approvalHistory ? `<details class="governance-details"><summary>Recent approval history</summary><div class="table-wrap"><table><thead><tr><th>Action</th><th>Status</th><th>Target</th><th>Updated</th></tr></thead><tbody>${approvalHistory}</tbody></table></div></details>` : ""}
+    <input type="hidden" data-run-return-path value="${escapeHtml(runPath)}">
+  `;
+}
+
+function renderRunBlockerGuide(
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
+  tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"]
+): string {
+  const blockedStages = tasks.filter((task) => task.status === "blocked" || task.status === "failed").map((task) => task.stageId);
+  return `<div class="run-blocker-guide">
+    <div>
+      <p class="eyebrow">Not sure what to choose?</p>
+      <h3>How to move this run forward</h3>
+      <ul>
+        <li><strong>Retry After Fix</strong> when you have already corrected the issue or supplied the missing input.</li>
+        <li><strong>Diagnose as New Run</strong> when you want Agent Workflow to investigate and attempt a governed repair.</li>
+        <li><strong>Skip blocked stage</strong> when this stage is optional and you accept that its checks or output will be missing.</li>
+      </ul>
+    </div>
+    <form class="run-skip-blocker-form" method="post" action="/api/queue-action">
+      <input type="hidden" name="runId" value="${escapeHtml(run.id)}">
+      <input type="hidden" name="action" value="skip-blocker">
+      <label>Why is it safe to skip ${escapeHtml(blockedStages.join(", ") || "this stage")}?<input name="reason" required placeholder="Example: optional verification is unavailable; I accept the risk"></label>
+      <label class="check-row"><input type="checkbox" name="confirmed" required> I understand this stage’s evidence or output will be missing.</label>
+      <button class="warning" type="submit">Skip blocked stage &amp; continue →</button>
+    </form>
+  </div>`;
 }
 
 type RunDecisionExplanation = {
@@ -36293,6 +36645,7 @@ async function processDashboardQueueAction(input: {
       ok: true,
       title: "Blocked run repair queued",
       runId: queued.run.runId,
+      redirectToRun: true,
       output: [
         `Blocked run: ${runId}`,
         `Repair run: ${queued.run.runId}`,
@@ -36330,6 +36683,7 @@ async function processDashboardQueueAction(input: {
         ok: true,
         title: "Blocker resolved and workflow resumed",
         runId: result.replacementRunId ?? runId,
+        redirectToRun: Boolean(result.replacementRunId),
         output: [
           `Run: ${result.replacementRunId ?? runId}`,
           ...(result.replacementRunId ? [`Superseded blocked run: ${runId}`] : []),
@@ -36337,10 +36691,58 @@ async function processDashboardQueueAction(input: {
           `Requeued blocked or unfinished stages: ${result.requeuedTasks}`,
           `Project context refreshed: ${projectDir}`,
           ...formatStaleInputWarnings(staleReport),
-          `Open: /run?id=${encodeURIComponent(runId)}`
+          `Open: /run?id=${encodeURIComponent(result.replacementRunId ?? runId)}`
         ].join("\n")
       }
       : { ok: false, error: `No blocked or unfinished stages could be resumed for run ${runId}.` };
+  }
+
+  if (action === "skip-blocker") {
+    if (!input.confirmed) {
+      return { ok: false, error: "Confirm that you accept the missing stage evidence before skipping the blocker." };
+    }
+    const reason = input.reason.trim();
+    if (!reason) {
+      return { ok: false, error: "Explain why the blocked stage is safe to skip." };
+    }
+    const details = await getWorkflowRunDetails(runId);
+    if (!details.run || (details.run.status !== "blocked" && details.run.status !== "failed")) {
+      return { ok: false, error: `Run is not blocked/failed or does not exist: ${runId}` };
+    }
+    const skippedStageIds = details.tasks
+      .filter((task) => task.status === "blocked" || task.status === "failed")
+      .map((task) => task.stageId);
+    if (!skippedStageIds.length) {
+      return { ok: false, error: "No blocked or failed stage is available to skip." };
+    }
+    const replayed = await replayWorkflowRun({
+      sourceRunId: runId,
+      actor: input.actor?.trim() || "dashboard",
+      reason,
+      preserveCompletedCheckpoints: true,
+      skipStageIds: skippedStageIds
+    });
+    if (!replayed) return { ok: false, error: `Unknown workflow run: ${runId}` };
+    await dismissFailedWorkflowRun({
+      runId,
+      actor: input.actor?.trim() || "dashboard",
+      reason: `Blocked stage ${skippedStageIds.join(", ")} explicitly skipped; continued in replacement run ${replayed.runId}. Operator reason: ${reason}`
+    });
+    return {
+      ok: true,
+      title: "Blocked stage skipped; workflow continued",
+      runId: replayed.runId,
+      redirectToRun: true,
+      output: [
+        `Source run: ${runId}`,
+        `Continuation run: ${replayed.runId}`,
+        `Skipped stage${skippedStageIds.length === 1 ? "" : "s"}: ${skippedStageIds.join(", ")}`,
+        `Completed checkpoints preserved: ${replayed.completedTasks}/${replayed.tasks}`,
+        `Queued remaining stages: ${replayed.queuedTasks}`,
+        `Reason: ${reason}`,
+        `Open: /run?id=${encodeURIComponent(replayed.runId)}`
+      ].join("\n")
+    };
   }
 
   if (action === "resume-checkpoint") {
@@ -36356,6 +36758,7 @@ async function processDashboardQueueAction(input: {
         ok: true,
         title: "Run resumed from checkpoint",
         runId: result.replacementRunId ?? runId,
+        redirectToRun: Boolean(result.replacementRunId),
         output: [
           `Run: ${result.replacementRunId ?? runId}`,
           ...(result.replacementRunId ? [`Superseded terminal run: ${runId}`] : []),
@@ -36380,6 +36783,7 @@ async function processDashboardQueueAction(input: {
         ok: true,
         title: "Run replay queued",
         runId: replayed.runId,
+        redirectToRun: true,
         output: [
           `Source run: ${runId}`,
           `Replay run: ${replayed.runId}`,
@@ -36412,16 +36816,111 @@ async function processDashboardQueueAction(input: {
   return { ok: false, error: `Unsupported queue action: ${action || "none"}` };
 }
 
-async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
+async function queueSupervisedWorkflowRepair(input: {
+  run: WorkflowRunStatus;
+  projectDir: string;
+  reason: string;
+  actor: string;
+}): Promise<boolean> {
+  try {
+    await indexProjectForRun({ projectDir: input.projectDir, maxFiles: 180, refine: false, forceRefine: false });
+  } catch {
+    return false;
+  }
+  const repairTask = [
+    `Repair supervised Agent Workflow run ${input.run.id}.`,
+    `Original workflow: ${input.run.workflowId}.`,
+    `Original task: ${input.run.task.slice(0, 4000)}`,
+    `Supervisor finding: ${input.reason.slice(0, 2000)}`,
+    "Preserve the original acceptance contract and completed checkpoints. Work only within the current project policy; do not edit policy to grant yourself authority. If policy prevents required product work, remain blocked and identify the exact missing permission or approval. Otherwise implement the missing product work, execute verification, and produce the requested package or installable delivery rather than reporting plans as completion."
+  ].join("\n\n");
+  const queued = await queueWorkflow({
+    workflowId: "debug-failure",
+    projectPath: input.projectDir,
+    registeredProjectRootUri: input.run.projectRootUri,
+    task: repairTask,
+    sourceTokenBudget: "12000",
+    sourceMaxFiles: "180",
+    includeExactSourceExcerpts: true,
+    preferImplementationSources: true,
+    evaluationMetadata: { source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor }
+  });
+  if (!queued.ok) return false;
+  await recordRunAction({
+    runId: input.run.id,
+    agentId: "workflow-orchestrator",
+    actionType: "workflow_supervisor_repair_queued",
+    target: queued.run.runId,
+    summary: "Workflow supervisor refreshed project context and queued a policy-bounded repair run.",
+    artifactKind: "workflow_supervisor_repair",
+    artifactContent: {
+      sourceRunId: input.run.id,
+      repairRunId: queued.run.runId,
+      workflowId: queued.workflow.id,
+      projectRootUri: input.run.projectRootUri,
+      finding: input.reason
+    },
+    idempotencyKey: `workflow-supervisor-repair-${input.run.id}-${queued.run.runId}`
+  });
+  return true;
+}
+
+async function loadProjectDeliveryReceipts(projectDir: string): Promise<SupervisedDeliveryReceipt[]> {
+  const receiptsDir = path.join(projectDir, ".agent-workflow", "receipts");
+  const entries = await fs.readdir(receiptsDir, { withFileTypes: true }).catch(() => []);
+  const candidates = entries
+    .filter((entry) => entry.isFile() && /\.(?:md|json)$/iu.test(entry.name))
+    .slice(0, 250);
+  const receipts: SupervisedDeliveryReceipt[] = [];
+  for (const entry of candidates) {
+    const absolutePath = path.join(receiptsDir, entry.name);
+    const content = await fs.readFile(absolutePath, "utf8").catch(() => "");
+    if (!content || content.length > 100_000) continue;
+    receipts.push({ path: path.relative(projectDir, absolutePath), content });
+  }
+  return receipts;
+}
+
+async function dismissRunSupersededByReceipt(input: {
+  run: WorkflowRunStatus;
+  receipt: SupervisedDeliveryReceipt;
+  repairRun?: WorkflowRunStatus;
+}): Promise<void> {
+  const reason = `Superseded by verified project delivery evidence ${input.receipt.path}; immutable history preserved.`;
+  if (input.repairRun && ["queued", "leased", "running"].includes(input.repairRun.status)) {
+    await cancelWorkflowRun(input.repairRun.id);
+  }
+  if (input.run.status === "blocked" || input.run.status === "failed") {
+    await dismissFailedWorkflowRun({ runId: input.run.id, actor: "learning-daemon", reason });
+  }
+}
+
+async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
   if (mode !== "apply-approved") return 0;
   const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
-  if (runs.some((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && stringValue(run.evaluationMetadata?.source) === "blocked-run-repair")) return 0;
-  for (const run of runs.filter((item) => item.status === "blocked")) {
+  const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair"]);
+  const deliveryReceipts = await loadProjectDeliveryReceipts(projectDir);
+  const activeRepair = runs.find((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && repairSources.has(stringValue(run.evaluationMetadata?.source) ?? ""));
+  if (activeRepair) {
+    const sourceRunId = stringValue(activeRepair.evaluationMetadata?.sourceRunId);
+    const sourceRun = runs.find((candidate) => candidate.id === sourceRunId);
+    const sourceDetails = sourceRun ? await getWorkflowRunDetails(sourceRun.id) : null;
+    const repairSuppressed = sourceDetails?.receipts.some((receipt) => receipt.actionType === "workflow_supervisor_repair_suppressed") ?? false;
+    if (sourceRun && repairSuppressed) {
+      await cancelWorkflowRun(activeRepair.id);
+      return 1;
+    }
+    const receipt = sourceRun ? findSupersedingDeliveryReceipt(sourceRun.task, deliveryReceipts) : null;
+    if (!sourceRun || !receipt) return 0;
+    await dismissRunSupersededByReceipt({ run: sourceRun, receipt, repairRun: activeRepair });
+    return 1;
+  }
+  for (const run of runs.filter((item) => !item.dismissed && (item.status === "blocked" || item.status === "failed" || item.status === "completed"))) {
     const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId);
-    const repairSource = stringValue(run.evaluationMetadata?.source) === "blocked-run-repair"
+    const repairSource = repairSources.has(stringValue(run.evaluationMetadata?.source) ?? "")
       ? runs.find((candidate) => candidate.id === sourceRunId)
       : undefined;
-    const supersededBy = findLaterCompletedEquivalentRun(runs, repairSource ?? run);
+    const supersededBy = run.status === "completed" ? undefined : findLaterCompletedEquivalentRun(runs, repairSource ?? run);
     if (supersededBy) {
       const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
       await dismissFailedWorkflowRun({ runId: run.id, actor: "learning-daemon", reason });
@@ -36431,28 +36930,34 @@ async function autoHealOneBlockedRun(projectDir: string, mode: LearningDaemonMod
       return 1;
     }
     if (repairSource) continue;
-    if (Date.now() - Date.parse(run.startedAt) > 7 * 24 * 60 * 60 * 1000) continue;
+    const repairReferenceTime = run.finishedAt ?? run.startedAt;
+    if (!isWithinAutomaticWorkflowRepairWindow(repairReferenceTime)) continue;
+    const deliveryReceipt = run.status === "completed" ? null : findSupersedingDeliveryReceipt(run.task, deliveryReceipts);
+    if (deliveryReceipt) {
+      await dismissRunSupersededByReceipt({ run, receipt: deliveryReceipt });
+      return 1;
+    }
     const details = await getWorkflowRunDetails(run.id);
-    if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued")) continue;
+    if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued"
+      || receipt.actionType === "workflow_supervisor_repair_queued"
+      || receipt.actionType === "workflow_supervisor_repair_suppressed")) continue;
     const approvals = await listActionApprovals({ runId: run.id, limit: 100 });
     if (approvals.some(isOpenApproval)) continue;
     const artifacts = await listArtifacts({ runId: run.id, kind: "stage_output" });
-    const output = artifacts.at(-1)?.content ?? {};
+    const outputs = artifacts.map((artifact) => artifact.content);
+    const output = outputs.at(-1) ?? {};
     const reason = `${stringValue(output.blockedReason) ?? ""} ${stringValue(output.summary) ?? ""}`.toLowerCase();
     const missingExistingEvidence = /\b(?:missing|not supplied|not provided|unavailable|omits?)\b/u.test(reason)
       && /\b(?:context|source|files?|diff|tests?|evidence|repository|implementation|configuration)\b/u.test(reason);
-    if (!missingExistingEvidence) continue;
-    const result = await processDashboardQueueAction({
-      action: "repair-blocked",
-      runId: run.id,
-      workerLimit: "6",
-      workerConcurrency: "1",
-      project: projectDir,
-      reason: "",
-      confirmed: false,
+    const deliveryReason = workflowDeliveryRepairReason(run, outputs);
+    if (!missingExistingEvidence && !deliveryReason) continue;
+    const repaired = await queueSupervisedWorkflowRepair({
+      run,
+      projectDir,
+      reason: deliveryReason ?? "The blocked run is missing project evidence that now exists or can be refreshed.",
       actor: "learning-daemon"
     });
-    return result.ok ? 1 : 0;
+    return repaired ? 1 : 0;
   }
   return 0;
 }
@@ -36478,7 +36983,15 @@ async function processDashboardApprovalAction(input: {
     });
   }
   if (decision === "execute") {
-    return executeApprovedAction({ approvalId, actor: "dashboard", actorRole: normalizeActorRole(input.actorRole, "operator") });
+    const result = await executeApprovedAction({ approvalId, actor: "dashboard", actorRole: normalizeActorRole(input.actorRole, "operator") });
+    if (!result.ok || !result.runId) return result;
+    const resumed = await resumeBlockedRunAfterResolvedApprovals(result.runId);
+    return resumed.resumedTasks > 0 ? {
+      ...result,
+      runId: resumed.replacementRunId ?? result.runId,
+      redirectToRun: Boolean(resumed.replacementRunId),
+      output: `${result.output}\nResumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? result.runId}.`
+    } : result;
   }
   if (decision === "dismiss") {
     return dismissApprovedAction({
@@ -36511,10 +37024,14 @@ async function processDashboardApprovalAction(input: {
   if (!approval) {
     return { ok: false, error: "Approval was not found or is no longer pending." };
   }
+  const resumed = decision === "approved"
+    ? await resumeBlockedRunAfterResolvedApprovals(approval.runId)
+    : { resumedTasks: 0 };
   return {
     ok: true,
     title: `Action ${decision}`,
-    runId: approval.runId,
+    runId: resumed.replacementRunId ?? approval.runId,
+    redirectToRun: Boolean(resumed.replacementRunId),
     output: [
       `Approval: ${approval.id}`,
       `Action: ${approval.actionType}`,
@@ -36524,8 +37041,9 @@ async function processDashboardApprovalAction(input: {
       `Actor role: ${approval.decidedRole ?? normalizeActorRole(input.actorRole, "approver")}`,
       `Role preview: ${rolePreviewForApproval(approval)}`,
       "Decision receipt was recorded.",
+      resumed.resumedTasks > 0 ? `Resumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? approval.runId}.` : "",
       "Open: /approvals"
-    ].join("\n")
+    ].filter(Boolean).join("\n")
   };
 }
 
@@ -36572,19 +37090,36 @@ async function approveAndExecuteAction(input: {
       ].join("\n")
     };
   }
+  const resumed = await resumeBlockedRunAfterResolvedApprovals(approval.runId);
   return {
     ok: true,
     title: "Action approved and executed",
-    runId: approval.runId,
+    runId: resumed.replacementRunId ?? approval.runId,
+    redirectToRun: Boolean(resumed.replacementRunId),
     output: [
       `Approval: ${approval.id}`,
       `Action: ${approval.actionType}`,
       `Target: ${approval.target}`,
       `Project: ${approval.projectRootUri}`,
       `Approval role gate: ${approvalGate.message}`,
-      execution.output
-    ].join("\n")
+      execution.output,
+      resumed.resumedTasks > 0 ? `Resumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? approval.runId}.` : ""
+    ].filter(Boolean).join("\n")
   };
+}
+
+async function resumeBlockedRunAfterResolvedApprovals(runId: string): Promise<{ resumedTasks: number; replacementRunId?: string }> {
+  const details = await getWorkflowRunDetails(runId);
+  if (details.run?.status !== "blocked") return { resumedTasks: 0 };
+  const unresolved = (await listActionApprovals({ runId, limit: 100 })).filter(isOpenApproval);
+  if (unresolved.length) return { resumedTasks: 0 };
+  const resumed = await resumeWorkflowRunFromCheckpoint({
+    runId,
+    actor: "dashboard",
+    reason: "Final required approval resolved; resume from completed checkpoints.",
+    includeFailed: true
+  });
+  return { resumedTasks: resumed.requeuedTasks, replacementRunId: resumed.replacementRunId };
 }
 
 async function processDashboardBulkApprovalAction(input: {
@@ -39971,7 +40506,9 @@ function respondDashboardAction(
   result: DashboardFollowUpResult,
   fallbackPath: string
 ): void {
-  const returnPath = dashboardActionReturnPath(request, form, fallbackPath);
+  const returnPath = result.ok && result.redirectToRun && result.runId
+    ? `/run?id=${encodeURIComponent(result.runId)}`
+    : dashboardActionReturnPath(request, form, fallbackPath);
   if (!returnPath) {
     response.writeHead(result.ok ? 200 : 400, { "content-type": "text/html; charset=utf-8" });
     response.end(renderDashboardActionResult(result));
@@ -40515,7 +41052,7 @@ function stageFixVerificationForm(input: {
 }
 
 type DashboardFollowUpResult =
-  | { ok: true; title: string; output: string; runId?: string }
+  | { ok: true; title: string; output: string; runId?: string; redirectToRun?: boolean }
   | { ok: false; error: string };
 
 async function readFormBody(request: http.IncomingMessage): Promise<URLSearchParams> {

@@ -31,6 +31,7 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
   assert.match(prompt, /Prior stage artifacts \(authoritative outputs from this run\)/u);
   assert.match(prompt, /Edit packages\/runtime\.ts/u);
   assert.match(prompt, /outcome: completed when the stage goal was achieved/u);
+  assert.match(prompt, /PINNED KEYWORD CONTRACT: BUILD means create, verify, package, and deliver a usable product/u);
 });
 
 test("stage prompt reserves a bounded section for named commit evidence", () => {

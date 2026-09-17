@@ -63,7 +63,18 @@ export function createOrchestrationPlan(input: { projectDir: string; task: strin
     addStep({ title: "Change review", reason: "The request calls for review, launch readiness, production confidence, SEO, or site-wide risk assessment.", kind: "workflow", target: "review-pr", task: `Review the project for risks, regressions, missing checks, and recommended actions related to: ${input.task}`, skipIfPriorEmpty: true });
   }
   if (requestsMutation && !includesAny(["review", "audit", "pass"])) {
-    addStep({ title: "Feature implementation plan", reason: "The request asks for implementation or changes, so the build-feature workflow should plan and execute within policy.", kind: "workflow", target: "build-feature", task: `Implement or plan the requested change within project policy: ${input.task}` });
+    const pinnedBuild = /\bbuild\b/u.test(normalizedTask);
+    addStep({
+      title: pinnedBuild ? "Build and deliver product" : "Feature implementation",
+      reason: pinnedBuild
+        ? "BUILD is a pinned delivery keyword: create, verify, package, and deliver a usable product within policy."
+        : "The request asks for implementation or changes, so the build-feature workflow should execute within policy.",
+      kind: "workflow",
+      target: "build-feature",
+      task: pinnedBuild
+        ? `BUILD CONTRACT: Create, verify, package, and deliver the requested usable product. Analysis, planning, documentation, or handoff alone is not completion. Original request: ${input.task}`
+        : `Implement and verify the requested change within project policy: ${input.task}`
+    });
   }
   if (includesAny(["context", "memory", "docs", "documentation", "remember", "decisions"])) {
     addStep({ title: "Context maintenance", reason: "The request mentions durable memory, docs, context, or decisions.", kind: "workflow", target: "maintain-context", task: `Update durable project context and decisions for: ${input.task}` });

@@ -919,7 +919,8 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
   const replay = await replayWorkflowRun({
     sourceRunId: runId,
     actor: "retry-failed-run",
-    reason: "Retry requested; terminal history is immutable, so a new run was created."
+    reason: "Retry requested; terminal history is immutable, so a checkpoint-preserving replacement run was created.",
+    preserveCompletedCheckpoints: true
   });
   if (replay) {
     await dismissFailedWorkflowRun({
@@ -928,7 +929,7 @@ export async function retryFailedWorkflowRun(runId: string): Promise<number> {
       reason: `Superseded by replacement run ${replay.runId}; immutable history and receipts preserved.`
     });
   }
-  return replay?.tasks ?? 0;
+  return replay?.queuedTasks ?? 0;
 }
 
 export async function resumeWorkflowRunFromCheckpoint(input: {
@@ -948,7 +949,12 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
       return result.rows[0]?.status;
     });
     if (terminal === "failed" || terminal === "blocked" || terminal === "cancelled") {
-      const replay = await replayWorkflowRun({ sourceRunId: input.runId, actor: input.actor, reason: input.reason });
+      const replay = await replayWorkflowRun({
+        sourceRunId: input.runId,
+        actor: input.actor,
+        reason: input.reason,
+        preserveCompletedCheckpoints: true
+      });
       if (replay) {
         await dismissFailedWorkflowRun({
           runId: input.runId,
@@ -956,7 +962,12 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
           reason: `Superseded by replacement run ${replay.runId}; immutable history and receipts preserved.`
         });
       }
-      return { requeuedTasks: replay?.tasks ?? 0, completedTasks: 0, totalTasks: replay?.tasks ?? 0, replacementRunId: replay?.runId };
+      return {
+        requeuedTasks: replay?.queuedTasks ?? 0,
+        completedTasks: replay?.completedTasks ?? 0,
+        totalTasks: replay?.tasks ?? 0,
+        replacementRunId: replay?.runId
+      };
     }
   }
   return withClient(async (client) => {
@@ -1422,7 +1433,9 @@ export async function replayWorkflowRun(input: {
   sourceRunId: string;
   actor: string;
   reason: string;
-}): Promise<{ projectId: string; runId: string; tasks: number } | null> {
+  preserveCompletedCheckpoints?: boolean;
+  skipStageIds?: string[];
+}): Promise<{ projectId: string; runId: string; tasks: number; completedTasks: number; skippedTasks: number; queuedTasks: number } | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -1489,6 +1502,36 @@ export async function replayWorkflowRun(input: {
       if (!workflow) {
         throw new Error(`Source run workflow is unavailable: ${input.sourceRunId}`);
       }
+      const sourceTasks = input.preserveCompletedCheckpoints
+        ? await client.query<{
+          id: string;
+          stageId: string;
+          status: string;
+          attempts: number;
+          startedAt: string | null;
+          finishedAt: string | null;
+          artifactContent: Record<string, unknown> | null;
+        }>(
+          `select wt.id::text,
+                  wt.stage_id as "stageId",
+                  wt.status,
+                  wt.attempts,
+                  wt.started_at::text as "startedAt",
+                  wt.finished_at::text as "finishedAt",
+                  artifact.content as "artifactContent"
+             from workflow_tasks wt
+             left join lateral (
+               select content
+                 from artifacts
+                where run_id = wt.run_id and task_id = wt.id and kind = 'stage_output'
+                order by created_at desc
+                limit 1
+             ) artifact on true
+            where wt.run_id = $1::uuid`,
+          [input.sourceRunId]
+        )
+        : { rows: [] };
+      const sourceTaskByStage = new Map(sourceTasks.rows.map((task) => [task.stageId, task]));
       const replayPolicy = resolveExecutionPolicy(sourceRun.projectConfig as ProjectConfig, sourceRun.policyProfile);
 
       const projectResult = await client.query<{ id: string }>(
@@ -1511,7 +1554,9 @@ export async function replayWorkflowRun(input: {
         ...sourceRun.evaluationMetadata,
         replayOfRunId: input.sourceRunId,
         replayedBy: input.actor,
-        replayReason: input.reason
+        replayReason: input.reason,
+        checkpointResume: input.preserveCompletedCheckpoints === true,
+        skippedStageIds: [...new Set(input.skipStageIds ?? [])]
       };
       const runResult = await client.query<{ id: string }>(
         `insert into workflow_runs (
@@ -1566,19 +1611,96 @@ export async function replayWorkflowRun(input: {
       }
 
       const taskIds: Record<string, string> = {};
+      let completedTasks = 0;
+      let skippedTasks = 0;
+      const skippedStageIds = new Set(input.skipStageIds ?? []);
       for (const stage of workflow.stages) {
+        const sourceTask = sourceTaskByStage.get(stage.id);
+        const preserveCheckpoint = sourceTask?.status === "completed" && sourceTask.artifactContent !== null;
+        const skipStage = skippedStageIds.has(stage.id) && !preserveCheckpoint;
         const taskResult = await client.query<{ id: string }>(
-          `insert into workflow_tasks (run_id, stage_id, agent_id, status, idempotency_key)
-           values ($1, $2, $3, 'queued', $4)
+          `insert into workflow_tasks (
+             run_id, stage_id, agent_id, status, idempotency_key,
+             attempts, started_at, finished_at
+           )
+           values ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8::timestamptz)
            returning id::text`,
           [
             runId,
             stage.id,
             stage.agent,
-            `${runId}:${stage.id}:${stage.agent}`
+            preserveCheckpoint || skipStage ? "completed" : "queued",
+            `${runId}:${stage.id}:${stage.agent}`,
+            preserveCheckpoint ? sourceTask.attempts : 0,
+            preserveCheckpoint ? sourceTask.startedAt : skipStage ? new Date().toISOString() : null,
+            preserveCheckpoint ? sourceTask.finishedAt : skipStage ? new Date().toISOString() : null
           ]
         );
-        taskIds[stage.id] = taskResult.rows[0].id;
+        const taskId = taskResult.rows[0].id;
+        taskIds[stage.id] = taskId;
+        if (preserveCheckpoint) {
+          completedTasks += 1;
+          if (sourceTask.artifactContent) {
+            const outputUri = `db://workflow_tasks/${taskId}/output`;
+            await client.query(
+              `insert into artifacts (run_id, task_id, kind, uri, content)
+               values ($1::uuid, $2::uuid, 'stage_output', $3, $4::jsonb)`,
+              [
+                runId,
+                taskId,
+                outputUri,
+                JSON.stringify({
+                  ...sourceTask.artifactContent,
+                  checkpointPreservedFromRunId: input.sourceRunId,
+                  checkpointPreservedFromTaskId: sourceTask.id
+                })
+              ]
+            );
+            await client.query(`update workflow_tasks set output_uri = $2 where id = $1::uuid`, [taskId, outputUri]);
+          }
+          await client.query(
+            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+             values ($1::uuid, $2, 'stage_checkpoint_preserved', $3, $4, $5::jsonb)`,
+            [
+              runId,
+              stage.agent,
+              taskId,
+              `Preserved completed checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}.`,
+              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask.id, stageId: stage.id })
+            ]
+          );
+        } else if (skipStage) {
+          skippedTasks += 1;
+          const outputUri = `db://workflow_tasks/${taskId}/output`;
+          await client.query(
+            `insert into artifacts (run_id, task_id, kind, uri, content)
+             values ($1::uuid, $2::uuid, 'stage_output', $3, $4::jsonb)`,
+            [
+              runId,
+              taskId,
+              outputUri,
+              JSON.stringify({
+                status: "skipped",
+                summary: `Stage ${stage.id} was explicitly skipped by ${input.actor}.`,
+                skipped: true,
+                skippedFromRunId: input.sourceRunId,
+                skipReason: input.reason
+              })
+            ]
+          );
+          await client.query(`update workflow_tasks set output_uri = $2 where id = $1::uuid`, [taskId, outputUri]);
+          await client.query(
+            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+             values ($1::uuid, $2, 'stage_blocker_ignored', $3, $4, $5::jsonb)`,
+            [
+              runId,
+              stage.agent,
+              taskId,
+              `Explicitly skipped blocked stage ${stage.id}; downstream execution may continue.`,
+              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask?.id ?? null, stageId: stage.id, actor: input.actor, reason: input.reason })
+            ]
+          );
+        }
       }
       await createWorkflowHandoffsForRun(client, runId, workflow);
       const sourceRevision = Object.values(sourceRun.executorSnapshot ?? {})[0]?.revision;
@@ -1604,6 +1726,10 @@ export async function replayWorkflowRun(input: {
           JSON.stringify({
             actor: input.actor,
             sourceRunId: input.sourceRunId,
+            preserveCompletedCheckpoints: input.preserveCompletedCheckpoints === true,
+            completedTasks,
+            skippedTasks,
+            queuedTasks: workflow.stages.length - completedTasks - skippedTasks,
             policySnapshotHash: sourceRun.policySnapshotHash,
             workflowSnapshot: sourceRun.workflowSnapshot ? "source-run" : "current-registry"
           })
@@ -1614,7 +1740,10 @@ export async function replayWorkflowRun(input: {
       return {
         projectId,
         runId,
-        tasks: workflow.stages.length
+        tasks: workflow.stages.length,
+        completedTasks,
+        skippedTasks,
+        queuedTasks: workflow.stages.length - completedTasks - skippedTasks
       };
     } catch (error) {
       await client.query("rollback");
@@ -2264,6 +2393,9 @@ export interface WorkflowRunStatus {
   modelTierOverride: string | null;
   providerOverride: string | null;
   evaluationMetadata: Record<string, unknown>;
+  replacementRunId?: string | null;
+  replacementRunStatus?: string | null;
+  replacementRunStartedAt?: string | null;
   workflowDefinitionVersion?: string;
   workflowDefinitionHash?: string;
   constructionRationale?: Record<string, unknown>;
@@ -2284,6 +2416,7 @@ export interface WorkflowTaskStatus {
   stageId: string;
   agentId: string;
   status: string;
+  skipped?: boolean;
   attempts: number;
   startedAt: string | null;
   finishedAt: string | null;
@@ -2996,10 +3129,11 @@ export interface ActivityEventStatus {
   source: string;
 }
 
-export async function listActivityEvents(input: { limit?: number; projectRootUri?: string }): Promise<ActivityEventStatus[]> {
+export async function listActivityEvents(input: { limit?: number; projectRootUri?: string; runId?: string }): Promise<ActivityEventStatus[]> {
   return withClient(async (client) => {
     const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
     const projectRootUri = input.projectRootUri?.trim() || null;
+    const runId = input.runId?.trim() || null;
     const result = await client.query<ActivityEventStatus>(
       `with activity as (
          select 'run-start:' || wr.id::text as id, wr.started_at as occurred_at,
@@ -3051,10 +3185,12 @@ export async function listActivityEvents(input: { limit?: number; projectRootUri
               project_root_uri as "projectRootUri", run_id::text as "runId", category,
               event_type as "eventType", severity, status, actor, title, detail, source
          from activity
-        where occurred_at is not null and ($2::text is null or project_root_uri = $2)
+        where occurred_at is not null
+          and ($2::text is null or project_root_uri = $2)
+          and ($3::uuid is null or run_id = $3::uuid)
         order by occurred_at desc
         limit $1`,
-      [limit, projectRootUri]
+      [limit, projectRootUri, runId]
     );
     return result.rows;
   });
@@ -3186,6 +3322,9 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         replacement.id as "replacementRunId",
+         replacement.status as "replacementRunStatus",
+         replacement.started_at as "replacementRunStartedAt",
          wr.workflow_definition_version as "workflowDefinitionVersion",
          wr.workflow_definition_hash as "workflowDefinitionHash",
          wr.construction_rationale as "constructionRationale",
@@ -3202,23 +3341,43 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          ) else null end as "blockedReason"
        from workflow_runs wr
        join projects p on p.id = wr.project_id
+       left join lateral (
+         select
+           next_run.id::text as id,
+           next_run.status,
+           next_run.started_at::text as started_at
+         from workflow_runs next_run
+         where next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
+         order by next_run.started_at desc
+         limit 1
+       ) replacement on true
        where wr.id = $1`,
       [runId]
     );
 
     const taskResult = await client.query<WorkflowTaskStatus>(
       `select
-         id::text,
-         stage_id as "stageId",
-         agent_id as "agentId",
-         status,
-         attempts,
-         nullif(executor_snapshot, '{}'::jsonb) as "executorSnapshot",
-         started_at::text as "startedAt",
-         finished_at::text as "finishedAt"
-       from workflow_tasks
-       where run_id = $1
-       order by available_at asc, stage_id asc`,
+         wt.id::text,
+         wt.stage_id as "stageId",
+         wt.agent_id as "agentId",
+         wt.status,
+         exists (
+           select 1 from action_receipts skipped_receipt
+           where skipped_receipt.run_id = wt.run_id
+             and skipped_receipt.target = wt.id::text
+             and skipped_receipt.action_type = 'stage_blocker_ignored'
+         ) as skipped,
+         wt.attempts,
+         nullif(wt.executor_snapshot, '{}'::jsonb) as "executorSnapshot",
+         wt.started_at::text as "startedAt",
+         wt.finished_at::text as "finishedAt"
+       from workflow_tasks wt
+       join workflow_runs wr on wr.id = wt.run_id
+       left join workflows wf on wf.id = wr.workflow_id
+       join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') with ordinality stage(definition, stage_order)
+         on stage.definition->>'id' = wt.stage_id
+       where wt.run_id = $1
+       order by stage.stage_order asc`,
       [runId]
     );
 
