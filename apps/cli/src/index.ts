@@ -4460,6 +4460,34 @@ program
       return heartbeat;
     };
 
+    let queueRecoveryInFlight: Promise<{ stale: RuntimeStaleRunReconciliationResult; healed: number }> | null = null;
+    const runQueueRecoveryLane = async (): Promise<{ stale: RuntimeStaleRunReconciliationResult; healed: number }> => {
+      if (queueRecoveryInFlight) return queueRecoveryInFlight;
+      queueRecoveryInFlight = (async () => {
+        const stale = await runLearningDaemonStaleRunReconciliation(projectDir);
+        const discoveredTargets = allProjects
+          ? await loadLearningDaemonProjectTargets(projectDir)
+          : [{ projectDir, enabled: true, paused: false, mode, limit }];
+        let healed = stale.reconciled.filter((item) => item.updated).length;
+        for (const target of discoveredTargets.filter((item) => item.enabled && !item.paused && item.mode === "apply-approved")) {
+          const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
+            projectRootUri: target.projectDir,
+            actor: "learning-daemon",
+            reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
+          });
+          healed += leaseRecovery.affectedRuns;
+          await learnFromWorkflowRepairs(target.projectDir);
+          healed += await autoRepairOneWorkflowRun(target.projectDir, target.mode);
+        }
+        return { stale, healed };
+      })();
+      try {
+        return await queueRecoveryInFlight;
+      } finally {
+        queueRecoveryInFlight = null;
+      }
+    };
+
     const runTick = async (): Promise<void> => {
       ticks += 1;
       try {
@@ -4502,7 +4530,9 @@ program
           // pass cannot leave completed work shown as queued or actionable
           // blockers unattended for several minutes.
           try {
-            staleRunReconciliation = await runLearningDaemonStaleRunReconciliation(projectDir);
+            const queueRecovery = await runQueueRecoveryLane();
+            staleRunReconciliation = queueRecovery.stale;
+            blockedRunsAutoHealed += queueRecovery.healed;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${projectDir} stale run reconciliation: ${message}`);
@@ -4529,14 +4559,6 @@ program
                 approvalAutopilotSkipped += autopilot.skipped;
                 autonomousAppliedActions += autopilot.executed;
               }
-              const leaseRecovery = await requeueExpiredWorkflowTaskLeases({
-                projectRootUri: recoveryTarget.projectDir,
-                actor: "learning-daemon",
-                reason: "Workflow supervisor recovered an expired task lease and requeued the unfinished stage."
-              });
-              blockedRunsAutoHealed += leaseRecovery.affectedRuns;
-              await learnFromWorkflowRepairs(recoveryTarget.projectDir);
-              blockedRunsAutoHealed += await autoRepairOneWorkflowRun(recoveryTarget.projectDir, recoveryTarget.mode);
               await writeStatus(stop ? "stopping" : "running", undefined, undefined, recoveryTarget.projectDir);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);
@@ -4645,12 +4667,20 @@ program
     };
 
     await writeStatus("starting");
-    await runTick();
-    if (options.once) {
-      const stopped = await writeStatus("stopped");
-      if (options.json) console.log(JSON.stringify(stopped, null, 2));
-      return;
-    }
+    await runQueueRecoveryLane();
+    const queueRecoveryTimer = setInterval(() => {
+      void runQueueRecoveryLane().catch((error) => {
+        console.error(`Queue recovery lane failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, Math.min(intervalMs, 10_000));
+    queueRecoveryTimer.unref();
+    try {
+      await runTick();
+      if (options.once) {
+        const stopped = await writeStatus("stopped");
+        if (options.json) console.log(JSON.stringify(stopped, null, 2));
+        return;
+      }
 
     const stopDaemon = () => {
       stop = true;
@@ -4661,12 +4691,15 @@ program
     if (!options.json) {
       console.log(`Learning daemon watching. id=${daemonId} mode=${mode} scope=${allProjects ? "all-projects" : "project"} project=${projectDir} intervalMs=${intervalMs} heartbeat=${heartbeatFile}`);
     }
-    while (!stop) {
-      await sleep(intervalMs);
-      if (!stop) await runTick();
+      while (!stop) {
+        await sleep(intervalMs);
+        if (!stop) await runTick();
+      }
+      const stopped = await writeStatus("stopped");
+      if (options.json) console.log(JSON.stringify(stopped, null, 2));
+    } finally {
+      clearInterval(queueRecoveryTimer);
     }
-    const stopped = await writeStatus("stopped");
-    if (options.json) console.log(JSON.stringify(stopped, null, 2));
   });
 
 program
@@ -37302,7 +37335,10 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       }
       return 1;
     }
-    if (repairSource) continue;
+    const providerRecoveryNeedsRealProbe = Boolean(repairSource)
+      && stringValue(run.evaluationMetadata?.source) === "workflow-root-repair"
+      && stringValue(run.evaluationMetadata?.rootRepairKind) === "provider-recovered";
+    if (repairSource && !providerRecoveryNeedsRealProbe) continue;
     const repairReferenceTime = run.finishedAt ?? run.startedAt;
     if (!isWithinAutomaticWorkflowRepairWindow(repairReferenceTime)) continue;
     const deliveryReceipt = run.status === "completed" ? null : findSupersedingDeliveryReceipt(run.task, deliveryReceipts);
@@ -37341,8 +37377,27 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       const transientProviderOutage = /\bprovider_outage\b|\bprovider outage\b/u.test(reason);
       if (!transientProviderOutage) continue;
       const provider = providerFromEnv(run.providerOverride ?? undefined);
+      const project = await loadProjectConfig(projectDir);
       const health = provider.check ? await provider.check().catch(() => ({ ready: false, details: [] })) : { ready: false, details: [] };
       if (!health.ready) continue;
+      const inferenceReady = await provider.executeStage({
+        runId: randomUUID(),
+        taskId: randomUUID(),
+        projectRootUri: projectDir,
+        projectConfig: project,
+        workflowId: "provider-recovery-probe",
+        workflowTask: "Verify that the configured provider can complete one bounded inference request.",
+        stageId: "probe",
+        agentId: "workflow-orchestrator",
+        agentName: "Workflow Orchestrator",
+        agentPrompt: "This is a provider health probe. Do not use tools or inspect project files. Return a short completed summary.",
+        stageGoal: "Return a successful bounded response without tools.",
+        compiledBrief: "Synthetic provider health probe. No project content is included.",
+        modelTier: "fast",
+        providerOverride: run.providerOverride,
+        priorReceipts: []
+      }).then(() => true, () => false);
+      if (!inferenceReady) continue;
       const replay = await replayWorkflowRun({
         sourceRunId: run.id,
         actor: "learning-daemon",
@@ -37351,7 +37406,7 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
         evaluationMetadataPatch: {
           source: "workflow-root-repair",
           sourceRunId: run.id,
-          rootRepairKind: "provider-recovered"
+          rootRepairKind: providerRecoveryNeedsRealProbe ? "provider-inference-recovered" : "provider-recovered"
         }
       });
       if (!replay) return 0;

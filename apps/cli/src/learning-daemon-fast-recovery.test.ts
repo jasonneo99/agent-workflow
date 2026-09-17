@@ -21,7 +21,7 @@ test("learning daemon dismisses older equivalent blockers and their approvals", 
 test("all-project daemon sweeps every queue between expensive project analyses", () => {
   assert.match(
     source,
-    /const runFastRecoverySweep = async[\s\S]+runLearningDaemonStaleRunReconciliation\(projectDir\)[\s\S]+for \(const recoveryTarget of targets\)[\s\S]+dismissDuplicateBlockedWorkflowRuns\(recoveryTarget\.projectDir[\s\S]+runApprovalAutopilot\([\s\S]+requeueExpiredWorkflowTaskLeases[\s\S]+learnFromWorkflowRepairs\(recoveryTarget\.projectDir\)[\s\S]+autoRepairOneWorkflowRun\(recoveryTarget\.projectDir, recoveryTarget\.mode\)/u
+    /const runQueueRecoveryLane = async[\s\S]+runLearningDaemonStaleRunReconciliation\(projectDir\)[\s\S]+requeueExpiredWorkflowTaskLeases[\s\S]+learnFromWorkflowRepairs\(target\.projectDir\)[\s\S]+autoRepairOneWorkflowRun\(target\.projectDir, target\.mode\)[\s\S]+const runFastRecoverySweep = async[\s\S]+runQueueRecoveryLane\(\)[\s\S]+dismissDuplicateBlockedWorkflowRuns\(recoveryTarget\.projectDir[\s\S]+runApprovalAutopilot/u
   );
   assert.match(
     source,
@@ -34,5 +34,6 @@ test("queue health and root repair run before slow project learning", () => {
   const learningTick = source.indexOf("await runLearningDaemonTick({", fastSweep);
   assert.ok(fastSweep >= 0);
   assert.ok(learningTick > fastSweep);
-  assert.match(source.slice(source.indexOf("const runFastRecoverySweep"), fastSweep), /runLearningDaemonStaleRunReconciliation[\s\S]+learnFromWorkflowRepairs[\s\S]+autoRepairOneWorkflowRun/u);
+  assert.match(source.slice(source.indexOf("const runFastRecoverySweep"), fastSweep), /runQueueRecoveryLane/u);
+  assert.match(source, /await runQueueRecoveryLane\(\);[\s\S]+setInterval\([\s\S]+runQueueRecoveryLane\(\)[\s\S]+Math\.min\(intervalMs, 10_000\)/u);
 });

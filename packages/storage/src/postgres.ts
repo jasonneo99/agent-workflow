@@ -1801,6 +1801,34 @@ export async function replayWorkflowRun(input: {
         ]
       );
 
+      const queuedTasks = workflow.stages.length - completedTasks - skippedTasks;
+      if (queuedTasks === 0) {
+        // A checkpoint-preserving replay can be terminal at creation time. It
+        // must still traverse the authoritative lifecycle so dashboards never
+        // display a completed replay as queued while waiting for reconciliation.
+        await transitionWorkflowRun(client, {
+          runId,
+          to: "leased",
+          actor: input.actor,
+          reason: "Replay restored every stage from completed checkpoints.",
+          idempotencyKey: "checkpoint-replay:leased"
+        });
+        await transitionWorkflowRun(client, {
+          runId,
+          to: "running",
+          actor: input.actor,
+          reason: "Replay restored every stage from completed checkpoints.",
+          idempotencyKey: "checkpoint-replay:running"
+        });
+        await transitionWorkflowRun(client, {
+          runId,
+          to: "completed",
+          actor: input.actor,
+          reason: "All replay stages were restored from completed checkpoints.",
+          idempotencyKey: "checkpoint-replay:completed"
+        });
+      }
+
       await client.query("commit");
       return {
         projectId,
@@ -1808,7 +1836,7 @@ export async function replayWorkflowRun(input: {
         tasks: workflow.stages.length,
         completedTasks,
         skippedTasks,
-        queuedTasks: workflow.stages.length - completedTasks - skippedTasks
+        queuedTasks
       };
     } catch (error) {
       await client.query("rollback");

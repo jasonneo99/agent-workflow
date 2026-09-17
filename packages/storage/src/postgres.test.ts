@@ -127,6 +127,11 @@ test("checkpoint replacement preserves completed stages and queues only unfinish
   assert.match(replay, /\.\.\.input\.evaluationMetadataPatch[\s\S]+replayOfRunId: input\.sourceRunId/u);
 });
 
+test("checkpoint replay finalizes immediately when every stage is already complete", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /if \(queuedTasks === 0\)[\s\S]+to: "leased"[\s\S]+to: "running"[\s\S]+to: "completed"/u);
+});
+
 test("operator-approved blocker skipping is explicit, receipted, and dependency-compatible", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /skipStageIds\?: string\[\]/u);

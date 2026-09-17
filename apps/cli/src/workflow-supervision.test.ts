@@ -17,11 +17,11 @@ test("learning daemon replays review evidence gaps with explicit root-repair lin
 });
 
 test("learning daemon health-gates one replay after a typed provider outage", () => {
-  assert.match(cliSource, /transientProviderOutage[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+rootRepairKind: "provider-recovered"[\s\S]+workflow_provider_recovery_replayed/u);
+  assert.match(cliSource, /providerRecoveryNeedsRealProbe[\s\S]+transientProviderOutage[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+provider\.executeStage[\s\S]+provider-inference-recovered[\s\S]+workflow_provider_recovery_replayed/u);
 });
 
 test("learning daemon closes every terminal repair with a reusable local lesson", () => {
-  assert.match(cliSource, /learnFromWorkflowRepairs\(recoveryTarget\.projectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
+  assert.match(cliSource, /learnFromWorkflowRepairs\(target\.projectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
   assert.match(cliSource, /actionType: "workflow_repair_learning"/u);
   assert.match(cliSource, /sourceUri: `agentflow:\/\/repair-learning\/\$\{run\.id\}`/u);
   assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks \}\)/u);
