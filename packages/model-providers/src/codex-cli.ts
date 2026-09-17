@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -163,7 +164,7 @@ function configuredAuthMode(): "chatgpt" | "access-token" | "any" {
 }
 
 export function createCodexCliRunner(): CodexCliRunner {
-  const binary = process.env.CODEX_CLI_BIN?.trim() || "codex";
+  const binary = resolveCodexCliBinary();
   return {
     authStatus: async () => {
       const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
@@ -191,6 +192,16 @@ export function createCodexCliRunner(): CodexCliRunner {
       });
     }
   };
+}
+
+function resolveCodexCliBinary(): string {
+  const configured = process.env.CODEX_CLI_BIN?.trim();
+  if (configured) return configured;
+  for (const directory of (process.env.PATH ?? "").split(path.delimiter).filter(Boolean)) {
+    const candidate = path.join(directory, "codex");
+    if (existsSync(candidate)) return candidate;
+  }
+  return "codex";
 }
 
 async function withCodexCliProcessLock<T>(operation: () => Promise<T>): Promise<T> {
@@ -315,7 +326,8 @@ export function buildCodexCliDiagnostic(input: { rawDetail: string; errorCode?: 
 
 function codexCliProcessError(input: Parameters<typeof buildCodexCliDiagnostic>[0]): CodexCliProcessError {
   const diagnostic = buildCodexCliDiagnostic(input);
-  const failure = new Error(`Codex CLI ${diagnostic.category.replaceAll("_", " ")} (diagnostic ${diagnostic.digest.slice(0, 12)}).`) as CodexCliProcessError;
+  const safeCode = diagnostic.errorCode ? ` [${diagnostic.errorCode}]` : "";
+  const failure = new Error(`Codex CLI ${diagnostic.category.replaceAll("_", " ")}${safeCode} (diagnostic ${diagnostic.digest.slice(0, 12)}).`) as CodexCliProcessError;
   failure.code = diagnostic.errorCode ?? `CODEX_CLI_${diagnostic.category.toUpperCase()}`;
   failure.retryable = diagnostic.retryable;
   failure.diagnostic = diagnostic;

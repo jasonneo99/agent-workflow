@@ -127,3 +127,9 @@ test("Codex CLI process launches are serialized across daemon and worker process
   const source = readFileSync(new URL("./codex-cli.ts", import.meta.url), "utf8");
   assert.match(source, /withCodexCliProcessLock[\s\S]+fs\.open\(lockPath, "wx", 0o600\)[\s\S]+process\.kill\(pid, 0\)[\s\S]+await operation\(\)/u);
 });
+
+test("Codex CLI resolves a PATH entry before spawning and exposes only the safe spawn code", () => {
+  const source = readFileSync(new URL("./codex-cli.ts", import.meta.url), "utf8");
+  assert.match(source, /resolveCodexCliBinary[\s\S]+process\.env\.PATH[\s\S]+existsSync\(candidate\)/u);
+  assert.match(source, /safeCode = diagnostic\.errorCode/u);
+});
