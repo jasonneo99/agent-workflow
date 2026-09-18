@@ -2036,7 +2036,7 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; defaultProviderId?: string; excludedProjectRootUris?: string[]; perProjectConcurrency?: number }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; defaultProviderId?: string; workerPlatform?: NodeJS.Platform; excludedProjectRootUris?: string[]; perProjectConcurrency?: number }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -2048,6 +2048,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       // worker cannot claim work for a provider it cannot execute.
       const providerIds = input?.providerIds === undefined ? null : [...new Set(input.providerIds)];
       const defaultProviderId = input?.defaultProviderId?.trim() || null;
+      const workerPlatform = input?.workerPlatform ?? null;
       const excludedProjectRootUris = input?.excludedProjectRootUris?.length ? [...new Set(input.excludedProjectRootUris)] : null;
       const perProjectConcurrency = Math.max(1, Math.min(16, input?.perProjectConcurrency ?? 2));
       // Claim selection is short and transactional. Serializing only this
@@ -2068,6 +2069,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
              and ($5::text[] is null or not (p.root_uri = any($5::text[])))
+             and (
+               coalesce(jsonb_array_length(p.config->'execution'->'worker_pool'->'allowed_platforms'), 0) = 0
+               or $8::text in (
+                 select jsonb_array_elements_text(p.config->'execution'->'worker_pool'->'allowed_platforms')
+               )
+             )
              and (
                select count(*)
                from workflow_tasks project_active
@@ -2176,7 +2183,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id limit 1
            ), a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId]
+        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId, workerPlatform]
       );
 
       if (!result.rows[0]) {

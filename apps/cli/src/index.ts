@@ -6326,7 +6326,7 @@ program
 
     if (!options.watch) {
       const capabilities = await probeWorkerProviderCapabilities();
-      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, perProjectConcurrency, providerIds: capabilities.ready, defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock" });
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, perProjectConcurrency, providerIds: capabilities.ready, defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock", workerPlatform: process.platform });
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
       console.log(`Concurrency: ${concurrency}`);
@@ -6407,6 +6407,7 @@ program
       perProjectConcurrency,
       providerIds: capabilities.ready,
       defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock",
+      workerPlatform: process.platform,
       providerRecoveryCooldownMs: 60_000,
       recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
       shouldStop: () => stop,
@@ -37735,10 +37736,6 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       ? runs.find((candidate) => candidate.id === sourceRunId)
       : undefined;
     const priorProviderRecoveryKind = stringValue(repairSource?.evaluationMetadata?.rootRepairKind);
-    // A recovered-provider replay gets at most one health-probed continuation.
-    // A second failed continuation is durable evidence to stop, learn, and
-    // surface the unmet host/provider prerequisite instead of looping.
-    if (priorProviderRecoveryKind === "provider-inference-recovered") continue;
     const supersededBy = run.status === "completed" ? undefined : findLaterCompletedEquivalentRun(runs, repairSource ?? run);
     if (supersededBy) {
       const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
@@ -37784,6 +37781,10 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       recordedFailure
     });
     if (rootRepairAction === "operator-provider") {
+      // A recovered-provider replay gets at most one health-probed provider
+      // continuation. A different later root cause still enters its matching
+      // repair path instead of being hidden by provider lineage.
+      if (priorProviderRecoveryKind === "provider-inference-recovered") continue;
       // Never retry a provider incident blindly. Once readiness and one bounded
       // inference both pass, previously external authentication, quota,
       // configuration, and outage failures are proven recovered and may be
@@ -46029,6 +46030,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       policy_profiles: {},
       worker_pool: {
         worker_id: "local-dev",
+        allowed_platforms: [],
         limit: 6,
         concurrency: 4,
         per_project_concurrency: 2,

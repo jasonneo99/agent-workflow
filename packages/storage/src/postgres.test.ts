@@ -64,7 +64,12 @@ test("workers claim only tasks whose pinned or resolved default provider they ad
   assert.match(source, /cardinality\(\$4::text\[\]\) > 0/u);
   assert.match(source, /\$4::text\[\] is null[\s\S]+?= any\(\$4::text\[\]\)/u);
   assert.match(source, /nullif\(nullif\(\$7::text, 'default'\), 'auto'\)/u);
-  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId\]/u);
+  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId, workerPlatform\]/u);
+});
+
+test("workers claim only projects that allow their operating-system platform", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /allowed_platforms[\s\S]+\$8::text[\s\S]+jsonb_array_elements_text/u);
 });
 
 test("workers can exclude project checkouts unavailable on their host", () => {

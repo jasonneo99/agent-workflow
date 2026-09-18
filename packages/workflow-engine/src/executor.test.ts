@@ -51,6 +51,7 @@ test("worker provider capabilities flow into durable queue claims", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /providerIds\?: string\[\]/u);
   assert.match(source, /defaultProviderId\?: string/u);
+  assert.match(source, /workerPlatform\?: NodeJS\.Platform/u);
   assert.match(source, /claimNextWorkflowTask\(\{[\s\S]+excludedProjectRootUris/u);
   assert.match(source, /providerIds: providerIds \? \[\.\.\.providerIds\] : undefined/u);
   assert.match(source, /options\.providerIds\.splice\([\s\S]+providerId !== attemptedProviderId/u);

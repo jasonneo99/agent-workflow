@@ -22,7 +22,8 @@ test("learning daemon health-gates one replay after a recoverable provider failu
 });
 
 test("learning daemon stops after one health-probed provider continuation", () => {
-  assert.match(cliSource, /priorProviderRecoveryKind === "provider-inference-recovered"\) continue/u);
+  assert.match(cliSource, /rootRepairAction === "operator-provider"[\s\S]+priorProviderRecoveryKind === "provider-inference-recovered"\) continue/u);
+  assert.doesNotMatch(cliSource, /priorProviderRecoveryKind === "provider-inference-recovered"\) continue;[\s\S]+const supersededBy/u);
 });
 
 test("learning daemon closes every terminal repair with a reusable local lesson", () => {
