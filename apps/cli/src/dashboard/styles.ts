@@ -197,14 +197,13 @@ export function dashboardCss(): string {
     .run-stage-timeline-scroll { overflow-x: auto; padding: 6px 2px 4px; }
     .run-stage-timeline { display: flex; min-width: max-content; margin: 0; padding: 0; list-style: none; }
     .run-stage-step { position: relative; display: grid; justify-items: center; align-content: start; width: 150px; min-width: 150px; padding: 0 10px; text-align: center; }
-    .run-stage-open { appearance: none; display: grid; justify-items: center; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 8px; background: transparent; color: inherit; box-shadow: none; }
-    .run-stage-open:hover { border-color: transparent; background: #f8fafc; box-shadow: none; }
-    .run-stage-open:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
     .run-stage-track { position: relative; width: 100%; display: grid; place-items: center; }
     .run-stage-track::after { content: ""; position: absolute; top: 50%; left: calc(50% + 20px); width: calc(100% - 40px); height: 3px; transform: translateY(-50%); background: #dbe4f0; }
     .run-stage-step:last-child .run-stage-track::after { display: none; }
     .run-stage-step.completed .run-stage-track::after { background: #16a34a; }
-    .run-stage-circle { position: relative; z-index: 1; display: grid; place-items: center; width: 38px; height: 38px; border: 3px solid #cbd5e1; border-radius: 50%; background: #fff; color: #64748b; font-weight: 800; }
+    .run-stage-circle { appearance: none; position: relative; z-index: 1; display: grid; place-items: center; width: 38px; height: 38px; padding: 0; border: 3px solid #cbd5e1; border-radius: 50%; background: #fff; color: #64748b; font-weight: 800; box-shadow: none; }
+    .run-stage-circle:hover { transform: scale(1.06); border-color: #60a5fa; background: #fff; color: #1d4ed8; box-shadow: 0 0 0 4px rgba(37, 99, 235, .1); }
+    .run-stage-circle:focus-visible { outline: 2px solid #2563eb; outline-offset: 3px; }
     .run-stage-step.completed .run-stage-circle { border-color: #16a34a; background: #16a34a; color: #fff; }
     .run-stage-step.active .run-stage-circle { border-color: #2563eb; background: #dbeafe; color: #1d4ed8; box-shadow: 0 0 0 6px rgba(37, 99, 235, .1); animation: run-stage-pulse 1.6s ease-in-out infinite; }
     .run-stage-step.failed .run-stage-circle { border-color: #dc2626; background: #fee2e2; color: #b91c1c; }
@@ -213,7 +212,6 @@ export function dashboardCss(): string {
     .run-stage-step strong { max-width: 100%; margin-top: 10px; color: #172033; font-size: 13px; overflow-wrap: anywhere; }
     .run-stage-step .run-stage-agent { max-width: 100%; margin-top: 2px; color: #64748b; font-size: 11px; overflow-wrap: anywhere; }
     .run-stage-step small { margin-top: 5px; color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
-    .run-stage-hint { margin-top: 4px; color: #2563eb; font-size: 10px; font-weight: 700; }
     .run-stage-step.completed small { color: #15803d; }
     .run-stage-step.active small { color: #1d4ed8; }
     .run-stage-step.failed small { color: #b91c1c; }

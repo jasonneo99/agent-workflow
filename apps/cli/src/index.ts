@@ -34551,13 +34551,10 @@ function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunD
             : "pending";
     const stateLabel = state === "active" ? "in progress" : state;
     return `<li class="run-stage-step ${state}" aria-label="Stage ${index + 1}: ${escapeHtml(task.stageId)}, ${escapeHtml(stateLabel)}">
-      <button type="button" class="run-stage-open" data-stage-watch="${escapeHtml(task.stageId)}" aria-label="Watch stage ${escapeHtml(task.stageId)}">
-        <span class="run-stage-track"><span class="run-stage-circle">${index + 1}</span></span>
-        <strong>${escapeHtml(task.stageId)}</strong>
-        <span class="run-stage-agent">${escapeHtml(task.agentId)}</span>
-        <small>${escapeHtml(stateLabel)}</small>
-        <span class="run-stage-hint">Open live view</span>
-      </button>
+      <div class="run-stage-track"><button type="button" class="run-stage-circle" data-stage-watch="${escapeHtml(task.stageId)}" aria-label="Watch stage ${escapeHtml(task.stageId)}" title="Open live stage activity">${index + 1}</button></div>
+      <strong>${escapeHtml(task.stageId)}</strong>
+      <span class="run-stage-agent">${escapeHtml(task.agentId)}</span>
+      <small>${escapeHtml(stateLabel)}</small>
     </li>`;
   }).join("");
   const completed = tasks.filter((task) => task.status === "completed" && !task.skipped).length;
