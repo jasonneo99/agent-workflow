@@ -113,6 +113,28 @@ export async function migrateStorage(): Promise<void> {
       WHERE evaluation_metadata ? 'sourceRunId'
     `);
     await client.query(`
+      WITH legacy_replacements AS (
+        SELECT DISTINCT ON (source.id)
+          source.id AS source_id,
+          child.id AS replacement_id
+        FROM workflow_runs source
+        JOIN workflow_runs child
+          ON child.id <> source.id
+         AND (
+           child.evaluation_metadata->>'replayOfRunId' = source.id::text
+           OR child.evaluation_metadata->>'sourceRunId' = source.id::text
+         )
+        WHERE source.replacement_run_id IS NULL
+        ORDER BY source.id, child.started_at DESC, child.id DESC
+      )
+      UPDATE workflow_runs source
+      SET replacement_run_id = legacy.replacement_id,
+          updated_at = now()
+      FROM legacy_replacements legacy
+      WHERE source.id = legacy.source_id
+        AND source.replacement_run_id IS NULL
+    `);
+    await client.query(`
       UPDATE workflow_runs
       SET status = 'cancelled'
       WHERE status = 'dismissed'
@@ -641,19 +663,11 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
              array[wr.id, next_run.id] as path
            from workflow_runs next_run
            where next_run.id = wr.replacement_run_id
-              or (wr.replacement_run_id is null and (
-                next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
-                or next_run.evaluation_metadata->>'sourceRunId' = wr.id::text
-              ))
            union all
            select child.id, child.status, child.started_at, child.replacement_run_id,
                   parent.relation, parent.depth + 1, parent.path || child.id
            from workflow_runs child
            join descendants parent on child.id = parent.replacement_run_id
-             or (parent.replacement_run_id is null and (
-               child.evaluation_metadata->>'replayOfRunId' = parent.id::text
-               or child.evaluation_metadata->>'sourceRunId' = parent.id::text
-             ))
            where parent.depth < 20 and not child.id = any(parent.path)
          )
          select id::text, status, started_at::text, relation

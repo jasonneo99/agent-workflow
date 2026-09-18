@@ -107,8 +107,7 @@ test("queue items expose replay and repair recovery relationships without rewrit
   assert.match(source, /recovery\.id as "recoveryRunId"/u);
   assert.match(source, /next_run\.id = wr\.replacement_run_id/u);
   assert.match(source, /child\.id = parent\.replacement_run_id/u);
-  assert.match(source, /wr\.replacement_run_id is null[\s\S]+next_run\.evaluation_metadata->>'replayOfRunId'/u);
-  assert.match(source, /next_run\.evaluation_metadata->>'replayOfRunId' = wr\.id::text[\s\S]+next_run\.evaluation_metadata->>'sourceRunId' = wr\.id::text/u);
+  assert.doesNotMatch(source, /next_run\.id = wr\.replacement_run_id[\s\S]{0,160}\bor\b/u);
   assert.match(source, /recovery\.relation as "recoveryRelation"/u);
   assert.match(source, /with recursive descendants as/u);
   assert.match(source, /parent\.depth < 20 and not child\.id = any\(parent\.path\)/u);
@@ -121,6 +120,14 @@ test("queue and dashboard lookups have indexes for recovery, receipts, and task 
   assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_repair_source_idx[\s\S]+evaluation_metadata->>'sourceRunId'/u);
   assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_schedule_idx[\s\S]+ON workflow_tasks\(run_id, status, available_at, started_at\)/u);
   assert.match(source, /CREATE INDEX IF NOT EXISTS action_receipts_run_type_created_idx[\s\S]+ON action_receipts\(run_id, action_type, created_at DESC\)/u);
+});
+
+test("migration moves legacy metadata lineage onto the indexed replacement relation", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /WITH legacy_replacements AS/u);
+  assert.match(source, /child\.evaluation_metadata->>'replayOfRunId' = source\.id::text/u);
+  assert.match(source, /child\.evaluation_metadata->>'sourceRunId' = source\.id::text/u);
+  assert.match(source, /SET replacement_run_id = legacy\.replacement_id/u);
 });
 
 test("queue and run detail expose the latest recorded stage failure reason", () => {
