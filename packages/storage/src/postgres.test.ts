@@ -63,12 +63,22 @@ test("workers claim only tasks whose pinned provider they advertise", () => {
   assert.match(source, /input\?\.providerIds === undefined \? null/u);
   assert.match(source, /cardinality\(\$4::text\[\]\) > 0/u);
   assert.match(source, /\$4::text\[\] is null[\s\S]+?= any\(\$4::text\[\]\)/u);
-  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris\]/u);
+  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency\]/u);
 });
 
 test("workers can exclude project checkouts unavailable on their host", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /excludedProjectRootUris[\s\S]+not \(p\.root_uri = any\(\$5::text\[\]\)\)/u);
+});
+
+test("global workers enforce fair bounded project concurrency while preserving run order", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const claim = source.slice(source.indexOf("export async function claimNextWorkflowTask"), source.indexOf("export async function startWorkflowTask"));
+  assert.match(claim, /pg_advisory_xact_lock\(hashtext\('agentflow:workflow-task-scheduler'\)\)/u);
+  assert.match(claim, /project_active\.status in \('leased', 'running'\)[\s\S]+< \$6::int/u);
+  assert.match(claim, /order by[\s\S]+count\(\*\)[\s\S]+wt\.available_at asc/u);
+  assert.match(claim, /not exists \([\s\S]+active\.run_id = wt\.run_id[\s\S]+active\.status in \('leased', 'running'\)/u);
+  assert.match(claim, /prior\.status <> 'completed'/u);
 });
 
 test("dismissed terminal runs remain immutable history but leave the actionable queue", () => {

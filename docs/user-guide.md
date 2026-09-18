@@ -1049,7 +1049,8 @@ execution:
   worker_pool:
     worker_id: local-dev
     limit: 6
-    concurrency: 1
+    concurrency: 4
+    per_project_concurrency: 2
     lease_seconds: 120
     interval_ms: 2000
     project_scoped: true
@@ -1097,7 +1098,12 @@ running.
 
 `--limit` is the maximum number of stages a worker tick may process. `--concurrency`
 is how many of those stages may run at the same time, capped at `16` for local
-developer safety. `lease_seconds` is a renewable liveness window, not a task timeout.
+developer safety. `--per-project-concurrency` limits how many active stages one
+project may occupy. Global workers prefer projects with fewer active stages, so
+unrelated repositories make progress in round-robin-like order instead of one
+busy project consuming the pool. Claim selection is serialized briefly across
+workers to enforce the cap, while stage execution remains parallel.
+`lease_seconds` is a renewable liveness window, not a task timeout.
 Healthy work renews it every one-third of the interval; if a worker or supervisor
 restarts, another worker may reclaim the abandoned stage after roughly two minutes
 with the default configuration.

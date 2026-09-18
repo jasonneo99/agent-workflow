@@ -29,7 +29,8 @@ const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
 const learningHeartbeatPath = path.join(learningProject, ".agent-workflow", "learning", "daemon-status.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 const workerLimit = Number.parseInt(process.env.AGENTFLOW_WORKER_LIMIT ?? "6", 10);
-const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "1", 10);
+const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "4", 10);
+const workerPerProjectConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_PER_PROJECT_CONCURRENCY ?? "2", 10);
 const workerId = process.env.AGENTFLOW_WORKER_ID ?? "supervised-local";
 const workerIntervalMs = Number.parseInt(process.env.AGENTFLOW_WORKER_INTERVAL_MS ?? "2000", 10);
 const learningEnabled = process.env.AGENTFLOW_LEARNING_DAEMON !== "0";
@@ -303,6 +304,8 @@ function startWorker(lane) {
     String(lane.leaseSeconds),
     "--concurrency",
     String(lane.concurrency),
+    "--per-project-concurrency",
+    String(lane.perProjectConcurrency),
     "--heartbeat-file",
     lane.heartbeatPath
   ];
@@ -432,6 +435,7 @@ async function writeHeartbeat(status, message) {
     daemonLanes: supervisedDaemonLaneStatus(learningEnabled),
     workerLimit,
     workerConcurrency,
+    workerPerProjectConcurrency,
     workerPoolProfile: configuredWorkerPoolProfile ?? null,
     workerLanes: workerLanes.map((lane) => ({
       id: lane.id,
@@ -440,6 +444,7 @@ async function writeHeartbeat(status, message) {
       projectScoped: lane.projectScoped,
       limit: lane.limit,
       concurrency: lane.concurrency,
+      perProjectConcurrency: lane.perProjectConcurrency,
       leaseSeconds: lane.leaseSeconds,
       intervalMs: lane.intervalMs,
       heartbeatPath: lane.heartbeatPath
@@ -469,6 +474,7 @@ async function loadWorkerLanes() {
       projectScoped: false,
       limit: positiveNumber(workerLimit, 6),
       concurrency: boundedPositiveNumber(workerConcurrency, 1, 16),
+      perProjectConcurrency: boundedPositiveNumber(workerPerProjectConcurrency, 1, 16),
       leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "120", 10), 120),
       intervalMs: positiveNumber(workerIntervalMs, 2000),
       heartbeatPath: workerHeartbeatPath
@@ -494,6 +500,7 @@ async function loadWorkerLanes() {
         projectScoped,
         limit: positiveNumber(numberValue(lane.limit) ?? numberValue(profile.limit) ?? numberValue(pool.limit) ?? workerLimit, 6),
         concurrency: boundedPositiveNumber(numberValue(lane.concurrency) ?? numberValue(profile.concurrency) ?? numberValue(pool.concurrency) ?? workerConcurrency, 1, 16),
+        perProjectConcurrency: boundedPositiveNumber(numberValue(lane.per_project_concurrency) ?? numberValue(profile.per_project_concurrency) ?? numberValue(pool.per_project_concurrency) ?? workerPerProjectConcurrency, 1, 16),
         leaseSeconds: positiveNumber(numberValue(lane.lease_seconds) ?? numberValue(profile.lease_seconds) ?? numberValue(pool.lease_seconds) ?? 120, 120),
         intervalMs,
         heartbeatPath: laneHeartbeatPath(laneWorkerId, index)
@@ -508,6 +515,7 @@ async function loadWorkerLanes() {
       projectScoped: true,
       limit: positiveNumber(workerLimit, 6),
       concurrency: boundedPositiveNumber(workerConcurrency, 1, 16),
+      perProjectConcurrency: boundedPositiveNumber(workerPerProjectConcurrency, 1, 16),
       leaseSeconds: positiveNumber(Number.parseInt(process.env.AGENTFLOW_WORKER_LEASE_SECONDS ?? "120", 10), 120),
       intervalMs: positiveNumber(workerIntervalMs, 2000),
       heartbeatPath: workerHeartbeatPath

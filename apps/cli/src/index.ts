@@ -289,6 +289,7 @@ type WorkerHeartbeat = {
   workerId: string;
   projectRootUri: string | null;
   concurrency: number;
+  perProjectConcurrency: number;
   startedAt: string;
   lastHeartbeatAt: string;
   limit: number;
@@ -312,6 +313,7 @@ type DashboardWorkerStatus = {
   workerId: string | null;
   projectRootUri: string | null;
   concurrency: number | null;
+  perProjectConcurrency: number | null;
   status: "running" | "stale" | "stopped" | "missing";
   pid: number | null;
   startedAt: string | null;
@@ -6217,8 +6219,9 @@ program
   .option("-p, --project <dir>", "only claim queued tasks for one project root")
   .option("--all-projects", "use project worker-pool defaults without restricting queue claims to that project")
   .option("--concurrency <number>", "maximum tasks this worker may execute at the same time", "1")
+  .option("--per-project-concurrency <number>", "maximum active stages from any one project", "2")
   .option("--heartbeat-file <path>", "worker heartbeat file path", defaultWorkerHeartbeatPath)
-  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; project?: string; allProjects?: boolean; concurrency: string; heartbeatFile: string }) => {
+  .action(async (options: { limit: string; watch?: boolean; intervalMs: string; workerId?: string; leaseSeconds: string; project?: string; allProjects?: boolean; concurrency: string; perProjectConcurrency: string; heartbeatFile: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -6247,15 +6250,17 @@ program
       return;
     }
     const concurrency = parseBoundedPositiveInteger(cliOptionValue(options.concurrency, ["--concurrency"], String(workerDefaults.concurrency ?? 1)), 1, 16);
+    const perProjectConcurrency = parseBoundedPositiveInteger(cliOptionValue(options.perProjectConcurrency, ["--per-project-concurrency"], String(workerDefaults.perProjectConcurrency ?? 2)), 1, 16);
     const projectScoped = workerDefaults.projectScoped !== false && !options.allProjects;
     const projectRootUri = configuredProjectRootUri && projectScoped ? configuredProjectRootUri : undefined;
 
     if (!options.watch) {
       const capabilities = await probeWorkerProviderCapabilities();
-      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, providerIds: capabilities.ready });
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, perProjectConcurrency, providerIds: capabilities.ready });
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
       console.log(`Concurrency: ${concurrency}`);
+      console.log(`Per-project concurrency: ${perProjectConcurrency}`);
       const approvalNotice = await formatPendingApprovalInboxNotice(projectRootUri);
       if (approvalNotice) {
         console.log("");
@@ -6287,6 +6292,7 @@ program
         workerId,
         projectRootUri: projectRootUri ?? null,
         concurrency,
+        perProjectConcurrency,
         startedAt,
         lastHeartbeatAt: new Date().toISOString(),
         limit,
@@ -6301,7 +6307,7 @@ program
           ...(tick?.quarantinedProviderIds ?? [])
         ])],
         status,
-        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency}`
+        command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency} --per-project-concurrency ${perProjectConcurrency}`
       };
       await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
       await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
@@ -6318,7 +6324,7 @@ program
     process.once("SIGTERM", stopWorker);
 
     await writeHeartbeat("starting");
-    console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
+    console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} perProjectConcurrency=${perProjectConcurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
     await runWorkerWatch({
       limitPerTick: limit,
       intervalMs,
@@ -6326,6 +6332,7 @@ program
       leaseSeconds,
       projectRootUri,
       concurrency,
+      perProjectConcurrency,
       providerIds: capabilities.ready,
       providerRecoveryCooldownMs: 60_000,
       recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
@@ -35216,6 +35223,7 @@ async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
     limit: null,
     projectRootUri: null,
     concurrency: null,
+    perProjectConcurrency: null,
     intervalMs: null,
     ticks: 0,
     claimed: 0,
@@ -35283,6 +35291,7 @@ async function loadWorkerHeartbeatLane(heartbeatPath: string): Promise<Dashboard
       limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
       projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : null,
       concurrency: typeof heartbeat.concurrency === "number" ? heartbeat.concurrency : null,
+      perProjectConcurrency: typeof heartbeat.perProjectConcurrency === "number" ? heartbeat.perProjectConcurrency : null,
       intervalMs,
       ticks: typeof heartbeat.ticks === "number" ? heartbeat.ticks : 0,
       claimed: typeof heartbeat.claimed === "number" ? heartbeat.claimed : 0,
@@ -40440,6 +40449,7 @@ function renderWorkerStatusHtml(worker: DashboardWorkerStatus, options: { compac
       <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
       <div><strong>Project Scope</strong>${escapeHtml(worker.projectRootUri ?? "all projects")}</div>
       <div><strong>Concurrency</strong>${worker.concurrency ?? "n/a"}</div>
+      <div><strong>Per-project cap</strong>${worker.perProjectConcurrency ?? "n/a"}</div>
       <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
       <div><strong>Ready Providers</strong>${escapeHtml(worker.providerIds?.join(", ") || "legacy/unknown")}</div>
       <div><strong>Unavailable Providers</strong>${escapeHtml(worker.unavailableProviderIds?.join(", ") || "none")}</div>
@@ -45553,6 +45563,7 @@ async function loadProjectWorkerPoolDefaults(projectDir: string): Promise<{
   workerId?: string;
   limit?: number;
   concurrency?: number;
+  perProjectConcurrency?: number;
   leaseSeconds?: number;
   intervalMs?: number;
   projectScoped?: boolean;
@@ -45564,6 +45575,7 @@ async function loadProjectWorkerPoolDefaults(projectDir: string): Promise<{
       workerId: workerPool?.worker_id,
       limit: workerPool?.limit,
       concurrency: workerPool?.concurrency,
+      perProjectConcurrency: workerPool?.per_project_concurrency,
       leaseSeconds: workerPool?.lease_seconds,
       intervalMs: workerPool?.interval_ms,
       projectScoped: workerPool?.project_scoped
@@ -45897,7 +45909,8 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
       worker_pool: {
         worker_id: "local-dev",
         limit: 6,
-        concurrency: 1,
+        concurrency: 4,
+        per_project_concurrency: 2,
         lease_seconds: 120,
         interval_ms: 2000,
         project_scoped: true,

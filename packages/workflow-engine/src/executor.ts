@@ -48,6 +48,7 @@ export type WorkerRunOptions = {
   leaseSeconds?: number;
   projectRootUri?: string;
   concurrency?: number;
+  perProjectConcurrency?: number;
   recoverExpiredLeases?: boolean;
   providerIds?: string[];
   unavailableProjectRootUris?: Set<string>;
@@ -843,12 +844,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         await assertLeaseOwned();
         let writeResult;
         try {
-          writeResult = await executeAllowedFileWrite({
-            relativePath: fileWrite.path,
-            content: fileWrite.content,
-            cwd: localProjectRootUri,
-            project
-          });
+          writeResult = await withProjectExecutionLock(
+            { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
+            () => executeAllowedFileWrite({
+              relativePath: fileWrite.path,
+              content: fileWrite.content,
+              cwd: localProjectRootUri,
+              project
+            })
+          );
         } catch (error) {
           const rejectionArtifactUri = await recordRunAction({
             runId: task.runId,
@@ -1301,6 +1305,7 @@ export async function runWorkerWatch(input: {
   leaseSeconds?: number;
   projectRootUri?: string;
   concurrency?: number;
+  perProjectConcurrency?: number;
   providerIds?: string[];
   providerRecoveryCooldownMs?: number;
   recoverProvider?: (providerId: string) => Promise<boolean>;
@@ -1328,6 +1333,7 @@ export async function runWorkerWatch(input: {
       leaseSeconds: input.leaseSeconds,
       projectRootUri: input.projectRootUri,
       concurrency: input.concurrency,
+      perProjectConcurrency: input.perProjectConcurrency,
       providerIds: providerIds ? [...providerIds] : undefined,
       unavailableProjectRootUris
     });

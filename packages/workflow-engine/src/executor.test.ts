@@ -41,6 +41,12 @@ test("workers recover expired leases before claiming new work", () => {
   assert.match(source, /recoverExpiredLeases: false/u);
 });
 
+test("workers serialize only writes to the same project-relative file resource", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /withProjectExecutionLock\([\s\S]+resource: `file:\$\{fileWrite\.path\.replace/u);
+  assert.match(source, /commandSerializationResource\(commandLine, localProjectRootUri\)/u);
+});
+
 test("worker provider capabilities flow into durable queue claims", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /providerIds\?: string\[\]/u);

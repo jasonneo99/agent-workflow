@@ -2035,7 +2035,7 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; excludedProjectRootUris?: string[] }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; excludedProjectRootUris?: string[]; perProjectConcurrency?: number }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -2047,6 +2047,11 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       // worker cannot claim work for a provider it cannot execute.
       const providerIds = input?.providerIds === undefined ? null : [...new Set(input.providerIds)];
       const excludedProjectRootUris = input?.excludedProjectRootUris?.length ? [...new Set(input.excludedProjectRootUris)] : null;
+      const perProjectConcurrency = Math.max(1, Math.min(16, input?.perProjectConcurrency ?? 2));
+      // Claim selection is short and transactional. Serializing only this
+      // decision prevents multiple workers from racing past a project's cap;
+      // task execution remains fully parallel after the transaction commits.
+      await client.query("select pg_advisory_xact_lock(hashtext('agentflow:workflow-task-scheduler'))");
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
         `with next_task as (
            select wt.id
@@ -2061,6 +2066,13 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and wt.available_at <= now()
              and ($3::text is null or p.root_uri = $3)
              and ($5::text[] is null or not (p.root_uri = any($5::text[])))
+             and (
+               select count(*)
+               from workflow_tasks project_active
+               join workflow_runs project_run on project_run.id = project_active.run_id
+               where project_run.project_id = wr.project_id
+                 and project_active.status in ('leased', 'running')
+             ) < $6::int
              and (
                $4::text[] is null
                or (
@@ -2097,7 +2109,16 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
                  )
                  and prior.status <> 'completed'
              )
-           order by wt.available_at asc, stage.stage_order asc
+           order by
+             (
+               select count(*)
+               from workflow_tasks project_active
+               join workflow_runs project_run on project_run.id = project_active.run_id
+               where project_run.project_id = wr.project_id
+                 and project_active.status in ('leased', 'running')
+             ) asc,
+             wt.available_at asc,
+             stage.stage_order asc
            limit 1
            for update of wt skip locked
          )
@@ -2151,7 +2172,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id limit 1
            ), a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris]
+        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency]
       );
 
       if (!result.rows[0]) {
