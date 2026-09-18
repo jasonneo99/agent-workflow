@@ -75,11 +75,15 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   lease_epoch bigint NOT NULL DEFAULT 0,
   lease_owner text,
   lease_expires_at timestamptz,
+  replacement_run_id uuid REFERENCES workflow_runs(id),
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
   CONSTRAINT workflow_runs_status_check CHECK (status IN ('queued','leased','running','completed','blocked','failed','cancelled'))
 );
+
+CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx
+ON workflow_runs(replacement_run_id);
 
 CREATE TABLE IF NOT EXISTS workflow_run_transitions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

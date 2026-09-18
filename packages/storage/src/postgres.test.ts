@@ -152,6 +152,8 @@ test("checkpoint replacement preserves blocked stages after every required actio
 test("checkpoint replay atomically reserves one replacement per source run", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("export async function setQueuedWorkflowRunAutonomy"));
+  assert.match(source, /ADD COLUMN IF NOT EXISTS replacement_run_id uuid REFERENCES workflow_runs\(id\)/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx/u);
   assert.match(replay, /for update of wr/u);
   assert.match(replay, /if \(sourceRun\.replacementRunId\)/u);
   assert.match(replay, /set replacement_run_id = \$2::uuid/u);
