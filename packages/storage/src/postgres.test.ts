@@ -57,13 +57,14 @@ test("successful approval execution dismisses failed or pending sibling attempts
   assert.match(execution, /Superseded by a successfully executed approval/u);
 });
 
-test("workers claim only tasks whose pinned provider they advertise", () => {
+test("workers claim only tasks whose pinned or resolved default provider they advertise", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /claimNextWorkflowTask\(input\?: \{[^}]*providerIds\?: string\[\]/u);
   assert.match(source, /input\?\.providerIds === undefined \? null/u);
   assert.match(source, /cardinality\(\$4::text\[\]\) > 0/u);
   assert.match(source, /\$4::text\[\] is null[\s\S]+?= any\(\$4::text\[\]\)/u);
-  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency\]/u);
+  assert.match(source, /nullif\(nullif\(\$7::text, 'default'\), 'auto'\)/u);
+  assert.match(source, /\[workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId\]/u);
 });
 
 test("workers can exclude project checkouts unavailable on their host", () => {

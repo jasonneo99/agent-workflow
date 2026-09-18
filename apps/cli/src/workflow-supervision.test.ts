@@ -17,8 +17,8 @@ test("learning daemon replays review evidence gaps with explicit root-repair lin
   assert.match(cliSource, /workflow_root_repair_replayed/u);
 });
 
-test("learning daemon health-gates one replay after a typed provider outage", () => {
-  assert.match(cliSource, /providerRecoveryNeedsRealProbe[\s\S]+transientProviderOutage[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+provider\.executeStage[\s\S]+provider-inference-recovered[\s\S]+workflow_provider_recovery_replayed/u);
+test("learning daemon health-gates one replay after a recoverable provider failure", () => {
+  assert.match(cliSource, /providerRecoveryNeedsRealProbe[\s\S]+recoverableProviderFailure[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+provider\.executeStage[\s\S]+provider-inference-recovered[\s\S]+workflow_provider_recovery_replayed/u);
 });
 
 test("learning daemon closes every terminal repair with a reusable local lesson", () => {

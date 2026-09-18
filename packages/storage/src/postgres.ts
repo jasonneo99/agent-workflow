@@ -2036,7 +2036,7 @@ export interface ClaimedWorkflowTask {
   }>;
 }
 
-export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; excludedProjectRootUris?: string[]; perProjectConcurrency?: number }): Promise<ClaimedWorkflowTask | null> {
+export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSeconds?: number; projectRootUri?: string; providerIds?: string[]; defaultProviderId?: string; excludedProjectRootUris?: string[]; perProjectConcurrency?: number }): Promise<ClaimedWorkflowTask | null> {
   return withClient(async (client) => {
     await client.query("begin");
     try {
@@ -2047,6 +2047,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       // explicitly empty capability set must fail closed so a quarantined
       // worker cannot claim work for a provider it cannot execute.
       const providerIds = input?.providerIds === undefined ? null : [...new Set(input.providerIds)];
+      const defaultProviderId = input?.defaultProviderId?.trim() || null;
       const excludedProjectRootUris = input?.excludedProjectRootUris?.length ? [...new Set(input.excludedProjectRootUris)] : null;
       const perProjectConcurrency = Math.max(1, Math.min(16, input?.perProjectConcurrency ?? 2));
       // Claim selection is short and transactional. Serializing only this
@@ -2081,11 +2082,13 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
                  and (
                    coalesce(
                      nullif(nullif(wr.provider_override, 'auto'), 'default'),
-                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto'),
+                     nullif(nullif($7::text, 'default'), 'auto')
                    ) is null
                    or coalesce(
                      nullif(nullif(wr.provider_override, 'auto'), 'default'),
-                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto'),
+                     nullif(nullif($7::text, 'default'), 'auto')
                    ) = any($4::text[])
                  )
                )
@@ -2173,7 +2176,7 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              where stage->>'id' = wt.stage_id limit 1
            ), a.definition->>'model_tier') as "modelTier"`
         ,
-        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency]
+        [workerId, leaseSeconds, projectRootUri, providerIds, excludedProjectRootUris, perProjectConcurrency, defaultProviderId]
       );
 
       if (!result.rows[0]) {

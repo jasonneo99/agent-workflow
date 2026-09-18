@@ -6326,7 +6326,7 @@ program
 
     if (!options.watch) {
       const capabilities = await probeWorkerProviderCapabilities();
-      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, perProjectConcurrency, providerIds: capabilities.ready });
+      const result = await runWorkerOnce(limit, { workerId, leaseSeconds, projectRootUri, concurrency, perProjectConcurrency, providerIds: capabilities.ready, defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock" });
       console.log(`Worker ${workerId} claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
       if (projectRootUri) console.log(`Project scope: ${projectRootUri}`);
       console.log(`Concurrency: ${concurrency}`);
@@ -6406,6 +6406,7 @@ program
       concurrency,
       perProjectConcurrency,
       providerIds: capabilities.ready,
+      defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock",
       providerRecoveryCooldownMs: 60_000,
       recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
       shouldStop: () => stop,
@@ -37778,11 +37779,12 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       recordedFailure
     });
     if (rootRepairAction === "operator-provider") {
-      // Authentication, quota, and configuration failures remain operator
-      // prerequisites. A typed transient outage may be replayed once only after
-      // the exact pinned/default provider reports healthy again.
-      const transientProviderOutage = /\bprovider_outage\b|\bprovider outage\b/u.test(reason);
-      if (!transientProviderOutage) continue;
+      // Never retry a provider incident blindly. Once readiness and one bounded
+      // inference both pass, previously external authentication, quota,
+      // configuration, and outage failures are proven recovered and may be
+      // replayed exactly once from durable checkpoints.
+      const recoverableProviderFailure = /\b(?:provider[_ -]?outage|auth(?:entication|orization)?|credential|quota|configuration|rate limit)\b/u.test(reason);
+      if (!recoverableProviderFailure) continue;
       const provider = providerFromEnv(run.providerOverride ?? undefined);
       const project = await loadProjectConfig(projectDir);
       const health = provider.check ? await provider.check().catch(() => ({ ready: false, details: [] })) : { ready: false, details: [] };
@@ -37808,7 +37810,7 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
       const replay = await replayWorkflowRun({
         sourceRunId: run.id,
         actor: "learning-daemon",
-        reason: `Provider ${provider.id} recovered after a typed transient outage; replaying the original workflow once.`,
+        reason: `Provider ${provider.id} passed readiness and bounded inference after the recorded provider failure; replaying the original workflow once.`,
         preserveCompletedCheckpoints: true,
         evaluationMetadataPatch: {
           source: "workflow-root-repair",
@@ -37822,7 +37824,7 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
         agentId: "workflow-orchestrator",
         actionType: "workflow_provider_recovery_replayed",
         target: replay.runId,
-        summary: `Learning daemon verified provider ${provider.id} was healthy and replayed the transient outage once.`,
+        summary: `Learning daemon verified provider ${provider.id} with readiness and bounded inference, then replayed the recovered provider failure once.`,
         artifactKind: "workflow_root_repair",
         artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, providerId: provider.id },
         idempotencyKey: `workflow-provider-recovery-${run.id}-${replay.runId}`

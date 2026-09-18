@@ -51,6 +51,7 @@ export type WorkerRunOptions = {
   perProjectConcurrency?: number;
   recoverExpiredLeases?: boolean;
   providerIds?: string[];
+  defaultProviderId?: string;
   unavailableProjectRootUris?: Set<string>;
 };
 
@@ -1307,6 +1308,7 @@ export async function runWorkerWatch(input: {
   concurrency?: number;
   perProjectConcurrency?: number;
   providerIds?: string[];
+  defaultProviderId?: string;
   providerRecoveryCooldownMs?: number;
   recoverProvider?: (providerId: string) => Promise<boolean>;
   shouldStop: () => boolean;
@@ -1335,6 +1337,7 @@ export async function runWorkerWatch(input: {
       concurrency: input.concurrency,
       perProjectConcurrency: input.perProjectConcurrency,
       providerIds: providerIds ? [...providerIds] : undefined,
+      defaultProviderId: input.defaultProviderId,
       unavailableProjectRootUris
     });
     if (providerIds) {
