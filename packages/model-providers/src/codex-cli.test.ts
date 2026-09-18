@@ -123,9 +123,10 @@ test("Codex CLI diagnostics retain only an allowlisted type and digest", () => {
   assert.doesNotMatch(serialized, /Users|Private Project|supersecret|postgres|user:pass/u);
 });
 
-test("Codex CLI process launches are serialized across daemon and worker processes", () => {
+test("Codex CLI process launches use a configurable bounded cross-process slot pool", () => {
   const source = readFileSync(new URL("./codex-cli.ts", import.meta.url), "utf8");
-  assert.match(source, /withCodexCliProcessLock[\s\S]+fs\.open\(lockPath, "wx", 0o600\)[\s\S]+process\.kill\(pid, 0\)[\s\S]+await operation\(\)/u);
+  assert.match(source, /withCodexCliProcessLock[\s\S]+configuredCodexCliConcurrency\(\)[\s\S]+slot < concurrency[\s\S]+fs\.open\(candidate, "wx", 0o600\)[\s\S]+process\.kill\(pid, 0\)[\s\S]+await operation\(\)/u);
+  assert.match(source, /configuredCodexCliConcurrency[\s\S]+Math\.max\(1, Math\.min\(16[\s\S]+AGENTFLOW_CODEX_CLI_CONCURRENCY/u);
 });
 
 test("Codex CLI resolves a PATH entry before spawning and exposes only the safe spawn code", () => {
