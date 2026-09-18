@@ -52,6 +52,18 @@ test("completed delivery without product writes is automatically repairable", ()
   assert.match(workflowDeliveryRepairReason(run, [{ stageId: "implement", agentId: "implementation-agent", summary: "Read-only discovery complete." }]) ?? "", /without governed product-write evidence/iu);
 });
 
+test("adaptive feature deliveries cannot complete without governed product writes", () => {
+  const reason = workflowDeliveryRepairReason({
+    workflowId: "dynamic-feature-delivery-a48fdeba2657",
+    task: "Implement coordinator fencing across ten bounded work items",
+    status: "completed"
+  }, [
+    { stageId: "implement-item-1", agentId: "implementation-agent", summary: "No implementation changes were made." },
+    { stageId: "verify", agentId: "auto-test-runner", summary: "No tests were executed." }
+  ]);
+  assert.match(reason ?? "", /without governed product-write evidence/iu);
+});
+
 test("completed delivery without executed verification is automatically repairable", () => {
   const reason = workflowDeliveryRepairReason(run, [
     { stageId: "implement", agentId: "implementation-agent", artifact: { requestedFileWrites: [{ path: "src/fan.ts" }] } },
