@@ -174,6 +174,14 @@ export function dashboardCss(): string {
     .topbar { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
     .panel { min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: clamp(16px, 1.5vw, 24px); margin-bottom: 18px; }
     .run-live-panel { border-color: #bfdbfe; }
+    .run-approval-level { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .9fr); gap: 18px; align-items: start; margin: 18px 0; padding: 16px; border: 1px solid #bfdbfe; border-radius: 9px; background: #eff6ff; }
+    .run-approval-level .eyebrow { margin: 0 0 4px; color: #1d4ed8; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+    .run-approval-level h3 { margin: 0 0 6px; }
+    .run-approval-level p:last-child { margin: 0; color: #475569; line-height: 1.45; }
+    .run-approval-level-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; }
+    .run-approval-level-form label { display: grid; gap: 5px; color: #475569; font-size: 12px; font-weight: 700; }
+    .run-approval-level-form label:nth-of-type(2) { grid-column: 1 / -1; }
+    .run-approval-level-form button { grid-column: 2; grid-row: 1; }
     .run-continuation-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 16px; align-items: center; margin-bottom: 18px; padding: 20px 22px; border: 2px solid #2563eb; border-radius: var(--radius); background: linear-gradient(135deg, #eff6ff, #ffffff); box-shadow: 0 10px 28px rgba(37, 99, 235, .12); }
     .run-continuation-banner.replacement-run { border-color: #16a34a; background: linear-gradient(135deg, #f0fdf4, #ffffff); box-shadow: 0 10px 28px rgba(22, 163, 74, .12); }
     .run-continuation-icon { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 50%; background: #2563eb; color: #fff; font-size: 22px; font-weight: 900; }
@@ -259,6 +267,9 @@ export function dashboardCss(): string {
     @keyframes run-live-pulse { 50% { transform: scale(.72); opacity: .72; } }
     @media (max-width: 600px) {
       .run-continuation-banner { grid-template-columns: auto minmax(0, 1fr); padding: 18px; }
+      .run-approval-level { grid-template-columns: 1fr; }
+      .run-approval-level-form { grid-template-columns: 1fr; }
+      .run-approval-level-form button, .run-approval-level-form label:nth-of-type(2) { grid-column: 1; grid-row: auto; }
       .run-continuation-action { grid-column: 1 / -1; width: 100%; justify-items: stretch; }
       .run-continuation-action .status { justify-self: start; }
       .run-continuation-action .button { width: 100%; text-align: center; }

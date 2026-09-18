@@ -119,6 +119,15 @@ test("checkpoint resume preserves terminal history by replaying into a new run",
   assert.match(source, /Superseded by replacement run \$\{replay\.runId\}/u);
 });
 
+test("approval-level changes preserve immutable runs and audit queued updates", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /autonomyOverride\?: string/u);
+  assert.match(source, /input\.autonomyOverride \?\? sourceRun\.autonomy/u);
+  assert.match(source, /export async function setQueuedWorkflowRunAutonomy/u);
+  assert.match(source, /and status = 'queued'/u);
+  assert.match(source, /run_autonomy_changed/u);
+});
+
 test("checkpoint replacement preserves completed stages and queues only unfinished work", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("async function createWorkflowHandoffsForRun"));
@@ -160,7 +169,7 @@ test("replay never restores stale project configuration over current policy", ()
   const projectUpsert = replay.slice(replay.indexOf("insert into projects"), replay.indexOf("returning id"));
   assert.doesNotMatch(projectUpsert, /config = excluded\.config/u);
   assert.match(replay, /resolveExecutionPolicy\(sourceRun\.projectConfig as ProjectConfig, sourceRun\.policyProfile\)/u);
-  assert.match(replay, /JSON\.stringify\(replayPolicy\.snapshot\)[\s\S]{0,100}replayPolicy\.snapshotHash/u);
+  assert.match(replay, /JSON\.stringify\(replayPolicySnapshot\)[\s\S]{0,100}replayPolicySnapshotHash/u);
 });
 
 test("retry dismisses superseded terminal history after creating its replacement", () => {

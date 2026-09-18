@@ -72,6 +72,18 @@ test("run stages open a bounded live stage activity view", () => {
   assert.match(source, /taskId === task\.id/u);
 });
 
+test("run detail shows and safely changes the run approval level", () => {
+  assert.match(source, /requestUrl\.pathname === "\/api\/run-approval-level"/u);
+  assert.match(source, /Approval level/u);
+  assert.match(source, /aria-label="Run approval level"/u);
+  assert.match(source, /Project\/profile ceiling/u);
+  assert.match(source, /setQueuedWorkflowRunAutonomy/u);
+  assert.match(source, /autonomyOverride: level/u);
+  assert.match(source, /preserveCompletedCheckpoints: true/u);
+  assert.match(source, /cannot change while a worker owns the run/u);
+  assert.match(source, /No continuation or policy mutation was created/u);
+});
+
 test("run detail clearly links checkpoint continuation runs in both directions", () => {
   assert.match(source, /id="run-continuation"/u);
   assert.match(source, /renderRunContinuationBanner/u);

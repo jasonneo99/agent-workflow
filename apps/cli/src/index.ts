@@ -49,7 +49,7 @@ import { buildGovernanceReport, finalizeGovernanceProject, formatGovernanceRepor
 import { buildHighRiskApprovalInbox, redactApprovalCardText, type HighRiskApprovalInbox } from "../../../packages/governance/src/high-risk-approval-inbox.js";
 import { buildBundleCompatibilityReport, buildBundleLifecyclePlan, buildBundlePinPlan, buildBundleRegistryReport, buildBundleUpgradePreview, bundleTrustStorePath, formatBundleCompatibilityReport, formatBundleLifecyclePlan, formatBundlePinPlan, formatBundleRegistryReport, formatBundleUpgradePreview, loadBundleRegistry, normalizePolicy, publicKeyFingerprint, readBundleTrustStore, signBundleManifest, verifyBundle, writeBundleLifecyclePlan, writeBundlePin, writeBundleTrustStore, type BundleCompatibilityReport, type BundleRegistryReport, type BundleTrustPolicy, type BundleUpgradePreview, type BundleVerification, type ProjectBundlePin, type ProjectBundleState } from "../../../packages/bundle-trust/src/index.js";
 import { agentWorkflowEnvPath, findAgentWorkflowRoot, resolveLocalProjectPath } from "../../../packages/runtime-root/src/index.js";
-import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
+import { canonicalJsonHash, evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../packages/policy-engine/src/index.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../../packages/local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../../packages/local-tools/src/file-writer.js";
 import { indexProjectFiles } from "../../../packages/project-indexer/src/index.js";
@@ -119,6 +119,7 @@ import {
   resetStorage,
   retryFailedWorkflowRun,
   seedRegistry,
+  setQueuedWorkflowRunAutonomy,
   upsertMemoryItem,
   upsertProject,
   upsertProjectIndexState,
@@ -25295,6 +25296,17 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/run-approval-level") {
+    const form = await readFormBody(request);
+    const result = await processDashboardRunApprovalLevel({
+      runId: form.get("runId") ?? "",
+      level: form.get("level") ?? "",
+      reason: form.get("reason") ?? ""
+    });
+    respondDashboardAction(request, response, form, result, dashboardResultRunPath(result, `/run?id=${encodeURIComponent(form.get("runId") ?? "")}`));
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/queue-action") {
     const form = await readFormBody(request);
     const result = await processDashboardQueueAction({
@@ -27044,6 +27056,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       throw error;
     });
     const tuningProposals = preferenceScorecard ? buildTuningProposals(preferenceScorecard) : null;
+    const approvalCeiling = await loadRunApprovalCeiling(details.run).catch(() => details.run!.autonomy);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunDetailHtml({
       run: details.run,
@@ -27057,7 +27070,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       observabilityReport,
       usageEstimate,
       preferenceScorecard,
-      tuningProposals
+      tuningProposals,
+      approvalCeiling
     }));
     return;
   }
@@ -34047,6 +34061,7 @@ function renderRunDetailHtml(input: {
   usageEstimate: RunUsageEstimate | null;
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
+  approvalCeiling: string;
 }): string {
   const completedTasks = input.tasks.filter((task) => task.status === "completed" && !task.skipped).length;
   const failedTasks = input.tasks.filter((task) => task.status === "failed").length;
@@ -34127,6 +34142,7 @@ function renderRunDetailHtml(input: {
         <div><strong>Active</strong><span id="run-live-active">${activeTasks}</span></div>
         <div><strong>Receipts</strong>${input.receipts.length}</div>
       </div>
+      ${renderRunApprovalLevelControl(input.run, input.approvalCeiling)}
       <p>${escapeHtml(input.run.task)}</p>
       ${input.run.status === "blocked" ? `<h3>Reason Blocked</h3><p class="warn-box">${escapeHtml(input.run.blockedReason?.trim() || "No specific blocker reason was recorded. This is a workflow defect; inspect the stage artifacts below.")}</p>` : ""}
       ${input.run.status === "failed" ? renderFailedRunResolutionPanel(input.run) : ""}
@@ -34184,6 +34200,108 @@ function renderRunDetailHtml(input: {
   <script>${renderRunLiveProgressScript(input.run.id, shouldRefresh)}</script>
 </body>
 </html>`;
+}
+
+const RUN_APPROVAL_LEVELS = ["0", "1", "2", "3", "4", "5", "wide-open"] as const;
+
+function runApprovalLevelLabel(level: string): string {
+  return ({
+    "0": "Advisory only",
+    "1": "Draft artifacts",
+    "2": "Edit local files",
+    "3": "Run local commands and tests",
+    "4": "External actions with approval",
+    "5": "Trusted scheduled automation",
+    "wide-open": "All configured actions"
+  } as Record<string, string>)[level] ?? "Custom policy";
+}
+
+function runApprovalLevelRank(level: string): number {
+  return level === "wide-open" ? 6 : Number.parseInt(level, 10);
+}
+
+async function loadRunApprovalCeiling(run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>): Promise<string> {
+  const configured = await loadLocalProjectConfig(run.projectRootUri);
+  return String(resolveExecutionPolicy(configured, run.policyProfile).project.project.autonomy);
+}
+
+function renderRunApprovalLevelControl(
+  run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
+  ceiling: string
+): string {
+  const currentRank = runApprovalLevelRank(run.autonomy);
+  const ceilingRank = runApprovalLevelRank(ceiling);
+  const immutableActive = run.status === "leased" || run.status === "running";
+  const superseded = Boolean(run.replacementRunId);
+  const options = RUN_APPROVAL_LEVELS.filter((level) => runApprovalLevelRank(level) <= ceilingRank).map((level) =>
+    `<option value="${escapeHtml(level)}"${level === run.autonomy ? " selected" : ""}>Level ${escapeHtml(level)} · ${escapeHtml(runApprovalLevelLabel(level))}</option>`
+  ).join("");
+  const behavior = run.status === "queued"
+    ? "This updates the queued run before any worker claims it."
+    : immutableActive
+      ? "A worker already owns this policy snapshot, so its authority cannot change mid-stage."
+      : "Changing this immutable run creates a checkpoint continuation with the selected level.";
+  return `<section class="run-approval-level" aria-labelledby="run-approval-level-title">
+    <div>
+      <p class="eyebrow">Approval level</p>
+      <h3 id="run-approval-level-title">Level ${escapeHtml(run.autonomy)} · ${escapeHtml(runApprovalLevelLabel(run.autonomy))}</h3>
+      <p>${escapeHtml(behavior)} Project/profile ceiling: <strong>Level ${escapeHtml(ceiling)}</strong>. Higher levels permit more autonomous action; project policy and explicit high-risk gates still apply.</p>
+    </div>
+    ${superseded ? `<a class="button" href="/run?id=${encodeURIComponent(run.replacementRunId!)}">Change current continuation →</a>` : immutableActive ? `<span class="status running">Locked while ${escapeHtml(run.status)}</span>` : `<form class="run-approval-level-form" method="post" action="/api/run-approval-level">
+      <input type="hidden" name="runId" value="${escapeHtml(run.id)}">
+      <input type="hidden" name="returnTo" value="/run?id=${encodeURIComponent(run.id)}">
+      <label><span>New level</span><select name="level" aria-label="Run approval level">${options}</select></label>
+      <label><span>Reason</span><input name="reason" required maxlength="500" value="Operator changed the run approval level from ${escapeHtml(run.autonomy)}." aria-label="Reason for approval level change"></label>
+      <button type="submit"${currentRank > ceilingRank ? " disabled" : ""}>Apply level</button>
+    </form>`}
+  </section>`;
+}
+
+async function processDashboardRunApprovalLevel(input: {
+  runId: string;
+  level: string;
+  reason: string;
+}): Promise<DashboardFollowUpResult> {
+  const runId = input.runId.trim();
+  const level = input.level.trim();
+  const reason = input.reason.trim();
+  if (!runId || !RUN_APPROVAL_LEVELS.includes(level as typeof RUN_APPROVAL_LEVELS[number])) return { ok: false, error: "Choose a valid approval level." };
+  if (!reason) return { ok: false, error: "A reason is required for the audit receipt." };
+  const details = await getWorkflowRunDetails(runId);
+  if (!details.run) return { ok: false, error: `Run not found: ${runId}` };
+  if (level === details.run.autonomy) {
+    return { ok: true, title: "Approval level unchanged", runId, output: `Run: ${runId}\nApproval level remains ${level} · ${runApprovalLevelLabel(level)}.\nNo continuation or policy mutation was created.` };
+  }
+  if (details.run.replacementRunId) return { ok: false, error: `This run is immutable history. Change approval level on continuation ${details.run.replacementRunId}.` };
+  if (details.run.status === "leased" || details.run.status === "running") {
+    return { ok: false, error: "Approval level cannot change while a worker owns the run. Wait for the stage to finish, then create a checkpoint continuation at the new level." };
+  }
+  const configured = await loadLocalProjectConfig(details.run.projectRootUri);
+  const resolved = resolveExecutionPolicy(configured, details.run.policyProfile);
+  const ceiling = String(resolved.project.project.autonomy);
+  if (runApprovalLevelRank(level) > runApprovalLevelRank(ceiling)) {
+    return { ok: false, error: `Level ${level} exceeds the project/profile ceiling of ${ceiling}. Change project policy first.` };
+  }
+  const policySnapshot = {
+    ...resolved.snapshot,
+    project: { ...resolved.snapshot.project, autonomy: level }
+  } as ProjectConfig;
+  const policySnapshotHash = canonicalJsonHash(policySnapshot);
+  if (details.run.status === "queued") {
+    const changed = await setQueuedWorkflowRunAutonomy({ runId, autonomy: level, policySnapshot, policySnapshotHash, actor: "dashboard", reason });
+    if (!changed) return { ok: false, error: "The run was claimed while the level was changing. Refresh and try again after the active stage finishes." };
+    return { ok: true, title: "Run approval level updated", runId, output: `Run: ${runId}\nApproval level: ${level} · ${runApprovalLevelLabel(level)}\nAudit receipt recorded before worker claim.` };
+  }
+  const replay = await replayWorkflowRun({
+    sourceRunId: runId,
+    actor: "dashboard",
+    reason: `${reason} Approval level ${details.run.autonomy} -> ${level}.`,
+    preserveCompletedCheckpoints: true,
+    evaluationMetadataPatch: { source: "run-approval-level-change", sourceRunId: runId, priorAutonomy: details.run.autonomy, requestedAutonomy: level },
+    autonomyOverride: level
+  });
+  if (!replay) return { ok: false, error: `Unable to create approval-level continuation for ${runId}.` };
+  return { ok: true, title: "Approval-level continuation queued", runId: replay.runId, output: `Source run: ${runId}\nContinuation: ${replay.runId}\nApproval level: ${level} · ${runApprovalLevelLabel(level)}\nPreserved checkpoints: ${replay.completedTasks}` };
 }
 
 function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): string {

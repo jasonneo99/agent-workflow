@@ -1499,6 +1499,7 @@ export async function replayWorkflowRun(input: {
   preserveCompletedCheckpoints?: boolean;
   skipStageIds?: string[];
   evaluationMetadataPatch?: Record<string, unknown>;
+  autonomyOverride?: string;
 }): Promise<{ projectId: string; runId: string; tasks: number; completedTasks: number; skippedTasks: number; queuedTasks: number } | null> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -1597,6 +1598,20 @@ export async function replayWorkflowRun(input: {
         : { rows: [] };
       const sourceTaskByStage = new Map(sourceTasks.rows.map((task) => [task.stageId, task]));
       const replayPolicy = resolveExecutionPolicy(sourceRun.projectConfig as ProjectConfig, sourceRun.policyProfile);
+      const autonomyRank = (value: string): number => value === "wide-open" ? 6 : Number.parseInt(value, 10);
+      if (input.autonomyOverride !== undefined && (
+        !["0", "1", "2", "3", "4", "5", "wide-open"].includes(input.autonomyOverride)
+        || autonomyRank(input.autonomyOverride) > autonomyRank(String(replayPolicy.project.project.autonomy))
+      )) {
+        throw new Error(`Requested autonomy ${input.autonomyOverride} exceeds or violates the resolved project policy.`);
+      }
+      const replayPolicySnapshot = input.autonomyOverride === undefined
+        ? replayPolicy.snapshot
+        : {
+          ...replayPolicy.snapshot,
+          project: { ...replayPolicy.snapshot.project, autonomy: input.autonomyOverride }
+        } as ProjectConfig;
+      const replayPolicySnapshotHash = createHash("sha256").update(stableJson(replayPolicySnapshot)).digest("hex");
 
       const projectResult = await client.query<{ id: string }>(
         `insert into projects (name, root_uri, profile, config, updated_at)
@@ -1636,10 +1651,10 @@ export async function replayWorkflowRun(input: {
           projectId,
           sourceRun.workflowId,
           sourceRun.task,
-          sourceRun.autonomy,
+          input.autonomyOverride ?? sourceRun.autonomy,
           sourceRun.policyProfile,
-          JSON.stringify(replayPolicy.snapshot),
-          replayPolicy.snapshotHash,
+          JSON.stringify(replayPolicySnapshot),
+          replayPolicySnapshotHash,
           sourceRun.modelTierOverride,
           sourceRun.providerOverride,
           JSON.stringify(replayMetadata),
@@ -1795,7 +1810,8 @@ export async function replayWorkflowRun(input: {
             completedTasks,
             skippedTasks,
             queuedTasks: workflow.stages.length - completedTasks - skippedTasks,
-            policySnapshotHash: sourceRun.policySnapshotHash,
+            policySnapshotHash: replayPolicySnapshotHash,
+            autonomyOverride: input.autonomyOverride ?? null,
             workflowSnapshot: sourceRun.workflowSnapshot ? "source-run" : "current-registry"
           })
         ]
@@ -1838,6 +1854,67 @@ export async function replayWorkflowRun(input: {
         skippedTasks,
         queuedTasks
       };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+export async function setQueuedWorkflowRunAutonomy(input: {
+  runId: string;
+  autonomy: string;
+  policySnapshot: ProjectConfig;
+  policySnapshotHash: string;
+  actor: string;
+  reason: string;
+}): Promise<boolean> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const run = await client.query<{ projectConfig: ProjectConfig; policyProfile: string }>(
+        `select p.config as "projectConfig", wr.policy_profile as "policyProfile"
+         from workflow_runs wr join projects p on p.id = wr.project_id
+         where wr.id = $1::uuid for update`,
+        [input.runId]
+      );
+      if (!run.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      const resolved = resolveExecutionPolicy(run.rows[0].projectConfig, run.rows[0].policyProfile);
+      const rank = (value: string): number => value === "wide-open" ? 6 : Number.parseInt(value, 10);
+      if (
+        !["0", "1", "2", "3", "4", "5", "wide-open"].includes(input.autonomy)
+        || rank(input.autonomy) > rank(String(resolved.project.project.autonomy))
+        || String(input.policySnapshot.project.autonomy) !== input.autonomy
+        || createHash("sha256").update(stableJson(input.policySnapshot)).digest("hex") !== input.policySnapshotHash
+      ) {
+        throw new Error("Queued run autonomy update does not match the resolved project policy or snapshot hash.");
+      }
+      const updated = await client.query(
+        `update workflow_runs
+         set autonomy = $2, policy_snapshot = $3::jsonb, policy_snapshot_hash = $4
+         where id = $1::uuid and status = 'queued'
+         returning id`,
+        [input.runId, input.autonomy, JSON.stringify(input.policySnapshot), input.policySnapshotHash]
+      );
+      if (!updated.rowCount) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, 'workflow-orchestrator', 'run_autonomy_changed', $2, $3, $4::jsonb)`,
+        [
+          input.runId,
+          input.autonomy,
+          `Run approval level changed to ${input.autonomy} before worker claim.`,
+          JSON.stringify({ actor: input.actor, reason: input.reason, policySnapshotHash: input.policySnapshotHash })
+        ]
+      );
+      await client.query("commit");
+      return true;
     } catch (error) {
       await client.query("rollback");
       throw error;
