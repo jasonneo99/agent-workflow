@@ -54,6 +54,7 @@ export type WorkerRunOptions = {
   defaultProviderId?: string;
   workerPlatform?: NodeJS.Platform;
   unavailableProjectRootUris?: Set<string>;
+  shouldStop?: () => boolean;
 };
 
 export function applyCurrentAutoApprovalThreshold(
@@ -144,6 +145,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
   };
 
   for (let i = 0; i < safeLimit; i += 1) {
+    if (options?.shouldStop?.()) break;
     const task = await claimNextWorkflowTask({
       ...options,
       excludedProjectRootUris: [...(options?.unavailableProjectRootUris ?? [])]
@@ -1341,7 +1343,8 @@ export async function runWorkerWatch(input: {
       providerIds: providerIds ? [...providerIds] : undefined,
       defaultProviderId: input.defaultProviderId,
       workerPlatform: input.workerPlatform,
-      unavailableProjectRootUris
+      unavailableProjectRootUris,
+      shouldStop: input.shouldStop
     });
     if (providerIds) {
       for (const failure of result.providerFailures) {

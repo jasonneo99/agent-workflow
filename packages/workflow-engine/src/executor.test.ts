@@ -41,6 +41,12 @@ test("workers recover expired leases before claiming new work", () => {
   assert.match(source, /recoverExpiredLeases: false/u);
 });
 
+test("stopping workers do not claim the remainder of an active batch", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /for \(let i = 0; i < safeLimit; i \+= 1\) \{\s+if \(options\?\.shouldStop\?\.\(\)\) break;\s+const task = await claimNextWorkflowTask/u);
+  assert.match(source, /shouldStop: input\.shouldStop/u);
+});
+
 test("workers serialize only writes to the same project-relative file resource", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /withProjectExecutionLock\([\s\S]+resource: `file:\$\{fileWrite\.path\.replace/u);
