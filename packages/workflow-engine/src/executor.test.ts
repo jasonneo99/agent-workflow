@@ -8,10 +8,30 @@ import { readFileSync } from "node:fs";
 test("active workers adopt only the current project auto-approval threshold", () => {
   const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "none", allowed_write_paths: ["docs/**"] } });
   const current = projectConfigSchema.parse({ project: { name: "current", autonomy: 3 }, actions: { auto_approve_max_risk: "medium", allowed_write_paths: ["src/**"] } });
-  const effective = applyCurrentAutoApprovalThreshold(snapshot, current);
+  const effective = applyCurrentAutoApprovalThreshold(snapshot, current, {});
   assert.equal(effective.actions.auto_approve_max_risk, "medium");
   assert.deepEqual(effective.actions.allowed_write_paths, ["docs/**"]);
   assert.equal(effective.project.autonomy, 2);
+});
+
+test("supervised worker approval autopilot applies before the first action blocks", () => {
+  const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "none" } });
+  const current = projectConfigSchema.parse({ project: { name: "current", autonomy: 2 }, actions: { auto_approve_max_risk: "none" } });
+  const effective = applyCurrentAutoApprovalThreshold(snapshot, current, {
+    AGENTFLOW_APPROVAL_AUTOPILOT: "on",
+    AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK: "medium"
+  });
+  assert.equal(effective.actions.auto_approve_max_risk, "medium");
+});
+
+test("explicitly disabled worker approval autopilot overrides a project threshold", () => {
+  const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "medium" } });
+  const current = projectConfigSchema.parse({ project: { name: "current", autonomy: 2 }, actions: { auto_approve_max_risk: "medium" } });
+  const effective = applyCurrentAutoApprovalThreshold(snapshot, current, {
+    AGENTFLOW_APPROVAL_AUTOPILOT: "off",
+    AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK: "medium"
+  });
+  assert.equal(effective.actions.auto_approve_max_risk, "none");
 });
 
 test("workers recover expired leases before claiming new work", () => {
