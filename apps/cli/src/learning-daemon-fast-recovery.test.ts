@@ -29,6 +29,13 @@ test("all-project daemon sweeps every queue between expensive project analyses",
   );
 });
 
+test("daemon heartbeats reread persisted trust settings instead of retaining stale risk values", () => {
+  assert.match(source, /autonomousApplyMaxRisk: update\?\.autonomousApplyMaxRisk \?\? await learningAutonomousApplyMaxRisk\(statusProjectDir\)/u);
+  assert.match(source, /approvalAutopilotEnabled: aggregate\?\.approvalAutopilotEnabled \?\? update\?\.approvalAutopilotEnabled \?\? await learningApprovalAutopilotEnabled\(statusProjectDir\)/u);
+  assert.match(source, /approvalAutopilotMaxRisk: aggregate\?\.approvalAutopilotMaxRisk \?\? update\?\.approvalAutopilotMaxRisk \?\? await learningApprovalAutopilotMaxRisk\(statusProjectDir\)/u);
+  assert.doesNotMatch(source, /lastStatus\?\.approvalAutopilotMaxRisk \?\? await learningApprovalAutopilotMaxRisk/u);
+});
+
 test("queue health and root repair run before slow project learning", () => {
   const fastSweep = source.indexOf("await runFastRecoverySweep();", source.indexOf("for (const target of targets)"));
   const learningTick = source.indexOf("await runLearningDaemonTick({", fastSweep);
