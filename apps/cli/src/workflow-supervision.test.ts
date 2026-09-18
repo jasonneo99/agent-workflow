@@ -68,6 +68,10 @@ test("root repair playbook distinguishes review evidence, delivery, approvals, a
   assert.equal(workflowRootRepairAction({ run: review, reason: "Required actions are awaiting approval.", hasOpenApproval: true }), "wait-approval");
   assert.equal(workflowRootRepairAction({ run: review, reason: "Codex provider outage after fallback failed." }), "operator-provider");
   assert.equal(workflowRootRepairAction({
+    run: { workflowId: "build-feature", task: "Implement roadmap milestone 7", status: "blocked" },
+    reason: "Missing project-specific context for roadmap milestones and current project state."
+  }), "replay-original");
+  assert.equal(workflowRootRepairAction({
     run: { workflowId: "debug-failure", task: "Implement milestone 7", status: "blocked" },
     reason: "No product write was recorded.",
     deliveryReason: "Delivery run stopped before implementation or verification."

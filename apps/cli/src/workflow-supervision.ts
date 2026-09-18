@@ -214,6 +214,9 @@ export function workflowRootRepairAction(input: {
     || input.run.workflowId.startsWith("agent-task-ux-reviewer");
   const evidenceGap = /missing|not supplied|not provided|unavailable|omits?|insufficient|lacks?|unproven/u.test(reason)
     && /context|source|files?|diff|tests?|evidence|repository|implementation|configuration|design system|platform guidance/u.test(reason);
+  const recoverableProjectContextGap = /(?:missing|requires?|needs?|not supplied|not provided|unavailable|insufficient|lacks?)\b/u.test(reason)
+    && /\b(?:project-specific context|project context|current project state|roadmap (?:milestones?|state)|working tree details)\b/u.test(reason);
+  if (recoverableProjectContextGap) return "replay-original";
   if (reviewWorkflow && evidenceGap) return "replay-original";
   if (input.deliveryReason) return supervisedRepairWorkflowId(input.run, input.deliveryReason);
   if (input.recordedFailure?.trim()) return "debug-failure";
