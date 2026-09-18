@@ -616,10 +616,10 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
          wr.finished_at::text as "finishedAt",
-         recovery.id as "recoveryRunId",
-         recovery.status as "recoveryRunStatus",
-         recovery.started_at as "recoveryStartedAt",
-         recovery.relation as "recoveryRelation",
+         null::text as "recoveryRunId",
+         null::text as "recoveryRunStatus",
+         null::text as "recoveryStartedAt",
+         null::text as "recoveryRelation",
          case when wr.status = 'blocked' then (
            select coalesce(ar.metadata->>'reason', ar.summary)
            from action_receipts ar
@@ -651,30 +651,6 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
-       left join lateral (
-         with recursive descendants as (
-           select
-             next_run.id,
-             next_run.status,
-             next_run.started_at,
-             next_run.replacement_run_id,
-             case when next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text then 'replay' else 'repair' end as relation,
-             1 as depth,
-             array[wr.id, next_run.id] as path
-           from workflow_runs next_run
-           where next_run.id = wr.replacement_run_id
-           union all
-           select child.id, child.status, child.started_at, child.replacement_run_id,
-                  parent.relation, parent.depth + 1, parent.path || child.id
-           from workflow_runs child
-           join descendants parent on child.id = parent.replacement_run_id
-           where parent.depth < 20 and not child.id = any(parent.path)
-         )
-         select id::text, status, started_at::text, relation
-         from descendants
-         order by depth desc, started_at desc
-         limit 1
-       ) recovery on true
        where ($2::text is null or p.root_uri = $2)
          -- Evaluation failures are comparison evidence, not actionable workflow
          -- failures. They remain visible on the Evaluations surface.
@@ -698,14 +674,61 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
             where active.run_id = wr.id
               and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
-       group by wr.id, p.id, recovery.id, recovery.status, recovery.started_at, recovery.relation
+       group by wr.id, p.id
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
          coalesce(min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
        limit $1`,
       [limit, projectRootUri]
     );
-    return result.rows;
+    if (!result.rows.length) return result.rows;
+
+    type RecoveryEdge = {
+      sourceId: string;
+      id: string;
+      status: string;
+      startedAt: string;
+      relation: "replay" | "repair";
+    };
+    const originsByCurrent = new Map(result.rows.map((row) => [row.runId, [row.runId]]));
+    const visitedByOrigin = new Map(result.rows.map((row) => [row.runId, new Set([row.runId])]));
+    const recoveryByOrigin = new Map<string, Omit<RecoveryEdge, "sourceId">>();
+    for (let depth = 0; depth < 20 && originsByCurrent.size; depth += 1) {
+      const edges = await client.query<RecoveryEdge>(
+        `select source.id::text as "sourceId", child.id::text, child.status,
+                child.started_at::text as "startedAt",
+                case when child.evaluation_metadata->>'replayOfRunId' = source.id::text
+                  then 'replay' else 'repair' end as relation
+           from workflow_runs source
+           join workflow_runs child on child.id = source.replacement_run_id
+          where source.id = any($1::uuid[])`,
+        [[...originsByCurrent.keys()]]
+      );
+      const nextOrigins = new Map<string, string[]>();
+      for (const edge of edges.rows) {
+        for (const origin of originsByCurrent.get(edge.sourceId) ?? []) {
+          const visited = visitedByOrigin.get(origin) ?? new Set<string>();
+          if (visited.has(edge.id)) continue;
+          visited.add(edge.id);
+          visitedByOrigin.set(origin, visited);
+          const prior = recoveryByOrigin.get(origin);
+          recoveryByOrigin.set(origin, { id: edge.id, status: edge.status, startedAt: edge.startedAt, relation: prior?.relation ?? edge.relation });
+          nextOrigins.set(edge.id, [...(nextOrigins.get(edge.id) ?? []), origin]);
+        }
+      }
+      originsByCurrent.clear();
+      for (const [runId, origins] of nextOrigins) originsByCurrent.set(runId, origins);
+    }
+    return result.rows.map((row) => {
+      const recovery = recoveryByOrigin.get(row.runId);
+      return recovery ? {
+        ...row,
+        recoveryRunId: recovery.id,
+        recoveryRunStatus: recovery.status,
+        recoveryStartedAt: recovery.startedAt,
+        recoveryRelation: recovery.relation
+      } : row;
+    });
   });
 }
 

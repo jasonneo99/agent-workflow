@@ -104,13 +104,13 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
 
 test("queue items expose replay and repair recovery relationships without rewriting lifecycle state", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  assert.match(source, /recovery\.id as "recoveryRunId"/u);
-  assert.match(source, /next_run\.id = wr\.replacement_run_id/u);
-  assert.match(source, /child\.id = parent\.replacement_run_id/u);
-  assert.doesNotMatch(source, /next_run\.id = wr\.replacement_run_id[\s\S]{0,160}\bor\b/u);
-  assert.match(source, /recovery\.relation as "recoveryRelation"/u);
-  assert.match(source, /with recursive descendants as/u);
-  assert.match(source, /parent\.depth < 20 and not child\.id = any\(parent\.path\)/u);
+  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  assert.match(queue, /join workflow_runs child on child\.id = source\.replacement_run_id/u);
+  assert.match(queue, /source\.id = any\(\$1::uuid\[\]\)/u);
+  assert.match(queue, /for \(let depth = 0; depth < 20/u);
+  assert.match(queue, /visited\.has\(edge\.id\)/u);
+  assert.match(queue, /recoveryRunId: recovery\.id/u);
+  assert.doesNotMatch(queue, /with recursive descendants as/u);
 });
 
 test("queue and dashboard lookups have indexes for recovery, receipts, and task state", () => {
