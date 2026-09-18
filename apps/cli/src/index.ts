@@ -2058,7 +2058,7 @@ program
       `Policy: ${report.policyMode}; holdout ready: ${report.holdoutApproved ? "yes" : "no"}`,
       `Observations: ${report.efficiency.observations}; projected savings: ${report.efficiency.projectedSavingsPercent}%`,
       `Cache: ${report.cache.validEntries}/${report.cache.entries} valid (${report.cache.bytes} bytes)`,
-      `Hosts: Claude ${report.hosts.claude ? "installed" : "not installed"}; Cursor ${report.hosts.cursor ? "installed" : "not installed"}`,
+      `Hosts: Claude ${report.hosts.claude ? "installed" : "not installed"}; Cursor ${report.hosts.cursor ? "installed" : "not installed"}; Codex ${report.hosts.codex ? "installed" : "not installed"}`,
       `Generation plans: ${report.codegen.awaitingReview} awaiting review, ${report.codegen.total} total`,
       `Calibration: ${report.calibration ? `${report.calibration.cases} cases; ready=${report.calibration.enforcementReady}` : "not run"}`
     ].join("\n"));
@@ -2125,16 +2125,20 @@ program
 
 program
   .command("context-hook")
-  .description("Evaluate a Claude Code or Cursor file-read hook request from stdin")
-  .requiredOption("--host <host>", "claude or cursor")
+  .description("Evaluate a Claude Code, Cursor, or Codex file-read hook request from stdin")
+  .requiredOption("--host <host>", "claude, cursor, or codex")
   .requiredOption("-p, --project <dir>", "project directory")
   .action(async (options: { host: string; project: string }) => {
     const host = parseContextHost(options.host);
     const projectDir = path.resolve(process.cwd(), options.project);
-    const project = await loadProjectConfig(projectDir);
-    const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
     const payload = JSON.parse(await readStandardInput());
     const read = normalizeHostRead(host, payload);
+    if (!read) {
+      process.stdout.write("{}\n");
+      return;
+    }
+    const project = await loadProjectConfig(projectDir);
+    const projectId = await upsertProject({ name: project.project.name, rootUri: projectDir, profile: project.project.autonomy === "wide-open" ? "enterprise" : "custom", config: project });
     const requestedPath = path.isAbsolute(read.filePath) ? read.filePath : path.resolve(projectDir, read.filePath);
     const relativePath = path.relative(projectDir, requestedPath);
     const sourcePath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath, label: "hook read" });
@@ -2145,14 +2149,25 @@ program
     const enforcement = enforceContextDecision({ policy, decision, exactReadRequested: read.exactReadRequested, holdoutApproved });
     const observation = policy.mode === "shadow" ? buildShadowObservation({ projectId, sourcePath: relativePath, content, intent: "discovery", policy }) : null;
     if (observation) await writeShadowObservationBatch({ projectRoot: projectDir, projectId, observations: [observation] });
-    const redirectCommand = `agentflow context-route --project . --file ${JSON.stringify(relativePath)} --question ${JSON.stringify("Summarize the relevant parts of this file")} --intent discovery --mode enforce --holdout-approved --execute`;
+    const redirectCommand = host === "codex"
+      ? `call Agent Workflow MCP tool agentflow_context_route for ${JSON.stringify(relativePath)} with execute=true and holdoutApproved=true`
+      : `agentflow context-route --project . --file ${JSON.stringify(relativePath)} --question ${JSON.stringify("Summarize the relevant parts of this file")} --intent discovery --mode enforce --holdout-approved --execute`;
     process.stdout.write(`${JSON.stringify(formatHostDecision({ host, action: enforcement.action, reason: enforcement.reason, route: decision.route, redirectCommand }))}\n`);
+  });
+
+program
+  .command("context-session-hook")
+  .description("Provide host session guidance for automatic governed context routing")
+  .requiredOption("--host <host>", "codex")
+  .action((options: { host: string }) => {
+    if (parseContextHost(options.host) !== "codex") throw new Error("Session context guidance is currently available for Codex only.");
+    process.stdout.write(`${JSON.stringify({ hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: "For broad project file reads, prefer the connected Agent Workflow MCP tool agentflow_context_route. Use execute=true and holdoutApproved=true. Preserve targeted rg/searches and bounded reads; use exact=true or a direct read for high-risk, stale, low-confidence, or explicitly exact evidence." } })}\n`);
   });
 
 program
   .command("context-host-setup")
   .description("Preview or install a project-local Context Gateway host hook")
-  .requiredOption("--host <host>", "claude or cursor")
+  .requiredOption("--host <host>", "claude, cursor, or codex")
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--write", "merge the hook into the host configuration")
   .option("--json", "print JSON")
@@ -2176,7 +2191,7 @@ program
 program
   .command("context-host-doctor")
   .description("Check Context Gateway policy, holdout evidence, and host-hook installation")
-  .requiredOption("--host <host>", "claude or cursor")
+  .requiredOption("--host <host>", "claude, cursor, or codex")
   .requiredOption("-p, --project <dir>", "project directory")
   .option("--json", "print JSON")
   .action(async (options: { host: string; project: string; json?: boolean }) => {
@@ -41162,7 +41177,7 @@ function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextO
     ${metricCard("Cache Health", `${report.cache.validEntries}/${report.cache.entries}`, `${report.cache.bytes} bytes; ${report.cache.expiredEntries} expired`)}
     ${metricCard("Pending Review", report.codegen.awaitingReview, `${report.codegen.total} generation plans`)}
   </section>
-  <section class="grid two"><article class="panel"><h2>Readiness</h2><dl><dt>Policy</dt><dd>${escapeHtml(report.policyMode)}</dd><dt>Holdout approved</dt><dd>${report.holdoutApproved ? "yes" : "no"}</dd><dt>Claude Code</dt><dd>${report.hosts.claude ? "installed" : "not installed"}</dd><dt>Cursor</dt><dd>${report.hosts.cursor ? "installed" : "not installed"}</dd></dl></article>
+  <section class="grid two"><article class="panel"><h2>Readiness</h2><dl><dt>Policy</dt><dd>${escapeHtml(report.policyMode)}</dd><dt>Holdout approved</dt><dd>${report.holdoutApproved ? "yes" : "no"}</dd><dt>Claude Code</dt><dd>${report.hosts.claude ? "installed" : "not installed"}</dd><dt>Cursor</dt><dd>${report.hosts.cursor ? "installed" : "not installed"}</dd><dt>Codex</dt><dd>${report.hosts.codex ? "installed" : "not installed"}</dd></dl></article>
   <article class="panel"><h2>Calibration</h2>${report.calibration ? `<p><strong>${escapeHtml(report.calibration.corpus)}</strong></p><p>${report.calibration.cases} cases · quality ${(report.calibration.qualityPassRate * 100).toFixed(1)}% · citations ${(report.calibration.citationPassRate * 100).toFixed(1)}% · savings ${report.calibration.tokenSavingsPercent}%</p><p>Regression ${report.calibration.regression.passed ? "passed" : "failed"}; enforcement ${report.calibration.enforcementReady ? "ready" : "not ready"}.</p>` : "<p>No repository calibration evidence yet.</p>"}</article></section>
   <section class="panel"><h2>Governed generation plans</h2><table><thead><tr><th>ID</th><th>Target</th><th>Status</th><th>Receipt</th></tr></thead><tbody>${plans}</tbody></table></section>
   <section class="panel"><h2>Safe actions</h2><p>Use <code>context-host-setup</code> without <code>--write</code> to preview hooks, and <code>context-calibrate</code> to write evidence. Threshold proposals remain review-required and never modify policy automatically.</p><p><a href="/api/context-gateway?project=${encodeURIComponent(selected)}">JSON status</a></p></section>
@@ -45280,18 +45295,18 @@ async function loadContextOperatorReport(projectDir: string) {
     const definition = hostHookDefinition(host);
     try { return (await fs.readFile(path.join(projectDir, definition.relativePath), "utf8")).includes("agentflow context-hook"); } catch { return false; }
   };
-  const [claude, cursor] = await Promise.all([installed("claude"), installed("cursor")]);
+  const [claude, cursor, codex] = await Promise.all([installed("claude"), installed("cursor"), installed("codex")]);
   const planSummaries = plans.map(({ id, createdAt, target, status, provider, receipt }) => ({ id, createdAt, target, status, provider, receipt }));
   return {
     version: 1, projectName: project.project.name, projectId, policyMode: policy.mode, holdoutApproved,
-    efficiency: buildContextEfficiencyReport(observations), cache, hosts: { claude, cursor }, calibration,
+    efficiency: buildContextEfficiencyReport(observations), cache, hosts: { claude, cursor, codex }, calibration,
     codegen: { total: plans.length, awaitingReview: plans.filter((item) => item.status === "awaiting-review").length, plans: planSummaries }
   };
 }
 
 function parseContextHost(value: string): ContextHost {
-  if (value === "claude" || value === "cursor") return value;
-  throw new Error("Context host must be claude or cursor.");
+  if (value === "claude" || value === "cursor" || value === "codex") return value;
+  throw new Error("Context host must be claude, cursor, or codex.");
 }
 
 async function readStandardInput(): Promise<string> {

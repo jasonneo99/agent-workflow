@@ -21,6 +21,8 @@ exports/
 .agent-workflow/tuning/
 .agent-workflow/context-handoffs/
 .agent-workflow/context-gateway/
+.agent-workflow/context-routing.yaml
+.agent-workflow/evals/
 .agent-workflow/model-improvement/
 .agent-workflow/runtime.env
 templates/**/.agent-workflow/learning/

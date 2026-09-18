@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "^(startup|resume|compact)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agentflow context-session-hook --host codex",
+            "timeout": 30,
+            "statusMessage": "Loading governed context routing"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "^(Bash|exec_command|mcp__.*__(read|open|get).*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "agentflow context-hook --host codex --project \"$(git rev-parse --show-toplevel)\"",
+            "timeout": 30,
+            "statusMessage": "Checking governed context route"
+          }
+        ]
+      }
+    ]
+  }
+}

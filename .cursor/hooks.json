@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "beforeReadFile": [
+      {
+        "command": "agentflow context-hook --host cursor --project .",
+        "matcher": "Read",
+        "timeout": 30,
+        "failClosed": true
+      }
+    ]
+  },
+  "version": 1
+}

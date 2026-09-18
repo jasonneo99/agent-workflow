@@ -223,6 +223,7 @@ npm run context-route -- -p . --file src/example.ts --question "Where is this us
 npm run context-holdout -- -p . --cases .agent-workflow/evals/context-holdout.json # Gate enforcement with local evidence
 npm run context-host-setup -- --host claude -p . # Preview a Claude Code read hook
 npm run context-host-setup -- --host cursor -p . # Preview a Cursor read hook
+npm run context-host-setup -- --host codex -p . # Preview a Codex routed-context hook
 npm run context-host-doctor -- -p . # Verify installed host hooks and gateway readiness
 npm run context-codegen -- -p . --spec "Generate tests" --reference tests/example.test.ts --target tests/new.test.ts
 npm run canary:dynamic         # Run a deterministic dynamic multi-handoff planning canary

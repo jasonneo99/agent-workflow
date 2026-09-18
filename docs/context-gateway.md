@@ -105,6 +105,16 @@ npm run context-host-setup -- --host cursor -p /path/to/project --write
 npm run context-host-doctor -- --host cursor -p /path/to/project
 ```
 
+Codex uses the same gateway through its connected Agent Workflow MCP server.
+The project hook adds concise session guidance and evaluates dedicated file-read
+tools plus simple broad `cat` reads before execution. Targeted searches,
+bounded reads, and ambiguous shell commands remain untouched:
+
+```bash
+npm run context-host-setup -- --host codex -p /path/to/project --write
+npm run context-host-doctor -- --host codex -p /path/to/project
+```
+
 The Claude adapter handles `Read` `PreToolUse` input and preserves targeted
 offset/limit reads. The Cursor adapter handles `beforeReadFile`, returns its
 documented allow/deny shape, and installs with `failClosed: true`. Both reuse
