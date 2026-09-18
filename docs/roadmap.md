@@ -217,6 +217,15 @@ and daemon paths.
    - Progress: source-size growth is ratcheted in `npm run check`; Context
      Gateway CLI commands, MCP context/reporting tools, project-index storage,
      tuning history, and action/ReAct receipts now have owned modules.
+4. **Add governed recurring web training discovery for every agent and daemon lane.**
+   - Priority: high
+   - Why next: agent and daemon guidance can become stale as tools, security
+     practices, model capabilities, and engineering techniques evolve.
+   - Exit gate: a configurable daemon cadence inventories every registered
+     agent and daemon lane, searches approved public sources for relevant
+     training material, and produces provenance-backed proposals with eval and
+     rollback plans; it never silently trains, rewrites shared prompts, or
+     imports untrusted content into execution context.
 
 ## Phase 1: Shared Platform Hardening
 
@@ -1034,6 +1043,41 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Current evidence: shared Postgres, Redis, and object-storage fingerprints
     match, but source and target resolve to the same endpoints. This proves one
     healthy state plane, not independent-host recovery or switchover.
+
+- [ ] Task: add governed recurring web training discovery for all agents and daemon lanes.
+  - Milestone: 7 Self-Improving Agent System
+  - Priority: high
+  - Execution order: 7
+  - Status: open
+  - Owner: a dedicated supervised research/training-scout daemon lane, with a
+    configurable cadence (weekly by default), manual run support, persisted
+    cursor/budget state, and visible heartbeat and receipts.
+  - Scope: inventory every registered agent and logical daemon lane; search
+    approved public web sources for current official documentation, research,
+    security guidance, evaluation methods, tool instructions, and other
+    potentially useful training material; deduplicate findings; map each
+    candidate to the agent or daemon capability it may improve; and publish a
+    decision-ready training proposal inbox.
+  - Proposal evidence: source URL, publisher, publication/update date, retrieval
+    date, license or reuse terms when available, content hash, affected agent or
+    daemon, claimed benefit, confidence, risks, proposed evals, expected token
+    and cost impact, rollback plan, and stale-source/contradiction indicators.
+  - Safety boundary: treat all web content as untrusted evidence, defend against
+    prompt injection and poisoned instructions, prefer primary/official sources,
+    never send private project context or personal data to search providers,
+    never ingest credentials or private topology, and keep raw downloads and
+    machine-specific state outside the open-source repository.
+  - Autonomy: the daemon may refresh search indexes and create scrubbed local
+    proposals on cadence. Applying project-local low/medium-risk training
+    changes requires holdout evaluation and existing policy receipts. Shared
+    agent definitions, daemon authority, provider/routing policy, executable
+    tools, network permissions, and high-risk changes require explicit human
+    approval and must remain reversible.
+  - Validation: prove complete roster coverage, bounded web/time/token budgets,
+    domain allow/deny controls, robots/rate-limit compliance, deterministic
+    deduplication, citation validity, injection resistance, license-aware
+    handling, eval-before-promotion, rollback, and clear dashboard states for
+    proposed, approved, rejected, stale, unsafe, and applied training.
 
 - [x] Task: automate dashboard performance regression gates.
   - Milestone: 3 Developer Dashboard
