@@ -26555,10 +26555,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end(JSON.stringify({ error: "Missing id" }));
       return;
     }
-    const [details, events, approvals] = await Promise.all([
+    const [details, events, approvals, artifacts] = await Promise.all([
       getWorkflowRunDetails(runId),
       listActivityEvents({ runId, limit: 250 }),
-      listActionApprovals({ runId, limit: 100 })
+      listActionApprovals({ runId, limit: 100 }),
+      listArtifacts({ runId })
     ]);
     if (!details.run) {
       response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -26580,7 +26581,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       stageTimelineHtml: renderRunStageTimeline(details.tasks),
       continuationHtml: renderRunContinuationBanner(details.run),
       commandCenterHtml: renderRunCommandCenterBody(details.run, details.tasks, approvals),
-      events: events.reverse()
+      events: events.reverse(),
+      receipts: details.receipts.map((receipt) => ({ id: receipt.id, actionType: receipt.actionType, summary: receipt.summary, createdAt: receipt.createdAt })),
+      approvals: approvals.map((approval) => ({ id: approval.id, actionType: approval.actionType, target: approval.target, status: approval.status, createdAt: approval.createdAt })),
+      artifacts: artifacts.map((artifact) => ({ id: artifact.id, kind: artifact.kind, uri: artifact.uri, createdAt: artifact.createdAt }))
     }));
     return;
   }
@@ -34112,7 +34116,6 @@ function renderRunDetailHtml(input: {
     <section id="run-stage-timeline" class="panel run-stage-timeline-panel">
       ${renderRunStageTimeline(input.tasks)}
     </section>
-    ${renderRunStageWatchDialog()}
     <section id="run-command-center" class="panel run-command-center">
       ${renderRunCommandCenterBody(input.run, input.tasks, input.approvals)}
     </section>
@@ -34124,9 +34127,11 @@ function renderRunDetailHtml(input: {
         </div>
         <div class="actions">
           <span id="run-live-indicator" class="run-live-indicator ${shouldRefresh ? "active" : ""}" aria-hidden="true"></span>
+          <button id="run-live-verbose" class="secondary compact-button" type="button" aria-pressed="false">Verbose</button>
           <button id="run-live-toggle" class="secondary compact-button" type="button">Pause updates</button>
         </div>
       </div>
+      <div id="run-live-scope" class="run-live-scope" hidden></div>
       <ol id="run-live-log" class="run-live-log" aria-label="Run progress log">
         <li class="run-live-empty">Waiting for activity…</li>
       </ol>
@@ -34312,18 +34317,22 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
     const connection = document.getElementById('run-live-connection');
     const indicator = document.getElementById('run-live-indicator');
     const toggle = document.getElementById('run-live-toggle');
+    const verboseToggle = document.getElementById('run-live-verbose');
+    const livePanel = log.closest('.run-live-panel');
+    const liveScope = document.getElementById('run-live-scope');
     const stages = document.getElementById('run-live-stages');
     const continuation = document.getElementById('run-continuation');
     const stageTimeline = document.getElementById('run-stage-timeline');
     const commandCenter = document.getElementById('run-command-center');
-    const stageDialog = document.getElementById('stage-watch-dialog');
-    const stageLog = document.getElementById('stage-watch-log');
     let selectedStage = '';
     let stageTimer = 0;
+    let verbose = false;
     let paused = false;
     let stopped = ${initiallyActive ? "false" : "true"};
     let loaded = false;
     let failures = 0;
+    let lastSummaryEvents = [];
+    let lastVerboseEvents = [];
 
     const text = (tag, value, className) => {
       const node = document.createElement(tag);
@@ -34337,13 +34346,26 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
     };
     const statusClass = (value) => ['queued', 'leased', 'running', 'completed', 'failed', 'blocked', 'cancelled'].includes(value) ? value : 'queued';
 
-    function renderEvents(events) {
+    function eventKey(event) {
+      return String(event.id || [event.occurredAt, event.eventType, event.title, event.detail, event.status].join('|'));
+    }
+
+    function renderEvents(events, forceReset = false) {
       const followTail = !loaded || log.scrollHeight - log.scrollTop - log.clientHeight < 64;
-      log.replaceChildren();
-      if (!events.length) log.append(text('li', 'No run activity has been recorded yet.', 'run-live-empty'));
+      if (forceReset) {
+        log.replaceChildren();
+        loaded = false;
+      }
+      const empty = log.querySelector('.run-live-empty');
+      if (events.length && empty) empty.remove();
+      const existing = new Set(Array.from(log.querySelectorAll('[data-event-key]')).map((node) => node.getAttribute('data-event-key')));
+      if (!events.length && !log.children.length) log.append(text('li', verbose ? 'Waiting for verbose activity…' : 'No run activity has been recorded yet.', 'run-live-empty'));
       for (const event of events) {
+        const key = eventKey(event);
+        if (existing.has(key)) continue;
         const item = document.createElement('li');
         item.className = 'run-live-entry ' + (event.severity || 'info');
+        item.dataset.eventKey = key;
         const time = text('time', formatTime(event.occurredAt), 'run-live-time');
         time.dateTime = event.occurredAt || '';
         const body = document.createElement('div');
@@ -34369,46 +34391,57 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
       }
     }
 
-    function setStageText(id, value) {
-      const node = document.getElementById(id);
-      if (node) node.textContent = value == null ? '' : String(value);
+    function verboseRunEntries(payload) {
+      const entries = [...(Array.isArray(payload.events) ? payload.events : [])];
+      for (const task of (Array.isArray(payload.tasks) ? payload.tasks : [])) entries.push({ id: 'task:' + task.stageId + ':' + task.status + ':' + task.attempts, occurredAt: payload.generatedAt, title: 'Stage snapshot · ' + task.stageId, detail: task.agentId + ' · attempt ' + task.attempts + ' · ' + task.executor, status: task.skipped ? 'skipped' : task.status, category: 'stage' });
+      for (const receipt of (Array.isArray(payload.receipts) ? payload.receipts : [])) entries.push({ id: 'receipt:' + receipt.id, occurredAt: receipt.createdAt, title: 'Action · ' + receipt.actionType, detail: receipt.summary, status: 'completed', category: 'receipt' });
+      for (const approval of (Array.isArray(payload.approvals) ? payload.approvals : [])) entries.push({ id: 'approval:' + approval.id, occurredAt: approval.createdAt, title: 'Approval · ' + approval.actionType, detail: approval.target, status: approval.status, category: 'approval' });
+      for (const artifact of (Array.isArray(payload.artifacts) ? payload.artifacts : [])) entries.push({ id: 'artifact:' + artifact.id, occurredAt: artifact.createdAt, title: 'Artifact · ' + artifact.kind, detail: artifact.uri, status: 'recorded', category: 'artifact' });
+      return entries.sort((left, right) => String(left.occurredAt || '').localeCompare(String(right.occurredAt || '')));
     }
 
-    function renderStageEvents(events) {
-      stageLog.replaceChildren();
-      if (!events.length) stageLog.append(text('li', 'No stage activity has been recorded yet.', 'run-live-empty'));
-      for (const event of events) {
-        const item = document.createElement('li');
-        item.className = 'run-live-entry ' + (event.severity || 'info');
-        const time = text('time', formatTime(event.occurredAt), 'run-live-time');
-        const body = document.createElement('div');
-        body.append(text('strong', event.title || event.eventType || 'Activity'));
-        if (event.detail) body.append(text('span', event.detail));
-        item.append(time, body, text('span', event.status || event.category || 'info', 'status ' + statusClass(event.status)));
-        stageLog.append(item);
-      }
-      stageLog.scrollTop = stageLog.scrollHeight;
+    function setVerbose(next, stageId = '') {
+      verbose = next;
+      selectedStage = next ? stageId : '';
+      verboseToggle.textContent = verbose ? 'Summary' : 'Verbose';
+      verboseToggle.setAttribute('aria-pressed', String(verbose));
+      livePanel.classList.toggle('verbose', verbose);
+      liveScope.hidden = !verbose;
+      liveScope.textContent = selectedStage
+        ? 'Streaming full activity for stage “' + selectedStage + '”. Choose Summary to return to the run feed.'
+        : 'Streaming all recorded run activity as it arrives. Choose a stage number to focus this stream.';
+      log.setAttribute('aria-label', selectedStage ? 'Verbose stage activity stream' : (verbose ? 'Verbose run activity stream' : 'Run progress log'));
+      renderEvents([], true);
+      if (!selectedStage) renderEvents(verbose ? lastVerboseEvents : lastSummaryEvents);
+      window.clearTimeout(stageTimer);
+      if (verbose && selectedStage) refreshStage();
     }
 
     async function refreshStage() {
-      if (!selectedStage || !stageDialog.open) return;
+      if (!verbose || !selectedStage) return;
       try {
         const response = await fetch('/api/run-stage?id=' + encodeURIComponent(runId) + '&stage=' + encodeURIComponent(selectedStage), { cache: 'no-store', headers: { accept: 'application/json' } });
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const payload = await response.json();
-        setStageText('stage-watch-title', payload.task.stageId);
-        setStageText('stage-watch-agent', payload.task.agentId);
-        setStageText('stage-watch-status', payload.task.status);
-        setStageText('stage-watch-attempts', payload.task.attempts);
-        setStageText('stage-watch-executor', payload.task.executor);
-        setStageText('stage-watch-updated', 'Updated ' + formatTime(payload.generatedAt));
-        setStageText('stage-watch-output', payload.outputText + (payload.truncated ? '\\n\\n[Output truncated in live view; use Run JSON for the complete artifact.]' : ''));
-        setStageText('stage-watch-evidence', payload.receipts.length + ' receipts · ' + payload.artifacts.length + ' artifacts · ' + payload.approvals.length + ' approvals');
-        renderStageEvents(Array.isArray(payload.events) ? payload.events : []);
+        const entries = [{
+          id: 'stage-snapshot:' + payload.task.stageId + ':' + payload.task.status + ':' + payload.task.attempts,
+          occurredAt: payload.task.finishedAt || payload.task.startedAt || payload.generatedAt,
+          title: payload.task.stageId + ' · ' + payload.task.agentId,
+          detail: 'Status ' + payload.task.status + ' · attempt ' + payload.task.attempts + ' · ' + payload.task.executor,
+          status: payload.task.status,
+          category: 'stage'
+        }];
+        for (const event of (Array.isArray(payload.events) ? payload.events : [])) entries.push(event);
+        for (const receipt of payload.receipts) entries.push({ id: 'receipt:' + receipt.actionType + ':' + receipt.createdAt, occurredAt: receipt.createdAt, title: 'Action · ' + receipt.actionType, detail: receipt.summary, status: 'completed', category: 'receipt' });
+        for (const approval of payload.approvals) entries.push({ id: 'approval:' + approval.actionType + ':' + approval.createdAt, occurredAt: approval.createdAt, title: 'Approval · ' + approval.actionType, detail: approval.target, status: approval.status, category: 'approval' });
+        for (const artifact of payload.artifacts) entries.push({ id: 'artifact:' + artifact.uri + ':' + artifact.createdAt, occurredAt: artifact.createdAt, title: 'Artifact · ' + artifact.kind, detail: artifact.uri, status: 'recorded', category: 'artifact' });
+        entries.sort((left, right) => String(left.occurredAt || '').localeCompare(String(right.occurredAt || '')));
+        renderEvents(entries);
+        connection.textContent = 'Verbose stage stream · updated ' + formatTime(payload.generatedAt) + (terminal.has(payload.task.status) ? '' : ' · next update in 2s');
         window.clearTimeout(stageTimer);
         if (!terminal.has(payload.task.status) && !terminal.has(payload.runStatus)) stageTimer = window.setTimeout(refreshStage, document.hidden ? 5000 : 2000);
       } catch (error) {
-        setStageText('stage-watch-updated', 'Live stage update unavailable (' + (error instanceof Error ? error.message : 'request failed') + ')');
+        connection.textContent = 'Verbose stage stream unavailable (' + (error instanceof Error ? error.message : 'request failed') + ') · retrying';
         window.clearTimeout(stageTimer);
         stageTimer = window.setTimeout(refreshStage, 5000);
       }
@@ -34418,14 +34451,12 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
       const trigger = event.target instanceof Element ? event.target.closest('[data-stage-watch]') : null;
       if (!trigger) return;
       selectedStage = trigger.getAttribute('data-stage-watch') || '';
-      setStageText('stage-watch-title', selectedStage);
-      setStageText('stage-watch-updated', 'Loading live stage evidence…');
-      stageDialog.showModal();
-      refreshStage();
+      setVerbose(true, selectedStage);
+      livePanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-    stageDialog.addEventListener('close', () => {
-      selectedStage = '';
-      window.clearTimeout(stageTimer);
+    verboseToggle.addEventListener('click', () => {
+      setVerbose(!verbose);
+      if (verbose) refresh();
     });
 
     async function refresh() {
@@ -34435,7 +34466,9 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
         if (!response.ok) throw new Error('HTTP ' + response.status);
         const payload = await response.json();
         failures = 0;
-        renderEvents(Array.isArray(payload.events) ? payload.events : []);
+        lastSummaryEvents = Array.isArray(payload.events) ? payload.events : [];
+        lastVerboseEvents = verboseRunEntries(payload);
+        if (!selectedStage) renderEvents(verbose ? lastVerboseEvents : lastSummaryEvents);
         renderStages(Array.isArray(payload.tasks) ? payload.tasks : []);
         if (typeof payload.continuationHtml === 'string' && continuation.innerHTML !== payload.continuationHtml) {
           continuation.innerHTML = payload.continuationHtml;
@@ -34551,7 +34584,7 @@ function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunD
             : "pending";
     const stateLabel = state === "active" ? "in progress" : state;
     return `<li class="run-stage-step ${state}" aria-label="Stage ${index + 1}: ${escapeHtml(task.stageId)}, ${escapeHtml(stateLabel)}">
-      <div class="run-stage-track"><button type="button" class="run-stage-circle" data-stage-watch="${escapeHtml(task.stageId)}" aria-label="Watch stage ${escapeHtml(task.stageId)}" title="Open live stage activity">${index + 1}</button></div>
+      <div class="run-stage-track"><button type="button" class="run-stage-circle" data-stage-watch="${escapeHtml(task.stageId)}" aria-label="Watch stage ${escapeHtml(task.stageId)}" title="Focus verbose stream on this stage">${index + 1}</button></div>
       <strong>${escapeHtml(task.stageId)}</strong>
       <span class="run-stage-agent">${escapeHtml(task.agentId)}</span>
       <small>${escapeHtml(stateLabel)}</small>
@@ -34561,25 +34594,6 @@ function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunD
   const skipped = tasks.filter((task) => task.skipped).length;
   return `<div class="section-heading"><div><p class="eyebrow">Stage Timeline</p><h2>${formatNumber(completed)} of ${formatNumber(tasks.length)} complete${skipped ? ` · ${formatNumber(skipped)} skipped` : ""}</h2></div><span class="muted">Updates live</span></div>
     <div class="run-stage-timeline-scroll"><ol class="run-stage-timeline" aria-label="Workflow stage progress">${steps || '<li class="run-stage-empty">No stages were created for this run.</li>'}</ol></div>`;
-}
-
-function renderRunStageWatchDialog(): string {
-  return `<dialog id="stage-watch-dialog" class="stage-watch-dialog" aria-labelledby="stage-watch-title">
-    <div class="stage-watch-shell">
-      <div class="stage-watch-header">
-        <div><p class="eyebrow">Live Stage</p><h2 id="stage-watch-title">Stage</h2><span id="stage-watch-updated" class="muted" aria-live="polite">Choose a stage to inspect it.</span></div>
-        <form method="dialog"><button class="secondary" type="submit">${iconLabel("x", "Close")}</button></form>
-      </div>
-      <div class="stage-watch-meta">
-        <div><strong>Agent</strong><span id="stage-watch-agent">—</span></div>
-        <div><strong>Status</strong><span id="stage-watch-status">—</span></div>
-        <div><strong>Attempts</strong><span id="stage-watch-attempts">—</span></div>
-        <div><strong>Executor</strong><span id="stage-watch-executor">—</span></div>
-      </div>
-      <section><div class="section-heading"><h3>What the agent is doing</h3><span id="stage-watch-evidence" class="muted"></span></div><ol id="stage-watch-log" class="run-live-log" aria-label="Stage activity log"><li class="run-live-empty">Loading stage activity…</li></ol></section>
-      <section><h3>Latest stage output</h3><pre id="stage-watch-output" class="stage-watch-output">No stage output has been recorded yet.</pre></section>
-    </div>
-  </dialog>`;
 }
 
 type FailedRunResolution = {

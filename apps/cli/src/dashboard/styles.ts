@@ -241,7 +241,9 @@ export function dashboardCss(): string {
     .run-approval-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; }
     .run-live-indicator { width: 9px; height: 9px; margin: auto 4px; border-radius: 50%; background: #94a3b8; }
     .run-live-indicator.active { background: #16a34a; box-shadow: 0 0 0 5px rgba(22, 163, 74, .12); animation: run-live-pulse 1.4s ease-in-out infinite; }
+    .run-live-scope { margin: 12px 0 0; padding: 10px 12px; border: 1px solid #93c5fd; border-radius: 8px; background: #eff6ff; color: #1e40af; font-size: 13px; }
     .run-live-log { min-height: 180px; max-height: 430px; overflow-y: auto; margin: 16px 0 0; padding: 0; list-style: none; border: 1px solid #dbe4f0; border-radius: 8px; background: #0f172a; color: #e2e8f0; }
+    .run-live-panel.verbose .run-live-log { min-height: 360px; max-height: min(68vh, 760px); }
     .run-live-entry { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; gap: 12px; align-items: start; padding: 10px 12px; border-bottom: 1px solid #243047; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; }
     .run-live-entry:last-child { border-bottom: 0; }
     .run-live-entry.warning { border-left: 3px solid #f59e0b; }
@@ -252,16 +254,6 @@ export function dashboardCss(): string {
     .run-live-entry .status { align-self: center; }
     .run-live-time { color: #7dd3fc; white-space: nowrap; }
     .run-live-empty { padding: 28px 14px; color: #94a3b8; text-align: center; }
-    .stage-watch-dialog { width: min(920px, calc(100vw - 28px)); max-height: min(850px, calc(100vh - 28px)); border: 1px solid var(--border); border-radius: 10px; padding: 0; color: #172033; box-shadow: 0 24px 70px rgba(15, 23, 42, .32); }
-    .stage-watch-dialog::backdrop { background: rgba(15, 23, 42, .5); }
-    .stage-watch-shell { display: grid; gap: 16px; padding: 20px; }
-    .stage-watch-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
-    .stage-watch-header h2 { margin: 2px 0 4px; }
-    .stage-watch-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
-    .stage-watch-meta > div { display: grid; gap: 4px; padding: 11px; border: 1px solid #e2e7f0; border-radius: 8px; background: #f8fafc; }
-    .stage-watch-meta strong { color: #64748b; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
-    .stage-watch-output { max-height: 260px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
-    .stage-watch-dialog .run-live-log { min-height: 150px; max-height: 300px; margin-top: 8px; }
     @keyframes run-live-pulse { 50% { transform: scale(.72); opacity: .72; } }
     @media (max-width: 600px) {
       .run-continuation-banner { grid-template-columns: auto minmax(0, 1fr); padding: 18px; }
@@ -281,8 +273,6 @@ export function dashboardCss(): string {
       .run-live-entry > div { grid-column: 1 / -1; grid-row: 2; }
       .run-live-entry > .status { grid-column: 2; grid-row: 1; }
       .run-live-time { grid-column: 1; grid-row: 1; }
-      .stage-watch-shell { padding: 15px; }
-      .stage-watch-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     .subpanel { min-width: 0; border: 1px solid #dbe4f0; border-radius: 8px; background: #f8fafc; padding: 14px; margin: 12px 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }

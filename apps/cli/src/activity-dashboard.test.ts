@@ -61,12 +61,16 @@ test("run detail renders a live numbered stage timeline", () => {
   assert.match(source, /Workflow completed with exceptions/u);
 });
 
-test("run stages open a bounded live stage activity view", () => {
+test("run stages use the inline verbose live progress stream", () => {
   assert.match(source, /requestUrl\.pathname === "\/api\/run-stage"/u);
   assert.match(source, /data-stage-watch=/u);
-  assert.match(source, /id="stage-watch-dialog"/u);
-  assert.match(source, /aria-label="Stage activity log"/u);
-  assert.match(source, /What the agent is doing/u);
+  assert.match(source, /id="run-live-verbose"/u);
+  assert.match(source, /Verbose stage activity stream/u);
+  assert.match(source, /Streaming full activity for stage/u);
+  assert.match(source, /verboseRunEntries/u);
+  assert.match(source, /Artifact · /u);
+  assert.match(source, /Action · /u);
+  assert.doesNotMatch(source, /id="stage-watch-dialog"/u);
   assert.match(source, /fetch\('\/api\/run-stage\?id='/u);
   assert.match(source, /slice\(0, 16_000\)/u);
   assert.match(source, /taskId === task\.id/u);
