@@ -27,6 +27,7 @@ export const stageTemplates: Record<string, StageTemplate> = {
   implement: stage("implement", "implementation-agent", "Implement the approved scoped change under project policy.", "executor", "change_summary", 8000, ["Requested behavior is implemented", "No action exceeds project policy"], "standard"),
   frontend: stage("frontend", "frontend-engineer", "Implement the frontend portion and interaction states.", "executor", "frontend_change", 6500, ["UI behavior matches the UX contract"], "standard"),
   backend: stage("backend", "backend-engineer", "Implement APIs, services, jobs, and integrations.", "executor", "backend_change", 6500, ["Service contracts and failure behavior are covered"], "standard"),
+  integrate: stage("integrate", "implementation-agent", "Integrate parallel work-item results, reconcile overlaps, and preserve the combined acceptance contract.", "executor", "integration_summary", 6000, ["Parallel results are reconciled without dropping completed behavior", "Overlaps and residual conflicts are explicit"], "standard"),
   test: stage("test", "test-engineer", "Add focused coverage for the changed behavior.", "verifier", "test_evidence", 4500, ["Happy path and material failure paths are tested"], "standard"),
   verify: stage("verify", "auto-test-runner", "Run configured deterministic verification and report exact evidence.", "verifier", "verification_report", 4000, ["Required checks pass or failures are explained"], "fast"),
   docs: stage("docs", "docs-maintainer", "Update user and operator documentation for the change.", "reflexive", "documentation_update", 3500, ["Changed behavior and operating steps are documented"], "fast"),
@@ -63,6 +64,7 @@ export type DynamicPlanChanges = {
   modelTierBindings?: Record<string, "fast" | "standard" | "reasoning">;
   contextBudgets?: Record<string, number>;
   approvalStages?: string[];
+  workItems?: string[];
 };
 
 export type ConstructDynamicWorkflowInput = {
@@ -89,7 +91,8 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
   const words = goal.trim().split(/\s+/u).filter(Boolean).length;
   const highRisk = HIGH_RISK_GOAL.test(goal);
   const broad = BROAD_SCOPE_GOAL.test(goal) || (goal.match(/[;:]/gu)?.length ?? 0) > 1;
-  const complexity: AdaptiveExecutionPlan["complexity"] = highRisk || words > 90 || broad && words > 45
+  const enumeratedWorkItems = extractEnumeratedWorkItems(goal);
+  const complexity: AdaptiveExecutionPlan["complexity"] = enumeratedWorkItems.length > 1 || highRisk || words > 90 || broad && words > 45
     ? "complex"
     : words <= 24 && !broad
       ? "simple"
@@ -97,6 +100,7 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
   const stages = new Set(archetype.stages);
   const remove: string[] = [];
   const parallel: string[][] = [];
+  const workItems = complexity === "complex" ? enumeratedWorkItems : [];
 
   if (complexity === "simple") {
     const preferredExecutor = /\b(?:api|backend|service|endpoint|webhook)\b/iu.test(goal) ? "backend" : "frontend";
@@ -125,11 +129,15 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
     complexity,
     latencyBudgetMs: complexity === "simple" ? 90_000 : complexity === "medium" ? 240_000 : 480_000,
     targetDirectRatio: complexity === "simple" ? 1.2 : complexity === "medium" ? 1.5 : 2,
-    changes: { remove: [...new Set(remove)], ...(parallel.length ? { parallel } : {}) },
+    changes: { remove: [...new Set(remove)], ...(parallel.length ? { parallel } : {}), ...(workItems.length > 1 ? { workItems } : {}) },
     rationale: [
       `Classified the goal as ${complexity} from scope, risk, and length signals.`,
       complexity === "simple" ? "Selected one owning execution stage plus deterministic verification." : "Removed redundant triage/documentation ceremony while preserving implementation and verification.",
-      parallel.length ? `Parallelized independent branches: ${parallel.map((group) => group.join(" + ")).join(", ")}.` : "Kept dependency order because no safe parallel branch was identified."
+      workItems.length > 1
+        ? `Decomposed ${workItems.length} bounded work items into parallel implementation branches behind an integration join.`
+        : parallel.length
+          ? `Parallelized independent branches: ${parallel.map((group) => group.join(" + ")).join(", ")}.`
+          : "Kept dependency order because no safe parallel branch was identified."
     ]
   };
 }
@@ -211,6 +219,40 @@ export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): 
       output: template.output
     };
   });
+  const boundedWorkItems = (changes.workItems ?? []).map((item) => item.trim()).filter(Boolean).slice(0, 12);
+  const implementationIndex = stages.findIndex((stage) => stage.id === "implement");
+  if (boundedWorkItems.length > 1 && implementationIndex >= 0) {
+    const implementation = stages[implementationIndex];
+    const branchIds = boundedWorkItems.map((_item, index) => `implement-item-${index + 1}`);
+    const branches = boundedWorkItems.map((item, index) => ({
+      ...structuredClone(implementation),
+      id: branchIds[index],
+      goal: `Implement bounded work item ${index + 1} of ${boundedWorkItems.length}: ${item}`,
+      depends_on: [...(implementation.depends_on ?? [])],
+      parallel_group: "parallel-work-items",
+      acceptance_criteria: [...implementation.acceptance_criteria, `Work item ${index + 1} remains within its declared scope`]
+    }));
+    const integrationTemplate = requireTemplate("integrate");
+    const integration = {
+      id: "integrate",
+      agent: integrationTemplate.agent,
+      goal: integrationTemplate.goal,
+      subagents: [],
+      depends_on: branchIds,
+      acceptance_criteria: integrationTemplate.acceptanceCriteria,
+      routing: { provider: changes.providerBindings?.integrate ?? "default", model_tier: changes.modelTierBindings?.integrate ?? integrationTemplate.modelTier },
+      pattern: { type: integrationTemplate.pattern, requires_verifier: true, promotion_gate: "policy" as const, stop_conditions: [] },
+      context: { load: ["project_contract", "prior_stage_outputs"], max_tokens: clampBudget(changes.contextBudgets?.integrate ?? integrationTemplate.contextTokens, input.project.context.max_project_tokens) },
+      approval_required: Boolean(changes.approvalStages?.includes("integrate")),
+      output: integrationTemplate.output
+    };
+    stages.splice(implementationIndex, 1, ...branches, integration);
+    for (const stage of stages) {
+      if (stage.id !== "integrate" && stage.depends_on?.includes("implement")) {
+        stage.depends_on = stage.depends_on.flatMap((dependency) => dependency === "implement" ? ["integrate"] : [dependency]);
+      }
+    }
+  }
   // A stage after a parallel block is a real join: it cannot run after only the
   // last textual branch happens to finish.
   for (let index = 1; index < stages.length; index += 1) {
@@ -299,6 +341,15 @@ function mergePlanChanges(base: DynamicPlanChanges | undefined, override: Dynami
     remove: [...new Set([...(base.remove ?? []), ...(override.remove ?? [])])],
     parallel: override.parallel ?? base.parallel
   };
+}
+export function extractEnumeratedWorkItems(goal: string): string[] {
+  const matches = [...goal.matchAll(/(?:^|[;\n]|\s)\((\d{1,2})\)\s*([\s\S]*?)(?=(?:[;\n]|\s)\(\d{1,2}\)\s*|$)/gu)];
+  if (matches.length < 2) return [];
+  const ordered = matches
+    .map((match) => ({ number: Number(match[1]), text: match[2].trim().replace(/[;,.]+$/u, "") }))
+    .filter((item) => item.number > 0 && item.text.length >= 3 && item.text.length <= 500)
+    .sort((left, right) => left.number - right.number);
+  return ordered.length >= 2 ? ordered.slice(0, 12).map((item) => item.text) : [];
 }
 function assertAcyclic(workflow: WorkflowDefinition): void {
   const dependencies = new Map(workflow.stages.map((stage) => [stage.id, stage.depends_on ?? []]));

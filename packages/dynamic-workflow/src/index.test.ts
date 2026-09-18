@@ -4,6 +4,7 @@ import { projectConfigSchema, workflowHandoffSchema } from "../../agent-registry
 import {
   constructDynamicWorkflow,
   definitionHash,
+  extractEnumeratedWorkItems,
   recommendAdaptiveExecution,
   selectWorkflowArchetype,
   stageTemplates,
@@ -107,6 +108,28 @@ test("adaptive execution parallelizes broad frontend and backend work", () => {
   assert.equal(plan.stages.find((stage) => stage.id === "backend")?.parallel_group, "parallel-1");
   assert.ok(!plan.stages.some((stage) => stage.id === "triage"));
   assert.ok(!plan.stages.some((stage) => stage.id === "docs"));
+});
+
+test("adaptive execution decomposes numbered deliverables into parallel branches and a join", () => {
+  const goal = "Implement all items: (1) add durable sessions; (2) add task cancellation; (3) add sandbox profiles; (4) add capability health checks.";
+  assert.deepEqual(extractEnumeratedWorkItems(goal), [
+    "add durable sessions",
+    "add task cancellation",
+    "add sandbox profiles",
+    "add capability health checks"
+  ]);
+  const plan = constructDynamicWorkflow({
+    goal,
+    project,
+    executionProfile: "adaptive",
+    now: "2026-01-02T03:04:05.000Z"
+  });
+  const branches = plan.stages.filter((stage) => stage.parallel_group === "parallel-work-items");
+  assert.equal(branches.length, 4);
+  assert.deepEqual(branches.map((stage) => stage.id), ["implement-item-1", "implement-item-2", "implement-item-3", "implement-item-4"]);
+  assert.ok(branches.every((stage) => stage.depends_on?.includes("architecture")));
+  assert.deepEqual(plan.stages.find((stage) => stage.id === "integrate")?.depends_on, branches.map((stage) => stage.id));
+  assert.deepEqual(plan.stages.find((stage) => stage.id === "test")?.depends_on, ["integrate"]);
 });
 
 test("allows bounded add, remove, repeat, reorder changes", () => {

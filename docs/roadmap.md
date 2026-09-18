@@ -990,6 +990,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Status: first adaptive-execution slice implemented for Studio auto-routing.
   - Done: classify each natural-language task as simple, medium, or complex from bounded scope and risk signals.
   - Done: generate the smallest validated stage graph for simple work, remove redundant ceremony for broader work, and parallelize independent frontend/backend branches behind a real join.
+  - Done: decompose bounded numbered deliverables into same-project parallel implementation branches, cap fan-out at twelve items, and require an explicit integration join before shared verification.
   - Done: preserve mandatory policy controls and verifier coverage in every adaptive plan.
   - Done: publish the execution profile, complexity, latency budget, direct-speed target, and construction rationale in the Studio route API and task dialog.
   - Done: make Codex/MCP orchestration adaptive by default, collapsing overlapping specialist passes into one risk-scaled governed run; retain `--execution-profile full` for deliberate exhaustive orchestration.
@@ -997,6 +998,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: fingerprint task intent, workflow, policy, and selected source state; rank exact and deterministic semantic run/memory matches; reject stale evidence; and surface approval-gated reuse, checkpoint, or fresh-run decisions with projected savings.
   - Done: add an explicit Context Gateway promotion gate that requires passing holdout and calibration evidence plus operator approval, then writes a project-local policy, rollback snapshot, and body-free receipt.
   - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
+  - Next: add governed per-branch Git worktree isolation, overlap prediction, conflict-aware merge ordering, branch verification receipts, and automatic cleanup so parallel same-project writes do not share a mutable checkout.
   - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
 
 - [x] Task: create a live roadmap dashboard with list and Gantt-style views.
