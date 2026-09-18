@@ -34,7 +34,7 @@ import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buil
 import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageRisk } from "../../../packages/failure-triage/src/index.js";
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
-import { parseDaemonSettingsRequest } from "./dashboard/daemon-settings.js";
+import { parseDaemonSettingsRequest, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
@@ -25737,7 +25737,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       respondDashboardAction(request, response, form, { ok: false, error: "Missing project." }, "/learning");
       return;
     }
-    const projectDir = path.resolve(process.cwd(), project);
+    const projectPath = await resolveDashboardProjectPath(project);
+    if (!projectPath.localPathExists) {
+      respondDashboardAction(request, response, form, { ok: false, error: "Daemon settings require a mutable local project checkout." }, "/learning?view=settings");
+      return;
+    }
+    const projectDir = projectPath.localRootUri;
     const existingLearningSettings = await readLearningSettings(projectDir).catch(() => null);
     await writeLearningSettings(projectDir, {
       kind: "agentflow_learning_settings",
@@ -27327,7 +27332,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       ? requestedLearningView
       : "overview";
     const projects = await listProjectStorageSummaries(100);
-    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+    const project = selectLearningProjectRoot({
+      requested: requestUrl.searchParams.get("project"),
+      configured: process.env.AGENTFLOW_DASHBOARD_PROJECT,
+      runtimeRoot: rootDir,
+      projects
+    });
     const projectPath = project ? await resolveDashboardProjectPath(project) : null;
     const localLearningDir = projectPath?.localRootUri ?? project;
     const reportPromise = project && learningView !== "overview"
