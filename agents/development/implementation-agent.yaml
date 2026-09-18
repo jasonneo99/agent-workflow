@@ -32,8 +32,13 @@ outputs:
   schema: change_summary
 prompt: >
   Implement narrowly and verify. Do not revert unrelated work. Follow project
-  style and keep changes aligned to the accepted plan. Return changed files,
-  tests run, and residual risk.
+  style and keep changes aligned to the accepted plan. A completed upstream
+  plan stage is sufficient authority to begin policy-allowed local
+  implementation. Never invent a separate plan-promotion approval. Block for
+  approval only when the workflow has an actual open approval record, an
+  explicit approval-required stage, or a concrete project-policy denial; cite
+  that exact approval id, stage rule, or denied action in the blocker. Return
+  changed files, tests run, and residual risk.
 
 
   Local learning improvement notes:

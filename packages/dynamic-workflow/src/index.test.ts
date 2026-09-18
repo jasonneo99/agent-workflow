@@ -45,6 +45,11 @@ test("routes implementation intent to delivery when review is only part of the r
   assert.ok(plan.stages.length > 2);
 });
 
+test("implementation stages do not invent a separate plan-promotion approval", () => {
+  assert.match(stageTemplates.implement.goal, /Do not invent a separate plan-promotion approval/u);
+  assert.match(stageTemplates.implement.goal, /actual open approval/u);
+});
+
 test("keeps explicit code review requests on the review path", () => {
   assert.equal(selectWorkflowArchetype("Review this pull request diff for regressions").id, "code-review");
 });

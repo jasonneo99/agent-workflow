@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "815247a9e0f8c74fcaa0a35b07a31600788f7d8ba4294b88766f3ee21e29887d"
+    "value": "2bbc9d8d2ab640cc154698c7b8e855e16f6b016f94c4f3c0e69735f0950b35ac"
   },
   "agents": [
     {
@@ -95,7 +95,7 @@
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "efcdb84cc51d6952051059c65828bd0c26cfab44d9dc72d0730d2da8890c0ccf"
+      "checksum": "eb22c06f6a434f28ba972161203b6bf723f1698c5de3a1ae2f32f8136fcfb7e8"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -162,7 +162,7 @@
     {
       "id": "build-feature",
       "path": "workflows/build-feature.yaml",
-      "checksum": "a4be8f132584e43b90f4142bc9062ff8e909f50c1c224cac9e185304726cae9e"
+      "checksum": "1f3c9a7336f2377e6d6858fa8eb88d33aa88659f4c8a0423c8572cadb8f79d44"
     },
     {
       "id": "ci-triage",
@@ -309,7 +309,7 @@
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "efcdb84cc51d6952051059c65828bd0c26cfab44d9dc72d0730d2da8890c0ccf"
+      "checksum": "eb22c06f6a434f28ba972161203b6bf723f1698c5de3a1ae2f32f8136fcfb7e8"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
@@ -361,7 +361,7 @@
     },
     {
       "path": "workflows/build-feature.yaml",
-      "checksum": "a4be8f132584e43b90f4142bc9062ff8e909f50c1c224cac9e185304726cae9e"
+      "checksum": "1f3c9a7336f2377e6d6858fa8eb88d33aa88659f4c8a0423c8572cadb8f79d44"
     },
     {
       "path": "workflows/ci-triage.yaml",

@@ -18,17 +18,17 @@ test("learning settings never choose a release registration by default when a mu
     runtimeRoot: "/opt/agent-workflow/current",
     projects: [
       { rootUri: "/home/example/releases/agent-workflow/abc123" },
-      { rootUri: "/Users/example/Projects/jarvis" }
+      { rootUri: "/Users/example/Projects/sample-app" }
     ]
   });
-  assert.equal(selected, "/Users/example/Projects/jarvis");
+  assert.equal(selected, "/Users/example/Projects/sample-app");
 });
 
 test("an explicit project selection remains authoritative", () => {
   const selected = selectLearningProjectRoot({
-    requested: "/Users/example/Projects/fleet-config",
+    requested: "/Users/example/Projects/platform-config",
     runtimeRoot: "/Users/example/Projects/Agent Workflow",
     projects: [{ rootUri: "/Users/example/Projects/Agent Workflow" }]
   });
-  assert.equal(selected, "/Users/example/Projects/fleet-config");
+  assert.equal(selected, "/Users/example/Projects/platform-config");
 });

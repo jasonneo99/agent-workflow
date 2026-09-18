@@ -40,7 +40,7 @@ stages:
     output: implementation_plan
   - id: implement
     agent: implementation-agent
-    goal: Create the requested product locally; a build stage cannot complete with analysis, planning, documentation, or a handoff alone.
+    goal: Create the requested product locally from the completed plan. Do not invent a separate plan-promotion approval; block only on an actual open approval, an explicit approval-required stage, or a concrete policy denial. A build stage cannot complete with analysis, planning, documentation, or a handoff alone.
     pattern:
       type: executor
       requires_verifier: true
