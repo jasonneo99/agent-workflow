@@ -21,6 +21,10 @@ test("learning daemon health-gates one replay after a recoverable provider failu
   assert.match(cliSource, /providerRecoveryNeedsRealProbe[\s\S]+recoverableProviderFailure[\s\S]+providerFromEnv\(run\.providerOverride \?\? undefined\)[\s\S]+provider\.check[\s\S]+provider\.executeStage[\s\S]+provider-inference-recovered[\s\S]+workflow_provider_recovery_replayed/u);
 });
 
+test("learning daemon stops after one health-probed provider continuation", () => {
+  assert.match(cliSource, /priorProviderRecoveryKind === "provider-inference-recovered"\) continue/u);
+});
+
 test("learning daemon closes every terminal repair with a reusable local lesson", () => {
   assert.match(cliSource, /learnFromWorkflowRepairs\(target\.projectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
   assert.match(cliSource, /actionType: "workflow_repair_learning"/u);

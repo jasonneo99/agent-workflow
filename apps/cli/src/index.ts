@@ -37734,6 +37734,11 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     const repairSource = repairSources.has(stringValue(run.evaluationMetadata?.source) ?? "")
       ? runs.find((candidate) => candidate.id === sourceRunId)
       : undefined;
+    const priorProviderRecoveryKind = stringValue(repairSource?.evaluationMetadata?.rootRepairKind);
+    // A recovered-provider replay gets at most one health-probed continuation.
+    // A second failed continuation is durable evidence to stop, learn, and
+    // surface the unmet host/provider prerequisite instead of looping.
+    if (priorProviderRecoveryKind === "provider-inference-recovered") continue;
     const supersededBy = run.status === "completed" ? undefined : findLaterCompletedEquivalentRun(runs, repairSource ?? run);
     if (supersededBy) {
       const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
@@ -37745,7 +37750,7 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     }
     const providerRecoveryNeedsRealProbe = Boolean(repairSource)
       && stringValue(run.evaluationMetadata?.source) === "workflow-root-repair"
-      && stringValue(run.evaluationMetadata?.rootRepairKind) === "provider-recovered";
+      && priorProviderRecoveryKind === "provider-recovered";
     if (repairSource && !providerRecoveryNeedsRealProbe) continue;
     const repairReferenceTime = run.finishedAt ?? run.startedAt;
     if (!isWithinAutomaticWorkflowRepairWindow(repairReferenceTime)) continue;
