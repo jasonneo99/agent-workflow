@@ -414,8 +414,8 @@ async function acquireWorkflowRunLease(client: pg.Client, input: {
   leaseSeconds: number;
   taskId: string;
 }): Promise<string> {
-  const locked = await client.query<{ status: string; leaseEpoch: string }>(
-    `select status, lease_epoch::text as "leaseEpoch" from workflow_runs where id = $1::uuid for update`,
+  const locked = await client.query<{ status: string; leaseEpoch: string; leaseOwner: string | null }>(
+    `select status, lease_epoch::text as "leaseEpoch", lease_owner as "leaseOwner" from workflow_runs where id = $1::uuid for update`,
     [input.runId]
   );
   const run = locked.rows[0];
@@ -432,15 +432,23 @@ async function acquireWorkflowRunLease(client: pg.Client, input: {
   } else if (run.status !== "leased" && run.status !== "running") {
     throw new Error(`Cannot lease task for terminal workflow run in ${run.status}.`);
   }
-  const authority = await client.query<{ leaseEpoch: string }>(
-    `update workflow_runs
-     set lease_epoch = lease_epoch + 1,
-         lease_owner = $2,
-         lease_expires_at = now() + ($3::int * interval '1 second')
-     where id = $1::uuid
-     returning lease_epoch::text as "leaseEpoch"`,
-    [input.runId, input.workerId, input.leaseSeconds]
-  );
+  const authority = run.leaseOwner === input.workerId && (run.status === "leased" || run.status === "running")
+    ? await client.query<{ leaseEpoch: string }>(
+      `update workflow_runs
+       set lease_expires_at = now() + ($3::int * interval '1 second')
+       where id = $1::uuid and lease_owner = $2
+       returning lease_epoch::text as "leaseEpoch"`,
+      [input.runId, input.workerId, input.leaseSeconds]
+    )
+    : await client.query<{ leaseEpoch: string }>(
+      `update workflow_runs
+       set lease_epoch = lease_epoch + 1,
+           lease_owner = $2,
+           lease_expires_at = now() + ($3::int * interval '1 second')
+       where id = $1::uuid
+       returning lease_epoch::text as "leaseEpoch"`,
+      [input.runId, input.workerId, input.leaseSeconds]
+    );
   const leaseEpoch = authority.rows[0].leaseEpoch;
   await client.query(
     `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
@@ -2101,9 +2109,17 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
                )
              )
              and not exists (
-               select 1 from workflow_tasks active
+               select 1
+               from workflow_tasks active
+               join lateral jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') active_stage
+                 on active_stage->>'id' = active.stage_id
                where active.run_id = wt.run_id
                  and active.status in ('leased', 'running')
+                 and (
+                   active.worker_id is distinct from $1
+                   or stage.definition->>'parallel_group' is null
+                   or active_stage->>'parallel_group' is distinct from stage.definition->>'parallel_group'
+                 )
              )
              and not exists (
                select 1
@@ -2423,8 +2439,14 @@ export async function completeWorkflowTask(input: {
       } else {
         await client.query(
           `update workflow_runs set lease_owner = null, lease_expires_at = null
-           where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint`,
-          [input.runId, input.workerId, input.fencingToken]
+           where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint
+             and not exists (
+               select 1 from workflow_tasks sibling
+               where sibling.run_id = $1::uuid
+                 and sibling.id <> $4::uuid
+                 and sibling.status in ('leased', 'running')
+             )`,
+          [input.runId, input.workerId, input.fencingToken, input.taskId]
         );
       }
 

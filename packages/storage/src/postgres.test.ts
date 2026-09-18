@@ -84,6 +84,7 @@ test("global workers enforce fair bounded project concurrency while preserving r
   assert.match(claim, /project_active\.status in \('leased', 'running'\)[\s\S]+< \$6::int/u);
   assert.match(claim, /order by[\s\S]+count\(\*\)[\s\S]+wt\.available_at asc/u);
   assert.match(claim, /not exists \([\s\S]+active\.run_id = wt\.run_id[\s\S]+active\.status in \('leased', 'running'\)/u);
+  assert.match(claim, /active\.worker_id is distinct from \$1[\s\S]+parallel_group[\s\S]+active_stage->>'parallel_group'/u);
   assert.match(claim, /prior\.status <> 'completed'/u);
 });
 
@@ -300,11 +301,12 @@ test("all run lifecycle writes route through the authoritative transition helper
   assert.match(source, /assertWorkflowRunFence\(/u);
 });
 
-test("concurrent claims serialize run ownership and monotonically advance the fence", () => {
+test("concurrent parallel-group claims share one worker fence while other claims advance it", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  assert.match(source, /select status, lease_epoch::text as "leaseEpoch" from workflow_runs where id = \$1::uuid for update/u);
+  assert.match(source, /select status, lease_epoch::text as "leaseEpoch", lease_owner as "leaseOwner" from workflow_runs where id = \$1::uuid for update/u);
+  assert.match(source, /run\.leaseOwner === input\.workerId[\s\S]+set lease_expires_at = now\(\)/u);
   assert.match(source, /lease_epoch = lease_epoch \+ 1/u);
-  assert.match(source, /not exists \([\s\S]+active\.status in \('leased', 'running'\)/u);
+  assert.match(source, /sibling\.id <> \$4::uuid[\s\S]+sibling\.status in \('leased', 'running'\)/u);
   assert.match(source, /wr\.lease_owner=\$2 and wr\.lease_epoch=\$3::bigint/u);
 });
 
