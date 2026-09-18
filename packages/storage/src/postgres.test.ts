@@ -105,6 +105,9 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
 test("queue items expose replay and repair recovery relationships without rewriting lifecycle state", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /recovery\.id as "recoveryRunId"/u);
+  assert.match(source, /next_run\.id = wr\.replacement_run_id/u);
+  assert.match(source, /child\.id = parent\.replacement_run_id/u);
+  assert.match(source, /wr\.replacement_run_id is null[\s\S]+next_run\.evaluation_metadata->>'replayOfRunId'/u);
   assert.match(source, /next_run\.evaluation_metadata->>'replayOfRunId' = wr\.id::text[\s\S]+next_run\.evaluation_metadata->>'sourceRunId' = wr\.id::text/u);
   assert.match(source, /recovery\.relation as "recoveryRelation"/u);
   assert.match(source, /with recursive descendants as/u);

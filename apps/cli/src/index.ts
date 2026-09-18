@@ -26049,7 +26049,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/runs") {
-    const runs = await listWorkflowRuns(50);
+    const runs = await loadCachedDashboardReport("api:runs:50", () => listWorkflowRuns(50), 2_000);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(runs, null, 2));
     return;
@@ -26080,9 +26080,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/queue") {
-    const queue = await listWorkflowQueue(100, {
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined
-    });
+    const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
+    const queue = await loadCachedDashboardReport(
+      `api:queue:100:${projectRootUri ?? "all"}`,
+      () => listWorkflowQueue(100, { projectRootUri }),
+      2_000
+    );
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(queue, null, 2));
     return;
@@ -26364,7 +26367,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end(JSON.stringify({ kind: "agentflow_server_daemon_fleet_health", status: "invalid", error: "authenticated server access is required" }));
       return;
     }
-    const report = await loadServerDaemonFleetHealth();
+    const report = await loadCachedDashboardReport(
+      "server-daemon-fleet-health",
+      () => loadServerDaemonFleetHealth(),
+      2_000
+    );
     response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -27220,9 +27227,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/queue") {
-    const queue = await listWorkflowQueue(100, {
-      projectRootUri: requestUrl.searchParams.get("project") ?? undefined
-    });
+    const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
+    const queue = await loadCachedDashboardReport(
+      `dashboard:queue:100:${projectRootUri ?? "all"}`,
+      () => listWorkflowQueue(100, { projectRootUri }),
+      2_000
+    );
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderQueueHtml(queue, requestUrl.searchParams));
     return;

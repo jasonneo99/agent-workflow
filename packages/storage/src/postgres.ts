@@ -635,17 +635,25 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
              next_run.id,
              next_run.status,
              next_run.started_at,
+             next_run.replacement_run_id,
              case when next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text then 'replay' else 'repair' end as relation,
              1 as depth,
              array[wr.id, next_run.id] as path
            from workflow_runs next_run
-           where next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
-              or next_run.evaluation_metadata->>'sourceRunId' = wr.id::text
+           where next_run.id = wr.replacement_run_id
+              or (wr.replacement_run_id is null and (
+                next_run.evaluation_metadata->>'replayOfRunId' = wr.id::text
+                or next_run.evaluation_metadata->>'sourceRunId' = wr.id::text
+              ))
            union all
-           select child.id, child.status, child.started_at, parent.relation, parent.depth + 1, parent.path || child.id
+           select child.id, child.status, child.started_at, child.replacement_run_id,
+                  parent.relation, parent.depth + 1, parent.path || child.id
            from workflow_runs child
-           join descendants parent on child.evaluation_metadata->>'replayOfRunId' = parent.id::text
-             or child.evaluation_metadata->>'sourceRunId' = parent.id::text
+           join descendants parent on child.id = parent.replacement_run_id
+             or (parent.replacement_run_id is null and (
+               child.evaluation_metadata->>'replayOfRunId' = parent.id::text
+               or child.evaluation_metadata->>'sourceRunId' = parent.id::text
+             ))
            where parent.depth < 20 and not child.id = any(parent.path)
          )
          select id::text, status, started_at::text, relation
