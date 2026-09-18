@@ -37278,6 +37278,8 @@ async function learnFromWorkflowRepairs(projectDir: string): Promise<number> {
         failedTasks,
         outcome: lesson.outcome,
         futureAction: lesson.futureAction,
+        diagnosisOrder: lesson.diagnosisOrder,
+        prevention: lesson.prevention,
         confidence: lesson.confidence
       },
       idempotencyKey: `workflow-repair-learning-${run.id}-${run.status}`
@@ -37285,7 +37287,7 @@ async function learnFromWorkflowRepairs(projectDir: string): Promise<number> {
     await upsertMemoryItem({
       projectRootUri: projectDir,
       sourceUri: `agentflow://repair-learning/${run.id}`,
-      summary: `Workflow repair lesson (${strategy}): ${lesson.outcome}. ${lesson.futureAction}`,
+      summary: `Workflow repair lesson (${strategy}): ${lesson.outcome}. ${lesson.futureAction} Prevention: ${lesson.prevention}`,
       metadata: {
         kind: "workflow_repair_learning",
         sourceRunId,
@@ -37293,6 +37295,7 @@ async function learnFromWorkflowRepairs(projectDir: string): Promise<number> {
         rootCauseClass: strategy,
         repairStatus: run.status,
         outcome: lesson.outcome,
+        prevention: lesson.prevention,
         confidence: lesson.confidence
       }
     });

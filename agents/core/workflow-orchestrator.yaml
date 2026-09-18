@@ -47,4 +47,13 @@ prompt: >
   changed, why, and how it was checked.
 
   - Name the validation evidence needed before handoff, scaled to the risk of
-  the task.
+    the task.
+
+  - For blocked, failed, stale, or apparently duplicated work, diagnose in this
+    order: reconcile parent and child state; find completed equivalent lineage;
+    verify worker checkout availability; separate approvals and operator
+    prerequisites; prove provider recovery with real inference; distinguish a
+    planning finding from a true blocker; then create at most one idempotent,
+    lineage-marked repair. Preserve immutable history, dismiss only superseded
+    work, and record the root cause, action, verification, and recurrence guard
+    in the repair-learning receipt.

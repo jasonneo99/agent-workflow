@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER, workflowDeliveryRepairReason, workflowRepairLesson, workflowRepairPrevention, workflowRootRepairAction } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -80,13 +80,23 @@ test("root repair playbook distinguishes review evidence, delivery, approvals, a
 });
 
 test("repair outcomes reinforce successful strategies and avoid failed ones", () => {
-  assert.deepEqual(workflowRepairLesson({ strategy: "replay-original", repairStatus: "completed", completedTasks: 3, failedTasks: 0 }), {
-    outcome: "reinforce",
-    futureAction: "Reuse replay-original for the same root-cause class when policy and evidence still match.",
-    confidence: 0.9
-  });
+  const lesson = workflowRepairLesson({ strategy: "replay-original", repairStatus: "completed", completedTasks: 3, failedTasks: 0 });
+  assert.equal(lesson.outcome, "reinforce");
+  assert.equal(lesson.futureAction, "Reuse replay-original for the same root-cause class when policy and evidence still match.");
+  assert.equal(lesson.confidence, 0.9);
+  assert.equal(lesson.prevention, workflowRepairPrevention("replay-original"));
+  assert.deepEqual(lesson.diagnosisOrder, WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER);
   assert.equal(workflowRepairLesson({ strategy: "debug-failure", repairStatus: "blocked", completedTasks: 0, failedTasks: 1 }).outcome, "avoid");
   assert.equal(workflowRepairLesson({ strategy: "build-feature", repairStatus: "running", completedTasks: 1, failedTasks: 0 }).outcome, "observe");
+});
+
+test("root repair prevention captures the durable incident lessons", () => {
+  assert.match(workflowRepairPrevention("stale-parent-state"), /parent terminal state from child tasks/iu);
+  assert.match(workflowRepairPrevention("worker-project-unavailable"), /checkout availability before claim/iu);
+  assert.match(workflowRepairPrevention("provider-recovered"), /bounded inference probe/iu);
+  assert.match(workflowRepairPrevention("provider-cli-contention"), /serialize shared local CLI launches/iu);
+  assert.match(workflowRepairPrevention("planning-deliverable-gap"), /finding and continue to implementation/iu);
+  assert.equal(WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER.length, 7);
 });
 
 test("repair runs do not recursively repair themselves", () => {

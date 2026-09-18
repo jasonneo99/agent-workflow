@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "3e4fd12f66d671982bd8e562e3160a3a30bfa90f4cd13918a34465b001aac209"
+    "value": "815247a9e0f8c74fcaa0a35b07a31600788f7d8ba4294b88766f3ee21e29887d"
   },
   "agents": [
     {
@@ -65,7 +65,7 @@
     {
       "id": "workflow-orchestrator",
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "49ee8e4728521198f9c1088659b46c87348cb2e8a7253e7701271734692109c5"
+      "checksum": "57d5d1261adeb1f5e93b5a05d794138932ceb7c7d5cf8de4b0fba433c1c439c9"
     },
     {
       "id": "backend-engineer",
@@ -285,7 +285,7 @@
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "49ee8e4728521198f9c1088659b46c87348cb2e8a7253e7701271734692109c5"
+      "checksum": "57d5d1261adeb1f5e93b5a05d794138932ceb7c7d5cf8de4b0fba433c1c439c9"
     },
     {
       "path": "agents/development/backend-engineer.yaml",

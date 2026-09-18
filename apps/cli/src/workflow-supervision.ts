@@ -128,7 +128,37 @@ export type WorkflowRepairLesson = {
   outcome: "reinforce" | "avoid" | "observe";
   futureAction: string;
   confidence: number;
+  diagnosisOrder: readonly string[];
+  prevention: string;
 };
+
+export const WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER = [
+  "Reconcile parent run state with authoritative child-task state before creating replacement work.",
+  "Check whether an equivalent or lineage-linked run already completed; preserve history and dismiss only superseded work.",
+  "Verify that an eligible worker can resolve the project checkout before diagnosing the model provider.",
+  "Separate approvals, credentials, quotas, and permissions from internal failures; never retry unmet operator prerequisites blindly.",
+  "For provider outages, require a bounded real inference probe, not authentication or process-health checks alone.",
+  "Treat missing planning detail as a finding unless an actual external prerequisite prevents implementation.",
+  "Allow one lineage-marked repair at a time, retain idempotent receipts, and learn from its verified terminal result."
+] as const;
+
+const WORKFLOW_REPAIR_PREVENTION: Record<string, string> = {
+  "review-evidence-gap": "Refresh governed project evidence, then replay the original review contract once with checkpoint lineage.",
+  "provider-recovered": "Do not trust login or readiness alone; run a bounded inference probe before replaying a provider outage.",
+  "provider-inference-recovered": "Retain the successful inference probe as the recovery gate and do not create another blind replay.",
+  "build-feature": "Require governed product-write and executed-verification evidence before accepting delivery completion.",
+  "debug-failure": "Repair the recorded causal failure, verify it, and suppress duplicate diagnostics for the same lineage.",
+  "replay-original": "Replay the original contract with completed checkpoints preserved instead of creating unrelated work.",
+  "worker-project-unavailable": "Resolve project checkout availability before claim; exclude unavailable project roots from that worker sweep.",
+  "stale-parent-state": "Derive the parent terminal state from child tasks and traverse required lifecycle states idempotently.",
+  "planning-deliverable-gap": "Record the gap as a finding and continue to implementation unless a real external prerequisite exists.",
+  "provider-cli-contention": "Serialize shared local CLI launches across processes and resolve the executable before spawning workers."
+};
+
+export function workflowRepairPrevention(strategy: string): string {
+  return WORKFLOW_REPAIR_PREVENTION[strategy]
+    ?? "Reclassify the failure from current evidence, apply one bounded lineage-marked repair, and verify the terminal result before reuse.";
+}
 
 export function workflowRepairLesson(input: {
   strategy: string;
@@ -136,24 +166,31 @@ export function workflowRepairLesson(input: {
   completedTasks: number;
   failedTasks: number;
 }): WorkflowRepairLesson {
+  const prevention = workflowRepairPrevention(input.strategy);
   if (input.repairStatus === "completed" && input.completedTasks > 0 && input.failedTasks === 0) {
     return {
       outcome: "reinforce",
       futureAction: `Reuse ${input.strategy} for the same root-cause class when policy and evidence still match.`,
-      confidence: 0.9
+      confidence: 0.9,
+      diagnosisOrder: WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER,
+      prevention
     };
   }
   if (input.repairStatus === "blocked" || input.repairStatus === "failed" || input.failedTasks > 0) {
     return {
       outcome: "avoid",
       futureAction: `Do not blindly repeat ${input.strategy}; reclassify the root cause or surface the unmet prerequisite.`,
-      confidence: 0.85
+      confidence: 0.85,
+      diagnosisOrder: WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER,
+      prevention
     };
   }
   return {
     outcome: "observe",
     futureAction: `Keep ${input.strategy} under observation until the successor reaches a verified terminal state.`,
-    confidence: 0.5
+    confidence: 0.5,
+    diagnosisOrder: WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER,
+    prevention
   };
 }
 
