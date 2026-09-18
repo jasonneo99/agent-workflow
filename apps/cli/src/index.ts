@@ -6348,13 +6348,15 @@ program
 
     let stop = false;
     let ticks = 0;
+    let latestTick: Awaited<ReturnType<typeof runWorkerOnce>> | undefined;
     const startedAt = new Date().toISOString();
     let capabilities: Awaited<ReturnType<typeof probeWorkerProviderCapabilities>> = { ready: [], unavailable: [] };
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
     const registryHeartbeatFile = path.join(defaultWorkerHeartbeatDir, `${safeWorkerHeartbeatFileSegment(workerId)}-${process.pid}.json`);
-    const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>): Promise<void> => {
-      if (tick) {
+    const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>, countTick = true): Promise<void> => {
+      if (tick && countTick) {
         ticks += 1;
+        latestTick = tick;
       }
       const heartbeat: WorkerHeartbeat = {
         ...await runtimeVersionMetadata,
@@ -6397,31 +6399,41 @@ program
     capabilities = await probeWorkerProviderCapabilities();
     await writeHeartbeat("running");
     console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} perProjectConcurrency=${perProjectConcurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
-    await runWorkerWatch({
-      limitPerTick: limit,
-      intervalMs,
-      workerId,
-      leaseSeconds,
-      projectRootUri,
-      concurrency,
-      perProjectConcurrency,
-      providerIds: capabilities.ready,
-      defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock",
-      workerPlatform: process.platform,
-      providerRecoveryCooldownMs: 60_000,
-      recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
-      shouldStop: () => stop,
-      onTick: async (result) => {
-        await writeHeartbeat(stop ? "stopping" : "running", result);
-        if (result.claimed > 0 || result.failed > 0) {
-          console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
-          const approvalNotice = await formatPendingApprovalInboxNotice(projectRootUri);
-          if (approvalNotice) {
-            console.log(approvalNotice);
+    const activeHeartbeatTimer = setInterval(() => {
+      void writeHeartbeat(stop ? "stopping" : "running", latestTick, false).catch((error) => {
+        console.error(`Worker heartbeat update failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }, Math.min(10_000, Math.max(2_000, Math.floor(leaseSeconds * 1000 / 4))));
+    activeHeartbeatTimer.unref();
+    try {
+      await runWorkerWatch({
+        limitPerTick: limit,
+        intervalMs,
+        workerId,
+        leaseSeconds,
+        projectRootUri,
+        concurrency,
+        perProjectConcurrency,
+        providerIds: capabilities.ready,
+        defaultProviderId: process.env.DEFAULT_MODEL_PROVIDER?.trim() || "mock",
+        workerPlatform: process.platform,
+        providerRecoveryCooldownMs: 60_000,
+        recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
+        shouldStop: () => stop,
+        onTick: async (result) => {
+          await writeHeartbeat(stop ? "stopping" : "running", result);
+          if (result.claimed > 0 || result.failed > 0) {
+            console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);
+            const approvalNotice = await formatPendingApprovalInboxNotice(projectRootUri);
+            if (approvalNotice) {
+              console.log(approvalNotice);
+            }
           }
         }
-      }
-    });
+      });
+    } finally {
+      clearInterval(activeHeartbeatTimer);
+    }
     await writeHeartbeat("stopped");
     if (registryHeartbeatFile !== heartbeatFile) {
       await fs.unlink(registryHeartbeatFile).catch(() => {});

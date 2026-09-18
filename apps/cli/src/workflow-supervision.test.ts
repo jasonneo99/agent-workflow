@@ -11,6 +11,11 @@ test("queueing hydrates an empty project index before compiling evidence", () =>
   assert.match(cliSource, /if \(sourceSummaries\.length === 0\)[\s\S]+indexProjectForRun[\s\S]+sourceSummaries = await loadSourceSummaries/u);
 });
 
+test("workers keep publishing heartbeats while long provider batches are active", () => {
+  assert.match(cliSource, /const activeHeartbeatTimer = setInterval\([\s\S]+writeHeartbeat\(stop \? "stopping" : "running", latestTick, false\)/u);
+  assert.match(cliSource, /try \{[\s\S]+await runWorkerWatch\([\s\S]+finally \{[\s\S]+clearInterval\(activeHeartbeatTimer\)/u);
+});
+
 test("learning daemon replays review evidence gaps with explicit root-repair lineage", () => {
   assert.match(cliSource, /workflowRootRepairAction\([\s\S]+rootRepairAction === "replay-original"/u);
   assert.match(cliSource, /evaluationMetadataPatch:[\s\S]+source: "workflow-root-repair"[\s\S]+rootRepairKind: "review-evidence-gap"/u);
