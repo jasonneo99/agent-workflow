@@ -100,6 +100,7 @@ import {
   listArtifacts,
   listProjectFileSummaries,
   listProjectStorageSummaries,
+  listWorkflowReuseEvidence,
   listStaleTerminalWorkflowRuns,
   listWorkflowQueue,
   listWorkflowHandoffs,
@@ -163,6 +164,7 @@ import { formatContractTestReport, runDefinitionContractTests, type ContractTest
 import { readFleetUsageReceipts, summarizeFleetUsage, type FleetUsageReceipt } from "../../../packages/fleet-model-gateway/src/index.js";
 import { buildUntrustedConversationBrief, classifyConversationIntent, conversationRequestHash, parseConversationRequest, sanitizeAssistantText, type ConversationRequest } from "../../../packages/conversation-contract/src/index.js";
 import { reliabilityProtocolVersions } from "../../../packages/reliability-control/src/index.js";
+import { buildGovernedReusePlan, type GovernedReusePlan } from "../../../packages/reuse-engine/src/index.js";
 
 const program = new Command();
 registerRepositoryMaintenanceCommand(program);
@@ -2082,6 +2084,46 @@ program
   });
 
 program
+  .command("context-promote")
+  .description("Promote the Context Gateway beyond shadow mode after explicit approval and passing evidence")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--mode <mode>", "advisory or enforce", "advisory")
+  .option("--approved", "confirm that the passing holdout and calibration evidence was reviewed")
+  .option("--write", "write the project-local policy, rollback snapshot, and receipt")
+  .option("--json", "print JSON")
+  .action(async (options: { project: string; mode: string; approved?: boolean; write?: boolean; json?: boolean }) => {
+    if (options.mode !== "advisory" && options.mode !== "enforce") throw new Error("Context promotion mode must be advisory or enforce.");
+    const projectDir = path.resolve(process.cwd(), options.project);
+    await loadProjectConfig(projectDir);
+    const report = await loadContextOperatorReport(projectDir);
+    const gates = {
+      holdoutApproved: report.holdoutApproved,
+      calibrationReady: report.calibration?.enforcementReady === true,
+      operatorApproved: options.approved === true
+    };
+    const canPromote = Object.values(gates).every(Boolean);
+    const basePolicy = await loadContextRoutingPolicy(projectDir);
+    const proposedPolicy = contextRoutingPolicySchema.parse({ ...basePolicy, mode: options.mode });
+    const target = path.join(projectDir, ".agent-workflow", "context-routing.yaml");
+    const result: Record<string, unknown> = { version: 1, projectId: report.projectId, from: basePolicy.mode, to: options.mode, gates, canPromote, writeRequested: options.write === true, written: false, target: path.relative(projectDir, target) };
+    if (options.write) {
+      if (!canPromote) throw new Error("Context promotion refused: passing holdout, passing calibration, and explicit --approved confirmation are all required.");
+      const prior = await fs.readFile(target, "utf8").catch(() => YAML.stringify(basePolicy));
+      const rollbackDir = path.join(projectDir, ".agent-workflow", "context-gateway", "rollbacks");
+      await fs.mkdir(rollbackDir, { recursive: true, mode: 0o700 });
+      const stamp = new Date().toISOString().replace(/[:.]/gu, "-");
+      const rollback = path.join(rollbackDir, `context-routing-${stamp}.yaml`);
+      await fs.writeFile(rollback, prior, { mode: 0o600 });
+      await fs.writeFile(target, YAML.stringify(proposedPolicy), { mode: 0o600 });
+      const receipt = path.join(rollbackDir, `context-routing-${stamp}.receipt.json`);
+      await fs.writeFile(receipt, `${JSON.stringify({ version: 1, promotedAt: new Date().toISOString(), from: basePolicy.mode, to: options.mode, priorHash: contextSha256(prior), nextHash: contextSha256(YAML.stringify(proposedPolicy)), gates, rollback: path.relative(projectDir, rollback), fileBodiesStored: false }, null, 2)}\n`, { mode: 0o600 });
+      Object.assign(result, { written: true, rollback: path.relative(projectDir, rollback), receipt: path.relative(projectDir, receipt) });
+    }
+    if (options.json) console.log(JSON.stringify(result, null, 2));
+    else console.log([`Context promotion: ${basePolicy.mode} -> ${options.mode}`, `Gates: holdout=${gates.holdoutApproved}; calibration=${gates.calibrationReady}; operator=${gates.operatorApproved}`, options.write ? `Written: ${result.written ? "yes" : "no"}` : "Preview only; use --approved --write after review."].join("\n"));
+  });
+
+program
   .command("context-hook")
   .description("Evaluate a Claude Code or Cursor file-read hook request from stdin")
   .requiredOption("--host <host>", "claude or cursor")
@@ -2324,6 +2366,34 @@ program
       return;
     }
     console.log(formatDashboardProjectAliasMergePlan(plan));
+  });
+
+program
+  .command("reuse-plan")
+  .description("Find governed exact and semantic reuse candidates for a workflow task")
+  .requiredOption("-w, --workflow <id>", "workflow id")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("-t, --task <task>", "task description")
+  .option("--policy-profile <name>", "execution policy profile")
+  .option("--json", "print JSON")
+  .action(async (options: { workflow: string; project: string; task: string; policyProfile?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const configuredProject = await loadProjectConfig(projectDir);
+    const resolvedPolicy = resolveExecutionPolicy(configuredProject, options.policyProfile);
+    const workflows = await loadWorkflows(rootDir);
+    const workflow = resolveWorkflow(workflows, options.workflow);
+    if (!workflow) throw new Error(`Unknown workflow: ${options.workflow}`);
+    const agents = [...selectWorkflowAgents(await loadAgentsForProject(projectDir), workflow).values()];
+    const sourceSummaries = await loadSourceSummaries({ projectDir, project: resolvedPolicy.project, workflow, agents, task: options.task });
+    const plan = await buildReusePlanForTask({
+      projectDir,
+      task: options.task,
+      workflow,
+      policySnapshotHash: resolvedPolicy.snapshotHash,
+      sourceSummaries
+    });
+    if (options.json) console.log(JSON.stringify(plan, null, 2));
+    else console.log(formatGovernedReusePlan(plan));
   });
 
 program
@@ -34118,6 +34188,7 @@ function renderRunDetailHtml(input: {
     </details>
   `).join("");
   const decisionExplanations = buildRunDecisionExplanations(input.run, input.qualityReport, input.summary);
+  const governedReusePlan = readGovernedReusePlan(input.artifacts);
 
   return `<!doctype html>
 <html>
@@ -34150,6 +34221,7 @@ function renderRunDetailHtml(input: {
     <section id="run-command-center" class="panel run-command-center">
       ${renderRunCommandCenterBody(input.run, input.tasks, input.approvals)}
     </section>
+    ${governedReusePlan ? renderGovernedReusePanel(governedReusePlan) : ""}
     <section class="panel run-live-panel" data-run-active="${shouldRefresh ? "true" : "false"}">
       <div class="section-heading">
         <div>
@@ -34236,6 +34308,35 @@ function renderRunDetailHtml(input: {
   <script>${renderRunLiveProgressScript(input.run.id, shouldRefresh)}</script>
 </body>
 </html>`;
+}
+
+function readGovernedReusePlan(artifacts: Awaited<ReturnType<typeof listArtifacts>>): GovernedReusePlan | null {
+  const compiled = artifacts.find((artifact) => artifact.kind === "compiled_brief");
+  const metadata = objectValue(compiled?.content?.metadata);
+  const plan = objectValue(metadata?.governedReusePlan);
+  if (plan?.version !== 1 || !Array.isArray(plan.candidates) || !Array.isArray(plan.memory)) return null;
+  return plan as unknown as GovernedReusePlan;
+}
+
+function renderGovernedReusePanel(plan: GovernedReusePlan): string {
+  const best = plan.candidates[0];
+  const candidateRows = plan.candidates.map((candidate) => `<tr>
+    <td><a href="/run?id=${encodeURIComponent(candidate.runId)}">${escapeHtml(candidate.runId.slice(0, 8))}</a></td>
+    <td><span class="status ${candidate.evidenceCurrent ? "completed" : "blocked"}">${escapeHtml(candidate.recommendation)}</span></td>
+    <td>${Math.round(candidate.taskSimilarity * 100)}%</td>
+    <td>${candidate.evidenceCurrent ? "current" : escapeHtml(candidate.staleReasons.join(", ") || "stale")}</td>
+    <td>${candidate.projectedSavings.stages} stages · ${formatNumber(candidate.projectedSavings.tokens)} tokens · ${formatDuration(candidate.projectedSavings.latencyMs)} · ${candidate.projectedSavings.costUsd === null ? "cost unavailable" : `$${candidate.projectedSavings.costUsd.toFixed(6)}`}</td>
+  </tr>`).join("");
+  return `<section class="panel governed-reuse-panel">
+    <div class="section-heading"><div><p class="eyebrow">Governed reuse</p><h2>${escapeHtml(titleCase(plan.recommendation))}</h2><span class="muted">Exact fingerprints and semantic matches are advisory until an operator accepts them.</span></div><span class="status ${best?.evidenceCurrent ? "completed" : "queued"}">${plan.requiresApproval ? "approval required" : "fresh run"}</span></div>
+    <div class="actions">
+      <button type="button" ${plan.recommendation === "reuse-result" ? "" : "disabled"}>Reuse result</button>
+      <button type="button" ${plan.recommendation === "resume-from-stage" ? "" : "disabled"}>Resume from checkpoint</button>
+      <span class="button secondary" aria-current="true">Run fresh</span>
+    </div>
+    <p class="muted">Reuse controls remain non-executing until the selected candidate is revalidated against current policy, workflow, and source hashes.</p>
+    <div class="table-wrap"><table><thead><tr><th>Source run</th><th>Decision</th><th>Similarity</th><th>Evidence</th><th>Projected savings</th></tr></thead><tbody>${candidateRows || '<tr><td colspan="5">No safe prior run matched. This run started fresh.</td></tr>'}</tbody></table></div>
+  </section>`;
 }
 
 const RUN_APPROVAL_LEVELS = ["0", "1", "2", "3", "4", "5", "wide-open"] as const;
@@ -44866,6 +44967,16 @@ async function queueWorkflow(input: {
     ? await loadExactSourceExcerpts(projectDir, sourceSummaries)
     : [];
   const namedCommitEvidence = await loadNamedCommitEvidence(projectDir, input.task);
+  const governedReusePlan = await buildReusePlanForTask({
+    projectDir,
+    task: input.task,
+    workflow,
+    policySnapshotHash: resolvedPolicy.snapshotHash,
+    sourceSummaries
+  });
+  const reuseAdvisory = governedReusePlan.candidates[0]
+    ? [`Governed reuse advisory only: ${governedReusePlan.recommendation} from run ${governedReusePlan.candidates[0].runId}; operator approval is required before any stage or result is reused.`]
+    : [];
   const brief = await compileContext({
     task: input.task,
     projectDir,
@@ -44874,7 +44985,7 @@ async function queueWorkflow(input: {
     agents: selectedAgentList,
     sourceSummaries,
     sourceExcerpts: [...namedCommitEvidence, ...exactSourceExcerpts],
-    preferenceNotes: await loadPreferenceNotes(projectDir)
+    preferenceNotes: [...await loadPreferenceNotes(projectDir), ...reuseAdvisory]
   });
   const runInputSnapshot = await buildRunInputSnapshot({
     projectConfig: configuredProject,
@@ -44902,7 +45013,8 @@ async function queueWorkflow(input: {
     evaluationMetadata: attachCodexOrigin(input.evaluationMetadata),
     compiledBrief: brief,
     compiledBriefMetadata: {
-      runInputSnapshot
+      runInputSnapshot,
+      governedReusePlan
     }
   });
 
@@ -46530,6 +46642,55 @@ async function loadSourceSummaries(input: {
   } catch {
     return [];
   }
+}
+
+async function buildReusePlanForTask(input: {
+  projectDir: string;
+  task: string;
+  workflow: Awaited<ReturnType<typeof loadWorkflows>>[number];
+  policySnapshotHash: string;
+  sourceSummaries: SourceSummaryWithHash[];
+}): Promise<GovernedReusePlan> {
+  const target = {
+    task: input.task,
+    workflowId: input.workflow.id,
+    workflowHash: stableHash(input.workflow),
+    policySnapshotHash: input.policySnapshotHash,
+    selectedSources: input.sourceSummaries.map((summary) => ({
+      sourceUri: summary.sourceUri,
+      contentHash: summary.contentHash ?? null
+    }))
+  };
+  try {
+    const evidence = await listWorkflowReuseEvidence({
+      projectRootUri: input.projectDir,
+      workflowId: input.workflow.id,
+      limit: 100
+    });
+    return buildGovernedReusePlan({ target, candidates: evidence.runs, memory: evidence.memory });
+  } catch {
+    return buildGovernedReusePlan({ target, candidates: [], memory: [] });
+  }
+}
+
+function formatGovernedReusePlan(plan: GovernedReusePlan): string {
+  const lines = [
+    `Governed reuse recommendation: ${plan.recommendation}`,
+    `Approval required: ${plan.requiresApproval ? "yes" : "no"}`,
+    `Fingerprint: ${plan.fingerprint.fingerprint}`,
+    "",
+    "Run candidates:"
+  ];
+  if (!plan.candidates.length) lines.push("- none; run fresh");
+  for (const candidate of plan.candidates) {
+    lines.push(`- ${candidate.runId}: ${candidate.recommendation}; similarity=${candidate.taskSimilarity}; current=${candidate.evidenceCurrent ? "yes" : "no"}; saved=${candidate.projectedSavings.stages} stage(s), ${candidate.projectedSavings.tokens} tokens, ${candidate.projectedSavings.latencyMs}ms, ${candidate.projectedSavings.costUsd === null ? "cost unavailable" : `$${candidate.projectedSavings.costUsd.toFixed(6)}`}`);
+    if (candidate.staleReasons.length) lines.push(`  stale: ${candidate.staleReasons.join(", ")}`);
+  }
+  lines.push("", "Memory matches:");
+  if (!plan.memory.length) lines.push("- none");
+  for (const memory of plan.memory) lines.push(`- ${memory.kind} ${memory.sourceUri}: similarity=${memory.similarity}`);
+  lines.push("", "No evidence is reused until an operator explicitly accepts the recommendation.");
+  return lines.join("\n");
 }
 
 async function loadPreferenceNotes(projectDir: string): Promise<string[]> {

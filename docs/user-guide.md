@@ -1480,6 +1480,35 @@ Executor adapters are documented in [executor-adapters.md](executor-adapters.md)
 
 Queued and running run-detail pages auto-refresh every five seconds. Use Process Next Batch for a single worker tick, Run Until Complete for a bounded watch pass, Resume Checkpoint to continue from the last completed stage, or Replay Run to create a fresh queued run from the source run's stored task, policy, provider overrides, workflow snapshot, and compiled context. Resume and replay actions run a stale-input check first. The check warns when project config, execution policy, bundle checksum, workflow definition, or selected source files differ from the evidence captured when the run was queued. Legacy runs created before input snapshots show a limited-check warning instead of pretending the inputs are known.
 
+Before a new run starts, Agent Workflow now builds a governed reuse plan from
+the normalized task intent, workflow definition, policy snapshot, and selected
+source hashes. It ranks exact prior runs and deterministic semantic matches from
+project memory, rejects stale evidence, and presents one of three decisions:
+reuse the completed result, resume from the last safe checkpoint, or run fresh.
+Reuse and resume remain advisory and require an explicit operator decision; a
+model cannot silently skip work. The run page shows the source run, similarity,
+freshness, and projected stage, token, latency, and cost savings.
+
+Preview the same evidence without queueing work:
+
+```bash
+npm run reuse-plan -- --workflow build-feature --project /path/to/project \
+  --task "Implement governed result reuse"
+```
+
+Context routing remains shadow-only until both holdout and calibration evidence
+pass. After reviewing that evidence, preview and then apply a project-local
+promotion. The write creates a rollback snapshot and a body-free receipt:
+
+```bash
+npm run context-promote -- --project /path/to/project --mode advisory
+npm run context-promote -- --project /path/to/project --mode advisory --approved --write
+```
+
+Use `--mode enforce` only after the advisory rollout is healthy. High-risk and
+low-confidence reads still promote to exact/frontier evidence, and exact reads
+remain available as an escape hatch.
+
 When a retried stage asks for the same successful command or file write again, Agent Workflow uses a deterministic action idempotency key to avoid repeating the side effect. The worker records a `local_command_reused` or `file_write_reused` receipt that points back to the original action artifact, preserving the audit trail without duplicating the command or write.
 
 CLI equivalents:

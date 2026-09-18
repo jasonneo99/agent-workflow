@@ -994,6 +994,8 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: publish the execution profile, complexity, latency budget, direct-speed target, and construction rationale in the Studio route API and task dialog.
   - Done: make Codex/MCP orchestration adaptive by default, collapsing overlapping specialist passes into one risk-scaled governed run; retain `--execution-profile full` for deliberate exhaustive orchestration.
   - Done: make CLI dynamic plans, dynamic runs, and governed server orchestration use the same adaptive contract by default.
+  - Done: fingerprint task intent, workflow, policy, and selected source state; rank exact and deterministic semantic run/memory matches; reject stale evidence; and surface approval-gated reuse, checkpoint, or fresh-run decisions with projected savings.
+  - Done: add an explicit Context Gateway promotion gate that requires passing holdout and calibration evidence plus operator approval, then writes a project-local policy, rollback snapshot, and body-free receipt.
   - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
   - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
 
