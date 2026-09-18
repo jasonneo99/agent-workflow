@@ -90,7 +90,8 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS lease_epoch bigint NOT NULL DEFAULT 0,
       ADD COLUMN IF NOT EXISTS lease_owner text,
       ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
-      ADD COLUMN IF NOT EXISTS replacement_run_id uuid REFERENCES workflow_runs(id)
+      ADD COLUMN IF NOT EXISTS replacement_run_id uuid REFERENCES workflow_runs(id),
+      ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx

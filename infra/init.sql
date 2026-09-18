@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   replacement_run_id uuid REFERENCES workflow_runs(id),
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
   CONSTRAINT workflow_runs_status_check CHECK (status IN ('queued','leased','running','completed','blocked','failed','cancelled'))
 );
