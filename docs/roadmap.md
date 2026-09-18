@@ -1050,7 +1050,7 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Execution order: 7
   - Status: open
   - Owner: a dedicated supervised research/training-scout daemon lane, with a
-    configurable cadence (weekly by default), manual run support, persisted
+    configurable cadence (daily by default), manual run support, persisted
     cursor/budget state, and visible heartbeat and receipts.
   - Scope: inventory every registered agent and logical daemon lane; search
     approved public web sources for current official documentation, research,
