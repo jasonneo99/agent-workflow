@@ -6279,7 +6279,7 @@ program
     let stop = false;
     let ticks = 0;
     const startedAt = new Date().toISOString();
-    const capabilities = await probeWorkerProviderCapabilities();
+    let capabilities: Awaited<ReturnType<typeof probeWorkerProviderCapabilities>> = { ready: [], unavailable: [] };
     const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
     const registryHeartbeatFile = path.join(defaultWorkerHeartbeatDir, `${safeWorkerHeartbeatFileSegment(workerId)}-${process.pid}.json`);
     const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>): Promise<void> => {
@@ -6324,6 +6324,8 @@ program
     process.once("SIGTERM", stopWorker);
 
     await writeHeartbeat("starting");
+    capabilities = await probeWorkerProviderCapabilities();
+    await writeHeartbeat("running");
     console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} perProjectConcurrency=${perProjectConcurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
     await runWorkerWatch({
       limitPerTick: limit,
