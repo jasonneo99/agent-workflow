@@ -189,6 +189,9 @@ export function dashboardCss(): string {
     .run-stage-timeline-scroll { overflow-x: auto; padding: 6px 2px 4px; }
     .run-stage-timeline { display: flex; min-width: max-content; margin: 0; padding: 0; list-style: none; }
     .run-stage-step { position: relative; display: grid; justify-items: center; align-content: start; width: 150px; min-width: 150px; padding: 0 10px; text-align: center; }
+    .run-stage-open { appearance: none; display: grid; justify-items: center; width: 100%; min-width: 0; padding: 0; border: 0; border-radius: 8px; background: transparent; color: inherit; box-shadow: none; }
+    .run-stage-open:hover { border-color: transparent; background: #f8fafc; box-shadow: none; }
+    .run-stage-open:focus-visible { outline: 2px solid #60a5fa; outline-offset: 3px; }
     .run-stage-track { position: relative; width: 100%; display: grid; place-items: center; }
     .run-stage-track::after { content: ""; position: absolute; top: 50%; left: calc(50% + 20px); width: calc(100% - 40px); height: 3px; transform: translateY(-50%); background: #dbe4f0; }
     .run-stage-step:last-child .run-stage-track::after { display: none; }
@@ -200,8 +203,9 @@ export function dashboardCss(): string {
     .run-stage-step.cancelled .run-stage-circle { border-color: #94a3b8; background: #e2e8f0; color: #475569; }
     .run-stage-step.skipped .run-stage-circle { border-color: #d97706; background: #fef3c7; color: #92400e; }
     .run-stage-step strong { max-width: 100%; margin-top: 10px; color: #172033; font-size: 13px; overflow-wrap: anywhere; }
-    .run-stage-step > span:not(.run-stage-circle) { max-width: 100%; margin-top: 2px; color: #64748b; font-size: 11px; overflow-wrap: anywhere; }
+    .run-stage-step .run-stage-agent { max-width: 100%; margin-top: 2px; color: #64748b; font-size: 11px; overflow-wrap: anywhere; }
     .run-stage-step small { margin-top: 5px; color: #64748b; font-size: 10px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+    .run-stage-hint { margin-top: 4px; color: #2563eb; font-size: 10px; font-weight: 700; }
     .run-stage-step.completed small { color: #15803d; }
     .run-stage-step.active small { color: #1d4ed8; }
     .run-stage-step.failed small { color: #b91c1c; }
@@ -242,6 +246,16 @@ export function dashboardCss(): string {
     .run-live-entry .status { align-self: center; }
     .run-live-time { color: #7dd3fc; white-space: nowrap; }
     .run-live-empty { padding: 28px 14px; color: #94a3b8; text-align: center; }
+    .stage-watch-dialog { width: min(920px, calc(100vw - 28px)); max-height: min(850px, calc(100vh - 28px)); border: 1px solid var(--border); border-radius: 10px; padding: 0; color: #172033; box-shadow: 0 24px 70px rgba(15, 23, 42, .32); }
+    .stage-watch-dialog::backdrop { background: rgba(15, 23, 42, .5); }
+    .stage-watch-shell { display: grid; gap: 16px; padding: 20px; }
+    .stage-watch-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 14px; }
+    .stage-watch-header h2 { margin: 2px 0 4px; }
+    .stage-watch-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .stage-watch-meta > div { display: grid; gap: 4px; padding: 11px; border: 1px solid #e2e7f0; border-radius: 8px; background: #f8fafc; }
+    .stage-watch-meta strong { color: #64748b; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; }
+    .stage-watch-output { max-height: 260px; overflow: auto; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .stage-watch-dialog .run-live-log { min-height: 150px; max-height: 300px; margin-top: 8px; }
     @keyframes run-live-pulse { 50% { transform: scale(.72); opacity: .72; } }
     @media (max-width: 600px) {
       .run-continuation-banner { grid-template-columns: auto minmax(0, 1fr); padding: 18px; }
@@ -258,6 +272,8 @@ export function dashboardCss(): string {
       .run-live-entry > div { grid-column: 1 / -1; grid-row: 2; }
       .run-live-entry > .status { grid-column: 2; grid-row: 1; }
       .run-live-time { grid-column: 1; grid-row: 1; }
+      .stage-watch-shell { padding: 15px; }
+      .stage-watch-meta { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
     .subpanel { min-width: 0; border: 1px solid #dbe4f0; border-radius: 8px; background: #f8fafc; padding: 14px; margin: 12px 0; }
     .actions { display: flex; flex-wrap: wrap; gap: 8px; }

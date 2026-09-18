@@ -61,6 +61,17 @@ test("run detail renders a live numbered stage timeline", () => {
   assert.match(source, /Workflow completed with exceptions/u);
 });
 
+test("run stages open a bounded live stage activity view", () => {
+  assert.match(source, /requestUrl\.pathname === "\/api\/run-stage"/u);
+  assert.match(source, /data-stage-watch=/u);
+  assert.match(source, /id="stage-watch-dialog"/u);
+  assert.match(source, /aria-label="Stage activity log"/u);
+  assert.match(source, /What the agent is doing/u);
+  assert.match(source, /fetch\('\/api\/run-stage\?id='/u);
+  assert.match(source, /slice\(0, 16_000\)/u);
+  assert.match(source, /taskId === task\.id/u);
+});
+
 test("run detail clearly links checkpoint continuation runs in both directions", () => {
   assert.match(source, /id="run-continuation"/u);
   assert.match(source, /renderRunContinuationBanner/u);

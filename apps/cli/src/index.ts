@@ -26573,6 +26573,61 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (requestUrl.pathname === "/api/run-stage") {
+    const runId = requestUrl.searchParams.get("id")?.trim();
+    const stageId = requestUrl.searchParams.get("stage")?.trim();
+    if (!runId || !stageId) {
+      response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "Missing id or stage" }));
+      return;
+    }
+    const [details, artifacts, approvals, events] = await Promise.all([
+      getWorkflowRunDetails(runId),
+      listArtifacts({ runId }),
+      listActionApprovals({ runId, limit: 100 }),
+      listActivityEvents({ runId, limit: 250 })
+    ]);
+    const task = details.tasks.find((candidate) => candidate.stageId === stageId);
+    if (!details.run || !task) {
+      response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ error: "Run stage not found" }));
+      return;
+    }
+    const stageArtifacts = artifacts.filter((artifact) => artifact.taskId === task.id || artifact.content?.stageId === stageId);
+    const stageReceipts = details.receipts.filter((receipt) => receipt.target === task.id || receipt.target === stageId);
+    const stageApprovals = approvals.filter((approval) => approval.taskId === task.id || approval.stageId === stageId);
+    const stageEvents = events.filter((event) =>
+      (event.category === "stage" && (event.title.includes(stageId) || event.actor === task.agentId))
+      || (event.category === "action" && stageReceipts.some((receipt) => event.id === `receipt:${receipt.id}`))
+      || (event.category === "approval" && stageApprovals.some((approval) => event.id === `approval:${approval.id}`))
+    ).reverse();
+    const stageOutput = [...stageArtifacts].reverse().find((artifact) => artifact.kind === "stage_output")?.content;
+    const outputText = stageOutput
+      ? JSON.stringify(stageOutput, null, 2).slice(0, 16_000)
+      : "No stage output has been recorded yet.";
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify({
+      generatedAt: new Date().toISOString(),
+      runStatus: details.run.status,
+      task: {
+        stageId: task.stageId,
+        agentId: task.agentId,
+        status: task.skipped ? "skipped" : task.status,
+        attempts: task.attempts,
+        startedAt: task.startedAt,
+        finishedAt: task.finishedAt,
+        executor: task.executorSnapshot ? `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}@${task.executorSnapshot.requestedHost}` : "local model"
+      },
+      events: stageEvents,
+      receipts: stageReceipts.map((receipt) => ({ actionType: receipt.actionType, summary: receipt.summary, createdAt: receipt.createdAt })),
+      approvals: stageApprovals.map((approval) => ({ actionType: approval.actionType, target: approval.target, status: approval.status, createdAt: approval.createdAt })),
+      artifacts: stageArtifacts.map((artifact) => ({ kind: artifact.kind, uri: artifact.uri, createdAt: artifact.createdAt })),
+      outputText,
+      truncated: Boolean(stageOutput && JSON.stringify(stageOutput, null, 2).length > 16_000)
+    }));
+    return;
+  }
+
   if (requestUrl.pathname === "/api/quality") {
     const runId = requestUrl.searchParams.get("id");
     if (!runId) {
@@ -34042,6 +34097,7 @@ function renderRunDetailHtml(input: {
     <section id="run-stage-timeline" class="panel run-stage-timeline-panel">
       ${renderRunStageTimeline(input.tasks)}
     </section>
+    ${renderRunStageWatchDialog()}
     <section id="run-command-center" class="panel run-command-center">
       ${renderRunCommandCenterBody(input.run, input.tasks, input.approvals)}
     </section>
@@ -34142,6 +34198,10 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
     const continuation = document.getElementById('run-continuation');
     const stageTimeline = document.getElementById('run-stage-timeline');
     const commandCenter = document.getElementById('run-command-center');
+    const stageDialog = document.getElementById('stage-watch-dialog');
+    const stageLog = document.getElementById('stage-watch-log');
+    let selectedStage = '';
+    let stageTimer = 0;
     let paused = false;
     let stopped = ${initiallyActive ? "false" : "true"};
     let loaded = false;
@@ -34190,6 +34250,65 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
         stages.append(row);
       }
     }
+
+    function setStageText(id, value) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = value == null ? '' : String(value);
+    }
+
+    function renderStageEvents(events) {
+      stageLog.replaceChildren();
+      if (!events.length) stageLog.append(text('li', 'No stage activity has been recorded yet.', 'run-live-empty'));
+      for (const event of events) {
+        const item = document.createElement('li');
+        item.className = 'run-live-entry ' + (event.severity || 'info');
+        const time = text('time', formatTime(event.occurredAt), 'run-live-time');
+        const body = document.createElement('div');
+        body.append(text('strong', event.title || event.eventType || 'Activity'));
+        if (event.detail) body.append(text('span', event.detail));
+        item.append(time, body, text('span', event.status || event.category || 'info', 'status ' + statusClass(event.status)));
+        stageLog.append(item);
+      }
+      stageLog.scrollTop = stageLog.scrollHeight;
+    }
+
+    async function refreshStage() {
+      if (!selectedStage || !stageDialog.open) return;
+      try {
+        const response = await fetch('/api/run-stage?id=' + encodeURIComponent(runId) + '&stage=' + encodeURIComponent(selectedStage), { cache: 'no-store', headers: { accept: 'application/json' } });
+        if (!response.ok) throw new Error('HTTP ' + response.status);
+        const payload = await response.json();
+        setStageText('stage-watch-title', payload.task.stageId);
+        setStageText('stage-watch-agent', payload.task.agentId);
+        setStageText('stage-watch-status', payload.task.status);
+        setStageText('stage-watch-attempts', payload.task.attempts);
+        setStageText('stage-watch-executor', payload.task.executor);
+        setStageText('stage-watch-updated', 'Updated ' + formatTime(payload.generatedAt));
+        setStageText('stage-watch-output', payload.outputText + (payload.truncated ? '\\n\\n[Output truncated in live view; use Run JSON for the complete artifact.]' : ''));
+        setStageText('stage-watch-evidence', payload.receipts.length + ' receipts · ' + payload.artifacts.length + ' artifacts · ' + payload.approvals.length + ' approvals');
+        renderStageEvents(Array.isArray(payload.events) ? payload.events : []);
+        window.clearTimeout(stageTimer);
+        if (!terminal.has(payload.task.status) && !terminal.has(payload.runStatus)) stageTimer = window.setTimeout(refreshStage, document.hidden ? 5000 : 2000);
+      } catch (error) {
+        setStageText('stage-watch-updated', 'Live stage update unavailable (' + (error instanceof Error ? error.message : 'request failed') + ')');
+        window.clearTimeout(stageTimer);
+        stageTimer = window.setTimeout(refreshStage, 5000);
+      }
+    }
+
+    document.addEventListener('click', (event) => {
+      const trigger = event.target instanceof Element ? event.target.closest('[data-stage-watch]') : null;
+      if (!trigger) return;
+      selectedStage = trigger.getAttribute('data-stage-watch') || '';
+      setStageText('stage-watch-title', selectedStage);
+      setStageText('stage-watch-updated', 'Loading live stage evidence…');
+      stageDialog.showModal();
+      refreshStage();
+    });
+    stageDialog.addEventListener('close', () => {
+      selectedStage = '';
+      window.clearTimeout(stageTimer);
+    });
 
     async function refresh() {
       if (paused) return schedule();
@@ -34314,16 +34433,38 @@ function renderRunStageTimeline(tasks: Awaited<ReturnType<typeof getWorkflowRunD
             : "pending";
     const stateLabel = state === "active" ? "in progress" : state;
     return `<li class="run-stage-step ${state}" aria-label="Stage ${index + 1}: ${escapeHtml(task.stageId)}, ${escapeHtml(stateLabel)}">
-      <div class="run-stage-track"><span class="run-stage-circle">${index + 1}</span></div>
-      <strong>${escapeHtml(task.stageId)}</strong>
-      <span>${escapeHtml(task.agentId)}</span>
-      <small>${escapeHtml(stateLabel)}</small>
+      <button type="button" class="run-stage-open" data-stage-watch="${escapeHtml(task.stageId)}" aria-label="Watch stage ${escapeHtml(task.stageId)}">
+        <span class="run-stage-track"><span class="run-stage-circle">${index + 1}</span></span>
+        <strong>${escapeHtml(task.stageId)}</strong>
+        <span class="run-stage-agent">${escapeHtml(task.agentId)}</span>
+        <small>${escapeHtml(stateLabel)}</small>
+        <span class="run-stage-hint">Open live view</span>
+      </button>
     </li>`;
   }).join("");
   const completed = tasks.filter((task) => task.status === "completed" && !task.skipped).length;
   const skipped = tasks.filter((task) => task.skipped).length;
   return `<div class="section-heading"><div><p class="eyebrow">Stage Timeline</p><h2>${formatNumber(completed)} of ${formatNumber(tasks.length)} complete${skipped ? ` · ${formatNumber(skipped)} skipped` : ""}</h2></div><span class="muted">Updates live</span></div>
     <div class="run-stage-timeline-scroll"><ol class="run-stage-timeline" aria-label="Workflow stage progress">${steps || '<li class="run-stage-empty">No stages were created for this run.</li>'}</ol></div>`;
+}
+
+function renderRunStageWatchDialog(): string {
+  return `<dialog id="stage-watch-dialog" class="stage-watch-dialog" aria-labelledby="stage-watch-title">
+    <div class="stage-watch-shell">
+      <div class="stage-watch-header">
+        <div><p class="eyebrow">Live Stage</p><h2 id="stage-watch-title">Stage</h2><span id="stage-watch-updated" class="muted" aria-live="polite">Choose a stage to inspect it.</span></div>
+        <form method="dialog"><button class="secondary" type="submit">${iconLabel("x", "Close")}</button></form>
+      </div>
+      <div class="stage-watch-meta">
+        <div><strong>Agent</strong><span id="stage-watch-agent">—</span></div>
+        <div><strong>Status</strong><span id="stage-watch-status">—</span></div>
+        <div><strong>Attempts</strong><span id="stage-watch-attempts">—</span></div>
+        <div><strong>Executor</strong><span id="stage-watch-executor">—</span></div>
+      </div>
+      <section><div class="section-heading"><h3>What the agent is doing</h3><span id="stage-watch-evidence" class="muted"></span></div><ol id="stage-watch-log" class="run-live-log" aria-label="Stage activity log"><li class="run-live-empty">Loading stage activity…</li></ol></section>
+      <section><h3>Latest stage output</h3><pre id="stage-watch-output" class="stage-watch-output">No stage output has been recorded yet.</pre></section>
+    </div>
+  </dialog>`;
 }
 
 type FailedRunResolution = {
