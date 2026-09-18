@@ -111,6 +111,15 @@ test("queue items expose replay and repair recovery relationships without rewrit
   assert.match(source, /parent\.depth < 20 and not child\.id = any\(parent\.path\)/u);
 });
 
+test("queue and dashboard lookups have indexes for recovery, receipts, and task state", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_status_started_idx[\s\S]+ON workflow_runs\(status, started_at DESC\)/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_replay_source_idx[\s\S]+evaluation_metadata->>'replayOfRunId'/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_repair_source_idx[\s\S]+evaluation_metadata->>'sourceRunId'/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_schedule_idx[\s\S]+ON workflow_tasks\(run_id, status, available_at, started_at\)/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS action_receipts_run_type_created_idx[\s\S]+ON action_receipts\(run_id, action_type, created_at DESC\)/u);
+});
+
 test("queue and run detail expose the latest recorded stage failure reason", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /ar\.action_type = 'stage_failed'[\s\S]+as "failedReason"/u);

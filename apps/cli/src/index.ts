@@ -26610,7 +26610,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/api/workflow-graph") {
-    const report = await loadDashboardWorkflowGraph(requestUrl.searchParams);
+    const report = await loadCachedDashboardReport(
+      `workflow-graph:${requestUrl.searchParams.toString()}`,
+      () => loadDashboardWorkflowGraph(requestUrl.searchParams),
+      2_000
+    );
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
     return;
@@ -27643,13 +27647,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   const [runs, workflows, worker, supervisor, runtimeMonitor, roadmap, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
-    listWorkflowRuns(25),
+    loadCachedDashboardReport("dashboard-home:runs:25", () => listWorkflowRuns(25), 2_000),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
     loadCachedDashboardReport("runtime-monitor", () => loadRuntimeMonitorReport()),
     loadCachedDashboardReport("roadmap", () => loadRoadmapDashboardReport()),
-    listWorkflowQueue(100),
+    loadCachedDashboardReport("dashboard-home:queue:100", () => listWorkflowQueue(100), 2_000),
     loadCachedDashboardReport("projects:100", () => listProjectStorageSummaries(100)),
     loadCachedDashboardReport("services", () => checkServices()),
     listActionApprovals({ status: "pending", limit: 25 }),
@@ -30559,6 +30563,7 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
         apiUrl.searchParams.delete('capture');
         let pollTimer = 0;
         let paused = false;
+        let pollInFlight = false;
         let latestReport = null;
         const showEvent = (index, heading, message) => {
           title.textContent = heading;
@@ -30620,7 +30625,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           }
         };
         const poll = async () => {
-          if (paused || document.hidden) return;
+          if (paused || document.hidden || pollInFlight) return;
+          pollInFlight = true;
           try {
             const response = await fetch(apiUrl, { headers: { accept: 'application/json' }, cache: 'no-store' });
             if (!response.ok) throw new Error('status ' + response.status);
@@ -30628,6 +30634,8 @@ function renderWorkflowNetworkHtml(report: DashboardWorkflowGraphReport, stages:
           } catch (error) {
             shell.classList.remove('live-connected');
             showEvent(0, 'Live feed unavailable', error instanceof Error ? error.message : 'Could not refresh workflow state');
+          } finally {
+            pollInFlight = false;
           }
         };
         const replayLatest = () => {

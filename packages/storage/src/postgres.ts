@@ -99,6 +99,20 @@ export async function migrateStorage(): Promise<void> {
       ON workflow_runs(replacement_run_id)
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS workflow_runs_status_started_idx
+      ON workflow_runs(status, started_at DESC)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS workflow_runs_replay_source_idx
+      ON workflow_runs ((evaluation_metadata->>'replayOfRunId'))
+      WHERE evaluation_metadata ? 'replayOfRunId'
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS workflow_runs_repair_source_idx
+      ON workflow_runs ((evaluation_metadata->>'sourceRunId'))
+      WHERE evaluation_metadata ? 'sourceRunId'
+    `);
+    await client.query(`
       UPDATE workflow_runs
       SET status = 'cancelled'
       WHERE status = 'dismissed'
@@ -211,6 +225,10 @@ export async function migrateStorage(): Promise<void> {
       ON artifacts(run_id, kind, created_at)
     `);
     await client.query(`
+      CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_schedule_idx
+      ON workflow_tasks(run_id, status, available_at, started_at)
+    `);
+    await client.query(`
       CREATE TABLE IF NOT EXISTS action_approvals (
         id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
         run_id uuid REFERENCES workflow_runs(id),
@@ -257,6 +275,10 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
       ON action_approvals(status, created_at)
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS action_receipts_run_type_created_idx
+      ON action_receipts(run_id, action_type, created_at DESC)
     `);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS action_approvals_run_level_idempotency_idx
