@@ -1527,6 +1527,7 @@ export async function replayWorkflowRun(input: {
         constructionRationale: Record<string, unknown>;
         compiledBrief: string | null;
         compiledBriefMetadata: Record<string, unknown> | null;
+        replacementRunId: string | null;
       }>(
         `select
            p.id::text as "projectId",
@@ -1549,19 +1550,45 @@ export async function replayWorkflowRun(input: {
            wr.workflow_definition_version as "workflowDefinitionVersion",
            wr.workflow_definition_hash as "workflowDefinitionHash",
            wr.construction_rationale as "constructionRationale",
+           wr.replacement_run_id::text as "replacementRunId",
            artifact.content->>'text' as "compiledBrief",
            artifact.content->'metadata' as "compiledBriefMetadata"
          from workflow_runs wr
          join projects p on p.id = wr.project_id
          left join workflows wf on wf.id = wr.workflow_id
          left join artifacts artifact on artifact.uri = wr.compiled_brief_uri
-         where wr.id = $1`,
+         where wr.id = $1
+         for update of wr`,
         [input.sourceRunId]
       );
       const sourceRun = source.rows[0];
       if (!sourceRun) {
         await client.query("rollback");
         return null;
+      }
+      if (sourceRun.replacementRunId) {
+        const existing = await client.query<{
+          tasks: number;
+          completedTasks: number;
+          skippedTasks: number;
+        }>(
+          `select count(*)::int as tasks,
+                  count(*) filter (where status = 'completed')::int as "completedTasks",
+                  0::int as "skippedTasks"
+             from workflow_tasks
+            where run_id = $1::uuid`,
+          [sourceRun.replacementRunId]
+        );
+        const counts = existing.rows[0] ?? { tasks: 0, completedTasks: 0, skippedTasks: 0 };
+        await client.query("commit");
+        return {
+          projectId: sourceRun.projectId,
+          runId: sourceRun.replacementRunId,
+          tasks: counts.tasks,
+          completedTasks: counts.completedTasks,
+          skippedTasks: counts.skippedTasks,
+          queuedTasks: Math.max(0, counts.tasks - counts.completedTasks)
+        };
       }
       const workflow = sourceRun.workflowSnapshot ?? sourceRun.workflowDefinition;
       if (!workflow) {
@@ -1576,6 +1603,8 @@ export async function replayWorkflowRun(input: {
           startedAt: string | null;
           finishedAt: string | null;
           artifactContent: Record<string, unknown> | null;
+          approvalCount: number;
+          executedApprovalCount: number;
         }>(
           `select wt.id::text,
                   wt.stage_id as "stageId",
@@ -1583,8 +1612,11 @@ export async function replayWorkflowRun(input: {
                   wt.attempts,
                   wt.started_at::text as "startedAt",
                   wt.finished_at::text as "finishedAt",
-                  artifact.content as "artifactContent"
+                  artifact.content as "artifactContent",
+                  count(aa.id)::int as "approvalCount",
+                  count(aa.id) filter (where aa.status = 'executed')::int as "executedApprovalCount"
              from workflow_tasks wt
+             left join action_approvals aa on aa.task_id = wt.id
              left join lateral (
                select content
                  from artifacts
@@ -1592,7 +1624,8 @@ export async function replayWorkflowRun(input: {
                 order by created_at desc
                 limit 1
              ) artifact on true
-            where wt.run_id = $1::uuid`,
+            where wt.run_id = $1::uuid
+            group by wt.id, artifact.content`,
           [input.sourceRunId]
         )
         : { rows: [] };
@@ -1696,7 +1729,11 @@ export async function replayWorkflowRun(input: {
       const skippedStageIds = new Set(input.skipStageIds ?? []);
       for (const stage of workflow.stages) {
         const sourceTask = sourceTaskByStage.get(stage.id);
-        const preserveCheckpoint = sourceTask?.status === "completed" && sourceTask.artifactContent !== null;
+        const actionResolvedCheckpoint = sourceTask?.status === "blocked"
+          && sourceTask.approvalCount > 0
+          && sourceTask.executedApprovalCount === sourceTask.approvalCount;
+        const preserveCheckpoint = (sourceTask?.status === "completed" || actionResolvedCheckpoint)
+          && sourceTask.artifactContent !== null;
         const skipStage = skippedStageIds.has(stage.id) && !preserveCheckpoint;
         const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (
@@ -1745,8 +1782,10 @@ export async function replayWorkflowRun(input: {
               runId,
               stage.agent,
               taskId,
-              `Preserved completed checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}.`,
-              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask.id, stageId: stage.id })
+              actionResolvedCheckpoint
+                ? `Preserved action-resolved checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}; every required action has a durable executed receipt.`
+                : `Preserved completed checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}.`,
+              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask.id, stageId: stage.id, actionResolvedCheckpoint })
             ]
           );
         } else if (skipStage) {
@@ -1844,6 +1883,14 @@ export async function replayWorkflowRun(input: {
           idempotencyKey: "checkpoint-replay:completed"
         });
       }
+
+      await client.query(
+        `update workflow_runs
+            set replacement_run_id = $2::uuid,
+                updated_at = now()
+          where id = $1::uuid and replacement_run_id is null`,
+        [input.sourceRunId, runId]
+      );
 
       await client.query("commit");
       return {
@@ -3241,6 +3288,49 @@ export async function claimActionApprovalExecution(input: {
     );
     const approval = result.rows[0];
     return approval?.executionClaimToken ? { approval, claimToken: approval.executionClaimToken } : null;
+  });
+}
+
+export async function recoverInterruptedActionApprovalExecutions(input: {
+  actor: string;
+}): Promise<ActionApprovalStatus[]> {
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const result = await client.query<ActionApprovalStatus>(
+        `update action_approvals aa
+         set status = 'approved',
+             execution_claim_token = null,
+             execution_claim_expires_at = null,
+             updated_at = now()
+         from workflow_runs wr, projects p
+         where aa.status = 'executing'
+           and aa.executed_by = $1
+           and aa.executed_at is null
+           and wr.id = aa.run_id
+           and p.id = wr.project_id
+         returning ${actionApprovalSelect}`,
+        [input.actor]
+      );
+      for (const approval of result.rows) {
+        await client.query(
+          `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+           values ($1::uuid, $2, 'action_approval_execution_recovered', $3, $4, $5)`,
+          [
+            approval.runId,
+            approval.agentId,
+            approval.target,
+            `Recovered an interrupted ${approval.actionType} execution owned by ${input.actor}; the approved action is eligible for a fresh idempotent execution attempt.`,
+            JSON.stringify({ approvalId: approval.id, actor: input.actor, priorStatus: "executing", nextStatus: "approved" })
+          ]
+        );
+      }
+      await client.query("commit");
+      return result.rows;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 

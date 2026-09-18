@@ -157,3 +157,22 @@ test("pinned build finalizer requires both creation and verification evidence", 
   } as StageExecutionOutput;
   assert.match(unfulfilledCompletionReason(finalizerInput, output) ?? "", /no completed verification evidence/iu);
 });
+
+test("review workflow finalizers are not misclassified as product delivery stages", () => {
+  const reviewInput = {
+    ...input,
+    workflowId: "review-pr",
+    stageId: "final-review",
+    agentId: "pr-preparer",
+    workflowTask: "Review implementation work and identify remaining risks.",
+    stagePattern: { type: "finalizer", requiresVerifier: false, promotionGate: "approval", stopConditions: [] }
+  };
+  const output = {
+    outcome: "completed",
+    summary: "Review complete with ordered findings and verification gaps.",
+    artifact: { findings: ["One gap remains."], nextAction: "Address the finding." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(reviewInput, output), null);
+});

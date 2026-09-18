@@ -112,6 +112,7 @@ import {
   recordRunAction,
   requestActionApproval,
   reconcileStaleTerminalWorkflowRuns,
+  recoverInterruptedActionApprovalExecutions,
   requeueExpiredWorkflowTaskLeases,
   requeueRunningWorkflowTasks,
   replayWorkflowRun,
@@ -4668,6 +4669,10 @@ program
     };
 
     await writeStatus("starting");
+    const recoveredApprovalExecutions = await recoverInterruptedActionApprovalExecutions({ actor: daemonId });
+    if (!options.json && recoveredApprovalExecutions.length) {
+      console.log(`Recovered ${recoveredApprovalExecutions.length} interrupted approval execution${recoveredApprovalExecutions.length === 1 ? "" : "s"} for ${daemonId}.`);
+    }
     await runQueueRecoveryLane();
     const queueRecoveryTimer = setInterval(() => {
       void runQueueRecoveryLane().catch((error) => {
@@ -38272,7 +38277,7 @@ async function runApprovalAutopilot(input: {
         actor: input.actor,
         approveActorRole: input.actorRole,
         executeActorRole: "operator",
-        note: `Autopilot approved and executed: risk=${classification.risk}, max=${input.maxRisk}.`
+        note: `Autopilot approved and requested immediate execution: risk=${classification.risk}, max=${input.maxRisk}.`
       });
     items.push({
       approvalId: approval.id,

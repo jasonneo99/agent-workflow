@@ -5,6 +5,7 @@ import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, 
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+const supervisionSource = readFileSync(new URL("./workflow-supervision.ts", import.meta.url), "utf8");
 
 test("queueing hydrates an empty project index before compiling evidence", () => {
   assert.match(cliSource, /if \(sourceSummaries\.length === 0\)[\s\S]+indexProjectForRun[\s\S]+sourceSummaries = await loadSourceSummaries/u);
@@ -25,6 +26,16 @@ test("learning daemon closes every terminal repair with a reusable local lesson"
   assert.match(cliSource, /actionType: "workflow_repair_learning"/u);
   assert.match(cliSource, /sourceUri: `agentflow:\/\/repair-learning\/\$\{run\.id\}`/u);
   assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks \}\)/u);
+});
+
+test("root-repair guidance covers approval interruption, replay loops, duplicate continuations, and contract scope", () => {
+  assert.match(supervisionSource, /Recover approval executions owned by a prior daemon process/u);
+  assert.match(supervisionSource, /Preserve a blocked stage as a completed checkpoint/u);
+  assert.match(supervisionSource, /Reserve continuation lineage atomically/u);
+  assert.match(supervisionSource, /Apply delivery-quality gates only to delivery workflows/u);
+  for (const strategy of ["interrupted-approval-execution", "action-resolved-checkpoint", "duplicate-replay-race", "workflow-contract-mismatch"]) {
+    assert.match(supervisionSource, new RegExp(`"${strategy}"`, "u"));
+  }
 });
 
 test("completed delivery without product writes is automatically repairable", () => {
@@ -100,7 +111,11 @@ test("root repair prevention captures the durable incident lessons", () => {
   assert.match(workflowRepairPrevention("provider-recovered"), /bounded inference probe/iu);
   assert.match(workflowRepairPrevention("provider-cli-contention"), /serialize shared local CLI launches/iu);
   assert.match(workflowRepairPrevention("planning-deliverable-gap"), /finding and continue to implementation/iu);
-  assert.equal(WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER.length, 7);
+  assert.match(workflowRepairPrevention("interrupted-approval-execution"), /daemon startup/iu);
+  assert.match(workflowRepairPrevention("action-resolved-checkpoint"), /executed receipt/iu);
+  assert.match(workflowRepairPrevention("duplicate-replay-race"), /Lock the source run/iu);
+  assert.match(workflowRepairPrevention("workflow-contract-mismatch"), /workflow identity/iu);
+  assert.equal(WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER.length, 11);
 });
 
 test("repair runs do not recursively repair themselves", () => {

@@ -11,3 +11,10 @@ test("approval autopilot does not create a second replacement after inline appro
   const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
   assert.match(source, /result\.runId !== approval\.runId[\s\S]+resumedRuns\.add\(approval\.runId\)[\s\S]+!resumedRuns\.has\(approval\.runId\)/u);
 });
+
+test("learning daemon recovers approval executions interrupted by its prior process", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.match(source, /recoverInterruptedActionApprovalExecutions\(\{ actor: daemonId \}\)/u);
+  assert.match(source, /Recovered \$\{recoveredApprovalExecutions\.length\} interrupted approval execution/u);
+  assert.match(source, /Autopilot approved and requested immediate execution/u);
+});

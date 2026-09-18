@@ -139,6 +139,10 @@ export const WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER = [
   "Separate approvals, credentials, quotas, and permissions from internal failures; never retry unmet operator prerequisites blindly.",
   "For provider outages, require a bounded real inference probe, not authentication or process-health checks alone.",
   "Treat missing planning detail as a finding unless an actual external prerequisite prevents implementation.",
+  "Recover approval executions owned by a prior daemon process before scanning new approvals.",
+  "Preserve a blocked stage as a completed checkpoint when every required action has an executed receipt.",
+  "Reserve continuation lineage atomically so one terminal source cannot spawn duplicate active replays.",
+  "Apply delivery-quality gates only to delivery workflows, never advisory review finalizers.",
   "Allow one lineage-marked repair at a time, retain idempotent receipts, and learn from its verified terminal result."
 ] as const;
 
@@ -152,7 +156,11 @@ const WORKFLOW_REPAIR_PREVENTION: Record<string, string> = {
   "worker-project-unavailable": "Resolve project checkout availability before claim; exclude unavailable project roots from that worker sweep.",
   "stale-parent-state": "Derive the parent terminal state from child tasks and traverse required lifecycle states idempotently.",
   "planning-deliverable-gap": "Record the gap as a finding and continue to implementation unless a real external prerequisite exists.",
-  "provider-cli-contention": "Serialize shared local CLI launches across processes and resolve the executable before spawning workers."
+  "provider-cli-contention": "Serialize shared local CLI launches across processes and resolve the executable before spawning workers.",
+  "interrupted-approval-execution": "On daemon startup, release only that daemon identity's unfinished execution claims and retry through the idempotent approval executor.",
+  "action-resolved-checkpoint": "Once every required action has an executed receipt, preserve the producing stage output as a completed checkpoint instead of rerunning the model.",
+  "duplicate-replay-race": "Lock the source run and reserve its replacement id in the replay transaction before another repair lane can create a continuation.",
+  "workflow-contract-mismatch": "Scope delivery completion gates by workflow identity so review and audit finalizers remain advisory."
 };
 
 export function workflowRepairPrevention(strategy: string): string {

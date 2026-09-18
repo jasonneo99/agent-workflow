@@ -31,12 +31,14 @@ function priorBuildEvidence(input: StageExecutionInput): { productWrite: boolean
 
 export function unfulfilledCompletionReason(input: StageExecutionInput, output: StageExecutionOutput): string | null {
   if (output.outcome !== "completed") return null;
-  const pinnedBuild = hasPinnedBuildIntent(input.workflowTask);
+  const deliveryWorkflow = !input.workflowId
+    || ["build-feature", "debug-failure", "dependency-upgrade", "data-migration", "wide-open-automation"].includes(input.workflowId);
+  const pinnedBuild = deliveryWorkflow && hasPinnedBuildIntent(input.workflowTask);
   const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix)\b/iu.test(input.workflowTask);
   const implementationStage = ["implementation-agent", "backend-engineer", "frontend-engineer", "database-engineer"].includes(input.agentId)
     || /(?:^|[-_])(?:implement(?:ation)?|backend|frontend|database)(?:$|[-_])/iu.test(input.stageId);
-  const deliveryFinalizer = deliveryIntent && input.stagePattern?.type === "finalizer";
-  const deliveryVerifier = deliveryIntent && (input.stagePattern?.type === "verifier" || input.agentId === "auto-test-runner" || /(?:^|[-_])verify(?:$|[-_])/iu.test(input.stageId));
+  const deliveryFinalizer = deliveryWorkflow && deliveryIntent && input.stagePattern?.type === "finalizer";
+  const deliveryVerifier = deliveryWorkflow && deliveryIntent && (input.stagePattern?.type === "verifier" || input.agentId === "auto-test-runner" || /(?:^|[-_])verify(?:$|[-_])/iu.test(input.stageId));
   if (!implementationStage && !deliveryFinalizer && !deliveryVerifier) return null;
   if (pinnedBuild && (deliveryVerifier || deliveryFinalizer)) {
     const evidence = priorBuildEvidence(input);

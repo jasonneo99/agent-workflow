@@ -131,7 +131,8 @@ test("approval-level changes preserve immutable runs and audit queued updates", 
 test("checkpoint replacement preserves completed stages and queues only unfinished work", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("async function createWorkflowHandoffsForRun"));
-  assert.match(replay, /sourceTask\?\.status === "completed" && sourceTask\.artifactContent !== null/u);
+  assert.match(replay, /sourceTask\?\.status === "completed" \|\| actionResolvedCheckpoint/u);
+  assert.match(replay, /sourceTask\.artifactContent !== null/u);
   assert.match(replay, /preserveCheckpoint \|\| skipStage \? "completed" : "queued"/u);
   assert.match(replay, /stage_checkpoint_preserved/u);
   assert.match(replay, /checkpointPreservedFromRunId/u);
@@ -139,6 +140,21 @@ test("checkpoint replacement preserves completed stages and queues only unfinish
   assert.match(source, /retryFailedWorkflowRun[\s\S]+preserveCompletedCheckpoints: true/u);
   assert.match(source, /return replay\?\.queuedTasks \?\? 0/u);
   assert.match(replay, /\.\.\.input\.evaluationMetadataPatch[\s\S]+replayOfRunId: input\.sourceRunId/u);
+});
+
+test("checkpoint replacement preserves blocked stages after every required action executes", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  assert.match(source, /actionResolvedCheckpoint = sourceTask\?\.status === "blocked"/u);
+  assert.match(source, /sourceTask\.executedApprovalCount === sourceTask\.approvalCount/u);
+  assert.match(source, /Preserved action-resolved checkpoint/u);
+});
+
+test("checkpoint replay atomically reserves one replacement per source run", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("export async function setQueuedWorkflowRunAutonomy"));
+  assert.match(replay, /for update of wr/u);
+  assert.match(replay, /if \(sourceRun\.replacementRunId\)/u);
+  assert.match(replay, /set replacement_run_id = \$2::uuid/u);
 });
 
 test("checkpoint replay finalizes immediately when every stage is already complete", () => {
@@ -214,6 +230,9 @@ test("approval execution is atomically claimed before dispatch", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /ADD COLUMN IF NOT EXISTS execution_claim_token uuid/u);
   assert.match(source, /export async function claimActionApprovalExecution/u);
+  assert.match(source, /export async function recoverInterruptedActionApprovalExecutions/u);
+  assert.match(source, /action_approval_execution_recovered/u);
+  assert.match(source, /aa\.executed_by = \$1/u);
   assert.match(source, /set status = 'executing'[\s\S]+execution_claim_token = gen_random_uuid\(\)/u);
   assert.match(source, /aa\.execution_claim_token = \$6::uuid/u);
 });
