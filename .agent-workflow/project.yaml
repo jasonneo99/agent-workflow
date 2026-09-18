@@ -111,3 +111,4 @@ actions:
     - "**/build/**"
     - "**/coverage/**"
   max_write_bytes: 250000
+  auto_approve_max_risk: medium

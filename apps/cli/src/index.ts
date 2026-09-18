@@ -24506,6 +24506,18 @@ async function writeLearningSettings(projectDir: string, settings: LearningSetti
   const learningDir = path.join(projectDir, ".agent-workflow", "learning");
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "settings.json"), `${JSON.stringify(settings, null, 2)}\n`, "utf8");
+  const configPath = path.join(projectDir, ".agent-workflow", "project.yaml");
+  const config = YAML.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+  const actions = isRecord(config.actions) ? config.actions : {};
+  const nextConfig = {
+    ...config,
+    actions: {
+      ...actions,
+      auto_approve_max_risk: settings.approvalAutopilotEnabled ? settings.approvalAutopilotMaxRisk : "none"
+    }
+  };
+  projectConfigSchema.parse(nextConfig);
+  await fs.writeFile(configPath, YAML.stringify(nextConfig), "utf8");
 }
 
 async function writeLearningReport(projectDir: string, report: LearningReport): Promise<void> {
@@ -45978,6 +45990,7 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         "**/coverage/**"
       ],
       max_write_bytes: 250000,
+      auto_approve_max_risk: "none",
       approval_rules: []
     }
   };

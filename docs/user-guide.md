@@ -1385,6 +1385,13 @@ npm run agentflow -- request-approval \
 
 Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
 
+The Learning settings approval-autopilot switch also persists its threshold as
+`actions.auto_approve_max_risk`. When enabled, workers execute eligible
+policy-allowed actions at or below that risk immediately, before a stage is
+blocked. The daemon sweep remains a recovery path for approvals created by
+older workers or immutable runs compiled before the setting changed. New
+projects default this field to `none` until the operator enables it.
+
 For local developer setups that want more autonomy, approval autopilot can scan
 pending approvals and already-approved unexecuted actions, then approve and
 execute eligible low/medium local side effects:

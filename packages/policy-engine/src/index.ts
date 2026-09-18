@@ -21,6 +21,40 @@ export interface ActionApprovalRuleMatch {
   reasons: string[];
 }
 
+export type ActionRisk = "low" | "medium" | "high";
+
+export function evaluateActionRiskAutoApproval(input: {
+  project: ProjectConfig;
+  actionType: "local_command" | "file_write" | "executor_adapter";
+  target: string;
+  bytes?: number;
+}): ActionApprovalRuleMatch | null {
+  const threshold = input.project.actions.auto_approve_max_risk;
+  if (threshold === "none") return null;
+  const normalized = input.target.replace(/\\/gu, "/").replace(/^\.\//u, "");
+  let risk: ActionRisk = "high";
+  if (input.actionType === "file_write") {
+    if (/(^|\/)(\.env|\.env\..*|id_rsa|id_ed25519|secrets?|credentials?|token|key)(\/|$)/iu.test(normalized)) return null;
+    risk = (input.bytes ?? 0) <= 20_000 && /^(\.agent-workflow\/|docs\/|README\.md$|CHANGELOG\.md$)/u.test(normalized) ? "low" : "medium";
+  } else if (input.actionType === "local_command") {
+    const command = input.target.trim().toLowerCase();
+    if (/(\bsudo\b|\brm\b|\bgit\s+(reset|clean|checkout)\b|\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\bdeploy\b|\bpublish\b|\bprisma\s+migrate\b|\bdocker\b|\blaunchctl\b)/u.test(command)) return null;
+    risk = /^(npm|pnpm|yarn)\s+(test|run\s+(test|typecheck|lint|validate|check|build)|exec\s+tsc)\b/u.test(command) ? "low" : "medium";
+  } else {
+    return null;
+  }
+  const rank = { low: 1, medium: 2, high: 3 } as const;
+  if (rank[risk] > rank[threshold]) return null;
+  return {
+    id: `risk-threshold-${threshold}`,
+    description: `Auto-execute ${risk}-risk policy-allowed local actions (maximum ${threshold}).`,
+    actionType: input.actionType,
+    target: input.target,
+    effect: "auto_execute",
+    reasons: [`classified ${risk} risk`, `within auto-approve threshold ${threshold}`]
+  };
+}
+
 const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
   local: {
     policies: {},

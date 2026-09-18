@@ -53,6 +53,13 @@ the action must still pass allowed and blocked command/path checks first. A
 matching `auto_execute` rule lets the worker execute the action immediately
 while preserving normal receipts and artifacts.
 
+For project-wide risk-based behavior, `actions.auto_approve_max_risk` accepts
+`none`, `low`, `medium`, or `high`. Eligible actions at or below the configured
+threshold execute in the worker before the stage can block. This threshold
+never overrides command/path blocklists, byte limits, secret-bearing path
+checks, or the hard gates for destructive, deployment, provider, server, and
+network actions. The dashboard Learning setting persists this project policy.
+
 Storage isolation remains an optional deployment concern. Teams that require
 separate infrastructure for production can run a separate Agent Workflow
 deployment, but the policy-profile feature does not require it.

@@ -71,6 +71,7 @@ const project: ProjectConfig = {
     allowed_write_paths: [],
     blocked_write_paths: [".git/**", "node_modules/**", ".env", ".env.*"],
     max_write_bytes: 200000,
+    auto_approve_max_risk: "none",
     approval_rules: []
   }
 };

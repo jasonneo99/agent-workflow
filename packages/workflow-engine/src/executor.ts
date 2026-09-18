@@ -10,7 +10,7 @@ import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
-import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
+import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
 import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
 import {
@@ -451,6 +451,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             project,
             actionType: "local_command",
             target: commandLine
+          }) ?? evaluateActionRiskAutoApproval({
+            project,
+            actionType: "local_command",
+            target: commandLine
           });
           if (!commandApprovalRule) {
             const approval = await requestActionApproval({
@@ -734,6 +738,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             continue;
           }
           fileWriteApprovalRule = evaluateActionApprovalRule({
+            project,
+            actionType: "file_write",
+            target: fileWrite.path,
+            bytes: Buffer.byteLength(fileWrite.content, "utf8")
+          }) ?? evaluateActionRiskAutoApproval({
             project,
             actionType: "file_write",
             target: fileWrite.path,

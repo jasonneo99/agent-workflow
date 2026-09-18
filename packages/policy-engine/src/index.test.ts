@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { canonicalJsonHash, evaluateActionApprovalRule, resolveExecutionPolicy } from "./index.js";
+import { canonicalJsonHash, evaluateActionApprovalRule, evaluateActionRiskAutoApproval, resolveExecutionPolicy } from "./index.js";
 
 const project = projectConfigSchema.parse({
   project: {
@@ -129,6 +129,36 @@ test("approval rules match scoped commands and file writes", () => {
     bytes: 12
   });
   assert.equal(fileRule?.id, "small-source-note");
+});
+
+test("risk threshold auto-approves eligible local actions but keeps dangerous actions gated", () => {
+  const autonomousProject = projectConfigSchema.parse({
+    ...project,
+    actions: { ...project.actions, auto_approve_max_risk: "medium" }
+  });
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
+    actionType: "file_write",
+    target: "docs/receipts/review.md",
+    bytes: 4_826
+  })?.id, "risk-threshold-medium");
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
+    actionType: "file_write",
+    target: "src/feature.ts",
+    bytes: 25_000
+  })?.id, "risk-threshold-medium");
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
+    actionType: "file_write",
+    target: "credentials/token",
+    bytes: 10
+  }), null);
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
+    actionType: "local_command",
+    target: "npm publish"
+  }), null);
 });
 
 test("approval rule command wildcards match command prefixes only", () => {
