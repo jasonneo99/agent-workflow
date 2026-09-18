@@ -34717,7 +34717,7 @@ function renderRunCommandCenterBody(
   tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"],
   approvals: Awaited<ReturnType<typeof listActionApprovals>>
 ): string {
-  const openApprovals = approvals.filter(isOpenApproval);
+  const openApprovals = approvals.filter((approval) => isOpenApproval(approval) && (approval.status !== "failed" || run.status === "blocked" || run.status === "failed"));
   const completed = tasks.filter((task) => task.status === "completed" && !task.skipped).length;
   const skipped = tasks.filter((task) => task.skipped).length;
   const failed = tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;

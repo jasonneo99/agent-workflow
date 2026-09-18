@@ -3130,6 +3130,33 @@ export async function getActionApproval(approvalId: string): Promise<ActionAppro
   });
 }
 
+export async function dismissSupersededActionApprovals(input: {
+  runId: string;
+  taskId: string;
+  actionType: "local_command" | "file_write";
+  target: string;
+  actor: string;
+}): Promise<number> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `update action_approvals
+          set status = 'dismissed',
+              decided_by = coalesce(decided_by, $5),
+              decided_role = coalesce(decided_role, 'operator'),
+              decided_at = coalesce(decided_at, now()),
+              decision_note = concat_ws(E'\n', nullif(decision_note, ''), 'Superseded after the worker executed the same policy-allowed action directly.'),
+              updated_at = now()
+        where run_id = $1::uuid
+          and task_id = $2::uuid
+          and action_type = $3
+          and target = $4
+          and status in ('pending', 'approved', 'failed')`,
+      [input.runId, input.taskId, input.actionType, input.target, input.actor]
+    );
+    return result.rowCount ?? 0;
+  });
+}
+
 export async function decideActionApproval(input: {
   approvalId: string;
   decision: "approved" | "rejected";
@@ -3233,6 +3260,21 @@ export async function markActionApprovalExecution(input: {
         await client.query("rollback");
         if (input.executionClaimToken) throw new Error("Approval execution claim was lost before finalization.");
         return null;
+      }
+      if (input.status === "executed") {
+        await client.query(
+          `update action_approvals
+              set status = 'dismissed',
+                  decision_note = concat_ws(E'\n', nullif(decision_note, ''), 'Superseded by a successfully executed approval for the same action.'),
+                  updated_at = now()
+            where id <> $1::uuid
+              and run_id = $2::uuid
+              and task_id is not distinct from $3::uuid
+              and action_type = $4
+              and target = $5
+              and status in ('pending', 'approved', 'failed')`,
+          [approval.id, approval.runId, approval.taskId, approval.actionType, approval.target]
+        );
       }
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)

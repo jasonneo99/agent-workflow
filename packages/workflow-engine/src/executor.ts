@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
+import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
@@ -18,6 +19,7 @@ import {
   claimSideEffect,
   claimNextWorkflowTask,
   completeWorkflowTask,
+  dismissSupersededActionApprovals,
   findRunActionByIdempotencyKey,
   failWorkflowTask,
   finalizeSideEffect,
@@ -47,6 +49,19 @@ export type WorkerRunOptions = {
   providerIds?: string[];
   unavailableProjectRootUris?: Set<string>;
 };
+
+export function applyCurrentAutoApprovalThreshold(
+  snapshot: ReturnType<typeof projectConfigSchema.parse>,
+  current: ReturnType<typeof projectConfigSchema.parse>
+): ReturnType<typeof projectConfigSchema.parse> {
+  return projectConfigSchema.parse({
+    ...snapshot,
+    actions: {
+      ...snapshot.actions,
+      auto_approve_max_risk: current.actions.auto_approve_max_risk
+    }
+  });
+}
 
 export class LostWorkflowTaskLeaseError extends Error {
   constructor(taskId: string) {
@@ -160,9 +175,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (leaseLost) throw new LostWorkflowTaskLeaseError(task.taskId);
         await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
       };
-      const actionResults = [];
-      const project = projectConfigSchema.parse(task.projectConfig);
       const localProjectRootUri = projectResolution.localRootUri;
+      const actionResults = [];
+      const snapshotProject = projectConfigSchema.parse(task.projectConfig);
+      const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
+      const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
       const stagePattern = normalizeStagePattern(task.stagePattern);
       const stageInput = {
         ...task,
@@ -588,6 +605,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         });
         const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
         if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
+        await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
         actionResults.push({
           commandLine,
           artifactUri,
@@ -882,6 +900,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         });
         const fileWriteFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, claimToken: fileSideEffect.claimToken, receipt: { artifactUri, path: writeResult.relativePath, nextHash: writeResult.nextHash } });
         if (!fileWriteFinalized) throw new Error(`File-write side-effect claim could not be finalized for ${fileWrite.path}.`);
+        await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "file_write", target: fileWrite.path, actor: task.workerId! });
         actionResults.push({
           type: "file_write",
           path: writeResult.relativePath,

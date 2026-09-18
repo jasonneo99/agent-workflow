@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./executor.js";
+import { actionIdempotencyKey, applyCurrentAutoApprovalThreshold, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./executor.js";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
+
+test("active workers adopt only the current project auto-approval threshold", () => {
+  const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "none", allowed_write_paths: ["docs/**"] } });
+  const current = projectConfigSchema.parse({ project: { name: "current", autonomy: 3 }, actions: { auto_approve_max_risk: "medium", allowed_write_paths: ["src/**"] } });
+  const effective = applyCurrentAutoApprovalThreshold(snapshot, current);
+  assert.equal(effective.actions.auto_approve_max_risk, "medium");
+  assert.deepEqual(effective.actions.allowed_write_paths, ["docs/**"]);
+  assert.equal(effective.project.autonomy, 2);
+});
 
 test("workers recover expired leases before claiming new work", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");

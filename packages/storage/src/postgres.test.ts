@@ -41,6 +41,22 @@ test("queue action receipt inserts use separate uuid and text parameters", () =>
   );
 });
 
+test("successful direct actions dismiss stale approval cards for the same task and target", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const dismissal = source.slice(source.indexOf("export async function dismissSupersededActionApprovals"), source.indexOf("export async function decideActionApproval"));
+  assert.match(dismissal, /status in \('pending', 'approved', 'failed'\)/u);
+  assert.match(dismissal, /task_id = \$2::uuid[\s\S]+action_type = \$3[\s\S]+target = \$4/u);
+  assert.match(dismissal, /status = 'dismissed'/u);
+});
+
+test("successful approval execution dismisses failed or pending sibling attempts", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const execution = source.slice(source.indexOf("export async function markActionApprovalExecution"), source.indexOf("export async function claimActionApprovalExecution"));
+  assert.match(execution, /if \(input\.status === "executed"\)/u);
+  assert.match(execution, /id <> \$1::uuid[\s\S]+task_id is not distinct from \$3::uuid[\s\S]+status in \('pending', 'approved', 'failed'\)/u);
+  assert.match(execution, /Superseded by a successfully executed approval/u);
+});
+
 test("workers claim only tasks whose pinned provider they advertise", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /claimNextWorkflowTask\(input\?: \{[^}]*providerIds\?: string\[\]/u);
