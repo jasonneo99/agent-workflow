@@ -49,6 +49,7 @@ export const workflowArchetypes: WorkflowArchetype[] = [
   archetype("documentation", "Create or maintain technical documentation.", ["documentation", "docs", "guide", "readme", "tutorial"], ["triage", "architecture", "docs", "verify", "package"]),
   archetype("model-improvement", "Improve prompts, routing, context, or evaluations.", ["model", "prompt", "routing", "eval", "fine tuning"], ["triage", "diagnose", "evaluate", "architecture", "implement", "verify", "package"]),
   archetype("maintenance", "Refactor or perform general repository maintenance.", ["refactor", "maintenance", "cleanup", "upgrade", "dependency"], ["triage", "architecture", "implement", "test", "verify", "docs", "package"]),
+  archetype("feature-delivery", "Implement and verify a general product or repository change.", ["implement", "add", "create", "change", "update"], ["triage", "architecture", "implement", "test", "verify", "package"]),
   archetype("product-discovery", "Turn a product goal into an implementation-ready direction.", ["research", "product", "strategy", "prototype", "discovery"], ["triage", "ux", "architecture", "security", "package"])
 ];
 
@@ -105,6 +106,7 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
       "debug-failure": ["diagnose", "implement", "verify"],
       documentation: ["docs", "verify"],
       maintenance: ["implement", "verify"],
+      "feature-delivery": ["implement", "verify"],
       "code-review": ["architecture", "test"],
       "product-discovery": ["ux", "architecture", "security"]
     };
@@ -134,8 +136,19 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
 
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
+  const mutationIntent = /^\s*(?:implement|add|create|change|update|build|fix|remove|delete|write)\b/iu.test(goal);
   return workflowArchetypes
-    .map((candidate, index) => ({ candidate, index, score: candidate.keywords.reduce((score, keyword) => score + (normalized.includes(keyword) ? keyword.split(/\s+/).length : 0), 0) }))
+    .map((candidate, index) => ({
+      candidate,
+      index,
+      // A mutation request can legitimately mention review cards, review
+      // feedback, or audit UI without asking for a read-only code review.
+      // Preserve explicit review routing while preventing that incidental noun
+      // from stripping the generated workflow of its executor stage.
+      score: mutationIntent && candidate.id === "code-review"
+        ? 0
+        : candidate.keywords.reduce((score, keyword) => score + (normalized.includes(keyword) ? keyword.split(/\s+/).length : 0), 0)
+    }))
     .sort((left, right) => right.score - left.score || left.index - right.index)[0].candidate;
 }
 

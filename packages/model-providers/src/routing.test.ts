@@ -19,6 +19,26 @@ test("daemon comparison preferences select the proven provider for the job tier"
   }
 });
 
+test("worker capability quarantine routes default work to a healthy allowed provider", async () => {
+  const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "codex-cli";
+    const route = await selectModelRoute({
+      workflowId: "build-feature",
+      stageId: "implement",
+      agentId: "implementation-agent",
+      modelTier: "standard",
+      providerOverride: undefined,
+      compiledBrief: ""
+    }, { allowedProviderIds: ["mock"] });
+    assert.equal(route.providerId, "mock");
+    assert.match(route.reason, /Worker capability routing replaced an unavailable preferred provider/u);
+  } finally {
+    if (previousProvider === undefined) delete process.env.DEFAULT_MODEL_PROVIDER;
+    else process.env.DEFAULT_MODEL_PROVIDER = previousProvider;
+  }
+});
+
 test("approved local holdout notes select local for fast adaptive stages", async () => {
   const server = createServer((request, response) => {
     if (request.url === "/models" || request.url === "/v1/models") {

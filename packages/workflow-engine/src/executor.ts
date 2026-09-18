@@ -38,6 +38,9 @@ export interface WorkerResult {
   claimed: number;
   completed: number;
   failed: number;
+  providerFailures: Array<{ providerId: string; kind: string }>;
+  providerIds?: string[];
+  quarantinedProviderIds?: string[];
 }
 
 export type WorkerRunOptions = {
@@ -133,7 +136,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
   const result: WorkerResult = {
     claimed: 0,
     completed: 0,
-    failed: 0
+    failed: 0,
+    providerFailures: []
   };
 
   for (let i = 0; i < safeLimit; i += 1) {
@@ -148,6 +152,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
     result.claimed += 1;
 
     let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
+    let attemptedProviderId: string | undefined;
     try {
       const projectResolution = await resolveLocalProjectPath(task.projectRootUri);
       if (!projectResolution.localPathExists) {
@@ -205,7 +210,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.completed += 1;
         continue;
       }
-      const route = await selectModelRoute(stageInput);
+      const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
+      attemptedProviderId = route.providerId;
       const routedStageInput = {
         ...stageInput,
         modelTier: route.modelTier
@@ -994,6 +1000,17 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       result.completed += 1;
     } catch (error) {
       if (leaseHeartbeat) clearInterval(leaseHeartbeat);
+      const providerFailure = classifyProviderFailure(error);
+      if (attemptedProviderId && (providerFailure.kind === "authentication" || providerFailure.kind === "configuration")) {
+        result.providerFailures.push({ providerId: attemptedProviderId, kind: providerFailure.kind });
+        if (options?.providerIds) {
+          options.providerIds.splice(
+            0,
+            options.providerIds.length,
+            ...options.providerIds.filter((providerId) => providerId !== attemptedProviderId)
+          );
+        }
+      }
       if (!(error instanceof LostWorkflowTaskLeaseError) && !isStaleLeaseError(error)) {
         await failWorkflowTask({
           taskId: task.taskId,
@@ -1170,7 +1187,7 @@ async function localFallbackResult(commandLine: string, cwd: string, project: Re
 }
 
 async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOptions, concurrency: number): Promise<WorkerResult> {
-  const result: WorkerResult = { claimed: 0, completed: 0, failed: 0 };
+  const result: WorkerResult = { claimed: 0, completed: 0, failed: 0, providerFailures: [] };
   let remaining = limit;
   const runLane = async (): Promise<void> => {
     while (remaining > 0) {
@@ -1179,6 +1196,7 @@ async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOption
       result.claimed += tick.claimed;
       result.completed += tick.completed;
       result.failed += tick.failed;
+      result.providerFailures.push(...tick.providerFailures);
       if (tick.claimed === 0) {
         return;
       }
@@ -1284,19 +1302,43 @@ export async function runWorkerWatch(input: {
   projectRootUri?: string;
   concurrency?: number;
   providerIds?: string[];
+  providerRecoveryCooldownMs?: number;
+  recoverProvider?: (providerId: string) => Promise<boolean>;
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 }): Promise<void> {
   const unavailableProjectRootUris = new Set<string>();
+  const providerIds = input.providerIds ? new Set(input.providerIds) : undefined;
+  const quarantinedProviders = new Map<string, number>();
   while (!input.shouldStop()) {
+    if (providerIds && input.recoverProvider) {
+      const cooldownMs = Math.max(1_000, input.providerRecoveryCooldownMs ?? 60_000);
+      for (const [providerId, quarantinedAt] of quarantinedProviders) {
+        if (Date.now() - quarantinedAt < cooldownMs) continue;
+        if (await input.recoverProvider(providerId)) {
+          quarantinedProviders.delete(providerId);
+          providerIds.add(providerId);
+        } else {
+          quarantinedProviders.set(providerId, Date.now());
+        }
+      }
+    }
     const result = await runWorkerOnce(input.limitPerTick, {
       workerId: input.workerId,
       leaseSeconds: input.leaseSeconds,
       projectRootUri: input.projectRootUri,
       concurrency: input.concurrency,
-      providerIds: input.providerIds,
+      providerIds: providerIds ? [...providerIds] : undefined,
       unavailableProjectRootUris
     });
+    if (providerIds) {
+      for (const failure of result.providerFailures) {
+        providerIds.delete(failure.providerId);
+        quarantinedProviders.set(failure.providerId, Date.now());
+      }
+      result.providerIds = [...providerIds];
+      result.quarantinedProviderIds = [...quarantinedProviders.keys()];
+    }
     await input.onTick(result);
     await sleep(input.intervalMs);
   }

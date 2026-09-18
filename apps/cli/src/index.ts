@@ -41,7 +41,7 @@ import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
-import { probeWorkerProviderCapabilities } from "./worker-provider-capabilities.js";
+import { probeWorkerProviderCapabilities, probeWorkerProviderExecution } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../packages/dashboard/src/queue-watcher.js";
 import { buildIdeConfigSnippet, mergeIdeConfig, type IdeClient } from "../../../packages/ide-onboarding/src/index.js";
@@ -6295,8 +6295,11 @@ program
         claimed: tick?.claimed ?? 0,
         completed: tick?.completed ?? 0,
         failed: tick?.failed ?? 0,
-        providerIds: capabilities.ready,
-        unavailableProviderIds: capabilities.unavailable.map((item) => item.providerId),
+        providerIds: tick?.providerIds ?? capabilities.ready,
+        unavailableProviderIds: [...new Set([
+          ...capabilities.unavailable.map((item) => item.providerId),
+          ...(tick?.quarantinedProviderIds ?? [])
+        ])],
         status,
         command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency}`
       };
@@ -6324,6 +6327,8 @@ program
       projectRootUri,
       concurrency,
       providerIds: capabilities.ready,
+      providerRecoveryCooldownMs: 60_000,
+      recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
       shouldStop: () => stop,
       onTick: async (result) => {
         await writeHeartbeat(stop ? "stopping" : "running", result);

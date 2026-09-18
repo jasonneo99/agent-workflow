@@ -29,6 +29,25 @@ test("selects a web app archetype from a natural-language goal", () => {
   assert.equal(selectWorkflowArchetype("Create me a local web app that tracks books").id, "web-app");
 });
 
+test("routes implementation intent to delivery when review is only part of the requested UI", () => {
+  const goal = "Implement roadmap priorities 9 and 10 with concise review cards, editable plans, handoff evidence, and compare-and-choose actions";
+  const plan = constructDynamicWorkflow({
+    goal,
+    project,
+    executionProfile: "adaptive",
+    now: "2026-01-02T03:04:05.000Z"
+  });
+  assert.equal(plan.dynamic?.archetype, "feature-delivery");
+  assert.notEqual(plan.dynamic?.complexity, "simple");
+  assert.ok(plan.stages.some((stage) => stage.id === "implement"));
+  assert.ok(plan.stages.some((stage) => stage.id === "verify"));
+  assert.ok(plan.stages.length > 2);
+});
+
+test("keeps explicit code review requests on the review path", () => {
+  assert.equal(selectWorkflowArchetype("Review this pull request diff for regressions").id, "code-review");
+});
+
 test("constructs a reproducible validated plan with policy controls and routing", () => {
   const plan = constructDynamicWorkflow({
     goal: "Create me a local web app that tracks books",

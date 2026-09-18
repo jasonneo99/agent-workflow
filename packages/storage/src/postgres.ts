@@ -2042,7 +2042,10 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
       const workerId = input?.workerId?.trim() || `worker-${process.pid}`;
       const leaseSeconds = Math.max(30, Math.min(3600, input?.leaseSeconds ?? 120));
       const projectRootUri = input?.projectRootUri?.trim() || null;
-      const providerIds = input?.providerIds?.length ? [...new Set(input.providerIds)] : null;
+      // undefined preserves the legacy unrestricted caller contract. An
+      // explicitly empty capability set must fail closed so a quarantined
+      // worker cannot claim work for a provider it cannot execute.
+      const providerIds = input?.providerIds === undefined ? null : [...new Set(input.providerIds)];
       const excludedProjectRootUris = input?.excludedProjectRootUris?.length ? [...new Set(input.excludedProjectRootUris)] : null;
       const result = await client.query<Omit<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">>(
         `with next_task as (
@@ -2060,14 +2063,19 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
              and ($5::text[] is null or not (p.root_uri = any($5::text[])))
              and (
                $4::text[] is null
-               or coalesce(
-                 nullif(nullif(wr.provider_override, 'auto'), 'default'),
-                 nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
-               ) is null
-               or coalesce(
-                 nullif(nullif(wr.provider_override, 'auto'), 'default'),
-                 nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
-               ) = any($4::text[])
+               or (
+                 cardinality($4::text[]) > 0
+                 and (
+                   coalesce(
+                     nullif(nullif(wr.provider_override, 'auto'), 'default'),
+                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+                   ) is null
+                   or coalesce(
+                     nullif(nullif(wr.provider_override, 'auto'), 'default'),
+                     nullif(nullif(stage.definition->'routing'->>'provider', 'default'), 'auto')
+                   ) = any($4::text[])
+                 )
+               )
              )
              and not exists (
                select 1 from workflow_tasks active

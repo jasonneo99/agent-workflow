@@ -17,7 +17,10 @@ type ProviderReadiness = {
 
 const readinessCache = new Map<string, Promise<ProviderReadiness>>();
 
-export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief">): Promise<ModelRouteDecision> {
+export async function selectModelRoute(
+  input: Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief">,
+  options?: { allowedProviderIds?: string[] }
+): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
   const preference = inferPreferenceTuning(input.compiledBrief);
   const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
@@ -32,9 +35,14 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
   const learnedProvider = mode !== "fixed" ? inferDaemonPreferredProvider(input.compiledBrief, modelTier) : undefined;
   const learnedRoute = learnedProvider ? await selectLearnedProvider(learnedProvider) : undefined;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
-  const providerId = mode === "fixed"
+  const preferredProviderId = mode === "fixed"
     ? defaultProvider
     : approvedLocalRoute?.providerId ?? tierProvider ?? learnedRoute?.providerId ?? autoRoute?.providerId ?? defaultProvider;
+  const allowedProviderIds = options?.allowedProviderIds === undefined ? undefined : new Set(options.allowedProviderIds);
+  const capabilityFallback = allowedProviderIds && !allowedProviderIds.has(preferredProviderId)
+    ? await selectAllowedProvider(modelTier, allowedProviderIds)
+    : undefined;
+  const providerId = capabilityFallback?.providerId ?? preferredProviderId;
 
   return {
     providerId,
@@ -42,7 +50,7 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
     requestedModelTier,
     mode,
     estimatedCostTier: estimateCostTier(providerId, modelTier),
-    reason: mode === "fixed"
+    reason: [mode === "fixed"
       ? `Fixed routing uses DEFAULT_MODEL_PROVIDER=${defaultProvider}.`
       : mode === "auto"
         ? [
@@ -59,8 +67,21 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
         learnedRoute?.reason ?? "",
         modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
         preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
-      ].filter(Boolean).join(" ")
+        ].filter(Boolean).join(" "),
+      capabilityFallback?.reason ?? ""
+    ].filter(Boolean).join(" ")
   };
+}
+
+async function selectAllowedProvider(modelTier: ModelTier, allowedProviderIds: Set<string>): Promise<{ providerId: string; reason: string }> {
+  for (const providerId of autoProviderCandidates(modelTier)) {
+    if (!allowedProviderIds.has(providerId)) continue;
+    const readiness = await getProviderReadiness(providerId);
+    if (readiness.ready) {
+      return { providerId, reason: `Worker capability routing replaced an unavailable preferred provider with ${providerId}.` };
+    }
+  }
+  throw new Error("Worker has no healthy allowed provider for this stage.");
 }
 
 async function selectLearnedProvider(providerId: string): Promise<{ providerId?: string; reason: string }> {

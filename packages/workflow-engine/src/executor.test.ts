@@ -45,7 +45,10 @@ test("worker provider capabilities flow into durable queue claims", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /providerIds\?: string\[\]/u);
   assert.match(source, /claimNextWorkflowTask\(\{[\s\S]+excludedProjectRootUris/u);
-  assert.match(source, /providerIds: input\.providerIds/u);
+  assert.match(source, /providerIds: providerIds \? \[\.\.\.providerIds\] : undefined/u);
+  assert.match(source, /options\.providerIds\.splice\([\s\S]+providerId !== attemptedProviderId/u);
+  assert.match(source, /providerIds\.delete\(failure\.providerId\)[\s\S]+quarantinedProviders\.set/u);
+  assert.match(source, /recoverProvider\(providerId\)[\s\S]+providerIds\.add\(providerId\)/u);
 });
 
 test("workers release tasks for unavailable host checkouts and stop reclaiming them", () => {
