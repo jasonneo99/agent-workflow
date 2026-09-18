@@ -16,6 +16,7 @@ export const contextRoutingPolicySchema = z.object({
   delegation_min_tokens: z.number().int().positive(),
   max_exact_slice_tokens: z.number().int().positive(),
   summary_cache_ttl_seconds: z.number().int().positive(),
+  automatic_risk_levels: z.array(z.enum(["low", "medium"])).min(1).optional(),
   low_risk_intents: z.array(intentSchema),
   frontier_required_intents: z.array(intentSchema),
   deterministic_extractors: z.array(z.enum(["git_diff", "text_match", "symbols", "imports", "signatures", "config_keys", "test_names"])),
@@ -61,6 +62,7 @@ export function decideContextRoute(input: {
   const estimatedTokens = estimateContextTokens(input.content);
   const frontierRequired = policy.frontier_required_intents.includes(input.intent);
   const lowRisk = policy.low_risk_intents.includes(input.intent);
+  const risk = frontierRequired ? "high" : lowRisk ? "low" : "medium";
   const hasTarget = Boolean(input.question?.trim());
   let route: ContextRoute;
   const reasons: string[] = [];
@@ -73,9 +75,9 @@ export function decideContextRoute(input: {
   } else if (hasTarget) {
     route = "deterministic";
     reasons.push("a targeted question should try deterministic extraction before model delegation");
-  } else if (lowRisk && estimatedTokens >= policy.delegation_min_tokens) {
+  } else if (risk !== "high" && (policy.automatic_risk_levels ?? ["low"]).includes(risk) && estimatedTokens >= policy.delegation_min_tokens) {
     route = "delegate";
-    reasons.push(`low-risk input exceeds the ${policy.delegation_min_tokens}-token delegation threshold`);
+    reasons.push(`${risk}-risk input is approved for automation and exceeds the ${policy.delegation_min_tokens}-token delegation threshold`);
   } else {
     route = "frontier";
     reasons.push("intent or input size is not eligible for automatic cheap-model delegation");
@@ -84,7 +86,7 @@ export function decideContextRoute(input: {
     route,
     enforced: policy.mode === "enforce",
     estimatedTokens,
-    risk: frontierRequired ? "high" : lowRisk ? "low" : "medium",
+    risk,
     reasons
   };
 }

@@ -11,6 +11,7 @@
     "delegation_min_tokens": { "type": "integer", "minimum": 1 },
     "max_exact_slice_tokens": { "type": "integer", "minimum": 1 },
     "summary_cache_ttl_seconds": { "type": "integer", "minimum": 1 },
+    "automatic_risk_levels": { "type": "array", "items": { "enum": ["low", "medium"] }, "minItems": 1, "uniqueItems": true },
     "low_risk_intents": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "frontier_required_intents": { "type": "array", "items": { "type": "string" }, "uniqueItems": true },
     "deterministic_extractors": { "type": "array", "items": { "enum": ["git_diff", "text_match", "symbols", "imports", "signatures", "config_keys", "test_names"] }, "uniqueItems": true },

@@ -4,6 +4,8 @@ direct_read_max_tokens: 1400
 delegation_min_tokens: 2400
 max_exact_slice_tokens: 1800
 summary_cache_ttl_seconds: 604800
+automatic_risk_levels:
+  - low
 low_risk_intents:
   - discovery
   - summarization

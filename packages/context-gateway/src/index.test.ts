@@ -20,6 +20,14 @@ test("routing is token-aware and risk-aware", () => {
   assert.equal(decideContextRoute({ policy, intent: "discovery", content: "x".repeat(12_000), question: "Where is authorizeUser called?" }).route, "deterministic");
 });
 
+test("an explicit risk ceiling automates medium work without relabeling it low risk", () => {
+  const medium = { ...policy, automatic_risk_levels: ["low", "medium"] as Array<"low" | "medium"> };
+  const decision = decideContextRoute({ policy: medium, intent: "editing", content: "x".repeat(12_000) });
+  assert.equal(decision.risk, "medium");
+  assert.equal(decision.route, "delegate");
+  assert.equal(decideContextRoute({ policy: medium, intent: "security", content: "x".repeat(12_000) }).route, "frontier");
+});
+
 test("deterministic extraction returns cited exact slices", () => {
   const slices = extractExactSlices({
     sourcePath: "src/auth.ts",

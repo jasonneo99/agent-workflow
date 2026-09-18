@@ -7,6 +7,9 @@ while preserving existing read behavior.
 The shared policy is `policies/context-routing.yaml`. It routes by estimated
 tokens, intent, risk, and whether a targeted deterministic lookup is possible.
 A fixed line-count threshold is intentionally not used.
+`automatic_risk_levels` sets the explicit automation ceiling. The portable
+default is low risk only; a reviewed project-local overlay may add medium while
+high-risk intents remain frontier-only.
 
 ## Observe
 
