@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
-import { hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason } from "./quality.js";
+import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason } from "./quality.js";
 
 const input = {
   stageId: "implement",
@@ -41,6 +41,18 @@ test("implementation may report a read-only model stage when governed writes are
     requestedFileWrites: [{ path: "src/example.py", content: "fixed = True\n" }]
   } as StageExecutionOutput;
   assert.equal(unfulfilledCompletionReason(input, output), null);
+});
+
+test("implementation receipts do not masquerade as product delivery", () => {
+  const output = {
+    outcome: "completed",
+    summary: "Recorded the implementation blocker for the next agent.",
+    artifact: { findings: ["The product is still absent."], nextAction: "Implement it." },
+    requestedCommands: [],
+    requestedFileWrites: [{ path: "docs/receipts/build-blocker.md", content: "Not implemented.\n" }]
+  } as StageExecutionOutput;
+  const deliveryInput = { ...input, workflowTask: "Build and deliver a finished application." };
+  assert.match(unfulfilledCompletionReason(deliveryInput, output) ?? "", /governed product file write/iu);
 });
 
 test("backend delivery cannot complete with read-only discovery instead of a requested product", () => {
@@ -156,6 +168,80 @@ test("pinned build finalizer requires both creation and verification evidence", 
     requestedFileWrites: []
   } as StageExecutionOutput;
   assert.match(unfulfilledCompletionReason(finalizerInput, output) ?? "", /no completed verification evidence/iu);
+});
+
+test("pinned build finalizer accepts durable product-write and executed verification receipts", () => {
+  const finalizerInput = {
+    ...input,
+    stageId: "package",
+    agentId: "pr-preparer",
+    workflowTask: "Build a finished fan module",
+    stagePattern: { type: "finalizer", requiresVerifier: false, promotionGate: "approval", stopConditions: [] },
+    priorStageArtifacts: [{
+      stageId: "implement",
+      agentId: "implementation-agent",
+      summary: "Created the module.",
+      artifact: { actionResults: [{ type: "file_write", path: "src/fan.ts", artifactUri: "db://write/1" }] }
+    }, {
+      stageId: "verify",
+      agentId: "auto-test-runner",
+      summary: "The focused tests passed.",
+      artifact: { actionResults: [{ commandLine: "npm test", exitCode: 0, timedOut: false, artifactUri: "db://command/1" }] }
+    }]
+  };
+  const output = {
+    outcome: "completed",
+    summary: "Packaged the finished module.",
+    artifact: { findings: ["Package ready."], nextAction: "Install it." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(finalizerInput, output), null);
+});
+
+test("verification prose cannot replace an executed verification receipt", () => {
+  const finalizerInput = {
+    ...input,
+    stageId: "package",
+    agentId: "pr-preparer",
+    workflowTask: "Build a finished fan module",
+    stagePattern: { type: "finalizer", requiresVerifier: false, promotionGate: "approval", stopConditions: [] },
+    priorStageArtifacts: [{
+      stageId: "implement",
+      agentId: "implementation-agent",
+      summary: "Created the module.",
+      artifact: { requestedFileWrites: [{ path: "src/fan.ts", content: "export {};\n" }] }
+    }, {
+      stageId: "verify",
+      agentId: "auto-test-runner",
+      summary: "Everything looks verified.",
+      artifact: { findings: ["No command receipt is attached."] }
+    }]
+  };
+  const output = {
+    outcome: "completed",
+    summary: "Packaged the finished module.",
+    artifact: { findings: ["Package ready."], nextAction: "Install it." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  assert.match(unfulfilledCompletionReason(finalizerInput, output) ?? "", /no completed verification evidence/iu);
+});
+
+test("checkpoint evidence rejects receipt-only implementation and accepts executed verification", () => {
+  assert.equal(completedStageProvidesPinnedBuildEvidence({
+    workflowTask: "Build a finished application",
+    stageId: "implement",
+    agentId: "implementation-agent",
+    artifact: { actionResults: [{ type: "file_write", path: "docs/receipts/build.md" }] }
+  }), false);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({
+    workflowTask: "Build a finished application",
+    stageId: "verify",
+    agentId: "auto-test-runner",
+    summary: "Focused tests passed.",
+    artifact: { actionResults: [{ commandLine: "npm test", exitCode: 0, timedOut: false }] }
+  }), true);
 });
 
 test("review workflow finalizers are not misclassified as product delivery stages", () => {

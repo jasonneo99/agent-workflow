@@ -3,7 +3,7 @@ import test from "node:test";
 import { probeWorkerProviderExecution, WORKER_PROVIDER_IDS } from "./worker-provider-capabilities.js";
 
 test("worker capability discovery covers every supported execution provider", () => {
-  assert.deepEqual(WORKER_PROVIDER_IDS, ["mock", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro"]);
+  assert.deepEqual(WORKER_PROVIDER_IDS, ["mock", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro"]);
 });
 
 test("worker provider admission requires a real bounded inference result", async () => {

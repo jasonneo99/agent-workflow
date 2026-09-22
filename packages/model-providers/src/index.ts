@@ -2,6 +2,7 @@ import { BedrockProvider } from "./bedrock.js";
 import { CodexCliProvider } from "./codex-cli.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
+import { MuseProvider } from "./muse.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
 import { OpenAIProvider } from "./openai.js";
 import type { ModelProvider } from "./types.js";
@@ -30,6 +31,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "anthropic") {
     return new AnthropicProvider();
+  }
+
+  if (provider === "muse") {
+    return new MuseProvider();
   }
 
   if (provider === "openai-compatible") {
@@ -81,6 +86,9 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.ANTHROPIC_API_KEY) {
     return "anthropic";
+  }
+  if (process.env.MUSE_API_KEY) {
+    return "muse";
   }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";

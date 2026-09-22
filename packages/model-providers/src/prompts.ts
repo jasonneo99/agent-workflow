@@ -11,6 +11,7 @@ export interface StageJsonArtifact {
     path: string;
     content: string;
   }>;
+  requestedFileReads: string[];
 }
 
 export interface FileSummaryJsonArtifact {
@@ -53,6 +54,14 @@ export function buildStagePrompt(input: StageExecutionInput): string {
       ].join("\n")).join("\n\n")
       : "None yet.",
     "",
+    "File contents you requested to read (fresh from disk this stage):",
+    input.fileReads?.length
+      ? input.fileReads.map((item) => [
+        `### ${item.path}${item.truncated ? " (truncated)" : ""}`,
+        item.error ? `READ ERROR: ${item.error}` : truncate(item.content, 12000)
+      ].join("\n")).join("\n\n")
+      : "None yet. Use requestedFileReads when you need to inspect source before acting.",
+    "",
     "Outcome rules:",
     "- PINNED KEYWORD CONTRACT: BUILD means create, verify, package, and deliver a usable product. Never reinterpret BUILD as analyze, plan, document, recommend, prototype-only, or hand off.",
     "- When the task contains the standalone word BUILD, every downstream stage must preserve that delivery intent. If product creation or verification evidence is absent, return blocked; do not describe the run as complete.",
@@ -64,13 +73,14 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- A terminal blocker must identify the specific unavailable authority, external dependency, approval, or required input and explain why no allowed action or existing artifact can resolve it.",
     "",
     "Return JSON with:",
-    "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
+    "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites/requestedFileReads contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
     "- blockedReason: concise reason when outcome is blocked; otherwise an empty string",
     "- summary: one or two sentences describing the stage result",
     "- findings: concrete observations, risks, or decisions",
     "- nextAction: the next useful workflow action",
     "- requestedCommands: exact commands from the allowed command policy only; do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
-    "- requestedFileWrites: project-relative files under allowed write paths only, each with path and full content; use [] unless a file edit is necessary and keep content compact"
+    "- requestedFileWrites: project-relative files under allowed write paths only, each with path and full content; use [] unless a file edit is necessary and keep content compact",
+    "- requestedFileReads: project-relative files to inspect, under allowed read paths only; files you list here are read and shown to you, then you are asked again so you can act on what you read; request reads first whenever you need source context instead of guessing; use [] when no inspection is needed"
   ].join("\n");
 }
 
@@ -155,7 +165,18 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
     ? value.requestedFileWrites
       .filter((item): item is { path: string; content: string } => Boolean(item) && typeof item.path === "string" && item.path.trim().length > 0 && typeof item.content === "string")
     : [];
-  const hasActionableRecovery = requestedCommands.length > 0 || requestedFileWrites.length > 0;
+  const requestedFileReads = Array.isArray(value.requestedFileReads)
+    ? value.requestedFileReads
+      .map((item): string | null => {
+        if (typeof item === "string") return item.trim();
+        if (item && typeof item === "object" && typeof (item as { path?: unknown }).path === "string") {
+          return String((item as { path: string }).path).trim();
+        }
+        return null;
+      })
+      .filter((item): item is string => Boolean(item && item.length > 0))
+    : [];
+  const hasActionableRecovery = requestedCommands.length > 0 || requestedFileWrites.length > 0 || requestedFileReads.length > 0;
   const outcome = (explicitlyBlocked || legacyBlocked) && !hasActionableRecovery ? "blocked" : "completed";
   return {
     outcome,
@@ -164,7 +185,8 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
     findings: Array.isArray(value.findings) ? value.findings.filter((item): item is string => typeof item === "string") : [],
     nextAction: typeof value.nextAction === "string" ? value.nextAction : "",
     requestedCommands,
-    requestedFileWrites
+    requestedFileWrites,
+    requestedFileReads
   };
 }
 
@@ -178,6 +200,7 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
     summary: parsed.summary,
     requestedCommands: parsed.requestedCommands,
     requestedFileWrites: parsed.requestedFileWrites,
+    requestedFileReads: parsed.requestedFileReads,
     artifact: {
       ...provider,
       runId: input.runId,
@@ -195,6 +218,7 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
       evidenceGapReclassifiedAsFinding: evidenceGapFinding,
       requestedCommands: parsed.requestedCommands,
       requestedFileWrites: parsed.requestedFileWrites,
+      requestedFileReads: parsed.requestedFileReads,
       summary: parsed.summary
     }
   };
@@ -263,12 +287,17 @@ export function truncate(value: string, maxLength: number): string {
 }
 
 function formatActionPolicy(project: StageExecutionInput["projectConfig"]): string {
+  const actions = project.actions as Partial<StageExecutionInput["projectConfig"]["actions"]>;
+  const list = (value: string[] | undefined): string => value?.join(" | ") || "none";
   return [
-    `Allowed commands: ${project.actions.allowed_commands.join(" | ") || "none"}`,
-    `Blocked commands: ${project.actions.blocked_commands.join(" | ") || "none"}`,
-    `Allowed write paths: ${project.actions.allowed_write_paths.join(" | ") || "none"}`,
-    `Blocked write paths: ${project.actions.blocked_write_paths.join(" | ") || "none"}`,
-    `Command timeout: ${project.actions.command_timeout_ms}ms`,
-    `Max write bytes: ${project.actions.max_write_bytes}`
+    `Allowed commands: ${list(actions.allowed_commands)}`,
+    `Blocked commands: ${list(actions.blocked_commands)}`,
+    `Allowed write paths: ${list(actions.allowed_write_paths)}`,
+    `Blocked write paths: ${list(actions.blocked_write_paths)}`,
+    `Allowed read paths: ${list(actions.allowed_read_paths)}`,
+    `Blocked read paths: ${list(actions.blocked_read_paths)}`,
+    `Command timeout: ${actions.command_timeout_ms ?? 0}ms`,
+    `Max write bytes: ${actions.max_write_bytes ?? 0}`,
+    `Max read bytes: ${actions.max_read_bytes ?? 0}`
   ].join("\n");
 }

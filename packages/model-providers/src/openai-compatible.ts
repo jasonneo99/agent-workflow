@@ -23,7 +23,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly baseURL: string;
   private readonly modelEnv: string;
 
-  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string; defaultBaseURL?: string } = {}) {
+  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string; defaultBaseURL?: string; defaultModel?: string } = {}) {
     this.id = input.id ?? this.id;
     const baseUrlEnv = input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL";
     const legacyBaseURL = input.baseUrlEnv ? undefined : process.env.OPENAI_COMPATIBLE_BASE_URL;
@@ -34,7 +34,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     this.baseURL = baseURL;
     this.modelEnv = input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL";
-    this.model = process.env[this.modelEnv] ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? AUTO_MODEL;
+    this.model = process.env[this.modelEnv] ?? input.defaultModel ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? AUTO_MODEL;
 
     this.client = new OpenAI({
       apiKey: process.env[input.apiKeyEnv ?? "OPENAI_COMPATIBLE_API_KEY"] || process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",

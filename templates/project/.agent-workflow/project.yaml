@@ -122,5 +122,22 @@ actions:
     - .env.*
     - .agent-workflow/schedule-state.json
   max_write_bytes: 200000
+  allowed_read_paths:
+    - .agent-workflow/**
+    - docs/**
+    - src/**
+    - test/**
+    - tests/**
+    - package.json
+    - README.md
+    - AGENTS.md
+  blocked_read_paths:
+    - .git/**
+    - node_modules/**
+    - .env
+    - .env.*
+    - "**/*.pem"
+    - "**/*.key"
+  max_read_bytes: 200000
   auto_approve_max_risk: none
   approval_rules: []

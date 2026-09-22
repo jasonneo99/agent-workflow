@@ -3,6 +3,7 @@ import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-r
 import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
+import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers/src/quality.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
@@ -1736,14 +1737,28 @@ export async function replayWorkflowRun(input: {
       const taskIds: Record<string, string> = {};
       let completedTasks = 0;
       let skippedTasks = 0;
+      let checkpointChainInvalidated = false;
       const skippedStageIds = new Set(input.skipStageIds ?? []);
       for (const stage of workflow.stages) {
         const sourceTask = sourceTaskByStage.get(stage.id);
         const actionResolvedCheckpoint = sourceTask?.status === "blocked"
           && sourceTask.approvalCount > 0
           && sourceTask.executedApprovalCount === sourceTask.approvalCount;
-        const preserveCheckpoint = (sourceTask?.status === "completed" || actionResolvedCheckpoint)
-          && sourceTask.artifactContent !== null;
+        const checkpointCandidate = sourceTask?.status === "completed" || actionResolvedCheckpoint;
+        const checkpointArtifact = sourceTask?.artifactContent ?? null;
+        const checkpointHasBuildEvidence = checkpointArtifact !== null && completedStageProvidesPinnedBuildEvidence({
+          workflowTask: sourceRun.task,
+          stageId: stage.id,
+          agentId: stage.agent,
+          summary: typeof checkpointArtifact.summary === "string" ? checkpointArtifact.summary : "",
+          artifact: checkpointArtifact
+        });
+        if (checkpointCandidate && !checkpointHasBuildEvidence) {
+          checkpointChainInvalidated = true;
+        }
+        const preserveCheckpoint = !checkpointChainInvalidated
+          && checkpointCandidate
+          && checkpointArtifact !== null;
         const skipStage = skippedStageIds.has(stage.id) && !preserveCheckpoint;
         const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (

@@ -29,3 +29,16 @@ actions:
   blocked_write_paths:
     - "**"
   max_write_bytes: 1
+  allowed_read_paths:
+    - .agent-workflow/**
+    - docs/**
+    - README.md
+    - AGENTS.md
+  blocked_read_paths:
+    - .git/**
+    - node_modules/**
+    - .env
+    - .env.*
+    - "**/*.pem"
+    - "**/*.key"
+  max_read_bytes: 200000

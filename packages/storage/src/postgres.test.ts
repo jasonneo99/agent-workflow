@@ -186,7 +186,9 @@ test("checkpoint replacement preserves completed stages and queues only unfinish
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("async function createWorkflowHandoffsForRun"));
   assert.match(replay, /sourceTask\?\.status === "completed" \|\| actionResolvedCheckpoint/u);
-  assert.match(replay, /sourceTask\.artifactContent !== null/u);
+  assert.match(replay, /checkpointArtifact !== null/u);
+  assert.match(replay, /completedStageProvidesPinnedBuildEvidence/u);
+  assert.match(replay, /checkpointChainInvalidated/u);
   assert.match(replay, /preserveCheckpoint \|\| skipStage \? "completed" : "queued"/u);
   assert.match(replay, /stage_checkpoint_preserved/u);
   assert.match(replay, /checkpointPreservedFromRunId/u);

@@ -37,6 +37,13 @@ export interface StageExecutionInput {
     summary: string;
     artifact: Record<string, unknown>;
   }>;
+  /** File contents fetched in earlier read rounds of this stage; appended to the prompt on re-prompt. */
+  fileReads?: Array<{
+    path: string;
+    content: string;
+    truncated: boolean;
+    error?: string;
+  }>;
 }
 
 export interface StageExecutionOutput {
@@ -50,6 +57,7 @@ export interface StageExecutionOutput {
     path: string;
     content: string;
   }>;
+  requestedFileReads?: string[];
 }
 
 export interface FileSummaryInput {

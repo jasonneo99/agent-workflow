@@ -122,6 +122,9 @@
         "allowed_write_paths": { "type": "array", "items": { "type": "string" }, "default": [".agent-workflow/**", "docs/**"] },
         "blocked_write_paths": { "type": "array", "items": { "type": "string" }, "default": [".git/**", "node_modules/**", ".env", ".env.*"] },
         "max_write_bytes": { "type": "integer", "minimum": 1, "default": 200000 },
+        "allowed_read_paths": { "type": "array", "items": { "type": "string" }, "default": ["**"] },
+        "blocked_read_paths": { "type": "array", "items": { "type": "string" }, "default": [".git/**", "node_modules/**", ".env", ".env.*", "**/*.pem", "**/*.key"] },
+        "max_read_bytes": { "type": "integer", "minimum": 1, "default": 200000 },
         "approval_rules": { "type": "array", "items": { "$ref": "#/$defs/approvalRule" }, "default": [] }
       }
     }
@@ -223,6 +226,9 @@
         "allowed_write_paths": { "type": "array", "items": { "type": "string" } },
         "blocked_write_paths": { "type": "array", "items": { "type": "string" } },
         "max_write_bytes": { "type": "integer", "minimum": 1 },
+        "allowed_read_paths": { "type": "array", "items": { "type": "string" } },
+        "blocked_read_paths": { "type": "array", "items": { "type": "string" } },
+        "max_read_bytes": { "type": "integer", "minimum": 1 },
         "approval_rules": { "type": "array", "items": { "$ref": "#/$defs/approvalRule" } }
       }
     },

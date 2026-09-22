@@ -36,6 +36,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `codex-cli` | Trusted local workflows billed through an authenticated Codex/ChatGPT entitlement | Codex CLI login, optional `CODEX_CLI_MODEL` |
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
+| `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
@@ -82,13 +83,37 @@ requests. OpenAI documents ChatGPT subscription login for local Codex clients
 and recommends Platform API keys for general OpenAI API calls:
 <https://learn.chatgpt.com/docs/auth>.
 
+### Meta Muse provider
+
+Use `muse` to run stages on Meta's Muse Spark models through the Meta Model
+API. The adapter speaks the OpenAI Chat Completions format against
+`https://api.meta.ai/v1`, so no extra CLI or login flow is needed — just a
+Meta Model API key:
+
+```env
+DEFAULT_MODEL_PROVIDER=muse
+MUSE_API_KEY=your-meta-model-api-key
+# Optional; defaults to https://api.meta.ai/v1 and muse-spark-1.1.
+# MUSE_BASE_URL=https://api.meta.ai/v1
+MUSE_MODEL=muse-spark-1.1
+# MUSE_MODEL_FAST=muse-spark-1.1
+# MUSE_MODEL_STANDARD=muse-spark-1.1
+# MUSE_MODEL_REASONING=muse-spark-1.1
+```
+
+Then verify readiness with:
+
+```bash
+npm run agentflow -- provider-check
+```
+
 ## Auto And Adaptive Routing
 
 Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the provider per stage. The workflow or agent assigns a model tier (`fast`, `standard`, or `reasoning`) from the request shape, then auto routing checks configured providers and selects a ready provider for that tier. Bedrock is included only when the AWS credential chain works, so expired SSO sessions do not silently become the default route.
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,codex-cli,openai,anthropic,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding
