@@ -141,3 +141,66 @@ const stopWords = new Set([
   "you",
   "your"
 ]);
+
+import { MemoryGraph, type WalkHit } from "../../storage/src/memory-graph.js";
+
+export interface GraphSelection extends RankedSourceSummary {}
+
+/**
+ * Minimum-context selection: walk the memory graph from a seed (goal or
+ * task) instead of flat term-matching every source. Hits are scored by graph
+ * relevance (type weight decayed by path cost, recency-boosted) with an
+ * optional boost for terms overlapping the current task. Superseded (stale)
+ * nodes are never selected. Returns selections within the token budget,
+ * ordered by score.
+ */
+export function selectFromMemoryGraph(input: {
+  graph: MemoryGraph;
+  seedId: string;
+  task?: string;
+  maxTokens?: number;
+  maxNodes?: number;
+  maxCost?: number;
+}): GraphSelection[] {
+  const maxTokens = input.maxTokens ?? 2000;
+  const maxNodes = input.maxNodes ?? 10;
+  const taskTerms = input.task ? new Set(tokenize(input.task)) : new Set<string>();
+
+  const scored = input.graph
+    .walk(input.seedId, input.maxCost ?? 8, maxNodes * 4)
+    .map((hit) => scoreGraphHit(hit, input.graph, taskTerms))
+    .filter((hit) => hit.score > 0)
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.tokenEstimate - b.tokenEstimate;
+    });
+
+  const selected: GraphSelection[] = [];
+  let usedTokens = 0;
+  for (const hit of scored) {
+    if (selected.length >= maxNodes) break;
+    if (usedTokens + hit.tokenEstimate > maxTokens && selected.length > 0) continue;
+    selected.push(hit);
+    usedTokens += hit.tokenEstimate;
+  }
+  return selected;
+}
+
+function scoreGraphHit(
+  hit: WalkHit,
+  graph: MemoryGraph,
+  taskTerms: Set<string>
+): GraphSelection {
+  const base = graph.scoreHit(hit);
+  const haystack = new Set(tokenize(`${hit.node.title} ${hit.node.body}`));
+  const matched = [...taskTerms].filter((term) => haystack.has(term));
+  const boost = taskTerms.size ? 1 + matched.length / taskTerms.size : 1;
+  return {
+    sourceUri: `memory://node/${hit.node.id}`,
+    tokenEstimate: hit.node.tokenEstimate,
+    summary: `${hit.node.title}: ${hit.node.body}`.slice(0, 500),
+    score: base * boost,
+    matchedTerms: matched.sort(),
+    selectionReason: `graph walk from seed (${hit.path}); relevance ${base.toFixed(2)}${matched.length ? `, task terms ${matched.sort().join(", ")}` : ""}`
+  };
+}
