@@ -4,6 +4,7 @@ import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
+import { fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
@@ -339,6 +340,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       // again with the contents in context. Reads are informational: a denied
       // or missing file is reported back, never a stage blocker.
       const stageFileReads: Array<{ path: string; content: string; truncated: boolean; error?: string }> = [];
+      const stageStateDeltas: StateDelta[] = [];
       const seenReadPaths = new Set<string>();
       const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
       let fileReadIteration = 0;
@@ -406,6 +408,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               content: readResult.content,
               truncated: readResult.truncated
             });
+            stageStateDeltas.push(fileReadDelta({
+              path: readResult.relativePath,
+              bytesRead: readResult.bytesRead,
+              truncated: readResult.truncated,
+              sha256: readResult.sha256,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read", taskId: task.taskId, artifactUri: readArtifactUri }
+            }));
             actionResults.push({
               type: "file_read",
               path: readResult.relativePath,
@@ -447,6 +456,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               }
             });
             stageFileReads.push({ path: readPath, content: "", truncated: false, error: message });
+            stageStateDeltas.push(fileReadDelta({
+              path: readPath,
+              error: message,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read_rejected", taskId: task.taskId, artifactUri: denialArtifactUri }
+            }));
             actionResults.push({
               type: "file_read_rejected",
               path: readPath,
@@ -472,7 +486,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const readRoundStartedAt = Date.now();
         const reread = await executeWithProviderFallback({
           providerId: route.providerId,
-          stageInput: { ...routedStageInput, fileReads: stageFileReads },
+          stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
           providerFactory: providerFromEnv
         });

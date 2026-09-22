@@ -1,4 +1,5 @@
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { foldStateDeltas, renderFactSet } from "./state-deltas.js";
 
 export interface StageJsonArtifact {
   outcome: "completed" | "blocked";
@@ -53,6 +54,9 @@ export function buildStagePrompt(input: StageExecutionInput): string {
         truncate(JSON.stringify(item.artifact), 4000)
       ].join("\n")).join("\n\n")
       : "None yet.",
+    "",
+    "Runtime state (machine state deltas, folded; consume this instead of re-deriving history):",
+    input.stateDeltas?.length ? renderFactSet(foldStateDeltas(input.stateDeltas)) : "No state changes recorded yet this stage.",
     "",
     "File contents you requested to read (fresh from disk this stage):",
     input.fileReads?.length

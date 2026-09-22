@@ -18,7 +18,7 @@ function baseInput(overrides = {}) {
     agentPrompt: "Do it.",
     stageGoal: "Ship it.",
     compiledBrief: "Brief.",
-    modelTier: "standard",
+    modelTier: "standard" as const,
     priorReceipts: [],
     ...overrides
   };
@@ -50,7 +50,7 @@ test("normalizeStageArtifact parses requestedFileReads as strings and {path} obj
     nextAction: "Read then implement.",
     requestedCommands: [],
     requestedFileWrites: [],
-    requestedFileReads: ["src/app.ts", { path: "src/other.ts" }, "", 42, null]
+    requestedFileReads: ["src/app.ts", { path: "src/other.ts" }, "", 42, null] as unknown as string[]
   });
   assert.deepEqual(artifact.requestedFileReads, ["src/app.ts", "src/other.ts"]);
 });

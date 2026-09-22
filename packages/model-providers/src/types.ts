@@ -1,4 +1,5 @@
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
+import type { StateDelta } from "./state-deltas.js";
 
 export type ModelTier = "fast" | "standard" | "reasoning";
 
@@ -44,6 +45,9 @@ export interface StageExecutionInput {
     truncated: boolean;
     error?: string;
   }>;
+  /** Typed state deltas recorded by the runtime this stage (AIR phase-1 spike).
+   *  Folded machine state the next turn consumes instead of re-reading history. */
+  stateDeltas?: StateDelta[];
 }
 
 export interface StageExecutionOutput {
