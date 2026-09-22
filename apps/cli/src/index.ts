@@ -1059,12 +1059,12 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, muse, openai-compatible, bedrock, or kiro")
   .option("--login", "authenticate interactively before selecting a CLI provider")
   .option("--device-auth", "use Codex device-code login for a headless machine")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-    const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "muse", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -1105,6 +1105,8 @@ program
       console.log("Using the authenticated Codex CLI. Defaults to ChatGPT subscription auth and never reads the Codex credential cache directly.");
     } else if (providerId === "anthropic") {
       console.log("Using Anthropic Messages API. Requires ANTHROPIC_API_KEY. Set ANTHROPIC_MODEL=auto to select tier models from the live Anthropic catalog.");
+    } else if (providerId === "muse") {
+      console.log("Using Meta Muse via the Meta Model API. Requires MUSE_API_KEY. MUSE_MODEL defaults to muse-spark-1.1.");
     } else if (providerId === "auto") {
       console.log("Using auto routing. Agent Workflow will pick a ready provider per stage tier.");
     } else if (providerId === "byo") {
@@ -34824,6 +34826,18 @@ function failedRunResolution(reason?: string | null): FailedRunResolution {
       automaticRepair: "operator-required"
     };
   }
+  if (/billing|payment/u.test(normalized)) {
+    return {
+      headline: "Provider billing is not configured",
+      summary: "The model API rejected the request because billing verification failed on the provider account. No prompt was executed and no tokens were used.",
+      instructions: [
+        "Open the provider billing settings (for Muse: the Model API dashboard at dev.meta.ai) and add a payment method, then verify billing is active.",
+        "Re-run the API check from the project root: node check-muse-api.mjs — chat completions should report OK.",
+        "Choose Retry Failed Stages."
+      ],
+      automaticRepair: "operator-required"
+    };
+  }
   if (/fallback|provider retry|provider.*failed|model route/u.test(normalized)) {
     return {
       headline: "Provider routing failed",
@@ -36248,6 +36262,34 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
       routingConfig: loadRoutingConfig()
     };
   }
+  if (selected === "muse") {
+    const currentModel = process.env.MUSE_MODEL || "muse-spark-1.1";
+    const museBaseUrl = process.env.MUSE_BASE_URL || "https://api.meta.ai/v1";
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(museBaseUrl, process.env.MUSE_API_KEY));
+    const tierModels = loadGenericTierModelPreview({
+      catalog: discovered.models,
+      provider: "compatible",
+      baseModel: currentModel,
+      tierEnvPrefix: "MUSE_MODEL"
+    });
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "MUSE_MODEL",
+      baseUrl: safeDisplayUrl(museBaseUrl),
+      apiKeyConfigured: Boolean(process.env.MUSE_API_KEY),
+      canSelectModel: true,
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
+      availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "Muse model choices are refreshed from the Meta Model API /models catalog."
+        : "Muse model choices will refresh from /v1/models after the API key can list models.",
+      providerStatuses: await loadAutoProviderStatuses(),
+      routingConfig: loadRoutingConfig()
+    };
+  }
   const model = selected === "kiro" ? "kiro-cli" : "mock";
   return {
     selected,
@@ -36557,7 +36599,7 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
 function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,codex-cli,openai,anthropic,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,codex-cli,openai,anthropic,muse,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
@@ -36587,7 +36629,7 @@ async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provi
 }
 
 async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
-  const [openai, codex, anthropic, local, byo, compatible, bedrock, kiro, mock] = await Promise.all([
+  const [openai, codex, anthropic, local, byo, compatible, muse, bedrock, kiro, mock] = await Promise.all([
     inspectOpenAIStatus(),
     inspectCodexCliStatus(),
     inspectAnthropicStatus(),
@@ -36612,6 +36654,13 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       model: process.env.OPENAI_COMPATIBLE_MODEL,
       apiKey: process.env.OPENAI_COMPATIBLE_API_KEY
     }),
+    inspectOpenAICompatibleStatus({
+      providerId: "muse",
+      label: "Muse",
+      baseUrl: process.env.MUSE_BASE_URL || "https://api.meta.ai/v1",
+      model: process.env.MUSE_MODEL,
+      apiKey: process.env.MUSE_API_KEY
+    }),
     inspectBedrockStatus(),
     inspectProviderStatus({
       providerId: "kiro",
@@ -36629,7 +36678,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       details: ["Always available for deterministic local validation."]
     }
   ]);
-  return [openai, codex, anthropic, local, byo, compatible, bedrock, kiro, mock];
+  return [openai, codex, anthropic, local, byo, compatible, muse, bedrock, kiro, mock];
 }
 
 async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
@@ -36697,7 +36746,7 @@ async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provide
 }
 
 async function inspectOpenAICompatibleStatus(input: {
-  providerId: "local" | "byo" | "openai-compatible";
+  providerId: "local" | "byo" | "openai-compatible" | "muse";
   label: string;
   baseUrl?: string;
   model?: string;
@@ -36718,7 +36767,7 @@ async function inspectOpenAICompatibleStatus(input: {
   }
 
   const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(input.baseUrl, input.apiKey));
-  const tierEnvPrefix = input.providerId === "local" ? "LOCAL_MODEL" : input.providerId === "byo" ? "BYO_MODEL" : "OPENAI_COMPATIBLE_MODEL";
+  const tierEnvPrefix = input.providerId === "local" ? "LOCAL_MODEL" : input.providerId === "byo" ? "BYO_MODEL" : input.providerId === "muse" ? "MUSE_MODEL" : "OPENAI_COMPATIBLE_MODEL";
   const baseModel = input.model || "auto";
   const tierModels = loadGenericTierModelPreview({
     catalog: discovered.models,
@@ -36942,6 +36991,9 @@ function modelEnvForProvider(provider: string): string | undefined {
   if (provider === "bedrock") {
     return "BEDROCK_MODEL";
   }
+  if (provider === "muse") {
+    return "MUSE_MODEL";
+  }
   return undefined;
 }
 
@@ -37070,7 +37122,7 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
     return "";
   }
   const normalized = normalizeProviderRef(trimmed);
-  const supported = new Set(["auto", "mock", "local", "byo", "openai", "anthropic", "openai-compatible", "bedrock", "kiro"]);
+  const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "muse", "openai-compatible", "bedrock", "kiro"]);
   return supported.has(normalized) ? normalized : undefined;
 }
 
@@ -40151,9 +40203,9 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
     : info.provider.selected === "auto"
       ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
       : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+  const providerIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
   const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
   const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
     const selected = value === selectedValue ? " selected" : "";
@@ -40186,6 +40238,11 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
       title: "OpenAI",
       detail: "Best hosted path for high-quality development runs. Use OPENAI_MODEL=auto to refresh from the live catalog.",
       command: "OPENAI_API_KEY + OPENAI_MODEL=auto"
+    },
+    {
+      title: "Muse",
+      detail: "Meta's Muse Spark models through the Meta Model API. Create a key at dev.meta.ai.",
+      command: "MUSE_API_KEY + MUSE_MODEL=auto"
     },
     {
       title: "Codex CLI / ChatGPT",
@@ -43678,6 +43735,7 @@ function normalizeProviderRef(value: string): string {
     kiro: "kiro",
     anthropic: "anthropic",
     claude: "anthropic",
+    muse: "muse",
     byo: "byo",
     "bring-your-own": "byo",
     "bring-your-own-model": "byo",
@@ -46204,6 +46262,16 @@ async function analyzeProjectForOnboarding(projectDir: string, profile: "enterpr
         "**/coverage/**"
       ],
       max_write_bytes: 250000,
+      allowed_read_paths: allowedWritePaths,
+      blocked_read_paths: [
+        ".git/**",
+        "node_modules/**",
+        ".env",
+        ".env.*",
+        "**/*.pem",
+        "**/*.key"
+      ],
+      max_read_bytes: 250000,
       auto_approve_max_risk: "none",
       approval_rules: []
     }

@@ -139,6 +139,9 @@ const actionOverridesSchema = z.object({
   allowed_write_paths: z.array(z.string()).optional(),
   blocked_write_paths: z.array(z.string()).optional(),
   max_write_bytes: z.number().int().positive().optional(),
+  allowed_read_paths: z.array(z.string()).optional(),
+  blocked_read_paths: z.array(z.string()).optional(),
+  max_read_bytes: z.number().int().positive().optional(),
   auto_approve_max_risk: z.enum(["none", "low", "medium", "high"]).optional(),
   approval_rules: z.array(z.object({
     id: z.string().min(1),
@@ -328,6 +331,16 @@ export const projectConfigSchema = z.object({
       ".env.*"
     ]),
     max_write_bytes: z.number().int().positive().default(200000),
+    allowed_read_paths: z.array(z.string()).default(["**"]),
+    blocked_read_paths: z.array(z.string()).default([
+      ".git/**",
+      "node_modules/**",
+      ".env",
+      ".env.*",
+      "**/*.pem",
+      "**/*.key"
+    ]),
+    max_read_bytes: z.number().int().positive().default(200000),
     auto_approve_max_risk: z.enum(["none", "low", "medium", "high"]).default("none"),
     approval_rules: z.array(z.object({
       id: z.string().min(1),
@@ -345,6 +358,16 @@ export const projectConfigSchema = z.object({
     allowed_write_paths: [".agent-workflow/**", "docs/**"],
     blocked_write_paths: [".git/**", "node_modules/**", ".env", ".env.*"],
     max_write_bytes: 200000,
+    allowed_read_paths: ["**"],
+    blocked_read_paths: [
+      ".git/**",
+      "node_modules/**",
+      ".env",
+      ".env.*",
+      "**/*.pem",
+      "**/*.key"
+    ],
+    max_read_bytes: 200000,
     auto_approve_max_risk: "none",
     approval_rules: []
   })

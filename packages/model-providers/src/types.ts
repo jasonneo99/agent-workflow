@@ -1,4 +1,5 @@
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
+import type { StateDelta } from "./state-deltas.js";
 
 export type ModelTier = "fast" | "standard" | "reasoning";
 
@@ -37,6 +38,19 @@ export interface StageExecutionInput {
     summary: string;
     artifact: Record<string, unknown>;
   }>;
+  /** File contents fetched in earlier read rounds of this stage; appended to the prompt on re-prompt. */
+  fileReads?: Array<{
+    path: string;
+    content: string;
+    truncated: boolean;
+    error?: string;
+  }>;
+  /** Typed state deltas recorded by the runtime this stage (AIR phase-1 spike).
+   *  Folded machine state the next turn consumes instead of re-reading history. */
+  stateDeltas?: StateDelta[];
+  /** Relevant past context selected from the memory graph (AIR phase-3).
+   *  Rendered as a PAST CONTEXT section; empty when the graph is disabled. */
+  memoryContext?: string[];
 }
 
 export interface StageExecutionOutput {
@@ -50,6 +64,7 @@ export interface StageExecutionOutput {
     path: string;
     content: string;
   }>;
+  requestedFileReads?: string[];
 }
 
 export interface FileSummaryInput {

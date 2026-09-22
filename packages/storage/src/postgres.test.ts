@@ -186,7 +186,9 @@ test("checkpoint replacement preserves completed stages and queues only unfinish
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const replay = source.slice(source.indexOf("export async function replayWorkflowRun"), source.indexOf("async function createWorkflowHandoffsForRun"));
   assert.match(replay, /sourceTask\?\.status === "completed" \|\| actionResolvedCheckpoint/u);
-  assert.match(replay, /sourceTask\.artifactContent !== null/u);
+  assert.match(replay, /checkpointArtifact !== null/u);
+  assert.match(replay, /completedStageProvidesPinnedBuildEvidence/u);
+  assert.match(replay, /checkpointChainInvalidated/u);
   assert.match(replay, /preserveCheckpoint \|\| skipStage \? "completed" : "queued"/u);
   assert.match(replay, /stage_checkpoint_preserved/u);
   assert.match(replay, /checkpointPreservedFromRunId/u);
@@ -334,3 +336,19 @@ test("concurrent parallel-group claims share one worker fence while other claims
 function compactSql(sql: string): string {
   return sql.trim().replace(/\s+/gu, " ").slice(0, 220);
 }
+
+test("migration creates memory_nodes and memory_edges tables", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+
+  assert.match(
+    source,
+    /CREATE TABLE IF NOT EXISTS memory_nodes[\s\S]+project_id text NOT NULL[\s\S]+node_id text NOT NULL[\s\S]+node_type text NOT NULL CHECK \(node_type IN \('goal','task','evidence','artifact','decision','action','result'\)\)[\s\S]+UNIQUE\(project_id, node_id\)/u
+  );
+  assert.match(
+    source,
+    /CREATE TABLE IF NOT EXISTS memory_edges[\s\S]+project_id text NOT NULL[\s\S]+from_node text NOT NULL[\s\S]+to_node text NOT NULL[\s\S]+edge_type text NOT NULL CHECK \(edge_type IN \('decomposes','supports','produces','decided_by','executes','leads_to','supersedes','relates'\)\)[\s\S]+UNIQUE\(project_id, from_node, to_node, edge_type\)/u
+  );
+  assert.match(source, /CREATE INDEX IF NOT EXISTS memory_nodes_project_type_idx/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS memory_edges_project_from_idx/u);
+  assert.match(source, /CREATE INDEX IF NOT EXISTS memory_edges_project_to_idx/u);
+});

@@ -153,3 +153,4 @@ Use `npm run init-project -- --project /path/to/project --profile enterprise` fo
 - Preserve portability across model providers.
 - Apply the open-source/personal boundary to every file type and contribution,
   including tests and documentation.
+- Merge, don't overwrite: when editing a file you did not create, integrate your changes into the existing content with surgical edits - never rewrite the file from scratch. Full-file rewrites are only for files you created yourself. Append-only files (decisions, receipts, logs) are appended to, never replaced.

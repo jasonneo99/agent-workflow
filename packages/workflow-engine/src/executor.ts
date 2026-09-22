@@ -3,9 +3,12 @@ import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
+import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
+import { fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
+import { buildMemoryContextForStage, recordStageMemoryGraph } from "./memory-graph-wiring.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
@@ -217,9 +220,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
       attemptedProviderId = route.providerId;
+      const memoryContext = await buildMemoryContextForStage({
+        projectId: task.runId,
+        stageGoal: task.stageGoal,
+        taskLabel: task.workflowTask
+      });
       const routedStageInput = {
         ...stageInput,
-        modelTier: route.modelTier
+        modelTier: route.modelTier,
+        memoryContext
       };
       const startedAt = Date.now();
       const fallbackPolicy = providerFallbackPolicyFromEnv();
@@ -332,6 +341,172 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         quality = scoreStageOutput(routedStageInput, output);
       }
 
+      // Bounded file-read rounds: give API-backed providers the source-inspection
+      // ability codex-cli has natively. The model lists files it needs, the
+      // executor reads them under the read-path policy, and the model is asked
+      // again with the contents in context. Reads are informational: a denied
+      // or missing file is reported back, never a stage blocker.
+      const stageFileReads: Array<{ path: string; content: string; truncated: boolean; error?: string }> = [];
+      const stageStateDeltas: StateDelta[] = [];
+      const seenReadPaths = new Set<string>();
+      const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
+      let fileReadIteration = 0;
+      const countRequestedActions = (out: typeof output): number =>
+        (out.requestedCommands?.length ?? 0) + (out.requestedFileWrites?.length ?? 0) + (out.requestedFileReads?.length ?? 0);
+      let readRounds = 0;
+      while (readRounds < maxReadRounds) {
+        const pendingReads = (output.requestedFileReads ?? []).filter((readPath) => {
+          const key = readPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+          if (!key || seenReadPaths.has(key)) return false;
+          seenReadPaths.add(key);
+          return true;
+        });
+        if (pendingReads.length === 0) break;
+        readRounds += 1;
+        for (const readPath of pendingReads) {
+          await assertLeaseOwned();
+          fileReadIteration += 1;
+          const fileReadIdempotencyKey = actionIdempotencyKey({
+            taskId: task.taskId,
+            stageId: task.stageId,
+            agentId: task.agentId,
+            actionType: "file_read",
+            target: readPath,
+            payload: readPath,
+            normalizePayload: true
+          });
+          const readReceiptBase = {
+            task,
+            stagePattern,
+            iteration: fileReadIteration,
+            totalRequestedActions: countRequestedActions(output),
+            actionType: "file_read" as const,
+            target: readPath,
+            payloadHash: hashText(normalizeActionText(readPath))
+          };
+          try {
+            const readResult = await executeAllowedFileRead({
+              relativePath: readPath,
+              cwd: localProjectRootUri,
+              project
+            });
+            const readArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "file_read",
+              target: readResult.relativePath,
+              summary: `Read ${readResult.bytesRead} bytes from \`${readResult.relativePath}\`${readResult.truncated ? " (truncated at policy max)" : ""}.`,
+              artifactKind: "file_read",
+              artifactContent: {
+                actionType: "file_read",
+                path: readResult.relativePath,
+                bytesRead: readResult.bytesRead,
+                truncated: readResult.truncated,
+                sha256: readResult.sha256,
+                contentPreview: readResult.content.slice(0, 20000),
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              },
+              idempotencyKey: fileReadIdempotencyKey
+            });
+            stageFileReads.push({
+              path: readResult.relativePath,
+              content: readResult.content,
+              truncated: readResult.truncated
+            });
+            stageStateDeltas.push(fileReadDelta({
+              path: readResult.relativePath,
+              bytesRead: readResult.bytesRead,
+              truncated: readResult.truncated,
+              sha256: readResult.sha256,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read", taskId: task.taskId, artifactUri: readArtifactUri }
+            }));
+            actionResults.push({
+              type: "file_read",
+              path: readResult.relativePath,
+              artifactUri: readArtifactUri,
+              bytesRead: readResult.bytesRead,
+              truncated: readResult.truncated
+            });
+            await recordBoundedReactLoopReceipt({
+              ...readReceiptBase,
+              policyDecision: {
+                status: "allowed",
+                approvalRequired: false,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "completed",
+                artifactUri: readArtifactUri,
+                bytesRead: readResult.bytesRead,
+                truncated: readResult.truncated
+              }
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const denialArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "file_read_rejected",
+              target: readPath,
+              summary: message,
+              artifactKind: "action_rejection",
+              artifactContent: {
+                actionType: "file_read",
+                target: readPath,
+                error: message,
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              }
+            });
+            stageFileReads.push({ path: readPath, content: "", truncated: false, error: message });
+            stageStateDeltas.push(fileReadDelta({
+              path: readPath,
+              error: message,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read_rejected", taskId: task.taskId, artifactUri: denialArtifactUri }
+            }));
+            actionResults.push({
+              type: "file_read_rejected",
+              path: readPath,
+              artifactUri: denialArtifactUri,
+              error: message
+            });
+            await recordBoundedReactLoopReceipt({
+              ...readReceiptBase,
+              policyDecision: {
+                status: "rejected",
+                approvalRequired: false,
+                allowedByPolicy: false,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "rejected",
+                artifactUri: denialArtifactUri
+              }
+            });
+          }
+        }
+        await assertLeaseOwned();
+        const readRoundStartedAt = Date.now();
+        const reread = await executeWithProviderFallback({
+          providerId: route.providerId,
+          stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
+          policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
+          providerFactory: providerFromEnv
+        });
+        await recordDirectProviderUsage({ stage: routedStageInput, attempts: reread.attempts, output: reread.output, latencyMs: Date.now() - readRoundStartedAt }).catch(() => 0);
+        fallbackAttempts = [...fallbackAttempts, ...reread.attempts];
+        output = reread.output;
+        quality = scoreStageOutput(routedStageInput, output);
+        fallbackUsed = false;
+        fallbackProviderId = undefined;
+        actualProviderId = reread.actualProvider;
+        actualModel = reread.actualModel;
+      }
+
       await recordRunAction({
         runId: task.runId,
         agentId: task.agentId,
@@ -372,7 +547,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
 
-      const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0);
+      const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0) + (output.requestedFileReads?.length ?? 0);
       let reactIteration = 0;
       for (const commandLine of output.requestedCommands ?? []) {
         await assertLeaseOwned();
@@ -960,6 +1135,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       const incompleteActions = actionResults.filter((action) => {
         const type = typeof action === "object" && action && "type" in action ? String(action.type) : "";
+        if (type === "file_read_rejected") return false;
         return type.endsWith("_approval_pending") || type.endsWith("_rejected") || type.includes("_side_effect_");
       });
       if (incompleteActions.length > 0) {
@@ -1003,6 +1179,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           quality,
           actionResults
         }
+      });
+      // Memory graph write path: advisory, idempotent, never breaks completion.
+      await recordStageMemoryGraph({
+        projectId: task.runId,
+        taskId: task.taskId,
+        goalTitle: task.workflowTask,
+        taskTitle: task.stageGoal,
+        decisionSummary: route.reason,
+        resultSummary: output.summary
       });
       clearInterval(leaseHeartbeat);
       result.completed += 1;
@@ -1272,7 +1457,7 @@ async function recordBoundedReactLoopReceipt(input: {
   stagePattern: StagePattern;
   iteration: number;
   totalRequestedActions: number;
-  actionType: "local_command" | "file_write";
+  actionType: "local_command" | "file_write" | "file_read";
   target: string;
   payloadHash: string;
   policyDecision: Record<string, unknown>;

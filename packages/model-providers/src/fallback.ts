@@ -35,7 +35,7 @@ export function classifyProviderFailure(error: unknown): ProviderExecutionError 
     return new ProviderExecutionError(kind, `Codex CLI ${codexDiagnostic.category.replaceAll("_", " ")} (diagnostic ${codexDiagnostic.digest.slice(0, 12)}).`, status, code);
   }
   if (status === 401 || status === 403 || /invalid[_ -]?api[_ -]?key|unauthorized|authentication|credential/.test(label)) return new ProviderExecutionError("authentication", "Provider authentication failed.", status, code);
-  if (/insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|exceeded.*quota|quota.*exhaust/.test(label)) return new ProviderExecutionError("account_quota", "Provider account quota is exhausted.", status, code);
+  if (status === 402 || /billing_not_configured|billing verification failed|insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|exceeded.*quota|quota.*exhaust/.test(label)) return new ProviderExecutionError("account_quota", "Provider billing is not configured or account quota is exhausted.", status, code);
   if (status === 429 || /rate[_ -]?limit|too many requests|throttl/.test(label)) return new ProviderExecutionError("rate_limited", "Provider rate limit was reached.", status, code);
   if (status === 404 || /model.*(not found|unavailable|does not exist|unsupported)|deployment.*not found/.test(label)) return new ProviderExecutionError("model_unavailable", "Requested provider model is unavailable.", status, code);
   if (candidate?.retryable === true || (status !== undefined && status >= 500) || /econnreset|econnrefused|enotfound|etimedout|connection error|fetch failed|socket hang up|service unavailable/.test(label)) return new ProviderExecutionError("provider_outage", "Provider service is unavailable.", status, code);

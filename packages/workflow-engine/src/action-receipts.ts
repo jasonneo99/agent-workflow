@@ -10,7 +10,7 @@ export function actionIdempotencyKey(input: { taskId: string; stageId: string; a
 
 export function buildBoundedReactLoopReceiptContent(input: {
   task: { runId: string; taskId: string; workflowId: string; workflowTask: string; stageId: string; stageGoal: string; agentId: string };
-  stagePattern: StagePattern; iteration: number; totalRequestedActions: number; actionType: "local_command" | "file_write"; target: string; payloadHash: string;
+  stagePattern: StagePattern; iteration: number; totalRequestedActions: number; actionType: "local_command" | "file_write" | "file_read"; target: string; payloadHash: string;
   policyDecision: Record<string, unknown>; resultReceipt: Record<string, unknown>;
 }): Record<string, unknown> {
   const maxIterations = input.stagePattern.maxIterations ?? Math.max(input.totalRequestedActions, 1);

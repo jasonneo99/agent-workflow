@@ -2,7 +2,7 @@ import { projectConfigSchema } from "../../../packages/agent-registry/src/schema
 import { providerFromEnv } from "../../../packages/model-providers/src/index.js";
 import type { ModelProvider } from "../../../packages/model-providers/src/types.js";
 
-export const WORKER_PROVIDER_IDS = ["mock", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro"] as const;
+export const WORKER_PROVIDER_IDS = ["mock", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro"] as const;
 
 export type WorkerProviderCapabilities = {
   ready: string[];

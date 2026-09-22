@@ -3,6 +3,7 @@ import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-r
 import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
+import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers/src/quality.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
@@ -377,6 +378,35 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS workflow_handoffs_run_status_idx ON workflow_handoffs(run_id, status, proposed_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS workflow_handoff_events_handoff_created_idx ON workflow_handoff_events(handoff_id, created_at)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS workflow_handoff_events_one_proposal_idx ON workflow_handoff_events(handoff_id) WHERE status = 'proposed'`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS memory_nodes (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id text NOT NULL,
+        node_id text NOT NULL,
+        node_type text NOT NULL CHECK (node_type IN ('goal','task','evidence','artifact','decision','action','result')),
+        title text NOT NULL,
+        body text NOT NULL DEFAULT '',
+        token_estimate integer NOT NULL DEFAULT 1,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        metadata jsonb NOT NULL DEFAULT '{}',
+        UNIQUE(project_id, node_id)
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS memory_edges (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id text NOT NULL,
+        from_node text NOT NULL,
+        to_node text NOT NULL,
+        edge_type text NOT NULL CHECK (edge_type IN ('decomposes','supports','produces','decided_by','executes','leads_to','supersedes','relates')),
+        cost numeric NOT NULL DEFAULT 1,
+        created_at timestamptz NOT NULL DEFAULT now(),
+        UNIQUE(project_id, from_node, to_node, edge_type)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS memory_nodes_project_type_idx ON memory_nodes(project_id, node_type, created_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS memory_edges_project_from_idx ON memory_edges(project_id, from_node)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS memory_edges_project_to_idx ON memory_edges(project_id, to_node)`);
   });
 }
 
@@ -1736,14 +1766,28 @@ export async function replayWorkflowRun(input: {
       const taskIds: Record<string, string> = {};
       let completedTasks = 0;
       let skippedTasks = 0;
+      let checkpointChainInvalidated = false;
       const skippedStageIds = new Set(input.skipStageIds ?? []);
       for (const stage of workflow.stages) {
         const sourceTask = sourceTaskByStage.get(stage.id);
         const actionResolvedCheckpoint = sourceTask?.status === "blocked"
           && sourceTask.approvalCount > 0
           && sourceTask.executedApprovalCount === sourceTask.approvalCount;
-        const preserveCheckpoint = (sourceTask?.status === "completed" || actionResolvedCheckpoint)
-          && sourceTask.artifactContent !== null;
+        const checkpointCandidate = sourceTask?.status === "completed" || actionResolvedCheckpoint;
+        const checkpointArtifact = sourceTask?.artifactContent ?? null;
+        const checkpointHasBuildEvidence = checkpointArtifact !== null && completedStageProvidesPinnedBuildEvidence({
+          workflowTask: sourceRun.task,
+          stageId: stage.id,
+          agentId: stage.agent,
+          summary: typeof checkpointArtifact.summary === "string" ? checkpointArtifact.summary : "",
+          artifact: checkpointArtifact
+        });
+        if (checkpointCandidate && !checkpointHasBuildEvidence) {
+          checkpointChainInvalidated = true;
+        }
+        const preserveCheckpoint = !checkpointChainInvalidated
+          && checkpointCandidate
+          && checkpointArtifact !== null;
         const skipStage = skippedStageIds.has(stage.id) && !preserveCheckpoint;
         const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (
