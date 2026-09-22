@@ -2981,7 +2981,8 @@ program
   .option("-r, --run <id>", "workflow run id")
   .option("-l, --limit <number>", "number of recent runs", "10")
   .option("--artifacts", "include artifact URIs when inspecting a run")
-  .action(async (options: { run?: string; limit: string; artifacts?: boolean }) => {
+  .option("--json", "print JSON")
+  .action(async (options: { run?: string; limit: string; artifacts?: boolean; json?: boolean }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2997,6 +2998,19 @@ program
       if (!details.run) {
         console.error(`Unknown workflow run: ${options.run}`);
         process.exitCode = 1;
+        return;
+      }
+
+      if (options.json) {
+        const payload: { run: unknown; stages: unknown; receipts: unknown; artifacts?: unknown } = {
+          run: details.run,
+          stages: details.tasks,
+          receipts: details.receipts,
+        };
+        if (options.artifacts) {
+          payload.artifacts = await listArtifacts({ runId: options.run });
+        }
+        console.log(JSON.stringify(payload, null, 2));
         return;
       }
 
@@ -3029,6 +3043,10 @@ program
 
     const limit = Number.parseInt(options.limit, 10);
     const runs = await listWorkflowRuns(Number.isFinite(limit) && limit > 0 ? limit : 10);
+    if (options.json) {
+      console.log(JSON.stringify(runs, null, 2));
+      return;
+    }
     for (const run of runs) {
       console.log(`${run.id} ${run.status} ${run.workflowId} - ${run.task}`);
     }
