@@ -221,7 +221,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
       attemptedProviderId = route.providerId;
       const memoryContext = await buildMemoryContextForStage({
-        projectId: task.runId,
+        projectId: localProjectRootUri,
         stageGoal: task.stageGoal,
         taskLabel: task.workflowTask
       });
@@ -1182,7 +1182,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       });
       // Memory graph write path: advisory, idempotent, never breaks completion.
       await recordStageMemoryGraph({
-        projectId: task.runId,
+        projectId: localProjectRootUri,
+        runId: task.runId,
         taskId: task.taskId,
         goalTitle: task.workflowTask,
         taskTitle: task.stageGoal,

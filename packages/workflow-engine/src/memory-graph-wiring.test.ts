@@ -6,6 +6,7 @@ import {
   formatMemoryContext,
   isMemoryGraphEnabled,
   memoryNodeIds,
+  projectGoalId,
   recordStageMemoryGraph
 } from "./memory-graph-wiring.js";
 
@@ -18,7 +19,8 @@ test("memoryNodeIds are deterministic per task", () => {
 
 test("buildStageOutcomeInput shares one goal per run and tags the task", () => {
   const input = buildStageOutcomeInput({
-    projectId: "run-1",
+    projectId: "proj-1",
+    runId: "run-1",
     taskId: "task-1",
     goalTitle: "Ship the feature",
     taskTitle: "Implement the endpoint",
@@ -30,6 +32,13 @@ test("buildStageOutcomeInput shares one goal per run and tags the task", () => {
   assert.equal(input.nodeIds?.decision, "decision:task-1");
   assert.equal(input.nodeIds?.result, "result:task-1");
   assert.equal(input.metadata?.taskId, "task-1");
+  assert.equal(input.metadata?.runId, "run-1");
+  assert.equal(input.metadata?.projectId, "proj-1");
+});
+
+test("projectGoalId is deterministic per project", () => {
+  assert.equal(projectGoalId("proj-1"), "project-goal:proj-1");
+  assert.notEqual(projectGoalId("proj-1"), projectGoalId("proj-2"));
 });
 
 test("formatMemoryContext renders prompt-ready lines", () => {
@@ -78,7 +87,8 @@ test("recordStageMemoryGraph never throws when disabled", async () => {
   try {
     process.env.AGENTFLOW_MEMORY_GRAPH = "0";
     await recordStageMemoryGraph({
-      projectId: "run-1",
+      projectId: "proj-disabled",
+      runId: "run-1",
       taskId: "task-1",
       goalTitle: "Ship the feature",
       taskTitle: "Implement the endpoint",
@@ -98,7 +108,8 @@ test("recordStageMemoryGraph never throws against an unreachable database", asyn
     process.env.DATABASE_URL = "postgres://127.0.0.1:1/unreachable";
     delete process.env.AGENTFLOW_MEMORY_GRAPH;
     await recordStageMemoryGraph({
-      projectId: "run-1",
+      projectId: "proj-unreachable",
+      runId: "run-1",
       taskId: "task-unreachable",
       goalTitle: "Ship the feature",
       taskTitle: "Implement the endpoint",
@@ -116,5 +127,33 @@ test("recordStageMemoryGraph never throws against an unreachable database", asyn
     else process.env.DATABASE_URL = previousUrl;
     if (previousFlag === undefined) delete process.env.AGENTFLOW_MEMORY_GRAPH;
     else process.env.AGENTFLOW_MEMORY_GRAPH = previousFlag;
+  }
+});
+
+test("cross-run: a later run sees an earlier run's stages via the project goal", async () => {
+  const project = `proj-crossrun-${Date.now()}`;
+  const { deleteMemoryGraph } = await import("../../storage/src/memory-graph-store.js");
+  try {
+    await recordStageMemoryGraph({
+      projectId: project,
+      runId: "run-a",
+      taskId: `task-a-${Date.now()}`,
+      goalTitle: "Ship the feature",
+      taskTitle: "Implement the payment endpoint",
+      decisionSummary: "routed to fast tier",
+      resultSummary: "endpoint live and tested"
+    });
+    const context = await buildMemoryContextForStage({
+      projectId: project,
+      stageGoal: "Implement the payment endpoint",
+      taskLabel: "Ship the feature"
+    });
+    assert.ok(context.length > 0, "expected past context from the earlier run");
+    assert.ok(
+      context.some((line) => line.includes("Implement the payment endpoint")),
+      `expected the earlier run's task in context, got: ${JSON.stringify(context)}`
+    );
+  } finally {
+    await deleteMemoryGraph(project);
   }
 });
