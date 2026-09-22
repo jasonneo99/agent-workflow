@@ -42,7 +42,7 @@ test("queue action receipt inserts use separate uuid and text parameters", () =>
 });
 
 test("successful direct actions dismiss stale approval cards for the same task and target", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./action-approvals.ts", import.meta.url), "utf8");
   const dismissal = source.slice(source.indexOf("export async function dismissSupersededActionApprovals"), source.indexOf("export async function decideActionApproval"));
   assert.match(dismissal, /status in \('pending', 'approved', 'failed'\)/u);
   assert.match(dismissal, /task_id = \$2::uuid[\s\S]+action_type = \$3[\s\S]+target = \$4/u);
@@ -50,7 +50,7 @@ test("successful direct actions dismiss stale approval cards for the same task a
 });
 
 test("successful approval execution dismisses failed or pending sibling attempts", () => {
-  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const source = readFileSync(new URL("./action-approvals.ts", import.meta.url), "utf8");
   const execution = source.slice(source.indexOf("export async function markActionApprovalExecution"), source.indexOf("export async function claimActionApprovalExecution"));
   assert.match(execution, /if \(input\.status === "executed"\)/u);
   assert.match(execution, /id <> \$1::uuid[\s\S]+task_id is not distinct from \$3::uuid[\s\S]+status in \('pending', 'approved', 'failed'\)/u);
@@ -285,13 +285,14 @@ test("unified activity query covers workflow, stage, action, and approval eviden
 
 test("approval execution is atomically claimed before dispatch", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const approvalsSource = readFileSync(new URL("./action-approvals.ts", import.meta.url), "utf8");
   assert.match(source, /ADD COLUMN IF NOT EXISTS execution_claim_token uuid/u);
-  assert.match(source, /export async function claimActionApprovalExecution/u);
-  assert.match(source, /export async function recoverInterruptedActionApprovalExecutions/u);
-  assert.match(source, /action_approval_execution_recovered/u);
-  assert.match(source, /aa\.executed_by = \$1/u);
-  assert.match(source, /set status = 'executing'[\s\S]+execution_claim_token = gen_random_uuid\(\)/u);
-  assert.match(source, /aa\.execution_claim_token = \$6::uuid/u);
+  assert.match(approvalsSource, /export async function claimActionApprovalExecution/u);
+  assert.match(approvalsSource, /export async function recoverInterruptedActionApprovalExecutions/u);
+  assert.match(approvalsSource, /action_approval_execution_recovered/u);
+  assert.match(approvalsSource, /aa\.executed_by = \$1/u);
+  assert.match(approvalsSource, /set status = 'executing'[\s\S]+execution_claim_token = gen_random_uuid\(\)/u);
+  assert.match(approvalsSource, /aa\.execution_claim_token = \$6::uuid/u);
 });
 
 test("side effects are reserved before dispatch and uncertain claims are not replayed", () => {
@@ -313,11 +314,12 @@ test("project execution locks serialize conflicting build resources across worke
 
 test("all run lifecycle writes route through the authoritative transition helper", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-  const directStatusWrites = [...source.matchAll(/update workflow_runs[\s\S]{0,140}?set status\s*=\s*['$]/gu)];
+  const transitionSource = readFileSync(new URL("./run-transitions.ts", import.meta.url), "utf8");
+  const directStatusWrites = [...transitionSource.matchAll(/update workflow_runs[\s\S]{0,140}?set status\s*=\s*['$]/gu)];
   assert.equal(directStatusWrites.length, 1, "only transitionWorkflowRun may perform runtime workflow_runs.status writes");
   assert.match(source, /workflow_run_transitions[\s\S]+UNIQUE\(run_id, idempotency_key\)[\s\S]+UNIQUE\(run_id, state_version\)/u);
   assert.match(source, /WHERE NOT EXISTS \([\s\S]+workflow_run_transitions existing WHERE existing\.run_id = wr\.id/u);
-  assert.match(source, /assertWorkflowRunFence\(/u);
+  assert.match(transitionSource, /assertWorkflowRunFence\(/u);
 });
 
 test("concurrent parallel-group claims share one worker fence while other claims advance it", () => {
