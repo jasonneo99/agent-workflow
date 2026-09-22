@@ -1,5 +1,13 @@
 import type { ModelTier, StageExecutionInput } from "./types.js";
 import { providerFromEnv } from "./index.js";
+import { compileAirHeader } from "../../context-compiler/src/air.js";
+import {
+  buildRoutingEngineInput,
+  defaultRoutingEngine,
+  parseRoutingHeader,
+  type RoutingDecisionEngine,
+  type RoutingEngineDecision
+} from "./routing-engine.js";
 
 export interface ModelRouteDecision {
   providerId: string;
@@ -17,12 +25,22 @@ type ProviderReadiness = {
 
 const readinessCache = new Map<string, Promise<ProviderReadiness>>();
 
+export type SelectModelRouteInput =
+  Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief"> &
+  Partial<Pick<StageExecutionInput, "projectConfig" | "stageGoal" | "workflowTask" | "stagePattern" | "stateDeltas">>;
+
 export async function selectModelRoute(
-  input: Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief">,
-  options?: { allowedProviderIds?: string[] }
+  input: SelectModelRouteInput,
+  options?: { allowedProviderIds?: string[]; routingEngine?: RoutingDecisionEngine }
 ): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
-  const preference = inferPreferenceTuning(input.compiledBrief);
+  const routingEngine = options?.routingEngine ?? defaultRoutingEngine;
+  const preferenceDecision = decideRouting(input, routingEngine, requestedModelTier);
+  const preference = {
+    promoteFastStages: preferenceDecision.decision.promoteFastStages,
+    localHoldoutPromotion: preferenceDecision.decision.localHoldout,
+    feedbackSignals: preferenceDecision.decision.feedbackSignals
+  };
   const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
   const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
   const allowAdaptiveTierPromotion = input.workflowId !== "provider-smoke";
@@ -32,7 +50,8 @@ export async function selectModelRoute(
   const approvedLocalRoute = mode !== "fixed" && modelTier === "fast" && preference.localHoldoutPromotion.approved
     ? await selectApprovedLocalRoute(preference.localHoldoutPromotion)
     : undefined;
-  const learnedProvider = mode !== "fixed" ? inferDaemonPreferredProvider(input.compiledBrief, modelTier) : undefined;
+  const learnedDecision = mode !== "fixed" ? decideRouting(input, routingEngine, modelTier) : undefined;
+  const learnedProvider = learnedDecision?.decision.preferredProviderByTier[modelTier];
   const learnedRoute = learnedProvider ? await selectLearnedProvider(learnedProvider) : undefined;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
   const preferredProviderId = mode === "fixed"
@@ -57,6 +76,7 @@ export async function selectModelRoute(
           `Auto routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
           approvedLocalRoute?.reason ?? "",
           learnedRoute?.reason ?? "",
+          routeEngineNote([preferenceDecision, learnedDecision]),
           autoRoute?.reason ?? "",
           modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
           preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
@@ -65,6 +85,7 @@ export async function selectModelRoute(
         `Adaptive routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
         approvedLocalRoute?.reason ?? "",
         learnedRoute?.reason ?? "",
+        routeEngineNote([preferenceDecision, learnedDecision]),
         modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
         preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
         ].filter(Boolean).join(" "),
@@ -89,6 +110,49 @@ async function selectLearnedProvider(providerId: string): Promise<{ providerId?:
   return readiness.ready
     ? { providerId, reason: `The learning daemon selected ${providerId} from comparison evidence that passed quality, fallback, latency, and sample gates.` }
     : { reason: `The learning daemon preferred ${providerId}, but it is not ready (${readiness.details.join("; ")}); using the normal route.` };
+}
+
+/**
+ * Decide routing from the AIR header, not the raw brief. The engine only ever
+ * sees structured header fields. When its confidence is low it escalates to
+ * the legacy brief-parsing path (the expensive rung of the hierarchy).
+ */
+function decideRouting(
+  input: SelectModelRouteInput,
+  engine: RoutingDecisionEngine,
+  modelTier: ModelTier
+): { decision: RoutingEngineDecision; escalated: boolean; header: string } {
+  const engineInput = buildRoutingEngineInput({ ...input, modelTier });
+  const header = compileAirHeader(engineInput);
+  // The header is the contract: parse it back so the engine only ever reads
+  // structured header fields, never the raw brief.
+  const decision = engine.decide({ ...parseRoutingHeader(header), ...engineInput });
+  if (decision.confidence >= 0.5) {
+    return { decision, escalated: false, header };
+  }
+  const legacyPreference = inferPreferenceTuning(input.compiledBrief);
+  const legacyProvider = inferDaemonPreferredProvider(input.compiledBrief, modelTier);
+  const preferredProviderByTier: Partial<Record<ModelTier, string>> = {};
+  if (legacyProvider) preferredProviderByTier[modelTier] = legacyProvider;
+  return {
+    decision: {
+      promoteFastStages: legacyPreference.promoteFastStages,
+      feedbackSignals: legacyPreference.feedbackSignals,
+      preferredProviderByTier,
+      localHoldout: legacyPreference.localHoldoutPromotion,
+      confidence: 0.4,
+      reason: `escalated to legacy brief parsing (${decision.reason})`
+    },
+    escalated: true,
+    header
+  };
+}
+
+function routeEngineNote(decisions: Array<{ decision: RoutingEngineDecision; escalated: boolean } | undefined>): string {
+  const parts = decisions
+    .filter((d): d is { decision: RoutingEngineDecision; escalated: boolean } => Boolean(d))
+    .map((d) => `${d.escalated ? "escalated:" : "engine:"} ${d.decision.reason}`);
+  return parts.length ? `Routing engine: ${parts.join(" | ")}` : "";
 }
 
 function inferDaemonPreferredProvider(compiledBrief: string, tier: ModelTier): string | undefined {
