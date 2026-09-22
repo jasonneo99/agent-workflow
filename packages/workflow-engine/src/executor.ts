@@ -8,6 +8,7 @@ import { fileReadDelta, type StateDelta } from "../../model-providers/src/state-
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
+import { buildMemoryContextForStage, recordStageMemoryGraph } from "./memory-graph-wiring.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
@@ -219,9 +220,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
       attemptedProviderId = route.providerId;
+      const memoryContext = await buildMemoryContextForStage({
+        projectId: task.runId,
+        stageGoal: task.stageGoal,
+        taskLabel: task.workflowTask
+      });
       const routedStageInput = {
         ...stageInput,
-        modelTier: route.modelTier
+        modelTier: route.modelTier,
+        memoryContext
       };
       const startedAt = Date.now();
       const fallbackPolicy = providerFallbackPolicyFromEnv();
@@ -1172,6 +1179,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           quality,
           actionResults
         }
+      });
+      // Memory graph write path: advisory, idempotent, never breaks completion.
+      await recordStageMemoryGraph({
+        projectId: task.runId,
+        taskId: task.taskId,
+        goalTitle: task.workflowTask,
+        taskTitle: task.stageGoal,
+        decisionSummary: route.reason,
+        resultSummary: output.summary
       });
       clearInterval(leaseHeartbeat);
       result.completed += 1;

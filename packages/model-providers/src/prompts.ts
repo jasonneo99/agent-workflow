@@ -58,6 +58,9 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "Runtime state (machine state deltas, folded; consume this instead of re-deriving history):",
     input.stateDeltas?.length ? renderFactSet(foldStateDeltas(input.stateDeltas)) : "No state changes recorded yet this stage.",
     "",
+    "Relevant past context (from the memory graph; earlier stages and runs):",
+    input.memoryContext?.length ? input.memoryContext.join("\n") : "None recorded yet.",
+    "",
     "File contents you requested to read (fresh from disk this stage):",
     input.fileReads?.length
       ? input.fileReads.map((item) => [

@@ -242,15 +242,18 @@ export function recordStageOutcome(
     decisionSummary: string;
     resultSummary: string;
     metadata?: Record<string, unknown>;
+    /** Deterministic ids make the write idempotent: re-recording the same
+     *  stage upserts the same rows instead of duplicating them. */
+    nodeIds?: { task?: string; decision?: string; result?: string };
   }
 ): { task: MemoryNode; decision: MemoryNode; result: MemoryNode } {
   let goal = input.goalId ? graph.getNode(input.goalId) : undefined;
   if (!goal) {
-    goal = graph.addNode({ type: "goal", title: input.goalTitle, body: input.goalTitle, metadata: input.metadata });
+    goal = graph.addNode({ id: input.goalId, type: "goal", title: input.goalTitle, body: input.goalTitle, metadata: input.metadata });
   }
-  const task = graph.addNode({ type: "task", title: input.taskTitle, body: input.taskTitle, metadata: input.metadata });
-  const decision = graph.addNode({ type: "decision", title: `Routing: ${input.taskTitle}`, body: input.decisionSummary, metadata: input.metadata });
-  const result = graph.addNode({ type: "result", title: `Result: ${input.taskTitle}`, body: input.resultSummary, metadata: input.metadata });
+  const task = graph.addNode({ id: input.nodeIds?.task, type: "task", title: input.taskTitle, body: input.taskTitle, metadata: input.metadata });
+  const decision = graph.addNode({ id: input.nodeIds?.decision, type: "decision", title: `Routing: ${input.taskTitle}`, body: input.decisionSummary, metadata: input.metadata });
+  const result = graph.addNode({ id: input.nodeIds?.result, type: "result", title: `Result: ${input.taskTitle}`, body: input.resultSummary, metadata: input.metadata });
   graph.addEdge(goal.id, task.id, "decomposes");
   graph.addEdge(task.id, decision.id, "decided_by");
   graph.addEdge(task.id, result.id, "produces");

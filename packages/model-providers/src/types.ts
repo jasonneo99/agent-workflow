@@ -48,6 +48,9 @@ export interface StageExecutionInput {
   /** Typed state deltas recorded by the runtime this stage (AIR phase-1 spike).
    *  Folded machine state the next turn consumes instead of re-reading history. */
   stateDeltas?: StateDelta[];
+  /** Relevant past context selected from the memory graph (AIR phase-3).
+   *  Rendered as a PAST CONTEXT section; empty when the graph is disabled. */
+  memoryContext?: string[];
 }
 
 export interface StageExecutionOutput {
