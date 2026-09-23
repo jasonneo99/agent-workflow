@@ -31299,15 +31299,15 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
       <p class="muted">${escapeHtml(item.rationale)}</p>
       ${evaluation?.holdoutTasks.length ? `<details><summary>Holdout evidence (${evaluation.holdoutTasks.length})</summary><ul>${evaluation.holdoutTasks.map((task) => `<li><strong>${escapeHtml(task.workflowId)}</strong> · ${escapeHtml(task.status)} · ${escapeHtml(task.evidence)}</li>`).join("")}</ul></details>` : ""}
       <details><summary>Proposed source change</summary><pre>${escapeHtml(item.diff)}</pre></details>
-      <form method="post" action="/api/agent-improvement-promotion-decision" class="inline-action-form">
+      ${decisionOpen ? `<form method="post" action="/api/agent-improvement-promotion-decision" class="inline-action-form">
         <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
         <input type="hidden" name="promotionId" value="${escapeHtml(item.id)}">
         <input type="hidden" name="returnTo" value="/learning?project=${encodeURIComponent(report.projectRootUri)}&view=agent-improvements">
-        <label>Decision note <input name="note" placeholder="Optional review note"${decisionOpen ? "" : " disabled"}></label>
-        <button type="submit" name="decision" value="approved"${decisionOpen ? "" : " disabled"}>Approve</button>
-        <button type="submit" name="decision" value="deferred" class="secondary"${decisionOpen ? "" : " disabled"}>Defer</button>
-        <button type="submit" name="decision" value="rejected" class="secondary"${decisionOpen ? "" : " disabled"}>Reject</button>
-      </form>
+        <label>Decision note <input name="note" placeholder="Optional review note"></label>
+        <button type="submit" name="decision" value="approved">Approve</button>
+        <button type="submit" name="decision" value="deferred" class="secondary">Defer</button>
+        <button type="submit" name="decision" value="deferred" class="secondary">Reject</button>
+      </form>` : `<p class="muted">Decision: <span class="flag ${item.status === "approved" || item.status === "applied" ? "good" : "warn"}">${escapeHtml(item.status.charAt(0).toUpperCase() + item.status.slice(1))}</span>${item.reviewer ? ` by ${escapeHtml(item.reviewer)}` : ""}${item.decidedAt ? ` &middot; ${escapeHtml(new Date(item.decidedAt).toLocaleString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }))}` : ""}${item.note ? ` &mdash; &ldquo;${escapeHtml(item.note)}&rdquo;` : ""}</p>`}
     </article>`;
   }).join("");
   const candidateRows = report.candidates.map((candidate) => `
