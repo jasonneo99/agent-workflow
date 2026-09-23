@@ -1,10 +1,12 @@
+import path from "node:path";
+import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
-import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
+import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
-import { fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
+import { commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
@@ -547,75 +549,222 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
 
-      const totalRequestedActions = (output.requestedCommands?.length ?? 0) + (output.requestedFileWrites?.length ?? 0) + (output.requestedFileReads?.length ?? 0);
-      let reactIteration = 0;
-      for (const commandLine of output.requestedCommands ?? []) {
-        await assertLeaseOwned();
-        reactIteration += 1;
-        const commandIdempotencyKey = actionIdempotencyKey({
-          taskId: task.taskId,
-          stageId: task.stageId,
-          agentId: task.agentId,
-          actionType: "local_command",
-          target: commandLine,
-          payload: commandLine,
-          normalizePayload: true
-        });
-        const previousCommand = await findRunActionByIdempotencyKey({
-          runId: task.runId,
-          artifactKind: "command_output",
-          idempotencyKey: commandIdempotencyKey
-        });
-        if (previousCommand) {
-          const reuseArtifactUri = await recordRunAction({
-            runId: task.runId,
+      // Verify-stage command retry (Fix 2): the action loops below re-run when
+      // a verify-type stage command fails and budget remains; the agent is
+      // re-invoked with the failure evidence folded into its stage input.
+      const verifyRetryBudget = verifyRetryBudgetFromEnv();
+      let verifyRetriesRemaining = verifyRetryBudget;
+      let verifyRetryRound = 0;
+      let verifyRetryRequested = false;
+      verifyActionRounds:
+      do {
+        verifyRetryRequested = false;
+        const totalRequestedActions = countRequestedActions(output);
+        let reactIteration = 0;
+        for (const commandLine of output.requestedCommands ?? []) {
+          await assertLeaseOwned();
+          reactIteration += 1;
+          const commandIdempotencyKey = actionIdempotencyKey({
             taskId: task.taskId,
+            stageId: task.stageId,
             agentId: task.agentId,
-            actionType: "local_command_reused",
-            target: commandLine,
-            summary: `Skipped duplicate command; reused receipt ${previousCommand.uri}.`,
-            artifactKind: "action_reuse",
-            artifactContent: {
-              actionType: "local_command",
-              target: commandLine,
-              originalArtifactUri: previousCommand.uri,
-              requestedByTaskId: task.taskId,
-              requestedByStageId: task.stageId
-            }
-          });
-          actionResults.push({
-            type: "local_command_reused",
-            commandLine,
-            artifactUri: previousCommand.uri,
-            reuseArtifactUri
-          });
-          await recordBoundedReactLoopReceipt({
-            task,
-            stagePattern,
-            iteration: reactIteration,
-            totalRequestedActions,
             actionType: "local_command",
             target: commandLine,
-            payloadHash: hashText(normalizeActionText(commandLine)),
-            policyDecision: {
-              status: "reused",
-              approvalRequired: false,
-              allowedByPolicy: true,
-              policyProfile: project.execution.policy_profile
-            },
-            resultReceipt: {
-              status: "reused",
-              artifactUri: reuseArtifactUri,
-              originalArtifactUri: previousCommand.uri
-            }
+            payload: verifyRetryRound > 0 ? `${commandLine}\n# agentflow-verify-retry-round:${verifyRetryRound}` : commandLine,
+            normalizePayload: true
           });
-          continue;
-        }
+          const previousCommand = await findRunActionByIdempotencyKey({
+            runId: task.runId,
+            artifactKind: "command_output",
+            idempotencyKey: commandIdempotencyKey
+          });
+          if (previousCommand) {
+            const reuseArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "local_command_reused",
+              target: commandLine,
+              summary: `Skipped duplicate command; reused receipt ${previousCommand.uri}.`,
+              artifactKind: "action_reuse",
+              artifactContent: {
+                actionType: "local_command",
+                target: commandLine,
+                originalArtifactUri: previousCommand.uri,
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              }
+            });
+            actionResults.push({
+              type: "local_command_reused",
+              commandLine,
+              artifactUri: previousCommand.uri,
+              reuseArtifactUri
+            });
+            await recordBoundedReactLoopReceipt({
+              task,
+              stagePattern,
+              iteration: reactIteration,
+              totalRequestedActions,
+              actionType: "local_command",
+              target: commandLine,
+              payloadHash: hashText(normalizeActionText(commandLine)),
+              policyDecision: {
+                status: "reused",
+                approvalRequired: false,
+                allowedByPolicy: true,
+                policyProfile: project.execution.policy_profile
+              },
+              resultReceipt: {
+                status: "reused",
+                artifactUri: reuseArtifactUri,
+                originalArtifactUri: previousCommand.uri
+              }
+            });
+            continue;
+          }
 
-        let commandApprovalRule: ActionApprovalRuleMatch | null = null;
-        if (project.policies.require_approval_for_external_actions) {
+          let commandApprovalRule: ActionApprovalRuleMatch | null = null;
+          if (project.policies.require_approval_for_external_actions) {
+            try {
+              assertCommandAllowed(commandLine, project);
+            } catch (error) {
+              const rejectionArtifactUri = await recordRunAction({
+                runId: task.runId,
+                taskId: task.taskId,
+                agentId: task.agentId,
+                actionType: "local_command_rejected",
+                target: commandLine,
+                summary: error instanceof Error ? error.message : String(error),
+                artifactKind: "action_rejection",
+                artifactContent: {
+                  actionType: "local_command",
+                  target: commandLine,
+                  error: error instanceof Error ? error.message : String(error),
+                  requestedByTaskId: task.taskId,
+                  requestedByStageId: task.stageId
+                }
+              });
+              actionResults.push({
+                type: "local_command_rejected",
+                commandLine,
+                artifactUri: rejectionArtifactUri,
+                error: error instanceof Error ? error.message : String(error)
+              });
+              await recordBoundedReactLoopReceipt({
+                task,
+                stagePattern,
+                iteration: reactIteration,
+                totalRequestedActions,
+                actionType: "local_command",
+                target: commandLine,
+                payloadHash: hashText(normalizeActionText(commandLine)),
+                policyDecision: {
+                  status: "rejected",
+                  approvalRequired: false,
+                  allowedByPolicy: false,
+                  policyProfile: project.execution.policy_profile
+                },
+                resultReceipt: {
+                  status: "rejected",
+                  artifactUri: rejectionArtifactUri,
+                  error: error instanceof Error ? error.message : String(error)
+                }
+              });
+              continue;
+            }
+            commandApprovalRule = evaluateActionApprovalRule({
+              project,
+              actionType: "local_command",
+              target: commandLine
+            }) ?? evaluateActionRiskAutoApproval({
+              project,
+              actionType: "local_command",
+              target: commandLine
+            });
+            if (!commandApprovalRule) {
+              const approval = await requestActionApproval({
+                runId: task.runId,
+                taskId: task.taskId,
+                stageId: task.stageId,
+                agentId: task.agentId,
+                actionType: "local_command",
+                target: normalizeActionText(commandLine),
+                rationale: `Policy requires approval before executing command requested by ${task.agentId} during ${task.stageId}.`,
+                policyDecision: {
+                  approvalRequired: true,
+                  allowedByPolicy: true,
+                  policyProfile: project.execution.policy_profile
+                },
+                payload: {
+                  commandLine: normalizeActionText(commandLine),
+                  payloadHash: hashText(normalizeActionText(commandLine))
+                },
+                idempotencyKey: commandIdempotencyKey
+              });
+              actionResults.push({
+                type: "local_command_approval_pending",
+                commandLine,
+                approvalId: approval.approvalId,
+                artifactUri: approval.artifactUri,
+                status: approval.status
+              });
+              await recordBoundedReactLoopReceipt({
+                task,
+                stagePattern,
+                iteration: reactIteration,
+                totalRequestedActions,
+                actionType: "local_command",
+                target: commandLine,
+                payloadHash: hashText(normalizeActionText(commandLine)),
+                policyDecision: {
+                  status: "approval_required",
+                  approvalRequired: true,
+                  allowedByPolicy: true,
+                  policyProfile: project.execution.policy_profile
+                },
+                resultReceipt: {
+                  status: "approval_pending",
+                  approvalId: approval.approvalId,
+                  artifactUri: approval.artifactUri
+                }
+              });
+              continue;
+            }
+          }
+
+          const commandSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, operation: "local_command", target: commandLine, claimSeconds: 3600 });
+          if (commandSideEffect.status !== "claimed" || !commandSideEffect.claimToken) {
+            actionResults.push({ type: `local_command_side_effect_${commandSideEffect.status}`, commandLine, receipt: commandSideEffect.receipt });
+            continue;
+          }
+          await assertLeaseOwned();
+          let commandResult: CommandExecutionResult;
           try {
-            assertCommandAllowed(commandLine, project);
+            const serializationResource = commandSerializationResource(commandLine, localProjectRootUri);
+            const executeCommand = () => {
+              // Fix 3 pre-flight: `npm run` without a package.json in the
+              // resolved cwd fails with npm's ENOENT. Fail fast with a clear
+              // diagnostic naming the cwd and the missing file instead.
+              const npmPreflightError = npmPreflightDiagnostic(commandLine, localProjectRootUri);
+              if (npmPreflightError) {
+                const preflightResult: CommandExecutionResult = {
+                  commandLine,
+                  cwd: localProjectRootUri,
+                  exitCode: 1,
+                  signal: null,
+                  stdout: "",
+                  stderr: npmPreflightError,
+                  durationMs: 0,
+                  timedOut: false
+                };
+                return Promise.resolve(preflightResult);
+              }
+              return executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project });
+            };
+            commandResult = serializationResource
+              ? await withProjectExecutionLock({ projectRootUri: task.projectRootUri, resource: serializationResource }, executeCommand)
+              : await executeCommand();
           } catch (error) {
             const rejectionArtifactUri = await recordRunAction({
               runId: task.runId,
@@ -651,7 +800,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 status: "rejected",
                 approvalRequired: false,
                 allowedByPolicy: false,
-                policyProfile: project.execution.policy_profile
+                policyProfile: project.execution.policy_profile,
+                approvalRule: commandApprovalRule ?? undefined
               },
               resultReceipt: {
                 status: "rejected",
@@ -661,252 +811,331 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             });
             continue;
           }
-          commandApprovalRule = evaluateActionApprovalRule({
-            project,
+          const summary = [
+            `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
+            commandResult.timedOut ? "after timing out" : `in ${commandResult.durationMs}ms`
+          ].join(" ");
+          const artifactUri = await recordRunAction({
+            runId: task.runId,
+            taskId: task.taskId,
+            agentId: task.agentId,
             actionType: "local_command",
-            target: commandLine
-          }) ?? evaluateActionRiskAutoApproval({
-            project,
-            actionType: "local_command",
-            target: commandLine
+            target: commandResult.commandLine,
+            summary,
+            artifactKind: "command_output",
+            artifactContent: {
+              ...commandResult,
+              approvalRule: commandApprovalRule ?? undefined,
+              requestedByTaskId: task.taskId,
+              requestedByStageId: task.stageId
+            },
+            idempotencyKey: commandIdempotencyKey
           });
-          if (!commandApprovalRule) {
-            const approval = await requestActionApproval({
+          const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
+          if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
+          await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
+          actionResults.push({
+            commandLine,
+            artifactUri,
+            exitCode: commandResult.exitCode,
+            timedOut: commandResult.timedOut,
+            approvalRule: commandApprovalRule ?? undefined
+          });
+          await recordBoundedReactLoopReceipt({
+            task,
+            stagePattern,
+            iteration: reactIteration,
+            totalRequestedActions,
+            actionType: "local_command",
+            target: commandResult.commandLine,
+            payloadHash: hashText(normalizeActionText(commandResult.commandLine)),
+            policyDecision: {
+              status: commandApprovalRule ? "auto_approved_by_rule" : "allowed",
+              approvalRequired: false,
+              allowedByPolicy: true,
+              policyProfile: project.execution.policy_profile,
+              approvalRule: commandApprovalRule ?? undefined
+            },
+            resultReceipt: {
+              status: commandResult.exitCode === 0 && !commandResult.timedOut ? "completed" : "failed",
+              artifactUri,
+              exitCode: commandResult.exitCode,
+              timedOut: commandResult.timedOut
+            }
+          });
+
+          if (
+            (commandResult.exitCode !== 0 || commandResult.timedOut)
+            && !commandFailureIsDiagnosticEvidence(stagePattern)
+            && !commandFailurePrecedesGovernedWrites(stagePattern, output)
+          ) {
+            // Fix 1: the thrown error carries the truncated command output so
+            // failures are self-diagnosing instead of a bare command line.
+            const failureEvidence = formatCommandFailureEvidence({
+              commandLine,
+              exitCode: commandResult.exitCode,
+              timedOut: commandResult.timedOut,
+              stdout: commandResult.stdout,
+              stderr: commandResult.stderr
+            });
+            // Fix 2: in verify-type stages, feed the failure back to the agent
+            // with a bounded retry budget instead of failing the run outright.
+            // Planner/react stages keep their diagnostic-evidence behavior.
+            if (verifyRetriesRemaining > 0 && commandFailureEligibleForVerifyRetry(stagePattern)) {
+              verifyRetriesRemaining -= 1;
+              verifyRetryRound += 1;
+              const truncatedOutput = truncateCommandOutputForError(
+                [commandResult.stdout, commandResult.stderr].filter(Boolean).join("\n")
+              );
+              await recordRunAction({
+                runId: task.runId,
+                taskId: task.taskId,
+                agentId: task.agentId,
+                actionType: "local_command_verify_retry",
+                target: commandLine,
+                summary: `Verify retry ${verifyRetryRound} of ${verifyRetryBudget}: feeding command failure back to ${task.agentId} (${verifyRetriesRemaining} ${verifyRetriesRemaining === 1 ? "retry" : "retries"} left).`,
+                artifactKind: "command_retry",
+                artifactContent: {
+                  commandLine,
+                  exitCode: commandResult.exitCode,
+                  timedOut: commandResult.timedOut,
+                  truncatedOutput,
+                  retryRound: verifyRetryRound,
+                  retriesRemaining: verifyRetriesRemaining,
+                  previousArtifactUri: artifactUri
+                }
+              });
+              stageStateDeltas.push(commandFailureDelta({
+                commandLine,
+                exitCode: commandResult.exitCode,
+                timedOut: commandResult.timedOut,
+                truncatedOutput,
+                retryRound: verifyRetryRound,
+                retriesRemaining: verifyRetriesRemaining,
+                provenance: {
+                  stageId: task.stageId,
+                  agentId: task.agentId,
+                  actionType: "local_command",
+                  taskId: task.taskId,
+                  artifactUri
+                }
+              }));
+              await assertLeaseOwned();
+              const verifyRetryStartedAt = Date.now();
+              const verifyRetry = await executeWithProviderFallback({
+                providerId: route.providerId,
+                stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
+                policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
+                providerFactory: providerFromEnv
+              });
+              await recordDirectProviderUsage({
+                stage: routedStageInput,
+                attempts: verifyRetry.attempts,
+                output: verifyRetry.output,
+                latencyMs: Date.now() - verifyRetryStartedAt
+              }).catch(() => 0);
+              fallbackAttempts = [...fallbackAttempts, ...verifyRetry.attempts];
+              output = verifyRetry.output;
+              quality = scoreStageOutput(routedStageInput, output);
+              actualProviderId = verifyRetry.actualProvider;
+              actualModel = verifyRetry.actualModel;
+              verifyRetryRequested = true;
+              continue verifyActionRounds;
+            }
+            throw new Error(`Requested command failed: ${commandLine}\n${failureEvidence}`);
+          }
+        }
+        for (const fileWrite of output.requestedFileWrites ?? []) {
+          await assertLeaseOwned();
+          reactIteration += 1;
+          const fileWriteIdempotencyKey = actionIdempotencyKey({
+            taskId: task.taskId,
+            stageId: task.stageId,
+            agentId: task.agentId,
+            actionType: "file_write",
+            target: fileWrite.path,
+            payload: fileWrite.content
+          });
+          const previousWrite = await findRunActionByIdempotencyKey({
+            runId: task.runId,
+            artifactKind: "file_write",
+            idempotencyKey: fileWriteIdempotencyKey
+          });
+          if (previousWrite) {
+            const reuseArtifactUri = await recordRunAction({
               runId: task.runId,
               taskId: task.taskId,
-              stageId: task.stageId,
               agentId: task.agentId,
-              actionType: "local_command",
-              target: normalizeActionText(commandLine),
-              rationale: `Policy requires approval before executing command requested by ${task.agentId} during ${task.stageId}.`,
-              policyDecision: {
-                approvalRequired: true,
-                allowedByPolicy: true,
-                policyProfile: project.execution.policy_profile
-              },
-              payload: {
-                commandLine: normalizeActionText(commandLine),
-                payloadHash: hashText(normalizeActionText(commandLine))
-              },
-              idempotencyKey: commandIdempotencyKey
+              actionType: "file_write_reused",
+              target: fileWrite.path,
+              summary: `Skipped duplicate file write; reused receipt ${previousWrite.uri}.`,
+              artifactKind: "action_reuse",
+              artifactContent: {
+                actionType: "file_write",
+                target: fileWrite.path,
+                originalArtifactUri: previousWrite.uri,
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              }
             });
             actionResults.push({
-              type: "local_command_approval_pending",
-              commandLine,
-              approvalId: approval.approvalId,
-              artifactUri: approval.artifactUri,
-              status: approval.status
+              type: "file_write_reused",
+              path: fileWrite.path,
+              artifactUri: previousWrite.uri,
+              reuseArtifactUri
             });
             await recordBoundedReactLoopReceipt({
               task,
               stagePattern,
               iteration: reactIteration,
               totalRequestedActions,
-              actionType: "local_command",
-              target: commandLine,
-              payloadHash: hashText(normalizeActionText(commandLine)),
+              actionType: "file_write",
+              target: fileWrite.path,
+              payloadHash: hashText(fileWrite.content),
               policyDecision: {
-                status: "approval_required",
-                approvalRequired: true,
+                status: "reused",
+                approvalRequired: false,
                 allowedByPolicy: true,
                 policyProfile: project.execution.policy_profile
               },
               resultReceipt: {
-                status: "approval_pending",
-                approvalId: approval.approvalId,
-                artifactUri: approval.artifactUri
+                status: "reused",
+                artifactUri: reuseArtifactUri,
+                originalArtifactUri: previousWrite.uri
               }
             });
             continue;
           }
-        }
 
-        const commandSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, operation: "local_command", target: commandLine, claimSeconds: 3600 });
-        if (commandSideEffect.status !== "claimed" || !commandSideEffect.claimToken) {
-          actionResults.push({ type: `local_command_side_effect_${commandSideEffect.status}`, commandLine, receipt: commandSideEffect.receipt });
-          continue;
-        }
-        await assertLeaseOwned();
-        let commandResult;
-        try {
-          const serializationResource = commandSerializationResource(commandLine, localProjectRootUri);
-          const executeCommand = () => executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project });
-          commandResult = serializationResource
-            ? await withProjectExecutionLock({ projectRootUri: task.projectRootUri, resource: serializationResource }, executeCommand)
-            : await executeCommand();
-        } catch (error) {
-          const rejectionArtifactUri = await recordRunAction({
-            runId: task.runId,
-            taskId: task.taskId,
-            agentId: task.agentId,
-            actionType: "local_command_rejected",
-            target: commandLine,
-            summary: error instanceof Error ? error.message : String(error),
-            artifactKind: "action_rejection",
-            artifactContent: {
-              actionType: "local_command",
-              target: commandLine,
-              error: error instanceof Error ? error.message : String(error),
-              requestedByTaskId: task.taskId,
-              requestedByStageId: task.stageId
+          let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
+          if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
+            try {
+              assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
+            } catch (error) {
+              const rejectionArtifactUri = await recordRunAction({
+                runId: task.runId,
+                taskId: task.taskId,
+                agentId: task.agentId,
+                actionType: "file_write_rejected",
+                target: fileWrite.path,
+                summary: error instanceof Error ? error.message : String(error),
+                artifactKind: "action_rejection",
+                artifactContent: {
+                  actionType: "file_write",
+                  target: fileWrite.path,
+                  error: error instanceof Error ? error.message : String(error),
+                  requestedByTaskId: task.taskId,
+                  requestedByStageId: task.stageId
+                }
+              });
+              actionResults.push({
+                type: "file_write_rejected",
+                path: fileWrite.path,
+                artifactUri: rejectionArtifactUri,
+                error: error instanceof Error ? error.message : String(error)
+              });
+              await recordBoundedReactLoopReceipt({
+                task,
+                stagePattern,
+                iteration: reactIteration,
+                totalRequestedActions,
+                actionType: "file_write",
+                target: fileWrite.path,
+                payloadHash: hashText(fileWrite.content),
+                policyDecision: {
+                  status: "rejected",
+                  approvalRequired: false,
+                  allowedByPolicy: false,
+                  policyProfile: project.execution.policy_profile
+                },
+                resultReceipt: {
+                  status: "rejected",
+                  artifactUri: rejectionArtifactUri,
+                  error: error instanceof Error ? error.message : String(error)
+                }
+              });
+              continue;
             }
-          });
-          actionResults.push({
-            type: "local_command_rejected",
-            commandLine,
-            artifactUri: rejectionArtifactUri,
-            error: error instanceof Error ? error.message : String(error)
-          });
-          await recordBoundedReactLoopReceipt({
-            task,
-            stagePattern,
-            iteration: reactIteration,
-            totalRequestedActions,
-            actionType: "local_command",
-            target: commandLine,
-            payloadHash: hashText(normalizeActionText(commandLine)),
-            policyDecision: {
-              status: "rejected",
-              approvalRequired: false,
-              allowedByPolicy: false,
-              policyProfile: project.execution.policy_profile,
-              approvalRule: commandApprovalRule ?? undefined
-            },
-            resultReceipt: {
-              status: "rejected",
-              artifactUri: rejectionArtifactUri,
-              error: error instanceof Error ? error.message : String(error)
-            }
-          });
-          continue;
-        }
-        const summary = [
-          `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
-          commandResult.timedOut ? "after timing out" : `in ${commandResult.durationMs}ms`
-        ].join(" ");
-        const artifactUri = await recordRunAction({
-          runId: task.runId,
-          taskId: task.taskId,
-          agentId: task.agentId,
-          actionType: "local_command",
-          target: commandResult.commandLine,
-          summary,
-          artifactKind: "command_output",
-          artifactContent: {
-            ...commandResult,
-            approvalRule: commandApprovalRule ?? undefined,
-            requestedByTaskId: task.taskId,
-            requestedByStageId: task.stageId
-          },
-          idempotencyKey: commandIdempotencyKey
-        });
-        const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
-        if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
-        await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
-        actionResults.push({
-          commandLine,
-          artifactUri,
-          exitCode: commandResult.exitCode,
-          timedOut: commandResult.timedOut,
-          approvalRule: commandApprovalRule ?? undefined
-        });
-        await recordBoundedReactLoopReceipt({
-          task,
-          stagePattern,
-          iteration: reactIteration,
-          totalRequestedActions,
-          actionType: "local_command",
-          target: commandResult.commandLine,
-          payloadHash: hashText(normalizeActionText(commandResult.commandLine)),
-          policyDecision: {
-            status: commandApprovalRule ? "auto_approved_by_rule" : "allowed",
-            approvalRequired: false,
-            allowedByPolicy: true,
-            policyProfile: project.execution.policy_profile,
-            approvalRule: commandApprovalRule ?? undefined
-          },
-          resultReceipt: {
-            status: commandResult.exitCode === 0 && !commandResult.timedOut ? "completed" : "failed",
-            artifactUri,
-            exitCode: commandResult.exitCode,
-            timedOut: commandResult.timedOut
-          }
-        });
-
-        if (
-          (commandResult.exitCode !== 0 || commandResult.timedOut)
-          && !commandFailureIsDiagnosticEvidence(stagePattern)
-          && !commandFailurePrecedesGovernedWrites(stagePattern, output)
-        ) {
-          throw new Error(`Requested command failed: ${commandLine}`);
-        }
-      }
-      for (const fileWrite of output.requestedFileWrites ?? []) {
-        await assertLeaseOwned();
-        reactIteration += 1;
-        const fileWriteIdempotencyKey = actionIdempotencyKey({
-          taskId: task.taskId,
-          stageId: task.stageId,
-          agentId: task.agentId,
-          actionType: "file_write",
-          target: fileWrite.path,
-          payload: fileWrite.content
-        });
-        const previousWrite = await findRunActionByIdempotencyKey({
-          runId: task.runId,
-          artifactKind: "file_write",
-          idempotencyKey: fileWriteIdempotencyKey
-        });
-        if (previousWrite) {
-          const reuseArtifactUri = await recordRunAction({
-            runId: task.runId,
-            taskId: task.taskId,
-            agentId: task.agentId,
-            actionType: "file_write_reused",
-            target: fileWrite.path,
-            summary: `Skipped duplicate file write; reused receipt ${previousWrite.uri}.`,
-            artifactKind: "action_reuse",
-            artifactContent: {
+            fileWriteApprovalRule = evaluateActionApprovalRule({
+              project,
               actionType: "file_write",
               target: fileWrite.path,
-              originalArtifactUri: previousWrite.uri,
-              requestedByTaskId: task.taskId,
-              requestedByStageId: task.stageId
+              bytes: Buffer.byteLength(fileWrite.content, "utf8")
+            }) ?? evaluateActionRiskAutoApproval({
+              project,
+              actionType: "file_write",
+              target: fileWrite.path,
+              bytes: Buffer.byteLength(fileWrite.content, "utf8")
+            });
+            if (!fileWriteApprovalRule) {
+              const approval = await requestActionApproval({
+                runId: task.runId,
+                taskId: task.taskId,
+                stageId: task.stageId,
+                agentId: task.agentId,
+                actionType: "file_write",
+                target: fileWrite.path,
+                rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
+                policyDecision: {
+                  approvalRequired: true,
+                  allowedByPolicy: true,
+                  policyProfile: project.execution.policy_profile
+                },
+                payload: {
+                  relativePath: fileWrite.path,
+                  bytes: Buffer.byteLength(fileWrite.content, "utf8"),
+                  payloadHash: hashText(fileWrite.content)
+                },
+                idempotencyKey: fileWriteIdempotencyKey
+              });
+              actionResults.push({
+                type: "file_write_approval_pending",
+                path: fileWrite.path,
+                approvalId: approval.approvalId,
+                artifactUri: approval.artifactUri,
+                status: approval.status
+              });
+              await recordBoundedReactLoopReceipt({
+                task,
+                stagePattern,
+                iteration: reactIteration,
+                totalRequestedActions,
+                actionType: "file_write",
+                target: fileWrite.path,
+                payloadHash: hashText(fileWrite.content),
+                policyDecision: {
+                  status: "approval_required",
+                  approvalRequired: true,
+                  allowedByPolicy: true,
+                  policyProfile: project.execution.policy_profile
+                },
+                resultReceipt: {
+                  status: "approval_pending",
+                  approvalId: approval.approvalId,
+                  artifactUri: approval.artifactUri
+                }
+              });
+              continue;
             }
-          });
-          actionResults.push({
-            type: "file_write_reused",
-            path: fileWrite.path,
-            artifactUri: previousWrite.uri,
-            reuseArtifactUri
-          });
-          await recordBoundedReactLoopReceipt({
-            task,
-            stagePattern,
-            iteration: reactIteration,
-            totalRequestedActions,
-            actionType: "file_write",
-            target: fileWrite.path,
-            payloadHash: hashText(fileWrite.content),
-            policyDecision: {
-              status: "reused",
-              approvalRequired: false,
-              allowedByPolicy: true,
-              policyProfile: project.execution.policy_profile
-            },
-            resultReceipt: {
-              status: "reused",
-              artifactUri: reuseArtifactUri,
-              originalArtifactUri: previousWrite.uri
-            }
-          });
-          continue;
-        }
+          }
 
-        let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
-        if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
+          const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
+          if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
+            actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });
+            continue;
+          }
+          await assertLeaseOwned();
+          let writeResult;
           try {
-            assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
+            writeResult = await withProjectExecutionLock(
+              { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
+              () => executeAllowedFileWrite({
+                relativePath: fileWrite.path,
+                content: fileWrite.content,
+                cwd: localProjectRootUri,
+                project
+              })
+            );
           } catch (error) {
             const rejectionArtifactUri = await recordRunAction({
               runId: task.runId,
@@ -942,7 +1171,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 status: "rejected",
                 approvalRequired: false,
                 allowedByPolicy: false,
-                policyProfile: project.execution.policy_profile
+                policyProfile: project.execution.policy_profile,
+                approvalRule: fileWriteApprovalRule ?? undefined
               },
               resultReceipt: {
                 status: "rejected",
@@ -952,108 +1182,36 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             });
             continue;
           }
-          fileWriteApprovalRule = evaluateActionApprovalRule({
-            project,
-            actionType: "file_write",
-            target: fileWrite.path,
-            bytes: Buffer.byteLength(fileWrite.content, "utf8")
-          }) ?? evaluateActionRiskAutoApproval({
-            project,
-            actionType: "file_write",
-            target: fileWrite.path,
-            bytes: Buffer.byteLength(fileWrite.content, "utf8")
-          });
-          if (!fileWriteApprovalRule) {
-            const approval = await requestActionApproval({
-              runId: task.runId,
-              taskId: task.taskId,
-              stageId: task.stageId,
-              agentId: task.agentId,
-              actionType: "file_write",
-              target: fileWrite.path,
-              rationale: `Policy requires approval before writing a file requested by ${task.agentId} during ${task.stageId}.`,
-              policyDecision: {
-                approvalRequired: true,
-                allowedByPolicy: true,
-                policyProfile: project.execution.policy_profile
-              },
-              payload: {
-                relativePath: fileWrite.path,
-                bytes: Buffer.byteLength(fileWrite.content, "utf8"),
-                payloadHash: hashText(fileWrite.content)
-              },
-              idempotencyKey: fileWriteIdempotencyKey
-            });
-            actionResults.push({
-              type: "file_write_approval_pending",
-              path: fileWrite.path,
-              approvalId: approval.approvalId,
-              artifactUri: approval.artifactUri,
-              status: approval.status
-            });
-            await recordBoundedReactLoopReceipt({
-              task,
-              stagePattern,
-              iteration: reactIteration,
-              totalRequestedActions,
-              actionType: "file_write",
-              target: fileWrite.path,
-              payloadHash: hashText(fileWrite.content),
-              policyDecision: {
-                status: "approval_required",
-                approvalRequired: true,
-                allowedByPolicy: true,
-                policyProfile: project.execution.policy_profile
-              },
-              resultReceipt: {
-                status: "approval_pending",
-                approvalId: approval.approvalId,
-                artifactUri: approval.artifactUri
-              }
-            });
-            continue;
-          }
-        }
-
-        const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
-        if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
-          actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });
-          continue;
-        }
-        await assertLeaseOwned();
-        let writeResult;
-        try {
-          writeResult = await withProjectExecutionLock(
-            { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
-            () => executeAllowedFileWrite({
-              relativePath: fileWrite.path,
-              content: fileWrite.content,
-              cwd: localProjectRootUri,
-              project
-            })
-          );
-        } catch (error) {
-          const rejectionArtifactUri = await recordRunAction({
+          const summary = [
+            `Wrote ${writeResult.bytesWritten} bytes to \`${writeResult.relativePath}\`.`,
+            writeResult.existed ? "Updated existing file." : "Created new file."
+          ].join(" ");
+          const artifactUri = await recordRunAction({
             runId: task.runId,
             taskId: task.taskId,
             agentId: task.agentId,
-            actionType: "file_write_rejected",
-            target: fileWrite.path,
-            summary: error instanceof Error ? error.message : String(error),
-            artifactKind: "action_rejection",
+            actionType: "file_write",
+            target: writeResult.relativePath,
+            summary,
+            artifactKind: "file_write",
             artifactContent: {
-              actionType: "file_write",
-              target: fileWrite.path,
-              error: error instanceof Error ? error.message : String(error),
+              ...writeResult,
+              approvalRule: fileWriteApprovalRule ?? undefined,
               requestedByTaskId: task.taskId,
               requestedByStageId: task.stageId
-            }
+            },
+            idempotencyKey: fileWriteIdempotencyKey
           });
+          const fileWriteFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, claimToken: fileSideEffect.claimToken, receipt: { artifactUri, path: writeResult.relativePath, nextHash: writeResult.nextHash } });
+          if (!fileWriteFinalized) throw new Error(`File-write side-effect claim could not be finalized for ${fileWrite.path}.`);
+          await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "file_write", target: fileWrite.path, actor: task.workerId! });
           actionResults.push({
-            type: "file_write_rejected",
-            path: fileWrite.path,
-            artifactUri: rejectionArtifactUri,
-            error: error instanceof Error ? error.message : String(error)
+            type: "file_write",
+            path: writeResult.relativePath,
+            artifactUri,
+            bytesWritten: writeResult.bytesWritten,
+            nextHash: writeResult.nextHash,
+            approvalRule: fileWriteApprovalRule ?? undefined
           });
           await recordBoundedReactLoopReceipt({
             task,
@@ -1061,78 +1219,25 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             iteration: reactIteration,
             totalRequestedActions,
             actionType: "file_write",
-            target: fileWrite.path,
+            target: writeResult.relativePath,
             payloadHash: hashText(fileWrite.content),
             policyDecision: {
-              status: "rejected",
+              status: fileWriteApprovalRule ? "auto_approved_by_rule" : "allowed",
               approvalRequired: false,
-              allowedByPolicy: false,
+              allowedByPolicy: true,
               policyProfile: project.execution.policy_profile,
               approvalRule: fileWriteApprovalRule ?? undefined
             },
             resultReceipt: {
-              status: "rejected",
-              artifactUri: rejectionArtifactUri,
-              error: error instanceof Error ? error.message : String(error)
+              status: "completed",
+              artifactUri,
+              bytesWritten: writeResult.bytesWritten,
+              previousHash: writeResult.previousHash,
+              nextHash: writeResult.nextHash
             }
           });
-          continue;
         }
-        const summary = [
-          `Wrote ${writeResult.bytesWritten} bytes to \`${writeResult.relativePath}\`.`,
-          writeResult.existed ? "Updated existing file." : "Created new file."
-        ].join(" ");
-        const artifactUri = await recordRunAction({
-          runId: task.runId,
-          taskId: task.taskId,
-          agentId: task.agentId,
-          actionType: "file_write",
-          target: writeResult.relativePath,
-          summary,
-          artifactKind: "file_write",
-          artifactContent: {
-            ...writeResult,
-            approvalRule: fileWriteApprovalRule ?? undefined,
-            requestedByTaskId: task.taskId,
-            requestedByStageId: task.stageId
-          },
-          idempotencyKey: fileWriteIdempotencyKey
-        });
-        const fileWriteFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, claimToken: fileSideEffect.claimToken, receipt: { artifactUri, path: writeResult.relativePath, nextHash: writeResult.nextHash } });
-        if (!fileWriteFinalized) throw new Error(`File-write side-effect claim could not be finalized for ${fileWrite.path}.`);
-        await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "file_write", target: fileWrite.path, actor: task.workerId! });
-        actionResults.push({
-          type: "file_write",
-          path: writeResult.relativePath,
-          artifactUri,
-          bytesWritten: writeResult.bytesWritten,
-          nextHash: writeResult.nextHash,
-          approvalRule: fileWriteApprovalRule ?? undefined
-        });
-        await recordBoundedReactLoopReceipt({
-          task,
-          stagePattern,
-          iteration: reactIteration,
-          totalRequestedActions,
-          actionType: "file_write",
-          target: writeResult.relativePath,
-          payloadHash: hashText(fileWrite.content),
-          policyDecision: {
-            status: fileWriteApprovalRule ? "auto_approved_by_rule" : "allowed",
-            approvalRequired: false,
-            allowedByPolicy: true,
-            policyProfile: project.execution.policy_profile,
-            approvalRule: fileWriteApprovalRule ?? undefined
-          },
-          resultReceipt: {
-            status: "completed",
-            artifactUri,
-            bytesWritten: writeResult.bytesWritten,
-            previousHash: writeResult.previousHash,
-            nextHash: writeResult.nextHash
-          }
-        });
-      }
+      } while (verifyRetryRequested);
       const incompleteActions = actionResults.filter((action) => {
         const type = typeof action === "object" && action && "type" in action ? String(action.type) : "";
         if (type === "file_read_rejected") return false;
@@ -1401,6 +1506,93 @@ async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOption
 }
 
 type StagePattern = NonNullable<StageExecutionInput["stagePattern"]>;
+
+export const COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES = 20;
+export const COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS = 4000;
+
+/**
+ * Truncate command output for error messages and retry evidence: the first
+ * ~20 lines, capped at ~4k chars, so a huge tsc dump cannot blow up the error
+ * path or the DB column the message lands in.
+ */
+export function truncateCommandOutputForError(
+  output: string,
+  maxLines: number = COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES,
+  maxChars: number = COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS
+): string {
+  const lines = output.split("\n");
+  const head = lines.slice(0, Math.max(1, maxLines)).join("\n");
+  const text = lines.length > maxLines
+    ? `${head}\n… [truncated: showing first ${maxLines} of ${lines.length} lines]`
+    : head;
+  return text.length > maxChars
+    ? `${text.slice(0, Math.max(0, maxChars))}\n… [truncated: showing first ${maxChars} chars]`
+    : text;
+}
+
+/** Build the self-diagnosing evidence block for a failed command (Fix 1). */
+export function formatCommandFailureEvidence(input: {
+  commandLine: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}): string {
+  const combined = [input.stdout?.trim(), input.stderr?.trim()]
+    .filter((part): part is string => Boolean(part))
+    .join("\n");
+  const outcome = input.timedOut ? "timed out" : `exited with code ${input.exitCode}`;
+  if (!combined) return `Command \`${input.commandLine}\` ${outcome}; it produced no output.`;
+  return `Command \`${input.commandLine}\` ${outcome}.\nCommand output (truncated):\n${truncateCommandOutputForError(combined)}`;
+}
+
+/**
+ * Verify-type stages (Fix 2): a failing command is fed back to the agent with
+ * a retry budget instead of failing the run. Planner/react stages keep their
+ * diagnostic-evidence behavior and never reach this path.
+ */
+export function commandFailureEligibleForVerifyRetry(stagePattern: Pick<StagePattern, "type">): boolean {
+  const type = stagePattern.type.trim().toLowerCase();
+  return type === "test" || type === "verify" || type === "verifier";
+}
+
+export const VERIFY_COMMAND_RETRY_BUDGET_DEFAULT = 2;
+export const VERIFY_COMMAND_RETRY_BUDGET_MAX = 5;
+
+/** Retry budget for verify-stage command retries; AGENTFLOW_VERIFY_RETRY_BUDGET overrides (0 disables). */
+export function verifyRetryBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AGENTFLOW_VERIFY_RETRY_BUDGET?.trim();
+  if (!raw) return VERIFY_COMMAND_RETRY_BUDGET_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return VERIFY_COMMAND_RETRY_BUDGET_DEFAULT;
+  return Math.min(VERIFY_COMMAND_RETRY_BUDGET_MAX, Math.max(0, parsed));
+}
+
+/**
+ * Pre-flight check for `npm run` commands (Fix 3): npm requires a
+ * package.json in the working directory. Returns a diagnostic naming the
+ * resolved directory and the missing file, or null when the check passes or
+ * does not apply.
+ */
+export function npmPreflightDiagnostic(commandLine: string, cwd: string): string | null {
+  const tokens = commandLine.trim().split(/\s+/);
+  if (tokens[0] !== "npm") return null;
+  // Accept both `npm run <script>` and `npm --prefix <dir> run <script>`.
+  const runIndex = tokens[1] === "run" ? 1 : tokens[1] === "--prefix" && tokens[3] === "run" ? 3 : -1;
+  if (runIndex < 0) return null;
+  let targetDir = cwd;
+  const prefixIndex = tokens.findIndex((token) => token === "--prefix");
+  if (prefixIndex >= 0 && prefixIndex < runIndex && tokens[prefixIndex + 1]) {
+    targetDir = path.resolve(cwd, tokens[prefixIndex + 1]);
+  }
+  if (existsSync(path.join(targetDir, "package.json"))) return null;
+  return (
+    `Cannot run \`${commandLine.trim()}\`: no package.json found in ${targetDir} ` +
+    `(resolved from cwd ${cwd}). npm run requires a package.json in the working ` +
+    `directory; without it npm fails with ENOENT. Run the command from the ` +
+    `directory containing package.json, or create one there.`
+  );
+}
 
 export function commandFailureIsDiagnosticEvidence(stagePattern: Pick<StagePattern, "type">): boolean {
   return stagePattern.type === "planner" || stagePattern.type === "react";

@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actionIdempotencyKey, applyCurrentAutoApprovalThreshold, buildBoundedReactLoopReceiptContent, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, isInternalWorkflowReceiptWrite, shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./executor.js";
+import {
+  COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS,
+  COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES,
+  VERIFY_COMMAND_RETRY_BUDGET_DEFAULT,
+  VERIFY_COMMAND_RETRY_BUDGET_MAX,
+  actionIdempotencyKey,
+  applyCurrentAutoApprovalThreshold,
+  buildBoundedReactLoopReceiptContent,
+  commandFailureEligibleForVerifyRetry,
+  commandFailureIsDiagnosticEvidence,
+  commandFailurePrecedesGovernedWrites,
+  formatCommandFailureEvidence,
+  isInternalWorkflowReceiptWrite,
+  npmPreflightDiagnostic,
+  shouldContinuePlanningDeliverableGap,
+  shouldRetryWeakFallbackBlock,
+  truncateCommandOutputForError,
+  verifyRetryBudgetFromEnv
+} from "./executor.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
@@ -287,4 +309,102 @@ test("narrow recurring executor rule executes only its exact target", async () =
   assert.equal(exact.status, "executed");
   assert.equal(different.status, "pending");
   assert.equal(executions, 1);
+});
+
+test("command output truncation caps lines and chars for error paths", () => {
+  const manyLines = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
+  const truncated = truncateCommandOutputForError(manyLines);
+  assert.equal(truncated.split("\n").length, COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES + 1);
+  assert.match(truncated, /showing first 20 of 50 lines/);
+  assert.equal(truncateCommandOutputForError("a\nb"), "a\nb");
+  const longLine = "x".repeat(COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS + 100);
+  const charTruncated = truncateCommandOutputForError(longLine);
+  assert.ok(charTruncated.length < COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS + 100);
+  assert.match(charTruncated, /showing first 4000 chars/);
+});
+
+test("command failure evidence is self-diagnosing", () => {
+  const evidence = formatCommandFailureEvidence({
+    commandLine: "npm run typecheck",
+    exitCode: 2,
+    timedOut: false,
+    stdout: "",
+    stderr: "error TS2835: Relative import paths need explicit file extensions"
+  });
+  assert.match(evidence, /npm run typecheck/);
+  assert.match(evidence, /exited with code 2/);
+  assert.match(evidence, /TS2835/);
+  const empty = formatCommandFailureEvidence({
+    commandLine: "npm test",
+    exitCode: 1,
+    timedOut: false,
+    stdout: "  ",
+    stderr: ""
+  });
+  assert.match(empty, /produced no output/);
+  const timedOut = formatCommandFailureEvidence({
+    commandLine: "sleep 999",
+    exitCode: null,
+    timedOut: true,
+    stdout: "",
+    stderr: ""
+  });
+  assert.match(timedOut, /timed out/);
+});
+
+test("verify retry eligibility covers test/verify stages only", () => {
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "test" }), true);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "verify" }), true);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "verifier" }), true);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "Test" }), true);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "planner" }), false);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "react" }), false);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "executor" }), false);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "single-shot" }), false);
+});
+
+test("verify retry budget defaults to 2 with env override and clamp", () => {
+  assert.equal(verifyRetryBudgetFromEnv({}), VERIFY_COMMAND_RETRY_BUDGET_DEFAULT);
+  assert.equal(VERIFY_COMMAND_RETRY_BUDGET_DEFAULT, 2);
+  assert.equal(verifyRetryBudgetFromEnv({ AGENTFLOW_VERIFY_RETRY_BUDGET: "3" }), 3);
+  assert.equal(verifyRetryBudgetFromEnv({ AGENTFLOW_VERIFY_RETRY_BUDGET: "0" }), 0);
+  assert.equal(verifyRetryBudgetFromEnv({ AGENTFLOW_VERIFY_RETRY_BUDGET: "99" }), VERIFY_COMMAND_RETRY_BUDGET_MAX);
+  assert.equal(verifyRetryBudgetFromEnv({ AGENTFLOW_VERIFY_RETRY_BUDGET: "bogus" }), VERIFY_COMMAND_RETRY_BUDGET_DEFAULT);
+});
+
+test("npm pre-flight flags missing package.json with a clear diagnostic", () => {
+  const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
+  assert.equal(npmPreflightDiagnostic("npm run typecheck", repoRoot), null);
+  assert.equal(npmPreflightDiagnostic("npm test", repoRoot), null);
+  assert.equal(npmPreflightDiagnostic("cargo test", "/nonexistent-dir"), null);
+  const emptyDir = mkdtempSync(join(tmpdir(), "agentflow-preflight-"));
+  try {
+    const diagnostic = npmPreflightDiagnostic("npm run typecheck", emptyDir);
+    assert.ok(diagnostic);
+    assert.match(diagnostic, /no package\.json found/);
+    assert.ok(diagnostic.includes(emptyDir));
+    assert.ok(diagnostic.includes("npm run typecheck"));
+    const prefixed = npmPreflightDiagnostic("npm --prefix sub run build", repoRoot);
+    assert.ok(prefixed);
+    assert.match(prefixed, /no package\.json found/);
+    assert.ok(prefixed.includes(join(repoRoot, "sub")));
+  } finally {
+    rmSync(emptyDir, { recursive: true, force: true });
+  }
+});
+
+test("verify-stage command failures re-enter the action loop with a retry budget", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /verifyActionRounds:\s+do \{/u);
+  assert.match(source, /continue verifyActionRounds;/u);
+  assert.match(source, /\} while \(verifyRetryRequested\);/u);
+  assert.match(source, /commandFailureEligibleForVerifyRetry\(stagePattern\)/u);
+  assert.match(source, /local_command_verify_retry/u);
+  assert.match(source, /agentflow-verify-retry-round/u);
+  assert.match(source, /commandFailureDelta\(/u);
+});
+
+test("npm pre-flight is hooked where the executor resolves the command cwd", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /npmPreflightDiagnostic\(commandLine, localProjectRootUri\)/u);
 });

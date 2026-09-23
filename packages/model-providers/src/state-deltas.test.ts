@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   commandDelta,
+  commandFailureDelta,
   fileReadDelta,
   foldStateDeltas,
   renderDeltaLog,
@@ -123,4 +124,31 @@ test("commandDelta: exit code is captured in the fact", () => {
   const d = commandDelta({ command: "cargo test", exitCode: 1, outputPreview: "FAILED", provenance: provenance() });
   assert.match(d.fact, /exit=1/);
   assert.match(d.fact, /FAILED/);
+});
+
+test("commandFailureDelta: retry framing and truncated output in the fact", () => {
+  const d = commandFailureDelta({
+    commandLine: "npm run typecheck",
+    exitCode: 2,
+    timedOut: false,
+    truncatedOutput: "error TS2835: Relative import paths need explicit file extensions",
+    retryRound: 1,
+    retriesRemaining: 1,
+    provenance: provenance()
+  });
+  assert.equal(d.op, "assert");
+  assert.match(d.fact, /Verify retry 1 \(1 retry left\)/);
+  assert.match(d.fact, /exited with code 2/);
+  assert.match(d.fact, /TS2835/);
+  const plural = commandFailureDelta({
+    commandLine: "npm run typecheck",
+    exitCode: 1,
+    timedOut: true,
+    truncatedOutput: "",
+    retryRound: 1,
+    retriesRemaining: 2,
+    provenance: provenance()
+  });
+  assert.match(plural.fact, /2 retries left/);
+  assert.match(plural.fact, /timed out/);
 });

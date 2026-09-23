@@ -169,3 +169,37 @@ export function commandDelta(input: {
     assertedAt
   };
 }
+
+/**
+ * Build a verify-retry delta for a failed verify command: the failure is fed
+ * back to the agent with its truncated output and the remaining retry budget,
+ * so the next model turn can fix the underlying issue and re-request the
+ * command instead of the run dying.
+ */
+export function commandFailureDelta(input: {
+  commandLine: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  truncatedOutput: string;
+  retryRound: number;
+  retriesRemaining: number;
+  provenance: StateDeltaProvenance;
+  assertedAt?: string;
+}): StateDelta {
+  const assertedAt = input.assertedAt ?? new Date().toISOString();
+  const outcome = input.timedOut ? "timed out" : `exited with code ${input.exitCode}`;
+  const retries = input.retriesRemaining === 1 ? "retry" : "retries";
+  return {
+    op: "assert",
+    key: `cmd:${input.commandLine.slice(0, 120)}`,
+    fact: [
+      `Verify retry ${input.retryRound} (${input.retriesRemaining} ${retries} left): command \`${input.commandLine}\` ${outcome}.`,
+      "Fix the underlying issue, then re-request the corrected file writes and the command in your next output.",
+      "Truncated command output:",
+      input.truncatedOutput
+    ].join("\n"),
+    provenance: input.provenance,
+    confidence: 1,
+    assertedAt
+  };
+}
