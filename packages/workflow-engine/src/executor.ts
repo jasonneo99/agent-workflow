@@ -1,6 +1,8 @@
 import path from "node:path";
 import { existsSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
@@ -207,6 +209,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
       const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
       const stagePattern = normalizeStagePattern(task.stagePattern);
+      // Footprint-scoped verify attribution: snapshot the working tree before
+      // the agent acts, so verify failures on pre-existing dirty state are not
+      // blamed on the agent. Read-only; never touches the working tree.
+      const verifyFootprintBefore = commandFailureEligibleForVerifyRetry(stagePattern)
+        ? await snapshotGitStatus(localProjectRootUri)
+        : null;
       const stageInput = {
         ...task,
         projectRootUri: localProjectRootUri,
@@ -556,6 +564,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let verifyRetriesRemaining = verifyRetryBudget;
       let verifyRetryRound = 0;
       let verifyRetryRequested = false;
+      let verifyEnvironmentalBlock: { summary: string; reason: string; files: string[] } | null = null;
       verifyActionRounds:
       do {
         verifyRetryRequested = false;
@@ -878,15 +887,54 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               stdout: commandResult.stdout,
               stderr: commandResult.stderr
             });
+            const truncatedOutput = truncateCommandOutputForError(
+              [commandResult.stdout, commandResult.stderr].filter(Boolean).join("\n")
+            );
+            // Footprint-scoped attribution: when the failure is confined to
+            // pre-existing dirty state the agent never touched, it is
+            // environmental -- block the stage without burning the agent retry
+            // budget. The developer's working tree is never modified.
+            const verifyAttribution = await attributeVerifyCommandFailure({
+              outputLines: truncatedOutput.split("\n"),
+              cwd: localProjectRootUri,
+              footprintBefore: verifyFootprintBefore
+            });
+            if (verifyAttribution.kind === "environmental") {
+              const envFiles = verifyAttribution.files.join(", ");
+              const envSummary =
+                `ENVIRONMENTAL_VERIFY_FAILURE: verify command \`${commandLine}\` failed on ` +
+                `files with pre-existing uncommitted changes outside this run's footprint (${envFiles}); ` +
+                `not counted against the agent retry budget.`;
+              await recordRunAction({
+                runId: task.runId,
+                taskId: task.taskId,
+                agentId: task.agentId,
+                actionType: "local_command_verify_environmental",
+                target: commandLine,
+                summary: envSummary,
+                artifactKind: "command_output",
+                artifactContent: {
+                  commandLine,
+                  exitCode: commandResult.exitCode,
+                  timedOut: commandResult.timedOut,
+                  environmentalFiles: verifyAttribution.files,
+                  failureEvidence,
+                  previousArtifactUri: artifactUri
+                }
+              });
+              verifyEnvironmentalBlock = {
+                summary: envSummary,
+                reason: `Verify failed on pre-existing uncommitted changes outside this run's footprint: ${envFiles}.`,
+                files: verifyAttribution.files
+              };
+              break verifyActionRounds;
+            }
             // Fix 2: in verify-type stages, feed the failure back to the agent
             // with a bounded retry budget instead of failing the run outright.
             // Planner/react stages keep their diagnostic-evidence behavior.
             if (verifyRetriesRemaining > 0 && commandFailureEligibleForVerifyRetry(stagePattern)) {
               verifyRetriesRemaining -= 1;
               verifyRetryRound += 1;
-              const truncatedOutput = truncateCommandOutputForError(
-                [commandResult.stdout, commandResult.stderr].filter(Boolean).join("\n")
-              );
               await recordRunAction({
                 runId: task.runId,
                 taskId: task.taskId,
@@ -1238,6 +1286,27 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           });
         }
       } while (verifyRetryRequested);
+      if (verifyEnvironmentalBlock) {
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          summary: verifyEnvironmentalBlock.summary,
+          reason: verifyEnvironmentalBlock.reason,
+          artifact: {
+            ...output.artifact,
+            outcome: "blocked",
+            blockedReason: verifyEnvironmentalBlock.reason,
+            environmentalFiles: verifyEnvironmentalBlock.files,
+            actionResults
+          }
+        });
+        clearInterval(leaseHeartbeat);
+        result.failed += 1;
+        continue;
+      }
       const incompleteActions = actionResults.filter((action) => {
         const type = typeof action === "object" && action && "type" in action ? String(action.type) : "";
         if (type === "file_read_rejected") return false;
@@ -1592,6 +1661,156 @@ export function npmPreflightDiagnostic(commandLine: string, cwd: string): string
     `directory; without it npm fails with ENOENT. Run the command from the ` +
     `directory containing package.json, or create one there.`
   );
+}
+
+const execFileAsync = promisify(execFile);
+
+/**
+ * Footprint-scoped verify failure attribution.
+ *
+ * Agent runs execute verify commands against the developer's live working
+ * tree, so pre-existing dirty state (uncommitted changes, scratch files the
+ * agent never touched) can fail verification. Blaming the agent burns its
+ * retry budget on failures it did not cause, and stashing the developer's
+ * work is not acceptable. Instead the executor snapshots `git status
+ * --porcelain` before the agent acts and attributes each verify failure to
+ * the agent's footprint (paths that changed during the stage) or to the
+ * environment.
+ */
+
+/**
+ * Parse `git status --porcelain` (v1) into repo-relative paths. Renames
+ * (`R  old -> new`) resolve to the new path; quoted paths are unwrapped.
+ */
+export function parseGitStatusPorcelain(porcelain: string): Set<string> {
+  const paths = new Set<string>();
+  for (const rawLine of porcelain.split("\n")) {
+    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+    if (line.length < 4) continue;
+    const rest = line.slice(3);
+    const arrowIndex = rest.indexOf(" -> ");
+    const rawPath = arrowIndex >= 0 ? rest.slice(arrowIndex + 4) : rest;
+    const unquoted = rawPath.length >= 2 && rawPath.startsWith('"') && rawPath.endsWith('"')
+      ? rawPath.slice(1, -1)
+      : rawPath;
+    if (unquoted) paths.add(unquoted);
+  }
+  return paths;
+}
+
+/**
+ * Agent footprint: paths present in the after-snapshot that were absent
+ * before the stage. Files already dirty before the stage are excluded even
+ * if the agent also touched them (indistinguishable from prior dirty state).
+ */
+export function diffGitFootprint(before: Set<string>, after: Set<string>): Set<string> {
+  const footprint = new Set<string>();
+  for (const entry of after) {
+    if (!before.has(entry)) footprint.add(entry);
+  }
+  return footprint;
+}
+
+const VERIFY_FAILURE_FILE_PATTERNS = [
+  /^\s*([^\s(]+\.[A-Za-z0-9]+)\(\d+,\d+\)/, // tsc: path/to/file.ts(6,30)
+  /^\s*((?:[A-Za-z]:)?[^\s]+\.[A-Za-z0-9]+):\d+:\d+/ // path/to/file.ts:6:30
+];
+
+/**
+ * Extract repo-relative file paths from verify command output lines.
+ * Absolute paths under cwd are relativized; paths outside cwd are ignored.
+ */
+export function extractVerifyFailureFiles(output: string, cwd: string): string[] {
+  const files: string[] = [];
+  const seen = new Set<string>();
+  const cwdPosix = cwd.replace(/\\/g, "/");
+  for (const line of output.split("\n")) {
+    for (const pattern of VERIFY_FAILURE_FILE_PATTERNS) {
+      const match = pattern.exec(line);
+      if (!match) continue;
+      let rel = match[1].replace(/\\/g, "/");
+      if (path.posix.isAbsolute(rel)) {
+        if (!rel.startsWith(`${cwdPosix}/`)) break;
+        rel = rel.slice(cwdPosix.length + 1);
+      }
+      rel = path.posix.normalize(rel);
+      if (rel === ".." || rel.startsWith("../")) break;
+      if (!seen.has(rel)) {
+        seen.add(rel);
+        files.push(rel);
+      }
+      break;
+    }
+  }
+  return files;
+}
+
+export type VerifyFailureAttribution =
+  | { kind: "agent"; files: string[] }
+  | { kind: "environmental"; files: string[] };
+
+function verifyFileInFootprint(file: string, footprint: Set<string>): boolean {
+  for (const entry of footprint) {
+    if (entry === file) return true;
+    // Untracked directories surface as `dir/` in porcelain; anything under
+    // one counts as the agent's footprint.
+    if (entry.endsWith("/") && file.startsWith(entry)) return true;
+  }
+  return false;
+}
+
+/**
+ * Attribute a verify-stage command failure. Pure: no git, no I/O.
+ * Unknown footprint (non-git project) or no parseable files keeps the
+ * existing behavior ("agent"); failures confined outside the footprint are
+ * "environmental".
+ */
+export function attributeVerifyFailure(input: {
+  outputLines: string[];
+  footprintBefore: Set<string> | null;
+  footprintAfter: Set<string> | null;
+  cwd: string;
+}): VerifyFailureAttribution {
+  const files = extractVerifyFailureFiles(input.outputLines.join("\n"), input.cwd);
+  if (input.footprintBefore === null || input.footprintAfter === null) {
+    return { kind: "agent", files };
+  }
+  if (files.length === 0) return { kind: "agent", files };
+  const footprint = diffGitFootprint(input.footprintBefore, input.footprintAfter);
+  const allOutside = files.every((file) => !verifyFileInFootprint(file, footprint));
+  return { kind: allOutside ? "environmental" : "agent", files };
+}
+
+/**
+ * Snapshot `git status --porcelain` for the project dir. Returns null when
+ * the dir is not a git repo or git fails -- callers treat null as unknown
+ * footprint and keep existing behavior. Read-only; never throws.
+ */
+export async function snapshotGitStatus(cwd: string): Promise<Set<string> | null> {
+  try {
+    const { stdout } = await execFileAsync("git", ["status", "--porcelain=v1", "--untracked-files=normal"], {
+      cwd,
+      timeout: 15000
+    });
+    return parseGitStatusPorcelain(stdout);
+  } catch {
+    return null;
+  }
+}
+
+/** Snapshot the working tree at failure time and attribute the failure. */
+export async function attributeVerifyCommandFailure(input: {
+  outputLines: string[];
+  cwd: string;
+  footprintBefore: Set<string> | null;
+}): Promise<VerifyFailureAttribution> {
+  const footprintAfter = input.footprintBefore === null ? null : await snapshotGitStatus(input.cwd);
+  return attributeVerifyFailure({
+    outputLines: input.outputLines,
+    footprintBefore: input.footprintBefore,
+    footprintAfter,
+    cwd: input.cwd
+  });
 }
 
 export function commandFailureIsDiagnosticEvidence(stagePattern: Pick<StagePattern, "type">): boolean {

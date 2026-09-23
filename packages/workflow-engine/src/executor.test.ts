@@ -7,19 +7,25 @@ import {
   VERIFY_COMMAND_RETRY_BUDGET_MAX,
   actionIdempotencyKey,
   applyCurrentAutoApprovalThreshold,
+  attributeVerifyFailure,
   buildBoundedReactLoopReceiptContent,
   commandFailureEligibleForVerifyRetry,
   commandFailureIsDiagnosticEvidence,
   commandFailurePrecedesGovernedWrites,
+  diffGitFootprint,
+  extractVerifyFailureFiles,
   formatCommandFailureEvidence,
   isInternalWorkflowReceiptWrite,
   npmPreflightDiagnostic,
+  parseGitStatusPorcelain,
   shouldContinuePlanningDeliverableGap,
   shouldRetryWeakFallbackBlock,
+  snapshotGitStatus,
   truncateCommandOutputForError,
   verifyRetryBudgetFromEnv
 } from "./executor.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -407,4 +413,113 @@ test("verify-stage command failures re-enter the action loop with a retry budget
 test("npm pre-flight is hooked where the executor resolves the command cwd", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /npmPreflightDiagnostic\(commandLine, localProjectRootUri\)/u);
+});
+
+test("git porcelain parsing handles modified, untracked, renamed, and deleted entries", () => {
+  const parsed = parseGitStatusPorcelain(
+    " M src/foo.ts\nM  src/staged.ts\n?? scratch/new.ts\n?? untracked-dir/\nR  old-name.ts -> new-name.ts\n D src/gone.ts\n"
+  );
+  assert.deepEqual(
+    [...parsed].sort(),
+    ["src/foo.ts", "src/staged.ts", "scratch/new.ts", "untracked-dir/", "new-name.ts", "src/gone.ts"].sort()
+  );
+});
+
+test("footprint diff captures only paths that appeared during the stage", () => {
+  const before = new Set(["src/foo.ts", "scratch/dirty.ts"]);
+  const after = new Set(["src/foo.ts", "scratch/dirty.ts", "src/agent-change.ts"]);
+  assert.deepEqual([...diffGitFootprint(before, after)], ["src/agent-change.ts"]);
+  assert.deepEqual([...diffGitFootprint(before, before)], []);
+});
+
+test("verify failure file extraction parses tsc-style paths and dedupes", () => {
+  const files = extractVerifyFailureFiles(
+    "packages/perf-harness/src/index.ts(6,30): error TS2835: Relative import paths need explicit file extensions\n" +
+      "src/other.ts:12:5: some other diagnostic\n" +
+      "just a log line\n" +
+      "packages/perf-harness/src/index.ts(6,30): error TS2835: duplicate\n",
+    "/repo"
+  );
+  assert.deepEqual(files, ["packages/perf-harness/src/index.ts", "src/other.ts"]);
+});
+
+test("verify failure file extraction relativizes absolute paths and drops outside ones", () => {
+  assert.deepEqual(extractVerifyFailureFiles("/repo/src/abs.ts(1,2): error TS1: x", "/repo"), ["src/abs.ts"]);
+  assert.deepEqual(extractVerifyFailureFiles("/elsewhere/src/x.ts(1,2): error TS1: x", "/repo"), []);
+});
+
+test("verify failures confined outside the agent footprint are environmental", () => {
+  const attribution = attributeVerifyFailure({
+    outputLines: ["scratch/dirty.ts(6,30): error TS2835: pre-existing breakage"],
+    footprintBefore: new Set(["scratch/dirty.ts"]),
+    footprintAfter: new Set(["scratch/dirty.ts"]),
+    cwd: "/repo"
+  });
+  assert.equal(attribution.kind, "environmental");
+  assert.deepEqual(attribution.files, ["scratch/dirty.ts"]);
+});
+
+test("verify failures touching the agent footprint stay agent-attributed", () => {
+  const attribution = attributeVerifyFailure({
+    outputLines: [
+      "src/agent-change.ts(1,1): error TS1234: agent typo",
+      "scratch/dirty.ts(6,30): error TS2835: pre-existing breakage"
+    ],
+    footprintBefore: new Set(["scratch/dirty.ts"]),
+    footprintAfter: new Set(["scratch/dirty.ts", "src/agent-change.ts"]),
+    cwd: "/repo"
+  });
+  assert.equal(attribution.kind, "agent");
+  assert.deepEqual(attribution.files, ["src/agent-change.ts", "scratch/dirty.ts"]);
+});
+
+test("unknown footprint or unparseable output falls back to agent attribution", () => {
+  const unknown = attributeVerifyFailure({
+    outputLines: ["scratch/dirty.ts(6,30): error TS2835: x"],
+    footprintBefore: null,
+    footprintAfter: null,
+    cwd: "/repo"
+  });
+  assert.equal(unknown.kind, "agent");
+  const unparseable = attributeVerifyFailure({
+    outputLines: ["something failed with no file paths"],
+    footprintBefore: new Set(),
+    footprintAfter: new Set(),
+    cwd: "/repo"
+  });
+  assert.equal(unparseable.kind, "agent");
+  assert.deepEqual(unparseable.files, []);
+});
+
+test("git status snapshot returns null outside a git repo", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentflow-nogit-"));
+  try {
+    assert.equal(await snapshotGitStatus(dir), null);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("git status snapshot captures new files in a git repo", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "agentflow-git-"));
+  try {
+    execFileSync("git", ["init"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: dir, stdio: "ignore" });
+    execFileSync("git", ["config", "user.name", "test"], { cwd: dir, stdio: "ignore" });
+    writeFileSync(join(dir, "new.ts"), "export const x = 1;\n");
+    const snapshot = await snapshotGitStatus(dir);
+    assert.ok(snapshot?.has("new.ts"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("environmental verify failures block before the retry budget is touched", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /attributeVerifyCommandFailure\(\{/u);
+  assert.match(source, /local_command_verify_environmental/u);
+  assert.match(source, /break verifyActionRounds;/u);
+  const attributionIndex = source.indexOf('verifyAttribution.kind === "environmental"');
+  const decrementIndex = source.indexOf("verifyRetriesRemaining -= 1");
+  assert.ok(attributionIndex >= 0 && decrementIndex > attributionIndex);
 });
