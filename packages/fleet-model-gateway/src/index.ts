@@ -232,8 +232,17 @@ async function readUpstreamBody(response: Response, maxBytes: number): Promise<B
 function resolveUpstreamTarget(requestUrl: string | undefined, upstream: URL): URL | null {
   if (!requestUrl?.startsWith("/")) return null;
   const parsed = new URL(requestUrl, "http://gateway.invalid");
-  const target = new URL(`${parsed.pathname}${parsed.search}`, upstream);
-  return target.origin === upstream.origin ? target : null;
+  if (parsed.search) return null;
+  const base = new URL(upstream.toString());
+  if (!base.pathname.endsWith("/")) base.pathname += "/";
+  const hasConfiguredBasePath = base.pathname !== "/";
+  switch (parsed.pathname) {
+    case "/v1/chat/completions": return new URL(hasConfiguredBasePath ? "chat/completions" : "/v1/chat/completions", base);
+    case "/v1/responses": return new URL(hasConfiguredBasePath ? "responses" : "/v1/responses", base);
+    case "/v1/embeddings": return new URL(hasConfiguredBasePath ? "embeddings" : "/v1/embeddings", base);
+    case "/v1/models": return new URL(hasConfiguredBasePath ? "models" : "/v1/models", base);
+    default: return null;
+  }
 }
 
 export function createFleetModelGateway(config: FleetGatewayConfig): http.Server {
@@ -334,7 +343,7 @@ export function createFleetModelGateway(config: FleetGatewayConfig): http.Server
       const target = resolveUpstreamTarget(request.url, upstream);
       if (!target) {
         response.writeHead(400, { "content-type": "application/json" });
-        response.end(JSON.stringify({ error: { message: "A relative gateway request target is required." } }));
+        response.end(JSON.stringify({ error: { message: "A supported relative gateway request target is required." } }));
         return;
       }
       const upstreamResponse = await fetch(target, {

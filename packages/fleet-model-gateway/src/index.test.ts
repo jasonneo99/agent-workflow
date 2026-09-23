@@ -66,6 +66,8 @@ test("gateway health and client policies fail closed before upstream", async () 
     assert.equal((await fetch(`${base}/healthz`, { headers: { authorization: "Bearer token" } })).status, 200);
     assert.equal((await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "blocked" }) })).status, 403);
     assert.equal((await fetch(`${base}/v1/chat/completions`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "model-a" }) })).status, 200);
+    assert.equal((await fetch(`${base}/v1/arbitrary`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "model-a" }) })).status, 400);
+    assert.equal((await fetch(`${base}/v1/responses?target=other`, { method: "POST", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "model-a" }) })).status, 400);
     assert.equal((await readFleetUsageReceipts(path.join(directory, "ledger.jsonl")))[0]?.totalTokens, 3);
     assert.equal((await fetch(`${base}/_agentflow/usage/summary`, { headers: { authorization: "Bearer token" } })).status, 401);
     const summaryResponse = await fetch(`${base}/_agentflow/usage/summary?limit=1`, { headers: { authorization: "Bearer observer-token" } });
