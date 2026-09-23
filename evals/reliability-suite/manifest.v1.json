@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "id": "agent-workflow-reliability-v1",
+  "version": "1.0.0",
+  "description": "Local-only synthetic baseline spanning seven representative Agent Workflow workload classes.",
+  "local_only": true,
+  "private_case_bodies_stored": false,
+  "cases": [
+    {
+      "id": "feature-delivery-synthetic",
+      "workflow_kind": "feature-delivery",
+      "workflow": "build-feature",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/feature-delivery.json", "sha256": "4142c6e64b13b701847d31005d447375b76f697c26d67398e9736ef04f637297" },
+      "checks": [{ "id": "feature-delivery-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "debugging-synthetic",
+      "workflow_kind": "debugging",
+      "workflow": "debug-failure",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/debugging.json", "sha256": "440adc783b51a96a7c0e82f8b3356336c5d0ad7557d715ffe105d370799bc027" },
+      "checks": [{ "id": "debugging-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "pr-review-synthetic",
+      "workflow_kind": "pr-review",
+      "workflow": "review-pr",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/pr-review.json", "sha256": "fb979351f5d3d5f6e1cfe1cbb59b8411a15fdb5f0a807701b5ad67347fba52c3" },
+      "checks": [{ "id": "pr-review-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "incident-response-synthetic",
+      "workflow_kind": "incident-response",
+      "workflow": "incident-response",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/incident-response.json", "sha256": "cf24ff7175cd9523b8a3bbd15e44a640a134112cd0635df1906f25cac2fbeba6" },
+      "checks": [{ "id": "incident-response-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "release-readiness-synthetic",
+      "workflow_kind": "release-readiness",
+      "workflow": "ship-release",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/release-readiness.json", "sha256": "19a728cae27f03e12001e1c5565fecc0b2e0178774d2c0dfd290e3e3dd1022cb" },
+      "checks": [{ "id": "release-readiness-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "context-handoff-synthetic",
+      "workflow_kind": "context-handoff",
+      "workflow": "maintain-context",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/context-handoff.json", "sha256": "d0aad1e6f796dee8b9714cc93aa20dc97c1aa53a816b9a00d8353641af5bf681" },
+      "checks": [{ "id": "context-handoff-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    },
+    {
+      "id": "maintenance-synthetic",
+      "workflow_kind": "maintenance",
+      "workflow": "dependency-upgrade",
+      "fixture": { "kind": "synthetic", "path": "evals/reliability-suite/fixtures/maintenance.json", "sha256": "079ddf1455f276d252be24819f4c645c5822e1a81cd31f9b3ce79117753912d7" },
+      "checks": [{ "id": "maintenance-outcome", "visibility": "hidden", "evaluator": "reliability-suite-deterministic", "evaluator_version": "1" }]
+    }
+  ],
+  "required_metrics": [
+    "outcome_correctness",
+    "verification_coverage",
+    "human_review_burden",
+    "recovery_success",
+    "rollback_success",
+    "policy_interventions",
+    "breaker_interventions",
+    "unsafe_action_attempts",
+    "cost",
+    "latency",
+    "context_size",
+    "fallback_rate",
+    "confidence_calibration",
+    "authority_calibration"
+  ]
+}

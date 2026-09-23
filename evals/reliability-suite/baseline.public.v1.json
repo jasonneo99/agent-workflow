@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "suite_id": "agent-workflow-reliability-v1",
+  "suite_version": "1.0.0",
+  "manifest_sha256": "c10d2725d14cde481b2f2965c4219c700888d8ce1390cfd2ab89f75bcc54bae3",
+  "frozen": true,
+  "generated_at": "2026-09-23T00:00:00.000Z",
+  "summary": {
+    "cases": 7,
+    "passed": 0,
+    "failed": 0,
+    "blocked": 0,
+    "not_run": 7,
+    "metric_coverage": {
+      "outcome_correctness": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "verification_coverage": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "human_review_burden": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "recovery_success": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "rollback_success": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "policy_interventions": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "breaker_interventions": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "unsafe_action_attempts": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "cost": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "latency": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "context_size": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "fallback_rate": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "confidence_calibration": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "authority_calibration": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      }
+    }
+  }
+}

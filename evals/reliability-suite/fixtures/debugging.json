@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Diagnose and correct a deterministic off-by-one defect.","inputs":{"symptom":"final item is processed twice","network_allowed":false}}

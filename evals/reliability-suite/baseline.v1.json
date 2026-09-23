@@ -1,0 +1,629 @@
+{
+  "schema_version": 1,
+  "suite_id": "agent-workflow-reliability-v1",
+  "suite_version": "1.0.0",
+  "manifest_sha256": "c10d2725d14cde481b2f2965c4219c700888d8ce1390cfd2ab89f75bcc54bae3",
+  "frozen": true,
+  "generated_by": "agent-workflow-reliability-suite/1",
+  "generated_at": "2026-09-23T00:00:00.000Z",
+  "results": [
+    {
+      "case_id": "feature-delivery-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "debugging-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "pr-review-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "incident-response-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "release-readiness-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "context-handoff-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    },
+    {
+      "case_id": "maintenance-synthetic",
+      "outcome": "not_run",
+      "metrics": [
+        {
+          "metric": "outcome_correctness",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "verification_coverage",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "human_review_burden",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "recovery_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "rollback_success",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "policy_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "breaker_interventions",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "unsafe_action_attempts",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "cost",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "latency",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "context_size",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "fallback_rate",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "confidence_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        },
+        {
+          "metric": "authority_calibration",
+          "coverage": "unavailable",
+          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+        }
+      ],
+      "check_results": []
+    }
+  ],
+  "summary": {
+    "cases": 7,
+    "passed": 0,
+    "failed": 0,
+    "blocked": 0,
+    "not_run": 7,
+    "metric_coverage": {
+      "outcome_correctness": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "verification_coverage": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "human_review_burden": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "recovery_success": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "rollback_success": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "policy_interventions": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "breaker_interventions": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "unsafe_action_attempts": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "cost": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "latency": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "context_size": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "fallback_rate": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "confidence_calibration": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      },
+      "authority_calibration": {
+        "measured": 0,
+        "partial": 0,
+        "unavailable": 7
+      }
+    }
+  }
+}

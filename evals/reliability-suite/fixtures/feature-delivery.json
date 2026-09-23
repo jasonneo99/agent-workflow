@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Add a synthetic health summary without external calls.","inputs":{"allowed_paths":["src/health-summary.ts","src/health-summary.test.ts"],"network_allowed":false}}

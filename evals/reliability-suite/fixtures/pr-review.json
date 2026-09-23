@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Review a synthetic patch for correctness defects.","inputs":{"patch_id":"synthetic-null-path-v1","network_allowed":false}}

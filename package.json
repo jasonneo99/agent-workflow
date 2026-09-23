@@ -136,6 +136,7 @@
     "restore-drill": "tsx apps/cli/src/index.ts restore-drill",
     "roadmap-audit": "tsx apps/cli/src/index.ts roadmap-audit",
     "repository-maintenance": "tsx apps/cli/src/index.ts repository-maintenance",
+    "reliability-baseline": "tsx scripts/reliability-baseline.ts",
     "runtime-monitor": "tsx apps/cli/src/index.ts runtime-monitor",
     "storage-migrate": "tsx apps/cli/src/index.ts storage-migrate",
     "storage-merge-evidence": "tsx apps/cli/src/index.ts storage-merge-evidence",
