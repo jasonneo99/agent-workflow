@@ -197,7 +197,7 @@ dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quie
 const defaultWorkerHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "worker-heartbeat.json");
 const defaultWorkerHeartbeatDir = path.join(rootDir, ".agent-workflow", "runtime", "workers");
 const defaultSupervisorHeartbeatPath = path.join(rootDir, ".agent-workflow", "runtime", "supervisor-heartbeat.json");
-const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
+const defaultLaunchAgentLabel = process.env.AGENTFLOW_LAUNCHD_LABEL || "dev.agent-workflow.agent";
 const defaultLaunchAgentLogDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");
 const defaultBundleRegistryPath = path.join(rootDir, "registries", "bundles.json");
 const defaultServerRequestAuditLogPath = path.join(rootDir, ".agent-workflow", "runtime", "server", "request-log.jsonl");
@@ -11914,8 +11914,8 @@ async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Pro
 
 async function loadLocalModelRuntimeStatus(): Promise<RuntimeMonitorReport["localModelRuntime"]> {
   const fallback: RuntimeMonitorReport["localModelRuntime"] = {
-    runtime: "missing", executable: null, label: "app.makealeft.agent-workflow.local-model",
-    plistPath: path.join(os.homedir(), "Library", "LaunchAgents", "app.makealeft.agent-workflow.local-model.plist"),
+    runtime: "missing", executable: null, label: "dev.agent-workflow.local-model",
+    plistPath: path.join(os.homedir(), "Library", "LaunchAgents", "dev.agent-workflow.local-model.plist"),
     installed: false, serviceStatus: process.platform === "darwin" ? "missing" : "unavailable", pid: null, runs: null,
     endpoint: safeDisplayUrl(process.env.LOCAL_MODEL_BASE_URL || "http://127.0.0.1:11434/v1") || "invalid",
     endpointHealthy: false, modelCount: 0, selectedModel: process.env.LOCAL_MODEL_NAME || "auto",

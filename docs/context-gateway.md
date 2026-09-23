@@ -1,8 +1,12 @@
 # Context Intelligence Gateway
 
 The Context Intelligence Gateway reduces frontier-model input without hiding
-risk-sensitive evidence. Its default `shadow` mode records what it would route
-while preserving existing read behavior.
+risk-sensitive evidence. Its default `enforce` mode routes eligible reads
+through cited summaries once a project has approved holdout evidence
+(`.agent-workflow/context-gateway/holdout/latest.json`); projects without
+approved holdouts keep allowing reads while recording evidence. The `shadow`
+and `advisory` modes record what would be routed without changing read
+behavior.
 
 The shared policy is `policies/context-routing.yaml`. It routes by estimated
 tokens, intent, risk, and whether a targeted deterministic lookup is possible.

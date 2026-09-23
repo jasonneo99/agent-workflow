@@ -7,7 +7,7 @@ const files = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "ut
   .filter(Boolean);
 const allowedUserNames = new Set(["example", "me", "person", "runner", "user", "you"]);
 const violations = [];
-const privateDeploymentTerms = ["loki", "heimdall", "hulk", "jarvis", "fleet-config"];
+const privateDeploymentTerms = ["loki", "heimdall", "hulk", "jarvis", "fleet-config", "makealeft"];
 
 function add(file, label, value) {
   violations.push(`${file}: ${label} (${value})`);

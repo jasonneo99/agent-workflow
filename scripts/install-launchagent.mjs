@@ -10,7 +10,7 @@ import dotenv from "dotenv";
 const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true });
 dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
-const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
+const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "dev.agent-workflow.agent";
 const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
 const logDir = path.join(rootDir, ".agent-workflow", "runtime", "launchd");

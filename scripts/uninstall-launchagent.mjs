@@ -5,7 +5,7 @@ import path from "node:path";
 import process from "node:process";
 import { execFile } from "node:child_process";
 
-const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "app.makealeft.agent-workflow";
+const label = process.env.AGENTFLOW_LAUNCHD_LABEL || "dev.agent-workflow.agent";
 const plistPath = path.join(os.homedir(), "Library", "LaunchAgents", `${label}.plist`);
 
 await launchctl(["bootout", `gui/${process.getuid()}`, plistPath], true);

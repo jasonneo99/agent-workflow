@@ -15,7 +15,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Trusted workflow bundles** — detached Ed25519 signatures, public-key trust policy, and tamper detection
 - **Dynamic multi-handoff planning** — construct policy-checked workflows from natural-language goals while preserving mandatory safety stages
 - **Context Intelligence Gateway** — route large reads through cited summaries, project-isolated caching, holdout gates, and exact-read escape hatches
-- **Proactive workflow optimization** — wake on evidence events, enforce project budgets and quiet hours, rank recommendations, simulate changes in shadow mode, and record promotion or rollback receipts
+- **Proactive workflow optimization** — wake on evidence events, enforce project budgets and quiet hours, rank recommendations, simulate changes before enforcing them, and record promotion or rollback receipts
 - **Governed assistant integration** — exchange non-executable intent envelopes and bounded status summaries while separately signing and allowlisting fleet host actions
 - **Repository-wide public/private boundary** — validate that code, prompts, tests, fixtures, docs, and release metadata remain portable and scrubbed
 
@@ -216,7 +216,7 @@ npm run dashboard              # Inspect runs, providers, model catalog, usage, 
 npm run init-project -- -p .   # Install agent workflow into a project
 npm run onboard-project -- -p . # Analyze stack and recommend tailored config
 npm run index-project -- -p .  # Index project files for context
-npm run context-report -- -p . # Inspect privacy-safe shadow routing evidence
+npm run context-report -- -p . # Inspect privacy-safe context routing evidence
 npm run context-status -- -p . # Inspect gateway readiness, cache, calibration, and review queues
 npm run context-calibrate -- -p . # Run the versioned repository holdout and regression gate
 npm run context-route -- -p . --file src/example.ts --question "Where is this used?" # Preview a routed read

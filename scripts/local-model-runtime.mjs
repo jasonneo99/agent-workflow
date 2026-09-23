@@ -13,7 +13,7 @@ dotenv.config({ path: path.join(rootDir, ".env"), quiet: true, override: true })
 dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quiet: true, override: true });
 const command = process.argv[2] ?? "status";
 const json = process.argv.includes("--json");
-const label = process.env.AGENTFLOW_LOCAL_MODEL_LAUNCHD_LABEL || "app.makealeft.agent-workflow.local-model";
+const label = process.env.AGENTFLOW_LOCAL_MODEL_LAUNCHD_LABEL || "dev.agent-workflow.local-model";
 const launchAgentsDir = path.join(os.homedir(), "Library", "LaunchAgents");
 const plistPath = path.join(launchAgentsDir, `${label}.plist`);
 const logDir = path.join(rootDir, ".agent-workflow", "runtime", "local-model");
