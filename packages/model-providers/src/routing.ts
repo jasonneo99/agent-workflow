@@ -214,12 +214,12 @@ function autoProviderCandidates(modelTier: ModelTier): string[] {
   }
 
   if (modelTier === "fast") {
-    return ["local", "byo", "bedrock", "openai-compatible", "codex-cli", "openai", "anthropic", "kiro", "mock"];
+    return ["local", "byo", "bedrock", "openai-compatible", "codex-cli", "openai", "anthropic", "muse", "kiro", "mock"];
   }
   if (modelTier === "reasoning") {
-    return ["codex-cli", "openai", "anthropic", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
+    return ["codex-cli", "openai", "anthropic", "muse", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
   }
-  return ["local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "openai-compatible", "kiro", "mock"];
+  return ["local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
 }
 
 function splitProviderList(value?: string): string[] {

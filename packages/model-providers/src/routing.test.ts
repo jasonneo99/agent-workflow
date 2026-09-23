@@ -39,6 +39,64 @@ test("worker capability quarantine routes default work to a healthy allowed prov
   }
 });
 
+test("adaptive routing can select Muse from the configured provider pool", async () => {
+  const server = createServer((request, response) => {
+    if (request.url === "/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ data: [{ id: "muse-spark-1.1" }] }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const address = server.address() as AddressInfo | null;
+  if (!address) throw new Error("Test server did not bind to a TCP address.");
+
+  const previous = {
+    provider: process.env.DEFAULT_MODEL_PROVIDER,
+    mode: process.env.AGENTFLOW_ROUTING_MODE,
+    candidates: process.env.AGENTFLOW_AUTO_PROVIDERS,
+    key: process.env.MUSE_API_KEY,
+    baseUrl: process.env.MUSE_BASE_URL,
+    model: process.env.MUSE_MODEL
+  };
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "auto";
+    process.env.AGENTFLOW_ROUTING_MODE = "adaptive";
+    process.env.AGENTFLOW_AUTO_PROVIDERS = "muse";
+    process.env.MUSE_API_KEY = "test-muse-key";
+    process.env.MUSE_BASE_URL = `http://127.0.0.1:${address.port}`;
+    process.env.MUSE_MODEL = "muse-spark-1.1";
+
+    const route = await selectModelRoute({
+      workflowId: "build-feature",
+      stageId: "implement",
+      agentId: "implementation-agent",
+      modelTier: "standard",
+      providerOverride: undefined,
+      compiledBrief: ""
+    });
+
+    assert.equal(route.providerId, "muse");
+    assert.match(route.reason, /muse:ready/u);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    for (const [key, value] of Object.entries({
+      DEFAULT_MODEL_PROVIDER: previous.provider,
+      AGENTFLOW_ROUTING_MODE: previous.mode,
+      AGENTFLOW_AUTO_PROVIDERS: previous.candidates,
+      MUSE_API_KEY: previous.key,
+      MUSE_BASE_URL: previous.baseUrl,
+      MUSE_MODEL: previous.model
+    })) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
 test("approved local holdout notes select local for fast adaptive stages", async () => {
   const server = createServer((request, response) => {
     if (request.url === "/models" || request.url === "/v1/models") {

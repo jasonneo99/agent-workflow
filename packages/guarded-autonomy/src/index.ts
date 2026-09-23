@@ -5,6 +5,7 @@ export const authorityLevels = ["observe", "propose", "simulate", "bounded_local
 export const effectClasses = ["R0", "R1", "R2", "R3"] as const;
 export const breakerScopes = ["global", "project", "workflow", "agent", "provider", "tool_class"] as const;
 export const adversarialThreatClasses = ["prompt_injection", "malicious_repository_instruction", "poisoned_memory", "contradictory_approval", "secret_exposure", "cross_project_leakage", "misleading_evaluator", "hostile_tool_result"] as const;
+export const transactionalFaultScenarios = ["interrupted_run", "duplicate_delivery", "stale_worker", "stale_approval", "provider_retry", "partial_write", "failed_verification", "compensation_failure"] as const;
 
 export const adversarialCaseSchema = z.object({
   schema_version: z.literal(1),
@@ -179,6 +180,23 @@ export function advanceTransaction(input: {
   return transactionReceiptSchema.parse({ ...receipt, state: input.nextState, verification });
 }
 
+export function evaluateTransactionalFault(input: {
+  scenario: typeof transactionalFaultScenarios[number];
+  idempotentResultAvailable?: boolean;
+  leaseCurrent?: boolean;
+  approvalCurrent?: boolean;
+  verificationPassed?: boolean;
+  compensationPassed?: boolean;
+}): { safeState: "resume" | "reuse" | "blocked" | "compensating" | "failed"; mayCommit: boolean; reason: string } {
+  if ((input.scenario === "stale_worker" && !input.leaseCurrent) || (input.scenario === "stale_approval" && !input.approvalCurrent)) return { safeState: "blocked", mayCommit: false, reason: "stale authority cannot commit" };
+  if (input.scenario === "duplicate_delivery") return input.idempotentResultAvailable ? { safeState: "reuse", mayCommit: false, reason: "reuse durable result" } : { safeState: "resume", mayCommit: false, reason: "claim one idempotent execution" };
+  if (input.scenario === "failed_verification") return { safeState: "compensating", mayCommit: false, reason: "verification failure requires compensation" };
+  if (input.scenario === "compensation_failure" || input.compensationPassed === false) return { safeState: "failed", mayCommit: false, reason: "preserve unresolved compensation risk" };
+  if (input.scenario === "partial_write") return { safeState: "compensating", mayCommit: false, reason: "partial effect cannot be completed without compensation" };
+  if (input.scenario === "provider_retry") return input.idempotentResultAvailable ? { safeState: "reuse", mayCommit: false, reason: "provider retry reuses the durable response" } : { safeState: "resume", mayCommit: false, reason: "retry remains fenced" };
+  return { safeState: "resume", mayCommit: input.verificationPassed === true, reason: "resume from the last verified checkpoint" };
+}
+
 export const promotionEvidenceSchema = z.object({
   representative_cases: z.number().int().nonnegative(),
   cases_per_affected_workflow: z.record(z.number().int().nonnegative()),
@@ -211,6 +229,41 @@ export function evaluatePromotionEvidence(input: unknown): {
     return { decision: "recommendation_only", reasons: ["evidence does not satisfy the project-local canary gate"] };
   }
   return { decision: "canary_eligible", reasons: [] };
+}
+
+export function evaluateCanaryOutcome(input: {
+  baseline_hash: string;
+  observed_baseline_hash: string;
+  safety_regressions: number;
+  verification_regression: number;
+  recovery_regression: number;
+  quality_delta: number;
+  cost_delta: number;
+  latency_delta: number;
+}): { action: "continue" | "promote" | "rollback_quarantine"; reasons: string[] } {
+  const reasons: string[] = [];
+  if (input.baseline_hash !== input.observed_baseline_hash) reasons.push("canary baseline changed");
+  if (input.safety_regressions > 0) reasons.push("safety regression");
+  if (input.verification_regression > 0) reasons.push("verification regression");
+  if (input.recovery_regression > 0) reasons.push("recovery regression");
+  if (input.quality_delta < 0) reasons.push("quality regression");
+  if (input.cost_delta > 0.1) reasons.push("cost regression exceeds 10 percent");
+  if (input.latency_delta > 0.1) reasons.push("latency regression exceeds 10 percent");
+  if (reasons.length) return { action: "rollback_quarantine", reasons };
+  return { action: input.quality_delta > 0 ? "promote" : "continue", reasons: [] };
+}
+
+export const canaryPercentages = [0, 10, 25, 50, 100] as const;
+export function advanceCanaryStage(input: { currentPercent: number; successfulRuns: number; hoursElapsed: number; humanApprovedFullPromotion?: boolean }): { nextPercent: number; advanced: boolean; reason: string } {
+  const index = canaryPercentages.findIndex((value) => value === input.currentPercent);
+  if (index < 0) throw new Error(`Unsupported canary percentage: ${input.currentPercent}`);
+  if (index === canaryPercentages.length - 1) return { nextPercent: 100, advanced: false, reason: "already fully promoted" };
+  const requiredRuns = input.currentPercent === 0 ? 10 : input.currentPercent === 10 ? 20 : 30;
+  if (input.successfulRuns < requiredRuns) return { nextPercent: input.currentPercent, advanced: false, reason: `requires ${requiredRuns} successful runs` };
+  if (input.hoursElapsed < 24) return { nextPercent: input.currentPercent, advanced: false, reason: "requires a 24 hour observation window" };
+  const nextPercent = canaryPercentages[index + 1];
+  if (nextPercent === 100 && !input.humanApprovedFullPromotion) return { nextPercent: input.currentPercent, advanced: false, reason: "full promotion requires human approval" };
+  return { nextPercent, advanced: true, reason: `advanced to ${nextPercent} percent` };
 }
 
 export function receiptHash(value: unknown): string {

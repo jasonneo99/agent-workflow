@@ -4,83 +4,83 @@
   "suite_version": "1.0.0",
   "manifest_sha256": "c10d2725d14cde481b2f2965c4219c700888d8ce1390cfd2ab89f75bcc54bae3",
   "frozen": true,
-  "generated_at": "2026-09-23T00:00:00.000Z",
+  "generated_at": "2026-09-23T22:39:56.647Z",
   "summary": {
     "cases": 7,
-    "passed": 0,
+    "passed": 7,
     "failed": 0,
     "blocked": 0,
-    "not_run": 7,
+    "not_run": 0,
     "metric_coverage": {
       "outcome_correctness": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "verification_coverage": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "human_review_burden": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "recovery_success": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "rollback_success": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "policy_interventions": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "breaker_interventions": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "unsafe_action_attempts": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "cost": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "latency": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "context_size": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "fallback_rate": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "confidence_calibration": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "authority_calibration": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       }
     }
   }

@@ -102,6 +102,15 @@ export const reliabilityMetricObservationSchema = z.object({
 export const reliabilityCaseResultSchema = z.object({
   case_id: z.string().min(1),
   outcome: z.enum(["passed", "failed", "blocked", "not_run"]),
+  execution: z.object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    evaluator_version: z.string().min(1),
+    evaluator_bundle_hash: z.string().regex(/^[a-f0-9]{64}$/u),
+    latency_ms: z.number().nonnegative(),
+    estimated_cost_usd: z.number().nonnegative(),
+    fallback_count: z.number().int().nonnegative()
+  }).optional(),
   metrics: z.array(reliabilityMetricObservationSchema),
   check_results: z.array(z.object({
     check_id: z.string().min(1),

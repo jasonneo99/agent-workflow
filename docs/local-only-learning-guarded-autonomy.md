@@ -185,6 +185,34 @@ revokes outstanding authority, stops new claims, quarantines the candidate and
 derived action-use memory, records compensation, and requires human re-enable.
 It never deletes queues, receipts, memory, artifacts, or user work.
 
+## Implemented foundation
+
+The first six prioritized slices are implemented on the shared local state
+plane:
+
+- the seven synthetic workflows execute through a separate evaluator process
+  and produce a frozen measured baseline with explicit provider/model, latency,
+  cost, fallback, verification, recovery, and calibration evidence;
+- workers issue immutable stage grants and revalidate current breaker
+  generations before provider execution, retries, bound executors, commands,
+  and file writes;
+- global, project, workflow, agent, provider, and tool-class breaker events are
+  durable, generation-fenced, fail closed, invalidate affected active leases,
+  and require a human-authored re-enable event;
+- provenance claims are append-only, scoped to project and tenant, retain
+  dependencies/conflicts/permitted use, and recursively become stale or revoked
+  when source evidence is revoked;
+- guarded transaction receipts and the deterministic fault matrix cover
+  interruption, duplicates, stale workers/approvals, retries, partial effects,
+  verification failure, and compensation failure;
+- promotion candidates bind a frozen baseline, move through receipted approval
+  and canary states, use staged rollout thresholds, roll back and quarantine on
+  regression, and are protected by the adversarial release gate.
+
+Authority expansion is still forbidden until real-run evidence satisfies the
+documented promotion thresholds. The implementation establishes enforcement
+and evidence collection; it does not pre-approve greater autonomy.
+
 ## First implementation slice
 
 Build the Reliability Suite baseline without live model calls:

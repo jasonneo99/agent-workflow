@@ -192,7 +192,25 @@ risk classification, summaries, console/Markdown rendering, and project-local
 persistence now share one independently tested package across CLI, dashboard,
 and daemon paths.
 
-1. **Continue MCP transport diagnosis when the defect reproduces.**
+Completed guarded-autonomy foundation: the seven-workflow Reliability Suite now
+has a measured frozen baseline and isolated evaluator; immutable stage grants
+are revalidated before provider calls, commands, file writes, and bound
+executors; hierarchical breaker generations are durable and invalidate active
+leases; provenance claims are append-only with recursive source revocation;
+the transactional fault matrix covers interruption, duplicates, stale workers
+and approvals, retries, partial effects, verification failure, and compensation
+failure; and the durable proposal/canary pipeline uses frozen-baseline hashes,
+human approval, staged rollout thresholds, rollback/quarantine receipts, and an
+adversarial release gate.
+
+1. **Operate and calibrate the guarded-autonomy controls with production evidence.**
+   - Priority: critical
+   - Why first: the six implementation contracts are now live, but authority
+     expansion remains evidence-gated until representative real runs confirm
+     calibration, breaker precision, recovery timing, and reviewer burden.
+   - Exit gate: sustained passing baselines and fault drills, no unsafe action
+     attempts, no invalid terminal writes, and human-reviewed canary evidence.
+2. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
    - Why conditional: existing repository mitigations and recovery receipts are
@@ -201,13 +219,13 @@ and daemon paths.
      more repository work is justified.
    - Exit gate: capture a reproducible client-side failure boundary or obtain a
      client/runtime fix; keep the documented CLI recovery path available.
-2. **Complete multi-machine synchronization and recovery proof.**
+3. **Complete multi-machine synchronization and recovery proof.**
    - Priority: high
    - Why next: same-plane verification passes, but it does not prove offline
      recovery or switchover between independent hosts.
    - Exit gate: repeatable two-host recovery evidence with no split-brain writes,
      lost receipts, or ambiguous project identity.
-3. **Continue cohesive source-module extraction.**
+4. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
      established, while repository maintenance still reports five production
@@ -217,7 +235,7 @@ and daemon paths.
    - Progress: source-size growth is ratcheted in `npm run check`; Context
      Gateway CLI commands, MCP context/reporting tools, project-index storage,
      tuning history, and action/ReAct receipts now have owned modules.
-4. **Add governed recurring web training discovery for every agent and daemon lane.**
+5. **Add governed recurring web training discovery for every agent and daemon lane.**
    - Priority: high
    - Why next: agent and daemon guidance can become stale as tools, security
      practices, model capabilities, and engineering techniques evolve.

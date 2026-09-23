@@ -30,6 +30,8 @@ import {
   findRunActionByIdempotencyKey,
   failWorkflowTask,
   finalizeSideEffect,
+  assertStageAuthority,
+  issueStageAuthorityGrant,
   recordRunAction,
   requeueExpiredWorkflowTaskLeases,
   requeueRunningWorkflowTasks,
@@ -223,12 +225,16 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
       if (task.executorSnapshot) {
+        const executorGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: task.leaseExpiresAt ?? new Date(Date.now() + leaseSeconds * 1000).toISOString(), mutationAllowed: true });
+        await assertStageAuthority({ grant: executorGrant, mutation: true });
         await executeBoundExecutorStage(task, project, assertLeaseOwned);
         clearInterval(leaseHeartbeat);
         result.completed += 1;
         continue;
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
+      const authorityGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: route.providerId, policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: task.leaseExpiresAt ?? new Date(Date.now() + leaseSeconds * 1000).toISOString(), mutationAllowed: true });
+      const assertStageGuard = (mutation: boolean): Promise<void> => assertStageAuthority({ grant: authorityGrant, mutation });
       attemptedProviderId = route.providerId;
       const memoryContext = await buildMemoryContextForStage({
         projectId: localProjectRootUri,
@@ -244,6 +250,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const fallbackPolicy = providerFallbackPolicyFromEnv();
       let execution;
       try {
+        await assertStageGuard(false);
         execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
       } catch (error) {
         const failure = classifyProviderFailure(error);
@@ -271,6 +278,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
       const initialCompletionViolation = unfulfilledCompletionReason(routedStageInput, output);
       if (initialCompletionViolation) {
+        await assertStageGuard(false);
         const contractRetry = await executeWithProviderFallback({
           providerId: route.providerId,
           stageInput: routedStageInput,
@@ -295,6 +303,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const fallbackOutput = output;
         const fallbackQuality = quality;
         try {
+          await assertStageGuard(false);
           const primaryRetry = await executeWithProviderFallback({
             providerId: route.providerId,
             stageInput: routedStageInput,
@@ -322,6 +331,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
       if (!quality.passed && qualityFallbackProviderId && qualityFallbackProviderId !== actualProviderId) {
         try {
+          await assertStageGuard(false);
           const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerFromEnv });
           const fallbackOutput = qualityExecution.output;
           const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
@@ -500,6 +510,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         }
         await assertLeaseOwned();
+        await assertStageGuard(false);
         const readRoundStartedAt = Date.now();
         const reread = await executeWithProviderFallback({
           providerId: route.providerId,
@@ -742,6 +753,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             }
           }
 
+          await assertStageGuard(true);
           const commandSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, operation: "local_command", target: commandLine, claimSeconds: 3600 });
           if (commandSideEffect.status !== "claimed" || !commandSideEffect.claimToken) {
             actionResults.push({ type: `local_command_side_effect_${commandSideEffect.status}`, commandLine, receipt: commandSideEffect.receipt });
@@ -969,6 +981,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 }
               }));
               await assertLeaseOwned();
+              await assertStageGuard(false);
               const verifyRetryStartedAt = Date.now();
               const verifyRetry = await executeWithProviderFallback({
                 providerId: route.providerId,
@@ -1167,6 +1180,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             }
           }
 
+          await assertStageGuard(true);
           const fileSideEffect = await claimSideEffect({ projectId: task.runId, idempotencyKey: fileWriteIdempotencyKey, operation: "file_write", target: fileWrite.path, claimSeconds: 3600 });
           if (fileSideEffect.status !== "claimed" || !fileSideEffect.claimToken) {
             actionResults.push({ type: `file_write_side_effect_${fileSideEffect.status}`, path: fileWrite.path, receipt: fileSideEffect.receipt });

@@ -9,7 +9,11 @@ import {
   evaluatePromotionEvidence,
   memoryClaimSchema,
   stageAuthorityGrantSchema,
-  transactionReceiptSchema
+  transactionReceiptSchema,
+  evaluateTransactionalFault,
+  transactionalFaultScenarios,
+  evaluateCanaryOutcome,
+  advanceCanaryStage
 } from "./index.js";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -49,6 +53,27 @@ test("promotion remains recommendation-only below the canary sample threshold", 
 test("any severe safety regression blocks promotion", () => {
   const result = evaluatePromotionEvidence({ representative_cases: 40, cases_per_affected_workflow: { debugging: 10 }, relative_quality_gain: 0.1, absolute_quality_gain_points: 4, confidence_excludes_meaningful_degradation: true, new_severe_safety_violations: 1, verification_regression: 0, recovery_regression: 0, policy_regression: 0, cost_regression: 0, latency_regression: 0 });
   assert.equal(result.decision, "blocked");
+});
+
+test("transactional fault matrix fails closed for every required fault", () => {
+  const cases = transactionalFaultScenarios.map((scenario) => evaluateTransactionalFault({ scenario, leaseCurrent: false, approvalCurrent: false, idempotentResultAvailable: true, verificationPassed: false, compensationPassed: scenario !== "compensation_failure" }));
+  assert.equal(cases.length, 8);
+  assert.equal(cases.every((item) => !item.mayCommit), true);
+  assert.equal(evaluateTransactionalFault({ scenario: "duplicate_delivery", idempotentResultAvailable: true }).safeState, "reuse");
+  assert.equal(evaluateTransactionalFault({ scenario: "partial_write" }).safeState, "compensating");
+  assert.equal(evaluateTransactionalFault({ scenario: "compensation_failure" }).safeState, "failed");
+});
+
+test("canary regression triggers rollback and quarantine", () => {
+  const result = evaluateCanaryOutcome({ baseline_hash: hash, observed_baseline_hash: hash, safety_regressions: 0, verification_regression: 1, recovery_regression: 0, quality_delta: 0.1, cost_delta: 0, latency_delta: 0 });
+  assert.equal(result.action, "rollback_quarantine");
+});
+
+test("canary stages require run evidence, time, and human approval at full rollout", () => {
+  assert.equal(advanceCanaryStage({ currentPercent: 0, successfulRuns: 9, hoursElapsed: 48 }).advanced, false);
+  assert.equal(advanceCanaryStage({ currentPercent: 0, successfulRuns: 10, hoursElapsed: 24 }).nextPercent, 10);
+  assert.equal(advanceCanaryStage({ currentPercent: 50, successfulRuns: 30, hoursElapsed: 24 }).advanced, false);
+  assert.equal(advanceCanaryStage({ currentPercent: 50, successfulRuns: 30, hoursElapsed: 24, humanApprovedFullPromotion: true }).nextPercent, 100);
 });
 
 test("committed adversarial suite covers every required boundary threat without private data", async () => {

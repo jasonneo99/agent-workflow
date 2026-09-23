@@ -5,624 +5,820 @@
   "manifest_sha256": "c10d2725d14cde481b2f2965c4219c700888d8ce1390cfd2ab89f75bcc54bae3",
   "frozen": true,
   "generated_by": "agent-workflow-reliability-suite/1",
-  "generated_at": "2026-09-23T00:00:00.000Z",
+  "generated_at": "2026-09-23T22:39:56.647Z",
   "results": [
     {
       "case_id": "feature-delivery-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 150.68941699999996,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 150.68941699999996,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 192,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "feature-delivery-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "debugging-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 139.875583,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 139.875583,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 164,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "debugging-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "pr-review-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 143.06537499999996,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 143.06537499999996,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 152,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "pr-review-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "incident-response-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 145.80895800000008,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 145.80895800000008,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 142,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "incident-response-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "release-readiness-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 144.32291600000008,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 144.32291600000008,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 183,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "release-readiness-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "context-handoff-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 142.16833300000008,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 142.16833300000008,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 165,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "context-handoff-outcome",
+          "passed": true
+        }
+      ]
     },
     {
       "case_id": "maintenance-synthetic",
-      "outcome": "not_run",
+      "outcome": "passed",
+      "execution": {
+        "provider": "deterministic-local",
+        "model": "reliability-fixture-v1",
+        "evaluator_version": "node-26.3.1",
+        "evaluator_bundle_hash": "d410672e670cd6d39377b58994cb06a21f2a1a23b86f0e2a40557c4d6957c14c",
+        "latency_ms": 147.1011669999998,
+        "estimated_cost_usd": 0,
+        "fallback_count": 0
+      },
       "metrics": [
         {
           "metric": "outcome_correctness",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "verification_coverage",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "human_review_burden",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "recovery_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "rollback_success",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "policy_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "breaker_interventions",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "unsafe_action_attempts",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "cost",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "usd"
         },
         {
           "metric": "latency",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 147.1011669999998,
+          "unit": "ms"
         },
         {
           "metric": "context_size",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 167,
+          "unit": "bytes"
         },
         {
           "metric": "fallback_rate",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 0,
+          "unit": "ratio"
         },
         {
           "metric": "confidence_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         },
         {
           "metric": "authority_calibration",
-          "coverage": "unavailable",
-          "reason": "Frozen pre-execution baseline; no live model or workflow call was made."
+          "coverage": "measured",
+          "value": 1,
+          "unit": "ratio"
         }
       ],
-      "check_results": []
+      "check_results": [
+        {
+          "check_id": "maintenance-outcome",
+          "passed": true
+        }
+      ]
     }
   ],
   "summary": {
     "cases": 7,
-    "passed": 0,
+    "passed": 7,
     "failed": 0,
     "blocked": 0,
-    "not_run": 7,
+    "not_run": 0,
     "metric_coverage": {
       "outcome_correctness": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "verification_coverage": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "human_review_burden": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "recovery_success": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "rollback_success": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "policy_interventions": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "breaker_interventions": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "unsafe_action_attempts": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "cost": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "latency": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "context_size": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "fallback_rate": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "confidence_calibration": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       },
       "authority_calibration": {
-        "measured": 0,
+        "measured": 7,
         "partial": 0,
-        "unavailable": 7
+        "unavailable": 0
       }
     }
   }

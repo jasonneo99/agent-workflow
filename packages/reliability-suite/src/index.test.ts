@@ -90,7 +90,8 @@ test("committed frozen baseline matches the manifest and public snapshot is aggr
   const publicBaseline = JSON.parse(await fs.readFile(path.join(repositoryRoot, "evals/reliability-suite/baseline.public.v1.json"), "utf8")) as Record<string, unknown>;
   assert.equal(baseline.manifest_sha256, canonicalSha256(committedManifest));
   assert.equal(baseline.summary.cases, reliabilityWorkflowKinds.length);
-  assert.equal(baseline.summary.not_run, reliabilityWorkflowKinds.length);
+  assert.equal(baseline.summary.passed, reliabilityWorkflowKinds.length);
+  assert.equal(baseline.summary.not_run, 0);
   assert.equal("results" in publicBaseline, false);
   assert.deepEqual(publicBaseline, scrubReliabilityBaseline(baseline));
 });
