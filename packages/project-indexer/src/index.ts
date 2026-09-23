@@ -154,7 +154,7 @@ export async function indexProjectFiles(input: {
           reused: true
         }
       });
-      if (input.contextGateway?.policy.mode === "shadow") contextObservations.push(buildShadowObservation({
+      if (input.contextGateway) contextObservations.push(buildShadowObservation({
         projectId: input.contextGateway.projectId,
         sourcePath: relativePath,
         content,
@@ -193,7 +193,7 @@ export async function indexProjectFiles(input: {
       summary,
       metadata
     });
-    if (input.contextGateway?.policy.mode === "shadow") contextObservations.push(buildShadowObservation({
+    if (input.contextGateway) contextObservations.push(buildShadowObservation({
       projectId: input.contextGateway.projectId,
       sourcePath: relativePath,
       content,

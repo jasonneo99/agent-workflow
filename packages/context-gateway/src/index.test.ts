@@ -8,9 +8,19 @@ import { buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, 
 
 const policy = contextRoutingPolicySchema.parse(YAML.parse(await fs.readFile(new URL("../../../policies/context-routing.yaml", import.meta.url), "utf8")));
 
-test("policy is portable YAML and remains shadow-only", () => {
-  assert.equal(policy.mode, "shadow");
+test("policy is portable YAML and defaults to enforce", () => {
+  assert.equal(policy.mode, "enforce");
   assert.equal(policy.telemetry.store_file_bodies, false);
+});
+
+test("observations stamp the live policy mode and record the enforced action", () => {
+  const shadowPolicy = { ...policy, mode: "shadow" as const };
+  const shadow = buildShadowObservation({ projectId: "p", sourcePath: "a.ts", content: "x".repeat(400), intent: "summarization", policy: shadowPolicy });
+  assert.equal(shadow.mode, "shadow");
+  assert.equal(shadow.enforcedAction, null);
+  const gated = buildShadowObservation({ projectId: "p", sourcePath: "a.ts", content: "x".repeat(400), intent: "summarization", policy, enforcedAction: "redirect" });
+  assert.equal(gated.mode, "enforce");
+  assert.equal(gated.enforcedAction, "redirect");
 });
 
 test("routing is token-aware and risk-aware", () => {

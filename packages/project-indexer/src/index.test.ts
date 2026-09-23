@@ -142,6 +142,16 @@ test("incremental indexing reuses unchanged summaries without rewriting files", 
   assert.deepEqual(second.deletedSourceUris, []);
 });
 
+test("indexing emits privacy-safe observations in enforce mode too", async () => {
+  const enforcePolicy: ContextRoutingPolicy = { ...contextPolicy, mode: "enforce" };
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-index-enforce-"));
+  await fs.writeFile(path.join(projectDir, "large.md"), "context data ".repeat(200));
+  const result = await indexProjectFiles({ projectDir, project, maxFiles: 10, contextGateway: { projectId: "project-a", policy: enforcePolicy } });
+  assert.equal(result.contextObservations.length, 1);
+  assert.equal(result.contextObservations[0].mode, "enforce");
+  assert.equal(result.contextObservations[0].fileBodyStored, false);
+});
+
 test("indexing emits privacy-safe shadow observations without changing read behavior", async () => {
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-index-context-"));
   await fs.writeFile(path.join(projectDir, "large.md"), "context data ".repeat(200));

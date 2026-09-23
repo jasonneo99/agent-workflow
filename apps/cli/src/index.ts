@@ -2149,7 +2149,7 @@ program
     const decision = decideContextRoute({ policy, intent: "discovery", content });
     const holdoutApproved = await hasApprovedContextHoldout(projectDir);
     const enforcement = enforceContextDecision({ policy, decision, exactReadRequested: read.exactReadRequested, holdoutApproved });
-    const observation = policy.mode === "shadow" ? buildShadowObservation({ projectId, sourcePath: relativePath, content, intent: "discovery", policy }) : null;
+    const observation = buildShadowObservation({ projectId, sourcePath: relativePath, content, intent: "discovery", policy, enforcedAction: enforcement.action });
     if (observation) await writeShadowObservationBatch({ projectRoot: projectDir, projectId, observations: [observation] });
     const redirectCommand = host === "codex"
       ? `call Agent Workflow MCP tool agentflow_context_route for ${JSON.stringify(relativePath)} with execute=true and holdoutApproved=true`
@@ -45299,7 +45299,7 @@ async function indexProjectWithStorage(input: {
   const state = await getProjectIndexState({ projectId: input.projectId });
   const sinceCommit = input.sinceCommit ?? state?.headCommit ?? undefined;
   const shouldIncrement = input.incremental && Boolean(sinceCommit);
-  const contextPolicy = await loadContextRoutingPolicy();
+  const contextPolicy = await loadContextRoutingPolicy(input.projectDir);
   const result = await indexProjectFiles({
     projectDir: input.projectDir,
     project: input.project,

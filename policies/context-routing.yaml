@@ -1,5 +1,5 @@
 version: 1
-mode: shadow
+mode: enforce
 direct_read_max_tokens: 1400
 delegation_min_tokens: 2400
 max_exact_slice_tokens: 1800

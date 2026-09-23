@@ -154,9 +154,13 @@ export function contextCacheKey(input: {
   }))}`;
 }
 
+// Telemetry record for a context-routing decision. The "Shadow" name is historic:
+// since enforcement shipped, the record carries the live policy mode and the
+// action enforcement took (null when the read was only measured, not gated).
 export type ContextShadowObservation = {
   version: 1;
-  mode: "shadow";
+  mode: "shadow" | "advisory" | "enforce";
+  enforcedAction: "allow" | "redirect" | "promote" | null;
   projectId: string;
   sourcePathHash: string;
   contentHash: string;
@@ -180,15 +184,16 @@ export function buildShadowObservation(input: {
   policy: ContextRoutingPolicy;
   expectedSummaryTokens?: number;
   latencyBudgetMs?: number;
+  enforcedAction?: "allow" | "redirect" | "promote" | null;
 }): ContextShadowObservation {
-  if (input.policy.mode !== "shadow") throw new Error("Shadow observations require a shadow-mode policy.");
   const decision = decideContextRoute(input);
   const expectedSummaryTokens = Math.max(0, input.expectedSummaryTokens ?? Math.min(800, Math.ceil(decision.estimatedTokens * 0.2)));
   const eligible = decision.route === "delegate" || decision.route === "deterministic";
   const avoided = eligible ? Math.max(0, decision.estimatedTokens - expectedSummaryTokens) : 0;
   return {
     version: 1,
-    mode: "shadow",
+    mode: input.policy.mode,
+    enforcedAction: input.enforcedAction ?? null,
     projectId: input.projectId,
     sourcePathHash: sha256(normalizeDisplayPath(input.sourcePath)),
     contentHash: sha256(input.content),
