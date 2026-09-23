@@ -306,7 +306,7 @@ ON performance_metrics(baseline_id, created_at DESC);
 
 -- Hot-path indexes for dashboard speed (non-concurrently for init.sql)
 CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx
-ON workflow_runs(project_id, status, created_at DESC);
+ON workflow_runs(project_id, status, started_at DESC);
 
 CREATE INDEX IF NOT EXISTS workflow_runs_workflow_status_idx
 ON workflow_runs(workflow_id, status);

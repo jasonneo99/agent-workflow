@@ -431,7 +431,7 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS performance_baselines_project_created_idx ON performance_baselines(project_id, created_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS performance_metrics_run_stage_idx ON performance_metrics(run_id, stage_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS performance_metrics_baseline_created_idx ON performance_metrics(baseline_id, created_at DESC)`);
-    await client.query(`CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx ON workflow_runs(project_id, status, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx ON workflow_runs(project_id, status, started_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS workflow_runs_workflow_status_idx ON workflow_runs(workflow_id, status)`);
     await client.query(`CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_idx ON workflow_tasks(run_id, status)`);
     await client.query(`CREATE INDEX IF NOT EXISTS action_receipts_run_created_idx ON action_receipts(run_id, created_at DESC)`);

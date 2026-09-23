@@ -36,7 +36,7 @@ test("canonical runtime migration contains hot-path indexes", () => {
   assert.match(sql, /CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_idx/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS action_receipts_run_created_idx/);
   assert.match(sql, /CREATE INDEX IF NOT EXISTS artifacts_task_kind_idx/);
-  assert.match(sql, /ON workflow_runs\(project_id, status, created_at DESC\)/);
+  assert.match(sql, /ON workflow_runs\(project_id, status, started_at DESC\)/);
 });
 
 test("init.sql syncs performance tables and hot-path indexes for fresh installs", () => {
