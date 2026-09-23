@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
-import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason } from "./quality.js";
+import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, workflowAcceptanceTask } from "./quality.js";
 
 const input = {
   stageId: "implement",
@@ -125,6 +125,40 @@ test("build is a standalone pinned delivery keyword", () => {
   assert.equal(hasPinnedBuildIntent("Build a finished fan module"), true);
   assert.equal(hasPinnedBuildIntent("Rebuildable package analysis"), false);
   assert.match(PINNED_BUILD_CONTRACT, /create, verify, package, and deliver/iu);
+});
+
+test("repair boilerplate does not turn a read-only original task into delivery work", () => {
+  const workflowTask = [
+    "Repair supervised Agent Workflow run source-run.",
+    "Original workflow: provider-smoke.",
+    "Original task: Perform a bounded read-only guarded-autonomy calibration smoke. Do not request commands or file writes.",
+    "Supervisor finding: Invalid datetime at expires_at.",
+    "Preserve the original acceptance contract. Otherwise implement missing product work and produce the package."
+  ].join("\n\n");
+  assert.equal(workflowAcceptanceTask(workflowTask), "Perform a bounded read-only guarded-autonomy calibration smoke. Do not request commands or file writes.");
+  assert.equal(hasPinnedBuildIntent(workflowTask), false);
+  const repairInput = { ...input, workflowId: "debug-failure", workflowTask, stageId: "fix", agentId: "implementation-agent" };
+  const output = {
+    outcome: "completed",
+    summary: "Confirmed the existing fix and reproduced the read-only smoke successfully.",
+    artifact: { findings: ["No additional product mutation is required."], nextAction: "Close the stale repair." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(repairInput, output), null);
+});
+
+test("nested repairs retain the deepest original acceptance task", () => {
+  const nested = [
+    "Repair blocked Agent Workflow run repair-run.",
+    "Original workflow: debug-failure.",
+    "Original task: Repair supervised Agent Workflow run source-run.",
+    "Original workflow: provider-smoke.",
+    "Original task: Perform a bounded read-only smoke. Do not request file writes.",
+    "Supervisor finding: Invalid datetime at expires_at.",
+    "Recorded blocker: no blocker."
+  ].join("\n\n");
+  assert.equal(workflowAcceptanceTask(nested), "Perform a bounded read-only smoke. Do not request file writes.");
 });
 
 test("pinned build verifier rejects a persuasive completion claim without product-write evidence", () => {

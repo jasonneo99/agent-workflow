@@ -37612,7 +37612,7 @@ async function processDashboardQueueAction(input: {
       `Original workflow: ${details.run.workflowId}.`,
       `Original task: ${details.run.task.slice(0, 4000)}`,
       `Recorded blocker: ${blockedReason}`,
-      "Use the newly refreshed project context and source-run artifacts. Diagnose and resolve the actual prerequisite or implementation failure, perform policy-allowed implementation and verification, preserve the original task boundaries, and report blocked rather than completed if a real approval or unavailable external dependency remains."
+      "Use the newly refreshed project context and source-run artifacts; preserve the original task boundaries. Diagnose and resolve the actual prerequisite or failure. Apply product edits and verification only when the original task requires them; for read-only or advisory work, do not invent file writes. After diagnosis, report blocked rather than completed if a real approval or unavailable external dependency still prevents progress."
     ].join("\n\n");
     const queued = await queueWorkflow({
       workflowId: "debug-failure",
@@ -37828,7 +37828,7 @@ async function queueSupervisedWorkflowRepair(input: {
     `Original workflow: ${input.run.workflowId}.`,
     `Original task: ${input.run.task.slice(0, 4000)}`,
     `Supervisor finding: ${input.reason.slice(0, 2000)}`,
-    "Preserve the original acceptance contract and completed checkpoints. Work only within the current project policy; do not edit policy to grant yourself authority. If policy prevents required product work, remain blocked and identify the exact missing permission or approval. Otherwise implement the missing product work, execute verification, and produce the requested package or installable delivery rather than reporting plans as completion."
+    "Preserve the original acceptance contract and completed checkpoints. Work only within the current project policy; do not edit policy to grant yourself authority. Apply product edits, verification, packaging, or installation only when the original task requires them. For read-only or advisory work, diagnose and verify without inventing file writes. If policy prevents an action required by the original task, remain blocked and identify the exact missing permission or approval."
   ].join("\n\n");
   const queued = await queueWorkflow({
     workflowId: repairWorkflowId,

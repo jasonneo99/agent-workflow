@@ -10,8 +10,14 @@ export interface StageQualityScore {
 
 export const PINNED_BUILD_CONTRACT = "BUILD means create, verify, package, and deliver a usable product. Analysis, a plan, documentation, or a handoff is not a build.";
 
+export function workflowAcceptanceTask(task?: string): string {
+  const value = task ?? "";
+  const matches = [...value.matchAll(/(?:^|\n)Original task:\s*([\s\S]*?)(?=\n\n(?:Original workflow:|Original task:|Supervisor finding:|Recorded blocker:|Use the newly refreshed|Preserve the original acceptance)|$)/gu)];
+  return matches.at(-1)?.[1]?.trim() || value;
+}
+
 export function hasPinnedBuildIntent(task: string): boolean {
-  return /\bbuild\b/iu.test(task);
+  return /\bbuild\b/iu.test(workflowAcceptanceTask(task));
 }
 
 function priorBuildEvidence(input: StageExecutionInput): { productWrite: boolean; verification: boolean } {
@@ -94,8 +100,9 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (output.outcome !== "completed") return null;
   const deliveryWorkflow = !input.workflowId
     || ["build-feature", "debug-failure", "dependency-upgrade", "data-migration", "wide-open-automation"].includes(input.workflowId);
-  const pinnedBuild = deliveryWorkflow && hasPinnedBuildIntent(input.workflowTask);
-  const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix)\b/iu.test(input.workflowTask);
+  const acceptanceTask = workflowAcceptanceTask(input.workflowTask);
+  const pinnedBuild = deliveryWorkflow && hasPinnedBuildIntent(acceptanceTask);
+  const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix)\b/iu.test(acceptanceTask);
   const implementationStage = ["implementation-agent", "backend-engineer", "frontend-engineer", "database-engineer"].includes(input.agentId)
     || /(?:^|[-_])(?:implement(?:ation)?|backend|frontend|database)(?:$|[-_])/iu.test(input.stageId);
   const deliveryFinalizer = deliveryWorkflow && deliveryIntent && input.stagePattern?.type === "finalizer";
