@@ -11,6 +11,7 @@ import { gzipSync } from "node:zlib";
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { Command } from "commander";
 import dotenv from "dotenv";
+import escapeHtmlText from "escape-html";
 import YAML from "yaml";
 import {
   byId,
@@ -35,6 +36,7 @@ import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageR
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseDaemonSettingsRequest, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
+import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
@@ -6326,7 +6328,7 @@ program
         await handleDashboardRequest(request, response);
       } catch (error) {
         response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-        response.end(error instanceof Error ? error.message : String(error));
+        response.end(publicHttpError("Dashboard request failed."));
       } finally {
         releaseRequestSlot();
       }
@@ -25792,7 +25794,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end(JSON.stringify({ project: projectDir, files, file, diff }));
     } catch (error) {
       response.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-      response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+      response.end(JSON.stringify({ error: publicHttpError("The requested project file could not be read.") }));
     }
     return;
   }
@@ -26595,7 +26597,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
           generatedAt: new Date().toISOString(),
           status: "blocked",
           dryRun: true,
-          error: error instanceof Error ? error.message : String(error),
+          error: publicHttpError("Request body must be valid JSON within the configured size limit."),
           checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
         }, null, 2));
         return;
@@ -26628,7 +26630,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         generatedAt: new Date().toISOString(),
         status: "blocked",
         dryRun: true,
-        error: error instanceof Error ? error.message : String(error),
+        error: publicHttpError("Request body must be valid JSON within the configured size limit."),
         checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
       }, null, 2));
       return;
@@ -26658,7 +26660,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     } catch (error) {
       await safeAppendServerRequestAuditEvent(buildServerRequestBodyErrorAuditEvent(request, error, "/api/server-orchestrations"));
       response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ kind: "agentflow_server_orchestration_report", status: "blocked", error: error instanceof Error ? error.message : String(error) }, null, 2));
+      response.end(JSON.stringify({ kind: "agentflow_server_orchestration_report", status: "blocked", error: publicHttpError("The orchestration request was invalid.") }, null, 2));
     }
     return;
   }
@@ -26720,7 +26722,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         generatedAt: new Date().toISOString(),
         status: "blocked",
         dryRun: true,
-        error: error instanceof Error ? error.message : String(error),
+        error: publicHttpError("Request body must be valid JSON within the configured size limit."),
         checks: [{ label: "Request body", status: "fail", detail: "Request body must be valid JSON within the configured size limit." }]
       }, null, 2));
       return;
@@ -26742,7 +26744,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     } catch (error) {
       await safeAppendServerRequestAuditEvent(buildServerRequestBodyErrorAuditEvent(request, error, "/api/server-conversation"));
       response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-      response.end(JSON.stringify({ kind: "agentflow_server_conversation_report", status: "blocked", error: error instanceof Error ? error.message : String(error) }, null, 2));
+      response.end(JSON.stringify({ kind: "agentflow_server_conversation_report", status: "blocked", error: publicHttpError("The conversation request was invalid.") }, null, 2));
     }
     return;
   }
@@ -27131,7 +27133,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       const intent = createAssistantIntent({ requestId: stringValue(payload.requestId) ?? randomUUID(), conversationId: stringValue(payload.conversationId) ?? "server", projectId: stringValue(payload.projectId) ?? undefined, goal: stringValue(payload.goal) ?? "", requestedAutonomy: parseLearningDaemonMode(stringValue(payload.requestedAutonomy) ?? "propose"), createdAt: new Date().toISOString() });
       response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       response.end(JSON.stringify({ intent, preview: previewAssistantPlan(intent, []) }, null, 2));
-    } catch (error) { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) })); }
+    } catch { response.writeHead(400, { "content-type": "application/json" }); response.end(JSON.stringify({ error: publicHttpError("The assistant intent request was invalid.") })); }
     return;
   }
 
@@ -28127,7 +28129,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
           : "Queue watcher idle · checked " + new Date(event.data.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
         if (event.data.changed) window.location.reload();
       };
-      watcher.postMessage({ type: "start", signature: ${JSON.stringify(queueSnapshotSignature(queue))} });
+      watcher.postMessage({ type: "start", signature: ${serializeInlineScriptJson(queueSnapshotSignature(queue))} });
       window.addEventListener("pagehide", () => watcher.postMessage({ type: "stop" }), { once: true });
     })();
   </script>
@@ -31043,11 +31045,11 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       </form>
     </section>
     ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
-    ${selectedProject ? `<section class="panel"><div class="section-heading"><div><h2>Workflow Optimizer</h2><span class="muted">Durable events, budgets, shadow evidence, approvals, and fleet health.</span></div><a class="button secondary" href="/api/optimizer-status?project=${encodeURIComponent(selectedProject)}">JSON</a></div><div id="optimizer-summary" class="meta-grid"><div><strong>Status</strong>Loading…</div></div></section><script>fetch(${JSON.stringify(`/api/optimizer-status?project=${encodeURIComponent(selectedProject)}`)}).then(r=>r.json()).then(r=>{document.getElementById('optimizer-summary').innerHTML='<div><strong>Status</strong>'+String(r.health?.status??'unknown')+'</div><div><strong>Events</strong>'+String(r.eventCursorCount??0)+'</div><div><strong>Queue</strong>'+String(r.health?.queueDepth??0)+'</div><div><strong>Budget</strong>'+String(r.health?.budgetConsumed??0)+' / '+String(r.health?.budgetLimit??0)+'</div><div><strong>Shadow Results</strong>'+String(r.shadowResults?.length??0)+'</div><div><strong>Approvals</strong>'+String(r.approvals?.length??0)+'</div>'}).catch(()=>{document.getElementById('optimizer-summary').textContent='Optimizer status unavailable.'})</script>` : ""}
+    ${selectedProject ? `<section class="panel"><div class="section-heading"><div><h2>Workflow Optimizer</h2><span class="muted">Durable events, budgets, shadow evidence, approvals, and fleet health.</span></div><a class="button secondary" href="/api/optimizer-status?project=${encodeURIComponent(selectedProject)}">JSON</a></div><div id="optimizer-summary" class="meta-grid"><div><strong>Status</strong>Loading…</div></div></section><script>fetch(${serializeInlineScriptJson(`/api/optimizer-status?project=${encodeURIComponent(selectedProject)}`)}).then(r=>r.json()).then(r=>{document.getElementById('optimizer-summary').innerHTML='<div><strong>Status</strong>'+String(r.health?.status??'unknown')+'</div><div><strong>Events</strong>'+String(r.eventCursorCount??0)+'</div><div><strong>Queue</strong>'+String(r.health?.queueDepth??0)+'</div><div><strong>Budget</strong>'+String(r.health?.budgetConsumed??0)+' / '+String(r.health?.budgetLimit??0)+'</div><div><strong>Shadow Results</strong>'+String(r.shadowResults?.length??0)+'</div><div><strong>Approvals</strong>'+String(r.approvals?.length??0)+'</div>'}).catch(()=>{document.getElementById('optimizer-summary').textContent='Optimizer status unavailable.'})</script>` : ""}
     ${body}
     <script>
       (() => {
-        const view = ${JSON.stringify(learningView)};
+        const view = ${serializeInlineScriptJson(learningView)};
         const groups = {
           overview: ["Recent Dashboard Actions", "Workflow Optimizer", "Choose what to review"],
           recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
@@ -34658,7 +34660,7 @@ async function processDashboardRunApprovalLevel(input: {
 
 function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): string {
   return `(() => {
-    const runId = ${JSON.stringify(runId)};
+    const runId = ${serializeInlineScriptJson(runId)};
     const terminal = new Set(['completed', 'failed', 'blocked', 'cancelled', 'dismissed']);
     const log = document.getElementById('run-live-log');
     const connection = document.getElementById('run-live-connection');
@@ -41925,7 +41927,7 @@ function renderDashboardFlash(params: URLSearchParams): string {
     (() => {
       try {
         const key = "agentflow.dashboard.actions";
-        const entry = ${JSON.stringify(historyEntry)};
+        const entry = ${serializeInlineScriptJson(historyEntry)};
         entry.path = window.location.pathname;
         entry.at = new Date().toISOString();
         const current = JSON.parse(window.localStorage.getItem(key) || "[]");
@@ -43824,11 +43826,7 @@ async function runDashboardAgentTask(input: {
 }
 
 function escapeHtml(value: string): string {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
+  return escapeHtmlText(value);
 }
 
 function workflowDisplayName(workflowId: string): string {

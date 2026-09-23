@@ -68,7 +68,12 @@ function safeEqual(left: string, right: string): boolean {
 }
 
 export function authenticateFleetClient(authorization: string | undefined, clientTokens: Record<string, string>): string | null {
-  const supplied = authorization?.match(/^Bearer\s+(.+)$/iu)?.[1];
+  const separator = authorization?.indexOf(" ") ?? -1;
+  const scheme = separator > 0 ? authorization!.slice(0, separator) : "";
+  let tokenStart = separator + 1;
+  while (authorization && tokenStart < authorization.length && authorization.charCodeAt(tokenStart) === 32) tokenStart += 1;
+  const candidate = authorization?.slice(tokenStart);
+  const supplied = scheme.toLowerCase() === "bearer" && candidate && !candidate.includes(" ") && !candidate.includes("\t") ? candidate : undefined;
   if (!supplied) return null;
   for (const [clientId, token] of Object.entries(clientTokens)) {
     if (token && safeEqual(supplied, token)) return clientId;
@@ -334,6 +339,7 @@ export function createFleetModelGateway(config: FleetGatewayConfig): http.Server
       }
       const upstreamResponse = await fetch(target, {
         method: request.method,
+        redirect: "manual",
         headers: {
           "content-type": request.headers["content-type"] ?? "application/json",
           ...(config.upstreamApiKey ? { authorization: `Bearer ${config.upstreamApiKey}` } : {})
@@ -341,6 +347,9 @@ export function createFleetModelGateway(config: FleetGatewayConfig): http.Server
         body: request.method === "GET" || request.method === "HEAD" ? undefined : forwardedBody,
         signal: AbortSignal.timeout(config.upstreamTimeoutMs ?? 120_000)
       });
+      if (upstreamResponse.status >= 300 && upstreamResponse.status < 400) {
+        throw new Error("Upstream redirects are not allowed through the fleet model gateway.");
+      }
       const responseBody = await readUpstreamBody(upstreamResponse, maxResponseBytes);
       let responsePayload: unknown = {};
       const responseText = responseBody.toString("utf8");

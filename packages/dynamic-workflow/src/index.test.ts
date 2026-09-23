@@ -137,6 +137,14 @@ test("adaptive execution decomposes numbered deliverables into parallel branches
   assert.deepEqual(plan.stages.find((stage) => stage.id === "test")?.depends_on, ["integrate"]);
 });
 
+test("enumerated work parsing remains bounded on long unmatched input", () => {
+  const adversarial = `Implement (1) ${" ".repeat(100_000)}unfinished`;
+  const startedAt = performance.now();
+  assert.deepEqual(extractEnumeratedWorkItems(adversarial), []);
+  assert.ok(performance.now() - startedAt < 250);
+  assert.deepEqual(extractEnumeratedWorkItems("(2) second item\n(1) first item"), ["first item", "second item"]);
+});
+
 test("allows bounded add, remove, repeat, reorder changes", () => {
   const plan = constructDynamicWorkflow({
     goal: "Fix a broken parser",

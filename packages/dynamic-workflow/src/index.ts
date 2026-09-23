@@ -343,10 +343,15 @@ function mergePlanChanges(base: DynamicPlanChanges | undefined, override: Dynami
   };
 }
 export function extractEnumeratedWorkItems(goal: string): string[] {
-  const matches = [...goal.matchAll(/(?:^|[;\n]|\s)\((\d{1,2})\)\s*([\s\S]*?)(?=(?:[;\n]|\s)\(\d{1,2}\)\s*|$)/gu)];
-  if (matches.length < 2) return [];
-  const ordered = matches
-    .map((match) => ({ number: Number(match[1]), text: match[2].trim().replace(/[;,.]+$/u, "") }))
+  const marker = /(?:^|[;\n\s])\((\d{1,2})\)\s*/gu;
+  const markers = [...goal.matchAll(marker)];
+  if (markers.length < 2) return [];
+  const ordered = markers
+    .map((match, index) => {
+      const start = (match.index ?? 0) + match[0].length;
+      const end = markers[index + 1]?.index ?? goal.length;
+      return { number: Number(match[1]), text: goal.slice(start, end).trim().replace(/[;,.]+$/u, "") };
+    })
     .filter((item) => item.number > 0 && item.text.length >= 3 && item.text.length <= 500)
     .sort((left, right) => left.number - right.number);
   return ordered.length >= 2 ? ordered.slice(0, 12).map((item) => item.text) : [];

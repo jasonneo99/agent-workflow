@@ -27,7 +27,7 @@ await launchctl(["kickstart", "-k", `gui/${process.getuid()}/${label}`], true);
 
 console.log(`Installed Agent Workflow LaunchAgent: ${plistPath}`);
 console.log(`Label: ${label}`);
-console.log(`Dashboard: http://127.0.0.1:${env.AGENTFLOW_DASHBOARD_PORT || "17888"}`);
+console.log("Dashboard is available on the configured local dashboard port.");
 console.log(`Logs: ${logDir}`);
 
 function buildLaunchdEnvironment() {

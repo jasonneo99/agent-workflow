@@ -184,6 +184,7 @@
     "@modelcontextprotocol/sdk": "^1.29.0",
     "commander": "^12.1.0",
     "dotenv": "^17.4.2",
+    "escape-html": "^1.0.3",
     "fast-glob": "^3.3.2",
     "openai": "^6.47.0",
     "pg": "^8.22.0",
@@ -192,6 +193,7 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@types/escape-html": "^1.0.4",
     "@types/node": "^22.5.4",
     "@types/pg": "^8.20.0",
     "tsx": "^4.19.1",

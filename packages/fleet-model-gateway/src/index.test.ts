@@ -8,7 +8,9 @@ import { authenticateFleetClient, createFleetModelGateway, estimateModelCost, im
 
 test("fleet client authentication requires an exact bearer token", () => {
   assert.equal(authenticateFleetClient("Bearer secret-a", { "client-a": "secret-a" }), "client-a");
+  assert.equal(authenticateFleetClient("bearer secret-a", { "client-a": "secret-a" }), "client-a");
   assert.equal(authenticateFleetClient("Bearer wrong", { "client-a": "secret-a" }), null);
+  assert.equal(authenticateFleetClient(`Bearer ${" ".repeat(20_000)}wrong`, { "client-a": "secret-a" }), null);
   assert.equal(authenticateFleetClient(undefined, { "client-a": "secret-a" }), null);
 });
 
@@ -106,6 +108,37 @@ test("rejects absolute-form request targets without contacting another origin", 
       request.end(JSON.stringify({ model: "model-a" }));
     });
     assert.equal(status, 400);
+    assert.equal(attackerRequests, 0);
+  } finally {
+    await new Promise<void>((resolve) => gateway.close(() => resolve()));
+    await new Promise<void>((resolve) => upstream.close(() => resolve()));
+    await new Promise<void>((resolve) => attacker.close(() => resolve()));
+  }
+});
+
+test("does not follow upstream redirects to another origin", async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-gateway-redirect-"));
+  let attackerRequests = 0;
+  const attacker = http.createServer((_request, response) => { attackerRequests += 1; response.end("{}"); });
+  await new Promise<void>((resolve) => attacker.listen(0, "127.0.0.1", resolve));
+  const attackerAddress = attacker.address();
+  assert.ok(attackerAddress && typeof attackerAddress === "object");
+  const upstream = http.createServer((_request, response) => {
+    response.writeHead(302, { location: `http://127.0.0.1:${attackerAddress.port}/capture` });
+    response.end();
+  });
+  await new Promise<void>((resolve) => upstream.listen(0, "127.0.0.1", resolve));
+  const upstreamAddress = upstream.address();
+  assert.ok(upstreamAddress && typeof upstreamAddress === "object");
+  const gateway = createFleetModelGateway({ upstreamBaseUrl: `http://127.0.0.1:${upstreamAddress.port}`, clientTokens: { client: "token" }, ledgerPath: path.join(directory, "ledger.jsonl"), provider: "test" });
+  await new Promise<void>((resolve) => gateway.listen(0, "127.0.0.1", resolve));
+  const gatewayAddress = gateway.address();
+  assert.ok(gatewayAddress && typeof gatewayAddress === "object");
+  try {
+    const response = await fetch(`http://127.0.0.1:${gatewayAddress.port}/v1/responses`, { method: "POST", redirect: "manual", headers: { authorization: "Bearer token", "content-type": "application/json" }, body: JSON.stringify({ model: "model-a" }) });
+    assert.equal(response.status, 502);
+    assert.equal(response.headers.get("location"), null);
+    assert.deepEqual(await response.json(), { error: { message: "Gateway request failed." } });
     assert.equal(attackerRequests, 0);
   } finally {
     await new Promise<void>((resolve) => gateway.close(() => resolve()));
