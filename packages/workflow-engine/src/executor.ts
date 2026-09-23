@@ -224,8 +224,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
+      const authorityExpiresAt = task.leaseExpiresAt
+        ? new Date(task.leaseExpiresAt).toISOString()
+        : new Date(Date.now() + leaseSeconds * 1000).toISOString();
       if (task.executorSnapshot) {
-        const executorGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: task.leaseExpiresAt ?? new Date(Date.now() + leaseSeconds * 1000).toISOString(), mutationAllowed: true });
+        const executorGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: authorityExpiresAt, mutationAllowed: true });
         await assertStageAuthority({ grant: executorGrant, mutation: true });
         await executeBoundExecutorStage(task, project, assertLeaseOwned);
         clearInterval(leaseHeartbeat);
@@ -233,7 +236,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
-      const authorityGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: route.providerId, policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: task.leaseExpiresAt ?? new Date(Date.now() + leaseSeconds * 1000).toISOString(), mutationAllowed: true });
+      const authorityGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: route.providerId, policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: authorityExpiresAt, mutationAllowed: true });
       const assertStageGuard = (mutation: boolean): Promise<void> => assertStageAuthority({ grant: authorityGrant, mutation });
       attemptedProviderId = route.providerId;
       const memoryContext = await buildMemoryContextForStage({
