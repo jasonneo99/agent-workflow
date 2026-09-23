@@ -210,6 +210,10 @@ adversarial release gate.
      calibration, breaker precision, recovery timing, and reviewer burden.
    - Exit gate: sustained passing baselines and fault drills, no unsafe action
      attempts, no invalid terminal writes, and human-reviewed canary evidence.
+   - Progress: a live `provider-smoke` run completed through immutable grant
+     issuance and provider-breaker revalidation. A scoped breaker drill proved
+     stale-grant denial, lease invalidation, and human re-enable generations.
+     Sustained samples and a reviewed promotion canary remain required.
 2. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
@@ -225,6 +229,11 @@ adversarial release gate.
      recovery or switchover between independent hosts.
    - Exit gate: repeatable two-host recovery evidence with no split-brain writes,
      lost receipts, or ambiguous project identity.
+   - Progress: an independent standby host replayed a new durable breaker
+     generation while remaining in PostgreSQL recovery, reproduced an expiring
+     Redis proof key, and passed PostgreSQL, Redis, and object-store health
+     monitors. Destructive promotion and rollback remain maintenance-window
+     work and are not inferred from replication readiness.
 4. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
@@ -234,7 +243,9 @@ adversarial release gate.
      public contracts, and a smaller large-file inventory.
    - Progress: source-size growth is ratcheted in `npm run check`; Context
      Gateway CLI commands, MCP context/reporting tools, project-index storage,
-     tuning history, and action/ReAct receipts now have owned modules.
+     tuning history, action/ReAct receipts, and guarded-autonomy storage schema
+     now have owned modules. The ratchet still reports five historical growth
+     regressions, so this item remains open rather than resetting the baseline.
 5. **Add governed recurring web training discovery for every agent and daemon lane.**
    - Priority: high
    - Why next: agent and daemon guidance can become stale as tools, security
@@ -282,7 +293,7 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Show selected tier models and catalog status in provider checks and dashboard surfaces without hard-coding release-specific model IDs into workflow definitions.
   - Explain auto model selection in `/model-catalog` and `/api/model-catalog`, including provider availability, override source, estimated cost class, policy score, tier fit, and top catalog candidates.
 
-- [ ] Adaptive per-agent model selection from live evidence.
+- [x] Adaptive per-agent model selection from live evidence.
   - Milestone: 10 Model / Provider Intelligence
   - Priority: high
   - Execution order: 7
@@ -290,6 +301,12 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Safety: preserve exact model overrides, provider/data-boundary policy, project ceilings, deterministic authorization, and bounded fallback; never let a cheaper or faster route bypass approval, privacy, or quality gates.
   - Evidence: maintain scrubbed per-agent/task-class route outcomes and confidence, distinguish insufficient evidence from poor performance, and decay stale measurements instead of treating old benchmarks as current truth.
   - Validation: compare the adaptive route against pinned and current default routes on representative holdouts; require non-regressing quality, truthful availability/fallback behavior, bounded cost/latency improvement, route receipts, and one-step rollback to the prior policy.
+  - Done: the optimizer emits scrubbed agent/task-class evidence; runtime
+    selection requires live provider readiness plus fresh minimum-sample,
+    quality, task-success, and fallback gates, scores latency and cost, decays
+    stale evidence, distinguishes insufficient evidence from poor performance,
+    passes the selected model through the governed execution contract, and
+    preserves exact provider/model overrides as the rollback path.
 
 ## Phase 2: Evaluation And Personalization
 
@@ -1072,8 +1089,10 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Scope: validate background synchronization, offline fallback recovery, cross-machine path mapping, and shared-state switch-over with repeatable evidence.
   - Validation: demonstrate recovery from an unavailable shared host without split-brain writes, lost receipts, or ambiguous project identity.
   - Current evidence: shared Postgres, Redis, and object-storage fingerprints
-    match, but source and target resolve to the same endpoints. This proves one
-    healthy state plane, not independent-host recovery or switchover.
+    match. An independent standby also replayed a new breaker generation and
+    expiring Redis proof key while PostgreSQL remained read-only and every
+    standby monitor stayed healthy. This proves independent-host replication
+    and split-brain protection, but not destructive promotion and rollback.
 
 - [x] Task: add governed recurring web training discovery for all agents and daemon lanes.
   - Milestone: 7 Self-Improving Agent System

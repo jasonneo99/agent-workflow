@@ -9,6 +9,7 @@ import type { ModelProvider } from "./types.js";
 
 export * from "./local-routing-recommendations.js";
 export * from "./fallback.js";
+export * from "./adaptive-evidence.js";
 
 export function providerFromEnv(providerOverride?: string): ModelProvider {
   const provider = providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";

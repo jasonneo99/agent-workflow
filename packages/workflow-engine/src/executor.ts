@@ -247,6 +247,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const routedStageInput = {
         ...stageInput,
         modelTier: route.modelTier,
+        modelOverride: route.modelOverride,
         memoryContext
       };
       const startedAt = Date.now();

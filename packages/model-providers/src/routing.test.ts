@@ -19,6 +19,25 @@ test("daemon comparison preferences select the proven provider for the job tier"
   }
 });
 
+test("fresh per-agent task evidence selects the provider and model without overriding explicit routes", async () => {
+  const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "openai";
+    const evidence = JSON.stringify({ agentId: "test-engineer", taskClass: "verify", providerId: "mock", modelId: "mock-fast", samples: 6, quality: 0.91, taskSuccess: 1, fallbackRate: 0, latencyMs: 800, costUsd: 0, observedAt: new Date().toISOString() });
+    const route = await selectModelRoute({ workflowId: "build-feature", stageId: "verify", agentId: "test-engineer", modelTier: "fast", providerOverride: undefined, compiledBrief: `## Adaptive Route Evidence\n- ${evidence}\n` });
+    assert.equal(route.providerId, "mock");
+    assert.equal(route.modelOverride, "mock-fast");
+    assert.match(route.reason, /fresh per-agent task evidence/u);
+
+    const explicit = await selectModelRoute({ workflowId: "build-feature", stageId: "verify", agentId: "test-engineer", modelTier: "fast", providerOverride: "openai", modelOverride: "gpt-explicit", compiledBrief: `## Adaptive Route Evidence\n- ${evidence}\n` });
+    assert.equal(explicit.providerId, "openai");
+    assert.equal(explicit.modelOverride, "gpt-explicit");
+  } finally {
+    if (previousProvider === undefined) delete process.env.DEFAULT_MODEL_PROVIDER;
+    else process.env.DEFAULT_MODEL_PROVIDER = previousProvider;
+  }
+});
+
 test("worker capability quarantine routes default work to a healthy allowed provider", async () => {
   const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
   try {

@@ -8,6 +8,7 @@ import {
   type RoutingDecisionEngine,
   type RoutingEngineDecision
 } from "./routing-engine.js";
+import { parseAdaptiveRouteEvidence, selectAdaptiveEvidence } from "./adaptive-evidence.js";
 
 export interface ModelRouteDecision {
   providerId: string;
@@ -16,6 +17,7 @@ export interface ModelRouteDecision {
   mode: "fixed" | "adaptive" | "auto";
   reason: string;
   estimatedCostTier: "none" | "low" | "medium" | "high";
+  modelOverride?: string;
 }
 
 type ProviderReadiness = {
@@ -27,7 +29,7 @@ const readinessCache = new Map<string, Promise<ProviderReadiness>>();
 
 export type SelectModelRouteInput =
   Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief"> &
-  Partial<Pick<StageExecutionInput, "projectConfig" | "stageGoal" | "workflowTask" | "stagePattern" | "stateDeltas">>;
+  Partial<Pick<StageExecutionInput, "modelOverride" | "projectConfig" | "stageGoal" | "workflowTask" | "stagePattern" | "stateDeltas">>;
 
 export async function selectModelRoute(
   input: SelectModelRouteInput,
@@ -53,10 +55,16 @@ export async function selectModelRoute(
   const learnedDecision = mode !== "fixed" ? decideRouting(input, routingEngine, modelTier) : undefined;
   const learnedProvider = learnedDecision?.decision.preferredProviderByTier[modelTier];
   const learnedRoute = learnedProvider ? await selectLearnedProvider(learnedProvider) : undefined;
+  const taskEvidence = mode !== "fixed" ? selectAdaptiveEvidence(parseAdaptiveRouteEvidence(input.compiledBrief), { agentId: input.agentId, taskClass: input.stageId }) : undefined;
+  const evidenceRoute = taskEvidence?.status === "selected" && taskEvidence.candidate
+    ? await selectLearnedProvider(taskEvidence.candidate.providerId)
+    : undefined;
   const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
-  const preferredProviderId = mode === "fixed"
+  const preferredProviderId = input.providerOverride
+    ? input.providerOverride
+    : mode === "fixed"
     ? defaultProvider
-    : approvedLocalRoute?.providerId ?? tierProvider ?? learnedRoute?.providerId ?? autoRoute?.providerId ?? defaultProvider;
+    : approvedLocalRoute?.providerId ?? tierProvider ?? evidenceRoute?.providerId ?? learnedRoute?.providerId ?? autoRoute?.providerId ?? defaultProvider;
   const allowedProviderIds = options?.allowedProviderIds === undefined ? undefined : new Set(options.allowedProviderIds);
   const capabilityFallback = allowedProviderIds && !allowedProviderIds.has(preferredProviderId)
     ? await selectAllowedProvider(modelTier, allowedProviderIds)
@@ -67,6 +75,7 @@ export async function selectModelRoute(
     providerId,
     modelTier,
     requestedModelTier,
+    modelOverride: input.modelOverride ?? (providerId === taskEvidence?.candidate?.providerId ? taskEvidence.candidate.modelId : undefined),
     mode,
     estimatedCostTier: estimateCostTier(providerId, modelTier),
     reason: [mode === "fixed"
@@ -76,6 +85,7 @@ export async function selectModelRoute(
           `Auto routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
           approvedLocalRoute?.reason ?? "",
           learnedRoute?.reason ?? "",
+          taskEvidence?.reason ?? "",
           routeEngineNote([preferenceDecision, learnedDecision]),
           autoRoute?.reason ?? "",
           modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
@@ -85,6 +95,7 @@ export async function selectModelRoute(
         `Adaptive routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
         approvedLocalRoute?.reason ?? "",
         learnedRoute?.reason ?? "",
+        taskEvidence?.reason ?? "",
         routeEngineNote([preferenceDecision, learnedDecision]),
         modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
         preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""

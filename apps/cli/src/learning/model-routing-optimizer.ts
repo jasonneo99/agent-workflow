@@ -1,9 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
-type Variant = { id: string; provider: string; modelTier: string; runs: number; completed: number; averageQuality: number | null; averageLatencyMs: number | null; fallbackRate: number };
+type Variant = { id: string; provider: string; modelTier: string; modelId?: string; agentId?: string; taskClass?: string; runs: number; completed: number; averageQuality: number | null; averageLatencyMs: number | null; fallbackRate: number };
 type Suite = { id: string; workflowId: string; variants: Variant[]; leader: string | null; latestAt: string };
-export type ModelRoutingRecommendation = { tier: string; provider: string; wins: number; runs: number; averageQuality: number; averageLatencyMs: number | null; fallbackRate: number; status: "eligible" | "needs-evidence"; rationale: string };
+export type ModelRoutingRecommendation = { tier: string; provider: string; modelId?: string; agentId?: string; taskClass?: string; observedAt?: string; wins: number; runs: number; averageQuality: number; taskSuccess: number; averageLatencyMs: number | null; fallbackRate: number; status: "eligible" | "needs-evidence"; rationale: string };
 export type ModelRoutingOptimizerReport = { kind: "agentflow_model_routing_optimizer"; generatedAt: string; projectRootUri: string; autoUpdateEnabled: boolean; suitesCompared: number; recommendations: ModelRoutingRecommendation[]; appliedProviders: Record<string, string>; filesWritten: string[] };
 export type ModelComparisonSchedule = { kind: "agentflow_model_comparison_schedule"; enabled: boolean; due: boolean; reason: string; tier: "fast" | "standard" | "reasoning"; providers: string[]; suitePath: string; lastStartedAt: string | null; intervalMs: number };
 
@@ -30,7 +30,8 @@ export async function runModelRoutingOptimizer(input: { projectDir: string; suit
     const preferencePath = path.join(tuningDir, "routing-preferences.md");
     await fs.mkdir(tuningDir, { recursive: true });
     const existing = await fs.readFile(preferencePath, "utf8").catch(() => "# Agent Workflow Routing Preference Notes\n");
-    const block = [markerStart, "## Daemon Model Routing", "", `- Generated: ${report.generatedAt}`, ...eligible.map((item) => `- Preferred provider ${item.tier}: ${item.provider}`), ...eligible.map((item) => `- Evidence ${item.tier}: wins=${item.wins}, runs=${item.runs}, quality=${item.averageQuality}, fallback=${item.fallbackRate}, latencyMs=${item.averageLatencyMs ?? "n/a"}`), markerEnd].join("\n");
+    const scopedEvidence = eligible.filter((item) => item.agentId && item.taskClass).map((item) => `- ${JSON.stringify({ agentId: item.agentId, taskClass: item.taskClass, providerId: item.provider, modelId: item.modelId, samples: item.runs, quality: item.averageQuality, taskSuccess: item.taskSuccess, fallbackRate: item.fallbackRate, latencyMs: item.averageLatencyMs ?? undefined, observedAt: item.observedAt ?? report.generatedAt })}`);
+    const block = [markerStart, "## Daemon Model Routing", "", `- Generated: ${report.generatedAt}`, ...eligible.map((item) => `- Preferred provider ${item.tier}: ${item.provider}`), ...eligible.map((item) => `- Evidence ${item.tier}: wins=${item.wins}, runs=${item.runs}, quality=${item.averageQuality}, fallback=${item.fallbackRate}, latencyMs=${item.averageLatencyMs ?? "n/a"}`), ...(scopedEvidence.length ? ["", "## Adaptive Route Evidence", ...scopedEvidence] : []), markerEnd].join("\n");
     const next = replaceMarkedBlock(existing, block);
     await fs.writeFile(preferencePath, `${next.trim()}\n`, "utf8");
     report.filesWritten.push(".agent-workflow/tuning/routing-preferences.md");
@@ -73,13 +74,14 @@ export async function prepareRecurringModelComparison(input: { projectDir: strin
 }
 
 export function rankComparedProviders(suites: Suite[]): ModelRoutingRecommendation[] {
-  const groups = new Map<string, { provider: string; tier: string; wins: number; runs: number; qualityTotal: number; qualityRuns: number; latencyTotal: number; latencyRuns: number; fallbackTotal: number }>();
+  const groups = new Map<string, { provider: string; tier: string; modelId?: string; agentId?: string; taskClass?: string; observedAt?: string; wins: number; runs: number; completed: number; qualityTotal: number; qualityRuns: number; latencyTotal: number; latencyRuns: number; fallbackTotal: number }>();
   for (const suite of suites) {
     const leader = suite.variants.find((variant) => variant.id === suite.leader);
     if (!leader || leader.averageQuality === null) continue;
-    const key = `${leader.modelTier}:${leader.provider}`;
-    const group = groups.get(key) ?? { provider: leader.provider, tier: leader.modelTier, wins: 0, runs: 0, qualityTotal: 0, qualityRuns: 0, latencyTotal: 0, latencyRuns: 0, fallbackTotal: 0 };
-    group.wins += 1; group.runs += leader.runs; group.qualityTotal += leader.averageQuality * leader.runs; group.qualityRuns += leader.runs; group.fallbackTotal += leader.fallbackRate * leader.runs;
+    const key = `${leader.modelTier}:${leader.provider}:${leader.modelId ?? ""}:${leader.agentId ?? ""}:${leader.taskClass ?? ""}`;
+    const group = groups.get(key) ?? { provider: leader.provider, tier: leader.modelTier, modelId: leader.modelId, agentId: leader.agentId, taskClass: leader.taskClass, observedAt: suite.latestAt, wins: 0, runs: 0, completed: 0, qualityTotal: 0, qualityRuns: 0, latencyTotal: 0, latencyRuns: 0, fallbackTotal: 0 };
+    group.wins += 1; group.runs += leader.runs; group.completed += leader.completed; group.qualityTotal += leader.averageQuality * leader.runs; group.qualityRuns += leader.runs; group.fallbackTotal += leader.fallbackRate * leader.runs;
+    if (Date.parse(suite.latestAt) > Date.parse(group.observedAt ?? "")) group.observedAt = suite.latestAt;
     if (leader.averageLatencyMs !== null) { group.latencyTotal += leader.averageLatencyMs * leader.runs; group.latencyRuns += leader.runs; }
     groups.set(key, group);
   }
@@ -88,7 +90,7 @@ export function rankComparedProviders(suites: Suite[]): ModelRoutingRecommendati
     const fallbackRate = Number((group.fallbackTotal / Math.max(1, group.runs)).toFixed(3));
     const averageLatencyMs = group.latencyRuns ? Math.round(group.latencyTotal / group.latencyRuns) : null;
     const eligible = group.wins >= 1 && group.runs >= 2 && averageQuality >= 0.7 && fallbackRate <= 0.1;
-    return { tier: group.tier, provider: group.provider, wins: group.wins, runs: group.runs, averageQuality, averageLatencyMs, fallbackRate, status: eligible ? "eligible" : "needs-evidence", rationale: eligible ? "Comparison leader passed minimum sample, quality, and fallback gates." : "Collect more passing comparison evidence before changing routing." };
+    return { tier: group.tier, provider: group.provider, modelId: group.modelId, agentId: group.agentId, taskClass: group.taskClass, observedAt: group.observedAt, wins: group.wins, runs: group.runs, averageQuality, taskSuccess: Number((group.completed / Math.max(1, group.runs)).toFixed(3)), averageLatencyMs, fallbackRate, status: eligible ? "eligible" : "needs-evidence", rationale: eligible ? "Comparison leader passed minimum sample, quality, and fallback gates." : "Collect more passing comparison evidence before changing routing." };
   });
   return candidates.sort((a, b) => a.tier.localeCompare(b.tier) || Number(b.status === "eligible") - Number(a.status === "eligible") || b.wins - a.wins || b.averageQuality - a.averageQuality || a.fallbackRate - b.fallbackRate || (a.averageLatencyMs ?? Infinity) - (b.averageLatencyMs ?? Infinity));
 }
