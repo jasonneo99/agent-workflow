@@ -142,6 +142,7 @@ import { buildObservabilityReport, formatObservabilityReport, type Observability
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
+import { decideTrainingProposal, formatTrainingDiscoveryReport, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, type TrainingProposalInbox } from "../../../packages/training-discovery/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
 import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readContextCacheHealth, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
@@ -4418,6 +4419,58 @@ program
   });
 
 program
+  .command("training-discovery")
+  .description("Run the governed public-source training scout manually")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--force", "run even when the daily cadence is not due")
+  .option("--json", "print training discovery JSON")
+  .action(async (options: { project: string; force?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const agents = await loadAgents(rootDir);
+    const report = await runTrainingDiscovery({
+      projectDir,
+      agents: agents.map((agent) => agent.id),
+      daemonLanes: daemonLanes.map((lane) => lane.id),
+      cadenceMs: parsePositiveInteger(process.env.AGENTFLOW_TRAINING_DISCOVERY_INTERVAL_MS ?? "", 86_400_000),
+      force: options.force
+    });
+    console.log(options.json ? JSON.stringify(report, null, 2) : formatTrainingDiscoveryReport(report));
+  });
+
+program
+  .command("training-proposals")
+  .description("List or decide governed training-discovery proposals")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .option("--id <id>", "proposal id to decide")
+  .option("--status <status>", "decision: approved, rejected, stale, unsafe, evaluated, or promoted")
+  .option("--reviewer <reviewer>", "reviewer identity", "operator")
+  .option("--note <note>", "bounded decision note")
+  .option("--json", "print proposal inbox JSON")
+  .action(async (options: { project: string; id?: string; status?: string; reviewer: string; note?: string; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
+    let inbox = await readTrainingProposalInbox(projectDir);
+    if (options.id || options.status) {
+      if (!options.id || !options.status || !allowed.has(options.status as TrainingProposalDecisionStatus)) {
+        throw new Error("--id and a valid --status are required together");
+      }
+      inbox = await decideTrainingProposal({
+        projectDir,
+        id: options.id,
+        status: options.status as Exclude<TrainingProposalDecisionStatus, "pending">,
+        reviewer: options.reviewer,
+        note: options.note
+      });
+    }
+    if (options.json) {
+      console.log(JSON.stringify(inbox, null, 2));
+      return;
+    }
+    for (const item of inbox.items) console.log(`${item.status}\t${item.id}\t${item.proposal.publisher}\t${item.proposal.targets.join(",")}`);
+    if (!inbox.items.length) console.log("No training proposals.");
+  });
+
+program
   .command("learning-daemon")
   .description("Run the local learning daemon in autonomous apply-approved mode, or observe/propose modes")
   .option("-p, --project <dir>", "project directory")
@@ -4498,8 +4551,13 @@ program
         approvalBacklogScanned?: number;
         mcpCleanup?: RuntimeMcpCleanupResult;
         staleRunReconciliation?: RuntimeStaleRunReconciliationResult;
+        trainingDiscovery?: TrainingDiscoveryReport | null;
       }
     ): Promise<LearningDaemonHeartbeat> => {
+      const latestTrainingDiscovery = aggregate?.trainingDiscovery
+        ?? update?.trainingDiscovery
+        ?? await readLatestTrainingDiscoveryReport(statusProjectDir)
+        ?? await readLatestTrainingDiscoveryReport(projectDir);
       const heartbeat: LearningDaemonHeartbeat = {
         ...await runtimeVersionMetadata,
         kind: "agentflow_learning_daemon_status",
@@ -4555,6 +4613,11 @@ program
         staleRunReconcileCandidates: aggregate?.staleRunReconciliation?.candidates.length ?? lastStatus?.staleRunReconcileCandidates ?? 0,
         staleRunReconciled: aggregate?.staleRunReconciliation?.reconciled.filter((item) => item.updated).length ?? lastStatus?.staleRunReconciled ?? 0,
         lastStaleRunReconcileAt: aggregate?.staleRunReconciliation?.generatedAt ?? lastStatus?.lastStaleRunReconcileAt ?? null,
+        trainingDiscoveryStatus: latestTrainingDiscovery?.status ?? lastStatus?.trainingDiscoveryStatus,
+        trainingDiscoveryLastRunAt: latestTrainingDiscovery?.generatedAt ?? lastStatus?.trainingDiscoveryLastRunAt ?? null,
+        trainingDiscoveryNextRunAfter: latestTrainingDiscovery?.nextRunAfter ?? lastStatus?.trainingDiscoveryNextRunAfter ?? null,
+        trainingDiscoveryProposals: latestTrainingDiscovery?.proposals.length ?? lastStatus?.trainingDiscoveryProposals ?? 0,
+        trainingDiscoveryErrors: latestTrainingDiscovery?.errors.length ?? lastStatus?.trainingDiscoveryErrors ?? 0,
         offlineSyncStatus: lastStatus?.offlineSyncStatus ?? null,
         lastError,
         command: allProjects
@@ -4632,7 +4695,18 @@ program
         let approvalAutopilotMaxRisk: ApprovalAutopilotRisk = await learningApprovalAutopilotMaxRisk(projectDir);
         let mcpCleanup: RuntimeMcpCleanupResult | undefined;
         let staleRunReconciliation: RuntimeStaleRunReconciliationResult | undefined;
+        let trainingDiscovery: TrainingDiscoveryReport | null = null;
         const projectErrors: string[] = [];
+        try {
+          trainingDiscovery = await runTrainingDiscovery({
+            projectDir,
+            agents: (await loadAgents(rootDir)).map((agent) => agent.id),
+            daemonLanes: daemonLanes.map((lane) => lane.id),
+            cadenceMs: parsePositiveInteger(process.env.AGENTFLOW_TRAINING_DISCOVERY_INTERVAL_MS ?? "", 86_400_000)
+          });
+        } catch (error) {
+          projectErrors.push(`${projectDir} training discovery: ${error instanceof Error ? error.message : String(error)}`);
+        }
         const runFastRecoverySweep = async (): Promise<void> => {
           // Parent run state and repair supervision are queue-health work, not
           // learning analysis. Do them first so a slow all-project learning
@@ -4692,7 +4766,8 @@ program
               approvalAutopilotOverride,
               // Provider comparisons produce fleet-wide evidence. Run them once
               // from the daemon's control project, not once per registered project.
-              modelComparisonEnabled: isFleetModelComparisonOwner(targetProjectDir, projectDir)
+              modelComparisonEnabled: isFleetModelComparisonOwner(targetProjectDir, projectDir),
+              trainingDiscoveryEnabled: false
             });
             await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
             lastUpdate = update;
@@ -4752,7 +4827,8 @@ program
           approvalBacklogErrors,
           approvalBacklogScanned,
           mcpCleanup,
-          staleRunReconciliation
+          staleRunReconciliation,
+          trainingDiscovery
         });
         if (!options.disableOfflineSync) {
           const offlineSync = await runDaemonOfflineSyncScheduler({
@@ -4766,7 +4842,7 @@ program
           }
         }
         if (!options.json) {
-          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, blockedAutoHealed=${blockedRunsAutoHealed}, workflowShape=${workflowShapeRecommendations}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
+          console.log(`Learning daemon tick ${ticks}: projects=${targets.length}, failedProjects=${projectErrors.length}, report=${analyzedRuns} run(s), proposals=${proposalCount}, roadmapSuggestions=${roadmapSuggestions}/${roadmapOpenItems}, inbox=${inboxCount}, applicationActions=${applicationActions}, autonomousApplied=${autonomousAppliedActions}, blockedAutoHealed=${blockedRunsAutoHealed}, workflowShape=${workflowShapeRecommendations}, trainingDiscovery=${trainingDiscovery?.status ?? "not-owner"}/${trainingDiscovery?.proposals.length ?? 0}, staleRuns=${staleRunReconciliation.reconciled.filter((item) => item.updated).length}/${staleRunReconciliation.candidates.length}, mcpCleanup=${mcpCleanup.terminated.filter((item) => item.status === "sent").length}/${mcpCleanup.candidates.filter((candidate) => candidate.autoCleanable).length}`);
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -7287,6 +7363,11 @@ type LearningDaemonHeartbeat = {
   staleRunReconcileCandidates?: number;
   staleRunReconciled?: number;
   lastStaleRunReconcileAt?: string | null;
+  trainingDiscoveryStatus?: TrainingDiscoveryReport["status"];
+  trainingDiscoveryLastRunAt?: string | null;
+  trainingDiscoveryNextRunAfter?: string | null;
+  trainingDiscoveryProposals?: number;
+  trainingDiscoveryErrors?: number;
   offlineSyncStatus?: OfflineSyncSchedulerStatus | null;
   command: string;
 };
@@ -7434,6 +7515,11 @@ type DashboardLearningDaemonStatus = {
   staleRunReconcileCandidates: number;
   staleRunReconciled: number;
   lastStaleRunReconcileAt: string | null;
+  trainingDiscoveryStatus: TrainingDiscoveryReport["status"] | null;
+  trainingDiscoveryLastRunAt: string | null;
+  trainingDiscoveryNextRunAfter: string | null;
+  trainingDiscoveryProposals: number;
+  trainingDiscoveryErrors: number;
   lastError: string;
   command: string;
 };
@@ -23672,7 +23758,8 @@ async function runLearningDaemonTick(input: {
   daemonId?: string;
   approvalAutopilotOverride?: boolean;
   modelComparisonEnabled?: boolean;
-}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+  trainingDiscoveryEnabled?: boolean;
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; trainingDiscovery: TrainingDiscoveryReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
   const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
   const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
   let approvalAutopilot: ApprovalAutopilotResult = emptyApprovalAutopilotResult(approvalAutopilotMaxRisk);
@@ -23689,6 +23776,14 @@ async function runLearningDaemonTick(input: {
   }
   const repositoryMaintenance = await scanRepositoryMaintenance(input.projectDir);
   await writeRepositoryMaintenanceReceipt(input.projectDir, repositoryMaintenance);
+  const trainingDiscovery = input.trainingDiscoveryEnabled === false
+    ? null
+    : await runTrainingDiscovery({
+      projectDir: input.projectDir,
+      agents: (await loadAgents(rootDir)).map((agent) => agent.id),
+      daemonLanes: daemonLanes.map((lane) => lane.id),
+      cadenceMs: parsePositiveInteger(process.env.AGENTFLOW_TRAINING_DISCOVERY_INTERVAL_MS ?? "", 86_400_000)
+    });
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const modelRoutingOptimizer = await runModelRoutingOptimizer({ projectDir: input.projectDir, suites: await loadDashboardEvaluations(250, input.projectDir), autoUpdate: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE) });
   const modelComparisonSchedule = await prepareRecurringModelComparison({
@@ -23803,7 +23898,7 @@ async function runLearningDaemonTick(input: {
     events: optimizerEvents,
     recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({ id: `workflow-shape:${index}:${report.generatedAt}`, projectId: input.projectDir, kind: "stage" as const, evidence: Math.min(1, report.runsAnalyzed / 10), impact: 0.5, reversibility: 1, risk: "medium" as const, confidence: Math.min(1, report.runsAnalyzed / 5), duplicateKey: JSON.stringify(item) })) ?? []
   });
-  return { report, roadmap, roadmapPublication, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
+  return { report, roadmap, roadmapPublication, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, trainingDiscovery, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
 }
 
 async function runLearningFailureTriage(input: {
@@ -26068,10 +26163,40 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/training-proposal-decision") {
+    const form = await readFormBody(request);
+    const project = form.get("project")?.trim() ?? "";
+    const id = form.get("id")?.trim() ?? "";
+    const status = form.get("status")?.trim() ?? "";
+    const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
+    try {
+      if (!project || !id || !allowed.has(status as TrainingProposalDecisionStatus)) throw new Error("Project, proposal, and a valid decision are required.");
+      await decideTrainingProposal({
+        projectDir: path.resolve(process.cwd(), project),
+        id,
+        status: status as Exclude<TrainingProposalDecisionStatus, "pending">,
+        reviewer: form.get("reviewer")?.trim() || "dashboard-operator",
+        note: form.get("note")?.trim() || undefined
+      });
+      respondDashboardAction(request, response, form, { ok: true, title: `Training proposal marked ${status}`, output: `Recorded ${status} decision for ${id}.` }, "/training-proposals");
+    } catch (error) {
+      respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/training-proposals");
+    }
+    return;
+  }
+
   if (requestUrl.pathname === "/api/runs") {
     const runs = await loadCachedDashboardReport("api:runs:50", () => listWorkflowRuns(50), 2_000);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(runs, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/training-proposals") {
+    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? process.cwd();
+    const inbox = await readTrainingProposalInbox(path.resolve(process.cwd(), project));
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
+    response.end(JSON.stringify(inbox, null, 2));
     return;
   }
 
@@ -27448,6 +27573,19 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
+    return;
+  }
+
+  if (requestUrl.pathname === "/training-proposals") {
+    const projects = await listProjectStorageSummaries(100);
+    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? process.cwd();
+    const projectDir = path.resolve(process.cwd(), project);
+    const [inbox, report] = await Promise.all([
+      readTrainingProposalInbox(projectDir),
+      readLatestTrainingDiscoveryReport(projectDir)
+    ]);
+    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    response.end(renderTrainingProposalsHtml(inbox, report, projects, project, requestUrl.searchParams));
     return;
   }
 
@@ -35950,6 +36088,11 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       staleRunReconcileCandidates: typeof heartbeat.staleRunReconcileCandidates === "number" ? heartbeat.staleRunReconcileCandidates : 0,
       staleRunReconciled: typeof heartbeat.staleRunReconciled === "number" ? heartbeat.staleRunReconciled : 0,
       lastStaleRunReconcileAt: typeof heartbeat.lastStaleRunReconcileAt === "string" ? heartbeat.lastStaleRunReconcileAt : null,
+      trainingDiscoveryStatus: heartbeat.trainingDiscoveryStatus === "completed" || heartbeat.trainingDiscoveryStatus === "not_due" || heartbeat.trainingDiscoveryStatus === "failed" ? heartbeat.trainingDiscoveryStatus : null,
+      trainingDiscoveryLastRunAt: typeof heartbeat.trainingDiscoveryLastRunAt === "string" ? heartbeat.trainingDiscoveryLastRunAt : null,
+      trainingDiscoveryNextRunAfter: typeof heartbeat.trainingDiscoveryNextRunAfter === "string" ? heartbeat.trainingDiscoveryNextRunAfter : null,
+      trainingDiscoveryProposals: typeof heartbeat.trainingDiscoveryProposals === "number" ? heartbeat.trainingDiscoveryProposals : 0,
+      trainingDiscoveryErrors: typeof heartbeat.trainingDiscoveryErrors === "number" ? heartbeat.trainingDiscoveryErrors : 0,
       lastError: typeof heartbeat.lastError === "string" ? heartbeat.lastError : "",
       command: typeof heartbeat.command === "string" ? heartbeat.command : `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -36005,6 +36148,11 @@ async function loadLearningDaemonStatus(projectDir: string): Promise<DashboardLe
       staleRunReconcileCandidates: 0,
       staleRunReconciled: 0,
       lastStaleRunReconcileAt: null,
+      trainingDiscoveryStatus: null,
+      trainingDiscoveryLastRunAt: null,
+      trainingDiscoveryNextRunAfter: null,
+      trainingDiscoveryProposals: 0,
+      trainingDiscoveryErrors: 0,
       lastError: "",
       command: `npm run agentflow -- learning-daemon --project ${shellQuote(projectDir)} --mode apply-approved`
     };
@@ -36022,6 +36170,10 @@ function formatLearningDaemonStatus(status: DashboardLearningDaemonStatus): stri
     `Last report: ${status.lastReportAt ?? "none"}`,
     `Ticks: ${status.ticks}`,
     `Proposals: ${status.proposals}`,
+    `Training discovery: ${status.trainingDiscoveryStatus ?? "not run"}`,
+    `Training discovery last run: ${status.trainingDiscoveryLastRunAt ?? "none"}`,
+    `Training discovery next run: ${status.trainingDiscoveryNextRunAfter ?? "none"}`,
+    `Training discovery proposals/errors: ${status.trainingDiscoveryProposals}/${status.trainingDiscoveryErrors}`,
     `Roadmap snapshot: ${status.roadmapSnapshotStatus ?? "not published"}`,
     `Roadmap snapshot published: ${status.roadmapSnapshotPublishedAt ?? "none"}`,
     `Roadmap snapshot digest: ${status.roadmapSnapshotDigest ?? "none"}`,
@@ -41193,7 +41345,7 @@ function iconForMetric(label: string): DashboardIconName {
   return "gauge";
 }
 
-function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
+function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "approval-rules" | "projects" | "agents" | "discovery" | "runs" | "activity" | "evaluations" | "workflow-graph" | "learning" | "learning-diagnostics" | "daemon-control" | "training-proposals" | "feedback-inbox" | "model-improvement" | "candidate-comparisons" | "context-gateway" | "roadmap" | "governance" | "roles" | "artifact-lifecycle" | "backup-report" | "server-readiness" | "fleet-model-usage" | "bundles" | "providers" | "model-catalog" | "info"): string {
   const groups = [
     {
       label: "Work",
@@ -41228,6 +41380,7 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
       items: [
         ["learning-diagnostics", "/learning?view=diagnostics", "Diagnostics", "gauge"],
         ["daemon-control", "/learning?view=settings", "Daemon settings", "server"],
+        ["training-proposals", "/training-proposals", "Training proposals", "search"],
         ["evaluations", "/evaluations", "Evaluations", "clipboard"],
         ["feedback-inbox", "/feedback-inbox", "Feedback", "message"],
         ["model-improvement", "/model-improvement", "Model improvements", "sparkles"],
@@ -41265,6 +41418,27 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
     }).join("")}
     </div>
   </nav>`;
+}
+
+function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: TrainingDiscoveryReport | null, projects: DashboardProjectSummary[], selected: string, params: URLSearchParams): string {
+  const options = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${project.rootUri === selected ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
+  const pending = inbox.items.filter((item) => item.status === "pending").length;
+  const rows = inbox.items.slice().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).map((item) => `<tr>
+    <td><strong>${escapeHtml(item.proposal.publisher)}</strong><br><a href="${escapeHtml(item.proposal.url)}" rel="noreferrer">${escapeHtml(item.sourceId)}</a><br><code>${escapeHtml(item.contentSha256.slice(0, 16))}</code></td>
+    <td>${escapeHtml(item.proposal.targets.join(", "))}<br><span class="muted">${escapeHtml(item.proposal.claimedBenefit)}</span></td>
+    <td>${escapeHtml(item.status)}<br><span class="muted">${escapeHtml(item.proposal.confidence)} confidence · ${escapeHtml(item.proposal.license)}</span></td>
+    <td><span>${escapeHtml(item.proposal.risks)}</span><br><strong>Holdout:</strong> ${escapeHtml(item.proposal.holdoutEvaluation)}</td>
+    <td><form method="post" action="/api/training-proposal-decision">${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}"><input name="note" maxlength="500" placeholder="Decision note"><div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div></form></td>
+  </tr>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Training Proposals</title><style>${dashboardCss()}</style></head><body>
+  ${dashboardNav("training-proposals")}
+  <main><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
+  ${renderDashboardFlash(params)}
+  <section class="panel"><form method="get" action="/training-proposals"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
+  <section class="metrics">${metricCard("Pending", pending, `${inbox.items.length} total proposals`)}${metricCard("Last discovery", report?.generatedAt ? renderDashboardDateTime(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
+  <section class="panel"><h2>Governed inbox</h2><p class="muted">Approval permits a bounded holdout evaluation; it does not change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Decision</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Manual run</h2><p><code>npm run training-discovery -- --project ${escapeHtml(selected)} --force</code></p><p><a href="/api/training-proposals?project=${encodeURIComponent(selected)}">JSON inbox</a></p></section>
+  </main></body></html>`;
 }
 
 function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextOperatorReport>>, projects: DashboardProjectSummary[], selected: string): string {

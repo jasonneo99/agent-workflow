@@ -1,5 +1,5 @@
 export type DaemonTrustLevel = "low" | "medium" | "high";
-export type DaemonLaneId = "evidence-collector" | "workflow-optimizer" | "action-executor" | "runtime-maintenance" | "repository-steward" | "release-ci-guardian" | "security-sentinel" | "backup-recovery-verifier";
+export type DaemonLaneId = "evidence-collector" | "workflow-optimizer" | "action-executor" | "runtime-maintenance" | "repository-steward" | "release-ci-guardian" | "security-sentinel" | "backup-recovery-verifier" | "training-scout";
 export type DaemonLaneDefinition = { id: DaemonLaneId; name: string; purpose: string; capabilities: string[]; defaultTrust: DaemonTrustLevel; mutationClass: "read-only" | "project-local" | "operational" };
 export type DaemonTrustSettings = Record<DaemonLaneId, DaemonTrustLevel>;
 export type FleetProjectScope = "local" | "remote" | "ephemeral";
@@ -57,7 +57,8 @@ export const daemonLanes: DaemonLaneDefinition[] = [
   { id: "repository-steward", name: "Repository Steward", purpose: "Maintain dependency, source, test, documentation, and repository hygiene within repository policy.", capabilities: ["bounded dependency hygiene", "missing test and docs detection", "validated local maintenance commits"], defaultTrust: "low", mutationClass: "project-local" },
   { id: "release-ci-guardian", name: "Release & CI Guardian", purpose: "Triage CI failures and prepare release-readiness evidence without publishing autonomously.", capabilities: ["CI triage", "release gate checks", "release evidence preparation"], defaultTrust: "low", mutationClass: "project-local" },
   { id: "security-sentinel", name: "Security Sentinel", purpose: "Inspect dependencies, configuration, secrets exposure, and trust-boundary regressions.", capabilities: ["security scans", "risk triage", "eligible low-risk remediation"], defaultTrust: "low", mutationClass: "project-local" },
-  { id: "backup-recovery-verifier", name: "Backup & Recovery Verifier", purpose: "Verify backup freshness, restore readiness, artifact integrity, and recovery evidence.", capabilities: ["backup freshness checks", "non-destructive restore drills", "recovery readiness receipts"], defaultTrust: "low", mutationClass: "operational" }
+  { id: "backup-recovery-verifier", name: "Backup & Recovery Verifier", purpose: "Verify backup freshness, restore readiness, artifact integrity, and recovery evidence.", capabilities: ["backup freshness checks", "non-destructive restore drills", "recovery readiness receipts"], defaultTrust: "low", mutationClass: "operational" },
+  { id: "training-scout", name: "Training Scout", purpose: "Discover current public primary-source material that may improve registered agents and daemon lanes.", capabilities: ["official-source monitoring", "roster coverage rotation", "deduplicated training proposals", "source health reporting"], defaultTrust: "low", mutationClass: "read-only" }
 ];
 
 export function defaultDaemonTrustSettings(): DaemonTrustSettings {

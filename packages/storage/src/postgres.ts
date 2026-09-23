@@ -407,6 +407,35 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS memory_nodes_project_type_idx ON memory_nodes(project_id, node_type, created_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS memory_edges_project_from_idx ON memory_edges(project_id, from_node)`);
     await client.query(`CREATE INDEX IF NOT EXISTS memory_edges_project_to_idx ON memory_edges(project_id, to_node)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS performance_baselines (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        project_id uuid REFERENCES projects(id),
+        workflow_id text REFERENCES workflows(id),
+        workload_hash text NOT NULL,
+        metrics jsonb NOT NULL DEFAULT '{}',
+        created_at timestamptz NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS performance_metrics (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        baseline_id uuid REFERENCES performance_baselines(id) ON DELETE CASCADE,
+        run_id uuid REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        stage_id text NOT NULL,
+        latency_ms double precision NOT NULL CHECK (latency_ms >= 0),
+        cpu_ms double precision CHECK (cpu_ms IS NULL OR cpu_ms >= 0),
+        memory_mb double precision CHECK (memory_mb IS NULL OR memory_mb >= 0),
+        metadata jsonb NOT NULL DEFAULT '{}',
+        created_at timestamptz NOT NULL DEFAULT now()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS performance_baselines_project_created_idx ON performance_baselines(project_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS performance_metrics_run_stage_idx ON performance_metrics(run_id, stage_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS performance_metrics_baseline_created_idx ON performance_metrics(baseline_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx ON workflow_runs(project_id, status, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_runs_workflow_status_idx ON workflow_runs(workflow_id, status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_idx ON workflow_tasks(run_id, status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS action_receipts_run_created_idx ON action_receipts(run_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS artifacts_task_kind_idx ON artifacts(task_id, kind)`);
   });
 }
 

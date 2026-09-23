@@ -264,6 +264,15 @@ Goal: make the reusable platform safer and easier to adopt without requiring pri
   - Show selected tier models and catalog status in provider checks and dashboard surfaces without hard-coding release-specific model IDs into workflow definitions.
   - Explain auto model selection in `/model-catalog` and `/api/model-catalog`, including provider availability, override source, estimated cost class, policy score, tier fit, and top catalog candidates.
 
+- [ ] Adaptive per-agent model selection from live evidence.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: high
+  - Execution order: 7
+  - Scope: choose from the models actually available at execution time for each agent and task class, using availability as a hard gate and measured quality, task performance, latency, and estimated cost as reviewable scoring inputs.
+  - Safety: preserve exact model overrides, provider/data-boundary policy, project ceilings, deterministic authorization, and bounded fallback; never let a cheaper or faster route bypass approval, privacy, or quality gates.
+  - Evidence: maintain scrubbed per-agent/task-class route outcomes and confidence, distinguish insufficient evidence from poor performance, and decay stale measurements instead of treating old benchmarks as current truth.
+  - Validation: compare the adaptive route against pinned and current default routes on representative holdouts; require non-regressing quality, truthful availability/fallback behavior, bounded cost/latency improvement, route receipts, and one-step rollback to the prior policy.
+
 ## Phase 2: Evaluation And Personalization
 
 Goal: improve quality and cost while keeping personalization auditable and portable.
@@ -1048,11 +1057,17 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
     match, but source and target resolve to the same endpoints. This proves one
     healthy state plane, not independent-host recovery or switchover.
 
-- [ ] Task: add governed recurring web training discovery for all agents and daemon lanes.
+- [x] Task: add governed recurring web training discovery for all agents and daemon lanes.
   - Milestone: 7 Self-Improving Agent System
   - Priority: high
   - Execution order: 7
-  - Status: open
+  - Status: implemented. The read-only `training-scout` daemon lane owns daily
+    official-source discovery, complete roster inventory, rotating coverage,
+    configurable versioned source registries, HTTPS/domain controls, robots and
+    rate-limit handling, content-hash deduplication, bounded fetches, prompt-
+    injection quarantine, manual runs, source-health evidence, bounded history,
+    proposal/decision receipts, heartbeat visibility, CLI decisions, and the
+    governed `/training-proposals` dashboard inbox.
   - Owner: a dedicated supervised research/training-scout daemon lane, with a
     configurable cadence (daily by default), manual run support, persisted
     cursor/budget state, and visible heartbeat and receipts.

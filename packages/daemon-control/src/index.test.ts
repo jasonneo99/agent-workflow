@@ -6,7 +6,8 @@ import { buildDaemonControlStatus } from "./status.js";
 import { renderDaemonControl } from "../../../apps/cli/src/dashboard/daemon-control.js";
 
 test("registers all daemon lanes with conservative defaults", () => {
-  assert.equal(daemonLanes.length, 8);
+  assert.equal(daemonLanes.length, 9);
+  assert.ok(daemonLanes.some((lane) => lane.id === "training-scout" && lane.mutationClass === "read-only"));
   assert.ok(Object.values(defaultDaemonTrustSettings()).every((level) => level === "low"));
 });
 test("form parsing, effective ceilings, and status reporting share one contract", () => {
@@ -25,6 +26,7 @@ test("dashboard control contract renders every lane and the status endpoint targ
   const html = renderDaemonControl({ project: "/portable/project", limit: 50, workflow: "build-feature", trust, shapeAutoUpdate: true, agentAutoApply: true, autonomousMaxRisk: "medium", autopilotEnabled: true, autopilotMaxRisk: "medium" });
   assert.match(html, /Daemon Control Plane/);
   assert.match(html, /Backup &amp; Recovery Verifier/);
+  assert.match(html, /Training Scout/);
   assert.match(html, /api\/daemon-control-status/);
   assert.match(html, /value="high" selected/);
 });

@@ -272,3 +272,50 @@ CREATE TABLE IF NOT EXISTS side_effect_receipts (
 
 CREATE INDEX IF NOT EXISTS artifacts_run_kind_idx
 ON artifacts(run_id, kind, created_at);
+
+-- Performance testing support (speed tests) - additive, idempotent
+CREATE TABLE IF NOT EXISTS performance_baselines (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  project_id uuid REFERENCES projects(id),
+  workflow_id text REFERENCES workflows(id),
+  workload_hash text NOT NULL,
+  metrics jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS performance_metrics (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  baseline_id uuid REFERENCES performance_baselines(id) ON DELETE CASCADE,
+  run_id uuid REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  stage_id text NOT NULL,
+  latency_ms double precision NOT NULL CHECK (latency_ms >= 0),
+  cpu_ms double precision CHECK (cpu_ms IS NULL OR cpu_ms >= 0),
+  memory_mb double precision CHECK (memory_mb IS NULL OR memory_mb >= 0),
+  metadata jsonb NOT NULL DEFAULT '{}',
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS performance_baselines_project_created_idx
+ON performance_baselines(project_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS performance_metrics_run_stage_idx
+ON performance_metrics(run_id, stage_id);
+
+CREATE INDEX IF NOT EXISTS performance_metrics_baseline_created_idx
+ON performance_metrics(baseline_id, created_at DESC);
+
+-- Hot-path indexes for dashboard speed (non-concurrently for init.sql)
+CREATE INDEX IF NOT EXISTS workflow_runs_project_status_idx
+ON workflow_runs(project_id, status, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS workflow_runs_workflow_status_idx
+ON workflow_runs(workflow_id, status);
+
+CREATE INDEX IF NOT EXISTS workflow_tasks_run_status_idx
+ON workflow_tasks(run_id, status);
+
+CREATE INDEX IF NOT EXISTS action_receipts_run_created_idx
+ON action_receipts(run_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS artifacts_task_kind_idx
+ON artifacts(task_id, kind);
