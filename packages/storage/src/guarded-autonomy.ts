@@ -125,16 +125,16 @@ export async function tripBreaker(input: {
       );
       if (input.state !== "enabled") {
         const scopePredicate = input.scope === "global" ? "true"
-          : input.scope === "project" ? "p.root_uri=$2"
-          : input.scope === "workflow" ? "wr.workflow_id=$2"
-          : input.scope === "agent" ? "wt.agent_id=$2"
-          : input.scope === "provider" ? "coalesce(wr.provider_override,'')=$2"
+          : input.scope === "project" ? "p.root_uri=$1"
+          : input.scope === "workflow" ? "wr.workflow_id=$1"
+          : input.scope === "agent" ? "wt.agent_id=$1"
+          : input.scope === "provider" ? "coalesce(wr.provider_override,'')=$1"
           : "true";
         await client.query(
           `update workflow_tasks wt set status='queued',worker_id=null,lease_expires_at=null,lease_generation=lease_generation+1,available_at=now()
            from workflow_runs wr join projects p on p.id=wr.project_id
            where wt.run_id=wr.id and wt.status in ('leased','running') and ${scopePredicate}`,
-          [input.scope, input.scopeId]
+          input.scope === "global" || input.scope === "tool_class" ? [] : [input.scopeId]
         );
       }
       await client.query("commit");
