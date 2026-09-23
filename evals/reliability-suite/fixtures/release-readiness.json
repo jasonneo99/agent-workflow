@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Assess a synthetic release with one failing required check.","inputs":{"checks":["tests:pass","typecheck:pass","boundary:fail"],"network_allowed":false}}

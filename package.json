@@ -151,6 +151,7 @@
     "roadmap-audit": "tsx apps/cli/src/index.ts roadmap-audit",
     "repository-maintenance": "tsx apps/cli/src/index.ts repository-maintenance",
     "reuse-plan": "tsx apps/cli/src/index.ts reuse-plan",
+    "reliability-baseline": "tsx scripts/reliability-baseline.ts",
     "runtime-monitor": "tsx apps/cli/src/index.ts runtime-monitor",
     "reliability": "node dist/apps/cli/src/reliability-command.js",
     "reliability:chaos": "node dist/apps/cli/src/reliability-command.js chaos",

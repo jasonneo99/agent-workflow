@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Plan a synthetic dependency cleanup without publishing.","inputs":{"scope":["package.json","package-lock.json"],"network_allowed":false}}

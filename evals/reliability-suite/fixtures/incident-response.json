@@ -1,0 +1,1 @@
+{"fixture_version":1,"goal":"Triage a synthetic worker retry storm.","inputs":{"signal":"retry rate exceeds budget","network_allowed":false}}
