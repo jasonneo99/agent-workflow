@@ -33,10 +33,10 @@ export async function listCurrentBreakers(keys: BreakerKey[]): Promise<BreakerSt
       }
       const result = await client.query<{
         scope: BreakerScope; scopeId: string; generation: string; state: BreakerState["state"];
-        reason: string; actor: string; createdAt: string; humanAuthored: boolean; evidenceHashes: string[];
+        reason: string; actor: string; createdAt: Date; humanAuthored: boolean; evidenceHashes: string[];
       }>(
         `select distinct on (scope,scope_id) scope,scope_id as "scopeId",generation::text,state,reason,actor,
-           created_at::text as "createdAt",human_authored as "humanAuthored",evidence_hashes as "evidenceHashes"
+           created_at as "createdAt",human_authored as "humanAuthored",evidence_hashes as "evidenceHashes"
          from breaker_events
          where (scope,scope_id) in (select * from unnest($1::text[],$2::text[]))
          order by scope,scope_id,generation desc`,
@@ -51,7 +51,7 @@ export async function listCurrentBreakers(keys: BreakerKey[]): Promise<BreakerSt
         state: row.state,
         reason: row.reason,
         actor: row.actor,
-        created_at: row.createdAt,
+        created_at: row.createdAt.toISOString(),
         human_authored: row.humanAuthored,
         evidence_hashes: row.evidenceHashes ?? []
       }));
@@ -117,10 +117,10 @@ export async function tripBreaker(input: {
     await client.query("begin");
     try {
       await client.query("select pg_advisory_xact_lock(hashtext($1))", [`breaker:${input.scope}:${input.scopeId}`]);
-      const result = await client.query<{ generation: string; createdAt: string }>(
+      const result = await client.query<{ generation: string; createdAt: Date }>(
         `insert into breaker_events(scope,scope_id,generation,state,reason,actor,human_authored,evidence_hashes)
          values($1,$2,coalesce((select max(generation)+1 from breaker_events where scope=$1 and scope_id=$2),1),$3,$4,$5,$6,$7::jsonb)
-         returning generation::text,created_at::text as "createdAt"`,
+         returning generation::text,created_at as "createdAt"`,
         [input.scope, input.scopeId, input.state, input.reason, input.actor, input.humanAuthored, JSON.stringify(input.evidenceHashes ?? [])]
       );
       if (input.state !== "enabled") {
@@ -138,7 +138,7 @@ export async function tripBreaker(input: {
         );
       }
       await client.query("commit");
-      return breakerStateSchema.parse({ schema_version: 1, scope: input.scope, scope_id: input.scopeId, generation: Number(result.rows[0].generation), state: input.state, reason: input.reason, actor: input.actor, created_at: result.rows[0].createdAt, human_authored: input.humanAuthored, evidence_hashes: input.evidenceHashes ?? [] });
+      return breakerStateSchema.parse({ schema_version: 1, scope: input.scope, scope_id: input.scopeId, generation: Number(result.rows[0].generation), state: input.state, reason: input.reason, actor: input.actor, created_at: result.rows[0].createdAt.toISOString(), human_authored: input.humanAuthored, evidence_hashes: input.evidenceHashes ?? [] });
     } catch (error) { await client.query("rollback"); throw error; }
   });
 }
