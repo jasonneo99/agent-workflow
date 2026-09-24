@@ -389,6 +389,29 @@ values, provider keys, database URLs, storage secrets, prompt bodies, and
 artifacts. Run `npm run runtime-monitor -- --check-mcp` to verify the launcher
 and MCP tool list independently of the Codex private stdio connection.
 
+## OpenTelemetry Tracing
+
+The workflow executor emits one span per executed stage (`agentflow.stage/<stageId>`)
+to any OTLP/HTTP-compatible backend (OpenObserve, Jaeger, Grafana Tempo, ...).
+Tracing is best-effort and never breaks a run: with no collector listening,
+spans are dropped silently.
+
+```bash
+# Point the exporter at your backend (OpenObserve example)
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:5080/api/default
+# OpenObserve requires basic auth; pass it as an exporter header
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Basic $(echo -n 'you@example.com:password' | base64)"
+# Disable tracing entirely
+export OTEL_TRACING_ENABLED=0
+```
+
+Each span carries `agentflow.workflow.id`, `agentflow.run.id`, `agentflow.task.id`,
+`agentflow.stage.id`, `agentflow.stage.pattern`, `agentflow.agent.id`,
+`agentflow.project.root`, plus the routed `agentflow.provider.id` /
+`agentflow.model.id`. The stage outcome (`completed`, `blocked`, `failed`) is
+recorded on span end, and executor events such as `agentflow.verify.retry` and
+`agentflow.verify.environmental_block` are attached as span events.
+
 ## Docs
 
 - [User Guide](docs/user-guide.md): full install and usage guide

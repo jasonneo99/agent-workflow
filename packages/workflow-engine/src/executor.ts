@@ -41,6 +41,7 @@ import {
 import { createRenewingStageAuthority } from "./stage-authority.js";
 import { attributeVerifyCommandFailure, commandFailureEligibleForVerifyRetry, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, formatCommandFailureEvidence, npmPreflightDiagnostic, snapshotGitStatus, truncateCommandOutputForError, verifyRetryBudgetFromEnv } from "./command-failure.js";
 export * from "./command-failure.js";
+import { endStageSpan, flushOtelTracing, recordStageEvent, setStageSpanAttributes, startStageSpan } from "./otel-tracing.js";
 
 export interface WorkerResult {
   claimed: number;
@@ -166,6 +167,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
     let leaseHeartbeat: ReturnType<typeof setInterval> | undefined;
     let attemptedProviderId: string | undefined;
+    let stageSpan: ReturnType<typeof startStageSpan>;
     try {
       const projectResolution = await resolveLocalProjectPath(task.projectRootUri);
       if (!projectResolution.localPathExists) {
@@ -210,6 +212,20 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
       const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
       const stagePattern = normalizeStagePattern(task.stagePattern);
+      // OpenTelemetry: one span per stage execution. Best-effort; a missing
+      // collector never breaks the run.
+      stageSpan = startStageSpan({
+        workflowId: task.workflowId,
+        runId: task.runId,
+        taskId: task.taskId,
+        stageId: task.stageId,
+        stagePattern: stagePattern.type,
+        agentId: task.agentId,
+        projectRootUri: task.projectRootUri
+      });
+      setStageSpanAttributes(stageSpan, {
+        "agentflow.stage.pattern.json": JSON.stringify(stagePattern)
+      });
       // Footprint-scoped verify attribution: snapshot the working tree before
       // the agent acts, so verify failures on pre-existing dirty state are not
       // blamed on the agent. Read-only; never touches the working tree.
@@ -536,6 +552,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         artifactKind: "model_route",
         artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
       });
+      setStageSpanAttributes(stageSpan, {
+        "agentflow.provider.id": actualProviderId ?? route.providerId,
+        ...(actualModel ? { "agentflow.model.id": actualModel } : {})
+      });
 
       if (output.outcome === "blocked") {
         const blockedReason = output.blockedReason?.trim() || output.summary;
@@ -563,6 +583,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             actionResults: []
           }
         });
+        endStageSpan(stageSpan, "blocked", blockedReason);
         result.failed += 1;
         continue;
       }
@@ -938,6 +959,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 reason: `Verify failed on pre-existing uncommitted changes outside this run's footprint: ${envFiles}.`,
                 files: verifyAttribution.files
               };
+              recordStageEvent(stageSpan, "agentflow.verify.environmental_block", {
+                "agentflow.verify.environmental.reason": `Verify failed on pre-existing uncommitted changes outside this run's footprint: ${envFiles}.`,
+                "agentflow.verify.environmental.files": verifyAttribution.files.join(",")
+              });
               break verifyActionRounds;
             }
             // Fix 2: in verify-type stages, feed the failure back to the agent
@@ -1000,6 +1025,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               actualProviderId = verifyRetry.actualProvider;
               actualModel = verifyRetry.actualModel;
               verifyRetryRequested = true;
+              recordStageEvent(stageSpan, "agentflow.verify.retry", {
+                "agentflow.verify.retry.round": verifyRetryRound + 1,
+                "agentflow.verify.command": commandLine
+              });
               continue verifyActionRounds;
             }
             throw new Error(`Requested command failed: ${commandLine}\n${failureEvidence}`);
@@ -1315,6 +1344,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             actionResults
           }
         });
+        endStageSpan(stageSpan, "blocked", verifyEnvironmentalBlock.reason);
         clearInterval(leaseHeartbeat);
         result.failed += 1;
         continue;
@@ -1340,6 +1370,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             actionResults
           }
         });
+        endStageSpan(stageSpan, "blocked", "Required actions were rejected or are awaiting approval.");
         clearInterval(leaseHeartbeat);
         result.failed += 1;
         continue;
@@ -1376,6 +1407,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         decisionSummary: route.reason,
         resultSummary: output.summary
       });
+      endStageSpan(stageSpan, "completed");
       clearInterval(leaseHeartbeat);
       result.completed += 1;
     } catch (error) {
@@ -1403,12 +1435,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           if (!isStaleLeaseError(failureError)) throw failureError;
         });
       }
+      endStageSpan(stageSpan, "failed", error instanceof Error ? error.message : String(error));
       result.failed += 1;
     } finally {
       if (leaseHeartbeat) clearInterval(leaseHeartbeat);
     }
   }
 
+  await flushOtelTracing();
   return result;
 }
 
