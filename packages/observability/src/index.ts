@@ -76,6 +76,10 @@ export interface ObservabilityReport {
     averageQuality: number | null;
     totalModelLatencyMs: number;
     averageModelLatencyMs: number | null;
+    orchestrationOverheadMs: number | null;
+    approvalWaitMs: number;
+    retryCount: number;
+    usefulParallelism: number | null;
     estimatedCompactPromptTokens: number | null;
     payloadsExported: false;
   };
@@ -116,6 +120,13 @@ export function buildObservabilityReport(input: {
     .sort((a, b) => a - b)[0] ?? null;
   const queueDelayMs = firstTaskStart === null ? null : Math.max(0, firstTaskStart - Date.parse(input.run.startedAt));
   const compactPromptTokens = estimateCompactPromptTokens(input.artifacts);
+  const runDuration = durationMs(input.run.startedAt, input.run.finishedAt);
+  const approvalWaitMs = measuredApprovalWaitMs(input.receipts);
+  const retryCount = input.tasks.reduce((total, task) => total + Math.max(0, task.attempts - 1), 0);
+  const usefulParallelism = measuredUsefulParallelism(input.tasks);
+  const orchestrationOverheadMs = runDuration === null
+    ? null
+    : Math.max(0, runDuration - Math.min(runDuration, quality.totalLatencyMs) - approvalWaitMs);
 
   const spans: OtelSpan[] = [
     {
@@ -195,7 +206,7 @@ export function buildObservabilityReport(input: {
     projectName: input.run.projectName,
     status: input.run.status,
     summary: {
-      runDurationMs: durationMs(input.run.startedAt, input.run.finishedAt),
+      runDurationMs: runDuration,
       queueDelayMs,
       taskCount: input.tasks.length,
       receiptCount: input.receipts.length,
@@ -206,6 +217,10 @@ export function buildObservabilityReport(input: {
       averageQuality: quality.averageQuality,
       totalModelLatencyMs: quality.totalLatencyMs,
       averageModelLatencyMs: quality.averageLatencyMs,
+      orchestrationOverheadMs,
+      approvalWaitMs,
+      retryCount,
+      usefulParallelism,
       estimatedCompactPromptTokens: compactPromptTokens,
       payloadsExported: false
     },
@@ -225,11 +240,15 @@ export function buildObservabilityReport(input: {
           gauge("agentflow.queue.delay", "Delay from run creation to first task start.", "ms", queueDelayMs, metricTime, metricAttrs),
           gauge("agentflow.model.latency.total", "Total recorded model latency.", "ms", quality.totalLatencyMs, metricTime, metricAttrs),
           gauge("agentflow.model.latency.average", "Average recorded model latency.", "ms", quality.averageLatencyMs, metricTime, metricAttrs),
+          gauge("agentflow.orchestration.overhead", "Elapsed run time outside recorded model and approval waits.", "ms", orchestrationOverheadMs, metricTime, metricAttrs),
+          gauge("agentflow.approval.wait", "Measured wait between approval request and decision receipts.", "ms", approvalWaitMs, metricTime, metricAttrs),
+          gauge("agentflow.parallelism.useful", "Average concurrently active workflow tasks.", "1", usefulParallelism, metricTime, metricAttrs),
           gauge("agentflow.quality.average", "Average output quality score.", "1", quality.averageQuality, metricTime, metricAttrs),
           sum("agentflow.task.count", "Workflow task count.", "1", input.tasks.length, metricTime, metricAttrs),
           sum("agentflow.receipt.count", "Action receipt count.", "1", input.receipts.length, metricTime, metricAttrs),
           sum("agentflow.artifact.count", "Artifact count.", "1", input.artifacts.length, metricTime, metricAttrs),
-          sum("agentflow.fallback.count", "Provider fallback count.", "1", quality.fallbackCount, metricTime, metricAttrs)
+          sum("agentflow.fallback.count", "Provider fallback count.", "1", quality.fallbackCount, metricTime, metricAttrs),
+          sum("agentflow.retry.count", "Workflow task retries beyond the first attempt.", "1", retryCount, metricTime, metricAttrs)
         ]
       }]
     }]
@@ -253,6 +272,10 @@ export function formatObservabilityReport(report: ObservabilityReport): string {
     `- Fallbacks: ${report.summary.fallbackCount}`,
     `- Average quality: ${report.summary.averageQuality ?? "n/a"}`,
     `- Model latency: ${report.summary.totalModelLatencyMs}ms total, ${report.summary.averageModelLatencyMs ?? "n/a"}ms avg`,
+    `- Orchestration overhead: ${report.summary.orchestrationOverheadMs ?? "n/a"}ms`,
+    `- Approval wait: ${report.summary.approvalWaitMs}ms`,
+    `- Retries: ${report.summary.retryCount}`,
+    `- Useful parallelism: ${report.summary.usefulParallelism ?? "n/a"}`,
     `- Estimated compact prompt tokens: ${report.summary.estimatedCompactPromptTokens ?? "n/a"}`,
     "- Payload export: disabled",
     "",
@@ -428,6 +451,38 @@ function durationMs(start: string | null | undefined, end: string | null | undef
   if (!start || !end) return null;
   const value = Date.parse(end) - Date.parse(start);
   return Number.isFinite(value) ? Math.max(0, value) : null;
+}
+
+function measuredApprovalWaitMs(receipts: ActionReceiptStatus[]): number {
+  const requested = new Map<string, number>();
+  let total = 0;
+  for (const receipt of [...receipts].sort((left, right) => Date.parse(left.createdAt) - Date.parse(right.createdAt))) {
+    const timestamp = Date.parse(receipt.createdAt);
+    if (!Number.isFinite(timestamp)) continue;
+    if (receipt.actionType === "action_approval_requested") requested.set(receipt.target, timestamp);
+    else if (/^action_approval_(?:approved|rejected|executed|completed)$/u.test(receipt.actionType)) {
+      const started = requested.get(receipt.target);
+      if (started !== undefined) {
+        total += Math.max(0, timestamp - started);
+        requested.delete(receipt.target);
+      }
+    }
+  }
+  return total;
+}
+
+function measuredUsefulParallelism(tasks: WorkflowTaskStatus[]): number | null {
+  const intervals = tasks.flatMap((task) => {
+    if (!task.startedAt || !task.finishedAt) return [];
+    const start = Date.parse(task.startedAt);
+    const end = Date.parse(task.finishedAt);
+    return Number.isFinite(start) && Number.isFinite(end) && end >= start ? [{ start, end }] : [];
+  });
+  if (!intervals.length) return null;
+  const elapsed = Math.max(...intervals.map((item) => item.end)) - Math.min(...intervals.map((item) => item.start));
+  if (elapsed <= 0) return 1;
+  const active = intervals.reduce((total, item) => total + item.end - item.start, 0);
+  return Math.round((active / elapsed) * 1000) / 1000;
 }
 
 function timeNs(value: string | null | undefined): string {

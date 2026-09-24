@@ -13,8 +13,8 @@ async function reliabilitySample(): Promise<ReliabilitySample> {
   return withClient(async (client) => {
     const result = await client.query<{ totalMutations: number; receiptedMutations: number; stuckRuns: number; invalidTerminalRuns: number }>(`
       select
-        (select count(*)::int from side_effect_receipts) as "totalMutations",
-        (select count(*)::int from side_effect_receipts where receipt <> '{}'::jsonb) as "receiptedMutations",
+        (select count(*)::int from side_effect_receipts where status='completed') as "totalMutations",
+        (select count(*)::int from side_effect_receipts where status='completed' and receipt <> '{}'::jsonb) as "receiptedMutations",
         (select count(*)::int from workflow_tasks where status in ('leased','running') and lease_expires_at<now()) as "stuckRuns",
         (select count(*)::int from workflow_runs wr where wr.status='completed' and exists(select 1 from workflow_tasks wt where wt.run_id=wr.id and wt.status not in ('completed','cancelled'))) as "invalidTerminalRuns"
     `);

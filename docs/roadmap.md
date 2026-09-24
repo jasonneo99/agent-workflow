@@ -219,7 +219,10 @@ silently train agents or expand daemon authority.
    - Progress: a live `provider-smoke` run completed through immutable grant
      issuance and provider-breaker revalidation. A scoped breaker drill proved
      stale-grant denial, lease invalidation, and human re-enable generations.
-     Sustained samples and a reviewed promotion canary remain required.
+     Reliability accounting now excludes incomplete side-effect reservations,
+     so the live completed-mutation sample reports 896/896 durable receipts.
+     Sustained samples, timed recovery and rollback drills, duplicate-effect and
+     false-critical evidence, and a reviewed promotion canary remain required.
 2. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
@@ -251,7 +254,10 @@ silently train agents or expand daemon authority.
      Gateway CLI commands, MCP context/reporting tools, project-index storage,
      tuning history, action/ReAct receipts, and guarded-autonomy storage schema
      now have owned modules. The ratchet still reports five historical growth
-     regressions, so this item remains open rather than resetting the baseline.
+     regressions. Stage-outcome classifiers now have a dedicated workflow-engine
+     module with focused compatibility coverage; the remaining reduction target
+     is 4,808 lines across three files, so this item remains open rather than
+     resetting the baseline.
 ## Phase 1: Shared Platform Hardening
 
 Goal: make the reusable platform safer and easier to adopt without requiring private product context.
@@ -1040,6 +1046,10 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
   - Next: add governed per-branch Git worktree isolation, overlap prediction, conflict-aware merge ordering, branch verification receipts, and automatic cleanup so parallel same-project writes do not share a mutable checkout.
   - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
+  - Progress: per-run OpenTelemetry reports now include queue delay, model
+    latency, measured approval wait, orchestration overhead, retry count, and
+    useful parallelism. A direct-execution comparison baseline and evidence-led
+    tuning remain.
 
 - [x] Task: create a live roadmap dashboard with list and Gantt-style views.
   - Milestone: 3 Developer Dashboard

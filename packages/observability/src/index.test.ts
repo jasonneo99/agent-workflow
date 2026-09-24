@@ -87,10 +87,16 @@ test("observability report exports OpenTelemetry compatible spans and metrics", 
   assert.equal(report.summary.payloadsExported, false);
   assert.equal(report.summary.queueDelayMs, 1000);
   assert.equal(report.summary.averageQuality, 0.82);
+  assert.equal(report.summary.retryCount, 0);
+  assert.equal(report.summary.usefulParallelism, 1);
+  assert.equal(report.summary.approvalWaitMs, 0);
+  assert.equal(report.summary.orchestrationOverheadMs, 3800);
   assert.ok(spans.some((span) => span.name === "agentflow.run review-pr"));
   assert.ok(spans.some((span) => span.name === "agentflow.stage inspect"));
   assert.ok(spans.some((span) => span.name === "agentflow.model.route"));
   assert.ok(metrics.some((metric) => metric.name === "agentflow.model.latency.total"));
+  assert.ok(metrics.some((metric) => metric.name === "agentflow.orchestration.overhead"));
+  assert.ok(metrics.some((metric) => metric.name === "agentflow.parallelism.useful"));
 });
 
 test("observability attributes redact common secret shapes", () => {
