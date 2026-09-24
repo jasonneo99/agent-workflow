@@ -41,9 +41,11 @@ The command writes the complete result to
 human maintenance decisions remain visible.
 
 `repository-maintenance-baseline.json` is a ratchet for the known large files.
-The `--check` mode fails only when one grows beyond its committed baseline;
-successful extractions lower the baseline. This prevents new concentration
-without requiring an unsafe all-at-once rewrite.
+The `--check` mode fails when one grows beyond its committed ceiling. Version 2
+entries may also retain a lower `target`; targets keep the extraction debt
+visible in reports without requiring an unsafe all-at-once rewrite. A reviewed
+current size may become the no-growth ceiling, but successful extractions lower
+both the ceiling and target until the target is reached.
 
 ## CLI Boundaries
 

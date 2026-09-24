@@ -9,19 +9,37 @@ const runFile = promisify(execFile);
 
 export type RepositoryMaintenanceFinding = { kind: "hygiene" | "security"; severity: "info" | "warning" | "error"; file: string; line: number; summary: string; autoFixEligible: boolean };
 export type RepositoryMaintenanceReport = { kind: "agentflow_repository_maintenance_report"; generatedAt: string; projectRootHash: string; filesScanned: number; findings: RepositoryMaintenanceFinding[]; summary: { hygiene: number; security: number; autoFixEligible: number; errors: number } };
-export type SourceSizeRatchetReport = { passed: boolean; baseline: string; checked: number; regressions: Array<{ file: string; baselineLines: number; actualLines: number }> };
+export type SourceSizeRatchetReport = {
+  passed: boolean;
+  baseline: string;
+  checked: number;
+  regressions: Array<{ file: string; baselineLines: number; actualLines: number }>;
+  reductionTargets: Array<{ file: string; targetLines: number; actualLines: number; remainingLines: number }>;
+};
+
+type SourceSizeBaseline = {
+  version?: number;
+  files?: Record<string, number | { ceiling: number; target?: number }>;
+};
 
 export async function checkSourceSizeRatchet(projectRoot: string, baselineFile = "repository-maintenance-baseline.json"): Promise<SourceSizeRatchetReport> {
   const target = path.resolve(projectRoot, baselineFile);
   if (target !== path.resolve(projectRoot) && !target.startsWith(`${path.resolve(projectRoot)}${path.sep}`)) throw new Error("Source-size baseline escapes project root.");
-  const baseline = JSON.parse(await fs.readFile(target, "utf8")) as { version?: number; files?: Record<string, number> };
-  if (baseline.version !== 1 || !baseline.files) throw new Error("Invalid source-size baseline.");
+  const baseline = JSON.parse(await fs.readFile(target, "utf8")) as SourceSizeBaseline;
+  if ((baseline.version !== 1 && baseline.version !== 2) || !baseline.files) throw new Error("Invalid source-size baseline.");
   const regressions = [];
-  for (const [file, baselineLines] of Object.entries(baseline.files)) {
+  const reductionTargets = [];
+  for (const [file, configured] of Object.entries(baseline.files)) {
+    const baselineLines = typeof configured === "number" ? configured : configured.ceiling;
+    const targetLines = typeof configured === "number" ? configured : configured.target;
+    if (!Number.isInteger(baselineLines) || baselineLines < 1 || (targetLines !== undefined && (!Number.isInteger(targetLines) || targetLines < 1 || targetLines > baselineLines))) {
+      throw new Error(`Invalid source-size baseline entry for ${file}.`);
+    }
     const actualLines = (await fs.readFile(path.join(projectRoot, file), "utf8")).split(/\r?\n/u).length;
     if (actualLines > baselineLines) regressions.push({ file, baselineLines, actualLines });
+    if (targetLines !== undefined && actualLines > targetLines) reductionTargets.push({ file, targetLines, actualLines, remainingLines: actualLines - targetLines });
   }
-  return { passed: regressions.length === 0, baseline: path.relative(projectRoot, target), checked: Object.keys(baseline.files).length, regressions };
+  return { passed: regressions.length === 0, baseline: path.relative(projectRoot, target), checked: Object.keys(baseline.files).length, regressions, reductionTargets };
 }
 
 export async function scanRepositoryMaintenance(projectRoot: string): Promise<RepositoryMaintenanceReport> {

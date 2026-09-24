@@ -51,4 +51,16 @@ test("source-size ratchet rejects growth but permits extraction", async () => {
   await fs.writeFile(path.join(root, "apps", "cli.ts"), "one");
   assert.equal((await checkSourceSizeRatchet(root)).passed, true);
 });
+
+test("source-size ratchet preserves a lower extraction target without allowing new growth", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "maintenance-ratchet-target-"));
+  await fs.mkdir(path.join(root, "apps"));
+  await fs.writeFile(path.join(root, "apps", "cli.ts"), "one\ntwo\nthree");
+  await fs.writeFile(path.join(root, "repository-maintenance-baseline.json"), JSON.stringify({ version: 2, files: { "apps/cli.ts": { ceiling: 3, target: 2 } } }));
+  const current = await checkSourceSizeRatchet(root);
+  assert.equal(current.passed, true);
+  assert.deepEqual(current.reductionTargets, [{ file: "apps/cli.ts", targetLines: 2, actualLines: 3, remainingLines: 1 }]);
+  await fs.writeFile(path.join(root, "apps", "cli.ts"), "one\ntwo\nthree\nfour");
+  assert.equal((await checkSourceSizeRatchet(root)).passed, false);
+});
 // boundary-synthetic-fixtures: credential-shaped values below verify maintenance detection only.

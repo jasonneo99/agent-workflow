@@ -17,7 +17,7 @@ export function registerRepositoryMaintenanceCommand(program: Command): void {
       const receipt = await writeRepositoryMaintenanceReceipt(projectDir, report);
       const ratchet = options.check ? await checkSourceSizeRatchet(projectDir) : null;
       if (options.json) console.log(JSON.stringify({ ...report, ratchet, receipt: path.relative(projectDir, receipt) }, null, 2));
-      else console.log([`Repository maintenance: ${report.filesScanned} files`, `Hygiene: ${report.summary.hygiene}; security: ${report.summary.security}; errors: ${report.summary.errors}`, ratchet ? `Size ratchet: ${ratchet.passed ? "pass" : `fail (${ratchet.regressions.length} regression(s))`}` : "", `Receipt: ${path.relative(projectDir, receipt)}`].filter(Boolean).join("\n"));
+      else console.log([`Repository maintenance: ${report.filesScanned} files`, `Hygiene: ${report.summary.hygiene}; security: ${report.summary.security}; errors: ${report.summary.errors}`, ratchet ? `Size ratchet: ${ratchet.passed ? "pass" : `fail (${ratchet.regressions.length} regression(s))`}` : "", ratchet?.reductionTargets.length ? `Reduction targets: ${ratchet.reductionTargets.length} file(s), ${ratchet.reductionTargets.reduce((sum, item) => sum + item.remainingLines, 0)} line(s) remaining` : "", `Receipt: ${path.relative(projectDir, receipt)}`].filter(Boolean).join("\n"));
       if (ratchet && !ratchet.passed) process.exitCode = 1;
     });
 }
