@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import fsSync from "node:fs";
-import fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import path from "node:path";
-import { redactDiagnosticData, shortDiagnosticHash } from "./diagnostics.js";
+import { shortDiagnosticHash as shortHash } from "./diagnostics.js";
+import { createMcpLogger } from "./logging.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod/v3";
@@ -16,14 +16,13 @@ const rootDir = findAgentWorkflowRoot(import.meta.url);
 const packageVersion = readPackageVersion(rootDir);
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
 const mcpLogPath = process.env.AGENTFLOW_MCP_LOG_FILE || path.join(rootDir, ".agent-workflow", "runtime", "mcp", "stdio.log");
+const { append: appendMcpLog, appendSyncSafe: appendMcpLogSyncSafe } = createMcpLogger(mcpLogPath);
 const maxOutputChars = parsePositiveInteger(process.env.AGENTFLOW_MCP_MAX_OUTPUT_CHARS, 12_000);
 const defaultTimeoutMs = 120_000;
 
 function readPackageVersion(root: string): string {
   const metadata = JSON.parse(fsSync.readFileSync(path.join(root, "package.json"), "utf8")) as { version?: unknown };
-  if (typeof metadata.version !== "string" || metadata.version.length === 0) {
-    throw new Error(`Package version is missing from ${path.join(root, "package.json")}`);
-  }
+  if (typeof metadata.version !== "string" || metadata.version.length === 0) throw new Error(`Package version is missing from ${path.join(root, "package.json")}`);
   return metadata.version;
 }
 
@@ -2117,26 +2116,4 @@ function approvalCallDiagnostic(input: {
     limit: input.limit ?? null,
     json: Boolean(input.json)
   };
-}
-
-function shortHash(value: string): string {
-  return shortDiagnosticHash(value);
-}
-
-async function appendMcpLog(event: string, data: Record<string, unknown>): Promise<void> {
-  try {
-    await fs.mkdir(path.dirname(mcpLogPath), { recursive: true });
-    await fs.appendFile(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactDiagnosticData(data) })}\n`, "utf8");
-  } catch {
-    // MCP uses stdout for the protocol; logging failures must stay silent.
-  }
-}
-
-function appendMcpLogSyncSafe(event: string, data: Record<string, unknown>): void {
-  try {
-    fsSync.mkdirSync(path.dirname(mcpLogPath), { recursive: true });
-    fsSync.appendFileSync(mcpLogPath, `${JSON.stringify({ ts: new Date().toISOString(), event, ...redactDiagnosticData(data) })}\n`, "utf8");
-  } catch {
-    // Best-effort process-exit breadcrumb only.
-  }
 }
