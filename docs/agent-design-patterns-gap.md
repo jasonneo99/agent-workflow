@@ -1,37 +1,41 @@
-# Agent Design Pattern Gap Analysis
+# Agent Design Pattern Architecture Status
 
 This document maps common AI agent design patterns to Agent Workflow's current
-architecture and identifies practical gaps. It is based on a reference design
-sheet covering single-shot, ReAct, planner-executor, reflexive, verifier-gated,
-and combined production agent architectures.
+architecture and records the status of practical gaps identified from a
+reference design sheet covering single-shot, ReAct, planner-executor,
+reflexive, verifier-gated, and combined production agent architectures.
+
+Status: the five pattern-specific gaps from the original analysis are closed as
+of 2026-09-24. The sections below retain the original categories while recording
+their implemented outcomes. Remaining architecture work is tracked separately in
+[`roadmap.md`](roadmap.md#current-execution-priority).
 
 ## Executive Summary
 
 Agent Workflow is already closest to the combined production architecture:
 planner, specialist executors, policy-gated tools, persistent memory, verifier
 stages, receipts, dashboard observability, and feedback-driven improvement. The
-next quality gains should come from making those loops more explicit and
-measurable, not from adding more generic agents.
+next quality gains should come from operating and calibrating those loops with
+representative evidence, not from adding more generic agents.
 
-The highest-value gaps are:
+The original highest-value gaps are now implemented:
 
-- explicit pattern selection per workflow stage
-- stronger verifier-gated promotion before autonomous changes expand
-- redacted remote request audit logs for governed server mode
-- clearer feedback and evaluation loops for local/BYO model routing
-- dashboard views that explain why the orchestrator chose a pattern, model,
-  agent, approval path, or fallback
+- workflow stages declare provider-neutral pattern metadata
+- autonomous promotion requires verifier, holdout, rollback, and policy evidence
+- governed server mode writes append-only redacted request audit events
+- local/BYO model changes flow through feedback, evaluation, and promotion gates
+- workflow graph and stage views explain selected patterns and their control flow
 
 ## Pattern Fit
 
-| Pattern | Current Fit | Existing Capability | Gap |
+| Pattern | Current Fit | Existing Capability | Outcome |
 | --- | --- | --- | --- |
-| Single-shot agent | Strong for simple local tasks | Direct agent tasks, deterministic mock provider, compact briefs | Need clearer routing when a user request should stay single-shot instead of becoming a workflow. |
-| ReAct agent | Partial | Worker stages can request policy-checked commands and file writes, then continue from receipts | Missing a first-class observe-act loop model with bounded iterations and explicit stop reasons. |
-| Planner-executor agent | Strong | `workflow-orchestrator`, `task-triager`, workflow YAML stages, specialist agents, worker queue | Need explicit stage-level pattern metadata so workflows can declare when a stage is planner, executor, verifier, or reflexive. |
-| Reflexive agent | Partial to strong | Learning daemon, feedback inbox, preference scorecards, tuning proposals, agent improvement patches | Needs tighter eval-backed promotion so self-improvements can be applied only when representative holdout evidence passes. |
-| Verifier-gated agent | Strong | `test-engineer`, `security-reviewer`, quality gates, approval inbox, policy engine, evaluation gates | Need verifier results shown as promotion blockers or enablers in every improvement surface. |
-| Combined production architecture | Strong locally | Durable storage, queue, artifacts, receipts, policy snapshots, MCP, dashboard, worker pools | Governed server mode needs request audit logs, rate controls, and clearer operator boundaries before broader remote use. |
+| Single-shot agent | Strong for simple local tasks | Direct agent tasks, deterministic mock provider, compact briefs | Routing remains explicit through triage and dynamic workflow construction; the dashboard explains the selected stage pattern. |
+| ReAct agent | Strong and bounded | Worker stages request policy-checked commands and file writes, then continue from receipts | ReAct stages record bounded observe-act iterations, policy decisions, results, and explicit stop reasons. |
+| Planner-executor agent | Strong | `workflow-orchestrator`, `task-triager`, workflow YAML stages, specialist agents, worker queue | Stage-level metadata declares planner, executor, verifier, reflexive, finalizer, ReAct, or single-shot behavior. |
+| Reflexive agent | Strong and governed | Learning daemon, feedback inbox, preference scorecards, tuning proposals, agent improvement patches | Representative holdout evidence, rollback hashes, and evaluation gates control promotion. |
+| Verifier-gated agent | Strong | `test-engineer`, `security-reviewer`, quality gates, approval inbox, policy engine, evaluation gates | Promotion surfaces expose verifier evidence as a blocker or enabler rather than an advisory result. |
+| Combined production architecture | Strong locally and governed remotely | Durable storage, queue, artifacts, receipts, policy snapshots, MCP, dashboard, worker pools | Server mode enforces auth, project routing, request limits, rate controls, idempotency, redacted audit events, and operator boundaries. |
 
 ## Current Architecture Strengths
 
@@ -50,7 +54,7 @@ The highest-value gaps are:
 - **Local-first safety**: project files, private context, learning state, and
   approvals stay local unless a user explicitly exports or enables server mode.
 
-## Gaps To Close
+## Closure Evidence
 
 ### 1. Explicit Stage Pattern Metadata
 
@@ -87,9 +91,9 @@ tasks.
 
 ### 3. Verifier-First Self-Improvement
 
-The learning daemon can generate recommendations, patch previews, holdout
-evals, and promotion queues. The next step is to make promotion evidence the
-default decision layer:
+The learning daemon generates recommendations, patch previews, holdout evals,
+and promotion queues. Promotion evidence is the default decision layer and
+records:
 
 - candidate patch
 - representative holdout tasks
@@ -104,9 +108,9 @@ shared behavior based only on weak signals.
 
 ### 4. Remote Request Audit Logs
 
-Governed server mode now has auth, project-id routing, idempotency, request
-size limits, and rate limits. It still needs append-only redacted request logs
-for server-mode operations:
+Governed server mode has auth, project-id routing, idempotency, request size
+limits, rate limits, and append-only redacted request audit events for
+server-mode operations:
 
 - request id
 - actor and role
@@ -123,7 +127,8 @@ artifact bodies.
 
 ### 5. Pattern-Aware Dashboard Explanation
 
-The dashboard should tell users why a workflow used a given pattern:
+The workflow graph and stage detail surfaces tell users why a workflow used a
+given pattern, including:
 
 - why the request became a workflow instead of a single agent task
 - why a stage was verifier-gated
@@ -134,12 +139,22 @@ The dashboard should tell users why a workflow used a given pattern:
 This improves trust and reduces confusion around approvals, daemon autonomy,
 and model routing.
 
-## Recommended Next Implementation Order
+## Remaining Architecture Work
 
-1. Add redacted remote request logs for server-mode hardening.
-2. Strengthen verifier-first promotion summaries across learning and model
-   improvement pages.
-3. Add pattern explanations to dashboard run details and workflow graph.
+The pattern gaps above are closed. The remaining architecture work is
+operational proof and maintainability work rather than missing pattern support:
+
+1. Accumulate sustained guarded-autonomy baselines, fault drills, and a reviewed
+   promotion canary before expanding authority.
+2. Complete a maintenance-window two-host promotion and rollback drill to prove
+   recovery without split-brain writes or lost receipts.
+3. Continue extracting the five oversized production modules without weakening
+   the source-size ratchet or their focused contracts.
+4. Resume Codex MCP transport diagnosis only when a fresh client-owned stdio
+   lifecycle failure provides reproducible evidence.
+
+The authoritative order and exit gates live in
+[`roadmap.md`](roadmap.md#current-execution-priority).
 
 ## Open Source Boundary
 

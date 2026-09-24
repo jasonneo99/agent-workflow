@@ -203,6 +203,12 @@ failure; and the durable proposal/canary pipeline uses frozen-baseline hashes,
 human approval, staged rollout thresholds, rollback/quarantine receipts, and an
 adversarial release gate.
 
+Recently completed: governed daily public-source training discovery now rotates
+coverage across registered agents and daemon lanes, deduplicates evidence,
+quarantines instruction-like content, and produces reviewable proposals with
+provenance, evaluation, cost, risk, licensing, and rollback fields. It does not
+silently train agents or expand daemon authority.
+
 1. **Operate and calibrate the guarded-autonomy controls with production evidence.**
    - Priority: critical
    - Why first: the six implementation contracts are now live, but authority
@@ -246,16 +252,6 @@ adversarial release gate.
      tuning history, action/ReAct receipts, and guarded-autonomy storage schema
      now have owned modules. The ratchet still reports five historical growth
      regressions, so this item remains open rather than resetting the baseline.
-5. **Add governed recurring web training discovery for every agent and daemon lane.**
-   - Priority: high
-   - Why next: agent and daemon guidance can become stale as tools, security
-     practices, model capabilities, and engineering techniques evolve.
-   - Exit gate: a configurable daemon cadence inventories every registered
-     agent and daemon lane, searches approved public sources for relevant
-     training material, and produces provenance-backed proposals with eval and
-     rollback plans; it never silently trains, rewrites shared prompts, or
-     imports untrusted content into execution context.
-
 ## Phase 1: Shared Platform Hardening
 
 Goal: make the reusable platform safer and easier to adopt without requiring private product context.
