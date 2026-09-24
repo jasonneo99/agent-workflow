@@ -36,6 +36,7 @@ import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageR
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "./reference-resolution.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
+import { buildWeeklyThroughputBuckets } from "./dashboard/throughput.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
@@ -27988,19 +27989,7 @@ function renderOpsPulseLine(): string {
 }
 
 function renderOpsThroughputChart(runs: DashboardRunStatus[]): string {
-  const byDay = new Map<string, { label: string; completed: number; failed: number; active: number }>();
-  for (const run of [...runs].reverse()) {
-    const date = new Date(run.startedAt);
-    const key = Number.isFinite(date.getTime())
-      ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
-      : run.startedAt.slice(0, 10);
-    const bucket = byDay.get(key) ?? { label: date.toLocaleDateString("en-US", { month: "short", day: "numeric" }), completed: 0, failed: 0, active: 0 };
-    if (run.status === "completed") bucket.completed += 1;
-    else if (run.status === "failed") bucket.failed += 1;
-    else bucket.active += 1;
-    byDay.set(key, bucket);
-  }
-  const buckets = [...byDay.values()].slice(-10);
+  const buckets = buildWeeklyThroughputBuckets(runs);
   const max = Math.max(...buckets.map((bucket) => bucket.completed + bucket.failed + bucket.active), 1);
   const bars = buckets.map((bucket) => {
     const total = bucket.completed + bucket.failed + bucket.active;
