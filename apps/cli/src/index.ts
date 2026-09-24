@@ -36,7 +36,7 @@ import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageR
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "./reference-resolution.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
-import { buildWeeklyThroughputBuckets } from "./dashboard/throughput.js";
+import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
@@ -27821,8 +27821,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
-  const [runs, workflows, worker, supervisor, runtimeMonitor, roadmap, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
+  const [runs, throughput, workflows, worker, supervisor, runtimeMonitor, roadmap, queue, projects, services, pendingApprovals, approvedExecutableApprovals] = await Promise.all([
     loadCachedDashboardReport("dashboard-home:runs:25", () => listWorkflowRuns(25), 2_000),
+    loadCachedDashboardReport("dashboard-home:throughput:7", () => listWorkflowRunThroughput(7), 2_000),
     loadWorkflows(rootDir),
     loadDashboardWorkerStatus(),
     loadDashboardSupervisorStatus(),
@@ -27855,14 +27856,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     readLearningActionReceipts(daemonProject).catch(() => null)
   ]);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-  response.end(renderDashboardHtml(runs, workflows, health));
+  response.end(renderDashboardHtml(runs, workflows, health, throughput));
 }
 
-function renderDashboardHtml(
-  runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
-  workflows: Awaited<ReturnType<typeof loadWorkflows>>,
-  health: DashboardHomeHealth
-): string {
+function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[]): string {
   const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
   const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 8);
   const pendingApprovals = health.pendingApprovals.length;
@@ -27929,7 +27926,7 @@ function renderDashboardHtml(
       </div>
     </section>
     <div class="ops-chart-grid">
-      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Workflow throughput</h2><span>Runs by final state · recent storage window</span></div><a href="/runs">View runs</a></div>${renderOpsThroughputChart(runs)}</section>
+      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Workflow throughput</h2><span>Runs by final state · rolling 7 days</span></div><a href="/runs">View runs</a></div>${renderOpsThroughputChart(throughput)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>
       <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Execution duration</h2><span>Completed and failed run latency</span></div></div>${renderOpsDurationChart(terminalRuns)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Queue pressure</h2><span>Stage work and oldest active item</span></div><a href="/queue">Open queue</a></div>${renderOpsQueuePressure(health.queue)}</section>
@@ -27988,12 +27985,12 @@ function renderOpsPulseLine(): string {
   return `<svg viewBox="0 0 640 52" preserveAspectRatio="none"><path class="pulse-grid" d="M0 26H640"></path><path class="pulse-one" d="M0 26 C45 26 48 12 78 26 S118 44 148 22 S202 9 236 27 S282 42 314 20 S366 7 405 27 S464 39 500 22 S552 15 580 26 S614 26 640 26"></path><path class="pulse-two" d="M0 26 C70 26 78 35 104 24 S148 14 176 28 S224 38 252 24 S300 18 334 28 S382 35 412 23 S466 18 496 27 S548 33 574 25 S614 26 640 26"></path></svg>`;
 }
 
-function renderOpsThroughputChart(runs: DashboardRunStatus[]): string {
-  const buckets = buildWeeklyThroughputBuckets(runs);
+function renderOpsThroughputChart(buckets: WorkflowThroughputBucket[]): string {
   const max = Math.max(...buckets.map((bucket) => bucket.completed + bucket.failed + bucket.active), 1);
   const bars = buckets.map((bucket) => {
     const total = bucket.completed + bucket.failed + bucket.active;
-    return `<div class="ops-throughput-column" title="${escapeHtml(bucket.label)}: ${total} run(s)"><div class="ops-stacked-bar" style="--bar-height:${Math.max(8, Math.round((total / max) * 100))}%"><i class="completed" style="--share:${total ? bucket.completed / total : 0}"></i><i class="failed" style="--share:${total ? bucket.failed / total : 0}"></i><i class="active" style="--share:${total ? bucket.active / total : 0}"></i></div><span>${escapeHtml(bucket.label)}</span></div>`;
+    const label = new Date(`${bucket.key}T12:00:00`).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+    return `<div class="ops-throughput-column" title="${escapeHtml(label)}: ${total} run(s)"><div class="ops-stacked-bar" style="--bar-height:${Math.max(8, Math.round((total / max) * 100))}%"><i class="completed" style="--share:${total ? bucket.completed / total : 0}"></i><i class="failed" style="--share:${total ? bucket.failed / total : 0}"></i><i class="active" style="--share:${total ? bucket.active / total : 0}"></i></div><span>${escapeHtml(label)}</span></div>`;
   }).join("");
   return `<div class="ops-chart-frame"><div class="ops-y-labels"><span>${max}</span><span>${Math.ceil(max / 2)}</span><span>0</span></div><div class="ops-throughput-bars">${bars || '<div class="ops-empty">No run data</div>'}</div></div><div class="ops-legend"><span><i class="completed"></i>Completed</span><span><i class="failed"></i>Failed</span><span><i class="active"></i>Active</span></div>`;
 }
