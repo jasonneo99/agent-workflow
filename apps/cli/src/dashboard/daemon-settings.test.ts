@@ -1,6 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { selectLearningProjectRoot } from "./daemon-settings.js";
+import { defaultDaemonTrustSettings } from "../../../../packages/daemon-control/src/index.js";
+import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./daemon-settings.js";
+
+test("learning settings require an explicit mutation section", () => {
+  const form = (value: string | null) => ({ get: (name: string) => name === "settingsSection" ? value : null });
+  assert.equal(parseLearningSettingsSection(form("daemon-trust")), "daemon-trust");
+  assert.equal(parseLearningSettingsSection(form("workflow-shape")), "workflow-shape");
+  assert.equal(parseLearningSettingsSection(form(null)), null);
+  assert.equal(parseLearningSettingsSection(form("all")), null);
+});
+
+test("workflow settings cannot overwrite existing daemon trust", () => {
+  const existing = { ...defaultDaemonTrustSettings(), "action-executor": "high" as const };
+  const staleForm = { get: (name: string) => name === "daemonTrust.action-executor" ? "low" : null };
+  assert.deepEqual(selectDaemonTrustSettings("workflow-shape", staleForm, existing), existing);
+  assert.equal(selectDaemonTrustSettings("daemon-trust", staleForm, existing)["action-executor"], "low");
+});
 
 test("learning settings prefer the mutable runtime checkout over a versioned release registration", () => {
   const selected = selectLearningProjectRoot({

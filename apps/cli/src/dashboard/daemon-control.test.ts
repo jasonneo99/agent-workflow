@@ -10,6 +10,8 @@ test("daemon control rendering exposes every lane and selected trust", () => {
   assert.match(html, /Daemon Control Plane/);
   assert.match(html, /Backup &amp; Recovery Verifier/);
   assert.match(html, /daemonTrust\.action-executor/);
+  assert.match(html, /name="settingsSection" value="daemon-trust"/u);
+  assert.doesNotMatch(html, /name="workflowShapeAutoUpdate"/u);
   assert.match(html, /value="high" selected/);
   assert.doesNotMatch(html, /Users\//);
 });

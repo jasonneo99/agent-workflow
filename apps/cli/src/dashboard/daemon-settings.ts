@@ -1,7 +1,23 @@
+import { defaultDaemonTrustSettings, type DaemonTrustSettings } from "../../../../packages/daemon-control/src/index.js";
 import { trustSettingsFromForm } from "../../../../packages/daemon-control/src/settings.js";
 
 export function parseDaemonSettingsRequest(form: Pick<FormData, "get">) {
   return { daemonTrustLevels: trustSettingsFromForm(form) };
+}
+
+export type LearningSettingsSection = "daemon-trust" | "workflow-shape";
+
+export function parseLearningSettingsSection(form: Pick<FormData, "get">): LearningSettingsSection | null {
+  const value = form.get("settingsSection");
+  return value === "daemon-trust" || value === "workflow-shape" ? value : null;
+}
+
+export function selectDaemonTrustSettings(
+  section: LearningSettingsSection,
+  form: Pick<FormData, "get">,
+  existing?: DaemonTrustSettings
+): DaemonTrustSettings {
+  return section === "daemon-trust" ? trustSettingsFromForm(form) : existing ?? defaultDaemonTrustSettings();
 }
 
 export function selectLearningProjectRoot(input: {

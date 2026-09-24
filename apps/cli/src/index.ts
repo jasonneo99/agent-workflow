@@ -35,7 +35,7 @@ import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buil
 import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageRisk } from "../../../packages/failure-triage/src/index.js";
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
-import { parseDaemonSettingsRequest, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
+import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
@@ -25855,28 +25855,28 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (request.method === "POST" && requestUrl.pathname === "/api/learning-settings") {
     const form = await readFormBody(request);
+    const settingsSection = parseLearningSettingsSection(form);
     const project = form.get("project") ?? "";
-    if (!project) {
-      respondDashboardAction(request, response, form, { ok: false, error: "Missing project." }, "/learning");
-      return;
-    }
+    if (!project) { respondDashboardAction(request, response, form, { ok: false, error: "Missing project." }, "/learning"); return; }
     const projectPath = await resolveDashboardProjectPath(project);
     if (!projectPath.localPathExists) {
       respondDashboardAction(request, response, form, { ok: false, error: "Daemon settings require a mutable local project checkout." }, "/learning?view=settings");
       return;
     }
+    if (!settingsSection) { respondDashboardAction(request, response, form, { ok: false, error: "This settings form is stale. Reload the page before saving so unrelated daemon settings are not overwritten." }, "/learning?view=settings"); return; }
     const projectDir = projectPath.localRootUri;
     const existingLearningSettings = await readLearningSettings(projectDir).catch(() => null);
+    const daemonTrustLevels = selectDaemonTrustSettings(settingsSection, form, existingLearningSettings?.daemonTrustLevels);
     await writeLearningSettings(projectDir, {
       kind: "agentflow_learning_settings",
       projectRootUri: projectDir,
       updatedAt: new Date().toISOString(),
-      workflowShapeAutoUpdate: form.get("workflowShapeAutoUpdate") === "on",
-      agentImprovementProjectLocalAutoApply: form.get("agentImprovementProjectLocalAutoApply") === "on",
-      autonomousApplyMaxRisk: parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium"),
-      approvalAutopilotEnabled: form.get("approvalAutopilotEnabled") === "on",
-      approvalAutopilotMaxRisk: parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium"),
-      ...parseDaemonSettingsRequest(form),
+      workflowShapeAutoUpdate: settingsSection === "workflow-shape" ? form.get("workflowShapeAutoUpdate") === "on" : existingLearningSettings?.workflowShapeAutoUpdate ?? true,
+      agentImprovementProjectLocalAutoApply: settingsSection === "workflow-shape" ? form.get("agentImprovementProjectLocalAutoApply") === "on" : existingLearningSettings?.agentImprovementProjectLocalAutoApply ?? true,
+      autonomousApplyMaxRisk: settingsSection === "workflow-shape" ? parseLearningRiskLevel(form.get("autonomousApplyMaxRisk") ?? "medium") : existingLearningSettings?.autonomousApplyMaxRisk ?? "medium",
+      approvalAutopilotEnabled: settingsSection === "workflow-shape" ? form.get("approvalAutopilotEnabled") === "on" : existingLearningSettings?.approvalAutopilotEnabled ?? false,
+      approvalAutopilotMaxRisk: settingsSection === "workflow-shape" ? parseApprovalAutopilotRisk(form.get("approvalAutopilotMaxRisk") ?? "medium") : existingLearningSettings?.approvalAutopilotMaxRisk ?? "medium",
+      daemonTrustLevels,
       daemonEnabled: existingLearningSettings?.daemonEnabled ?? true,
       daemonPaused: existingLearningSettings?.daemonPaused ?? false,
       daemonMode: existingLearningSettings?.daemonMode ?? "apply-approved",
@@ -25885,7 +25885,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const query = new URLSearchParams({
       project: projectDir,
       limit: form.get("limit") ?? "50",
-      workflow: form.get("workflow") ?? ""
+      workflow: form.get("workflow") ?? "", view: "settings"
     });
     response.writeHead(303, { location: `/learning?${query.toString()}` });
     response.end();
@@ -31486,10 +31486,10 @@ function renderWorkflowShapeOptimizationHtml(report: WorkflowShapeOptimizationRe
         <a class="button secondary" href="/workflow-graph?workflow=${encodeURIComponent(report.workflowId)}&project=${encodeURIComponent(report.projectRootUri)}&view=network">Graph</a>
       </div>
       <form method="post" action="/api/learning-settings" class="inline-action-form">
+        <input type="hidden" name="settingsSection" value="workflow-shape">
         <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri)}">
         <input type="hidden" name="workflow" value="${escapeHtml(report.workflowId)}">
         <input type="hidden" name="limit" value="${escapeHtml(String(report.runsAnalyzed || 50))}">
-        ${daemonLanes.map((lane) => `<input type="hidden" name="daemonTrust.${escapeHtml(lane.id)}" value="${escapeHtml(daemonTrustLevels[lane.id])}">`).join("")}
         <label class="checkbox-label">
           <input type="checkbox" name="workflowShapeAutoUpdate" value="on" ${autoUpdate ? "checked" : ""}>
           Autonomous optimizer writes learning-owned recommendation files
