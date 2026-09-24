@@ -681,14 +681,14 @@ export function dashboardCss(): string {
     button.secondary, .button.secondary { color: #b8d2e3; background: #091a2a; border-color: #23445e; box-shadow: none; }
     button.secondary:hover, .button.secondary:hover { color: #eaffff; border-color: #2c7794; background: #0c2336; }
 
-    .ops-home { max-width: 1800px; padding-top: 22px; }
+    .ops-home { max-width: 1840px; padding: 18px 18px 34px; }
     .ops-topbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; margin-bottom: 14px; }
     .ops-topbar h1 { margin: 0 0 3px; font-size: 23px; letter-spacing: -.025em; }
     .ops-topbar p { margin: 0; font-size: 13px; }
     .ops-topbar-actions { display: flex; align-items: center; gap: 10px; }
     .ops-live { display: inline-flex; align-items: center; gap: 7px; min-height: 36px; padding: 0 12px; border: 1px solid #16425a; background: #071827; color: #a8c0d0; font-size: 12px; }
     .ops-live i, .ops-system-state > i { width: 8px; height: 8px; border-radius: 50%; background: var(--ops-teal); box-shadow: 0 0 12px var(--ops-teal); animation: ops-live-pulse 2.2s ease-in-out infinite; }
-    .ops-pulse-panel, .ops-panel { border: 1px solid var(--ops-line); background: linear-gradient(145deg, rgba(7, 23, 38, .98), rgba(4, 15, 27, .98)); box-shadow: 0 14px 36px rgba(0, 0, 0, .2); }
+    .ops-pulse-panel, .ops-panel { border: 1px solid #19415c; background: linear-gradient(145deg, rgba(7, 23, 38, .98), rgba(4, 15, 27, .98)); box-shadow: inset 0 1px rgba(77, 153, 190, .045), 0 14px 36px rgba(0, 0, 0, .2); }
     .ops-pulse-panel { margin-bottom: 12px; }
     .ops-pulse-heading { min-height: 80px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, .42fr); align-items: stretch; border-bottom: 1px solid var(--ops-line); }
     .ops-neural-line { min-width: 0; padding: 10px 24px; display: flex; align-items: center; }
@@ -716,7 +716,7 @@ export function dashboardCss(): string {
     .ops-spark.violet polyline { stroke: var(--ops-violet); }
     .ops-spark.amber polyline { stroke: var(--ops-amber); }
     .ops-chart-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-    .ops-panel { min-width: 0; padding: 16px; }
+    .ops-panel { min-width: 0; padding: 14px; }
     .ops-span-2 { grid-column: span 2; }
     .ops-panel-heading { min-height: 42px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
     .ops-panel-heading h2 { margin: 0 0 3px; font-size: 14px; letter-spacing: -.01em; }
@@ -776,13 +776,20 @@ export function dashboardCss(): string {
     .ops-project-bars a > i { height: 5px; background: #10283b; }
     .ops-project-bars b { display: block; height: 100%; background: linear-gradient(90deg, var(--ops-cyan), var(--ops-violet)); box-shadow: 0 0 8px rgba(21, 223, 243, .22); }
     .ops-project-bars strong { text-align: right; font-size: 10px; }
-    .ops-lower-grid { display: grid; grid-template-columns: minmax(0, 1.8fr) minmax(280px, .8fr); gap: 12px; margin-top: 12px; }
-    .ops-table { border: 0; }
+    .ops-lower-grid { display: grid; grid-template-columns: minmax(680px, 1.75fr) minmax(320px, 1fr); gap: 12px; margin-top: 12px; align-items: stretch; }
+    .ops-table { width: 100%; table-layout: fixed; border: 0; }
+    .ops-table .ops-col-run { width: 12%; }
+    .ops-table .ops-col-task { width: 29%; }
+    .ops-table .ops-col-workflow { width: 22%; }
+    .ops-table .ops-col-status { width: 14%; }
+    .ops-table .ops-col-duration { width: 10%; }
+    .ops-table .ops-col-started { width: 13%; }
     .ops-table th { background: #0a1d2f; color: #7895aa; font-size: 9px; letter-spacing: .07em; }
-    .ops-table td { padding-block: 9px; font-size: 10px; vertical-align: middle; }
+    .ops-table td { padding-block: 9px; font-size: 10px; vertical-align: middle; overflow: hidden; text-overflow: ellipsis; }
     .ops-table td strong, .ops-table td small { display: block; }
+    .ops-table td strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .ops-table td small { margin-top: 3px; color: var(--ops-muted); font-size: 9px; }
-    .ops-run-status { display: inline-flex; align-items: center; gap: 6px; color: #9eb3c3; font-size: 9px; text-transform: capitalize; }
+    .ops-run-status, .ops-run-status.completed, .ops-run-status.failed, .ops-run-status.cancelled, .ops-run-status.running, .ops-run-status.queued { display: inline-flex; align-items: center; justify-content: flex-start; gap: 6px; min-width: 0; padding: 0; border-radius: 0; background: transparent; color: #9eb3c3; font-size: 9px; text-transform: capitalize; }
     .ops-run-status i, .ops-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #7690a4; }
     .ops-run-status.completed i, .ops-status-dot.good { background: var(--ops-teal); box-shadow: 0 0 7px rgba(22, 226, 176, .55); }
     .ops-run-status.failed i { background: var(--ops-red); box-shadow: 0 0 7px rgba(255, 98, 108, .5); }
@@ -794,6 +801,8 @@ export function dashboardCss(): string {
     .ops-approval-row small { margin-top: 3px; color: var(--ops-muted); font-size: 9px; }
     .ops-approval-row > span:last-child { color: var(--ops-cyan); font-size: 9px; }
     .ops-status-dot.warn { background: var(--ops-amber); box-shadow: 0 0 7px rgba(243, 184, 75, .5); }
+    .ops-approvals-panel { display: flex; flex-direction: column; }
+    .ops-approval-list { flex: 1; }
     .ops-empty { min-height: 130px; display: grid; place-content: center; gap: 4px; text-align: center; color: var(--ops-muted); font-size: 11px; }
     .ops-empty strong { font-size: 12px; }
     .ops-home .start-work { margin-top: 12px; }
@@ -816,6 +825,12 @@ export function dashboardCss(): string {
       .ops-strip { grid-template-columns: repeat(3, minmax(0, 1fr)); }
       .ops-state { grid-column: span 2; }
       .provider-hero { grid-template-columns: 1fr; }
+      .ops-lower-grid { grid-template-columns: 1fr; }
+      .ops-approvals-panel .ops-empty { min-height: 90px; }
+      .ops-donut-layout { grid-template-columns: minmax(86px, .85fr) minmax(76px, 1.15fr); gap: 8px; }
+      .ops-donut { width: min(118px, 100%); }
+      .ops-donut-key { gap: 9px; }
+      .ops-donut-key > div { gap: 5px; }
     }
     @media (max-width: 820px) {
       :root { --nav-width: 0px; }
