@@ -168,6 +168,24 @@ test("actionable blocked output continues through the governed action runner", (
   assert.equal(result.requestedFileWrites.length, 1);
 });
 
+test("normalizes a hash-pinned surgical patch without requiring full file content", () => {
+  const result = normalizeStageArtifact({
+    outcome: "completed",
+    requestedFileWrites: [{ path: "src/large.ts", content: null, patch: "@@ -1 +1 @@\n-old\n+new\n", expectedHash: "a".repeat(64) }]
+  });
+  assert.equal(result.requestedFileWrites.length, 1);
+  assert.equal(result.requestedFileWrites[0].content, null);
+  assert.match(result.requestedFileWrites[0].patch ?? "", /^@@/u);
+});
+
+test("rejects ambiguous write requests containing both content and a patch", () => {
+  const result = normalizeStageArtifact({
+    outcome: "completed",
+    requestedFileWrites: [{ path: "src/large.ts", content: "replacement", patch: "@@ -1 +1 @@\n-old\n+new\n", expectedHash: "a".repeat(64) }]
+  });
+  assert.equal(result.requestedFileWrites.length, 0);
+});
+
 test("stage prompts distinguish historical failure language from a current blocker", () => {
   const prompt = buildStagePrompt({
     runId: "run-final",

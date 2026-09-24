@@ -147,9 +147,11 @@ export class OpenAIProvider implements ModelProvider {
                   additionalProperties: false,
                   properties: {
                     path: { type: "string" },
-                    content: { type: "string" }
+                    content: { type: ["string", "null"] },
+                    patch: { type: ["string", "null"] },
+                    expectedHash: { type: ["string", "null"] }
                   },
-                  required: ["path", "content"]
+                  required: ["path", "content", "patch", "expectedHash"]
                 }
               }
             },

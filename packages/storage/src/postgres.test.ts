@@ -305,7 +305,7 @@ test("side effects are reserved before dispatch and uncertain claims are not rep
   assert.match(reliabilitySource, /export async function finalizeSideEffect[\s\S]+status='pending'[\s\S]+claim_token=\$3::uuid/u);
   const executorSource = readFileSync(new URL("../../workflow-engine/src/executor.ts", import.meta.url), "utf8");
   assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedCommand/u);
-  assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedFileWrite/u);
+  assert.match(executorSource, /claimSideEffect[\s\S]+executeAllowedFileMutation/u);
   assert.match(executorSource, /type\.includes\("_side_effect_"\)/u);
 });
 

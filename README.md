@@ -5,10 +5,10 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 ## What it does
 
 - **25 specialist agents** — architecture, frontend, backend, security, UX, testing, model improvement, docs, and more
-- **19 composable workflows** — build features, review PRs, debug failures, improve model routing, make architecture decisions, investigate performance, and check release readiness
-- **BYO model first** — use any OpenAI-compatible model gateway, plus optional OpenAI, Bedrock, or Kiro adapters
+- **20 composable workflows** — build features, review PRs, debug failures, improve model routing, make architecture decisions, investigate performance, and check release readiness
+- **BYO model first** — use any OpenAI-compatible model gateway, plus Codex CLI, OpenAI, Anthropic, Muse, Bedrock, Kiro, and local adapters
 - **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
-- **Adaptive routing** — send cheap stages to local/BYO models, promote stages from feedback, and use stronger providers where needed
+- **Adaptive routing** — select ready providers and models from fresh per-agent/task evidence while preserving exact overrides and policy boundaries
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
 - **Durable execution** — queued stages, receipts, artifacts, and exportable reports
 - **Multi-project governance** — read-only health, provider, policy-drift, queue, role, artifact lifecycle, and remediation reporting
@@ -168,6 +168,13 @@ environment variables only when you want to pin exact models.
 Use `AGENTFLOW_MODEL_POLICY` to tune the catalog selector without hard-coding
 model IDs: `lowest-cost`, `balanced`, `best-coding` (default), or
 `maximum-reasoning`.
+
+When the learning optimizer has enough fresh comparison evidence, adaptive
+routing can choose a provider and model for the exact agent and task class.
+Availability is a hard gate; minimum samples, quality, task success, fallback
+rate, latency, cost, and evidence age are reviewable inputs. Stale, malformed,
+or insufficient evidence cannot change a route. Explicit provider and model
+overrides remain authoritative for reproducible runs and one-step rollback.
 
 | Tier | Use case | Default routing behavior |
 |------|----------|--------------------------|

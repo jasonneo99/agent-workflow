@@ -65,3 +65,21 @@ artifacts, or mutate storage.
 Keep destructive prune/delete operations outside recovery until a future release
 adds an audited implementation. Current prune/delete gates record approval and
 policy evidence but do not delete data.
+
+## Independent Standby Evidence
+
+The recovery design has been exercised against an independent standby host:
+
+- a newly written durable breaker generation replayed to standby PostgreSQL;
+- standby PostgreSQL remained in recovery/read-only mode while receive and
+  replay positions converged;
+- an expiring Redis proof key replicated to the standby instance; and
+- PostgreSQL, Redis, and object-storage standby monitors all reported healthy.
+
+This is evidence of independent-host replication readiness and split-brain
+protection. It is not evidence that promotion and rollback have completed.
+Treat standby promotion, client endpoint switching, primary fencing, and
+rollback as a planned maintenance-window drill. During that drill, require one
+writer, preserve immutable receipts, verify project identity and path mapping,
+and record the before/after recovery evidence. Never promote automatically only
+because replication monitors are healthy.

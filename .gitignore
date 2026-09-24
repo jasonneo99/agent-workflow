@@ -25,6 +25,8 @@ exports/
 .agent-workflow/evals/
 .agent-workflow/model-improvement/
 .agent-workflow/runtime.env
+.agent-workflow/perf-report.md
+.agent-workflow/plans/
 templates/**/.agent-workflow/learning/
 templates/**/.agent-workflow/tuning/
 templates/**/.agent-workflow/context-gateway/

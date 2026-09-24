@@ -79,6 +79,22 @@ test("delivery implementation requires a governed product write even without an 
   assert.match(unfulfilledCompletionReason(deliveryInput, output) ?? "", /governed product file write/i);
 });
 
+test("advisory agent tasks may complete inspection without inventing a product write", () => {
+  const output = {
+    outcome: "completed",
+    summary: "Inspected the implementation path and prepared bounded recommendations without changing files.",
+    artifact: { findings: ["The existing implementation is valid."], nextAction: "Review the findings." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  const advisoryInput = {
+    ...input,
+    workflowId: "agent-task-implementation-agent",
+    workflowTask: "Inspect the implementation and recommend any useful fixes."
+  };
+  assert.equal(unfulfilledCompletionReason(advisoryInput, output), null);
+});
+
 test("delivery verification cannot complete while reporting that tests were not run", () => {
   const output = {
     outcome: "completed",

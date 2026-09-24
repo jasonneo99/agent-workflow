@@ -7,6 +7,7 @@ import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
+import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
@@ -30,8 +31,6 @@ import {
   findRunActionByIdempotencyKey,
   failWorkflowTask,
   finalizeSideEffect,
-  assertStageAuthority,
-  issueStageAuthorityGrant,
   recordRunAction,
   requeueExpiredWorkflowTaskLeases,
   requeueRunningWorkflowTasks,
@@ -42,6 +41,7 @@ import {
   withProjectExecutionLock,
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
+import { createRenewingStageAuthority } from "./stage-authority.js";
 
 export interface WorkerResult {
   claimed: number;
@@ -224,20 +224,16 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         projectConfig: project,
         modelTier: (task.modelTier as "fast" | "standard" | "reasoning") ?? undefined
       };
-      const authorityExpiresAt = task.leaseExpiresAt
-        ? new Date(task.leaseExpiresAt).toISOString()
-        : new Date(Date.now() + leaseSeconds * 1000).toISOString();
       if (task.executorSnapshot) {
-        const executorGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: authorityExpiresAt, mutationAllowed: true });
-        await assertStageAuthority({ grant: executorGrant, mutation: true });
+        const assertExecutorAuthority = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
+        await assertExecutorAuthority(true);
         await executeBoundExecutorStage(task, project, assertLeaseOwned);
         clearInterval(leaseHeartbeat);
         result.completed += 1;
         continue;
       }
       const route = await selectModelRoute(stageInput, { allowedProviderIds: options?.providerIds });
-      const authorityGrant = await issueStageAuthorityGrant({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: route.providerId, policySnapshot: project, evidence: task.compiledBrief || task.stageGoal, expiresAt: authorityExpiresAt, mutationAllowed: true });
-      const assertStageGuard = (mutation: boolean): Promise<void> => assertStageAuthority({ grant: authorityGrant, mutation });
+      const assertStageGuard = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: route.providerId, project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
       attemptedProviderId = route.providerId;
       const memoryContext = await buildMemoryContextForStage({
         projectId: localProjectRootUri,
@@ -1013,13 +1009,16 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         for (const fileWrite of output.requestedFileWrites ?? []) {
           await assertLeaseOwned();
           reactIteration += 1;
+          const mutation = normalizeRequestedFileMutation(fileWrite);
+          if (!mutation) continue;
+          const { isPatch, payload: filePayload, expectedHash, bytes: actionBytes } = mutation;
           const fileWriteIdempotencyKey = actionIdempotencyKey({
             taskId: task.taskId,
             stageId: task.stageId,
             agentId: task.agentId,
             actionType: "file_write",
             target: fileWrite.path,
-            payload: fileWrite.content
+            payload: mutation.idempotencyPayload
           });
           const previousWrite = await findRunActionByIdempotencyKey({
             runId: task.runId,
@@ -1056,7 +1055,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               totalRequestedActions,
               actionType: "file_write",
               target: fileWrite.path,
-              payloadHash: hashText(fileWrite.content),
+              payloadHash: hashText(filePayload),
               policyDecision: {
                 status: "reused",
                 approvalRequired: false,
@@ -1075,7 +1074,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
           if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
             try {
-              assertFileWriteAllowed(fileWrite.path, fileWrite.content, project);
+              if (isPatch) assertFilePatchAllowed(fileWrite.path, filePayload, expectedHash!, project);
+              else assertFileWriteAllowed(fileWrite.path, filePayload, project);
             } catch (error) {
               const rejectionArtifactUri = await recordRunAction({
                 runId: task.runId,
@@ -1106,7 +1106,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 totalRequestedActions,
                 actionType: "file_write",
                 target: fileWrite.path,
-                payloadHash: hashText(fileWrite.content),
+                payloadHash: hashText(filePayload),
                 policyDecision: {
                   status: "rejected",
                   approvalRequired: false,
@@ -1125,12 +1125,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               project,
               actionType: "file_write",
               target: fileWrite.path,
-              bytes: Buffer.byteLength(fileWrite.content, "utf8")
+              bytes: actionBytes
             }) ?? evaluateActionRiskAutoApproval({
               project,
               actionType: "file_write",
               target: fileWrite.path,
-              bytes: Buffer.byteLength(fileWrite.content, "utf8")
+              bytes: actionBytes
             });
             if (!fileWriteApprovalRule) {
               const approval = await requestActionApproval({
@@ -1148,8 +1148,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 },
                 payload: {
                   relativePath: fileWrite.path,
-                  bytes: Buffer.byteLength(fileWrite.content, "utf8"),
-                  payloadHash: hashText(fileWrite.content)
+                  bytes: actionBytes,
+                  payloadHash: hashText(filePayload),
+                  mode: isPatch ? "patch" : "replace",
+                  expectedHash
                 },
                 idempotencyKey: fileWriteIdempotencyKey
               });
@@ -1167,7 +1169,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 totalRequestedActions,
                 actionType: "file_write",
                 target: fileWrite.path,
-                payloadHash: hashText(fileWrite.content),
+                payloadHash: hashText(filePayload),
                 policyDecision: {
                   status: "approval_required",
                   approvalRequired: true,
@@ -1195,12 +1197,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           try {
             writeResult = await withProjectExecutionLock(
               { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
-              () => executeAllowedFileWrite({
-                relativePath: fileWrite.path,
-                content: fileWrite.content,
-                cwd: localProjectRootUri,
-                project
-              })
+              () => executeAllowedFileMutation({ request: fileWrite, payload: filePayload, isPatch, expectedHash, cwd: localProjectRootUri, project })
             );
           } catch (error) {
             const rejectionArtifactUri = await recordRunAction({
@@ -1232,7 +1229,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               totalRequestedActions,
               actionType: "file_write",
               target: fileWrite.path,
-              payloadHash: hashText(fileWrite.content),
+              payloadHash: hashText(filePayload),
               policyDecision: {
                 status: "rejected",
                 approvalRequired: false,
@@ -1248,10 +1245,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             });
             continue;
           }
-          const summary = [
-            `Wrote ${writeResult.bytesWritten} bytes to \`${writeResult.relativePath}\`.`,
-            writeResult.existed ? "Updated existing file." : "Created new file."
-          ].join(" ");
+          const summary = summarizeFileMutation(writeResult, isPatch);
           const artifactUri = await recordRunAction({
             runId: task.runId,
             taskId: task.taskId,
@@ -1263,6 +1257,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactContent: {
               ...writeResult,
               approvalRule: fileWriteApprovalRule ?? undefined,
+              mode: isPatch ? "patch" : "replace",
               requestedByTaskId: task.taskId,
               requestedByStageId: task.stageId
             },
@@ -1286,7 +1281,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             totalRequestedActions,
             actionType: "file_write",
             target: writeResult.relativePath,
-            payloadHash: hashText(fileWrite.content),
+            payloadHash: hashText(filePayload),
             policyDecision: {
               status: fileWriteApprovalRule ? "auto_approved_by_rule" : "allowed",
               approvalRequired: false,

@@ -62,7 +62,9 @@ export interface StageExecutionOutput {
   requestedCommands?: string[];
   requestedFileWrites?: Array<{
     path: string;
-    content: string;
+    content?: string | null;
+    patch?: string | null;
+    expectedHash?: string | null;
   }>;
   requestedFileReads?: string[];
 }

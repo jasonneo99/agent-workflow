@@ -10,7 +10,9 @@ export interface StageJsonArtifact {
   requestedCommands: string[];
   requestedFileWrites: Array<{
     path: string;
-    content: string;
+    content?: string | null;
+    patch?: string | null;
+    expectedHash?: string | null;
   }>;
   requestedFileReads: string[];
 }
@@ -86,7 +88,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- findings: concrete observations, risks, or decisions",
     "- nextAction: the next useful workflow action",
     "- requestedCommands: exact commands from the allowed command policy only; do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
-    "- requestedFileWrites: project-relative files under allowed write paths only, each with path and full content; use [] unless a file edit is necessary and keep content compact",
+    "- requestedFileWrites: project-relative files under allowed write paths only. For a compact or new file, provide path and full content, with patch/expectedHash null. For a surgical edit to a large existing file, provide path, a unified-diff patch containing @@ hunks, and the SHA-256 expectedHash of the exact preimage, with content null. Never provide both content and patch. Use [] unless an edit is necessary",
     "- requestedFileReads: project-relative files to inspect, under allowed read paths only; files you list here are read and shown to you, then you are asked again so you can act on what you read; request reads first whenever you need source context instead of guessing; use [] when no inspection is needed"
   ].join("\n");
 }
@@ -170,7 +172,12 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
     : [];
   const requestedFileWrites = Array.isArray(value.requestedFileWrites)
     ? value.requestedFileWrites
-      .filter((item): item is { path: string; content: string } => Boolean(item) && typeof item.path === "string" && item.path.trim().length > 0 && typeof item.content === "string")
+      .filter((item): item is { path: string; content?: string | null; patch?: string | null; expectedHash?: string | null } => {
+        if (!item || typeof item.path !== "string" || !item.path.trim()) return false;
+        const content = typeof item.content === "string";
+        const patch = typeof item.patch === "string" && typeof item.expectedHash === "string";
+        return content !== patch;
+      })
     : [];
   const requestedFileReads = Array.isArray(value.requestedFileReads)
     ? value.requestedFileReads

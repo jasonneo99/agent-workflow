@@ -59,6 +59,11 @@ export function assertFileWriteAllowed(relativePathInput: string, content: strin
     throw new Error(`File write rejected: content is ${bytes} bytes, max is ${project.actions.max_write_bytes}.`);
   }
 
+  assertFilePathAllowed(relativePath, project);
+}
+
+export function assertFilePathAllowed(relativePathInput: string, project: ProjectConfig): string {
+  const relativePath = normalizeRelativePath(relativePathInput);
   for (const pattern of project.actions.blocked_write_paths) {
     if (matchesGlob(relativePath, pattern)) {
       throw new Error(`File write rejected by blocked path pattern: ${pattern}`);
@@ -69,9 +74,10 @@ export function assertFileWriteAllowed(relativePathInput: string, content: strin
   if (!allowed) {
     throw new Error(`File write is not allowed by project policy: ${relativePath}`);
   }
+  return relativePath;
 }
 
-function normalizeRelativePath(value: string): string {
+export function normalizeRelativePath(value: string): string {
   const normalized = value.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!normalized) {
     throw new Error("File write rejected: path is empty.");
@@ -113,6 +119,6 @@ function escapeRegExp(value: string): string {
   return value.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&");
 }
 
-function sha256(content: Buffer): string {
+export function sha256(content: Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }

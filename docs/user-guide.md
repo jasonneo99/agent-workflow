@@ -1645,7 +1645,10 @@ npm run provider-smoke
 
 The `run-and-watch`, `agent-task`, `preset`, `orchestrate`, `summarize-run`, `onboard-project`, project-local agents, schedules, dashboard commands, adaptive model routing, quality scoring, and cost/quality reporting are now implemented.
 
-Adaptive routing lets Agent Workflow start with cheaper BYO/local models, promote hard stages to stronger models, retry low-quality outputs through a fallback provider, and record which agent/model combinations produce the best accepted results.
+Adaptive routing lets Agent Workflow start with cheaper BYO/local models,
+promote hard stages to stronger models, retry low-quality outputs through a
+fallback provider, and use fresh measured evidence to select a provider and
+model for an exact agent and task class.
 
 Configure it with:
 
@@ -1678,6 +1681,20 @@ Each worker stage records:
 - durable preference notes that shaped the result
 ```
 
+Per-agent evidence is deliberately conservative. Provider availability is a
+hard gate, and the evidence must meet minimum sample, quality, task-success,
+fallback, and freshness thresholds before it can alter a route. Passing
+candidates are compared using quality, successful task completion, fallback
+behavior, latency, estimated cost, sample confidence, and age. The routing
+reason distinguishes **insufficient evidence** from **poor performance**, so a
+new model is not punished merely because it has too few observations. Evidence
+older than 30 days and malformed records are ignored.
+
+Explicit provider and model overrides take precedence over learned routing.
+Use them for pinned reproducibility or immediate rollback; adaptive evidence
+cannot bypass project policy, worker capabilities, data boundaries, approval
+requirements, stage authority, or provider readiness.
+
 ## 17. Feedback Memory
 
 Record whether a run was useful:
@@ -1701,7 +1718,15 @@ The dashboard page `/feedback-inbox` groups unreviewed runs into probably accept
 
 Use **Bulk Review** from `/feedback-inbox` to review suggested ratings and notes in one table. Rows are checked by default so you can quickly submit the obvious items, but you can uncheck any row, change its rating, or edit its note before recording feedback.
 
-Compiled briefs include recent feedback as adaptive preference notes. If prior feedback includes revised or rejected outcomes, adaptive routing conservatively promotes fast stages to standard and records that decision in the `model_route` receipt and quality report. Compiled briefs also include approved project-local tuning notes from `.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and `routing-preferences.md` with a small context cap.
+Compiled briefs include recent feedback as adaptive preference notes. If prior
+feedback includes revised or rejected outcomes, adaptive routing conservatively
+promotes fast stages to standard and records that decision in the `model_route`
+receipt and quality report. Approved optimizer output may also include scrubbed
+structured per-agent/task-class route evidence; only the guarded thresholds in
+the preceding section allow it to affect execution. Compiled briefs include
+approved project-local tuning notes from
+`.agent-workflow/tuning/agent-notes.md`, `context-budget-notes.md`, and
+`routing-preferences.md` with a small context cap.
 
 ## 18. Preference Scorecard
 

@@ -118,7 +118,7 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
     }
   }
   if ((output.requestedFileWrites ?? []).some((write) => isProductWritePath(write.path))) return null;
-  if (deliveryIntent && implementationStage) {
+  if (deliveryWorkflow && deliveryIntent && implementationStage) {
     return "Delivery implementation stage cannot complete without at least one governed product file write; planning or inspection alone does not satisfy the user acceptance contract.";
   }
   const text = `${output.summary} ${JSON.stringify(output.artifact)}`.toLowerCase();

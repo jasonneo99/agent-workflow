@@ -68,6 +68,8 @@ actions:
     - npm run validate
     - npm run validate-examples
     - npm run provider-check
+    - npm run check
+    - npm run reliability -- intent *
     - npm run list
     - npm run status
     - npm run agentflow -- list
@@ -100,6 +102,7 @@ actions:
     - package-lock.json
     - tsconfig.json
     - agent-workflow.bundle.json
+    - repository-maintenance-baseline.json
   blocked_write_paths:
     - .git/**
     - node_modules/**

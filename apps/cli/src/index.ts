@@ -39,6 +39,9 @@ import { parseDaemonSettingsRequest, selectLearningProjectRoot } from "./dashboa
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { parsePositiveInteger, parseNonNegativeInteger, parseOptionalNumber, parseBoundedPositiveInteger, parseDashboardRunLimit } from "./numeric-options.js";
+import { commandPrefixForPackageManager, detectFrameworks, detectLanguages, detectMarkers, detectPackageManager } from "./onboarding-detection.js";
+import { recommendAgents, recommendCommands, recommendContextExcludes, recommendContextIncludes, recommendWorkflows, recommendWritePaths } from "./onboarding-recommendations.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
 import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
@@ -2241,7 +2244,7 @@ program
         stageGoal: options.spec, compiledBrief: `Reference: ${options.reference}\n\n${referenceContent}`, modelTier: "fast", priorReceipts: []
       });
       const candidate = output.requestedFileWrites?.find((item) => item.path === options.target);
-      if (!candidate) throw new Error(`Provider ${provider.id} did not return a candidate write for the exact target ${options.target}.`);
+      if (!candidate || typeof candidate.content !== "string") throw new Error(`Provider ${provider.id} did not return full file content for the exact target ${options.target}.`);
       assertFileWriteAllowed(options.target, candidate.content, project);
       const created = await createCodegenPlan({ projectRoot: projectDir, target: options.target, reference: options.reference, referenceContent, candidateContent: candidate.content, spec: options.spec, provider: provider.id });
       const report = { planId: created.plan.id, status: created.plan.status, provider: provider.id, target: created.plan.target, referenceHash: created.plan.referenceHash, candidateHash: created.plan.candidateHash, diff: created.plan.diff, next: `Review the diff, then rerun with --plan ${created.plan.id} --approved --reviewed-by <name> --validate-command <allowed-command>.` };
@@ -27436,13 +27439,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   }
 
   if (requestUrl.pathname === "/evaluations") {
-    const suites = await loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations());
-    const requestedSuite = requestUrl.searchParams.get("suite");
-    const selected = requestedSuite
-      ? suites.find((suite) => suite.id === requestedSuite) ?? null
-      : suites[0] ?? null;
+    const [suites, providerStatuses] = await Promise.all([loadCachedDashboardReport("evaluations:250", () => loadDashboardEvaluations()), loadCachedDashboardReport("evaluation-provider-statuses", () => loadAutoProviderStatuses())]);
+    const requestedSuite = requestUrl.searchParams.get("suite"), selected = requestedSuite ? suites.find((suite) => suite.id === requestedSuite) ?? null : suites[0] ?? null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderEvaluationsHtml(suites, selected));
+    response.end(renderEvaluationsHtml(suites, selected, providerStatuses));
     return;
   }
 
@@ -29490,7 +29490,8 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
 </html>`;
 }
 
-function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: DashboardEvaluationSuite | null): string {
+function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: DashboardEvaluationSuite | null, providerStatuses: Awaited<ReturnType<typeof loadAutoProviderStatuses>>): string { const testedProviders = new Set(suites.flatMap((suite) => suite.variants.map((variant) => variant.provider)));
+  const providerRows = providerStatuses.map((provider) => { const tested = testedProviders.has(provider.providerId), statusClass = provider.status === "ready" ? "completed" : provider.status === "missing" ? "failed" : "queued"; return `<tr${provider.providerId === "muse" ? ' class="leader-row"' : ""}><td><strong>${escapeHtml(provider.label)}</strong><br><code>${escapeHtml(provider.providerId)}</code></td><td><span class="status ${statusClass}">${escapeHtml(provider.status)}</span></td><td>${escapeHtml(provider.model ?? "auto")}</td><td><span class="flag ${tested ? "good" : "warn"}">${tested ? "tested" : "not tested"}</span></td><td>${tested ? `${suites.filter((suite) => suite.variants.some((variant) => variant.provider === provider.providerId)).length} suite(s)` : "No evaluation runs yet"}</td><td><a class="button secondary" href="/providers?provider=${encodeURIComponent(provider.providerId)}">Configure</a></td></tr>`; }).join("");
   const suiteLinks = suites.map((suite) => `
     <a class="suite-link ${selected?.id === suite.id ? "active" : ""}" href="/evaluations?suite=${encodeURIComponent(suite.id)}">
       <strong>${escapeHtml(suite.name)}</strong>
@@ -29543,6 +29544,7 @@ function renderEvaluationsHtml(suites: DashboardEvaluationSuite[], selected: Das
       </div>
       <a class="button secondary" href="/api/evaluations${selected ? `?suite=${encodeURIComponent(selected.id)}` : ""}">JSON</a>
     </div>
+    <section class="panel"><div class="section-heading"><div><h2>Provider coverage</h2><span class="muted">Supported providers remain visible even before they have evaluation evidence. “Tested” means at least one stored suite contains that provider.</span></div><a class="button secondary" href="/candidate-comparisons">Plan comparison</a></div><div class="table-wrap"><table><thead><tr><th>Provider</th><th>Readiness</th><th>Model</th><th>Coverage</th><th>Evidence</th><th>Setup</th></tr></thead><tbody>${providerRows}</tbody></table></div></section>
     <div class="comparison-layout">
       <aside class="suite-list" aria-label="Evaluation suites">
         <h2>Suites</h2>
@@ -33753,6 +33755,8 @@ function renderServerRequestAuditPanel(report: ServerRequestAuditReport): string
   <div class="table-wrap"><table><thead><tr><th>Time</th><th>Status</th><th>Endpoint</th><th>Workflow</th><th>Auth</th><th>Rate Limit</th><th>Run</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No governed server request audit events found.</td></tr>'}</tbody></table></div></section>`;
 }
 
+function renderReadinessGroup(id: string, title: string, summary: string, content: string): string { return `<details class="readiness-group" id="${escapeHtml(id)}"><summary><span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(summary)}</small></span><span class="readiness-group-action">View details</span></summary><div class="readiness-group-content">${content}</div></details>`; }
+
 function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, approvalActionPlan: ServerApprovalActionPlanReport, approvalActionTestAdapter: ServerApprovalActionTestAdapterReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
@@ -33806,12 +33810,40 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
   migrationParams.set("dir", migrationPlans.directory);
   const registryParams = new URLSearchParams(jsonParams);
   if (registry.includeRoots) registryParams.set("includeRoots", "true");
+  const serverControlDetails = `
+    <section class="panel"><h2>Readiness Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div></section>
+    <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
+    ${renderServerAuthHardeningPanel(report.authHardening)}
+    ${renderServerMutationControlsPanel(mutationControls)}
+    ${renderServerApprovalActionPlanPanel(approvalActionPlan, approvalActionTestAdapter)}`;
+  const projectAndAuditDetails = `
+    ${renderServerRequestAuditPanel(requestAudit)}
+    <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
+    <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>`;
+  const runtimeDetails = `
+    <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+    ${renderRuntimeMonitorPanel(runtimeMonitor, params)}`;
+  const storageDetails = `
+    <section class="panel"><div class="section-heading"><div><h2>Shared Storage Verification</h2><span class="muted">Read-only migration proof. This does not copy, restore, delete, or mutate storage.</span></div><a class="button secondary" href="/api/storage-verify?${escapeHtml(storageParams.toString())}">JSON</a></div>
+    <div class="metric-grid">${metricCard("Storage", storageVerification.status, "durable state comparison")}${metricCard("Matched", storageMatches, `${storageVerification.diffs.length} durable tables`)}${metricCard("Mismatched", storageMismatches, "count or fingerprint differs")}${metricCard("Missing", storageMissing, "table absent on one side")}</div>
+    <div class="meta-grid compact"><div><strong>Source DB</strong>${escapeHtml(storageVerification.source.endpoint.databaseUrl)}</div><div><strong>Target DB</strong>${escapeHtml(storageVerification.target.endpoint.databaseUrl)}</div><div><strong>Source Objects</strong>${escapeHtml(storageVerification.source.endpoint.objectStorageEndpoint)}</div><div><strong>Target Objects</strong>${escapeHtml(storageVerification.target.endpoint.objectStorageEndpoint)}</div></div>
+    <p class="muted">Generated ${renderDashboardDateTime(storageVerification.generatedAt)}. Current status: <span class="status ${storageStatusClass}">${escapeHtml(storageVerification.status)}</span>.</p>
+    ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
+    <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
+    ${renderPostMergeEvidencePanel(mergeEvidence)}
+    ${renderOfflineFallbackPanel(offlineFallback, params)}
+    ${renderObjectArtifactProofPanel(objectProof, params)}
+    <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
+    <div class="metric-grid">${metricCard("Plans", migrationPlans.plans.length, "generated migration packages")}${metricCard("Ready", migrationPlans.plans.filter((plan) => plan.status === "ready").length, "safe to review for execution")}${metricCard("Blocked", migrationPlans.plans.filter((plan) => plan.status === "blocked").length, "requires config changes first")}${metricCard("Warnings", migrationPlans.plans.reduce((total, plan) => total + plan.warningCount, 0), "across listed plans")}</div>
+    <div class="meta-grid compact"><div><strong>Directory</strong><code>${escapeHtml(migrationPlans.directory)}</code></div><div><strong>Generated</strong>${renderDashboardDateTime(migrationPlans.generatedAt)}</div></div>
+    ${migrationPlans.warnings.length ? `<details class="governance-details" open><summary>Migration Plan Warnings</summary><ul>${migrationWarningRows}</ul></details>` : ""}
+    <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Status</th><th>Source DB</th><th>Target Storage</th><th>Warnings / Steps</th><th>Markdown Report</th><th>Guarded Script</th></tr></thead><tbody>${migrationPlanRows || '<tr><td colspan="7">No generated storage migration plans found. Run <code>npm run storage-migrate -- --write-plan</code> to create a reviewed dry-run package.</td></tr>'}</tbody></table></div></section>`;
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Agent Workflow Server Readiness</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("server-readiness")}
   <main><div class="topbar"><div><a href="/">Dashboard</a><h1>Server Readiness</h1><p class="muted">Read-only governed server-mode readiness. This page does not enable remote execution or change network binding.</p></div><a class="button secondary" href="/api/server-readiness?${escapeHtml(jsonParams.toString())}">JSON</a></div>
   ${renderDashboardFlash(params)}
   ${renderDashboardActionHistory()}
-  <section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="192.0.2.10"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section>
+  <details class="readiness-filter"><summary>Inspection scope and advanced filters</summary><section class="panel"><form method="get" class="workflow-form"><label>Project<select name="project"><option value="">all registered projects</option>${projectOptions}</select></label><label>Limit<input name="limit" value="${escapeHtml(params.get("limit") ?? String(report.limit))}" inputmode="numeric"></label><label>Storage host<input name="storageHost" value="${escapeHtml(storageHost)}" placeholder="192.0.2.10"></label><label>Migration dir<input name="migrationDir" value="${escapeHtml(migrationDir)}" placeholder=".agent-workflow/migrations"></label><label class="checkbox-row"><input type="checkbox" name="includeRoots" value="true"${registry.includeRoots ? " checked" : ""}> include local roots</label><div class="form-actions"><button type="submit">Inspect</button></div></form></section></details>
   ${renderPrimaryStatePlaneOperatorPanel(mergeEvidence, offlineFallback, runtimeMonitor)}
   ${renderSharedStatePlaneProofPanel(statePlaneProof)}
   <section class="panel"><div class="metric-grid">
@@ -33822,42 +33854,12 @@ function renderServerReadinessHtml(report: ServerReadinessReport, registry: Serv
     ${metricCard("Projects", report.projects.length, "registered project ids inspected")}
     ${metricCard("Origins", report.mode.allowedOrigins.length, "allowed browser origins")}
   </div><p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current status: <span class="status ${statusClass}">${escapeHtml(report.status)}</span>.</p></section>
-  <section class="panel"><h2>Readiness Checks</h2><div class="table-wrap"><table><thead><tr><th>Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${checkRows}</tbody></table></div></section>
-  <section class="panel"><h2>Endpoint Classes</h2><div class="table-wrap"><table><thead><tr><th>Class</th><th>Implementation</th><th>Ready</th><th>Required Controls</th></tr></thead><tbody>${endpointRows}</tbody></table></div></section>
-  ${renderServerAuthHardeningPanel(report.authHardening)}
-  ${renderServerMutationControlsPanel(mutationControls)}
-  ${renderServerApprovalActionPlanPanel(approvalActionPlan, approvalActionTestAdapter)}
-  ${renderServerRequestAuditPanel(requestAudit)}
-  <section class="panel"><div class="section-heading"><div><h2>Server Project IDs</h2><span class="muted">Client-facing preview. Future server-mode requests should use projectId instead of raw filesystem paths.</span></div><a class="button secondary" href="/api/server-projects?${escapeHtml(registryParams.toString())}">JSON</a></div><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Default Workflows</th><th>Request Example</th></tr></thead><tbody>${registryRows || '<tr><td colspan="4">No registered projects found.</td></tr>'}</tbody></table></div></section>
-  <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>
-  <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
-  ${renderRuntimeMonitorPanel(runtimeMonitor, params)}
-  <section class="panel"><div class="section-heading"><div><h2>Shared Storage Verification</h2><span class="muted">Read-only migration proof. This does not copy, restore, delete, or mutate storage.</span></div><a class="button secondary" href="/api/storage-verify?${escapeHtml(storageParams.toString())}">JSON</a></div>
-  <div class="metric-grid">
-    ${metricCard("Storage", storageVerification.status, "durable state comparison")}
-    ${metricCard("Matched", storageMatches, `${storageVerification.diffs.length} durable tables`)}
-    ${metricCard("Mismatched", storageMismatches, "count or fingerprint differs")}
-    ${metricCard("Missing", storageMissing, "table absent on one side")}
-  </div>
-  <div class="meta-grid compact"><div><strong>Source DB</strong>${escapeHtml(storageVerification.source.endpoint.databaseUrl)}</div><div><strong>Target DB</strong>${escapeHtml(storageVerification.target.endpoint.databaseUrl)}</div><div><strong>Source Objects</strong>${escapeHtml(storageVerification.source.endpoint.objectStorageEndpoint)}</div><div><strong>Target Objects</strong>${escapeHtml(storageVerification.target.endpoint.objectStorageEndpoint)}</div></div>
-  <p class="muted">Generated ${renderDashboardDateTime(storageVerification.generatedAt)}. Current status: <span class="status ${storageStatusClass}">${escapeHtml(storageVerification.status)}</span>.</p>
-  ${storageVerification.warnings.length ? `<details class="governance-details" open><summary>Storage Warnings</summary><ul>${storageWarningRows}</ul></details>` : ""}
-  <div class="table-wrap"><table><thead><tr><th>Table</th><th>Status</th><th>Source Rows</th><th>Target Rows</th></tr></thead><tbody>${storageDiffRows}</tbody></table></div></section>
-  ${renderPostMergeEvidencePanel(mergeEvidence)}
-  ${renderOfflineFallbackPanel(offlineFallback, params)}
-  ${renderObjectArtifactProofPanel(objectProof, params)}
-  <section class="panel"><div class="section-heading"><div><h2>Storage Migration Plans</h2><span class="muted">Generated dry-run operator packages from <code>storage-migrate --write-plan</code>. This page only reads plan artifacts.</span></div><a class="button secondary" href="/api/storage-migrations?${escapeHtml(migrationParams.toString())}">JSON</a></div>
-  <div class="metric-grid">
-    ${metricCard("Plans", migrationPlans.plans.length, "generated migration packages")}
-    ${metricCard("Ready", migrationPlans.plans.filter((plan) => plan.status === "ready").length, "safe to review for execution")}
-    ${metricCard("Blocked", migrationPlans.plans.filter((plan) => plan.status === "blocked").length, "requires config changes first")}
-    ${metricCard("Warnings", migrationPlans.plans.reduce((total, plan) => total + plan.warningCount, 0), "across listed plans")}
-  </div>
-  <div class="meta-grid compact"><div><strong>Directory</strong><code>${escapeHtml(migrationPlans.directory)}</code></div><div><strong>Generated</strong>${renderDashboardDateTime(migrationPlans.generatedAt)}</div></div>
-  ${migrationPlans.warnings.length ? `<details class="governance-details" open><summary>Migration Plan Warnings</summary><ul>${migrationWarningRows}</ul></details>` : ""}
-  <div class="table-wrap"><table><thead><tr><th>Generated</th><th>Status</th><th>Source DB</th><th>Target Storage</th><th>Warnings / Steps</th><th>Markdown Report</th><th>Guarded Script</th></tr></thead><tbody>${migrationPlanRows || '<tr><td colspan="7">No generated storage migration plans found. Run <code>npm run storage-migrate -- --write-plan</code> to create a reviewed dry-run package.</td></tr>'}</tbody></table></div></section>
-  <section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section>
-  <section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No server-mode notes found.</li>'}</ul></section></main></body></html>`;
+  <nav class="readiness-jump-nav" aria-label="Readiness detail groups"><a href="#server-controls">Server controls</a><a href="#runtime-services">Runtime &amp; services</a><a href="#projects-audit">Projects &amp; audit</a><a href="#storage-recovery">Storage &amp; recovery</a></nav>
+  ${renderReadinessGroup("server-controls", "Server controls", `${report.authHardening.warningControls + report.authHardening.failingControls} controls need review`, serverControlDetails)}
+  ${renderReadinessGroup("runtime-services", "Runtime & services", `${runtimeMonitor.processes.reduce((total, process) => total + process.count, 0)} managed processes inspected`, runtimeDetails)}
+  ${renderReadinessGroup("projects-audit", "Projects & audit", `${report.projects.length} projects and ${requestAudit.totalRead} request events`, projectAndAuditDetails)}
+  ${renderReadinessGroup("storage-recovery", "Storage & recovery", `${storageMatches}/${storageVerification.diffs.length} tables match; ${migrationPlans.plans.length} migration plans`, storageDetails)}
+  <details class="readiness-group"><summary><span><strong>Operator reference</strong><small>Commands and local-first operating notes</small></span><span class="readiness-group-action">View details</span></summary><div class="readiness-group-content"><section class="panel"><h2>Recommended Commands</h2><ul>${commandRows}</ul></section><section class="panel"><h2>Notes</h2><ul>${noteRows || '<li>No server-mode notes found.</li>'}</ul></section></div></details></main></body></html>`;
 }
 
 function renderArtifactLifecycleHtml(report: ArtifactLifecycleReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
@@ -41538,8 +41540,8 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
     }
   ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
   const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
-  return `<nav class="side-nav human-nav" aria-label="Dashboard navigation">
-    <div class="nav-brand"><strong>Agent Workflow</strong><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div>
+  return `<script>(()=>{const key='agentflow.dashboard.theme';let theme='light';try{theme=window.localStorage.getItem(key)==='dark'?'dark':'light'}catch{}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
+    <div class="nav-brand"><strong>Agent Workflow</strong><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
     <div id="dashboard-menu" class="dashboard-menu">
       <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
     ${groups.map((group) => {
@@ -42227,7 +42229,7 @@ function workerActionForm(runId: string, mode: "batch" | "watch", label: string)
 }
 
 function queueProcessForm(project: string): string {
-  return `<form class="worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input type="hidden" name="project" value="${escapeHtml(project)}"><input name="workerLimit" inputmode="numeric" value="6" aria-label="Worker limit"><input name="workerConcurrency" inputmode="numeric" value="1" aria-label="Worker concurrency"><button type="submit">${iconLabel("play", "Process Worker Batch")}</button></form>`;
+  return `<form class="worker-form queue-worker-form" method="post" action="/api/queue-action"><input type="hidden" name="action" value="process"><input type="hidden" name="project" value="${escapeHtml(project)}"><label>Batch limit<input name="workerLimit" inputmode="numeric" value="6"></label><label>Concurrency<input name="workerConcurrency" inputmode="numeric" value="1"></label><button type="submit">${iconLabel("play", "Process Worker Batch")}</button></form>`;
 }
 
 function queueRecoverExpiredLeasesForm(): string {
@@ -46039,26 +46041,6 @@ function parseExecutionProfile(value: string): "adaptive" | "full" {
   throw new Error("Execution profile must be 'adaptive' or 'full'.");
 }
 
-function parsePositiveInteger(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function parseNonNegativeInteger(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
-}
-
-function parseOptionalNumber(value: string | undefined): number | null {
-  if (value === undefined || value.trim() === "") return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function parseBoundedPositiveInteger(value: string, fallback: number, max: number): number {
-  return Math.min(parsePositiveInteger(value, fallback), max);
-}
-
 function normalizeActorRole(value: string | undefined, fallback: string): string {
   return value?.trim() || fallback;
 }
@@ -46136,12 +46118,6 @@ async function loadProjectWorkerPoolDefaults(projectDir: string): Promise<{
   } catch {
     return {};
   }
-}
-
-function parseDashboardRunLimit(value: string, fallback: number): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(Math.max(parsed, 0), 250);
 }
 
 function parseDashboardRunScope(value: string): "project" | "all-projects" {
@@ -46822,231 +46798,6 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value : undefined;
-}
-
-async function detectPackageManager(projectDir: string, packageJson: Record<string, unknown> | null): Promise<string | undefined> {
-  const packageManager = stringValue(packageJson?.packageManager);
-  if (packageManager) {
-    return packageManager.split("@")[0];
-  }
-  if (await exists(path.join(projectDir, "pnpm-lock.yaml"))) {
-    return "pnpm";
-  }
-  if (await exists(path.join(projectDir, "yarn.lock"))) {
-    return "yarn";
-  }
-  if (await exists(path.join(projectDir, "bun.lockb")) || await exists(path.join(projectDir, "bun.lock"))) {
-    return "bun";
-  }
-  if (await exists(path.join(projectDir, "package-lock.json"))) {
-    return "npm";
-  }
-  return packageJson ? "npm" : undefined;
-}
-
-function commandPrefixForPackageManager(packageManager: string | undefined): string {
-  if (packageManager === "pnpm") {
-    return "pnpm";
-  }
-  if (packageManager === "yarn") {
-    return "yarn";
-  }
-  if (packageManager === "bun") {
-    return "bun";
-  }
-  return "npm run";
-}
-
-async function detectMarkers(projectDir: string): Promise<string[]> {
-  const markerChecks: Array<[string, string]> = [
-    ["package.json", "package-json"],
-    ["tsconfig.json", "typescript"],
-    ["next.config.js", "next"],
-    ["next.config.mjs", "next"],
-    ["vite.config.ts", "vite"],
-    ["vite.config.js", "vite"],
-    ["tailwind.config.ts", "tailwind"],
-    ["tailwind.config.js", "tailwind"],
-    ["components.json", "shadcn"],
-    ["pyproject.toml", "python"],
-    ["requirements.txt", "python"],
-    ["manage.py", "django"],
-    ["composer.json", "php"],
-    ["wp-config.php", "wordpress"],
-    ["index.html", "static-site"],
-    ["Dockerfile", "docker"],
-    ["docker-compose.yml", "docker-compose"],
-    ["docker-compose.yaml", "docker-compose"]
-  ];
-  const markers: string[] = [];
-  for (const [file, marker] of markerChecks) {
-    if (await exists(path.join(projectDir, file)) && !markers.includes(marker)) {
-      markers.push(marker);
-    }
-  }
-  return markers;
-}
-
-function detectFrameworks(dependencies: Record<string, unknown>, markers: string[]): string[] {
-  const frameworks = new Set<string>();
-  if (dependencies.next || markers.includes("next")) frameworks.add("next");
-  if (dependencies.react || dependencies["@vitejs/plugin-react"]) frameworks.add("react");
-  if (dependencies.vue || dependencies["@vitejs/plugin-vue"]) frameworks.add("vue");
-  if (dependencies.svelte || dependencies["@sveltejs/kit"]) frameworks.add("svelte");
-  if (dependencies.astro) frameworks.add("astro");
-  if (dependencies.express) frameworks.add("express");
-  if (dependencies.fastify) frameworks.add("fastify");
-  if (markers.includes("vite")) frameworks.add("vite");
-  if (markers.includes("tailwind")) frameworks.add("tailwind");
-  if (markers.includes("shadcn")) frameworks.add("shadcn");
-  if (markers.includes("django")) frameworks.add("django");
-  if (markers.includes("wordpress")) frameworks.add("wordpress");
-  if (markers.includes("static-site")) frameworks.add("static-site");
-  if (markers.includes("docker") || markers.includes("docker-compose")) frameworks.add("docker");
-  return [...frameworks];
-}
-
-function detectLanguages(packageJson: Record<string, unknown> | null, markers: string[]): string[] {
-  const languages = new Set<string>();
-  if (packageJson) languages.add("javascript");
-  if (markers.includes("typescript")) languages.add("typescript");
-  if (markers.includes("python")) languages.add("python");
-  if (markers.includes("php") || markers.includes("wordpress")) languages.add("php");
-  if (markers.includes("static-site")) languages.add("html");
-  return [...languages];
-}
-
-function recommendCommands(scripts: Record<string, unknown>, commandPrefix: string, markers: string[]): string[] {
-  const commands = new Set<string>();
-  for (const script of ["test", "typecheck", "lint", "build", "check", "verify"]) {
-    if (scripts[script]) {
-      commands.add(commandPrefix === "npm run" ? `npm run ${script}` : `${commandPrefix} ${script}`);
-    }
-  }
-  if (markers.includes("python")) {
-    commands.add("python -m pytest");
-  }
-  if (markers.includes("php")) {
-    commands.add("composer test");
-  }
-  return [...commands].length ? [...commands] : ["npm test", "npm run typecheck", "npm run lint"];
-}
-
-function recommendContextIncludes(markers: string[], frameworks: string[], languages: string[]): string[] {
-  const includes = new Set([
-    "AGENTS.md",
-    ".agent-workflow/**",
-    "README.md",
-    "docs/**"
-  ]);
-  if (languages.includes("javascript") || languages.includes("typescript")) {
-    includes.add("package.json");
-    includes.add("src/**");
-    includes.add("app/**");
-    includes.add("pages/**");
-    includes.add("components/**");
-    includes.add("lib/**");
-    includes.add("test/**");
-    includes.add("tests/**");
-  }
-  if (languages.includes("python")) {
-    includes.add("pyproject.toml");
-    includes.add("requirements.txt");
-    includes.add("**/*.py");
-  }
-  if (languages.includes("php") || frameworks.includes("wordpress")) {
-    includes.add("composer.json");
-    includes.add("wp-content/**");
-    includes.add("**/*.php");
-  }
-  if (frameworks.includes("static-site")) {
-    includes.add("index.html");
-    includes.add("site/**");
-    includes.add("assets/**");
-  }
-  if (markers.includes("docker") || markers.includes("docker-compose")) {
-    includes.add("Dockerfile");
-    includes.add("docker-compose.yml");
-    includes.add("docker-compose.yaml");
-  }
-  return [...includes];
-}
-
-function recommendContextExcludes(frameworks: string[], languages: string[]): string[] {
-  const excludes = new Set([
-    "node_modules/**",
-    ".git/**",
-    "dist/**",
-    "build/**",
-    "coverage/**",
-    ".next/**",
-    ".turbo/**",
-    ".cache/**",
-    ".agent-workflow/schedule-state.json",
-    "**/*.jpg",
-    "**/*.jpeg",
-    "**/*.png",
-    "**/*.webp",
-    "**/*.gif",
-    "**/*.woff",
-    "**/*.woff2",
-    "**/*.ttf"
-  ]);
-  if (languages.includes("python")) {
-    excludes.add(".venv/**");
-    excludes.add("venv/**");
-    excludes.add("__pycache__/**");
-  }
-  if (frameworks.includes("wordpress")) {
-    excludes.add("wp-content/uploads/**");
-  }
-  return [...excludes];
-}
-
-function recommendWritePaths(frameworks: string[], languages: string[]): string[] {
-  const paths = new Set([
-    ".agent-workflow/**",
-    "AGENTS.md",
-    "README.md",
-    "docs/**"
-  ]);
-  if (languages.includes("javascript") || languages.includes("typescript")) {
-    ["src/**", "app/**", "pages/**", "components/**", "lib/**", "test/**", "tests/**", "package.json"].forEach((item) => paths.add(item));
-  }
-  if (languages.includes("python")) {
-    ["**/*.py", "pyproject.toml", "requirements.txt", "tests/**"].forEach((item) => paths.add(item));
-  }
-  if (languages.includes("php") || frameworks.includes("wordpress")) {
-    ["**/*.php", "wp-content/themes/**", "wp-content/plugins/**", "composer.json"].forEach((item) => paths.add(item));
-  }
-  if (frameworks.includes("static-site")) {
-    ["index.html", "site/**", "assets/**"].forEach((item) => paths.add(item));
-  }
-  return [...paths];
-}
-
-function recommendAgents(frameworks: string[], languages: string[], markers: string[]): string[] {
-  const agents = new Set(["technical-architect", "implementation-agent", "test-engineer", "docs-maintainer"]);
-  if (frameworks.some((framework) => ["react", "next", "vite", "vue", "svelte", "astro", "tailwind", "shadcn", "static-site"].includes(framework))) {
-    agents.add("frontend-engineer");
-    agents.add("ux-reviewer");
-  }
-  if (frameworks.some((framework) => ["express", "fastify", "django"].includes(framework)) || languages.includes("php")) {
-    agents.add("backend-engineer");
-  }
-  if (markers.includes("docker") || markers.includes("docker-compose")) {
-    agents.add("ci-debugger");
-  }
-  agents.add("security-reviewer");
-  return [...agents];
-}
-
-function recommendWorkflows(frameworks: string[], _languages: string[], _markers: string[]): string[] {
-  const workflows = new Set(["build-feature", "review-pr", "debug-failure", "maintain-context"]);
-  if (frameworks.some((framework) => ["react", "next", "vite", "vue", "svelte", "astro", "static-site", "wordpress"].includes(framework))) {
-    workflows.add("production-readiness");
-  }
-  return [...workflows];
 }
 
 function summarizeDetectedProject(frameworks: string[], languages: string[], markers: string[]): string {

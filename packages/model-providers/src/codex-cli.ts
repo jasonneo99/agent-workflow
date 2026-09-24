@@ -49,8 +49,8 @@ const stageSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        properties: { path: { type: "string" }, content: { type: "string" } },
-        required: ["path", "content"]
+        properties: { path: { type: "string" }, content: { type: ["string", "null"] }, patch: { type: ["string", "null"] }, expectedHash: { type: ["string", "null"] } },
+        required: ["path", "content", "patch", "expectedHash"]
       }
     }
   },

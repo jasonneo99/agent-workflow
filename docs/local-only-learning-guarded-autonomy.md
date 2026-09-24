@@ -213,6 +213,16 @@ Authority expansion is still forbidden until real-run evidence satisfies the
 documented promotion thresholds. The implementation establishes enforcement
 and evidence collection; it does not pre-approve greater autonomy.
 
+## Operational calibration evidence
+
+The first live calibration completed a bounded provider-smoke run through
+immutable grant issuance and provider-breaker revalidation. A separate scoped
+breaker drill proved that changing the breaker generation denies a stale grant,
+invalidates affected active leases, and requires a new human-authored enable
+generation before work can resume. These results validate the enforcement path;
+they are not sufficient by themselves to expand authority. Sustained passing
+samples and a human-reviewed promotion canary are still required.
+
 ## First implementation slice
 
 Build the Reliability Suite baseline without live model calls:

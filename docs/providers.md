@@ -188,6 +188,29 @@ Each worker stage records a `model_route` receipt with the requested and actual 
 
 When prior project feedback includes revised or rejected runs, Agent Workflow adds compact preference notes to the compiled brief and conservatively promotes fast stages to standard. The quality report shows both the requested tier and the routed tier so the tuning remains auditable.
 
+### Per-agent and task-class evidence
+
+The Workflow & Model Optimizer may add scrubbed structured evidence for an
+exact agent and task class. The runtime considers that evidence only in
+adaptive or auto mode and only after the candidate provider passes its live
+readiness check. A candidate must also have at least three fresh samples,
+quality of at least `0.7`, task success of at least `0.8`, and a fallback rate
+no greater than `0.1`. Passing candidates are ranked with quality, task
+success, fallback behavior, latency, estimated cost, sample confidence, and
+freshness. Evidence older than 30 days is excluded instead of being treated as
+current performance.
+
+The decision states whether evidence was selected, insufficient, or rejected
+for poor performance. Malformed evidence is ignored. Project policy, worker
+provider capabilities, data boundaries, stage authority, and live provider
+availability remain hard gates. An explicit stage provider or model override
+always wins, which provides reproducibility and a direct rollback path.
+
+The selected model is passed through the same governed stage execution
+contract and is recorded with the route and provider-attempt receipts. If no
+candidate qualifies, Agent Workflow retains the configured tier/default route;
+it does not guess from thin evidence.
+
 The `/model-improvement` dashboard includes Local Provider Evidence for this
 same route data. Use it before expanding local routing: it compares local/BYO
 stage volume, fallback rate, feedback quality, latency, and avoided hosted calls
