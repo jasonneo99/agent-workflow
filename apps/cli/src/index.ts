@@ -27851,33 +27851,34 @@ function renderDashboardHtml(
   workflows: Awaited<ReturnType<typeof loadWorkflows>>,
   health: DashboardHomeHealth
 ): string {
-  const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running").slice(0, 5);
-  const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 5);
+  const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
+  const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 8);
   const pendingApprovals = health.pendingApprovals.length;
   const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
-  const attentionHref = pendingApprovals ? "/approvals?status=pending" : failedRuns ? "/queue" : "/settings";
-  const attentionTitle = pendingApprovals
-    ? `${pendingApprovals} approval${pendingApprovals === 1 ? "" : "s"} need a decision`
-    : failedRuns
-      ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"} need review`
-      : "Everything is ready";
-  const attentionDetail = pendingApprovals
-    ? "Review requested actions before work can continue."
-    : failedRuns
-      ? "Open failed work to understand what happened and recover safely."
-      : "Services are healthy and no decisions are blocking work.";
-  const workRows = activeRuns.map((run) => `
-    <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
-      <span class="human-row-icon">${dashboardIcon(run.status === "running" ? "activity" : "list")}</span>
-      <span><strong>${escapeHtml(compactDashboardText(run.task, 78))}</strong><small>${escapeHtml(run.projectName)} · ${escapeHtml(workflowDisplayName(run.workflowId))}</small></span>
-      <span class="human-row-state ${escapeHtml(run.status)}">${run.status === "running" ? "In progress" : "Waiting"}</span>
+  const terminalRuns = runs.filter((run) => run.status === "completed" || run.status === "failed");
+  const completedRuns = terminalRuns.filter((run) => run.status === "completed").length;
+  const successRate = terminalRuns.length ? Math.round((completedRuns / terminalRuns.length) * 100) : 0;
+  const durations = terminalRuns.map(dashboardRunDurationMs).filter((value): value is number => value !== null).sort((a, b) => a - b);
+  const medianDuration = durations.length ? durations[Math.floor(durations.length / 2)] : null;
+  const activeStageTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks + item.runningTasks, 0);
+  const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
+  const servicesReady = health.services.filter((service) => service.reachable).length;
+  const systemHealthy = servicesReady === health.services.length && health.worker.status === "running" && health.supervisor.status === "running" && failedRuns === 0;
+  const approvalRows = [...health.pendingApprovals, ...health.approvedExecutableApprovals].slice(0, 5).map((approval) => `
+    <a class="ops-approval-row" href="/approvals?status=${approval.status === "pending" ? "pending" : "approved"}">
+      <span class="ops-status-dot ${approval.status === "pending" ? "warn" : "good"}"></span>
+      <span><strong>${escapeHtml(compactDashboardText(approval.actionType, 42))}</strong><small>${escapeHtml(compactDashboardText(approval.target, 54))}</small></span>
+      <span>${approval.status === "pending" ? "Review" : "Ready"}</span>
     </a>`).join("");
-  const outcomeRows = recentRuns.map((run) => `
-    <a class="human-list-row" href="/run?id=${encodeURIComponent(run.id)}">
-      <span class="human-row-icon ${run.status === "completed" ? "success" : "danger"}">${dashboardIcon(run.status === "completed" ? "check" : "warning")}</span>
-      <span><strong>${escapeHtml(compactDashboardText(run.task, 70))}</strong><small>${escapeHtml(run.projectName)} · ${renderDashboardDateTime(run.startedAt)}</small></span>
-      <span class="human-row-state ${escapeHtml(run.status)}">${escapeHtml(workflowOutcomeLabel(run.workflowId, run.status))}</span>
-    </a>`).join("");
+  const recentRows = recentRuns.map((run) => `
+    <tr>
+      <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a></td>
+      <td><strong>${escapeHtml(compactDashboardText(run.task, 54))}</strong><small>${escapeHtml(run.projectName)}</small></td>
+      <td>${escapeHtml(workflowDisplayName(run.workflowId))}</td>
+      <td><span class="ops-run-status ${escapeHtml(run.status)}"><i></i>${escapeHtml(run.status)}</span></td>
+      <td>${escapeHtml(formatDashboardDuration(dashboardRunDurationMs(run)))}</td>
+      <td>${renderDashboardDateTime(run.startedAt)}</td>
+    </tr>`).join("");
   const workflowOptions = workflows
     .filter((workflow) => workflow.triggers.manual)
     .map((workflow) => `<option value="${escapeHtml(workflow.id)}">${escapeHtml(workflow.name)} (${escapeHtml(workflow.id)})</option>`)
@@ -27896,36 +27897,38 @@ function renderDashboardHtml(
 </head>
 <body>
   ${dashboardNav("dashboard")}
-  <main>
-    <div class="topbar">
-      <div>
-        <h1>Home</h1>
-        <p class="page-intro">Here’s what needs your attention and what’s happening.</p>
-      </div>
-      <a class="button start-work-link" href="#start-work">${dashboardIcon("play")} Start work</a>
+  <main class="ops-home">
+    <div class="ops-topbar">
+      <div><h1>System Pulse</h1><p>Live operational view of agent execution, reliability, and flow.</p></div>
+      <div class="ops-topbar-actions"><span class="ops-live"><i></i> Live</span><a class="button" href="#start-work">${dashboardIcon("play")} Start workflow</a></div>
     </div>
-    <section class="attention-callout ${pendingApprovals || failedRuns ? "warn" : "good"}">
-      <span class="attention-icon">${dashboardIcon(pendingApprovals || failedRuns ? "warning" : "check")}</span>
-      <span><strong>${escapeHtml(attentionTitle)}</strong><small>${escapeHtml(attentionDetail)}</small></span>
-      <a class="button secondary" href="${attentionHref}">${pendingApprovals ? "Review approvals" : failedRuns ? "Review failed work" : "View system status"}</a>
+    <section class="ops-pulse-panel">
+      <div class="ops-pulse-heading">
+        <div class="ops-neural-line" aria-hidden="true">${renderOpsPulseLine()}</div>
+        <a class="ops-system-state ${systemHealthy ? "good" : "warn"}" href="/settings"><i></i><span><strong>${systemHealthy ? "All systems operational" : "System attention required"}</strong><small>${servicesReady}/${health.services.length} services · worker ${escapeHtml(health.worker.status)} · supervisor ${escapeHtml(health.supervisor.status)}</small></span>${dashboardIcon("chevrons")}</a>
+      </div>
+      <div class="ops-metric-row">
+        ${renderOpsMetric("Recent runs", formatNumber(runs.length), `${activeRuns.length} active`, runs.map((_, index) => index + 1), "cyan")}
+        ${renderOpsMetric("Success rate", `${successRate}%`, `${completedRuns}/${terminalRuns.length || 0} terminal`, terminalRuns.map((run) => run.status === "completed" ? 1 : 0), "teal")}
+        ${renderOpsMetric("Median duration", formatDashboardDuration(medianDuration), `${durations.length} measured`, durations.slice(-10), "violet")}
+        ${renderOpsMetric("Active stage tasks", formatNumber(activeStageTasks), `${health.queue.length} queue records`, health.queue.slice(0, 10).map((item) => item.queuedTasks + item.runningTasks), "cyan")}
+        ${renderOpsMetric("Approval work", formatNumber(pendingApprovals + health.approvedExecutableApprovals.length), `${pendingApprovals} pending`, [0, pendingApprovals, health.approvedExecutableApprovals.length], "amber")}
+        ${renderOpsMetric("Active projects", formatNumber(activeProjects), `${health.projects.length} registered`, health.projects.slice(0, 10).map((project) => project.runCount), "violet")}
+      </div>
     </section>
-    <div class="home-layout">
-      <section class="human-section">
-        <div class="human-section-heading"><h2>In progress</h2><a href="/queue">View all work</a></div>
-        <div class="human-list">${workRows || '<div class="human-empty"><strong>No work is running</strong><span>Start something new when you’re ready.</span></div>'}</div>
-      </section>
-      <div class="home-side">
-        <section class="human-section recommended-action">
-          <h2>Recommended next action</h2>
-          <a class="recommendation-row" href="${attentionHref}"><span>${dashboardIcon(pendingApprovals ? "shield" : failedRuns ? "warning" : "play")}</span><span><strong>${pendingApprovals ? "Review approvals" : failedRuns ? "Review failed work" : "Start your next task"}</strong><small>${escapeHtml(attentionDetail)}</small></span>${dashboardIcon("chevrons")}</a>
-        </section>
-        <section class="human-section">
-          <div class="human-section-heading"><h2>Recent outcomes</h2><a href="/runs">View all</a></div>
-          <div class="human-list compact">${outcomeRows || '<div class="human-empty"><strong>No recent outcomes</strong><span>Completed work will appear here.</span></div>'}</div>
-        </section>
-      </div>
+    <div class="ops-chart-grid">
+      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Workflow throughput</h2><span>Runs by final state · recent storage window</span></div><a href="/runs">View runs</a></div>${renderOpsThroughputChart(runs)}</section>
+      <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>
+      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Execution duration</h2><span>Completed and failed run latency</span></div></div>${renderOpsDurationChart(terminalRuns)}</section>
+      <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Queue pressure</h2><span>Stage work and oldest active item</span></div><a href="/queue">Open queue</a></div>${renderOpsQueuePressure(health.queue)}</section>
+      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue)}</section>
+      <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Project activity</h2><span>Runs across registered projects</span></div><a href="/projects">Projects</a></div>${renderOpsProjectActivity(health.projects)}</section>
     </div>
-    <section class="human-section start-work" id="start-work">
+    <div class="ops-lower-grid">
+      <section class="ops-panel ops-runs-panel"><div class="ops-panel-heading"><div><h2>Recent runs</h2><span>Latest terminal workflow outcomes</span></div><a href="/runs">View all runs</a></div><div class="table-wrap"><table class="ops-table"><thead><tr><th>Run</th><th>Task</th><th>Workflow</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead><tbody>${recentRows || '<tr><td colspan="6">No terminal runs in the current window.</td></tr>'}</tbody></table></div></section>
+      <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Approval work</h2><span>Decisions and executable actions</span></div><a href="/approvals">View all</a></div><div class="ops-approval-list">${approvalRows || '<div class="ops-empty"><strong>No approval work</strong><span>The action boundary is clear.</span></div>'}</div></section>
+    </div>
+    <section class="ops-panel start-work" id="start-work">
       <div class="human-section-heading"><div><h2>Start work</h2><p>Describe the outcome. Agent Workflow will handle the execution details.</p></div></div>
       <form class="workflow-form human-composer" method="post" action="/api/workflow-run">
         <label>Project path
@@ -27954,6 +27957,99 @@ function renderDashboardHtml(
   </main>
 </body>
 </html>`;
+}
+
+function dashboardRunDurationMs(run: DashboardRunStatus): number | null {
+  if (!run.finishedAt) return null;
+  const duration = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
+  return Number.isFinite(duration) && duration >= 0 ? duration : null;
+}
+
+function formatDashboardDuration(durationMs: number | null): string {
+  if (durationMs === null) return "n/a";
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)}s`;
+  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
+}
+
+function renderOpsSparkline(values: number[], tone: "cyan" | "teal" | "violet" | "amber"): string {
+  const samples = values.length > 1 ? values : [0, ...(values.length ? values : [0])];
+  const max = Math.max(...samples, 1);
+  const points = samples.map((value, index) => `${(index / Math.max(samples.length - 1, 1)) * 92 + 2},${28 - (value / max) * 22}`).join(" ");
+  return `<svg class="ops-spark ${tone}" viewBox="0 0 96 32" aria-hidden="true"><polyline points="${points}"></polyline></svg>`;
+}
+
+function renderOpsMetric(label: string, value: string, detail: string, samples: number[], tone: "cyan" | "teal" | "violet" | "amber"): string {
+  return `<div class="ops-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small>${renderOpsSparkline(samples, tone)}</div>`;
+}
+
+function renderOpsPulseLine(): string {
+  return `<svg viewBox="0 0 640 52" preserveAspectRatio="none"><path class="pulse-grid" d="M0 26H640"></path><path class="pulse-one" d="M0 26 C45 26 48 12 78 26 S118 44 148 22 S202 9 236 27 S282 42 314 20 S366 7 405 27 S464 39 500 22 S552 15 580 26 S614 26 640 26"></path><path class="pulse-two" d="M0 26 C70 26 78 35 104 24 S148 14 176 28 S224 38 252 24 S300 18 334 28 S382 35 412 23 S466 18 496 27 S548 33 574 25 S614 26 640 26"></path></svg>`;
+}
+
+function renderOpsThroughputChart(runs: DashboardRunStatus[]): string {
+  const byDay = new Map<string, { label: string; completed: number; failed: number; active: number }>();
+  for (const run of [...runs].reverse()) {
+    const date = new Date(run.startedAt);
+    const key = Number.isFinite(date.getTime())
+      ? `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+      : run.startedAt.slice(0, 10);
+    const bucket = byDay.get(key) ?? { label: date.toLocaleDateString("en-US", { month: "short", day: "numeric" }), completed: 0, failed: 0, active: 0 };
+    if (run.status === "completed") bucket.completed += 1;
+    else if (run.status === "failed") bucket.failed += 1;
+    else bucket.active += 1;
+    byDay.set(key, bucket);
+  }
+  const buckets = [...byDay.values()].slice(-10);
+  const max = Math.max(...buckets.map((bucket) => bucket.completed + bucket.failed + bucket.active), 1);
+  const bars = buckets.map((bucket) => {
+    const total = bucket.completed + bucket.failed + bucket.active;
+    return `<div class="ops-throughput-column" title="${escapeHtml(bucket.label)}: ${total} run(s)"><div class="ops-stacked-bar" style="--bar-height:${Math.max(8, Math.round((total / max) * 100))}%"><i class="completed" style="--share:${total ? bucket.completed / total : 0}"></i><i class="failed" style="--share:${total ? bucket.failed / total : 0}"></i><i class="active" style="--share:${total ? bucket.active / total : 0}"></i></div><span>${escapeHtml(bucket.label)}</span></div>`;
+  }).join("");
+  return `<div class="ops-chart-frame"><div class="ops-y-labels"><span>${max}</span><span>${Math.ceil(max / 2)}</span><span>0</span></div><div class="ops-throughput-bars">${bars || '<div class="ops-empty">No run data</div>'}</div></div><div class="ops-legend"><span><i class="completed"></i>Completed</span><span><i class="failed"></i>Failed</span><span><i class="active"></i>Active</span></div>`;
+}
+
+function renderOpsStatusChart(runs: DashboardRunStatus[]): string {
+  const completed = runs.filter((run) => run.status === "completed").length;
+  const failed = runs.filter((run) => run.status === "failed").length;
+  const active = Math.max(0, runs.length - completed - failed);
+  const total = Math.max(runs.length, 1);
+  const completedStop = Math.round((completed / total) * 100);
+  const failedStop = completedStop + Math.round((failed / total) * 100);
+  return `<div class="ops-donut-layout"><div class="ops-donut" style="--completed:${completedStop}%;--failed:${failedStop}%"><span><strong>${runs.length}</strong><small>runs</small></span></div><div class="ops-donut-key"><div><i class="completed"></i><span>Completed</span><strong>${completed}</strong></div><div><i class="failed"></i><span>Failed</span><strong>${failed}</strong></div><div><i class="active"></i><span>Active</span><strong>${active}</strong></div></div></div>`;
+}
+
+function renderOpsDurationChart(runs: DashboardRunStatus[]): string {
+  const samples = [...runs].reverse().slice(-16).map((run) => dashboardRunDurationMs(run) ?? 0);
+  if (!samples.length) return '<div class="ops-empty"><strong>No duration evidence</strong><span>Finished runs will populate this chart.</span></div>';
+  const width = 720;
+  const height = 170;
+  const max = Math.max(...samples, 1);
+  const points = samples.map((value, index) => `${30 + (index / Math.max(samples.length - 1, 1)) * (width - 50)},${height - 24 - (value / max) * (height - 52)}`).join(" ");
+  const area = `30,${height - 24} ${points} ${width - 20},${height - 24}`;
+  return `<div class="ops-line-chart"><svg viewBox="0 0 ${width} ${height}" preserveAspectRatio="none" role="img" aria-label="Recent workflow run duration trend"><g class="ops-grid-lines"><path d="M30 20H${width - 20}"></path><path d="M30 ${height / 2}H${width - 20}"></path><path d="M30 ${height - 24}H${width - 20}"></path></g><polygon points="${area}"></polygon><polyline points="${points}"></polyline></svg><div class="ops-axis-labels"><span>${escapeHtml(formatDashboardDuration(max))}</span><span>${escapeHtml(formatDashboardDuration(Math.round(max / 2)))}</span><span>0s</span></div></div>`;
+}
+
+function renderOpsQueuePressure(queue: DashboardQueueItem[]): string {
+  const queued = queue.reduce((sum, item) => sum + item.queuedTasks, 0);
+  const running = queue.reduce((sum, item) => sum + item.runningTasks, 0);
+  const failed = queue.reduce((sum, item) => sum + item.failedTasks, 0);
+  const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running" || item.runStatus === "leased");
+  const oldestMs = active.length ? Math.max(...active.map((item) => Date.now() - Date.parse(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)).filter(Number.isFinite)) : 0;
+  const total = Math.max(queued + running + failed, 1);
+  return `<div class="ops-queue-summary"><div><span>Queue depth</span><strong>${queued + running}</strong><small>${running} running · ${queued} waiting</small></div><div><span>Oldest active</span><strong>${formatDashboardDuration(oldestMs)}</strong><small>${failed} failed stage${failed === 1 ? "" : "s"}</small></div></div><div class="ops-pressure-bar"><i class="running" style="width:${(running / total) * 100}%"></i><i class="queued" style="width:${(queued / total) * 100}%"></i><i class="failed" style="width:${(failed / total) * 100}%"></i></div><div class="ops-legend"><span><i class="running"></i>Running</span><span><i class="queued"></i>Queued</span><span><i class="failed"></i>Failed</span></div>`;
+}
+
+function renderOpsAgentFlow(queue: DashboardQueueItem[]): string {
+  const flows = queue.filter((item) => item.runningAgentId || item.nextAgentId).slice(0, 5);
+  if (!flows.length) return '<div class="ops-empty"><strong>No active handoffs</strong><span>Agent transitions appear here while workflows execute.</span></div>';
+  return `<div class="ops-flow-list">${flows.map((item) => `<a href="/run?id=${encodeURIComponent(item.runId)}"><span class="ops-agent-node current">${escapeHtml(item.runningAgentId ?? "queued")}</span><span class="ops-flow-trace"><i></i>${dashboardIcon("chevrons")}</span><span class="ops-agent-node next">${escapeHtml(item.nextAgentId ?? "complete")}</span><small>${escapeHtml(compactDashboardText(item.task, 46))}</small></a>`).join("")}</div>`;
+}
+
+function renderOpsProjectActivity(projects: DashboardProjectSummary[]): string {
+  const top = [...projects].sort((a, b) => b.runCount - a.runCount).slice(0, 6);
+  const max = Math.max(...top.map((project) => project.runCount), 1);
+  return `<div class="ops-project-bars">${top.map((project) => `<a href="/projects?project=${encodeURIComponent(project.rootUri)}"><span>${escapeHtml(compactDashboardText(project.name, 22))}</span><i><b style="width:${(project.runCount / max) * 100}%"></b></i><strong>${formatNumber(project.runCount)}</strong></a>`).join("") || '<div class="ops-empty">No project activity</div>'}</div>`;
 }
 
 function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): string {
