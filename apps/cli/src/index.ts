@@ -34,6 +34,7 @@ import { buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, b
 import { buildCostOpportunities, buildEvaluationGaps, buildFailurePatterns, buildProposalPreview, selectFailedRuns, summarizeRouteFeedback } from "../../../packages/learning-evidence/src/index.js";
 import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageRisk } from "../../../packages/failure-triage/src/index.js";
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
+import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "./reference-resolution.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
@@ -43970,94 +43971,6 @@ function workflowOutcomeLabel(workflowId: string, status: string): string {
   if (workflowId === "debug-failure") return "Fix verified";
   if (workflowId === "investigate-issue") return "Investigation complete";
   return "Completed";
-}
-
-function resolveWorkflow<T extends { id: string }>(workflows: T[], workflowId: string): T | undefined {
-  const aliases: Record<string, string> = {
-    "review-change": "review-pr",
-    review: "review-pr",
-    "pull-request-review": "review-pr",
-    "fix-failure": "debug-failure",
-    debug: "debug-failure",
-    investigate: "investigate-issue",
-    diagnose: "investigate-issue",
-    release: "ship-release",
-    ship: "ship-release",
-    "context-maintenance": "maintain-context",
-    "update-context": "maintain-context"
-  };
-  return byId(workflows).get(aliases[workflowId] ?? workflowId);
-}
-
-function resolveAgent<T extends { id: string; display_name: string }>(agents: T[], agentRef: string): T | undefined {
-  const normalizedRef = normalizeLookup(agentRef);
-  const aliases: Record<string, string> = {
-    mira: "ux-reviewer",
-    ux: "ux-reviewer",
-    "ux-pass": "ux-reviewer",
-    "ux-review": "ux-reviewer",
-    frontend: "frontend-engineer",
-    backend: "backend-engineer",
-    database: "database-engineer",
-    db: "database-engineer",
-    security: "security-reviewer",
-    test: "test-engineer",
-    tests: "test-engineer",
-    ci: "ci-debugger",
-    docs: "docs-maintainer",
-    release: "release-manager",
-    product: "product-strategist",
-    architect: "technical-architect",
-    architecture: "technical-architect"
-  };
-  const resolvedId = aliases[normalizedRef] ?? agentRef;
-  const agentIndex = byId(agents);
-  return agentIndex.get(resolvedId)
-    ?? agents.find((agent) => normalizeLookup(agent.display_name) === normalizedRef)
-    ?? agents.find((agent) => normalizeLookup(agent.id) === normalizedRef);
-}
-
-function normalizeLookup(value: string): string {
-  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-}
-
-function normalizeProviderRef(value: string): string {
-  const normalized = normalizeLookup(value);
-  const aliases: Record<string, string> = {
-    auto: "auto",
-    automatic: "auto",
-    smart: "auto",
-    router: "auto",
-    "auto-router": "auto",
-    openai: "openai",
-    "open-ai": "openai",
-    gpt: "openai",
-    codex: "codex-cli",
-    "codex-cli": "codex-cli",
-    kiro: "kiro",
-    anthropic: "anthropic",
-    claude: "anthropic",
-    muse: "muse",
-    byo: "byo",
-    "bring-your-own": "byo",
-    "bring-your-own-model": "byo",
-    "byo-model": "byo",
-    mock: "mock",
-    test: "mock",
-    local: "local",
-    localhost: "local",
-    ollama: "local",
-    "lm-studio": "local",
-    lmstudio: "local",
-    llama: "local",
-    "llama-cpp": "local",
-    "openai-compatible": "openai-compatible",
-    "open-ai-compatible": "openai-compatible",
-    compatible: "openai-compatible",
-    bedrock: "bedrock",
-    aws: "bedrock"
-  };
-  return aliases[normalized] ?? normalized;
 }
 
 function createAgentTaskWorkflow(agent: Awaited<ReturnType<typeof loadAgents>>[number]): Awaited<ReturnType<typeof loadWorkflows>>[number] {
