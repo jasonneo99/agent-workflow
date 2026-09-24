@@ -776,6 +776,31 @@ export function dashboardCss(): string {
     .ops-project-bars a > i { height: 5px; background: #10283b; }
     .ops-project-bars b { display: block; height: 100%; background: linear-gradient(90deg, var(--ops-cyan), var(--ops-violet)); box-shadow: 0 0 8px rgba(21, 223, 243, .22); }
     .ops-project-bars strong { text-align: right; font-size: 10px; }
+    .ops-daemon-layout { min-height: 190px; display: grid; grid-template-columns: minmax(0, 1fr) 190px; gap: 18px; }
+    .ops-daemon-chart { min-width: 0; display: flex; align-items: end; gap: 10px; padding: 18px 10px 0; border-bottom: 1px solid #1a3850; background-image: linear-gradient(rgba(51, 91, 120, .15) 1px, transparent 1px); background-size: 100% 33.333%; }
+    .ops-daemon-column { flex: 1; height: 100%; min-width: 18px; display: flex; flex-direction: column; align-items: center; justify-content: end; gap: 8px; }
+    .ops-daemon-column > span { color: #70899c; font-size: 8px; white-space: nowrap; }
+    .ops-daemon-stack { width: min(34px, 80%); min-height: 7px; display: flex; flex-direction: column-reverse; }
+    .ops-daemon-stack i { display: block; flex: var(--share) 1 0; min-height: calc(min(var(--share), 1) * 5px); }
+    .ops-daemon-stack .applied, .ops-legend .daemon-applied { background: var(--ops-teal); }
+    .ops-daemon-stack .planned, .ops-legend .daemon-planned { background: var(--ops-violet); }
+    .ops-daemon-stack .other, .ops-legend .daemon-other { background: #52728a; }
+    .ops-daemon-facts { display: grid; grid-template-columns: 1fr 1fr; align-content: center; gap: 14px; }
+    .ops-daemon-facts span, .ops-daemon-facts strong { display: block; }
+    .ops-daemon-facts span { color: #7895aa; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+    .ops-daemon-facts strong { margin-top: 5px; font-size: 12px; }
+    .good-text { color: var(--ops-teal) !important; }
+    .warn-text { color: var(--ops-amber) !important; }
+    .ops-daemon-lanes { min-height: 158px; display: grid; align-content: center; gap: 12px; }
+    .ops-daemon-lanes > div { display: grid; grid-template-columns: 8px minmax(0, 1fr); align-items: center; gap: 10px; }
+    .ops-daemon-lanes i { width: 7px; height: 7px; border-radius: 50%; }
+    .ops-daemon-lanes i.active { background: var(--ops-teal); box-shadow: 0 0 9px rgba(22, 226, 176, .55); }
+    .ops-daemon-lanes i.idle { background: #526d80; }
+    .ops-daemon-lanes strong, .ops-daemon-lanes small { display: block; }
+    .ops-daemon-lanes strong { font-size: 10px; }
+    .ops-daemon-lanes small { margin-top: 2px; color: var(--ops-muted); font-size: 9px; }
+    .ops-daemon-trust { display: flex; justify-content: space-between; gap: 12px; padding-top: 12px; border-top: 1px solid var(--ops-line); color: var(--ops-muted); font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
+    .ops-daemon-trust strong { color: var(--ops-amber); }
     .ops-lower-grid { display: grid; grid-template-columns: minmax(680px, 1.75fr) minmax(320px, 1fr); gap: 12px; margin-top: 12px; align-items: stretch; }
     .ops-table { width: 100%; table-layout: fixed; border: 0; }
     .ops-table .ops-col-run { width: 12%; }
@@ -831,6 +856,8 @@ export function dashboardCss(): string {
       .ops-donut { width: min(118px, 100%); }
       .ops-donut-key { gap: 9px; }
       .ops-donut-key > div { gap: 5px; }
+      .ops-daemon-layout { grid-template-columns: 1fr; }
+      .ops-daemon-facts { grid-template-columns: repeat(4, 1fr); }
     }
     @media (max-width: 820px) {
       :root { --nav-width: 0px; }

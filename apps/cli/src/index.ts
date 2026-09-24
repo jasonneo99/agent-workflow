@@ -7548,6 +7548,8 @@ type DashboardHomeHealth = {
   latestFailedRun: DashboardRunStatus | null;
   pendingApprovals: DashboardActionApproval[];
   approvedExecutableApprovals: DashboardActionApproval[];
+  learningDaemon: DashboardLearningDaemonStatus | null;
+  learningReceipts: LearningActionReceiptLog | null;
 };
 
 type DashboardProjectDetail = {
@@ -27841,8 +27843,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
     latestFailedRun: runs.find((run) => run.status === "failed") ?? null,
     pendingApprovals,
-    approvedExecutableApprovals: approvedExecutableApprovals.filter((approval) => isExecutableApprovalAction(approval.actionType) && !approval.executedAt)
+    approvedExecutableApprovals: approvedExecutableApprovals.filter((approval) => isExecutableApprovalAction(approval.actionType) && !approval.executedAt),
+    learningDaemon: null,
+    learningReceipts: null
   };
+  const daemonProject = supervisor.learningProject ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "templates/project";
+  [health.learningDaemon, health.learningReceipts] = await Promise.all([
+    loadLearningDaemonStatus(daemonProject).catch(() => null),
+    readLearningActionReceipts(daemonProject).catch(() => null)
+  ]);
   response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
   response.end(renderDashboardHtml(runs, workflows, health));
 }
@@ -27924,6 +27933,8 @@ function renderDashboardHtml(
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Queue pressure</h2><span>Stage work and oldest active item</span></div><a href="/queue">Open queue</a></div>${renderOpsQueuePressure(health.queue)}</section>
       <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Project activity</h2><span>Runs across registered projects</span></div><a href="/projects">Projects</a></div>${renderOpsProjectActivity(health.projects)}</section>
+      <section class="ops-panel ops-span-2 ops-daemon-panel"><div class="ops-panel-heading"><div><h2>Daemon monitor</h2><span>Learning cycles, autonomous actions, and heartbeat health</span></div><a href="/learning">Open learning</a></div>${renderDaemonMonitor(health.supervisor, health.learningDaemon, health.learningReceipts)}</section>
+      <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Daemon lanes</h2><span>Managed runtime responsibilities</span></div><a href="/settings">Settings</a></div>${renderDaemonLanes(health.supervisor, health.learningDaemon)}</section>
     </div>
     <div class="ops-lower-grid">
       <section class="ops-panel ops-runs-panel"><div class="ops-panel-heading"><div><h2>Recent runs</h2><span>Latest terminal workflow outcomes</span></div><a href="/runs">View all runs</a></div><div class="table-wrap"><table class="ops-table"><colgroup><col class="ops-col-run"><col class="ops-col-task"><col class="ops-col-workflow"><col class="ops-col-status"><col class="ops-col-duration"><col class="ops-col-started"></colgroup><thead><tr><th>Run</th><th>Task</th><th>Workflow</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead><tbody>${recentRows || '<tr><td colspan="6">No terminal runs in the current window.</td></tr>'}</tbody></table></div></section>
@@ -28038,6 +28049,39 @@ function renderOpsProjectActivity(projects: DashboardProjectSummary[]): string {
   const top = [...projects].sort((a, b) => b.runCount - a.runCount).slice(0, 6);
   const max = Math.max(...top.map((project) => project.runCount), 1);
   return `<div class="ops-project-bars">${top.map((project) => `<a href="/projects?project=${encodeURIComponent(project.rootUri)}"><span>${escapeHtml(compactDashboardText(project.name, 22))}</span><i><b style="width:${(project.runCount / max) * 100}%"></b></i><strong>${formatNumber(project.runCount)}</strong></a>`).join("") || '<div class="ops-empty">No project activity</div>'}</div>`;
+}
+
+function renderDaemonMonitor(supervisor: DashboardSupervisorStatus, daemon: DashboardLearningDaemonStatus | null, receipts: LearningActionReceiptLog | null): string {
+  const events = [...(receipts?.events ?? [])].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)).slice(-24);
+  const buckets = new Map<string, { label: string; applied: number; planned: number; other: number }>();
+  for (const event of events) {
+    const date = new Date(event.createdAt);
+    const key = event.createdAt.slice(0, 10);
+    const bucket = buckets.get(key) ?? { label: Number.isFinite(date.getTime()) ? date.toLocaleDateString("en-US", { month: "short", day: "numeric" }) : key, applied: 0, planned: 0, other: 0 };
+    if (event.status === "applied") bucket.applied += 1;
+    else if (event.status === "planned") bucket.planned += 1;
+    else bucket.other += 1;
+    buckets.set(key, bucket);
+  }
+  const points = [...buckets.values()].slice(-10);
+  const max = Math.max(...points.map((item) => item.applied + item.planned + item.other), 1);
+  const bars = points.map((item) => {
+    const total = item.applied + item.planned + item.other;
+    return `<div class="ops-daemon-column"><div class="ops-daemon-stack" style="height:${Math.max(8, (total / max) * 100)}%"><i class="applied" style="--share:${item.applied}"></i><i class="planned" style="--share:${item.planned}"></i><i class="other" style="--share:${item.other}"></i></div><span>${escapeHtml(item.label)}</span></div>`;
+  }).join("");
+  const status = daemon?.status ?? supervisor.status;
+  const lastCycle = daemon?.lastReportAt ?? daemon?.lastHeartbeatAt ?? supervisor.lastHeartbeatAt;
+  return `<div class="ops-daemon-layout"><div class="ops-daemon-chart">${bars || '<div class="ops-empty"><strong>No daemon action receipts yet</strong><span>Heartbeat monitoring remains active.</span></div>'}</div><div class="ops-daemon-facts"><div><span>Status</span><strong class="${status === "running" ? "good-text" : "warn-text"}">${escapeHtml(status)}</strong></div><div><span>Cycles</span><strong>${formatNumber(daemon?.ticks ?? supervisor.ticks)}</strong></div><div><span>Last cycle</span><strong>${renderDashboardDateTime(lastCycle, "none")}</strong></div><div><span>Actions</span><strong>${formatNumber(events.length)}</strong></div></div></div><div class="ops-legend"><span><i class="daemon-applied"></i>Applied</span><span><i class="daemon-planned"></i>Planned</span><span><i class="daemon-other"></i>Closed</span></div>`;
+}
+
+function renderDaemonLanes(supervisor: DashboardSupervisorStatus, daemon: DashboardLearningDaemonStatus | null): string {
+  const lanes = [
+    ["Supervisor", supervisor.status === "running", `${formatNumber(supervisor.ticks)} ticks`],
+    ["Worker", supervisor.workerManaged, supervisor.workerManaged ? "managed" : "external"],
+    ["Learning", daemon?.status === "running", daemon?.mode ?? supervisor.learningMode ?? "disabled"],
+    ["Dashboard", supervisor.dashboardManaged, supervisor.dashboardManaged ? "managed" : "external"]
+  ] as const;
+  return `<div class="ops-daemon-lanes">${lanes.map(([label, active, detail]) => `<div><i class="${active ? "active" : "idle"}"></i><span><strong>${label}</strong><small>${escapeHtml(detail)}</small></span></div>`).join("")}</div><div class="ops-daemon-trust"><span>Autonomy ceiling</span><strong>${escapeHtml(daemon?.autonomousApplyMaxRisk ?? "none")}</strong></div>`;
 }
 
 function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): string {
