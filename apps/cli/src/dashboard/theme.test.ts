@@ -26,6 +26,7 @@ test("dashboard defaults to light and retains a selectable dark theme", async ()
   assert.match(source, /provider\.providerId === "muse"/u);
   assert.match(source, /metric-grid snapshot-metrics/u);
   assert.match(source, /metricCard\("Latest", latest \? formatDashboardDateTimeText/u);
+  assert.doesNotMatch(source, /metricCard\([^\n]*renderDashboardDateTime\(/u);
   assert.match(source, /window\.agentflowToggleTheme/u);
   assert.match(source, /<label>Batch limit<input name="workerLimit"/u);
   assert.match(source, /<label>Concurrency<input name="workerConcurrency"/u);

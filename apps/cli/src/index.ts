@@ -31838,8 +31838,8 @@ function renderLocalLlmSetupChecklistHtml(report: LocalLlmSetupChecklistReport):
         </div>
         <div class="metric-grid">
           ${metricCard("Local Successes", smoke.counts["local-selected"], "completed local/BYO selections")}
-          ${metricCard("First Local Success", smoke.firstSuccessAt ? renderDashboardDateTime(smoke.firstSuccessAt) : "none", "true local-selected receipt")}
-          ${metricCard("Latest Smoke", smoke.latestSmokeAt ? renderDashboardDateTime(smoke.latestSmokeAt) : "none", "most recent setup smoke")}
+          ${metricCard("First Local Success", smoke.firstSuccessAt ? formatDashboardDateTimeText(smoke.firstSuccessAt) : "none", "true local-selected receipt")}
+          ${metricCard("Latest Smoke", smoke.latestSmokeAt ? formatDashboardDateTimeText(smoke.latestSmokeAt) : "none", "most recent setup smoke")}
           ${metricCard("Latest Issue", smoke.latestFailureReason ? truncateText(smoke.latestFailureReason, 72) : "none", "failure, skip, fallback, or hosted selection")}
         </div>
         <p class="muted">${escapeHtml(smoke.recommendation)}</p>
@@ -31888,7 +31888,7 @@ function renderLocalLlmSetupGuideHtml(report: LocalLlmSetupGuideReport): string 
         ${metricCard("Detected Ready", report.runtimes.filter((runtime) => runtime.status === "ready").length, "runtime catalogs")}
         ${metricCard("Recommended", report.recommendedRuntime?.label ?? "none", report.recommendedRuntime?.baseUrl ?? "start a local runtime")}
         ${metricCard("Routing Note", report.routingNoteEligible ? "eligible" : "blocked", report.approved ? "approved" : "needs approval")}
-        ${metricCard("First Local Smoke", report.firstLocalSmokeSuccessAt ? renderDashboardDateTime(report.firstLocalSmokeSuccessAt) : "none", "required evidence")}
+        ${metricCard("First Local Smoke", report.firstLocalSmokeSuccessAt ? formatDashboardDateTimeText(report.firstLocalSmokeSuccessAt) : "none", "required evidence")}
       </div>
       <p class="muted">${escapeHtml(report.recommendation)}</p>
       <div class="split-grid compact">
@@ -32363,7 +32363,7 @@ function renderLocalLlmRoutingDecisionTimelineHtml(report: DashboardLocalLlmRout
         ${metricCard("Planned", report.items.filter((item) => item.state === "planned").length, "reviewed note plans")}
         ${metricCard("Recommended", report.items.filter((item) => item.state === "recommended").length, "not yet planned")}
         ${metricCard("Monitoring", report.items.filter((item) => item.state === "monitoring").length, "hold decisions")}
-        ${metricCard("Application Receipt", renderDashboardDateTime(report.sourceApplicationGeneratedAt), "latest apply evidence")}
+        ${metricCard("Application Receipt", report.sourceApplicationGeneratedAt ? formatDashboardDateTimeText(report.sourceApplicationGeneratedAt) : "n/a", "latest apply evidence")}
       </div>
       <p class="muted">${report.summary.map((item) => escapeHtml(item)).join(" ")}</p>
       <div class="table-wrap"><table><thead><tr><th>State</th><th>Decision</th><th>Target</th><th>Plan/Route</th><th>Outcome Evidence</th><th>Economics</th></tr></thead><tbody>${rows || "<tr><td colspan=\"6\">No routing decisions are available yet.</td></tr>"}</tbody></table></div>
@@ -33462,7 +33462,7 @@ function renderPostMergeEvidencePanel(evidence: StorageMergeEvidenceListing): st
       ${metricCard("Last Import", importResult ? importResult.status : "none", importResult ? `${importResult.mode}, ${formatNumber(importResult.affectedRows)} affected` : "no persisted import result")}
       ${metricCard("Backup", backup ? "present" : "missing", backup ? `${backup.files.length} file(s)` : "source and target backups not found")}
       ${metricCard("Object Proof", objectProof ? objectProof.status : "missing", objectProof ? `${objectProof.bucketParityStatus ?? "bucket not checked"}, ${formatNumber(objectProof.missingObjects)} missing refs` : "run object-artifact-proof --write")}
-      ${metricCard("Project Decisions", projectDecisions ? projectDecisions.decisions.length : 0, projectDecisions ? `latest ${renderDashboardDateTime(projectDecisions.generatedAt)}` : "none recorded")}
+      ${metricCard("Project Decisions", projectDecisions ? projectDecisions.decisions.length : 0, projectDecisions ? `latest ${formatDashboardDateTimeText(projectDecisions.generatedAt)}` : "none recorded")}
     </div>
     <div class="table-wrap"><table><thead><tr><th>Switch-Over Check</th><th>Status</th><th>Detail</th></tr></thead><tbody>${proofRows}</tbody></table></div>
     <details class="governance-details" open><summary>Conflict Classification</summary>
@@ -33516,7 +33516,7 @@ function renderOfflineFallbackPanel(report: OfflineFallbackReport, params: URLSe
       ${metricCard("Shared", report.currentServicesReachable ? "online" : "offline", "current configured storage")}
       ${metricCard("Local Fallback", report.localServicesReachable ? "ready" : "stopped", "localhost Docker services")}
       ${metricCard("Sync Queue", pendingItems.length, "pending local fallback items")}
-      ${metricCard("Scheduler", report.scheduler.status, `${report.scheduler.mode}; ${report.scheduler.nextRunAfter ? `next ${renderDashboardDateTime(report.scheduler.nextRunAfter)}` : "daemon check"}`)}
+      ${metricCard("Scheduler", report.scheduler.status, `${report.scheduler.mode}; ${report.scheduler.nextRunAfter ? `next ${formatDashboardDateTimeText(report.scheduler.nextRunAfter)}` : "daemon check"}`)}
     </div>
     <p class="muted">Generated ${renderDashboardDateTime(report.generatedAt)}. Current fallback status: <span class="status ${statusClass}">${escapeHtml(report.mode)}</span>.</p>
     <div class="meta-grid compact">
@@ -41567,7 +41567,7 @@ function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: Train
   <main><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
   ${renderDashboardFlash(params)}
   <section class="panel"><form method="get" action="/training-proposals"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
-  <section class="metrics">${metricCard("Pending", pending, `${inbox.items.length} total proposals`)}${metricCard("Last discovery", report?.generatedAt ? renderDashboardDateTime(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
+  <section class="metrics">${metricCard("Pending", pending, `${inbox.items.length} total proposals`)}${metricCard("Last discovery", report?.generatedAt ? formatDashboardDateTimeText(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
   <section class="panel"><h2>Governed inbox</h2><p class="muted">Approval permits a bounded holdout evaluation; it does not change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Decision</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Manual run</h2><p><code>npm run training-discovery -- --project ${escapeHtml(selected)} --force</code></p><p><a href="/api/training-proposals?project=${encodeURIComponent(selected)}">JSON inbox</a></p></section>
   </main></body></html>`;
