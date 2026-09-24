@@ -466,6 +466,8 @@ export function dashboardCss(): string {
     .metric strong .icon { width: 15px; height: 15px; color: #2563eb; }
     .metric span { font-size: 22px; font-weight: 700; }
     .metric small, .muted { color: #64748b; }
+    .snapshot-metrics { grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr)); }
+    .snapshot-metrics .metric span { font-size: 18px; line-height: 1.25; overflow-wrap: anywhere; }
     .approval-triage-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; margin: 0 0 12px; }
     .approval-triage-grid div { border: 1px solid #dbe4f0; background: #f8fafc; padding: 12px; display: grid; gap: 4px; }
     .approval-triage-grid strong { color: #172033; font-size: 13px; }

@@ -32394,10 +32394,10 @@ function renderLocalLlmRoutingDecisionSnapshotsHtml(report: LocalLlmRoutingDecis
         </div>
         <span class="status ${report.captured ? "completed" : "queued"}">${report.captured ? "changed" : "unchanged"}</span>
       </div>
-      <div class="metric-grid">
+      <div class="metric-grid snapshot-metrics">
         ${metricCard("Snapshots", report.snapshots.length, "kept locally")}
-        ${metricCard("Latest", latest ? renderDashboardDateTime(latest.generatedAt) : "none", "last persisted")}
-        ${metricCard("Previous", previous === "none" ? "none" : renderDashboardDateTime(previous), "comparison baseline")}
+        ${metricCard("Latest", latest ? formatDashboardDateTimeText(latest.generatedAt) : "none", "last persisted")}
+        ${metricCard("Previous", previous === "none" ? "none" : formatDashboardDateTimeText(previous), "comparison baseline")}
         ${metricCard("Changed Items", report.latestDelta.changedItems, `${report.latestDelta.added} added, ${report.latestDelta.removed} removed`)}
         ${metricCard("Savings Delta", formatUsd(report.latestDelta.netSavingsDeltaUsd), "latest vs previous")}
         ${metricCard("Current Hash", report.currentSnapshot.decisionHash.slice(0, 10), report.captured ? "new projection" : "same projection")}

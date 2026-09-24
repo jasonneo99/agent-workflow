@@ -16,6 +16,7 @@ test("dashboard defaults to light and retains a selectable dark theme", async ()
   assert.match(css, /\.queue-worker-form/u);
   assert.match(css, /\.readiness-group/u);
   assert.match(css, /\.readiness-jump-nav/u);
+  assert.match(css, /\.snapshot-metrics/u);
   assert.match(css, /\.theme-toggle/u);
   assert.match(source, /agentflow\.dashboard\.theme/u);
   assert.match(source, /data-theme-toggle/u);
@@ -23,6 +24,8 @@ test("dashboard defaults to light and retains a selectable dark theme", async ()
   assert.match(source, /Inspection scope and advanced filters/u);
   assert.match(source, /Provider coverage/u);
   assert.match(source, /provider\.providerId === "muse"/u);
+  assert.match(source, /metric-grid snapshot-metrics/u);
+  assert.match(source, /metricCard\("Latest", latest \? formatDashboardDateTimeText/u);
   assert.match(source, /window\.agentflowToggleTheme/u);
   assert.match(source, /<label>Batch limit<input name="workerLimit"/u);
   assert.match(source, /<label>Concurrency<input name="workerConcurrency"/u);
