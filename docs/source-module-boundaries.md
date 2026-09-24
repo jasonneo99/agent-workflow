@@ -63,6 +63,11 @@ accepted-workflow accounting in run-reporter modules; and model-route plus
 action/ReAct receipt construction in workflow-engine modules. Continue by
 extracting cohesive families; avoid a mechanical file-per-function split.
 
+The latest reduction pass also moves dashboard duration metrics into the
+dashboard presentation boundary, registry hashing and seeding into the storage
+registry boundary, and shared aggregation helpers into the run-reporter utility
+boundary. Each extraction lowers the corresponding no-growth ceiling.
+
 ## Current Large-File Inventory
 
 - `apps/cli/src/index.ts`: split command registration by domain, then move

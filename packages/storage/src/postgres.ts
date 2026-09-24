@@ -1,6 +1,5 @@
 import type pg from "pg";
-import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
-import type { RegistryRecord } from "../../agent-registry/src/loaders.js";
+import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
 import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers/src/quality.js";
@@ -11,7 +10,9 @@ import { transitionWorkflowRun } from "./run-transitions.js";
 import { findRecentDuplicateRun } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
+import { stableJson, workflowDefinitionHash } from "./registry.js";
 export { databaseUrl, withClient } from "./client.js";
+export { seedRegistry, workflowDefinitionHash } from "./registry.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
 export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
 export { appendProvenanceClaim, assertStageAuthority, issueStageAuthorityGrant, listCurrentBreakers, persistGuardedTransaction, queuePromotionCandidate, recordCanaryOutcome, revokeProvenanceSource, transitionPromotionCandidate, tripBreaker } from "./guarded-autonomy.js";
@@ -29,66 +30,6 @@ export {
   requestActionApproval,
   type ActionApprovalStatus
 } from "./action-approvals.js";
-export function workflowDefinitionHash(definition: unknown): string {
-  return createHash("sha256").update(stableJson(definition)).digest("hex");
-}
-function stableJson(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
-  if (value && typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stableJson(record[key])}`).join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "null";
-}
-export async function seedRegistry(
-  agents: RegistryRecord<AgentCard>[],
-  workflows: RegistryRecord<WorkflowDefinition>[]
-): Promise<{ agents: number; workflows: number }> {
-  return withClient(async (client) => {
-    for (const record of agents) {
-      await client.query(
-        `insert into agents (id, display_name, category, source_path, definition, updated_at)
-         values ($1, $2, $3, $4, $5, now())
-         on conflict (id) do update
-         set display_name = excluded.display_name,
-             category = excluded.category,
-             source_path = excluded.source_path,
-             definition = excluded.definition,
-             updated_at = now()`,
-        [
-          record.value.id,
-          record.value.display_name,
-          record.value.category,
-          record.path,
-          JSON.stringify(record.value)
-        ]
-      );
-    }
-    for (const record of workflows) {
-      await client.query(
-        `insert into workflows (id, name, source_path, definition, updated_at)
-         values ($1, $2, $3, $4, now())
-         on conflict (id) do update
-         set name = excluded.name,
-             source_path = excluded.source_path,
-             definition = excluded.definition,
-             updated_at = now()`,
-        [
-          record.value.id,
-          record.value.name,
-          record.path,
-          JSON.stringify(record.value)
-        ]
-      );
-    }
-
-    return {
-      agents: agents.length,
-      workflows: workflows.length
-    };
-  });
-}
-
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(`

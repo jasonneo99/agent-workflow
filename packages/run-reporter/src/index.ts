@@ -5,6 +5,7 @@ import type {
   WorkflowTaskStatus
 } from "../../storage/src/postgres.js";
 import { buildAcceptedWorkflowOutcome, type AcceptedWorkflowOutcome } from "./outcome-metrics.js";
+import { countBy, round } from "./report-utils.js";
 export * from "./outcome-metrics.js";
 export * from "./tuning-history.js";
 
@@ -2275,21 +2276,9 @@ function arrayOfStrings(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
-function countBy<T>(items: T[], getKey: (item: T) => string): Record<string, number> {
-  return items.reduce<Record<string, number>>((counts, item) => {
-    const key = getKey(item) || "unknown";
-    counts[key] = (counts[key] ?? 0) + 1;
-    return counts;
-  }, {});
-}
-
 function formatCounts(counts: Record<string, number>): string {
   const entries = Object.entries(counts);
   return entries.length ? entries.map(([key, value]) => `${key}=${value}`).join(", ") : "none";
-}
-
-function round(value: number): number {
-  return Number(value.toFixed(2));
 }
 
 function collectRunFeedback(artifacts: ArtifactStatus[]): FeedbackSummary {

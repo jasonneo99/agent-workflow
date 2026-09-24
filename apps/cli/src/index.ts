@@ -157,6 +157,7 @@ import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepository
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { dashboardCss, roadmapDashboardCss } from "./dashboard/styles.js";
+import { dashboardRunDurationMs, formatDashboardDuration } from "./dashboard/home-metrics.js";
 import { dashboardIcon, type DashboardIconName } from "./dashboard/icons.js";
 import { renderStudioHtml } from "./dashboard/studio.js";
 import { registerRepositoryMaintenanceCommand } from "./commands/repository-maintenance.js";
@@ -27957,19 +27958,6 @@ function renderDashboardHtml(
   </main>
 </body>
 </html>`;
-}
-
-function dashboardRunDurationMs(run: DashboardRunStatus): number | null {
-  if (!run.finishedAt) return null;
-  const duration = Date.parse(run.finishedAt) - Date.parse(run.startedAt);
-  return Number.isFinite(duration) && duration >= 0 ? duration : null;
-}
-
-function formatDashboardDuration(durationMs: number | null): string {
-  if (durationMs === null) return "n/a";
-  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
-  if (durationMs < 60_000) return `${(durationMs / 1_000).toFixed(durationMs < 10_000 ? 1 : 0)}s`;
-  return `${Math.floor(durationMs / 60_000)}m ${Math.round((durationMs % 60_000) / 1_000)}s`;
 }
 
 function renderOpsSparkline(values: number[], tone: "cyan" | "teal" | "violet" | "amber"): string {
