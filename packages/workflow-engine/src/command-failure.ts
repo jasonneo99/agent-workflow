@@ -41,9 +41,10 @@ export function formatCommandFailureEvidence(input: {
   return `Command \`${input.commandLine}\` ${outcome}.\nCommand output (truncated):\n${truncateCommandOutputForError(combined)}`;
 }
 
-export function commandFailureEligibleForVerifyRetry(stagePattern: Pick<StagePattern, "type">): boolean {
+export function commandFailureEligibleForVerifyRetry(stagePattern: Pick<StagePattern, "type">, commandLine?: string): boolean {
   const type = stagePattern.type.trim().toLowerCase();
-  return type === "test" || type === "verify" || type === "verifier";
+  if (type === "test" || type === "verify" || type === "verifier") return true;
+  return /^(?:npm\s+(?:test|run\s+(?:check|typecheck|validate)(?:\s|$))|pnpm\s+(?:test|check|typecheck)(?:\s|$)|yarn\s+(?:test|check|typecheck)(?:\s|$))/u.test(commandLine?.trim() ?? "");
 }
 
 export function verifyRetryBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {

@@ -365,6 +365,8 @@ test("verify retry eligibility covers test/verify stages only", () => {
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "verifier" }), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "Test" }), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "planner" }), false);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "planner" }, "npm run check"), true);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "single-shot" }, "npm test"), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "react" }), false);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "executor" }), false);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "single-shot" }), false);
@@ -405,7 +407,7 @@ test("verify-stage command failures re-enter the action loop with a retry budget
   assert.match(source, /verifyActionRounds:\s+do \{/u);
   assert.match(source, /continue verifyActionRounds;/u);
   assert.match(source, /\} while \(verifyRetryRequested\);/u);
-  assert.match(source, /commandFailureEligibleForVerifyRetry\(stagePattern\)/u);
+  assert.match(source, /commandFailureEligibleForVerifyRetry\(stagePattern, commandLine\)/u);
   assert.match(source, /local_command_verify_retry/u);
   assert.match(source, /agentflow-verify-retry-round/u);
   assert.match(source, /commandFailureDelta\(/u);

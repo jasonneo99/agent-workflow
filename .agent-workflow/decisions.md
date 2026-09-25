@@ -38,3 +38,13 @@
   approvals and unrecovered failures are delivered back to that task with a
   durable deduplication receipt; callbacks may ask for a decision but cannot
   manufacture approval or execute an action.
+
+## Roadmap evidence decisions — ab07a406
+
+- Keep guarded-autonomy authority unchanged until missing calibration evidence and a reviewed canary satisfy existing promotion policy. Completed-only receipt coverage does not hide incomplete or uncertain reservations; the earlier gap was reconciled to one expired pending reservation.
+- Treat standby replication/read-only evidence as readiness only. Preserve one writer; no split-brain writes, destructive host failover, deployment, push, or history rewrite are authorized by this context handoff.
+- Continue cohesive extraction without resetting maintenance targets or weakening contracts, policy checks, receipts, or tests. Preserve unrelated work.
+- Require governed worktree isolation and branch verification evidence before treating parallel same-project writes as safely isolated; retain conflict-aware ordering and cleanup as explicit acceptance requirements.
+- Use latency reports for tuning only after direct-baseline comparison and coverage of concurrent, retry, and missing-receipt cases. Do not equate task overlap with useful speedup.
+- Change MCP repository code only when fresh reproducible evidence identifies a client-facing boundary the repository can address.
+- Update roadmap claims only from verified evidence. Keep raw runtime/fleet evidence in the access-controlled companion; durable public context contains portable constraints, scrubbed summaries, and source pointers only, consistent with `docs/open-source-boundary.md`.

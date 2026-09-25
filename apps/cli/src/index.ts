@@ -95,6 +95,7 @@ import {
   decideActionApproval,
   dismissAllFailedWorkflowRuns,
   dismissFailedWorkflowRun,
+  supersedeWorkflowRun,
   getActionApproval,
   getArtifactById,
   getArtifactByUri,
@@ -34636,7 +34637,7 @@ function renderRunApprovalLevelControl(
   const currentRank = runApprovalLevelRank(run.autonomy);
   const ceilingRank = runApprovalLevelRank(ceiling);
   const immutableActive = run.status === "leased" || run.status === "running";
-  const superseded = Boolean(run.replacementRunId);
+  const superseded = Boolean(run.replacementRunId) || Boolean(run.superseded);
   const options = RUN_APPROVAL_LEVELS.filter((level) => runApprovalLevelRank(level) <= ceilingRank).map((level) =>
     `<option value="${escapeHtml(level)}"${level === run.autonomy ? " selected" : ""}>Level ${escapeHtml(level)} · ${escapeHtml(runApprovalLevelLabel(level))}</option>`
   ).join("");
@@ -35119,7 +35120,7 @@ function renderRunCommandCenterBody(
   const blocked = run.status === "blocked";
   const failedRun = run.status === "failed";
   const failureResolution = failedRunResolution(run.failedReason);
-  const superseded = Boolean(run.replacementRunId);
+  const superseded = Boolean(run.replacementRunId) || Boolean(run.superseded);
   const attention = !superseded && (openApprovals.length > 0 || blocked || failedRun);
   const headline = superseded
     ? "This run is read-only history"
@@ -37937,7 +37938,10 @@ async function dismissRunSupersededByReceipt(input: {
     await cancelWorkflowRun(input.repairRun.id);
   }
   if (input.run.status === "blocked" || input.run.status === "failed") {
-    await dismissFailedWorkflowRun({ runId: input.run.id, actor: "learning-daemon", reason });
+    await supersedeWorkflowRun({
+      runId: input.run.id, actor: "learning-daemon", reason,
+      supersededBy: input.repairRun?.id ?? input.receipt.path
+    });
   }
 }
 
@@ -37976,7 +37980,7 @@ async function dismissDuplicateBlockedWorkflowRuns(projectDir: string, actor: st
         });
       }
     }
-    if (await dismissFailedWorkflowRun({ runId: run.id, actor, reason })) dismissed += 1;
+    if (await supersedeWorkflowRun({ runId: run.id, actor, reason, supersededBy: newest.id })) dismissed += 1;
   }
   return dismissed;
 }
@@ -38068,9 +38072,9 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     const supersededBy = run.status === "completed" ? undefined : findLaterCompletedEquivalentRun(runs, repairSource ?? run);
     if (supersededBy) {
       const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
-      await dismissFailedWorkflowRun({ runId: run.id, actor: "learning-daemon", reason });
+      await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon", reason, supersededBy: supersededBy.id });
       if (repairSource?.status === "blocked") {
-        await dismissFailedWorkflowRun({ runId: repairSource.id, actor: "learning-daemon", reason });
+        await supersedeWorkflowRun({ runId: repairSource.id, actor: "learning-daemon", reason, supersededBy: supersededBy.id });
       }
       return 1;
     }
@@ -38164,11 +38168,8 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
         artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, providerId: provider.id },
         idempotencyKey: `workflow-provider-recovery-${run.id}-${replay.runId}`
       });
-      await dismissFailedWorkflowRun({
-        runId: run.id,
-        actor: "learning-daemon",
-        reason: `Superseded by provider-recovery replay ${replay.runId}; immutable history preserved.`
-      });
+      await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon",
+        reason: `Superseded by provider-recovery replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
       return 1;
     }
     if (rootRepairAction === "wait-approval" || rootRepairAction === "none") continue;
@@ -38200,11 +38201,8 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
         artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, action: rootRepairAction },
         idempotencyKey: `workflow-root-repair-${run.id}-${replay.runId}`
       });
-      await dismissFailedWorkflowRun({
-        runId: run.id,
-        actor: "learning-daemon",
-        reason: `Superseded by root-repair replay ${replay.runId}; immutable history preserved.`
-      });
+      await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon",
+        reason: `Superseded by root-repair replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
       return 1;
     }
     if (!missingExistingEvidence && !deliveryReason && !repairableFailure) continue;

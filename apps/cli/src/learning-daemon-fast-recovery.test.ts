@@ -14,7 +14,7 @@ test("learning daemon heals approvals before expensive analysis", () => {
 test("learning daemon dismisses older equivalent blockers and their approvals", () => {
   assert.match(
     source,
-    /async function dismissDuplicateBlockedWorkflowRuns[\s\S]+newestByContract[\s\S]+decision: "rejected"[\s\S]+status: "dismissed"[\s\S]+dismissFailedWorkflowRun/u
+    /async function dismissDuplicateBlockedWorkflowRuns[\s\S]+newestByContract[\s\S]+decision: "rejected"[\s\S]+status: "dismissed"[\s\S]+supersedeWorkflowRun/u
   );
 });
 

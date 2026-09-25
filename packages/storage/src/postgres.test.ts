@@ -92,7 +92,7 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(
     source,
-    /export async function listWorkflowQueue[\s\S]+not exists \([\s\S]+dismissed\.run_id = wr\.id[\s\S]+dismissed\.action_type = 'failed_run_dismissed'/u
+    /export async function listWorkflowQueue[\s\S]+not exists \([\s\S]+dismissed\.run_id = wr\.id[\s\S]+dismissed\.action_type in \('failed_run_dismissed', 'failed_run_superseded'\)/u
   );
   assert.match(
     source,
@@ -100,6 +100,14 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
   );
   assert.match(source, /export async function reinstateFailedWorkflowRun[\s\S]+failed_run_reinstated/u);
   assert.match(source, /export async function listWorkflowQueue[\s\S]+reinstated\.created_at > dismissed\.created_at/u);
+});
+
+test("superseded terminal runs are explicit history and leave the actionable queue", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const supersession = readFileSync(new URL("./run-supersession.ts", import.meta.url), "utf8");
+  assert.match(supersession, /export async function supersedeWorkflowRun[\s\S]+failed_run_superseded/u);
+  assert.match(source, /export async function listWorkflowQueue[\s\S]+failed_run_dismissed',\s*'failed_run_superseded'/u);
+  assert.match(source, /as dismissed,[\s\S]+failed_run_superseded[\s\S]+as superseded/u);
 });
 
 test("queue items expose replay and repair recovery relationships without rewriting lifecycle state", () => {

@@ -915,7 +915,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             // Fix 2: in verify-type stages, feed the failure back to the agent
             // with a bounded retry budget instead of failing the run outright.
             // Planner/react stages keep their diagnostic-evidence behavior.
-            if (verifyRetriesRemaining > 0 && commandFailureEligibleForVerifyRetry(stagePattern)) {
+            if (verifyRetriesRemaining > 0 && commandFailureEligibleForVerifyRetry(stagePattern, commandLine)) {
               verifyRetriesRemaining -= 1;
               verifyRetryRound += 1;
               await recordRunAction({

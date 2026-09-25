@@ -16,8 +16,7 @@ export { seedRegistry, workflowDefinitionHash } from "./registry.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
 export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
 export { appendProvenanceClaim, assertStageAuthority, issueStageAuthorityGrant, listCurrentBreakers, persistGuardedTransaction, queuePromotionCandidate, recordCanaryOutcome, revokeProvenanceSource, transitionPromotionCandidate, tripBreaker } from "./guarded-autonomy.js";
-export { listWorkflowReuseEvidence } from "./reuse.js";
-export { transitionWorkflowRun, type WorkflowRunTransitionInput } from "./run-transitions.js";
+export { listWorkflowReuseEvidence } from "./reuse.js"; export { transitionWorkflowRun, type WorkflowRunTransitionInput } from "./run-transitions.js"; export { supersedeWorkflowRun } from "./run-supersession.js";
 export {
   claimActionApprovalExecution,
   completeApprovalRequestRun,
@@ -382,7 +381,6 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`CREATE INDEX IF NOT EXISTS artifacts_task_kind_idx ON artifacts(task_id, kind)`);
   });
 }
-
 async function acquireWorkflowRunLease(client: pg.Client, input: {
   runId: string;
   workerId: string;
@@ -533,7 +531,6 @@ export interface WorkflowQueueItem {
   recoveryStartedAt: string | null;
   recoveryRelation: "replay" | "repair" | null;
 }
-
 export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string }): Promise<WorkflowQueueItem[]> {
   return withClient(async (client) => {
     const projectRootUri = options?.projectRootUri?.trim() || null;
@@ -590,7 +587,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
            select 1
            from action_receipts dismissed
            where dismissed.run_id = wr.id
-             and dismissed.action_type = 'failed_run_dismissed'
+             and dismissed.action_type in ('failed_run_dismissed','failed_run_superseded')
              and not exists (
                select 1
                from action_receipts reinstated
@@ -1165,7 +1162,7 @@ export async function reinstateFailedWorkflowRun(input: {
          and wr.status in ('failed', 'blocked', 'cancelled')
          and exists (
            select 1 from action_receipts dismissed
-           where dismissed.run_id = wr.id and dismissed.action_type = 'failed_run_dismissed'
+           where dismissed.run_id=wr.id and dismissed.action_type in ('failed_run_dismissed','failed_run_superseded')
          )
        returning id::text`,
       [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason })]
@@ -2717,6 +2714,7 @@ export interface WorkflowRunStatus {
   blockedReason?: string | null;
   failedReason?: string | null;
   dismissed?: boolean;
+  superseded?: boolean;
   stateVersion?: string;
   leaseEpoch?: string;
   leaseOwner?: string | null;
@@ -3004,14 +3002,15 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
            select 1
            from action_receipts dismissed
            where dismissed.run_id = wr.id
-             and dismissed.action_type = 'failed_run_dismissed'
+             and dismissed.action_type in ('failed_run_dismissed','failed_run_superseded')
              and not exists (
                select 1 from action_receipts reinstated
                where reinstated.run_id = wr.id
                  and reinstated.action_type = 'failed_run_reinstated'
                  and reinstated.created_at > dismissed.created_at
              )
-         ) as dismissed
+         ) as dismissed,
+         exists (select 1 from action_receipts superseded where superseded.run_id = wr.id and superseded.action_type = 'failed_run_superseded') as superseded
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        order by wr.started_at desc
@@ -3147,14 +3146,15 @@ export async function listWorkflowRunsForProject(input: {
            select 1
            from action_receipts dismissed
            where dismissed.run_id = wr.id
-             and dismissed.action_type = 'failed_run_dismissed'
+             and dismissed.action_type in ('failed_run_dismissed', 'failed_run_superseded')
              and not exists (
                select 1 from action_receipts reinstated
                where reinstated.run_id = wr.id
                  and reinstated.action_type = 'failed_run_reinstated'
                  and reinstated.created_at > dismissed.created_at
              )
-         ) as dismissed
+         ) as dismissed,
+         exists (select 1 from action_receipts superseded where superseded.run_id = wr.id and superseded.action_type = 'failed_run_superseded') as superseded
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        where p.root_uri = $1
