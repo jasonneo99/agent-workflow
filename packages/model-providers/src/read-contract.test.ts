@@ -27,6 +27,8 @@ function baseInput(overrides = {}) {
 test("stage prompt instructs API providers to request file reads and shows read policy", () => {
   const prompt = buildStagePrompt(baseInput());
   assert.match(prompt, /requestedFileReads/u);
+  assert.match(prompt, /Never say that a read, write, or command was requested unless/u);
+  assert.match(prompt, /dirty worktree is not itself a blocker/u);
   assert.match(prompt, /Allowed read paths:/u);
   assert.match(prompt, /Blocked read paths:/u);
   assert.match(prompt, /Max read bytes:/u);
