@@ -1,5 +1,18 @@
 # Agent Workflow Roadmap
 
+## Direct-speed governed execution
+
+- [x] Continuously replenish worker slots while long provider calls are active.
+- [x] Compile stage-specific context deltas and bound prior-stage evidence.
+- [x] Reuse read-only Codex sessions across stages and worker restarts on one host.
+- [x] Fuse low-risk static build ceremony while retaining implementation and verification.
+- [x] Downshift bounded routine stages to fast models unless task risk requires the authored tier.
+
+The compatibility switches are `AGENTFLOW_CODEX_SESSION_REUSE=0` and
+`AGENTFLOW_ADAPTIVE_STATIC_WORKFLOWS=0`. Routing and workflow receipts retain the
+selected tier and optimized stage graph so speed changes remain visible and
+reversible.
+
 This roadmap keeps Agent Workflow moving toward reusable shared platform IP while keeping product-specific agent engines private.
 
 ## Direction

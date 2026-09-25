@@ -24,6 +24,8 @@ export interface FileSummaryJsonArtifact {
 }
 
 export function buildStagePrompt(input: StageExecutionInput): string {
+  const briefBudget = stageBriefBudget(input);
+  const relevantArtifacts = selectPriorStageArtifacts(input);
   return [
     `Workflow: ${input.workflowId}`,
     `Overall task: ${input.workflowTask}`,
@@ -41,19 +43,19 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     formatActionPolicy(input.projectConfig),
     "",
     "Compiled project/workflow brief:",
-    selectCompiledBriefForPrompt(input.compiledBrief, 8000),
+    selectCompiledBriefForPrompt(input.compiledBrief, briefBudget, input.stageId),
     "",
     "Prior stage receipts:",
     input.priorReceipts.length
-      ? input.priorReceipts.map((receipt) => `- ${receipt.actionType} ${receipt.agentId}: ${receipt.summary}`).join("\n")
+      ? input.priorReceipts.slice(-12).map((receipt) => `- ${receipt.actionType} ${receipt.agentId}: ${truncate(receipt.summary, 400)}`).join("\n")
       : "None yet.",
     "",
     "Prior stage artifacts (authoritative outputs from this run):",
-    input.priorStageArtifacts?.length
-      ? input.priorStageArtifacts.map((item) => [
+    relevantArtifacts.length
+      ? relevantArtifacts.map((item) => [
         `### ${item.stageId} (${item.agentId})`,
         `Summary: ${item.summary}`,
-        truncate(JSON.stringify(item.artifact), 4000)
+        truncate(JSON.stringify(item.artifact), 1800)
       ].join("\n")).join("\n\n")
       : "None yet.",
     "",
@@ -95,7 +97,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
   ].join("\n");
 }
 
-export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8000): string {
+export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8000, stageId = ""): string {
   const safeMax = Math.max(1000, maxChars);
   const completeMetadata = `Compiled brief selection metadata: strategy=section-budgeted; completeness=complete; originalChars=${compiledBrief.length}; promptBudget=${safeMax}`;
   if (compiledBrief.length + completeMetadata.length + 1 <= safeMax) {
@@ -114,10 +116,12 @@ export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8
   }
 
   const metadata = `Compiled brief selection metadata: strategy=section-budgeted; completeness=truncated; originalChars=${compiledBrief.length}; promptBudget=${safeMax}`;
+  const implementationStage = /implement|fix|frontend|backend|database/iu.test(stageId);
+  const verificationStage = /verify|test|review|package/iu.test(stageId);
   const allocations: Array<[string, number]> = [
-    ["Exact Source Evidence", 3600],
-    ["Project Context", 850],
-    ["Indexed Source Summaries", 950],
+    ["Exact Source Evidence", implementationStage ? 2600 : verificationStage ? 1100 : 1500],
+    ["Project Context", 650],
+    ["Indexed Source Summaries", implementationStage ? 750 : 450],
     ["Action Policy", 650],
     ["Adaptive Preference Notes", 350],
     ["Applied Local Tuning Notes", 300],
@@ -136,6 +140,22 @@ export function selectCompiledBriefForPrompt(compiledBrief: string, maxChars = 8
   for (const [name, budget] of allocations) append(sections.get(name) ?? "", budget);
 
   return selected.join("\n\n").slice(0, safeMax);
+}
+
+function stageBriefBudget(input: StageExecutionInput): number {
+  if (/implement|fix|frontend|backend|database/iu.test(input.stageId)) return 6000;
+  if (/plan|architecture|security/iu.test(input.stageId)) return 4800;
+  if (/verify|test|review/iu.test(input.stageId)) return 3600;
+  return 2800;
+}
+
+function selectPriorStageArtifacts(input: StageExecutionInput): NonNullable<StageExecutionInput["priorStageArtifacts"]> {
+  const artifacts = input.priorStageArtifacts ?? [];
+  if (artifacts.length <= 2) return artifacts;
+  const preferred = /verify|test|package|document/iu.test(input.stageId)
+    ? artifacts.filter((item) => /implement|fix|verify|test/iu.test(item.stageId))
+    : artifacts;
+  return preferred.slice(-2);
 }
 
 function budgetBriefFragment(value: string, maxChars: number): string {

@@ -16,7 +16,7 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string };
+type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string; sessionKey?: string };
 type CodexCliRunResult = { output: string; model: string; usage?: StageExecutionOutput["usage"] };
 export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
 export interface CodexCliDiagnostic {
@@ -29,6 +29,7 @@ export interface CodexCliDiagnostic {
   signal?: NodeJS.Signals;
 }
 type CodexCliProcessError = Error & { code?: string; retryable?: boolean; diagnostic?: CodexCliDiagnostic };
+const codexCliSessions = new Map<string, string>();
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
   execute(input: CodexCliRunInput): Promise<CodexCliRunResult>;
@@ -100,13 +101,14 @@ export class CodexCliProvider implements ModelProvider {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
         input.projectRootUri
-          ? "Inspect the supplied project checkout with bounded read-only discovery before reporting missing context. Resolve named commits with git show/diff, locate task-relevant source and tests, and reuse authoritative project files or prior artifacts when they already contain the needed evidence. Block only after those sources are genuinely absent or ambiguous. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
+          ? "Treat the supplied stage context and prior artifacts as primary. Avoid broad repository scans and repeated orientation. Inspect only a small, task-relevant path when the supplied evidence is insufficient; otherwise request exact additional files through requestedFileReads. Resolve named commits with bounded git show/diff when required. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
           : "No project checkout is available. Do not inspect unrelated filesystem locations, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
       schema: stageSchema,
       model,
-      workingDirectory: input.projectRootUri
+      workingDirectory: input.projectRootUri,
+      sessionKey: input.runId
     });
     const parsed = normalizeStageArtifact(extractJsonObject(result.output) as StageJsonArtifact);
     return {
@@ -173,7 +175,7 @@ export function createCodexCliRunner(): CodexCliRunner {
       const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
       return `${result.stdout}\n${result.stderr}`.trim();
     },
-    execute: async ({ prompt, schema, model, workingDirectory }) => {
+    execute: async ({ prompt, schema, model, workingDirectory, sessionKey }) => {
       return withCodexCliProcessLock(async () => {
         const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
         const schemaPath = path.join(temporaryDir, "output-schema.json");
@@ -181,13 +183,29 @@ export function createCodexCliRunner(): CodexCliRunner {
         try {
           await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
           const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
-          const args = [
-            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
-            "--skip-git-repo-check", "--sandbox", "read-only", "--cd", executionDirectory,
-            "--output-schema", schemaPath, "--output-last-message", outputPath,
-            "--color", "never", ...(model ? ["--model", model] : []), "-"
-          ];
+          const reusableSession = configuredCodexCliSessionReuse() && sessionKey ? await loadCodexCliSession(sessionKey) : undefined;
+          const args = reusableSession
+            ? [
+              "exec", "resume", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+              "--output-schema", schemaPath, "--output-last-message", outputPath,
+              ...(model ? ["--model", model] : []), reusableSession, "-"
+            ]
+            : [
+              "exec", ...(configuredCodexCliSessionReuse() && sessionKey ? [] : ["--ephemeral"]),
+              "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
+              "--sandbox", "read-only", "--cd", executionDirectory,
+              "--output-schema", schemaPath, "--output-last-message", outputPath,
+              "--color", "never", ...(model ? ["--model", model] : []), "-"
+            ];
           const processResult = await runProcess(binary, args, prompt, executionDirectory);
+          if (!reusableSession && sessionKey) {
+            const threadId = parseCodexCliThreadId(processResult.stdout);
+            if (threadId) {
+              codexCliSessions.set(sessionKey, threadId);
+              await rememberCodexCliSession(sessionKey, threadId);
+              while (codexCliSessions.size > 128) codexCliSessions.delete(codexCliSessions.keys().next().value!);
+            }
+          }
           return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
         } finally {
           await fs.rm(temporaryDir, { recursive: true, force: true });
@@ -195,6 +213,51 @@ export function createCodexCliRunner(): CodexCliRunner {
       });
     }
   };
+}
+
+export function configuredCodexCliSessionReuse(): boolean {
+  return !/^(?:0|false|off|no)$/iu.test(process.env.AGENTFLOW_CODEX_SESSION_REUSE?.trim() ?? "");
+}
+
+export function parseCodexCliThreadId(jsonl: string): string | undefined {
+  for (const line of jsonl.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      const candidate = event.thread_id ?? event.threadId ?? (event.thread && typeof event.thread === "object" ? (event.thread as Record<string, unknown>).id : undefined);
+      if (typeof candidate === "string" && /^[0-9a-f-]{36}$/iu.test(candidate)) return candidate;
+    } catch { /* Ignore non-event output. */ }
+  }
+  return undefined;
+}
+
+async function loadCodexCliSession(sessionKey: string): Promise<string | undefined> {
+  const cached = codexCliSessions.get(sessionKey);
+  if (cached) return cached;
+  try {
+    const record = JSON.parse(await fs.readFile(codexCliSessionPath(sessionKey), "utf8")) as { threadId?: unknown; createdAt?: unknown };
+    if (typeof record.threadId !== "string" || !/^[0-9a-f-]{36}$/iu.test(record.threadId)) return undefined;
+    if (typeof record.createdAt !== "number" || Date.now() - record.createdAt > 24 * 60 * 60 * 1000) return undefined;
+    codexCliSessions.set(sessionKey, record.threadId);
+    return record.threadId;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    return undefined;
+  }
+}
+
+async function rememberCodexCliSession(sessionKey: string, threadId: string): Promise<void> {
+  const directory = codexCliSessionDirectory();
+  await fs.mkdir(directory, { recursive: true, mode: 0o700 });
+  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify({ threadId, createdAt: Date.now() })}\n`, { mode: 0o600 });
+}
+
+function codexCliSessionDirectory(): string {
+  return path.join(os.tmpdir(), `agentflow-codex-sessions-${typeof process.getuid === "function" ? process.getuid() : "user"}`);
+}
+
+function codexCliSessionPath(sessionKey: string): string {
+  return path.join(codexCliSessionDirectory(), `${createHash("sha256").update(sessionKey).digest("hex")}.json`);
 }
 
 export function parseCodexCliUsage(jsonl: string): StageExecutionOutput["usage"] {

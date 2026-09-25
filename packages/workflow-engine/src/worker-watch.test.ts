@@ -3,7 +3,7 @@ import test from "node:test";
 import { runWorkerWatchLoop } from "./worker-watch.js";
 import type { WorkerResult } from "./worker-types.js";
 
-const empty = (): WorkerResult => ({ claimed: 0, completed: 0, failed: 0, blocked: 0, providerFailures: [], providerIds: [], quarantinedProviderIds: [] });
+const empty = (): WorkerResult => ({ claimed: 0, completed: 0, failed: 0, providerFailures: [], providerIds: [], quarantinedProviderIds: [] });
 
 test("watch worker replenishes an idle slot when another stage unlocks work", async () => {
   let stopped = false;

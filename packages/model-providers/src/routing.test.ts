@@ -4,6 +4,23 @@ import type { AddressInfo } from "node:net";
 import test from "node:test";
 import { autoProviderCandidates, selectModelRoute } from "./routing.js";
 
+test("routine low-risk stages downshift to fast while risky tasks preserve their tier", async () => {
+  const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;
+  const previousMode = process.env.AGENTFLOW_ROUTING_MODE;
+  try {
+    process.env.DEFAULT_MODEL_PROVIDER = "mock";
+    process.env.AGENTFLOW_ROUTING_MODE = "fixed";
+    const routine = await selectModelRoute({ workflowId: "build-feature", stageId: "verify", agentId: "auto-test-runner", modelTier: "standard", workflowTask: "Update a button label", compiledBrief: "" });
+    assert.equal(routine.modelTier, "fast");
+    assert.match(routine.reason, /Downshifted from standard/u);
+    const risky = await selectModelRoute({ workflowId: "build-feature", stageId: "verify", agentId: "auto-test-runner", modelTier: "standard", workflowTask: "Change production authentication", compiledBrief: "" });
+    assert.equal(risky.modelTier, "standard");
+  } finally {
+    if (previousProvider === undefined) delete process.env.DEFAULT_MODEL_PROVIDER; else process.env.DEFAULT_MODEL_PROVIDER = previousProvider;
+    if (previousMode === undefined) delete process.env.AGENTFLOW_ROUTING_MODE; else process.env.AGENTFLOW_ROUTING_MODE = previousMode;
+  }
+});
+
 test("provider smoke prefers proven fast hosted routes while preserving readiness fallback", () => {
   const previousSmokeProviders = process.env.AGENTFLOW_SMOKE_PROVIDERS;
   const previousAutoProviders = process.env.AGENTFLOW_AUTO_PROVIDERS;

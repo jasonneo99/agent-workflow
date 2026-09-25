@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliTimeoutMs, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
+import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliSessionReuse, configuredCodexCliTimeoutMs, parseCodexCliThreadId, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -48,9 +48,9 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.equal(result.artifact.provider, "codex-cli");
     assert.equal(result.artifact.model, "codex-test-model");
     assert.equal(calls[0]?.model, "codex-test-model");
-    assert.match(calls[0]?.prompt ?? "", /inspect the supplied project checkout/i);
-    assert.match(calls[0]?.prompt ?? "", /Resolve named commits with git show\/diff/);
-    assert.match(calls[0]?.prompt ?? "", /Block only after those sources are genuinely absent or ambiguous/);
+    assert.match(calls[0]?.prompt ?? "", /supplied stage context and prior artifacts as primary/i);
+    assert.match(calls[0]?.prompt ?? "", /Avoid broad repository scans/i);
+    assert.match(calls[0]?.prompt ?? "", /Resolve named commits with bounded git show\/diff/);
     assert.equal(calls[0]?.workingDirectory, "/tmp/synthetic-project");
   } finally {
     if (previous === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
@@ -100,6 +100,20 @@ test("Codex CLI JSONL usage is normalized for route accounting", () => {
     JSON.stringify({ type: "thread.started", thread_id: "synthetic" }),
     JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 30 } })
   ].join("\n")), { inputTokens: 120, cachedInputTokens: 20, reasoningTokens: undefined, outputTokens: 30, totalTokens: 150 });
+});
+
+test("Codex CLI session reuse defaults on, can be disabled, and captures thread ids", () => {
+  const previous = process.env.AGENTFLOW_CODEX_SESSION_REUSE;
+  try {
+    delete process.env.AGENTFLOW_CODEX_SESSION_REUSE;
+    assert.equal(configuredCodexCliSessionReuse(), true);
+    process.env.AGENTFLOW_CODEX_SESSION_REUSE = "off";
+    assert.equal(configuredCodexCliSessionReuse(), false);
+    assert.equal(parseCodexCliThreadId(JSON.stringify({ type: "thread.started", thread_id: "cf815d03-6423-4520-bf3c-5d486203260b" })), "cf815d03-6423-4520-bf3c-5d486203260b");
+  } finally {
+    if (previous === undefined) delete process.env.AGENTFLOW_CODEX_SESSION_REUSE;
+    else process.env.AGENTFLOW_CODEX_SESSION_REUSE = previous;
+  }
 });
 
 test("Codex CLI JSONL output has a configurable bounded allowance", () => {

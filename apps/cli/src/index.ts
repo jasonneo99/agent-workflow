@@ -155,7 +155,7 @@ import type { ModelTier } from "../../../packages/model-providers/src/types.js";
 import { appendTuningApprovalHistory, buildCandidateComparisonPlan, buildCostQualityReport, buildModelImprovementPlan, buildPreferenceScorecard, buildRunExport, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, buildTuningProposals, buildWorkflowShapeOptimizationReport, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalHistoryMarkdown, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport, type CandidateComparisonPlan, type CandidateVariantPlan, type CostQualityReport, type ModelImprovementPlan, type PreferenceScorecard, type TuningApplicationPlan, type TuningApprovalHistory, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport } from "../../../packages/run-reporter/src/index.js";
 import { buildObservabilityReport, formatObservabilityReport, type ObservabilityReport } from "../../../packages/observability/src/index.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
-import { constructDynamicWorkflow, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
+import { constructDynamicWorkflow, optimizeStaticWorkflowForLatency, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
 import { decideTrainingProposal, formatTrainingDiscoveryReport, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, type TrainingProposalInbox } from "../../../packages/training-discovery/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
@@ -45176,17 +45176,16 @@ async function queueWorkflow(input: {
   | { ok: false; error: string }
 > {
   const projectDir = path.resolve(process.cwd(), input.projectPath);
-  const agents = await loadAgentsForProject(projectDir);
-  const workflows = await loadWorkflows(rootDir);
-  const workflow = input.workflowOverride ?? resolveWorkflow(workflows, input.workflowId);
-
-  if (!workflow) {
-    return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
-  }
+  const [agents, workflows] = await Promise.all([loadAgentsForProject(projectDir), loadWorkflows(rootDir)]);
+  const resolvedWorkflow = input.workflowOverride ?? resolveWorkflow(workflows, input.workflowId);
+  if (!resolvedWorkflow) return { ok: false, error: `Unknown workflow: ${input.workflowId}` };
+  const latencyOptimization = input.workflowOverride || /^(?:0|false|off|no)$/iu.test(process.env.AGENTFLOW_ADAPTIVE_STATIC_WORKFLOWS?.trim() ?? "")
+    ? { workflow: resolvedWorkflow, optimization: { applied: false, complexity: "complex" as const, originalStages: resolvedWorkflow.stages.map((stage) => stage.id), selectedStages: resolvedWorkflow.stages.map((stage) => stage.id), rationale: "Explicit workflow overrides retain their authored stage graph." } }
+    : optimizeStaticWorkflowForLatency(resolvedWorkflow, input.task);
+  const workflow = latencyOptimization.workflow;
   if (input.workflowOverride) {
     await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
   }
-
   const configuredProject = await loadProjectConfig(projectDir);
   let resolvedPolicy: ReturnType<typeof resolveExecutionPolicy>;
   try {
@@ -45283,11 +45282,12 @@ async function queueWorkflow(input: {
     constructionRationale: workflow.dynamic?.construction_rationale,
     modelTierOverride: input.modelTierOverride,
     providerOverride: input.providerOverride,
-    evaluationMetadata: attachCodexOrigin(input.evaluationMetadata),
+    evaluationMetadata: attachCodexOrigin({ ...(input.evaluationMetadata ?? {}), latencyOptimization: latencyOptimization.optimization }),
     compiledBrief: brief,
     compiledBriefMetadata: {
       runInputSnapshot,
-      governedReusePlan
+      governedReusePlan,
+      latencyOptimization: latencyOptimization.optimization
     }
   });
 

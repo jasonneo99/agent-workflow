@@ -63,7 +63,6 @@ async function runContinuouslyReplenishedBatch(
     claimed: 0,
     completed: 0,
     failed: 0,
-    blocked: 0,
     providerFailures: [],
     providerIds: shared.providerIds ?? [],
     quarantinedProviderIds: []
@@ -118,6 +117,5 @@ function mergeWorkerResult(target: WorkerResult, source: WorkerResult): void {
   target.claimed += source.claimed;
   target.completed += source.completed;
   target.failed += source.failed;
-  target.blocked += source.blocked;
   target.providerFailures.push(...source.providerFailures);
 }

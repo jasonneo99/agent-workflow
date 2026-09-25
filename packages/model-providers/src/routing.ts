@@ -36,8 +36,9 @@ export async function selectModelRoute(
   options?: { allowedProviderIds?: string[]; routingEngine?: RoutingDecisionEngine }
 ): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
+  const latencyTier = selectLatencyAwareTier(input, requestedModelTier);
   const routingEngine = options?.routingEngine ?? defaultRoutingEngine;
-  const preferenceDecision = decideRouting(input, routingEngine, requestedModelTier);
+  const preferenceDecision = decideRouting(input, routingEngine, latencyTier);
   const preference = {
     promoteFastStages: preferenceDecision.decision.promoteFastStages,
     localHoldoutPromotion: preferenceDecision.decision.localHoldout,
@@ -46,7 +47,7 @@ export async function selectModelRoute(
   const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
   const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
   const allowAdaptiveTierPromotion = input.workflowId !== "provider-smoke";
-  const modelTier = mode === "adaptive" && allowAdaptiveTierPromotion && preference.promoteFastStages && requestedModelTier === "fast" ? "standard" : requestedModelTier;
+  const modelTier = mode === "adaptive" && allowAdaptiveTierPromotion && preference.promoteFastStages && latencyTier === "fast" ? "standard" : latencyTier;
   const explicitTierProvider = process.env[`AGENTFLOW_PROVIDER_${modelTier.toUpperCase()}`];
   const tierProvider = explicitTierProvider === "auto" ? undefined : explicitTierProvider;
   const approvedLocalRoute = mode !== "fixed" && modelTier === "fast" && preference.localHoldoutPromotion.approved
@@ -88,7 +89,8 @@ export async function selectModelRoute(
           taskEvidence?.reason ?? "",
           routeEngineNote([preferenceDecision, learnedDecision]),
           autoRoute?.reason ?? "",
-          modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
+          latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
+          modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : "",
           preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
         ].filter(Boolean).join(" ")
       : [
@@ -97,12 +99,22 @@ export async function selectModelRoute(
         learnedRoute?.reason ?? "",
         taskEvidence?.reason ?? "",
         routeEngineNote([preferenceDecision, learnedDecision]),
-        modelTier !== requestedModelTier ? `Promoted from ${requestedModelTier} because prior project feedback includes revision or rejection signal.` : "",
+        latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
+        modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : "",
         preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
         ].filter(Boolean).join(" "),
+      latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
       capabilityFallback?.reason ?? ""
     ].filter(Boolean).join(" ")
   };
+}
+
+function selectLatencyAwareTier(input: SelectModelRouteInput, requested: ModelTier): ModelTier {
+  if (requested === "reasoning" || input.workflowId === "provider-smoke") return requested;
+  if (!/^(?:orient|triage|collect|verify|test|document|docs|package)$/iu.test(input.stageId)) return requested;
+  const task = input.workflowTask ?? "";
+  if (/\b(?:auth(?:entication|orization)?|permission|security|vulnerability|migration|schema|database|deploy|release|payment|billing|secret|credential|production)\b/iu.test(task)) return requested;
+  return "fast";
 }
 
 async function selectAllowedProvider(modelTier: ModelTier, allowedProviderIds: Set<string>): Promise<{ providerId: string; reason: string }> {

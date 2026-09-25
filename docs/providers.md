@@ -66,10 +66,20 @@ DEFAULT_MODEL_PROVIDER=codex-cli
 CODEX_CLI_AUTH_MODE=chatgpt
 # Optional; omit to use the Codex CLI default model.
 CODEX_CLI_MODEL=
+AGENTFLOW_CODEX_SESSION_REUSE=1
 ```
 
-The adapter invokes `codex exec` in an ephemeral temporary directory with a
-read-only sandbox and a strict JSON output schema. It does not read or copy the
+Workflow-scoped Codex session reuse is enabled by default. It preserves the
+read-only sandbox while avoiding repeated repository orientation between stages.
+The runtime stores only a mode-0600 run-to-thread pointer under the operating
+system temporary directory, expires it after 24 hours, and never places prompt
+content in that pointer. Set `AGENTFLOW_CODEX_SESSION_REUSE=0` for strict
+one-process/one-session isolation.
+
+The adapter invokes `codex exec` with a read-only sandbox, temporary schema and
+output files, and a strict JSON output contract. Workflow runs retain their
+Codex session only for bounded continuation; standalone summaries remain
+ephemeral. It does not read or copy the
 Codex credential cache, and it removes `OPENAI_API_KEY` and `OPENAI_ADMIN_KEY`
 from the child environment so an API credential cannot silently replace the
 requested ChatGPT authentication path. The default readiness check requires

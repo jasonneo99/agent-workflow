@@ -84,6 +84,14 @@ export type AdaptiveExecutionPlan = {
   rationale: string[];
 };
 
+export type StaticWorkflowOptimization = {
+  applied: boolean;
+  complexity: AdaptiveExecutionPlan["complexity"];
+  originalStages: string[];
+  selectedStages: string[];
+  rationale: string;
+};
+
 const HIGH_RISK_GOAL = /\b(?:auth(?:entication|orization)?|permission|security|vulnerability|migration|schema|database|deploy|release|payment|billing|secret|credential|production)\b/iu;
 const BROAD_SCOPE_GOAL = /\b(?:cohesive|across|end[- ]to[- ]end|multiple|all|roadmap|platform|architecture|frontend|backend)\b/iu;
 
@@ -91,8 +99,9 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
   const words = goal.trim().split(/\s+/u).filter(Boolean).length;
   const highRisk = HIGH_RISK_GOAL.test(goal);
   const broad = BROAD_SCOPE_GOAL.test(goal) || (goal.match(/[;:]/gu)?.length ?? 0) > 1;
+  const batched = /\b(?:all|next)\s+\d+\b/iu.test(goal);
   const enumeratedWorkItems = extractEnumeratedWorkItems(goal);
-  const complexity: AdaptiveExecutionPlan["complexity"] = enumeratedWorkItems.length > 1 || highRisk || words > 90 || broad && words > 45
+  const complexity: AdaptiveExecutionPlan["complexity"] = batched || enumeratedWorkItems.length > 1 || highRisk || words > 90 || broad && words > 45
     ? "complex"
     : words <= 24 && !broad
       ? "simple"
@@ -139,6 +148,45 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
           ? `Parallelized independent branches: ${parallel.map((group) => group.join(" + ")).join(", ")}.`
           : "Kept dependency order because no safe parallel branch was identified."
     ]
+  };
+}
+
+export function optimizeStaticWorkflowForLatency(
+  workflow: WorkflowDefinition,
+  goal: string
+): { workflow: WorkflowDefinition; optimization: StaticWorkflowOptimization } {
+  const originalStages = workflow.stages.map((stage) => stage.id);
+  const complexity = recommendAdaptiveExecution(goal).complexity;
+  if (workflow.id !== "build-feature" || complexity === "complex") {
+    return {
+      workflow,
+      optimization: { applied: false, complexity, originalStages, selectedStages: originalStages, rationale: "Preserved the full workflow because its shape or risk requires every configured stage." }
+    };
+  }
+
+  const required = complexity === "simple"
+    ? new Set(["implement", "verify"])
+    : new Set(["plan", "implement", "verify"]);
+  if (/\b(?:docs?|documentation|readme|guide|roadmap|decision log)\b/iu.test(goal)) required.add("document");
+  if (/\b(?:package|pull request|\bpr\b|release notes)\b/iu.test(goal)) required.add("package");
+  const stages = workflow.stages.filter((stage) => required.has(stage.id));
+  if (!stages.some((stage) => stage.pattern.type === "executor") || !stages.some((stage) => stage.pattern.type === "verifier")) {
+    return {
+      workflow,
+      optimization: { applied: false, complexity, originalStages, selectedStages: originalStages, rationale: "Preserved the full workflow because fusion would remove implementation or verification." }
+    };
+  }
+  return {
+    workflow: workflowSchema.parse({ ...workflow, stages }),
+    optimization: {
+      applied: stages.length < workflow.stages.length,
+      complexity,
+      originalStages,
+      selectedStages: stages.map((stage) => stage.id),
+      rationale: complexity === "simple"
+        ? "Fused orientation, planning, documentation, and packaging into the owning implementation turn while preserving deterministic verification."
+        : "Removed redundant orientation, documentation, and packaging turns while preserving planning, implementation, and verification."
+    }
   };
 }
 

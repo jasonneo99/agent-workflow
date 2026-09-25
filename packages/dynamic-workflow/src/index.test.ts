@@ -5,6 +5,7 @@ import {
   constructDynamicWorkflow,
   definitionHash,
   extractEnumeratedWorkItems,
+  optimizeStaticWorkflowForLatency,
   recommendAdaptiveExecution,
   selectWorkflowArchetype,
   stageTemplates,
@@ -48,6 +49,29 @@ test("routes implementation intent to delivery when review is only part of the r
 test("implementation stages do not invent a separate plan-promotion approval", () => {
   assert.match(stageTemplates.implement.goal, /Do not invent a separate plan-promotion approval/u);
   assert.match(stageTemplates.implement.goal, /actual open approval/u);
+});
+
+test("static low-risk build workflows fuse ceremony but retain implementation and verification", () => {
+  const workflow = workflowHandoffSchema; // keep schema imports exercised alongside this fixture
+  assert.ok(workflow);
+  const definition = {
+    id: "build-feature", name: "Build", description: "Build", lead: "workflow-orchestrator",
+    stages: [
+      { id: "orient", agent: "task-triager", goal: "orient" },
+      { id: "plan", agent: "technical-architect", goal: "plan", pattern: { type: "planner" } },
+      { id: "implement", agent: "implementation-agent", goal: "implement", pattern: { type: "executor" } },
+      { id: "verify", agent: "auto-test-runner", goal: "verify", pattern: { type: "verifier" } },
+      { id: "document", agent: "auto-docs-update", goal: "document" },
+      { id: "package", agent: "pr-preparer", goal: "package" }
+    ]
+  } as never;
+  const optimized = optimizeStaticWorkflowForLatency(definition, "Change a button label");
+  assert.equal(optimized.optimization.applied, true);
+  assert.deepEqual(optimized.workflow.stages.map((stage) => stage.id), ["implement", "verify"]);
+  const risky = optimizeStaticWorkflowForLatency(definition, "Change production authentication permissions");
+  assert.equal(risky.optimization.applied, false);
+  assert.equal(risky.workflow.stages.length, 6);
+  assert.equal(optimizeStaticWorkflowForLatency(definition, "Do all 5").optimization.applied, false);
 });
 
 test("keeps explicit code review requests on the review path", () => {
