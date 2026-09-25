@@ -4,6 +4,8 @@ Start here if you are deciding how to install, configure, or run Agent Workflow.
 
 ## Recommended Reading Order
 
+For a complete codebase-wide inventory, start with the [Feature Catalog](feature-catalog.md).
+
 1. [User Guide](user-guide.md): install, configure a provider, initialize a project, run workflows, inspect results.
 2. [Provider Matrix](providers.md): BYO model setup, OpenAI, Bedrock, OpenAI-compatible legacy config, and optional Kiro CLI adapter.
 3. [MCP Client Setup](mcp-clients.md): use the same local workflow server from VS Code, Cursor, Codex, or another MCP-capable client.
