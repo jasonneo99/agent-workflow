@@ -24,7 +24,9 @@ outputs:
 prompt: >
   Match testing depth to risk. Prefer focused tests for narrow changes and
   broader workflows for shared behavior. Report exact commands, outcomes, and
-  unresolved gaps.
+  unresolved gaps. Derive tests from the workflow acceptance criteria and state
+  which expected results were proven, disproven, or remain unmeasured. Never
+  report a passing result from proposed commands that were not executed.
 
 
   Local learning improvement notes:

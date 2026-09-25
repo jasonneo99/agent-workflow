@@ -2,7 +2,24 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { selectModelRoute } from "./routing.js";
+import { autoProviderCandidates, selectModelRoute } from "./routing.js";
+
+test("provider smoke prefers proven fast hosted routes while preserving readiness fallback", () => {
+  const previousSmokeProviders = process.env.AGENTFLOW_SMOKE_PROVIDERS;
+  const previousAutoProviders = process.env.AGENTFLOW_AUTO_PROVIDERS;
+  try {
+    delete process.env.AGENTFLOW_SMOKE_PROVIDERS;
+    process.env.AGENTFLOW_AUTO_PROVIDERS = "local,mock";
+    assert.deepEqual(autoProviderCandidates("fast", "provider-smoke").slice(0, 4), ["openai", "anthropic", "codex-cli", "local"]);
+    process.env.AGENTFLOW_SMOKE_PROVIDERS = "codex-cli,openai";
+    assert.deepEqual(autoProviderCandidates("fast", "provider-smoke"), ["codex-cli", "openai", "mock"]);
+  } finally {
+    if (previousSmokeProviders === undefined) delete process.env.AGENTFLOW_SMOKE_PROVIDERS;
+    else process.env.AGENTFLOW_SMOKE_PROVIDERS = previousSmokeProviders;
+    if (previousAutoProviders === undefined) delete process.env.AGENTFLOW_AUTO_PROVIDERS;
+    else process.env.AGENTFLOW_AUTO_PROVIDERS = previousAutoProviders;
+  }
+});
 
 test("daemon comparison preferences select the proven provider for the job tier", async () => {
   const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;

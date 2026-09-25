@@ -14,6 +14,10 @@ Reproducible performance baselines for Agent Workflow Studio dashboard and workf
 # Capture real bounded dashboard API requests and persist the baseline.
 npm run performance:baseline -- --project . --base-url http://127.0.0.1:17888 --samples 20
 
+# Restart an isolated dashboard and measure all 25 product routes. The canary
+# records cold latency plus repeated persisted-warm median/p95/max evidence.
+npm run dashboard:sla -- --project . --samples 3 --warm-budget-ms 800
+
 # Capture a candidate with the same workload, then fail on a p95 regression.
 npm run performance:baseline -- --project . --base-url http://127.0.0.1:17888 --samples 20
 npm run performance:compare -- --project . --baseline <baseline-id> --candidate <candidate-id> --budget 10

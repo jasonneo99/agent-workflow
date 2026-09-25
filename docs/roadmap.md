@@ -1286,6 +1286,14 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Done: reconcile blocked history and active repairs against verified project-local completion/delivery receipts, cancel duplicates when direct implementation already delivered the task, and exclude dismissed history from future repair selection.
   - Done: persist operator-reviewed repair suppression on the immutable original run so cancelling a stale child repair cannot regenerate the same work on a later daemon tick.
 
+- [x] Feature: calibrate workflow outcomes against expected-result evidence.
+  - Milestone: 10 Learning And Model Improvement
+  - Priority: high
+  - Status: implemented
+  - Done: separate lifecycle completion from accepted outcomes; surface feedback coverage, first-pass acceptance, calibrated quality, quality mismatches, fallbacks, and stage-class latency-budget breaches; add a seven-case local outcome-contract holdout and a full-route dashboard SLA canary.
+  - Routing: provider smoke checks use an independently configurable, evidence-oriented fast-provider order while retaining readiness checks and deterministic fallback.
+  - Resilience: specialist prompts require explicit acceptance evidence and preserve useful review output when optional provider or command paths fail.
+
 ## Contribution Boundary
 
 Before adding a roadmap item, classify it:

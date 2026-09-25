@@ -59,7 +59,7 @@ export async function selectModelRoute(
   const evidenceRoute = taskEvidence?.status === "selected" && taskEvidence.candidate
     ? await selectLearnedProvider(taskEvidence.candidate.providerId)
     : undefined;
-  const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
+  const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider, input.workflowId) : undefined;
   const preferredProviderId = input.providerOverride
     ? input.providerOverride
     : mode === "fixed"
@@ -191,7 +191,7 @@ async function selectApprovedLocalRoute(promotion: LocalHoldoutPreference): Prom
   };
 }
 
-async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: string): Promise<{ providerId: string; reason: string }> {
+async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: string, workflowId?: string): Promise<{ providerId: string; reason: string }> {
   if (explicitTierProvider && explicitTierProvider !== "auto") {
     return {
       providerId: explicitTierProvider,
@@ -199,7 +199,7 @@ async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: s
     };
   }
 
-  const candidates = autoProviderCandidates(modelTier);
+  const candidates = autoProviderCandidates(modelTier, workflowId);
   const checked: string[] = [];
   for (const providerId of candidates) {
     const readiness = await getProviderReadiness(providerId);
@@ -218,7 +218,13 @@ async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: s
   };
 }
 
-function autoProviderCandidates(modelTier: ModelTier): string[] {
+export function autoProviderCandidates(modelTier: ModelTier, workflowId?: string): string[] {
+  const smokeConfigured = workflowId === "provider-smoke"
+    ? splitProviderList(process.env.AGENTFLOW_SMOKE_PROVIDERS)
+    : [];
+  if (workflowId === "provider-smoke") {
+    return unique([...(smokeConfigured.length ? smokeConfigured : ["openai", "anthropic", "codex-cli", "local", "byo", "bedrock", "openai-compatible", "muse", "kiro"]), "mock"]);
+  }
   const configured = splitProviderList(process.env.AGENTFLOW_AUTO_PROVIDERS);
   if (configured.length) {
     return unique([...configured, "mock"]);

@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "2bbc9d8d2ab640cc154698c7b8e855e16f6b016f94c4f3c0e69735f0950b35ac"
+    "value": "0b9c927fc915e7d5fba7a2171b63beea8c5a5efe9d282456f78a7acf02d1e734"
   },
   "agents": [
     {
@@ -80,7 +80,7 @@
     {
       "id": "database-engineer",
       "path": "agents/development/database-engineer.yaml",
-      "checksum": "70bc48d50aec2eec19b017f1208318a26d867bb3b1e3332935dbc2b696ac56da"
+      "checksum": "03714e09569a917f273220cd5f012b50f14f70d9faea0256c7292ca20851623a"
     },
     {
       "id": "eval-curator",
@@ -95,7 +95,7 @@
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "eb22c06f6a434f28ba972161203b6bf723f1698c5de3a1ae2f32f8136fcfb7e8"
+      "checksum": "60a8e0cff2a7cb69c78c153065516e10b23f51bb082fa593bad68ce26d080759"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -110,7 +110,7 @@
     {
       "id": "security-reviewer",
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "88d4c47d8a68c337dddf520b89c59246f63b4cc7a721e8afb3e64ce94b40d5f9"
+      "checksum": "07f035110c73fea6076b81fd81332b98aa78d7b6d24a5fd4be5d76568cf4a4af"
     },
     {
       "id": "technical-architect",
@@ -120,7 +120,7 @@
     {
       "id": "test-engineer",
       "path": "agents/development/test-engineer.yaml",
-      "checksum": "af4914fa373d34864bbe13ec614b79720b335fee592824169b06afc027253b5c"
+      "checksum": "451e380cde45697cef29e2579c2d4632c7aa8d5df7547ea35dc8fe7c46a03874"
     },
     {
       "id": "docs-maintainer",
@@ -130,7 +130,7 @@
     {
       "id": "pr-preparer",
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "e9778e320cb714fd1a3cd7232f0dde7b3e3c6ba27cf3e287ac54e316409846ac"
+      "checksum": "370adc55d2d62c58279fabbfe74813877a600e85256af292a0946e5f7ebe28cd"
     },
     {
       "id": "release-manager",
@@ -297,7 +297,7 @@
     },
     {
       "path": "agents/development/database-engineer.yaml",
-      "checksum": "70bc48d50aec2eec19b017f1208318a26d867bb3b1e3332935dbc2b696ac56da"
+      "checksum": "03714e09569a917f273220cd5f012b50f14f70d9faea0256c7292ca20851623a"
     },
     {
       "path": "agents/development/eval-curator.yaml",
@@ -309,7 +309,7 @@
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "eb22c06f6a434f28ba972161203b6bf723f1698c5de3a1ae2f32f8136fcfb7e8"
+      "checksum": "60a8e0cff2a7cb69c78c153065516e10b23f51bb082fa593bad68ce26d080759"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
@@ -321,7 +321,7 @@
     },
     {
       "path": "agents/development/security-reviewer.yaml",
-      "checksum": "88d4c47d8a68c337dddf520b89c59246f63b4cc7a721e8afb3e64ce94b40d5f9"
+      "checksum": "07f035110c73fea6076b81fd81332b98aa78d7b6d24a5fd4be5d76568cf4a4af"
     },
     {
       "path": "agents/development/technical-architect.yaml",
@@ -329,7 +329,7 @@
     },
     {
       "path": "agents/development/test-engineer.yaml",
-      "checksum": "af4914fa373d34864bbe13ec614b79720b335fee592824169b06afc027253b5c"
+      "checksum": "451e380cde45697cef29e2579c2d4632c7aa8d5df7547ea35dc8fe7c46a03874"
     },
     {
       "path": "agents/operations/docs-maintainer.yaml",
@@ -337,7 +337,7 @@
     },
     {
       "path": "agents/operations/pr-preparer.yaml",
-      "checksum": "e9778e320cb714fd1a3cd7232f0dde7b3e3c6ba27cf3e287ac54e316409846ac"
+      "checksum": "370adc55d2d62c58279fabbfe74813877a600e85256af292a0946e5f7ebe28cd"
     },
     {
       "path": "agents/operations/release-manager.yaml",

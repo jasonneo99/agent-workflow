@@ -100,6 +100,33 @@ run details. `/api/evaluations` returns the same comparison data as JSON; pass
 Do not commit private evaluation cases, customer prompts, or product-specific
 scoring. Keep those suites inside the target project's ignored local context.
 
+### Workflow outcome contract holdout
+
+The repository-local `.agent-workflow/evaluations/workflow-outcome-contracts.yaml`
+suite exercises inspection-only work, implementation delivery, failed
+verification repair, supersession, reversible migrations, final review
+packaging, and provider fallback. It is intentionally ignored because generated
+reports and provider observations are local runtime evidence. Preview or run it
+with:
+
+```bash
+npm run agentflow -- evaluate \
+  --suite .agent-workflow/evaluations/workflow-outcome-contracts.yaml \
+  --project . \
+  --dry-run
+
+npm run agentflow -- evaluate \
+  --suite .agent-workflow/evaluations/workflow-outcome-contracts.yaml \
+  --project . \
+  --skip-index
+```
+
+Lifecycle completion and expected-result acceptance are separate signals. The
+Outcome Accuracy scorecard therefore combines explicit accepted, revised, and
+rejected feedback with completion, fallback, latency-budget, and evidence-gap
+counts instead of treating a completed run or a heuristic quality score as
+proof that the result was useful.
+
 ## Private product scoring
 
 Shared evaluation code supports a declarative weighting profile, but the actual product weights and heuristics stay under the target project's ignored `.agent-workflow/evaluations/` directory. For example:

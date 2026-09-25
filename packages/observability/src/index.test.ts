@@ -63,6 +63,15 @@ const artifacts: ArtifactStatus[] = [
       agentId: "technical-architect"
     },
     createdAt: "2026-08-28T10:00:03.000Z"
+  },
+  {
+    id: "artifact-command",
+    runId: run.id,
+    taskId: tasks[0].id,
+    kind: "command_output",
+    uri: "db://command",
+    content: { durationMs: 500, exitCode: 0, commandLine: "npm test" },
+    createdAt: "2026-08-28T10:00:04.000Z"
   }
 ];
 
@@ -90,13 +99,18 @@ test("observability report exports OpenTelemetry compatible spans and metrics", 
   assert.equal(report.summary.retryCount, 0);
   assert.equal(report.summary.usefulParallelism, 1);
   assert.equal(report.summary.approvalWaitMs, 0);
-  assert.equal(report.summary.orchestrationOverheadMs, 3800);
+  assert.equal(report.summary.commandExecutionMs, 500);
+  assert.equal(report.summary.fileWriteExecutionMs, 0);
+  assert.equal(report.summary.orchestrationOverheadMs, 3300);
+  assert.equal(report.summary.latencyBudgetBreaches, 0);
   assert.ok(spans.some((span) => span.name === "agentflow.run review-pr"));
   assert.ok(spans.some((span) => span.name === "agentflow.stage inspect"));
   assert.ok(spans.some((span) => span.name === "agentflow.model.route"));
   assert.ok(metrics.some((metric) => metric.name === "agentflow.model.latency.total"));
   assert.ok(metrics.some((metric) => metric.name === "agentflow.orchestration.overhead"));
   assert.ok(metrics.some((metric) => metric.name === "agentflow.parallelism.useful"));
+  assert.ok(metrics.some((metric) => metric.name === "agentflow.command.duration.total"));
+  assert.ok(metrics.some((metric) => metric.name === "agentflow.latency_budget.breach_count"));
 });
 
 test("observability attributes redact common secret shapes", () => {

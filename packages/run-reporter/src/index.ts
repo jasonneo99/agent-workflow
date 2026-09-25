@@ -5,10 +5,11 @@ import type {
   WorkflowTaskStatus
 } from "../../storage/src/postgres.js";
 import { buildAcceptedWorkflowOutcome, type AcceptedWorkflowOutcome } from "./outcome-metrics.js";
+import { buildOutcomeAccuracyGroupMetrics, buildOutcomeAccuracyReport, type OutcomeAccuracyGroupMetrics, type OutcomeAccuracyReport } from "./outcome-accuracy.js";
 import { countBy, round } from "./report-utils.js";
 export * from "./outcome-metrics.js";
+export * from "./outcome-accuracy.js";
 export * from "./tuning-history.js";
-
 export interface RunExportInput {
   run: WorkflowRunStatus;
   tasks: WorkflowTaskStatus[];
@@ -16,12 +17,10 @@ export interface RunExportInput {
   artifacts: ArtifactStatus[];
   scrub?: boolean;
 }
-
 export interface RunExportDocument {
   markdown: string;
   json: Record<string, unknown>;
 }
-
 export interface CostQualityReport {
   runId: string;
   workflowId: string;
@@ -45,20 +44,17 @@ export interface CostQualityReport {
   recommendations: string[];
   outcome?: AcceptedWorkflowOutcome;
 }
-
 export interface FeedbackSummary {
   counts: Record<string, number>;
   latest: RunFeedback | null;
   items: RunFeedback[];
 }
-
 export interface RunFeedback {
   rating: "accepted" | "revised" | "rejected";
   note: string;
   createdAt: string;
   source: string;
 }
-
 export interface CostQualityStage {
   stageId: string;
   agentId: string;
@@ -75,7 +71,6 @@ export interface CostQualityStage {
   latencyMs: number | null;
   reasons: string[];
 }
-
 export interface PreferenceScorecardInput {
   projectRootUri: string;
   reports: CostQualityReport[];
@@ -85,11 +80,12 @@ export interface PreferenceScorecard {
   projectRootUri: string;
   runsAnalyzed: number;
   feedbackCounts: Record<string, number>;
+  outcomeAccuracy: OutcomeAccuracyReport;
   groups: PreferenceScoreGroup[];
   recommendations: string[];
 }
 
-export interface PreferenceScoreGroup {
+export interface PreferenceScoreGroup extends OutcomeAccuracyGroupMetrics {
   key: string;
   workflowId: string;
   stageId: string;
@@ -645,6 +641,8 @@ export function buildPreferenceScorecard(input: PreferenceScorecardInput): Prefe
     const feedbackScore = round((group.accepted * 1 + group.revised * 0.35 + group.rejected * -1) / Math.max(1, group.accepted + group.revised + group.rejected));
     const fallbackRate = round(group.fallbackCount / Math.max(1, group.runs));
     const averageQuality = group.qualityCount ? round(group.qualityTotal / group.qualityCount) : null;
+    const averageLatencyMs = group.latencyCount ? Math.round(group.latencyTotal / group.latencyCount) : null;
+    const outcome = buildOutcomeAccuracyGroupMetrics({ ...group, fallbackRate, averageQuality, averageLatencyMs });
     return {
       key,
       workflowId: group.workflowId,
@@ -657,12 +655,13 @@ export function buildPreferenceScorecard(input: PreferenceScorecardInput): Prefe
       revised: group.revised,
       rejected: group.rejected,
       feedbackScore,
+      ...outcome,
       averageQuality,
       fallbackRate,
-      averageLatencyMs: group.latencyCount ? Math.round(group.latencyTotal / group.latencyCount) : null,
+      averageLatencyMs,
       recommendation: group.accepted + group.revised + group.rejected === 0
         ? "Collect accepted/revised/rejected feedback before changing this combination."
-        : recommendScoreGroup(group.modelTier, feedbackScore, fallbackRate, averageQuality)
+        : recommendScoreGroup(group.modelTier, feedbackScore, fallbackRate, outcome.calibratedQuality)
     };
   }).sort((a, b) => {
     const riskDelta = (b.revised + b.rejected + b.fallbackRate) - (a.revised + a.rejected + a.fallbackRate);
@@ -673,6 +672,7 @@ export function buildPreferenceScorecard(input: PreferenceScorecardInput): Prefe
     projectRootUri: input.projectRootUri,
     runsAnalyzed: input.reports.length,
     feedbackCounts: countBy(input.reports.flatMap((report) => report.feedback.latest ? [report.feedback.latest] : []), (item) => item.rating),
+    outcomeAccuracy: buildOutcomeAccuracyReport(input.reports),
     groups: scoredGroups,
     recommendations: recommendScorecard(scoredGroups, input.reports.length)
   };

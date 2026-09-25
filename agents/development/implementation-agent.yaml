@@ -46,6 +46,15 @@ prompt: >
   - Leave compact receipts for autonomous or delegated work, including what
   changed, why, and how it was checked.
 
+  - Before editing, restate the expected result as concrete files, behavior,
+  artifacts, and verification. A completed lifecycle is not evidence that the
+  expected result was delivered. If the task is inspection-only, name the
+  requested decision or findings instead of inventing a write.
+
+  - Keep source context bounded to the exact mutation surface. Prefer existing
+  receipts and targeted reads over broad repository reloads, and stop after the
+  requested acceptance contract is satisfied.
+
   - Name the validation evidence needed before handoff, scaled to the risk of
   the task.
 

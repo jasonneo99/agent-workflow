@@ -109,6 +109,12 @@ npm run agentflow -- provider-check
 
 ## Auto And Adaptive Routing
 
+`provider-smoke` uses an evidence-oriented fast-route order: OpenAI, Anthropic,
+Codex CLI, then local and compatibility fallbacks. Set
+`AGENTFLOW_SMOKE_PROVIDERS` to override that order without changing routing for
+delivery workflows. Readiness checks still gate every candidate, and `mock`
+remains the deterministic final fallback.
+
 Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the provider per stage. The workflow or agent assigns a model tier (`fast`, `standard`, or `reasoning`) from the request shape, then auto routing checks configured providers and selects a ready provider for that tier. Bedrock is included only when the AWS credential chain works, so expired SSO sessions do not silently become the default route.
 
 ```env

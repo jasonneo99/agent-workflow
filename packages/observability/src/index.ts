@@ -5,7 +5,7 @@ import type {
   WorkflowRunStatus,
   WorkflowTaskStatus
 } from "../../storage/src/postgres.js";
-import { buildCostQualityReport, type CostQualityReport } from "../../run-reporter/src/index.js";
+import { buildCostQualityReport, latencyBudgetMs, type CostQualityReport } from "../../run-reporter/src/index.js";
 
 type AttributeValue = { stringValue: string } | { intValue: string } | { doubleValue: number } | { boolValue: boolean };
 
@@ -76,10 +76,13 @@ export interface ObservabilityReport {
     averageQuality: number | null;
     totalModelLatencyMs: number;
     averageModelLatencyMs: number | null;
+    commandExecutionMs: number;
+    fileWriteExecutionMs: number;
     orchestrationOverheadMs: number | null;
     approvalWaitMs: number;
     retryCount: number;
     usefulParallelism: number | null;
+    latencyBudgetBreaches: number;
     estimatedCompactPromptTokens: number | null;
     payloadsExported: false;
   };
@@ -124,9 +127,12 @@ export function buildObservabilityReport(input: {
   const approvalWaitMs = measuredApprovalWaitMs(input.receipts);
   const retryCount = input.tasks.reduce((total, task) => total + Math.max(0, task.attempts - 1), 0);
   const usefulParallelism = measuredUsefulParallelism(input.tasks);
+  const commandExecutionMs = artifactDuration(input.artifacts, "command_output");
+  const fileWriteExecutionMs = artifactDuration(input.artifacts, "file_write");
+  const latencyBudgetBreaches = quality.stages.filter((stage) => stage.latencyMs !== null && stage.latencyMs > latencyBudgetMs({ workflowId: input.run.workflowId, ...stage })).length;
   const orchestrationOverheadMs = runDuration === null
     ? null
-    : Math.max(0, runDuration - Math.min(runDuration, quality.totalLatencyMs) - approvalWaitMs);
+    : Math.max(0, runDuration - Math.min(runDuration, quality.totalLatencyMs + commandExecutionMs + fileWriteExecutionMs) - approvalWaitMs);
 
   const spans: OtelSpan[] = [
     {
@@ -217,10 +223,13 @@ export function buildObservabilityReport(input: {
       averageQuality: quality.averageQuality,
       totalModelLatencyMs: quality.totalLatencyMs,
       averageModelLatencyMs: quality.averageLatencyMs,
+      commandExecutionMs,
+      fileWriteExecutionMs,
       orchestrationOverheadMs,
       approvalWaitMs,
       retryCount,
       usefulParallelism,
+      latencyBudgetBreaches,
       estimatedCompactPromptTokens: compactPromptTokens,
       payloadsExported: false
     },
@@ -240,6 +249,8 @@ export function buildObservabilityReport(input: {
           gauge("agentflow.queue.delay", "Delay from run creation to first task start.", "ms", queueDelayMs, metricTime, metricAttrs),
           gauge("agentflow.model.latency.total", "Total recorded model latency.", "ms", quality.totalLatencyMs, metricTime, metricAttrs),
           gauge("agentflow.model.latency.average", "Average recorded model latency.", "ms", quality.averageLatencyMs, metricTime, metricAttrs),
+          gauge("agentflow.command.duration.total", "Total recorded local command execution time.", "ms", commandExecutionMs, metricTime, metricAttrs),
+          gauge("agentflow.file_write.duration.total", "Total recorded governed file-write time.", "ms", fileWriteExecutionMs, metricTime, metricAttrs),
           gauge("agentflow.orchestration.overhead", "Elapsed run time outside recorded model and approval waits.", "ms", orchestrationOverheadMs, metricTime, metricAttrs),
           gauge("agentflow.approval.wait", "Measured wait between approval request and decision receipts.", "ms", approvalWaitMs, metricTime, metricAttrs),
           gauge("agentflow.parallelism.useful", "Average concurrently active workflow tasks.", "1", usefulParallelism, metricTime, metricAttrs),
@@ -248,7 +259,8 @@ export function buildObservabilityReport(input: {
           sum("agentflow.receipt.count", "Action receipt count.", "1", input.receipts.length, metricTime, metricAttrs),
           sum("agentflow.artifact.count", "Artifact count.", "1", input.artifacts.length, metricTime, metricAttrs),
           sum("agentflow.fallback.count", "Provider fallback count.", "1", quality.fallbackCount, metricTime, metricAttrs),
-          sum("agentflow.retry.count", "Workflow task retries beyond the first attempt.", "1", retryCount, metricTime, metricAttrs)
+          sum("agentflow.retry.count", "Workflow task retries beyond the first attempt.", "1", retryCount, metricTime, metricAttrs),
+          sum("agentflow.latency_budget.breach_count", "Stages exceeding their task-class latency budget.", "1", latencyBudgetBreaches, metricTime, metricAttrs)
         ]
       }]
     }]
@@ -272,10 +284,13 @@ export function formatObservabilityReport(report: ObservabilityReport): string {
     `- Fallbacks: ${report.summary.fallbackCount}`,
     `- Average quality: ${report.summary.averageQuality ?? "n/a"}`,
     `- Model latency: ${report.summary.totalModelLatencyMs}ms total, ${report.summary.averageModelLatencyMs ?? "n/a"}ms avg`,
+    `- Command execution: ${report.summary.commandExecutionMs}ms`,
+    `- File-write execution: ${report.summary.fileWriteExecutionMs}ms`,
     `- Orchestration overhead: ${report.summary.orchestrationOverheadMs ?? "n/a"}ms`,
     `- Approval wait: ${report.summary.approvalWaitMs}ms`,
     `- Retries: ${report.summary.retryCount}`,
     `- Useful parallelism: ${report.summary.usefulParallelism ?? "n/a"}`,
+    `- Latency budget breaches: ${report.summary.latencyBudgetBreaches}`,
     `- Estimated compact prompt tokens: ${report.summary.estimatedCompactPromptTokens ?? "n/a"}`,
     "- Payload export: disabled",
     "",
@@ -445,6 +460,10 @@ function spanStatus(status: string): { code: number; message?: string } {
     return { code: 2, message: status };
   }
   return { code: 1 };
+}
+
+function artifactDuration(artifacts: ArtifactStatus[], kind: string): number {
+  return artifacts.filter((artifact) => artifact.kind === kind).reduce((sum, artifact) => sum + (numberValue(artifact.content.durationMs) ?? 0), 0);
 }
 
 function durationMs(start: string | null | undefined, end: string | null | undefined): number | null {

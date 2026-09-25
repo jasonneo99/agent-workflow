@@ -36,6 +36,7 @@ import { classifyFailureForTriage, failureTriageRiskAllowed, type FailureTriageR
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../packages/learning-proposals/src/index.js";
 import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "./reference-resolution.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
+import { renderPreferenceScorecardHtml } from "./dashboard/outcome-accuracy.js";
 import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
@@ -40736,35 +40737,6 @@ function renderTuningProposalsHtml(proposalSet: TuningProposalSet, tuningOverlay
   `;
 }
 
-function renderPreferenceScorecardHtml(scorecard: PreferenceScorecard): string {
-  const recommendations = scorecard.recommendations.map((item) => `<li>${escapeHtml(item)}</li>`).join("");
-  const rows = scorecard.groups.slice(0, 8).map((group) => `
-    <tr>
-      <td>${escapeHtml(group.workflowId)}<br><span class="muted">${escapeHtml(group.stageId)}</span></td>
-      <td>${escapeHtml(group.agentId)}</td>
-      <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}</td>
-      <td>${group.runs}</td>
-      <td>${group.accepted}/${group.revised}/${group.rejected}</td>
-      <td>${group.feedbackScore}</td>
-      <td>${group.averageQuality ?? "n/a"}</td>
-      <td>${group.fallbackRate}</td>
-      <td>${escapeHtml(group.recommendation)}</td>
-    </tr>
-  `).join("");
-
-  return `
-    <div class="meta-grid compact">
-      <div><strong>Runs</strong>${scorecard.runsAnalyzed}</div>
-      <div><strong>Feedback</strong>${escapeHtml(formatInlineCounts(scorecard.feedbackCounts))}</div>
-    </div>
-    <ul>${recommendations}</ul>
-    <table>
-      <thead><tr><th>Workflow</th><th>Agent</th><th>Provider/Tier</th><th>Runs</th><th>A/R/R</th><th>Score</th><th>Quality</th><th>Fallback</th><th>Recommendation</th></tr></thead>
-      <tbody>${rows || "<tr><td colspan=\"9\">No scored combinations yet.</td></tr>"}</tbody>
-    </table>
-  `;
-}
-
 function renderCostQualityHtml(report: CostQualityReport): string {
   const stageRows = report.stages.map((stage) => `
     <tr>
@@ -40809,6 +40781,8 @@ function renderObservabilityHtml(report: ObservabilityReport): string {
       ${metricCard("Run Duration", report.summary.runDurationMs === null ? "n/a" : `${report.summary.runDurationMs}ms`, "workflow wall time")}
       ${metricCard("Queue Delay", report.summary.queueDelayMs === null ? "n/a" : `${report.summary.queueDelayMs}ms`, "created to first stage")}
       ${metricCard("Model Latency", `${report.summary.totalModelLatencyMs}ms`, `avg ${report.summary.averageModelLatencyMs ?? "n/a"}ms`)}
+      ${metricCard("Command Time", `${report.summary.commandExecutionMs}ms`, `${report.summary.fileWriteExecutionMs}ms governed writes`)}
+      ${metricCard("Budget Breaches", report.summary.latencyBudgetBreaches, "task-class latency budgets")}
       ${metricCard("Spans", spanCount, `${metricCount} metrics`)}
     </div>
     <div class="meta-grid compact">

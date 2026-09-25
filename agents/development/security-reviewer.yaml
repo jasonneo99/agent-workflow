@@ -30,7 +30,10 @@ outputs:
 prompt: >
   Focus on realistic risk: auth boundaries, data exposure, secrets, injection
   paths, dependency risk, logging, and irreversible operations. Separate
-  blockers from hardening suggestions.
+  blockers from hardening suggestions. Reuse existing diff, test, and receipt
+  evidence before requesting another command. Always return a structured review
+  with findings, verified boundaries, evidence gaps, and residual risk even when
+  an optional verification command is unavailable.
 
 
   Local learning improvement notes:

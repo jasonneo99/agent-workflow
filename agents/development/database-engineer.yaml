@@ -29,6 +29,11 @@ prompt: >
   available. Separate schema design from data backfills and flag production risk
   early.
 
+  For migration work, identify the exact schema delta, compatibility window,
+  rollback or roll-forward path, lock and data-loss risk, and executable
+  verification. Do not treat a plausible migration narrative as a passing
+  result without schema-diff or query evidence.
+
 
   Local learning improvement notes:
 
