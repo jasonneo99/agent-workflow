@@ -10,7 +10,7 @@ test("provider smoke prefers proven fast hosted routes while preserving readines
   try {
     delete process.env.AGENTFLOW_SMOKE_PROVIDERS;
     process.env.AGENTFLOW_AUTO_PROVIDERS = "local,mock";
-    assert.deepEqual(autoProviderCandidates("fast", "provider-smoke").slice(0, 4), ["openai", "anthropic", "codex-cli", "local"]);
+    assert.deepEqual(autoProviderCandidates("fast", "provider-smoke").slice(0, 4), ["openai", "anthropic", "gemini", "codex-cli"]);
     process.env.AGENTFLOW_SMOKE_PROVIDERS = "codex-cli,openai";
     assert.deepEqual(autoProviderCandidates("fast", "provider-smoke"), ["codex-cli", "openai", "mock"]);
   } finally {

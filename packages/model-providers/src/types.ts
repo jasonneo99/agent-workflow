@@ -58,7 +58,16 @@ export interface StageExecutionOutput {
   blockedReason?: string;
   summary: string;
   artifact: Record<string, unknown>;
-  usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number; costUsd?: number };
+  usage?: {
+    inputTokens?: number;
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    costUsd?: number;
+    costSource?: "provider-reported" | "catalog-estimate" | "unavailable";
+    pricingVersion?: string;
+  };
   requestedCommands?: string[];
   requestedFileWrites?: Array<{
     path: string;

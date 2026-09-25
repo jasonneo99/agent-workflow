@@ -32,6 +32,7 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
   assert.match(prompt, /Edit packages\/runtime\.ts/u);
   assert.match(prompt, /outcome: completed when the stage goal was achieved/u);
   assert.match(prompt, /PINNED KEYWORD CONTRACT: BUILD means create, verify, package, and deliver a usable product/u);
+  assert.match(prompt, /provider sandbox is intentionally read-only and is never itself a blocker/u);
   assert.match(prompt, /evidence gaps do not block the review itself/u);
 });
 

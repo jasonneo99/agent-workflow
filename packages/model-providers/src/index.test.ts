@@ -44,3 +44,18 @@ test("Codex CLI is a first-class provider without requiring an API key", () => {
     else process.env.OPENAI_API_KEY = previousApiKey;
   }
 });
+
+test("Gemini is a first-class provider using its dedicated API key", () => {
+  const previousKey = process.env.GEMINI_API_KEY;
+  try {
+    process.env.GEMINI_API_KEY = "test-gemini-key";
+    const provider = providerFromEnv("gemini");
+    assert.equal(provider.id, "gemini");
+    assert.equal(typeof provider.check, "function");
+    assert.equal(typeof provider.executeStage, "function");
+    assert.equal(typeof provider.summarizeFile, "function");
+  } finally {
+    if (previousKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = previousKey;
+  }
+});

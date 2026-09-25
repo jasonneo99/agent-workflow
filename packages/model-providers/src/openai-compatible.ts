@@ -23,7 +23,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
   private readonly baseURL: string;
   private readonly modelEnv: string;
 
-  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string; defaultBaseURL?: string; defaultModel?: string } = {}) {
+  constructor(input: { id?: string; baseUrlEnv?: string; modelEnv?: string; apiKeyEnv?: string; apiKeyEnvFallbacks?: string[]; defaultBaseURL?: string; defaultModel?: string; defaultHeaders?: Record<string, string> } = {}) {
     this.id = input.id ?? this.id;
     const baseUrlEnv = input.baseUrlEnv ?? "OPENAI_COMPATIBLE_BASE_URL";
     const legacyBaseURL = input.baseUrlEnv ? undefined : process.env.OPENAI_COMPATIBLE_BASE_URL;
@@ -36,9 +36,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     this.modelEnv = input.modelEnv ?? "OPENAI_COMPATIBLE_MODEL";
     this.model = process.env[this.modelEnv] ?? input.defaultModel ?? process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL ?? AUTO_MODEL;
 
+    const apiKeyEnv = input.apiKeyEnv ?? "OPENAI_COMPATIBLE_API_KEY";
+    const apiKey = [apiKeyEnv, ...(input.apiKeyEnvFallbacks ?? []), "OPENAI_COMPATIBLE_API_KEY"]
+      .map((envName) => process.env[envName])
+      .find(Boolean);
     this.client = new OpenAI({
-      apiKey: process.env[input.apiKeyEnv ?? "OPENAI_COMPATIBLE_API_KEY"] || process.env.OPENAI_COMPATIBLE_API_KEY || "not-required",
-      baseURL
+      apiKey: apiKey || "not-required",
+      baseURL,
+      defaultHeaders: input.defaultHeaders
     });
   }
 
@@ -97,12 +102,13 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
     const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
 
+    const usage = response.usage as typeof response.usage & { prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } };
     return { ...buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model,
         modelTier: input.modelTier ?? "standard",
         responseId: response.id
-    }), usage: { inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens, totalTokens: response.usage?.total_tokens } };
+    }), usage: { inputTokens: usage?.prompt_tokens, cachedInputTokens: usage?.prompt_tokens_details?.cached_tokens, reasoningTokens: usage?.completion_tokens_details?.reasoning_tokens, outputTokens: usage?.completion_tokens, totalTokens: usage?.total_tokens } };
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {

@@ -165,9 +165,21 @@ function validFleetUsageReceipt(value: unknown): value is FleetUsageReceipt {
 }
 
 export function estimateModelCost(usage: ReturnType<typeof usageFromPayload>, model: string | undefined, pricing: FleetGatewayConfig["modelPricing"]): number | undefined {
-  const price = model ? pricing?.[model] : undefined;
+  const price = model ? resolveModelPrice(model, pricing) : undefined;
   if (!price) return undefined;
   return Number((((usage.inputTokens - usage.cachedInputTokens) * price.inputPerMillionUsd + usage.cachedInputTokens * (price.cachedInputPerMillionUsd ?? 0) + usage.outputTokens * price.outputPerMillionUsd) / 1_000_000).toFixed(8));
+}
+
+export const MODEL_PRICING_VERSION = "2026-09-25";
+
+export function resolveModelPrice(model: string, pricing: FleetGatewayConfig["modelPricing"]): ModelPricing[string] | undefined {
+  if (!pricing) return undefined;
+  if (pricing[model]) return pricing[model];
+  const normalized = model.toLowerCase();
+  const key = Object.keys(pricing)
+    .filter((candidate) => normalized === candidate.toLowerCase() || normalized.startsWith(`${candidate.toLowerCase()}-`))
+    .sort((left, right) => right.length - left.length)[0];
+  return key ? pricing[key] : undefined;
 }
 
 export function modelPricingFromEnv(value = process.env.AGENTFLOW_MODEL_GATEWAY_PRICING): ModelPricing {

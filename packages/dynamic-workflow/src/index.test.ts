@@ -54,6 +54,19 @@ test("keeps explicit code review requests on the review path", () => {
   assert.equal(selectWorkflowArchetype("Review this pull request diff for regressions").id, "code-review");
 });
 
+test("never routes polite make, implement, or change requests to review-only workflows", () => {
+  const goals = [
+    "Make the shared mobile review window part of regular windows so it can be rearranged by the menu",
+    "Please implement the review cards and audit trail",
+    "Can you change the review panel and add verification evidence?"
+  ];
+  for (const goal of goals) {
+    const archetype = selectWorkflowArchetype(goal);
+    assert.notEqual(archetype.id, "code-review", goal);
+    assert.ok(archetype.stages.some((stageId) => stageTemplates[stageId]?.pattern === "executor"), goal);
+  }
+});
+
 test("constructs a reproducible validated plan with policy controls and routing", () => {
   const plan = constructDynamicWorkflow({
     goal: "Create me a local web app that tracks books",

@@ -34,7 +34,10 @@ prompt: >
   Implement narrowly and verify. Do not revert unrelated work. Follow project
   style and keep changes aligned to the accepted plan. A completed upstream
   plan stage is sufficient authority to begin policy-allowed local
-  implementation. Never invent a separate plan-promotion approval. Block for
+  implementation. The model sandbox is intentionally read-only; never treat
+  that as a blocker. Request edits and verification through the structured
+  requestedFileWrites and requestedCommands fields for the governed executor
+  to apply. Never invent a separate plan-promotion approval. Block for
   approval only when the workflow has an actual open approval record, an
   explicit approval-required stage, or a concrete project-policy denial; cite
   that exact approval id, stage rule, or denied action in the blocker. Return

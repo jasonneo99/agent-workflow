@@ -17,6 +17,8 @@ interface SetupAnswers {
   openaiModel?: string;
   anthropicKey?: string;
   anthropicModel?: string;
+  geminiApiKey?: string;
+  geminiModel?: string;
   museApiKey?: string;
   museModel?: string;
   bedrockModel?: string;
@@ -52,14 +54,15 @@ async function main(): Promise<void> {
   console.log("  3) openai        — OpenAI API with live model-catalog tier selection");
   console.log("  4) anthropic     — Anthropic Messages API with Claude");
   console.log("  5) muse          — Meta Muse via the Meta Model API");
-  console.log("  6) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
-  console.log("  7) byo           — Bring your own OpenAI-compatible model gateway");
-  console.log("  8) openai-compatible — Same as BYO, with legacy env names");
-  console.log("  9) kiro          — Optional Kiro CLI adapter");
+  console.log("  6) gemini        — Google Gemini API");
+  console.log("  7) bedrock       — AWS Bedrock (Nova, Claude, Llama, Mistral)");
+  console.log("  8) byo           — Bring your own OpenAI-compatible model gateway");
+  console.log("  9) openai-compatible — Same as BYO, with legacy env names");
+  console.log(" 10) kiro          — Optional Kiro CLI adapter");
   console.log("");
 
-  const providerChoice = await ask("  Provider [1-9, default 1]: ");
-  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "anthropic", "5": "muse", "6": "bedrock", "7": "byo", "8": "openai-compatible", "9": "kiro", "": "auto" };
+  const providerChoice = await ask("  Provider [1-10, default 1]: ");
+  const providerMap: Record<string, string> = { "1": "auto", "2": "mock", "3": "openai", "4": "anthropic", "5": "muse", "6": "gemini", "7": "bedrock", "8": "byo", "9": "openai-compatible", "10": "kiro", "": "auto" };
   const provider = providerMap[providerChoice.trim()] ?? "mock";
 
   const answers: SetupAnswers = { provider, useEnterprise: false };
@@ -83,6 +86,13 @@ async function main(): Promise<void> {
     answers.museApiKey = await ask("  Muse API key: ");
     const model = await ask("  Muse model [default muse-spark-1.1]: ");
     answers.museModel = model.trim() || "muse-spark-1.1";
+  }
+
+  if (provider === "gemini") {
+    console.log("");
+    answers.geminiApiKey = await ask("  Gemini API key: ");
+    const model = await ask("  Gemini model [default gemini-3.8-flash]: ");
+    answers.geminiModel = model.trim() || "gemini-3.8-flash";
   }
 
   if (provider === "bedrock") {
@@ -198,7 +208,7 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
 
   if (answers.provider === "auto") {
     lines.push("AGENTFLOW_ROUTING_MODE=adaptive");
-    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
+    lines.push("AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro");
     lines.push("AGENTFLOW_MODEL_POLICY=best-coding");
   }
 
@@ -215,6 +225,11 @@ async function writeEnvFile(answers: SetupAnswers): Promise<void> {
   if (answers.provider === "muse") {
     lines.push(`MUSE_API_KEY=${answers.museApiKey ?? ""}`);
     lines.push(`MUSE_MODEL=${answers.museModel ?? "muse-spark-1.1"}`);
+  }
+
+  if (answers.provider === "gemini") {
+    lines.push(`GEMINI_API_KEY=${answers.geminiApiKey ?? ""}`);
+    lines.push(`GEMINI_MODEL=${answers.geminiModel ?? "gemini-3.8-flash"}`);
   }
 
   if (answers.provider === "bedrock") {

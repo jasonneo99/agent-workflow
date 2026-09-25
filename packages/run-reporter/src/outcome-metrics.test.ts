@@ -19,4 +19,14 @@ test("accepted workflow outcomes count measured frontier tokens without projecti
   const aggregate = buildAcceptedWorkflowOutcomeReport([outcome, { ...outcome, accepted: false }]);
   assert.equal(aggregate.acceptedWorkflows, 1);
   assert.equal(aggregate.averageFrontierInputTokensPerAcceptedWorkflow, 1200);
+  assert.equal(aggregate.tokenCoveragePercent, 100);
+  assert.equal(aggregate.costCoveragePercent, 100);
+});
+
+test("accepted workflow outcomes backfill catalog cost from immutable route evidence", () => {
+  const outcome = buildAcceptedWorkflowOutcome({ accepted: true, routeArtifacts: [
+    route("priced", { actualModel: "gpt-5.6-luna", route: { modelTier: "fast" }, usage: { inputTokens: 1_000_000, outputTokens: 1_000_000 } })
+  ] });
+  assert.equal(outcome.measuredCostUsd, 1.4);
+  assert.equal(outcome.costCoverageStages, 1);
 });

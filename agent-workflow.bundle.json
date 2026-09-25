@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "0b9c927fc915e7d5fba7a2171b63beea8c5a5efe9d282456f78a7acf02d1e734"
+    "value": "dafa88ba6c67f890b12c98324d70870ae1d96f835e9ad964f79ac47d3ed85a2a"
   },
   "agents": [
     {
@@ -95,7 +95,7 @@
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "60a8e0cff2a7cb69c78c153065516e10b23f51bb082fa593bad68ce26d080759"
+      "checksum": "bbc1c5d8658cd7fd69cf8f699c36daab3807c531347669aec402094a0e7ac7d1"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -309,7 +309,7 @@
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "60a8e0cff2a7cb69c78c153065516e10b23f51bb082fa593bad68ce26d080759"
+      "checksum": "bbc1c5d8658cd7fd69cf8f699c36daab3807c531347669aec402094a0e7ac7d1"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",

@@ -1004,6 +1004,15 @@ selected project.
 Set `AGENTFLOW_LEARNING_DAEMON=0` before installing or launching if you want the
 dashboard and worker without the local learning loop.
 
+Peer-learning exchanges are disabled by default. Queue a bounded question with
+`npm run agentflow -- learning-loop-question --project <path> --requester <id>
+--respondent <id> --task-class <class> --question <text> --evidence-hash <sha>`.
+Add `--run` for an immediate provider-backed exchange. To let normal daemon
+ticks process queued questions, set `AGENTFLOW_LEARNING_LOOP_AUTO_RUN=true` and
+configure the daily exchange, queue-depth, and cost ceilings in `.env`. These
+exchanges cannot request commands or file writes, and their ratings remain
+advisory until deterministic checks and human confirmation pass.
+
 Open:
 
 ```text
@@ -1157,8 +1166,18 @@ Dashboard and JSON endpoints:
 /api/projects
 /api/agents?project=<project-root>
 /api/run?id=<run-id>
+/api/run-progress?id=<run-id>
 /api/quality?id=<run-id>
 ```
+
+Run and queue responses include an `eta` object with `state`,
+`estimatedCompletionAt`, `remainingMs`, `confidence`, `source`, `sampleCount`,
+and a human-readable `reason`. Estimates use comparable completed workflow
+runs and current stage progress. New runs remain `learning`, and blocked or
+failed runs report `paused`, rather than returning a misleading countdown.
+The authenticated `/api/server-orchestration-status` response also includes an
+aggregate ETA for parallel run groups; it follows the latest projected child
+completion and includes each child run estimate.
 
 `/api/server-request-log` and `agentflow server-request-log` show redacted
 append-only audit events for governed `/api/server-queue` requests. They keep
@@ -1601,6 +1620,11 @@ agentflow_provider_use
 agentflow_provider_smoke
 ```
 
+Call `agentflow_status` with `json: true` when an assistant or service needs a
+machine-readable ETA. A voice or assistant client can tell a user the
+remaining-time range and confidence, explain when the estimate is
+still learning, and avoid promising a completion time while work is blocked.
+
 `agentflow_run_workflow` processes worker stages by default when called through MCP so Codex, Cursor, and VS Code do not leave runs stuck in `queued`. Pass `queueOnly=true` only when you intentionally want to queue work for a separately running worker.
 
 Tool definitions and input schemas live in:
@@ -1654,7 +1678,7 @@ Configure it with:
 
 ```bash
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,openai,anthropic,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,gemini,openai,anthropic,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 ```

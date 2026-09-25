@@ -26,7 +26,15 @@ test("orchestration status propagates blocked runs to the aggregate", () => {
   assert.match(source, /\/api\/server-orchestration-status/u);
   assert.match(source, /progress: ServerOrchestrationStatusReport\["progress"\]/u);
   assert.match(source, /pendingApprovals/u);
+  assert.match(source, /approvals: openApprovals\.slice\(0, 20\)/u);
+  assert.match(source, /allowedDecisions: \["approve", "approve-and-execute", "reject"\]/u);
+  assert.match(source, /actionEndpoint: "\/api\/server-approval-action"/u);
+  assert.match(source, /approvals: openApprovals\.slice\(0, 20\)/u);
+  assert.match(source, /allowedDecisions: \["approve", "approve-and-execute", "reject"\]/u);
+  assert.match(source, /actionEndpoint: "\/api\/server-approval-action"/u);
   assert.match(source, /result = serverOrchestrationStatusIsTerminal\(status\)/u);
+  assert.match(source, /eta: AggregateRunEta/u);
+  assert.match(source, /aggregateRunEtas\(runs\.map/u);
 });
 
 test("orchestration exposes bounded authenticated progress events", () => {

@@ -5,7 +5,7 @@ Portable Agent Workflows keeps workflow and agent definitions provider-neutral. 
 The recommended cost-control path is `local` for an on-machine runtime such as
 Ollama, LM Studio, or llama.cpp-compatible servers. Use `byo` when the model
 endpoint is remote, team-hosted, or an enterprise OpenAI-compatible gateway.
-Kiro, Codex, OpenAI, and Bedrock are optional environments/adapters, not
+Kiro, Codex, OpenAI, Gemini, and Bedrock are optional environments/adapters, not
 requirements.
 
 On macOS, Ollama can be made restart-durable without coupling it to the Agent
@@ -36,6 +36,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `codex-cli` | Trusted local workflows billed through an authenticated Codex/ChatGPT entitlement | Codex CLI login, optional `CODEX_CLI_MODEL` |
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
+| `gemini` | Google Gemini through the official OpenAI-compatible endpoint | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
 | `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
@@ -107,6 +108,69 @@ Then verify readiness with:
 npm run agentflow -- provider-check
 ```
 
+### Google Gemini provider
+
+Create a Gemini authorization key in Google AI Studio and keep it only in the
+local `.env`. Agent Workflow uses Google's official OpenAI-compatible endpoint
+so Gemini shares the structured stage-artifact, usage, routing, fallback, and
+receipt contract used by other hosted providers:
+
+```env
+DEFAULT_MODEL_PROVIDER=gemini
+GEMINI_API_KEY=your-gemini-authorization-key
+# GOOGLE_API_KEY is accepted when GEMINI_API_KEY is absent.
+# GEMINI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MODEL_FAST=
+GEMINI_MODEL_STANDARD=
+GEMINI_MODEL_REASONING=
+```
+
+```bash
+npm run agentflow -- provider-use gemini --check
+npm run agentflow -- contract-test --provider gemini --live-provider
+```
+
+Google's compatibility endpoint is currently beta and does not expose every
+Gemini-native feature. This adapter intentionally covers portable text stages
+and file summaries; Gemini-specific grounding, Files API, and native tools are
+outside its contract. Do not commit keys or put them in runtime artifacts.
+
+### AWS Bedrock provider
+
+Bedrock uses the AWS SDK credential chain and the Bedrock Converse API. For a
+human-operated machine, prefer short-lived AWS IAM Identity Center credentials:
+
+```bash
+aws configure sso --profile agentflow-bedrock
+aws sso login --profile agentflow-bedrock
+AWS_PROFILE=agentflow-bedrock AWS_REGION=us-east-1 \
+  aws bedrock list-foundation-models
+```
+
+Then place only non-secret selections in the local `.env`:
+
+```env
+DEFAULT_MODEL_PROVIDER=bedrock
+AWS_PROFILE=agentflow-bedrock
+AWS_REGION=us-east-1
+BEDROCK_MODEL=auto
+BEDROCK_MODEL_FAST=
+BEDROCK_MODEL_STANDARD=
+BEDROCK_MODEL_REASONING=
+```
+
+```bash
+npm run agentflow -- provider-use bedrock --check
+npm run agentflow -- contract-test --provider bedrock --live-provider
+```
+
+The AWS identity needs permission to list foundation models and invoke the
+selected model with `bedrock:Converse`. Third-party models may also require AWS
+Marketplace permissions; Anthropic models require the AWS first-time-use form.
+Use a model and region that support Converse. Production hosts should use an IAM
+role or temporary credentials instead of long-lived access keys.
+
 ## Auto And Adaptive Routing
 
 `provider-smoke` uses an evidence-oriented fast-route order: OpenAI, Anthropic,
@@ -119,7 +183,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,codex-cli,openai,anthropic,muse,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding
@@ -163,6 +227,11 @@ BEDROCK_MODEL=auto
 BEDROCK_MODEL_FAST=
 BEDROCK_MODEL_STANDARD=
 BEDROCK_MODEL_REASONING=
+
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MODEL_FAST=
+GEMINI_MODEL_STANDARD=
+GEMINI_MODEL_REASONING=
 ```
 
 For catalog-backed providers, `MODEL=auto` refreshes the provider model list

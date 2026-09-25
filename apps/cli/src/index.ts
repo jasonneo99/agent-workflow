@@ -37,6 +37,11 @@ import { buildLearningProposalSet, formatLearningProposalSet, writeLearningPropo
 import { normalizeLookup, normalizeProviderRef, resolveAgent, resolveWorkflow } from "./reference-resolution.js";
 import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { renderPreferenceScorecardHtml } from "./dashboard/outcome-accuracy.js";
+import { renderLearningLoopHtml } from "./dashboard/learning-loop.js";
+import { buildHumanInterventionItems } from "./dashboard/human-intervention.js";
+import { buildLearningLoopDashboard, readLearningLoopState, type LearningLoopDashboard, type LearningLoopSchedulerReceipt } from "../../../packages/learning-loop/src/index.js";
+import { registerLearningLoopCommand } from "./learning/learning-loop-command.js";
+import { runDaemonLearningLoopSchedule } from "./learning/learning-loop-daemon.js";
 import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
@@ -166,6 +171,7 @@ import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schem
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
 import { dashboardCss, roadmapDashboardCss } from "./dashboard/styles.js";
 import { dashboardRunDurationMs, formatDashboardDuration } from "./dashboard/home-metrics.js";
+import { aggregateRunEtas, estimateRunEta, type AggregateRunEta, type RunEta } from "./dashboard/run-eta.js";
 import { dashboardIcon, type DashboardIconName } from "./dashboard/icons.js";
 import { renderStudioHtml } from "./dashboard/studio.js";
 import { registerRepositoryMaintenanceCommand } from "./commands/repository-maintenance.js";
@@ -1071,12 +1077,12 @@ program
   .command("provider-use")
   .alias("model-use")
   .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-  .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, muse, openai-compatible, bedrock, or kiro")
+  .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, gemini, muse, openai-compatible, bedrock, or kiro")
   .option("--login", "authenticate interactively before selecting a CLI provider")
   .option("--device-auth", "use Codex device-code login for a headless machine")
   .option("--check", "run provider-check after switching")
   .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-    const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "muse", "openai-compatible", "bedrock", "kiro"];
+    const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"];
     const providerId = normalizeProviderRef(provider);
     if (!supported.includes(providerId)) {
       console.error(`Unsupported provider: ${provider}`);
@@ -1117,6 +1123,8 @@ program
       console.log("Using the authenticated Codex CLI. Defaults to ChatGPT subscription auth and never reads the Codex credential cache directly.");
     } else if (providerId === "anthropic") {
       console.log("Using Anthropic Messages API. Requires ANTHROPIC_API_KEY. Set ANTHROPIC_MODEL=auto to select tier models from the live Anthropic catalog.");
+    } else if (providerId === "gemini") {
+      console.log("Using Gemini through Google's official OpenAI-compatible endpoint. Requires GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL defaults to gemini-3.8-flash.");
     } else if (providerId === "muse") {
       console.log("Using Meta Muse via the Meta Model API. Requires MUSE_API_KEY. MUSE_MODEL defaults to muse-spark-1.1.");
     } else if (providerId === "auto") {
@@ -3008,7 +3016,11 @@ program
     }
 
     if (options.run) {
-      const details = await getWorkflowRunDetails(options.run);
+      const [details, historicalRuns, approvals] = await Promise.all([
+        getWorkflowRunDetails(options.run),
+        listWorkflowRuns(250),
+        listActionApprovals({ runId: options.run, limit: 100 })
+      ]);
       if (!details.run) {
         console.error(`Unknown workflow run: ${options.run}`);
         process.exitCode = 1;
@@ -3016,10 +3028,22 @@ program
       }
 
       if (options.json) {
-        const payload: { run: unknown; stages: unknown; receipts: unknown; artifacts?: unknown } = {
+        const payload: { run: unknown; eta: RunEta; stages: unknown; receipts: unknown; approvals: unknown; artifacts?: unknown } = {
           run: details.run,
+          eta: estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }),
           stages: details.tasks,
           receipts: details.receipts,
+          approvals: approvals.map((approval) => ({
+            approvalId: approval.id,
+            runId: approval.runId,
+            stageId: approval.stageId,
+            actionType: approval.actionType,
+            target: approval.target,
+            rationale: approval.rationale,
+            status: approval.status,
+            allowedDecisions: ["approve", "approve-and-execute", "reject"],
+            actionEndpoint: "/api/server-approval-action"
+          }))
         };
         if (options.artifacts) {
           payload.artifacts = await listArtifacts({ runId: options.run });
@@ -3033,6 +3057,7 @@ program
       console.log(`Autonomy: ${details.run.autonomy}`);
       console.log(`Policy profile: ${details.run.policyProfile}`);
       console.log(`Policy snapshot: ${details.run.policySnapshotHash || "legacy run"}`);
+      console.log(`ETA: ${formatRunEta(estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }))}`);
       console.log("");
       console.log("Stages");
       for (const task of details.tasks) {
@@ -3043,6 +3068,14 @@ program
       console.log("Receipts");
       for (const receipt of details.receipts) {
         console.log(`- ${receipt.actionType} ${receipt.agentId}: ${receipt.summary}`);
+      }
+      if (approvals.length) {
+        console.log("");
+        console.log("Approvals");
+        for (const approval of approvals) {
+          console.log(`- ${approval.id} ${approval.status} ${approval.actionType}: ${approval.target}`);
+          console.log(`  ${approval.rationale}`);
+        }
       }
       if (options.artifacts) {
         const artifacts = await listArtifacts({ runId: options.run });
@@ -3058,11 +3091,12 @@ program
     const limit = Number.parseInt(options.limit, 10);
     const runs = await listWorkflowRuns(Number.isFinite(limit) && limit > 0 ? limit : 10);
     if (options.json) {
-      console.log(JSON.stringify(runs, null, 2));
+      console.log(JSON.stringify(runs.map((run) => ({ ...run, eta: estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs }) })), null, 2));
       return;
     }
     for (const run of runs) {
-      console.log(`${run.id} ${run.status} ${run.workflowId} - ${run.task}`);
+      const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
+      console.log(`${run.id} ${run.status} ${run.workflowId} ETA=${formatRunEta(eta)} - ${run.task}`);
     }
   });
 
@@ -4481,6 +4515,7 @@ program
     if (!inbox.items.length) console.log("No training proposals.");
   });
 
+registerLearningLoopCommand(program, rootDir);
 program
   .command("learning-daemon")
   .description("Run the local learning daemon in autonomous apply-approved mode, or observe/propose modes")
@@ -8481,7 +8516,19 @@ type ServerOrchestrationStatusReport = {
     percent: number;
     currentStages: Array<{ runId: string; stageId: string; agentId: string; status: string; attempts: number }>;
     pendingApprovals: number;
+    approvals: Array<{
+      approvalId: string;
+      runId: string;
+      stageId: string;
+      actionType: string;
+      target: string;
+      rationale: string;
+      status: string;
+      allowedDecisions: Array<"approve" | "approve-and-execute" | "reject">;
+      actionEndpoint: "/api/server-approval-action";
+    }>;
   };
+  eta: AggregateRunEta;
   cursor: string;
   result: null | { outcome: "completed" | "blocked" | "failed"; summary: string; artifactUri: string | null };
 };
@@ -14503,6 +14550,13 @@ async function previewApprovalPolicyRecheck(
       return { status: "fail", detail: `File-write policy recheck failed: ${error instanceof Error ? error.message : String(error)}` };
     }
   }
+  if (approval.actionType === "project_policy_change") {
+    const kind = stringFromRecord(approval.payload, "changeKind");
+    const rule = stringFromRecord(approval.payload, "proposedRule");
+    return kind && rule
+      ? { status: "pass", detail: `Exact project policy addition is ready for reviewed execution: ${kind}=${rule}` }
+      : { status: "fail", detail: "Project policy change approval is missing its exact change kind or proposed rule." };
+  }
   if (approval.actionType === "artifact_archive" || approval.actionType === "artifact_restore" || approval.actionType === "artifact_prune" || approval.actionType === "object_mirror") {
     return { status: "warn", detail: `${approval.actionType} has a dedicated execution path; preview confirms envelope controls but leaves the specialized dry-run proof to that action.` };
   }
@@ -14922,7 +14976,11 @@ async function processServerOrchestrationRequest(request: http.IncomingMessage, 
 }
 
 function emptyServerOrchestrationProgress(): ServerOrchestrationStatusReport["progress"] {
-  return { totalStages: 0, completedStages: 0, runningStages: 0, queuedStages: 0, blockedStages: 0, failedStages: 0, cancelledStages: 0, percent: 0, currentStages: [], pendingApprovals: 0 };
+  return { totalStages: 0, completedStages: 0, runningStages: 0, queuedStages: 0, blockedStages: 0, failedStages: 0, cancelledStages: 0, percent: 0, currentStages: [], pendingApprovals: 0, approvals: [] };
+}
+
+function emptyServerOrchestrationEta(reason: string): AggregateRunEta {
+  return { state: "learning", estimatedCompletionAt: null, remainingMs: null, projectedTotalMs: null, confidence: "none", source: "none", sampleCount: 0, completedTasks: 0, totalTasks: 0, reason, runs: [] };
 }
 
 function serverOrchestrationStatusIsTerminal(status: ServerOrchestrationStatusReport["status"]): boolean {
@@ -14932,15 +14990,16 @@ function serverOrchestrationStatusIsTerminal(status: ServerOrchestrationStatusRe
 async function loadServerOrchestrationStatus(request: http.IncomingMessage, projectId: string, operationId: string): Promise<{ statusCode: number; report: ServerOrchestrationStatusReport }> {
   const auth = validateServerMutationAuth(request);
   const emptyProgress = emptyServerOrchestrationProgress();
-  if (!auth.ok) return { statusCode: 403, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, cursor: stableHash([operationId, "missing"]), result: null } };
+  if (!auth.ok) return { statusCode: 403, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, eta: emptyServerOrchestrationEta("Authentication is required before ETA evidence can be read."), cursor: stableHash([operationId, "missing"]), result: null } };
   const summary = (await listProjectStorageSummaries(500)).find((item) => item.id === projectId);
-  const runs = summary ? (await listWorkflowRunsForProject({ projectRootUri: summary.rootUri, limit: 500 }))
-    .filter((run) => stringValue(run.evaluationMetadata?.source) === "server-orchestration" && stringValue(run.evaluationMetadata?.operationId) === operationId) : [];
-  if (!runs.length) return { statusCode: 404, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, cursor: stableHash([operationId, "missing"]), result: null } };
+  const projectRuns = summary ? await listWorkflowRunsForProject({ projectRootUri: summary.rootUri, limit: 500 }) : [];
+  const runs = projectRuns.filter((run) => stringValue(run.evaluationMetadata?.source) === "server-orchestration" && stringValue(run.evaluationMetadata?.operationId) === operationId);
+  if (!runs.length) return { statusCode: 404, report: { kind: "agentflow_server_orchestration_status", generatedAt: new Date().toISOString(), operationId, projectId, status: "missing", runGroup: [], progress: emptyProgress, eta: emptyServerOrchestrationEta("No matching orchestration runs were found."), cursor: stableHash([operationId, "missing"]), result: null } };
   const statuses = runs.map((run) => run.status);
   const status: ServerOrchestrationStatusReport["status"] = statuses.includes("blocked") ? "blocked" : statuses.includes("failed") ? "failed" : statuses.some((item) => item === "queued" || item === "leased" || item === "running") ? (statuses.includes("running") || statuses.includes("leased") ? "running" : "queued") : "completed";
   const latest = runs[0];
   const details = await Promise.all(runs.map((run) => getWorkflowRunDetails(run.id)));
+  const eta = aggregateRunEtas(runs.map((run, index) => ({ runId: run.id, eta: estimateRunEta({ run, tasks: details[index]?.tasks ?? [], historicalRuns: projectRuns }) })));
   const tasks = details.flatMap((detail) => detail.tasks.map((task) => ({ ...task, runId: detail.run?.id ?? "" })));
   const count = (taskStatus: string): number => tasks.filter((task) => task.status === taskStatus).length;
   const completedStages = count("completed");
@@ -14948,7 +15007,7 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
   const failedStages = count("failed");
   const cancelledStages = count("cancelled");
   const terminalStages = completedStages + blockedStages + failedStages + cancelledStages;
-  const pendingApprovals = (await Promise.all(runs.map((run) => listActionApprovals({ runId: run.id, limit: 100 })))).flat().filter((approval) => isOpenApproval(approval)).length;
+  const openApprovals = (await Promise.all(runs.map((run) => listActionApprovals({ runId: run.id, limit: 100 })))).flat().filter((approval) => isOpenApproval(approval));
   const progress: ServerOrchestrationStatusReport["progress"] = {
     totalStages: tasks.length,
     completedStages,
@@ -14959,7 +15018,18 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
     cancelledStages,
     percent: tasks.length ? Math.round((terminalStages / tasks.length) * 100) : 0,
     currentStages: tasks.filter((task) => task.status === "running" || task.status === "leased" || task.status === "queued" || task.status === "blocked" || task.status === "failed").slice(0, 8).map((task) => ({ runId: task.runId, stageId: task.stageId, agentId: task.agentId, status: task.status, attempts: task.attempts })),
-    pendingApprovals
+    pendingApprovals: openApprovals.length,
+    approvals: openApprovals.slice(0, 20).map((approval) => ({
+      approvalId: approval.id,
+      runId: approval.runId,
+      stageId: approval.stageId,
+      actionType: approval.actionType,
+      target: approval.target,
+      rationale: approval.rationale,
+      status: approval.status,
+      allowedDecisions: ["approve", "approve-and-execute", "reject"],
+      actionEndpoint: "/api/server-approval-action"
+    }))
   };
   const artifacts = await listArtifacts({ runId: latest.id, kind: "stage_output" });
   const finalArtifact = artifacts.at(-1) ?? null;
@@ -14972,6 +15042,7 @@ async function loadServerOrchestrationStatus(request: http.IncomingMessage, proj
     generatedAt: new Date().toISOString(), operationId, projectId, status,
     runGroup: runs.map((run) => ({ runId: run.id, workflowId: run.workflowId, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt })),
     progress,
+    eta,
     cursor,
     result
   } };
@@ -23704,7 +23775,7 @@ async function runLearningDaemonTick(input: {
   approvalAutopilotOverride?: boolean;
   modelComparisonEnabled?: boolean;
   trainingDiscoveryEnabled?: boolean;
-}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; trainingDiscovery: TrainingDiscoveryReport | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
+}): Promise<{ report: LearningReport; roadmap: RoadmapSuggestionReport; roadmapPublication: RoadmapSnapshotPublication; proposalSet: LearningProposalSet; approvalQueue: LearningApprovalQueue; applicationPlan: LearningApplicationPlan; workflowShape: WorkflowShapeOptimizationReport | null; modelRoutingOptimizer: ModelRoutingOptimizerReport; modelComparisonSchedule: ModelComparisonSchedule; trainingDiscovery: TrainingDiscoveryReport | null; learningLoopScheduler: LearningLoopSchedulerReceipt | null; agentImprovement: AgentImprovementReport; agentImprovementPatchPlan: AgentImprovementPatchPlan; agentImprovementEvalPlan: AgentImprovementEvalPlan; agentImprovementPromotionQueue: AgentImprovementPromotionQueue; agentImprovementApply: AgentImprovementApplyResult; workflowShapeAutoUpdate: boolean; agentImprovementProjectLocalAutoApply: boolean; autonomousApplyMaxRisk: LearningRiskLevel; autonomousApplication: LearningAutonomousApplicationResult; approvalAutopilotEnabled: boolean; approvalAutopilotMaxRisk: ApprovalAutopilotRisk; approvalAutopilot: ApprovalAutopilotResult; approvalBacklog: ApprovalBacklogReport; repositoryMaintenance: RepositoryMaintenanceReport }> {
   const approvalAutopilotEnabled = input.approvalAutopilotOverride ?? await learningApprovalAutopilotEnabled(input.projectDir);
   const approvalAutopilotMaxRisk = await learningApprovalAutopilotMaxRisk(input.projectDir);
   let approvalAutopilot: ApprovalAutopilotResult = emptyApprovalAutopilotResult(approvalAutopilotMaxRisk);
@@ -23729,6 +23800,10 @@ async function runLearningDaemonTick(input: {
       daemonLanes: daemonLanes.map((lane) => lane.id),
       cadenceMs: parsePositiveInteger(process.env.AGENTFLOW_TRAINING_DISCOVERY_INTERVAL_MS ?? "", 86_400_000)
     });
+  let learningLoopScheduler: LearningLoopSchedulerReceipt | null = null;
+  if (envFlagEnabled(process.env.AGENTFLOW_LEARNING_LOOP_AUTO_RUN)) {
+    learningLoopScheduler = await runDaemonLearningLoopSchedule({ projectDir: input.projectDir, definitionsRoot: rootDir });
+  }
   const report = await loadLearningReport({ projectDir: input.projectDir, limit: input.limit });
   const modelRoutingOptimizer = await runModelRoutingOptimizer({ projectDir: input.projectDir, suites: await loadDashboardEvaluations(250, input.projectDir), autoUpdate: input.mode === "apply-approved" && envFlagEnabled(process.env.AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE) });
   const modelComparisonSchedule = await prepareRecurringModelComparison({
@@ -23843,7 +23918,7 @@ async function runLearningDaemonTick(input: {
     events: optimizerEvents,
     recommendations: workflowShape?.recommendations.slice(0, 50).map((item, index) => ({ id: `workflow-shape:${index}:${report.generatedAt}`, projectId: input.projectDir, kind: "stage" as const, evidence: Math.min(1, report.runsAnalyzed / 10), impact: 0.5, reversibility: 1, risk: "medium" as const, confidence: Math.min(1, report.runsAnalyzed / 5), duplicateKey: JSON.stringify(item) })) ?? []
   });
-  return { report, roadmap, roadmapPublication, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, trainingDiscovery, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
+  return { report, roadmap, roadmapPublication, proposalSet, approvalQueue, applicationPlan, workflowShape, modelRoutingOptimizer, modelComparisonSchedule, trainingDiscovery, learningLoopScheduler, agentImprovement, agentImprovementPatchPlan, agentImprovementEvalPlan, agentImprovementPromotionQueue, agentImprovementApply, workflowShapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, autonomousApplication, approvalAutopilotEnabled, approvalAutopilotMaxRisk, approvalAutopilot, approvalBacklog, repositoryMaintenance };
 }
 
 async function runLearningFailureTriage(input: {
@@ -26132,8 +26207,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/runs") {
     const runs = await loadCachedDashboardReport("api:runs:50", () => listWorkflowRuns(50), 2_000);
+    const runsWithEta = runs.map((run) => ({
+      ...run,
+      eta: estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs })
+    }));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(runs, null, 2));
+    response.end(JSON.stringify(runsWithEta, null, 2));
     return;
   }
 
@@ -26177,7 +26256,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       2_000
     );
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(queue, null, 2));
+    const historicalRuns = await listWorkflowRuns(250);
+    response.end(JSON.stringify(queue.map((item) => ({ ...item, eta: estimateQueueItemEta(item, historicalRuns) })), null, 2));
     return;
   }
 
@@ -26776,11 +26856,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end("Missing id");
       return;
     }
-    const details = await getWorkflowRunDetails(runId);
-    const artifacts = await listArtifacts({ runId });
-    const handoffs = await listWorkflowHandoffs({ runId });
+    const [details, artifacts, handoffs, historicalRuns, approvals] = await Promise.all([
+      getWorkflowRunDetails(runId),
+      listArtifacts({ runId }),
+      listWorkflowHandoffs({ runId }),
+      listWorkflowRuns(250),
+      listActionApprovals({ runId, limit: 100 })
+    ]);
+    const eta = details.run ? estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }) : null;
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ...details, artifacts, handoffs }, null, 2));
+    response.end(JSON.stringify({ ...details, eta, artifacts, handoffs, approvals }, null, 2));
     return;
   }
 
@@ -26791,11 +26876,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end(JSON.stringify({ error: "Missing id" }));
       return;
     }
-    const [details, events, approvals, artifacts] = await Promise.all([
+    const [details, events, approvals, artifacts, historicalRuns] = await Promise.all([
       getWorkflowRunDetails(runId),
       listActivityEvents({ runId, limit: 250 }),
       listActionApprovals({ runId, limit: 100 }),
-      listArtifacts({ runId })
+      listArtifacts({ runId }),
+      listWorkflowRuns(250)
     ]);
     if (!details.run) {
       response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
@@ -26806,6 +26892,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     response.end(JSON.stringify({
       generatedAt: new Date().toISOString(),
       run: { status: details.run.status, finishedAt: details.run.finishedAt },
+      eta: estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }),
       tasks: details.tasks.map((task) => ({
         stageId: task.stageId,
         agentId: task.agentId,
@@ -26819,7 +26906,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       commandCenterHtml: renderRunCommandCenterBody(details.run, details.tasks, approvals),
       events: events.reverse(),
       receipts: details.receipts.map((receipt) => ({ id: receipt.id, actionType: receipt.actionType, summary: receipt.summary, createdAt: receipt.createdAt })),
-      approvals: approvals.map((approval) => ({ id: approval.id, actionType: approval.actionType, target: approval.target, status: approval.status, createdAt: approval.createdAt })),
+      approvals: approvals.map((approval) => ({
+        id: approval.id,
+        actionType: approval.actionType,
+        target: approval.target,
+        rationale: approval.rationale,
+        status: approval.status,
+        createdAt: approval.createdAt,
+        allowedDecisions: ["approve", "approve-and-execute", "reject"],
+        actionEndpoint: "/api/server-approval-action"
+      })),
       artifacts: artifacts.map((artifact) => ({ id: artifact.id, kind: artifact.kind, uri: artifact.uri, createdAt: artifact.createdAt }))
     }));
     return;
@@ -27005,6 +27101,16 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  if (requestUrl.pathname === "/api/learning-loop") {
+    const project = requestUrl.searchParams.get("project");
+    if (!project) { response.writeHead(400, { "content-type": "text/plain; charset=utf-8" }); response.end("Missing project"); return; }
+    const projectPath = await resolveDashboardProjectPath(project);
+    const state = await readLearningLoopState(projectPath.localRootUri);
+    response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+    response.end(JSON.stringify(buildLearningLoopDashboard(state), null, 2));
     return;
   }
 
@@ -27268,9 +27374,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       response.end("Run not found");
       return;
     }
-    const [artifacts, approvals] = await Promise.all([
+    const [artifacts, approvals, historicalRuns] = await Promise.all([
       listArtifacts({ runId }),
-      listActionApprovals({ runId, limit: 100 })
+      listActionApprovals({ runId, limit: 100 }),
+      listWorkflowRuns(250)
     ]);
     const summary = await summarizeWorkflowRun(runId);
     const qualityReport = await loadCostQualityReport(runId);
@@ -27297,6 +27404,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     });
     const tuningProposals = preferenceScorecard ? buildTuningProposals(preferenceScorecard) : null;
     const approvalCeiling = await loadRunApprovalCeiling(details.run).catch(() => details.run!.autonomy);
+    const eta = estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunDetailHtml({
       run: details.run,
@@ -27309,6 +27417,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       qualityReport,
       observabilityReport,
       usageEstimate,
+      eta,
       preferenceScorecard,
       tuningProposals,
       approvalCeiling
@@ -27318,13 +27427,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/queue") {
     const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
-    const queue = await loadCachedDashboardReport(
-      `dashboard:queue:100:${projectRootUri ?? "all"}`,
-      () => listWorkflowQueue(100, { projectRootUri }),
-      2_000
-    );
+    const [queue, historicalRuns] = await Promise.all([
+      loadCachedDashboardReport(`dashboard:queue:100:${projectRootUri ?? "all"}`, () => listWorkflowQueue(100, { projectRootUri }), 2_000),
+      listWorkflowRuns(250)
+    ]);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderQueueHtml(queue, requestUrl.searchParams));
+    response.end(renderQueueHtml(queue, requestUrl.searchParams, historicalRuns));
     return;
   }
 
@@ -27429,7 +27537,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/learning") {
     const requestedLearningView = requestUrl.searchParams.get("view") ?? "overview";
-    const learningView = ["overview", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"].includes(requestedLearningView)
+    const learningView = ["overview", "learning-loop", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"].includes(requestedLearningView)
       ? requestedLearningView
       : "overview";
     const projects = await listProjectStorageSummaries(100);
@@ -27474,7 +27582,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         mode: "read-only"
       }).catch(() => null)
       : Promise.resolve(null);
-    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement] = await Promise.all([
+    const learningLoopPromise: Promise<LearningLoopDashboard | null> = project && learningView === "learning-loop"
+      ? readLearningLoopState(localLearningDir).then(buildLearningLoopDashboard)
+      : Promise.resolve(null);
+    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement, learningLoop] = await Promise.all([
       reportPromise,
       learningQueuePromise,
       learningDaemonPromise,
@@ -27483,7 +27594,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       learningActionReceiptHealthPromise,
       loadDashboardSupervisorStatus(),
       workflowShapePromise,
-      agentImprovementPromise
+      agentImprovementPromise,
+      learningLoopPromise
     ]);
     const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
     const agentImprovementEval = agentImprovement
@@ -27503,7 +27615,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         .catch(() => null)
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, learningSettings, supervisor, projects, requestUrl.searchParams, projectPath));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, learningSettings, supervisor, projects, requestUrl.searchParams, projectPath, learningLoop));
     return;
   }
 
@@ -27797,7 +27909,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[]): string {
   const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
   const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 8);
-  const pendingApprovals = health.pendingApprovals.length;
+  const humanInterventions = buildHumanInterventionItems({ pendingApprovals: health.pendingApprovals, approvedExecutableApprovals: health.approvedExecutableApprovals, queue: health.queue, workerStatus: health.worker.status, supervisorStatus: health.supervisor.status, mcpStatus: health.runtimeMonitor.mcpPipeline.status, missingServices: health.services.filter((service) => !service.reachable).map((service) => service.endpoint.name), learningDaemonError: health.learningDaemon?.lastError, approvalBacklogErrors: health.learningDaemon?.approvalBacklogErrors, approvalBacklogWarnings: health.learningDaemon?.approvalBacklogWarnings });
   const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
   const terminalRuns = runs.filter((run) => run.status === "completed" || run.status === "failed");
   const completedRuns = terminalRuns.filter((run) => run.status === "completed").length;
@@ -27808,11 +27920,11 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
   const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
   const servicesReady = health.services.filter((service) => service.reachable).length;
   const systemHealthy = servicesReady === health.services.length && health.worker.status === "running" && health.supervisor.status === "running" && failedRuns === 0;
-  const approvalRows = [...health.pendingApprovals, ...health.approvedExecutableApprovals].slice(0, 5).map((approval) => `
-    <a class="ops-approval-row" href="/approvals?status=${approval.status === "pending" ? "pending" : "approved"}">
-      <span class="ops-status-dot ${approval.status === "pending" ? "warn" : "good"}"></span>
-      <span><strong>${escapeHtml(compactDashboardText(approval.actionType, 42))}</strong><small>${escapeHtml(compactDashboardText(approval.target, 54))}</small></span>
-      <span>${approval.status === "pending" ? "Review" : "Ready"}</span>
+  const interventionRows = humanInterventions.map((item) => `
+    <a class="ops-approval-row" href="${escapeHtml(item.href)}">
+      <span class="ops-status-dot ${item.severity}"></span>
+      <span><strong>${escapeHtml(compactDashboardText(item.title, 52))}</strong><small>${escapeHtml(compactDashboardText(item.detail, 72))}</small></span>
+      <span>${escapeHtml(item.action)}</span>
     </a>`).join("");
   const recentRows = recentRuns.map((run) => `
     <tr>
@@ -27856,7 +27968,7 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
         ${renderOpsMetric("Success rate", `${successRate}%`, `${completedRuns}/${terminalRuns.length || 0} terminal`, terminalRuns.map((run) => run.status === "completed" ? 1 : 0), "teal")}
         ${renderOpsMetric("Median duration", formatDashboardDuration(medianDuration), `${durations.length} measured`, durations.slice(-10), "violet")}
         ${renderOpsMetric("Active stage tasks", formatNumber(activeStageTasks), `${health.queue.length} queue records`, health.queue.slice(0, 10).map((item) => item.queuedTasks + item.runningTasks), "cyan")}
-        ${renderOpsMetric("Approval work", formatNumber(pendingApprovals + health.approvedExecutableApprovals.length), `${pendingApprovals} pending`, [0, pendingApprovals, health.approvedExecutableApprovals.length], "amber")}
+        ${renderOpsMetric("Human intervention", formatNumber(humanInterventions.length), humanInterventions.length ? "action required" : "clear", [0, humanInterventions.filter((item) => item.severity === "warn").length, humanInterventions.filter((item) => item.severity === "bad").length], "amber")}
         ${renderOpsMetric("Active projects", formatNumber(activeProjects), `${health.projects.length} registered`, health.projects.slice(0, 10).map((project) => project.runCount), "violet")}
       </div>
     </section>
@@ -27865,14 +27977,14 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>
       <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Execution duration</h2><span>Completed and failed run latency</span></div></div>${renderOpsDurationChart(terminalRuns)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Queue pressure</h2><span>Stage work and oldest active item</span></div><a href="/queue">Open queue</a></div>${renderOpsQueuePressure(health.queue)}</section>
-      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue)}</section>
+      <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Agent flow</h2><span>Current and next stage handoffs</span></div><a href="/workflow-graph">Open graph</a></div>${renderOpsAgentFlow(health.queue, runs)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Project activity</h2><span>Runs across registered projects</span></div><a href="/projects">Projects</a></div>${renderOpsProjectActivity(health.projects)}</section>
       <section class="ops-panel ops-span-2 ops-daemon-panel"><div class="ops-panel-heading"><div><h2>Daemon monitor</h2><span>Learning cycles, autonomous actions, and heartbeat health</span></div><a href="/learning">Open learning</a></div>${renderDaemonMonitor(health.supervisor, health.learningDaemon, health.learningReceipts)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Daemon lanes</h2><span>Managed runtime responsibilities</span></div><a href="/settings">Settings</a></div>${renderDaemonLanes(health.supervisor, health.learningDaemon)}</section>
     </div>
     <div class="ops-lower-grid">
       <section class="ops-panel ops-runs-panel"><div class="ops-panel-heading"><div><h2>Recent runs</h2><span>Latest terminal workflow outcomes</span></div><a href="/runs">View all runs</a></div><div class="table-wrap"><table class="ops-table"><colgroup><col class="ops-col-run"><col class="ops-col-task"><col class="ops-col-workflow"><col class="ops-col-status"><col class="ops-col-duration"><col class="ops-col-started"></colgroup><thead><tr><th>Run</th><th>Task</th><th>Workflow</th><th>Status</th><th>Duration</th><th>Started</th></tr></thead><tbody>${recentRows || '<tr><td colspan="6">No terminal runs in the current window.</td></tr>'}</tbody></table></div></section>
-      <section class="ops-panel ops-approvals-panel"><div class="ops-panel-heading"><div><h2>Approval work</h2><span>Decisions and executable actions</span></div><a href="/approvals">View all</a></div><div class="ops-approval-list">${approvalRows || '<div class="ops-empty"><strong>No approval work</strong><span>The action boundary is clear.</span></div>'}</div></section>
+      <section class="ops-panel ops-approvals-panel"><div class="ops-panel-heading"><div><h2>Human intervention</h2><span>Every decision, recovery, and runtime item requiring a person</span></div><a href="/approvals">Open approvals</a></div><div class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0">${interventionRows || '<div class="ops-empty"><strong>No human intervention needed</strong><span>The system can continue autonomously.</span></div>'}</div></section>
     </div>
     <section class="ops-panel start-work" id="start-work">
       <div class="human-section-heading"><div><h2>Start work</h2><p>Describe the outcome. Agent Workflow will handle the execution details.</p></div></div>
@@ -27961,10 +28073,10 @@ function renderOpsQueuePressure(queue: DashboardQueueItem[]): string {
   return `<div class="ops-queue-summary"><div><span>Queue depth</span><strong>${queued + running}</strong><small>${running} running · ${queued} waiting</small></div><div><span>Oldest active</span><strong>${formatDashboardDuration(oldestMs)}</strong><small>${failed} failed stage${failed === 1 ? "" : "s"}</small></div></div><div class="ops-pressure-bar"><i class="running" style="width:${(running / total) * 100}%"></i><i class="queued" style="width:${(queued / total) * 100}%"></i><i class="failed" style="width:${(failed / total) * 100}%"></i></div><div class="ops-legend"><span><i class="running"></i>Running</span><span><i class="queued"></i>Queued</span><span><i class="failed"></i>Failed</span></div>`;
 }
 
-function renderOpsAgentFlow(queue: DashboardQueueItem[]): string {
+function renderOpsAgentFlow(queue: DashboardQueueItem[], historicalRuns: DashboardRunStatus[]): string {
   const flows = queue.filter((item) => item.runningAgentId || item.nextAgentId).slice(0, 5);
   if (!flows.length) return '<div class="ops-empty"><strong>No active handoffs</strong><span>Agent transitions appear here while workflows execute.</span></div>';
-  return `<div class="ops-flow-list">${flows.map((item) => `<a href="/run?id=${encodeURIComponent(item.runId)}"><span class="ops-agent-node current">${escapeHtml(item.runningAgentId ?? "queued")}</span><span class="ops-flow-trace"><i></i>${dashboardIcon("chevrons")}</span><span class="ops-agent-node next">${escapeHtml(item.nextAgentId ?? "complete")}</span><small>${escapeHtml(compactDashboardText(item.task, 46))}</small></a>`).join("")}</div>`;
+  return `<div class="ops-flow-list">${flows.map((item) => { const eta = estimateQueueItemEta(item, historicalRuns); return `<a href="/run?id=${encodeURIComponent(item.runId)}"><span class="ops-agent-node current">${escapeHtml(item.runningAgentId ?? "queued")}</span><span class="ops-flow-trace"><i></i>${dashboardIcon("chevrons")}</span><span class="ops-agent-node next">${escapeHtml(item.nextAgentId ?? "complete")}</span><small>${escapeHtml(compactDashboardText(item.task, 46))} · ETA ${escapeHtml(formatRunEta(eta))}</small></a>`; }).join("")}</div>`;
 }
 
 function renderOpsProjectActivity(projects: DashboardProjectSummary[]): string {
@@ -28006,7 +28118,7 @@ function renderDaemonLanes(supervisor: DashboardSupervisorStatus, daemon: Dashbo
   return `<div class="ops-daemon-lanes">${lanes.map(([label, active, detail]) => `<div><i class="${active ? "active" : "idle"}"></i><span><strong>${label}</strong><small>${escapeHtml(detail)}</small></span></div>`).join("")}</div><div class="ops-daemon-trust"><span>Autonomy ceiling</span><strong>${escapeHtml(daemon?.autonomousApplyMaxRisk ?? "none")}</strong></div>`;
 }
 
-function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): string {
+function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, historicalRuns: DashboardRunStatus[]): string {
   const projectFilter = params.get("project")?.trim() || "";
   const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
   const recoveryActiveStatuses = new Set(["queued", "leased", "running"]);
@@ -28019,6 +28131,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
   const failed = queue.filter((item) => item.runStatus === "failed" && !recoveringRunIds.has(item.runId));
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
   const cards = queue.filter((item) => !recoveringRunIds.has(item.runId)).map((item) => {
+    const eta = estimateQueueItemEta(item, historicalRuns);
     const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
       ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
@@ -28077,6 +28190,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
         </div>
         <div class="queue-card-facts">
           <div><strong>Current work</strong><span>${escapeHtml(currentStage)}</span></div>
+          <div><strong>ETA</strong><span title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</span></div>
           <div><strong>Queue</strong><span>${formatNumber(item.runningTasks)} running · ${formatNumber(item.queuedTasks)} waiting</span></div>
           <div><strong>Worker</strong><span>${escapeHtml(item.runningWorkerId ?? "Not leased")}</span></div>
           <div><strong>Oldest active</strong><span>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</span></div>
@@ -28185,6 +28299,21 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams): 
   </script>
 </body>
 </html>`;
+}
+
+function estimateQueueItemEta(item: DashboardQueueItem, historicalRuns: DashboardRunStatus[]): RunEta {
+  const tasks = [
+    ...Array.from({ length: item.completedTasks }, () => ({ status: "completed" })),
+    ...Array.from({ length: item.runningTasks }, () => ({ status: "running" })),
+    ...Array.from({ length: item.queuedTasks }, () => ({ status: "queued" })),
+    ...Array.from({ length: item.failedTasks }, () => ({ status: "failed" }))
+  ];
+  while (tasks.length < item.totalTasks) tasks.push({ status: item.runStatus === "blocked" ? "blocked" : "queued" });
+  return estimateRunEta({
+    run: { id: item.runId, workflowId: item.workflowId, projectRootUri: item.projectRootUri, status: item.runStatus, startedAt: item.startedAt, finishedAt: null },
+    tasks,
+    historicalRuns
+  });
 }
 
 function renderApprovalsHtml(
@@ -29355,7 +29484,9 @@ function renderUnifiedActivityHtml(report: UnifiedActivityReport, projects: Dash
 }
 
 function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
-  const rows = runs.map((run) => `
+  const rows = runs.map((run) => {
+    const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
+    return `
     <tr>
       <td><a href="/run?id=${encodeURIComponent(run.id)}">${escapeHtml(run.id.slice(0, 8))}</a><br><span class="muted">${escapeHtml(run.id)}</span><div class="row-tools">${renderRunInfoDialog({
         runId: run.id,
@@ -29377,8 +29508,10 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
       <td>${escapeHtml(run.task)}</td>
       <td>${renderDashboardDateTime(run.startedAt)}</td>
+      <td title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</td>
     </tr>
-  `).join("");
+  `;
+  }).join("");
 
   return `<!doctype html>
 <html>
@@ -29403,8 +29536,8 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
     <section class="panel">
       <h2>Recent Runs</h2>
       <table>
-        <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan=\"6\">No runs found.</td></tr>"}</tbody>
+        <thead><tr><th>Run</th><th>Status</th><th>Workflow</th><th>Project</th><th>Task</th><th>Started</th><th>ETA</th></tr></thead>
+        <tbody>${rows || "<tr><td colspan=\"7\">No runs found.</td></tr>"}</tbody>
       </table>
     </section>
   </main>
@@ -31020,13 +31153,13 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null): string {
-  const learningViews = ["overview", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"] as const;
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null, learningLoop: LearningLoopDashboard | null = null): string {
+  const learningViews = ["overview", "learning-loop", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"] as const;
   const requestedView = params.get("view");
   const learningView = learningViews.includes(requestedView as typeof learningViews[number]) ? requestedView as typeof learningViews[number] : "overview";
   const selectedProject = projectPath?.storageRootUri ?? report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
   const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
-  const jsonHref = report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
+  const jsonHref = learningLoop ? `/api/learning-loop?project=${encodeURIComponent(projectPath?.localRootUri ?? selectedProject)}` : report ? `/api/learning-report?project=${encodeURIComponent(report.projectDir)}&limit=${encodeURIComponent(String(report.limit))}` : "";
   const shapeJsonHref = workflowShape ? `/api/learning-workflow-shape?project=${encodeURIComponent(workflowShape.projectRootUri)}&workflow=${encodeURIComponent(workflowShape.workflowId)}&limit=${encodeURIComponent(String(report?.limit ?? params.get("limit") ?? "50"))}` : "";
   const agentImprovementJsonHref = agentImprovement ? `/api/agent-improvement-report?project=${encodeURIComponent(agentImprovement.projectRootUri)}&limit=${encodeURIComponent(String(agentImprovement.limit))}` : "";
   const shapeAutoUpdate = learningSettings?.workflowShapeAutoUpdate ?? true;
@@ -31042,10 +31175,13 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=recommendations"><span class="human-row-icon">${dashboardIcon("sparkles")}</span><span><strong>Recommendations</strong><small>Workflow improvements, evaluation gaps, and routing opportunities.</small></span>${dashboardIcon("chevrons")}</a>
       <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=approvals"><span class="human-row-icon">${dashboardIcon("shield")}</span><span><strong>Approvals</strong><small>Review learning proposals and planned changes.</small></span>${dashboardIcon("chevrons")}</a>
       <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=agent-improvements"><span class="human-row-icon">${dashboardIcon("agent")}</span><span><strong>Agent improvements</strong><small>Inspect evaluated changes to agent definitions.</small></span>${dashboardIcon("chevrons")}</a>
+      <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=learning-loop"><span class="human-row-icon">${dashboardIcon("sparkles")}</span><span><strong>Learning loop</strong><small>Peer questions, calibrated assessments, disagreement, and guarded experiments.</small></span>${dashboardIcon("chevrons")}</a>
       <a class="human-list-row" href="/learning?project=${encodeURIComponent(selectedProject)}&view=diagnostics"><span class="human-row-icon">${dashboardIcon("gauge")}</span><span><strong>Diagnostics</strong><small>Failures, receipts, routing signals, and daemon health.</small></span>${dashboardIcon("chevrons")}</a>
     </div>
   </section>` : "";
-  const body = report
+  const body = learningLoop
+    ? renderLearningLoopHtml(learningLoop)
+    : report
     ? renderLearningReportHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, shapeAutoUpdate, agentImprovementProjectLocalAutoApply, autonomousApplyMaxRisk, approvalAutopilotEnabled, approvalAutopilotMaxRisk, daemonTrustLevels, supervisor, projectPath)
     : learningView === "overview" && selectedProject
       ? overviewBody
@@ -31073,7 +31209,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       ${learningViews.map((view) => {
         const hrefParams = new URLSearchParams(params);
         hrefParams.set("view", view);
-        const label = view === "agent-improvements" ? "Agent improvements" : titleCase(view);
+        const label = view === "agent-improvements" ? "Agent improvements" : view === "learning-loop" ? "Learning loop" : titleCase(view);
         return `<a href="/learning?${escapeHtml(hrefParams.toString())}" class="${learningView === view ? "active" : ""}" ${learningView === view ? 'aria-current="page"' : ""}>${escapeHtml(label)}</a>`;
       }).join("")}
     </nav>
@@ -31104,6 +31240,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
         const view = ${serializeInlineScriptJson(learningView)};
         const groups = {
           overview: ["Recent Dashboard Actions", "Workflow Optimizer", "Choose what to review"],
+          "learning-loop": ["Learning Loop", "Open Peer Questions", "Peer Assessment Results", "Learning Experiments", "Scheduler Receipts"],
           recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
           approvals: ["Learning Proposal Inbox", "Approved Application Plan"],
           "agent-improvements": ["Agent Definition Improvement"],
@@ -34433,6 +34570,7 @@ function renderRunDetailHtml(input: {
   qualityReport: CostQualityReport | null;
   observabilityReport: ObservabilityReport | null;
   usageEstimate: RunUsageEstimate | null;
+  eta: RunEta;
   preferenceScorecard: PreferenceScorecard | null;
   tuningProposals: TuningProposalSet | null;
   approvalCeiling: string;
@@ -34514,6 +34652,7 @@ function renderRunDetailHtml(input: {
         <div><strong>Workflow</strong>${escapeHtml(workflowDisplayName(input.run.workflowId))}<br><span class="muted">${escapeHtml(input.run.workflowId)}</span></div>
         <div><strong>Project</strong>${escapeHtml(input.run.projectName)}</div>
         <div><strong>Started</strong>${renderDashboardDateTime(input.run.startedAt)}</div>
+        <div><strong>ETA</strong><span id="run-live-eta" title="${escapeHtml(input.eta.reason)}">${escapeHtml(formatRunEta(input.eta))}</span></div>
         <div><strong>Tasks</strong><span id="run-live-completed">${completedTasks}/${input.tasks.length} completed</span></div>
         <div><strong>Failed</strong><span id="run-live-failed">${failedTasks}</span></div>
         <div><strong>Active</strong><span id="run-live-active">${activeTasks}</span></div>
@@ -34631,6 +34770,13 @@ async function loadRunApprovalCeiling(run: NonNullable<Awaited<ReturnType<typeof
   return String(resolveExecutionPolicy(configured, run.policyProfile).project.project.autonomy);
 }
 
+function formatRunEta(eta: RunEta): string {
+  if (eta.state === "complete") return "Complete";
+  if (eta.state === "paused") return "Paused";
+  if (eta.state === "learning" || eta.remainingMs === null || !eta.estimatedCompletionAt) return "Estimating…";
+  return `~${formatDashboardDuration(eta.remainingMs)} remaining · ${formatDashboardDateTimeText(eta.estimatedCompletionAt)} · ${eta.confidence} confidence`;
+}
+
 function renderRunApprovalLevelControl(
   run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>,
   ceiling: string
@@ -34725,6 +34871,7 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
     const continuation = document.getElementById('run-continuation');
     const stageTimeline = document.getElementById('run-stage-timeline');
     const commandCenter = document.getElementById('run-command-center');
+    const eta = document.getElementById('run-live-eta');
     let selectedStage = '';
     let stageTimer = 0;
     let verbose = false;
@@ -34744,6 +34891,13 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
     const formatTime = (value) => {
       const date = new Date(value);
       return Number.isNaN(date.getTime()) ? String(value || '') : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    };
+    const formatDuration = (value) => {
+      if (!Number.isFinite(value)) return '';
+      if (value < 60000) return Math.max(1, Math.round(value / 1000)) + 's';
+      const minutes = Math.floor(value / 60000);
+      const seconds = Math.round((value % 60000) / 1000);
+      return minutes + 'm ' + seconds + 's';
     };
     const statusClass = (value) => ['queued', 'leased', 'running', 'completed', 'failed', 'blocked', 'cancelled'].includes(value) ? value : 'queued';
 
@@ -34887,6 +35041,16 @@ function renderRunLiveProgressScript(runId: string, initiallyActive: boolean): s
         document.getElementById('run-live-completed').textContent = completed + '/' + tasks.length + ' completed';
         document.getElementById('run-live-failed').textContent = String(failed);
         document.getElementById('run-live-active').textContent = String(active);
+        if (eta && payload.eta) {
+          eta.textContent = payload.eta.state === 'complete'
+            ? 'Complete'
+            : payload.eta.state === 'paused'
+              ? 'Paused'
+              : payload.eta.state === 'estimated' && Number.isFinite(payload.eta.remainingMs)
+                ? '~' + formatDuration(payload.eta.remainingMs) + ' remaining · ' + new Date(payload.eta.estimatedCompletionAt).toLocaleString([], { hour: 'numeric', minute: '2-digit' }) + ' · ' + payload.eta.confidence + ' confidence'
+                : 'Estimating…';
+          eta.title = payload.eta.reason || '';
+        }
         const status = document.getElementById('run-live-status');
         status.textContent = payload.run.status;
         status.className = 'status ' + statusClass(payload.run.status);
@@ -35415,7 +35579,7 @@ type DashboardModelCatalogReport = {
 };
 
 type DashboardModelCatalogProvider = {
-  providerId: "openai" | "anthropic" | "byo" | "openai-compatible" | "bedrock";
+  providerId: "openai" | "anthropic" | "gemini" | "byo" | "openai-compatible" | "bedrock";
   label: string;
   configured: boolean;
   status: "ready" | "missing" | "not configured";
@@ -36295,10 +36459,6 @@ function parseLearningRiskLevel(value: string): LearningRiskLevel {
   return "medium";
 }
 
-function riskRank(value: LearningRiskLevel): number {
-  return value === "low" ? 1 : value === "medium" ? 2 : 3;
-}
-
 function safeWorkerHeartbeatFileSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9_.-]/g, "-").replace(/^-+|-+$/g, "") || "worker";
 }
@@ -36363,6 +36523,29 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
   }
   if (selected === "anthropic") {
     return describeAnthropicProvider(adapter, loadRoutingConfig());
+  }
+  if (selected === "gemini") {
+    const currentModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+    const geminiBaseUrl = process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/";
+    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(geminiBaseUrl, geminiApiKey));
+    const tierModels = loadGenericTierModelPreview({ catalog: discovered.models, provider: "compatible", baseModel: currentModel, tierEnvPrefix: "GEMINI_MODEL" });
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "GEMINI_MODEL",
+      baseUrl: safeDisplayUrl(geminiBaseUrl),
+      apiKeyConfigured: Boolean(geminiApiKey),
+      canSelectModel: Boolean(geminiApiKey),
+      availableModels: uniqueSorted(["auto", currentModel, ...discovered.models]),
+      availableModelsError: discovered.error,
+      tierModels,
+      catalogHint: discovered.models.length
+        ? "Gemini model choices are refreshed from Google's official OpenAI-compatible /models endpoint."
+        : "Gemini model choices will refresh after GEMINI_API_KEY or GOOGLE_API_KEY can list models.",
+      routingConfig: loadRoutingConfig()
+    };
   }
   if (selected === "local") {
     const currentModel = process.env.LOCAL_MODEL_NAME || "auto";
@@ -36523,6 +36706,19 @@ async function loadDashboardModelCatalogReport(): Promise<DashboardModelCatalogR
       configuredForTier: (tier) => configuredOpenAIModelForTier(tier)
     }),
     loadProviderCatalogExplanation(anthropicCatalogConfig()),
+    loadProviderCatalogExplanation({
+      providerId: "gemini",
+      label: "Google Gemini",
+      configured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+      catalogProvider: "compatible",
+      catalogSource: "Google Gemini OpenAI-compatible /models",
+      modelEnv: "GEMINI_MODEL",
+      configuredModel: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      baseUrl: safeDisplayUrl(process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/"),
+      apiKeyStatus: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY ? "configured" : "missing",
+      loadModels: () => loadOpenAICompatibleModelIds(process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/", process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
+      configuredForTier: (tier) => process.env[`GEMINI_MODEL_${tier.toUpperCase()}`] || process.env.GEMINI_MODEL || "gemini-3.8-flash"
+    }),
     loadProviderCatalogExplanation({
       providerId: "byo",
       label: "BYO / OpenAI-compatible gateway",
@@ -36744,6 +36940,23 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
   if (selected === "anthropic") {
     return describeAnthropicProviderFast(adapter, routingConfig);
   }
+  if (selected === "gemini") {
+    const currentModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
+    const geminiApiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+    return {
+      selected,
+      adapter,
+      model: currentModel,
+      modelEnv: "GEMINI_MODEL",
+      baseUrl: safeDisplayUrl(process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/"),
+      apiKeyConfigured: Boolean(geminiApiKey),
+      canSelectModel: Boolean(geminiApiKey),
+      availableModels: uniqueSorted(["auto", currentModel]),
+      availableModelsError: "Live Gemini model listing was skipped for fast page load.",
+      catalogHint: "Use the Providers page or provider-check to refresh Gemini choices from Google's model catalog.",
+      routingConfig
+    };
+  }
   if (selected === "byo") {
     const currentModel = process.env.BYO_MODEL_NAME || "auto";
     return {
@@ -36805,7 +37018,7 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
 function loadRoutingConfig(): DashboardInfo["provider"]["routingConfig"] {
   return {
     provider: process.env.DEFAULT_MODEL_PROVIDER ?? "mock",
-    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,codex-cli,openai,anthropic,muse,openai-compatible,kiro",
+    autoProviders: process.env.AGENTFLOW_AUTO_PROVIDERS ?? "local,byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro",
     fastProvider: process.env.AGENTFLOW_PROVIDER_FAST ?? "auto",
     standardProvider: process.env.AGENTFLOW_PROVIDER_STANDARD ?? "auto",
     reasoningProvider: process.env.AGENTFLOW_PROVIDER_REASONING ?? "auto",
@@ -36835,10 +37048,17 @@ async function loadAutoRoutePreviews(): Promise<NonNullable<DashboardInfo["provi
 }
 
 async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
-  const [openai, codex, anthropic, local, byo, compatible, muse, bedrock, kiro, mock] = await Promise.all([
+  const [openai, codex, anthropic, gemini, local, byo, compatible, muse, bedrock, kiro, mock] = await Promise.all([
     inspectOpenAIStatus(),
     inspectCodexCliStatus(),
     inspectAnthropicStatus(),
+    inspectOpenAICompatibleStatus({
+      providerId: "gemini",
+      label: "Google Gemini",
+      baseUrl: process.env.GEMINI_BASE_URL || "https://generativelanguage.googleapis.com/v1beta/openai/",
+      model: process.env.GEMINI_MODEL || "gemini-3.8-flash",
+      apiKey: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY
+    }),
     inspectOpenAICompatibleStatus({
       providerId: "local",
       label: "Local model runtime",
@@ -36884,7 +37104,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
       details: ["Always available for deterministic local validation."]
     }
   ]);
-  return [openai, codex, anthropic, local, byo, compatible, muse, bedrock, kiro, mock];
+  return [openai, codex, anthropic, gemini, local, byo, compatible, muse, bedrock, kiro, mock];
 }
 
 async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
@@ -36952,7 +37172,7 @@ async function inspectOpenAIStatus(): Promise<NonNullable<DashboardInfo["provide
 }
 
 async function inspectOpenAICompatibleStatus(input: {
-  providerId: "local" | "byo" | "openai-compatible" | "muse";
+  providerId: "local" | "byo" | "openai-compatible" | "gemini" | "muse";
   label: string;
   baseUrl?: string;
   model?: string;
@@ -36973,7 +37193,7 @@ async function inspectOpenAICompatibleStatus(input: {
   }
 
   const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(input.baseUrl, input.apiKey));
-  const tierEnvPrefix = input.providerId === "local" ? "LOCAL_MODEL" : input.providerId === "byo" ? "BYO_MODEL" : input.providerId === "muse" ? "MUSE_MODEL" : "OPENAI_COMPATIBLE_MODEL";
+  const tierEnvPrefix = input.providerId === "local" ? "LOCAL_MODEL" : input.providerId === "byo" ? "BYO_MODEL" : input.providerId === "gemini" ? "GEMINI_MODEL" : input.providerId === "muse" ? "MUSE_MODEL" : "OPENAI_COMPATIBLE_MODEL";
   const baseModel = input.model || "auto";
   const tierModels = loadGenericTierModelPreview({
     catalog: discovered.models,
@@ -37185,6 +37405,9 @@ function modelEnvForProvider(provider: string): string | undefined {
   if (provider === "anthropic") {
     return "ANTHROPIC_MODEL";
   }
+  if (provider === "gemini") {
+    return "GEMINI_MODEL";
+  }
   if (provider === "byo") {
     return "BYO_MODEL_NAME";
   }
@@ -37269,7 +37492,7 @@ async function updateDashboardRouting(input: {
   const updates: Record<string, string> = {
     DEFAULT_MODEL_PROVIDER: provider,
     AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,openai,anthropic,openai-compatible,kiro",
+    AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,gemini,openai,anthropic,openai-compatible,kiro",
     AGENTFLOW_PROVIDER_FAST: fastProvider,
     AGENTFLOW_PROVIDER_STANDARD: standardProvider,
     AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
@@ -37328,7 +37551,7 @@ function normalizeDashboardProvider(value: string, options: { allowBlank: boolea
     return "";
   }
   const normalized = normalizeProviderRef(trimmed);
-  const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "muse", "openai-compatible", "bedrock", "kiro"]);
+  const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]);
   return supported.has(normalized) ? normalized : undefined;
 }
 
@@ -39517,7 +39740,7 @@ async function executeApprovedAction(input: {
       ].join("\n")
     };
   }
-  if (!["artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter"].includes(approval.actionType)) {
+  if (!["artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter", "project_policy_change"].includes(approval.actionType)) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
 
@@ -39555,7 +39778,7 @@ async function executeApprovedAction(input: {
     });
   }
 
-  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : "";
+  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : approval.actionType === "project_policy_change" ? "project_policy_change" : "";
   if (!artifactKind) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
@@ -39589,6 +39812,9 @@ async function executeApprovedAction(input: {
   }
 
   try {
+    if (approval.actionType === "project_policy_change") {
+      return executeProjectPolicyChangeApproval({ approval, actor: input.actor, actorRole: input.actorRole, executionClaimToken });
+    }
     if (approval.actionType === "executor_adapter") {
       const snapshot = approval.payload.snapshot as ExecutorSnapshot | undefined;
       if (!snapshot) throw new Error("Approved executor action is missing its immutable snapshot.");
@@ -39741,6 +39967,67 @@ async function executeApprovedAction(input: {
     });
     return { ok: false, error: message };
   }
+}
+
+async function executeProjectPolicyChangeApproval(input: {
+  approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>;
+  actor: string;
+  actorRole?: string;
+  executionClaimToken: string;
+}): Promise<DashboardFollowUpResult> {
+  const changeKind = stringFromRecord(input.approval.payload, "changeKind");
+  const proposedRule = stringFromRecord(input.approval.payload, "proposedRule")?.trim();
+  const field = changeKind === "allowed_command" ? "allowed_commands" : changeKind === "allowed_write_path" ? "allowed_write_paths" : null;
+  if (!field || !proposedRule) throw new Error("Project policy change approval is missing a supported exact rule.");
+  const projectRoot = await resolveLocalProjectRootUri(input.approval.projectRootUri);
+  const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+  const [before, configStat] = await Promise.all([fs.readFile(configPath, "utf8"), fs.stat(configPath)]);
+  const document = YAML.parseDocument(before);
+  const parsed = objectValue(document.toJS());
+  const actions = objectValue(parsed.actions);
+  const existing = Array.isArray(actions[field]) ? actions[field].filter((value): value is string => typeof value === "string") : [];
+  const alreadyPresent = existing.includes(proposedRule);
+  if (!alreadyPresent) document.setIn(["actions", field], [...existing, proposedRule]);
+  const next = document.toJS();
+  projectConfigSchema.parse(next);
+  const nextYaml = document.toString();
+  const evidenceDir = path.join(projectRoot, ".agent-workflow", "runtime", "policy-changes");
+  await fs.mkdir(evidenceDir, { recursive: true });
+  const backupPath = path.join(evidenceDir, `${input.approval.id}.before.yaml`);
+  await fs.writeFile(backupPath, before, { mode: 0o600, flag: "wx" }).catch(async (error: NodeJS.ErrnoException) => {
+    if (error.code !== "EEXIST") throw error;
+  });
+  if (!alreadyPresent) {
+    const temporaryPath = `${configPath}.${input.approval.id}.tmp`;
+    await fs.writeFile(temporaryPath, nextYaml, { mode: configStat.mode });
+    await fs.rename(temporaryPath, configPath);
+  }
+  const summary = alreadyPresent
+    ? `Exact ${field} rule was already present: ${proposedRule}`
+    : `Added exact ${field} rule after approval: ${proposedRule}`;
+  const artifactUri = await recordRunAction({
+    runId: input.approval.runId,
+    taskId: input.approval.taskId,
+    agentId: input.approval.agentId,
+    actionType: "project_policy_change",
+    target: input.approval.target,
+    summary,
+    artifactKind: "project_policy_change",
+    artifactContent: {
+      approvalId: input.approval.id,
+      changeKind,
+      field,
+      proposedRule,
+      alreadyPresent,
+      beforeHash: createHash("sha256").update(before).digest("hex"),
+      afterHash: createHash("sha256").update(alreadyPresent ? before : nextYaml).digest("hex"),
+      rollbackPath: path.relative(projectRoot, backupPath),
+      executedByRole: input.actorRole ?? null
+    },
+    idempotencyKey: input.approval.idempotencyKey
+  });
+  await markActionApprovalExecution({ approvalId: input.approval.id, status: "executed", actor: input.actor, actorRole: input.actorRole, summary, artifactUri, executionClaimToken: input.executionClaimToken });
+  return { ok: true, title: "Project policy updated", runId: input.approval.runId, output: `${summary}\nRollback snapshot: ${path.relative(projectRoot, backupPath)}\nArtifact: ${artifactUri}` };
 }
 
 async function executeLifecycleApproval(input: {
@@ -40406,9 +40693,9 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
     : info.provider.selected === "auto"
       ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
       : `<p class="muted">This provider has no selectable live model list.</p>`;
-  const providerIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-  const executionProviderIds = ["auto", "local", "byo", "bedrock", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-  const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+  const providerIds = ["auto", "local", "byo", "bedrock", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  const executionProviderIds = ["auto", "local", "byo", "bedrock", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+  const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "gemini", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
   const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
   const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
     const selected = value === selectedValue ? " selected" : "";
@@ -40563,7 +40850,7 @@ function renderProvidersHtml(info: DashboardInfo, params: URLSearchParams = new 
           <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
         </label>
         <label>Auto priority
-          <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,openai">
+          <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,gemini,openai">
         </label>
         <label>Fast tier
           <select name="fastProvider">${optionList(executionProviderIds, info.provider.routingConfig.fastProvider)}</select>
@@ -40794,43 +41081,6 @@ function renderObservabilityHtml(report: ObservabilityReport): string {
   `;
 }
 
-function renderDashboardUsageHtml(summary: DashboardUsageSummary): string {
-  const modeLabel = summary.includeMock ? "Including mock/test runs" : "Real providers only";
-  const toggleHref = summary.includeMock ? "/" : "/?includeMock=true";
-  const toggleLabel = summary.includeMock ? "Hide Mock/Test Runs" : "Include Mock/Test Runs";
-  const excluded = summary.includeMock
-    ? "Mock/test runs are included in these diagnostics."
-    : `${summary.mockRunsExcluded} mock/test runs and ${summary.mockStagesExcluded} mock stages excluded from cost metrics.`;
-  const partialNotice = summary.partial && summary.note
-    ? `<p class="warn-box">${escapeHtml(summary.note)}</p>`
-    : "";
-  return `
-    ${partialNotice}
-    <div class="section-heading">
-      <div>
-        <strong>${escapeHtml(modeLabel)}</strong>
-        <span class="muted">${escapeHtml(excluded)}</span>
-      </div>
-      <a class="button secondary" href="${escapeHtml(toggleHref)}">${escapeHtml(toggleLabel)}</a>
-    </div>
-    <div class="metric-grid">
-      ${metricCard("Runs", summary.runsAnalyzed, `${summary.completedRuns} complete / ${summary.failedRuns} failed / ${summary.queuedRuns + summary.runningRuns} active`)}
-      ${metricCard("Model Stages", summary.routedStages, `${summary.byoSavingsStages} local/BYO-compatible`)}
-      ${metricCard("Avg Latency", summary.averageLatencyMs === null ? "n/a" : formatDuration(summary.averageLatencyMs), `${formatDuration(summary.totalLatencyMs)} total model latency`)}
-      ${metricCard("Avg Run Time", summary.averageRunDurationMs === null ? "n/a" : formatDuration(summary.averageRunDurationMs), "completed runs")}
-      ${metricCard("Est. Prompt Tokens", formatNumber(summary.estimatedPromptTokens), "compiled brief x routed stages")}
-      ${metricCard("Est. Tokens Saved", formatNumber(summary.estimatedTokensSaved), `${summary.tokenReductionPercent ?? "n/a"}% vs indexed context baseline`)}
-    </div>
-    <div class="meta-grid compact">
-      <div><strong>Providers</strong>${escapeHtml(formatInlineCounts(summary.providerMix))}</div>
-      <div><strong>Cost Mix</strong>${escapeHtml(formatInlineCounts(summary.costMix))}</div>
-      <div><strong>Model Tiers</strong>${escapeHtml(formatInlineCounts(summary.modelTierMix))}</div>
-      <div><strong>Est. Baseline</strong>${escapeHtml(formatNumber(summary.estimatedBaselineTokens))} indexed-context tokens</div>
-    </div>
-    <p class="muted">Token savings are estimated from recent home-page runs, indexed project summaries, and compiled briefs. They show context avoided, not exact provider billing tokens. Mock is test-only and excluded by default.</p>
-  `;
-}
-
 function renderRunUsageEstimateHtml(estimate: RunUsageEstimate): string {
   return `
     <div class="metric-grid">
@@ -40974,230 +41224,8 @@ function renderLaunchAgentLogHtml(view: { ok: boolean; kind: "stdout" | "stderr"
 </html>`;
 }
 
-function renderDashboardHealthHtml(health: DashboardHomeHealth): string {
-  const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
-  const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
-  const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
-  const servicesReady = health.services.every((service) => service.reachable);
-  const activeProjects = health.projects.filter((project) => project.runCount > 0 || project.indexedFiles > 0).length;
-  const providerStatus = health.provider === "mock" ? "mock" : health.provider;
-  const pendingApprovalCount = health.pendingApprovals.length;
-  const executableApprovalCount = health.approvedExecutableApprovals.length;
-  const approvalWorkCount = pendingApprovalCount + executableApprovalCount;
-  const approvalValue = pendingApprovalCount
-    ? `${pendingApprovalCount} pending`
-    : executableApprovalCount
-      ? `${executableApprovalCount} ready`
-      : "clear";
-  const approvalDetail = pendingApprovalCount && executableApprovalCount
-    ? `${pendingApprovalCount} need decision, ${executableApprovalCount} approved action${executableApprovalCount === 1 ? "" : "s"} ready to execute`
-    : pendingApprovalCount
-      ? `${pendingApprovalCount} pending decision${pendingApprovalCount === 1 ? "" : "s"}`
-      : executableApprovalCount
-        ? `${executableApprovalCount} approved side effect${executableApprovalCount === 1 ? "" : "s"} awaiting execution`
-        : "No pending or executable approval work";
-  return `
-    <div class="health-grid">
-      ${healthCard({
-        label: "Supervisor",
-        status: health.supervisor.status === "running" ? "good" : health.supervisor.status === "missing" ? "warn" : "bad",
-        value: health.supervisor.status,
-        detail: supervisorStatusDetail(health.supervisor),
-        href: "/settings"
-      })}
-      ${healthCard({
-        label: "Worker",
-        status: health.worker.status === "running" ? "good" : health.worker.status === "missing" ? "warn" : "bad",
-        value: health.worker.status,
-        detail: workerStatusDetail(health.worker),
-        href: "/settings"
-      })}
-      ${healthCard({
-        label: "Queue",
-        status: failedRuns > 0 ? "bad" : queuedTasks + runningTasks > 0 ? "warn" : "good",
-        value: `${queuedTasks + runningTasks} active`,
-        detail: failedRuns > 0 ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"} need review` : "Queue is ready for new work",
-        href: "/queue"
-      })}
-      ${healthCard({
-        label: "Approval Work",
-        status: approvalWorkCount > 0 ? "warn" : "good",
-        value: approvalValue,
-        detail: approvalDetail,
-        href: pendingApprovalCount ? "/approvals?status=pending" : executableApprovalCount ? "/approvals?status=approved" : "/approvals"
-      })}
-      ${healthCard({
-        label: "Provider",
-        status: providerStatus === "mock" ? "warn" : "good",
-        value: providerStatus,
-        detail: providerStatus === "mock" ? "Mock is useful for smoke tests, not real agent output" : "Configured for live model execution",
-        href: "/providers"
-      })}
-      ${healthCard({
-        label: "MCP",
-        status: health.runtimeMonitor.mcpPipeline.status === "ok" ? "good" : "bad",
-        value: health.runtimeMonitor.mcpPipeline.status,
-        detail: health.runtimeMonitor.mcpPipeline.status === "ok" ? "Codex/IDE launcher is configured for on-demand tools" : "MCP launcher or plugin config needs attention",
-        href: "/server-readiness"
-      })}
-      ${healthCard({
-        label: "Storage",
-        status: servicesReady ? "good" : "bad",
-        value: servicesReady ? "ready" : "attention",
-        detail: servicesReady ? "Postgres, Redis, and object storage are reachable" : "One or more enterprise services are unavailable",
-        href: "/settings"
-      })}
-      ${healthCard({
-        label: "Projects",
-        status: activeProjects > 0 ? "good" : "warn",
-        value: formatNumber(activeProjects),
-        detail: `${formatNumber(health.projects.length)} known project${health.projects.length === 1 ? "" : "s"} in local storage`,
-        href: "/projects"
-      })}
-      ${healthCard({
-        label: "Latest Failed Run",
-        status: health.latestFailedRun ? "bad" : "good",
-        value: health.latestFailedRun ? health.latestFailedRun.id.slice(0, 8) : "none",
-        detail: health.latestFailedRun ? compactDashboardText(`${health.latestFailedRun.workflowId}: ${health.latestFailedRun.task}`, 120) : "No recent failed run in the home window",
-        href: health.latestFailedRun ? `/run?id=${encodeURIComponent(health.latestFailedRun.id)}` : "/runs"
-      })}
-    </div>
-  `;
-}
-
-function renderDashboardOperationsSnapshotHtml(health: DashboardHomeHealth): string {
-  const queuedTasks = health.queue.reduce((sum, item) => sum + item.queuedTasks, 0);
-  const runningTasks = health.queue.reduce((sum, item) => sum + item.runningTasks, 0);
-  const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
-  const expiredLeases = health.queue.filter((item) => hasExpiredLease(item)).length;
-  const activeRuns = health.queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running").length;
-  const workerReady = health.worker.status === "running";
-  const statusClass = failedRuns || expiredLeases ? "bad" : queuedTasks + runningTasks > 0 ? "warn" : workerReady ? "good" : "warn";
-  const statusText = failedRuns
-    ? `${failedRuns} failed run${failedRuns === 1 ? "" : "s"}`
-    : expiredLeases
-      ? `${expiredLeases} expired lease${expiredLeases === 1 ? "" : "s"}`
-      : queuedTasks + runningTasks > 0
-        ? `${queuedTasks + runningTasks} active stage task${queuedTasks + runningTasks === 1 ? "" : "s"}`
-        : workerReady
-          ? "ready"
-          : "worker attention";
-  const nextAction = failedRuns
-    ? `<a class="button secondary" href="/queue" title="Open the queue filtered by recent run state so failed runs can be inspected or dismissed.">Review Failed Runs</a>`
-    : expiredLeases
-      ? queueRecoverExpiredLeasesForm()
-      : queuedTasks > 0 && workerReady
-        ? queueProcessForm("")
-      : queuedTasks > 0
-          ? `<a class="button secondary" href="/settings" title="Open worker setup commands for starting the local Agent Workflow worker.">Start Worker</a>`
-          : `<a class="button secondary" href="/queue" title="Open queue details, recovery actions, and worker controls.">Open Queue</a>`;
-  return `<section class="panel operations-panel">
-    <div class="section-heading">
-      <div>
-        <h2>Operations Snapshot</h2>
-        <span class="muted">Current queue and worker state for local agent execution.</span>
-      </div>
-      <div class="actions">
-        <a class="button secondary" href="/queue" title="Inspect queued, running, failed, and expired workflow stage tasks.">Open Queue</a>
-        <a class="button secondary" href="/settings" title="View local dashboard, worker, MCP, and provider startup commands.">Worker Setup</a>
-      </div>
-    </div>
-    <div class="ops-strip">
-      <div class="ops-state ${statusClass}"><strong>${escapeHtml(statusText)}</strong><span>${escapeHtml(workerStatusDetail(health.worker))}</span><div class="ops-action">${nextAction}</div></div>
-      <a href="/queue" aria-label="${formatNumber(activeRuns)} active workflow runs" title="Open active queued or running workflow runs."><strong>${formatNumber(activeRuns)}</strong><span>active runs</span></a>
-      <a href="/queue" aria-label="${formatNumber(queuedTasks)} queued stage tasks" title="Open stage tasks waiting for a worker."><strong>${formatNumber(queuedTasks)}</strong><span>queued tasks</span></a>
-      <a href="/queue" aria-label="${formatNumber(runningTasks)} running stage tasks" title="Open stage tasks currently leased by a worker."><strong>${formatNumber(runningTasks)}</strong><span>running tasks</span></a>
-      <a href="/queue" aria-label="${formatNumber(failedRuns)} failed workflow runs" title="Open failed runs that may need review, retry, or dismissal."><strong>${formatNumber(failedRuns)}</strong><span>failed runs</span></a>
-      <a href="/queue" aria-label="${formatNumber(expiredLeases)} expired worker leases" title="Open expired leases that can be requeued after worker interruption."><strong>${formatNumber(expiredLeases)}</strong><span>expired leases</span></a>
-    </div>
-  </section>`;
-}
-
 function healthCard(input: { label: string; status: "good" | "warn" | "bad"; value: string; detail: string; href: string }): string {
   return `<a class="health-card ${input.status}" href="${escapeHtml(input.href)}"><strong>${escapeHtml(input.label)}</strong><span>${escapeHtml(input.value)}</span><small>${escapeHtml(input.detail)}</small></a>`;
-}
-
-function renderDashboardActionCenterHtml(health: DashboardHomeHealth): string {
-  const items = dashboardActionItems(health);
-  const topItems = items.slice(0, 5);
-  const primary = topItems[0];
-  const severity = primary?.severity ?? "good";
-  const summary = primary
-    ? primary.title
-    : "Ready for the next workflow";
-  const detail = primary
-    ? primary.detail
-    : "Services, worker, queue, approvals, and MCP pipeline are in a good state.";
-  const rows = topItems.map((item) => `
-    <div class="command-item ${item.severity}">
-      <div>
-        <strong>${escapeHtml(item.title)}</strong>
-        <span>${escapeHtml(item.detail)}</span>
-      </div>
-      <a class="button secondary" href="${escapeHtml(item.href)}">${escapeHtml(item.action)}</a>
-    </div>
-  `).join("");
-  const queueActive = health.queue.reduce((sum, item) => sum + item.queuedTasks + item.runningTasks, 0);
-  const projectCount = health.projects.length;
-  return `<section class="panel command-center ${severity}">
-    <div class="section-heading">
-      <div>
-        <h2>Command Center</h2>
-        <span class="muted">Highest-value action items first.</span>
-      </div>
-      <div class="actions">
-        <a class="button secondary" href="/approvals">Approvals</a>
-        <a class="button secondary" href="/queue">Queue</a>
-        <a class="button secondary" href="/server-readiness">Runtime</a>
-      </div>
-    </div>
-    <div class="command-summary">
-      <div><strong>${escapeHtml(summary)}</strong><span>${escapeHtml(detail)}</span></div>
-      <div class="command-facts">
-        <a href="/queue"><strong>${formatNumber(queueActive)}</strong><span>active tasks</span></a>
-        <a href="/approvals"><strong>${formatNumber(health.pendingApprovals.length + health.approvedExecutableApprovals.length)}</strong><span>approval work</span></a>
-        <a href="/projects"><strong>${formatNumber(projectCount)}</strong><span>projects</span></a>
-      </div>
-    </div>
-    ${rows ? `<div class="command-list">${rows}</div>` : ""}
-  </section>`;
-}
-
-function renderDashboardRoadmapPriorityHtml(report: RoadmapDashboardReport): string {
-  const openTasks = report.tasks
-    .filter((task) => task.status !== "done")
-    .sort(compareRoadmapTasks)
-    .slice(0, 3);
-  const rows = openTasks.map((task) => `
-    <div class="command-item ${task.kind === "bug" || task.priority === "critical" || task.priority === "high" ? "warn" : "good"}">
-      <div>
-        <strong>${escapeHtml(task.title)}</strong>
-        <span>${task.milestoneNumber ? `Milestone ${task.milestoneNumber}: ${escapeHtml(task.milestoneTitle ?? "")}` : "Unlinked"} · ${escapeHtml(task.priority)} priority · ${escapeHtml(task.status)}</span>
-      </div>
-      <a class="button secondary" href="/roadmap?milestone=${encodeURIComponent(String(task.milestoneNumber ?? "all"))}&status=all&priority=${encodeURIComponent(task.priority)}">Open</a>
-    </div>
-  `).join("");
-  return `<section class="panel command-center warn">
-    <div class="section-heading">
-      <div>
-        <h2>Next Best Work</h2>
-        <span class="muted">Top open roadmap items, generated from <code>docs/roadmap.md</code>.</span>
-      </div>
-      <div class="actions">
-        <a class="button secondary" href="/roadmap">Roadmap</a>
-        <a class="button secondary" href="/roadmap?view=gantt&status=open">Gantt</a>
-      </div>
-    </div>
-    <div class="command-summary">
-      <div><strong>${formatNumber(report.summary.openCount + report.summary.nextCount)} open roadmap item${report.summary.openCount + report.summary.nextCount === 1 ? "" : "s"}</strong><span>${formatNumber(report.summary.priorityCounts.critical + report.summary.priorityCounts.high)} critical/high priority item${report.summary.priorityCounts.critical + report.summary.priorityCounts.high === 1 ? "" : "s"} across ${formatNumber(report.summary.milestoneCount)} milestones.</span></div>
-      <div class="command-facts">
-        <a href="/roadmap?priority=high&status=open"><strong>${formatNumber(report.summary.priorityCounts.high)}</strong><span>high</span></a>
-        <a href="/roadmap?priority=critical&status=open"><strong>${formatNumber(report.summary.priorityCounts.critical)}</strong><span>critical</span></a>
-        <a href="/roadmap?status=open"><strong>${formatNumber(report.summary.bugCount)}</strong><span>bugs</span></a>
-      </div>
-    </div>
-    ${rows ? `<div class="command-list">${rows}</div>` : "<p class=\"muted\">No open roadmap items found.</p>"}
-  </section>`;
 }
 
 function dashboardActionItems(health: DashboardHomeHealth): Array<{ severity: "bad" | "warn" | "good"; title: string; detail: string; href: string; action: string }> {
@@ -41513,7 +41541,7 @@ function titleCase(value: string): string {
 }
 
 function isExecutableApprovalAction(actionType: string): boolean {
-  return actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
+  return actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "project_policy_change" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
 }
 
 function approvalDecisionForms(approval: Awaited<ReturnType<typeof listActionApprovals>>[number]): string {

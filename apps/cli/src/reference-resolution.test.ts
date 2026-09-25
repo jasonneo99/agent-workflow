@@ -46,4 +46,5 @@ test("normalizeProviderRef maps aliases and normalizes unknown providers", () =>
   assert.equal(normalizeProviderRef("Codex"), "codex-cli");
   assert.equal(normalizeProviderRef("LM Studio"), "local");
   assert.equal(normalizeProviderRef("Bring Your Own Model"), "byo");
+  assert.equal(normalizeProviderRef("Google Gemini"), "gemini");
 });

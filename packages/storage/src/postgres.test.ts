@@ -278,7 +278,7 @@ test("task leases use a distinct leased state and fenced terminal writes", () =>
   assert.match(source, /acquireWorkflowRunLease[\s\S]+lease_epoch = lease_epoch \+ 1/u);
   assert.match(source, /update workflow_tasks set lease_generation = \$2::bigint/u);
   assert.match(source, /export async function startWorkflowTask[\s\S]+status='leased'[\s\S]+lease_generation=\$4::bigint/u);
-  assert.match(source, /assertActiveTaskFence[\s\S]+wt\.status='running'[\s\S]+wt\.lease_generation=\$3::bigint[\s\S]+wr\.lease_epoch=\$3::bigint/u);
+  assert.match(source, /assertActiveTaskFence[\s\S]+wt\.status='running'[\s\S]+wt\.lease_generation=\$3::bigint[\s\S]+wr\.status in \('leased','running'\)/u);
   assert.match(source, /export async function completeWorkflowTask[\s\S]+await assertActiveTaskFence\(client, input\)/u);
   assert.match(source, /export async function renewWorkflowTaskLease[\s\S]+lease_generation = \$4::bigint[\s\S]+lease_expires_at > now\(\)/u);
 });
@@ -338,7 +338,9 @@ test("concurrent parallel-group claims share one worker fence while other claims
   assert.match(source, /run\.leaseOwner === input\.workerId[\s\S]+set lease_expires_at = now\(\)/u);
   assert.match(source, /lease_epoch = lease_epoch \+ 1/u);
   assert.match(source, /sibling\.id <> \$4::uuid[\s\S]+sibling\.status in \('leased', 'running'\)/u);
-  assert.match(source, /wr\.lease_owner=\$2 and wr\.lease_epoch=\$3::bigint/u);
+  assert.match(source, /assertActiveTaskFence[\s\S]+wt\.lease_generation=\$3::bigint[\s\S]+wr\.status in \('leased','running'\)/u);
+  assert.match(source, /renewWorkflowTaskLease[\s\S]+update workflow_tasks[\s\S]+lease_generation = \$4::bigint[\s\S]+select 1 from workflow_runs[\s\S]+status in \('leased','running'\)/u);
+  assert.doesNotMatch(source, /assertActiveTaskFence[\s\S]{0,500}wr\.lease_epoch=\$3::bigint/u);
 });
 
 function compactSql(sql: string): string {

@@ -862,16 +862,17 @@ export function dashboardCss(): string {
     .ops-run-status i, .ops-status-dot { width: 7px; height: 7px; border-radius: 50%; background: #7690a4; }
     .ops-run-status.completed i, .ops-status-dot.good { background: var(--ops-teal); box-shadow: 0 0 7px rgba(22, 226, 176, .55); }
     .ops-run-status.failed i { background: var(--ops-red); box-shadow: 0 0 7px rgba(255, 98, 108, .5); }
-    .ops-approval-list { display: grid; }
-    .ops-approval-row { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 10px; align-items: center; min-height: 54px; border-bottom: 1px solid #102a3e; color: var(--ops-text); }
+    .ops-approval-list { display: grid; align-content: start; max-height: 268px; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; }
+    .ops-approval-list:focus-visible { outline: 2px solid var(--ops-cyan); outline-offset: 3px; border-radius: 4px; }
+    .ops-approval-row { display: grid; grid-template-columns: 7px minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 40px; padding: 5px 2px; border-bottom: 1px solid #102a3e; color: var(--ops-text); }
     .ops-approval-row:last-child { border-bottom: 0; }
     .ops-approval-row strong, .ops-approval-row small { display: block; }
-    .ops-approval-row strong { font-size: 10px; }
-    .ops-approval-row small { margin-top: 3px; color: var(--ops-muted); font-size: 9px; }
-    .ops-approval-row > span:last-child { color: var(--ops-cyan); font-size: 9px; }
+    .ops-approval-row strong { font-size: 9.5px; line-height: 1.2; }
+    .ops-approval-row small { margin-top: 1px; color: var(--ops-muted); font-size: 8.5px; line-height: 1.25; }
+    .ops-approval-row > span:last-child { color: var(--ops-cyan); font-size: 8.5px; white-space: nowrap; }
     .ops-status-dot.warn { background: var(--ops-amber); box-shadow: 0 0 7px rgba(243, 184, 75, .5); }
-    .ops-approvals-panel { display: flex; flex-direction: column; }
-    .ops-approval-list { flex: 1; }
+    .ops-status-dot.bad { background: var(--ops-red); box-shadow: 0 0 7px rgba(255, 100, 112, .5); }
+    .ops-approvals-panel { display: flex; flex-direction: column; align-self: start; width: 100%; }
     .ops-empty { min-height: 130px; display: grid; place-content: center; gap: 4px; text-align: center; color: var(--ops-muted); font-size: 11px; }
     .ops-empty strong { font-size: 12px; }
     .ops-home .start-work { margin-top: 12px; }

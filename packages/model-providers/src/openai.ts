@@ -164,12 +164,13 @@ export class OpenAIProvider implements ModelProvider {
 
     const parsed = normalizeStageArtifact(extractJsonObject(response.output_text) as StageJsonArtifact);
 
+    const usage = response.usage as typeof response.usage & { input_tokens_details?: { cached_tokens?: number }; output_tokens_details?: { reasoning_tokens?: number } };
     return { ...buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model,
         modelTier: input.modelTier ?? "standard",
         responseId: response.id
-    }), usage: { inputTokens: response.usage?.input_tokens, outputTokens: response.usage?.output_tokens, totalTokens: response.usage?.total_tokens } };
+    }), usage: { inputTokens: usage?.input_tokens, cachedInputTokens: usage?.input_tokens_details?.cached_tokens, reasoningTokens: usage?.output_tokens_details?.reasoning_tokens, outputTokens: usage?.output_tokens, totalTokens: usage?.total_tokens } };
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {

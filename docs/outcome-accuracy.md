@@ -102,7 +102,7 @@ answers from dominating routing recommendations.
 Provider-smoke routing has an independent candidate order controlled by:
 
 ```env
-AGENTFLOW_SMOKE_PROVIDERS=openai,anthropic,codex-cli,local
+AGENTFLOW_SMOKE_PROVIDERS=openai,anthropic,gemini,codex-cli,local
 ```
 
 Every candidate still passes readiness checks. The default prioritizes the

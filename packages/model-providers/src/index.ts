@@ -1,5 +1,6 @@
 import { BedrockProvider } from "./bedrock.js";
 import { CodexCliProvider } from "./codex-cli.js";
+import { GeminiProvider } from "./gemini.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { MuseProvider } from "./muse.js";
@@ -36,6 +37,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "muse") {
     return new MuseProvider();
+  }
+
+  if (provider === "gemini") {
+    return new GeminiProvider();
   }
 
   if (provider === "openai-compatible") {
@@ -90,6 +95,9 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.MUSE_API_KEY) {
     return "muse";
+  }
+  if (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY) {
+    return "gemini";
   }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";

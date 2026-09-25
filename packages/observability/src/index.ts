@@ -341,6 +341,7 @@ function buildModelRouteSpan(input: {
 }): OtelSpan {
   const route = objectValue(input.artifact.content.route);
   const quality = objectValue(input.artifact.content.quality);
+  const usage = objectValue(input.artifact.content.usage);
   const latencyMs = numberValue(input.artifact.content.latencyMs);
   const created = timeNs(input.artifact.createdAt);
   return {
@@ -355,7 +356,8 @@ function buildModelRouteSpan(input: {
       "agentflow.artifact.uri": input.artifact.uri,
       "agentflow.stage.id": stringValue(input.artifact.content.stageId),
       "agentflow.agent.id": stringValue(input.artifact.content.agentId),
-      "agentflow.model.provider": stringValue(route.providerId),
+      "agentflow.model.provider": stringValue(input.artifact.content.actualProviderId) ?? stringValue(route.providerId),
+      "agentflow.model.id": stringValue(input.artifact.content.actualModel),
       "agentflow.model.tier": stringValue(route.modelTier),
       "agentflow.model.requested_tier": stringValue(route.requestedModelTier),
       "agentflow.cost.tier": stringValue(route.estimatedCostTier),
@@ -363,6 +365,13 @@ function buildModelRouteSpan(input: {
       "agentflow.fallback.provider": stringValue(input.artifact.content.fallbackProviderId),
       "agentflow.quality.score": numberValue(quality.score),
       "agentflow.quality.passed": booleanValue(quality.passed),
+      "gen_ai.usage.input_tokens": numberValue(usage.inputTokens),
+      "gen_ai.usage.output_tokens": numberValue(usage.outputTokens),
+      "agentflow.usage.cached_input_tokens": numberValue(usage.cachedInputTokens),
+      "agentflow.usage.reasoning_tokens": numberValue(usage.reasoningTokens),
+      "agentflow.cost.usd": numberValue(usage.costUsd),
+      "agentflow.cost.source": stringValue(usage.costSource),
+      "agentflow.cost.pricing_version": stringValue(usage.pricingVersion),
       "agentflow.latency.ms": latencyMs
     }),
     status: { code: booleanValue(quality.passed) === false ? 2 : 1 }

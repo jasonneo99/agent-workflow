@@ -2299,7 +2299,7 @@ async function assertActiveTaskFence(client: pg.Client, input: { taskId: string;
      join workflow_runs wr on wr.id = wt.run_id
      where wt.id=$1 and wt.status='running' and wt.worker_id=$2
        and wt.lease_generation=$3::bigint and wt.lease_expires_at>now()
-       and wr.lease_owner=$2 and wr.lease_epoch=$3::bigint and wr.lease_expires_at>now()
+       and wr.status in ('leased','running')
      for update of wt, wr`,
     [input.taskId, input.workerId, input.fencingToken]
   );
@@ -2329,7 +2329,7 @@ export async function renewWorkflowTaskLease(input: {
         await client.query("rollback");
         return false;
       }
-      const run = await client.query(
+      await client.query(
         `update workflow_runs
          set lease_expires_at = now() + ($4::int * interval '1 second')
          where id = $1::uuid and lease_owner = $2 and lease_epoch = $3::bigint
@@ -2337,7 +2337,13 @@ export async function renewWorkflowTaskLease(input: {
          returning id`,
         [input.runId, input.workerId, input.fencingToken, leaseSeconds]
       );
-      if (run.rowCount !== 1) {
+      const activeRun = await client.query(
+        `select 1 from workflow_runs
+         where id = $1::uuid and status in ('leased','running')
+         for update`,
+        [input.runId]
+      );
+      if (activeRun.rowCount !== 1) {
         await client.query("rollback");
         return false;
       }
@@ -2441,8 +2447,6 @@ export async function completeWorkflowTask(input: {
           actor: input.workerId,
           reason: "All workflow tasks completed.",
           idempotencyKey: `run-completed:${input.taskId}:${input.fencingToken}`,
-          expectedLeaseEpoch: input.fencingToken,
-          expectedLeaseOwner: input.workerId,
           metadata: { taskId: input.taskId }
         });
       } else {
@@ -2516,8 +2520,6 @@ export async function blockWorkflowTask(input: {
         actor: input.workerId,
         reason: input.reason,
         idempotencyKey: `run-blocked:${input.taskId}:${input.fencingToken}`,
-        expectedLeaseEpoch: input.fencingToken,
-        expectedLeaseOwner: input.workerId,
         metadata: { taskId: input.taskId }
       });
       await client.query("commit");
@@ -2593,8 +2595,6 @@ export async function failWorkflowTask(input: {
         actor: input.workerId,
         reason: input.error,
         idempotencyKey: `run-failed:${input.taskId}:${input.fencingToken}`,
-        expectedLeaseEpoch: input.fencingToken,
-        expectedLeaseOwner: input.workerId,
         metadata: { taskId: input.taskId }
       });
 

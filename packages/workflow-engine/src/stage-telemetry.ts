@@ -12,6 +12,12 @@ import {
 export interface StageRouteTelemetry {
   providerId: string;
   modelId?: string;
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
+  costUsd?: number;
+  costSource?: string;
 }
 
 /** Keep optional executor tracing behind a compact, best-effort lifecycle adapter. */
@@ -29,7 +35,13 @@ export function createStageTelemetry(
     setRoute(route: StageRouteTelemetry): void {
       setStageSpanAttributes(span, {
         "agentflow.provider.id": route.providerId,
-        ...(route.modelId ? { "agentflow.model.id": route.modelId } : {})
+        ...(route.modelId ? { "agentflow.model.id": route.modelId } : {}),
+        ...(route.inputTokens === undefined ? {} : { "gen_ai.usage.input_tokens": route.inputTokens }),
+        ...(route.outputTokens === undefined ? {} : { "gen_ai.usage.output_tokens": route.outputTokens }),
+        ...(route.cachedInputTokens === undefined ? {} : { "agentflow.usage.cached_input_tokens": route.cachedInputTokens }),
+        ...(route.reasoningTokens === undefined ? {} : { "agentflow.usage.reasoning_tokens": route.reasoningTokens }),
+        ...(route.costUsd === undefined ? {} : { "agentflow.cost.usd": route.costUsd }),
+        ...(route.costSource ? { "agentflow.cost.source": route.costSource } : {})
       });
     },
     event(name: string, attributes?: Attributes): void {

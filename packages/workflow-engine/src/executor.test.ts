@@ -70,7 +70,7 @@ test("workers recover expired leases before claiming new work", () => {
 });
 
 test("stopping workers do not claim the remainder of an active batch", () => {
-  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const source = ["./executor.ts", "./worker-watch.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(source, /for \(let i = 0; i < safeLimit; i \+= 1\) \{\s+if \(options\?\.shouldStop\?\.\(\)\) break;\s+const task = await claimNextWorkflowTask/u);
   assert.match(source, /shouldStop: input\.shouldStop/u);
 });
@@ -83,7 +83,7 @@ test("workers serialize only writes to the same project-relative file resource",
 });
 
 test("worker provider capabilities flow into durable queue claims", () => {
-  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const source = ["./executor.ts", "./worker-watch.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(source, /providerIds\?: string\[\]/u);
   assert.match(source, /defaultProviderId\?: string/u);
   assert.match(source, /workerPlatform\?: NodeJS\.Platform/u);
@@ -95,7 +95,7 @@ test("worker provider capabilities flow into durable queue claims", () => {
 });
 
 test("workers release tasks for unavailable host checkouts and stop reclaiming them", () => {
-  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const source = ["./executor.ts", "./worker-watch.ts"].map((file) => readFileSync(new URL(file, import.meta.url), "utf8")).join("\n");
   assert.match(source, /projectResolution\.localPathExists[\s\S]+unavailableProjectRootUris\?\.add[\s\S]+requeueRunningWorkflowTasks[\s\S]+worker_project_unavailable/u);
   assert.match(source, /const unavailableProjectRootUris = new Set<string>\(\)[\s\S]+unavailableProjectRootUris/u);
 });
@@ -525,4 +525,13 @@ test("environmental verify failures block before the retry budget is touched", (
   const attributionIndex = source.indexOf('verifyAttribution.kind === "environmental"');
   const decrementIndex = source.indexOf("verifyRetriesRemaining -= 1");
   assert.ok(attributionIndex >= 0 && decrementIndex > attributionIndex);
+});
+
+test("out-of-policy commands and writes become exact actionable policy approvals", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /actionType: "project_policy_change"/u);
+  assert.match(source, /changeKind: "allowed_command", proposedRule: normalizeActionText\(commandLine\)/u);
+  assert.match(source, /changeKind: "allowed_write_path", proposedRule: fileWrite\.path/u);
+  assert.match(source, /type: "project_policy_change_approval_pending"/u);
+  assert.match(source, /status: "approval_pending"/u);
 });

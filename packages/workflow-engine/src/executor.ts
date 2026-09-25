@@ -46,6 +46,7 @@ import type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
 export type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
 import { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 export { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
+import { runWorkerWatchLoop, type WorkerWatchInput } from "./worker-watch.js";
 
 export function applyCurrentAutoApprovalThreshold(
   snapshot: ReturnType<typeof projectConfigSchema.parse>,
@@ -490,6 +491,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         actualModel = reread.actualModel;
       }
 
+      const routeReceipt = buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality });
       await recordRunAction({
         runId: task.runId,
         agentId: task.agentId,
@@ -497,11 +499,18 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         target: `${task.workflowId}/${task.stageId}`,
         summary: `${route.providerId}${actualProviderId !== route.providerId ? ` -> ${actualProviderId}` : ""} quality=${quality.score}`,
         artifactKind: "model_route",
-        artifactContent: buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality })
+        artifactContent: routeReceipt
       });
+      const routeUsage = routeReceipt.usage && typeof routeReceipt.usage === "object" && !Array.isArray(routeReceipt.usage) ? routeReceipt.usage as Record<string, unknown> : {};
       stageTelemetry.setRoute({
         providerId: actualProviderId ?? route.providerId,
-        modelId: actualModel
+        modelId: actualModel,
+        inputTokens: finiteTelemetryNumber(routeUsage.inputTokens),
+        outputTokens: finiteTelemetryNumber(routeUsage.outputTokens),
+        cachedInputTokens: finiteTelemetryNumber(routeUsage.cachedInputTokens),
+        reasoningTokens: finiteTelemetryNumber(routeUsage.reasoningTokens),
+        costUsd: finiteTelemetryNumber(routeUsage.costUsd),
+        costSource: typeof routeUsage.costSource === "string" ? routeUsage.costSource : undefined
       });
 
       if (output.outcome === "blocked") {
@@ -612,31 +621,45 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
 
           let commandApprovalRule: ActionApprovalRuleMatch | null = null;
-          if (project.policies.require_approval_for_external_actions) {
-            try {
+          try {
               assertCommandAllowed(commandLine, project);
             } catch (error) {
+              const policyError = error instanceof Error ? error.message : String(error);
               const rejectionArtifactUri = await recordRunAction({
                 runId: task.runId,
                 taskId: task.taskId,
                 agentId: task.agentId,
                 actionType: "local_command_rejected",
                 target: commandLine,
-                summary: error instanceof Error ? error.message : String(error),
+                summary: policyError,
                 artifactKind: "action_rejection",
                 artifactContent: {
                   actionType: "local_command",
                   target: commandLine,
-                  error: error instanceof Error ? error.message : String(error),
+                  error: policyError,
                   requestedByTaskId: task.taskId,
                   requestedByStageId: task.stageId
                 }
               });
+              const approval = await requestActionApproval({
+                runId: task.runId,
+                taskId: task.taskId,
+                stageId: task.stageId,
+                agentId: task.agentId,
+                actionType: "project_policy_change",
+                target: `actions.allowed_commands:${normalizeActionText(commandLine)}`,
+                rationale: `The requested command is outside the project allowlist. Approve this exact policy addition to continue ${task.stageId}.`,
+                policyDecision: { approvalRequired: true, allowedByPolicy: false, policyProfile: project.execution.policy_profile },
+                payload: { changeKind: "allowed_command", proposedRule: normalizeActionText(commandLine), requestedActionType: "local_command", requestedTarget: normalizeActionText(commandLine), policyError, rejectionArtifactUri },
+                idempotencyKey: `policy-change-${commandIdempotencyKey}`
+              });
               actionResults.push({
-                type: "local_command_rejected",
+                type: "project_policy_change_approval_pending",
                 commandLine,
+                approvalId: approval.approvalId,
                 artifactUri: rejectionArtifactUri,
-                error: error instanceof Error ? error.message : String(error)
+                approvalArtifactUri: approval.artifactUri,
+                error: policyError
               });
               await recordBoundedReactLoopReceipt({
                 task,
@@ -647,19 +670,21 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 target: commandLine,
                 payloadHash: hashText(normalizeActionText(commandLine)),
                 policyDecision: {
-                  status: "rejected",
-                  approvalRequired: false,
+                  status: "approval_required",
+                  approvalRequired: true,
                   allowedByPolicy: false,
                   policyProfile: project.execution.policy_profile
                 },
                 resultReceipt: {
-                  status: "rejected",
+                  status: "approval_pending",
+                  approvalId: approval.approvalId,
                   artifactUri: rejectionArtifactUri,
-                  error: error instanceof Error ? error.message : String(error)
+                  error: policyError
                 }
               });
               continue;
-            }
+          }
+          if (project.policies.require_approval_for_external_actions) {
             commandApprovalRule = evaluateActionApprovalRule({
               project,
               actionType: "local_command",
@@ -1047,32 +1072,47 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
 
           let fileWriteApprovalRule: ActionApprovalRuleMatch | null = null;
-          if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
+          if (!isInternalWorkflowReceiptWrite(fileWrite.path)) {
             try {
               if (isPatch) assertFilePatchAllowed(fileWrite.path, filePayload, expectedHash!, project);
               else assertFileWriteAllowed(fileWrite.path, filePayload, project);
             } catch (error) {
+              const policyError = error instanceof Error ? error.message : String(error);
               const rejectionArtifactUri = await recordRunAction({
                 runId: task.runId,
                 taskId: task.taskId,
                 agentId: task.agentId,
                 actionType: "file_write_rejected",
                 target: fileWrite.path,
-                summary: error instanceof Error ? error.message : String(error),
+                summary: policyError,
                 artifactKind: "action_rejection",
                 artifactContent: {
                   actionType: "file_write",
                   target: fileWrite.path,
-                  error: error instanceof Error ? error.message : String(error),
+                  error: policyError,
                   requestedByTaskId: task.taskId,
                   requestedByStageId: task.stageId
                 }
               });
+              const approval = await requestActionApproval({
+                runId: task.runId,
+                taskId: task.taskId,
+                stageId: task.stageId,
+                agentId: task.agentId,
+                actionType: "project_policy_change",
+                target: `actions.allowed_write_paths:${fileWrite.path}`,
+                rationale: `The requested file is outside the project write allowlist. Approve this exact policy addition to continue ${task.stageId}.`,
+                policyDecision: { approvalRequired: true, allowedByPolicy: false, policyProfile: project.execution.policy_profile },
+                payload: { changeKind: "allowed_write_path", proposedRule: fileWrite.path, requestedActionType: "file_write", requestedTarget: fileWrite.path, policyError, rejectionArtifactUri },
+                idempotencyKey: `policy-change-${fileWriteIdempotencyKey}`
+              });
               actionResults.push({
-                type: "file_write_rejected",
+                type: "project_policy_change_approval_pending",
                 path: fileWrite.path,
+                approvalId: approval.approvalId,
                 artifactUri: rejectionArtifactUri,
-                error: error instanceof Error ? error.message : String(error)
+                approvalArtifactUri: approval.artifactUri,
+                error: policyError
               });
               await recordBoundedReactLoopReceipt({
                 task,
@@ -1083,19 +1123,22 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 target: fileWrite.path,
                 payloadHash: hashText(filePayload),
                 policyDecision: {
-                  status: "rejected",
-                  approvalRequired: false,
+                  status: "approval_required",
+                  approvalRequired: true,
                   allowedByPolicy: false,
                   policyProfile: project.execution.policy_profile
                 },
                 resultReceipt: {
-                  status: "rejected",
+                  status: "approval_pending",
+                  approvalId: approval.approvalId,
                   artifactUri: rejectionArtifactUri,
-                  error: error instanceof Error ? error.message : String(error)
+                  error: policyError
                 }
               });
               continue;
             }
+          }
+          if (project.policies.require_approval_for_external_actions && !isInternalWorkflowReceiptWrite(fileWrite.path)) {
             fileWriteApprovalRule = evaluateActionApprovalRule({
               project,
               actionType: "file_write",
@@ -1644,63 +1687,10 @@ function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-export async function runWorkerWatch(input: {
-  limitPerTick: number;
-  intervalMs: number;
-  workerId?: string;
-  leaseSeconds?: number;
-  projectRootUri?: string;
-  concurrency?: number;
-  perProjectConcurrency?: number;
-  providerIds?: string[];
-  defaultProviderId?: string;
-  workerPlatform?: NodeJS.Platform;
-  providerRecoveryCooldownMs?: number;
-  recoverProvider?: (providerId: string) => Promise<boolean>;
-  shouldStop: () => boolean;
-  onTick: (result: WorkerResult) => void | Promise<void>;
-}): Promise<void> {
-  const unavailableProjectRootUris = new Set<string>();
-  const providerIds = input.providerIds ? new Set(input.providerIds) : undefined;
-  const quarantinedProviders = new Map<string, number>();
-  while (!input.shouldStop()) {
-    if (providerIds && input.recoverProvider) {
-      const cooldownMs = Math.max(1_000, input.providerRecoveryCooldownMs ?? 60_000);
-      for (const [providerId, quarantinedAt] of quarantinedProviders) {
-        if (Date.now() - quarantinedAt < cooldownMs) continue;
-        if (await input.recoverProvider(providerId)) {
-          quarantinedProviders.delete(providerId);
-          providerIds.add(providerId);
-        } else {
-          quarantinedProviders.set(providerId, Date.now());
-        }
-      }
-    }
-    const result = await runWorkerOnce(input.limitPerTick, {
-      workerId: input.workerId,
-      leaseSeconds: input.leaseSeconds,
-      projectRootUri: input.projectRootUri,
-      concurrency: input.concurrency,
-      perProjectConcurrency: input.perProjectConcurrency,
-      providerIds: providerIds ? [...providerIds] : undefined,
-      defaultProviderId: input.defaultProviderId,
-      workerPlatform: input.workerPlatform,
-      unavailableProjectRootUris,
-      shouldStop: input.shouldStop
-    });
-    if (providerIds) {
-      for (const failure of result.providerFailures) {
-        providerIds.delete(failure.providerId);
-        quarantinedProviders.set(failure.providerId, Date.now());
-      }
-      result.providerIds = [...providerIds];
-      result.quarantinedProviderIds = [...quarantinedProviders.keys()];
-    }
-    await input.onTick(result);
-    await sleep(input.intervalMs);
-  }
+function finiteTelemetryNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+export function runWorkerWatch(input: WorkerWatchInput): Promise<void> {
+  return runWorkerWatchLoop(input, runWorkerOnce);
 }

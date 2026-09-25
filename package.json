@@ -10,6 +10,7 @@
     "workflows",
     "llm",
     "bedrock",
+    "gemini",
     "openai",
     "automation"
   ],

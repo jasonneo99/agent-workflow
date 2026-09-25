@@ -144,8 +144,8 @@ export function recommendAdaptiveExecution(goal: string, archetype = selectWorkf
 
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
-  const mutationIntent = /^\s*(?:implement|add|create|change|update|build|fix|remove|delete|write)\b/iu.test(goal);
-  return workflowArchetypes
+  const mutationIntent = /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(?:make|implement|add|create|change|update|build|fix|remove|delete|write)\b/iu.test(goal);
+  const selected = workflowArchetypes
     .map((candidate, index) => ({
       candidate,
       index,
@@ -154,10 +154,16 @@ export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
       // Preserve explicit review routing while preventing that incidental noun
       // from stripping the generated workflow of its executor stage.
       score: mutationIntent && candidate.id === "code-review"
-        ? 0
+        ? Number.NEGATIVE_INFINITY
         : candidate.keywords.reduce((score, keyword) => score + (normalized.includes(keyword) ? keyword.split(/\s+/).length : 0), 0)
     }))
     .sort((left, right) => right.score - left.score || left.index - right.index)[0].candidate;
+  // Mutation language is an execution contract. Even if a goal contains many
+  // review/audit terms, it must retain an executor rather than degrade into a
+  // read-only workflow.
+  return mutationIntent && !selected.stages.some((stageId) => stageTemplates[stageId]?.pattern === "executor")
+    ? workflowArchetypes.find((candidate) => candidate.id === "feature-delivery")!
+    : selected;
 }
 
 export function constructDynamicWorkflow(input: ConstructDynamicWorkflowInput): WorkflowDefinition {

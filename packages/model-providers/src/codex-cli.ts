@@ -17,7 +17,7 @@ import {
 } from "./prompts.js";
 
 type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string };
-type CodexCliRunResult = { output: string; model: string };
+type CodexCliRunResult = { output: string; model: string; usage?: StageExecutionOutput["usage"] };
 export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
 export interface CodexCliDiagnostic {
   source: "codex-cli";
@@ -109,12 +109,15 @@ export class CodexCliProvider implements ModelProvider {
       workingDirectory: input.projectRootUri
     });
     const parsed = normalizeStageArtifact(extractJsonObject(result.output) as StageJsonArtifact);
-    return buildStageExecutionOutput(input, parsed, {
+    return {
+      ...buildStageExecutionOutput(input, parsed, {
       provider: this.id,
       model: result.model,
       modelTier: input.modelTier ?? "standard",
       authMode: configuredAuthMode()
-    });
+      }),
+      ...(result.usage ? { usage: result.usage } : {})
+    };
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
@@ -179,19 +182,54 @@ export function createCodexCliRunner(): CodexCliRunner {
           await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
           const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
           const args = [
-            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules",
+            "exec", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--json",
             "--skip-git-repo-check", "--sandbox", "read-only", "--cd", executionDirectory,
             "--output-schema", schemaPath, "--output-last-message", outputPath,
             "--color", "never", ...(model ? ["--model", model] : []), "-"
           ];
-          await runProcess(binary, args, prompt, executionDirectory);
-          return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default" };
+          const processResult = await runProcess(binary, args, prompt, executionDirectory);
+          return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
         } finally {
           await fs.rm(temporaryDir, { recursive: true, force: true });
         }
       });
     }
   };
+}
+
+export function parseCodexCliUsage(jsonl: string): StageExecutionOutput["usage"] {
+  let measured: StageExecutionOutput["usage"];
+  for (const line of jsonl.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as Record<string, unknown>;
+      const usage = findUsageRecord(event);
+      if (!usage) continue;
+      const inputTokens = finiteUsageNumber(usage.input_tokens ?? usage.inputTokens);
+      const cachedInputTokens = finiteUsageNumber(usage.cached_input_tokens ?? usage.cachedInputTokens);
+      const reasoningTokens = finiteUsageNumber(usage.reasoning_tokens ?? usage.reasoningTokens);
+      const outputTokens = finiteUsageNumber(usage.output_tokens ?? usage.outputTokens);
+      const totalTokens = finiteUsageNumber(usage.total_tokens ?? usage.totalTokens) ?? ((inputTokens ?? 0) + (outputTokens ?? 0));
+      if (inputTokens !== undefined || outputTokens !== undefined) measured = { inputTokens, cachedInputTokens, reasoningTokens, outputTokens, totalTokens };
+    } catch { /* Ignore non-event output while retaining the structured last-message file. */ }
+  }
+  return measured;
+}
+
+function findUsageRecord(value: unknown, depth = 0): Record<string, unknown> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value) || depth > 4) return undefined;
+  const record = value as Record<string, unknown>;
+  const direct = record.usage;
+  if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct as Record<string, unknown>;
+  for (const nested of Object.values(record)) {
+    const found = findUsageRecord(nested, depth + 1);
+    if (found) return found;
+  }
+  return undefined;
+}
+
+function finiteUsageNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.trunc(value) : undefined;
 }
 
 function resolveCodexCliBinary(): string {
@@ -263,9 +301,14 @@ export function configuredCodexCliTimeoutMs(): number {
   return Math.max(5_000, Math.min(3_600_000, Number(process.env.CODEX_CLI_TIMEOUT_MS) || 900_000));
 }
 
+export function configuredCodexCliOutputMaxBytes(): number {
+  const parsed = Number.parseInt(process.env.CODEX_CLI_OUTPUT_MAX_BYTES ?? "", 10);
+  return Number.isFinite(parsed) ? Math.max(1_000_000, Math.min(parsed, 32_000_000)) : 8_000_000;
+}
+
 async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string): Promise<{ stdout: string; stderr: string }> {
   const timeoutMs = configuredCodexCliTimeoutMs();
-  const maxBytes = 1_000_000;
+  const maxBytes = configuredCodexCliOutputMaxBytes();
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_ADMIN_KEY;

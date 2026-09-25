@@ -18,3 +18,12 @@ test("learning daemon recovers approval executions interrupted by its prior proc
   assert.match(source, /Recovered \$\{recoveredApprovalExecutions\.length\} interrupted approval execution/u);
   assert.match(source, /Autopilot approved and requested immediate execution/u);
 });
+
+test("exact project policy approvals execute with rollback evidence and resume blocked work", () => {
+  const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+  assert.match(source, /approval\.actionType === "project_policy_change"/u);
+  assert.match(source, /rollbackPath: path\.relative\(projectRoot, backupPath\)/u);
+  assert.match(source, /beforeHash: createHash\("sha256"\)/u);
+  assert.match(source, /afterHash: createHash\("sha256"\)/u);
+  assert.match(source, /approveAndExecuteAction[\s\S]+resumeBlockedRunAfterResolvedApprovals\(approval\.runId\)/u);
+});

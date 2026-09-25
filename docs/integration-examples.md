@@ -89,7 +89,7 @@ Use this when you want cheap local/default execution for most stages and stronge
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,anthropic,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,gemini,openai,anthropic,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding
@@ -141,6 +141,25 @@ chooses a model per tier. Use exact `OPENAI_MODEL_FAST`,
 `OPENAI_MODEL_STANDARD`, or `OPENAI_MODEL_REASONING` values only when you need
 reproducible pinned runs.
 
+### Google Gemini
+
+Use this for portable text stages through Google's official OpenAI-compatible
+Gemini endpoint.
+
+```env
+DEFAULT_MODEL_PROVIDER=gemini
+GEMINI_API_KEY=<gemini-authorization-key>
+GEMINI_MODEL=gemini-3.8-flash
+GEMINI_MODEL_FAST=
+GEMINI_MODEL_STANDARD=
+GEMINI_MODEL_REASONING=
+```
+
+```bash
+npm run agentflow -- provider-use gemini --check
+npm run agentflow -- contract-test --provider gemini --live-provider
+```
+
 ### AWS Bedrock
 
 Use this when you want direct Bedrock execution through the AWS SDK credential chain.
@@ -157,7 +176,8 @@ BEDROCK_MODEL_REASONING=
 
 ```bash
 aws sso login --profile <optional-profile>
-npm run provider-check
+npm run agentflow -- provider-use bedrock --check
+npm run agentflow -- contract-test --provider bedrock --live-provider
 ```
 
 ### Kiro CLI Adapter
@@ -281,6 +301,13 @@ Use the same local stdio command if your client supports MCP server configuratio
   "cwd": "/absolute/path/to/agent-workflow"
 }
 ```
+
+For a machine-readable workflow estimate, call `agentflow_status` with a
+`runId` and `json: true`. The result includes an evidence-based `eta` object
+with remaining milliseconds, projected completion time, confidence, evidence
+source, and explanation. Voice or assistant clients should say
+when an ETA is low-confidence, learning, or paused instead of presenting it as
+a guaranteed deadline.
 
 ## Common Combinations
 

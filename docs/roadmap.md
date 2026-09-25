@@ -223,6 +223,9 @@ silently train agents or expand daemon authority.
      so the live completed-mutation sample reports 896/896 durable receipts.
      Sustained samples, timed recovery and rollback drills, duplicate-effect and
      false-critical evidence, and a reviewed promotion canary remain required.
+     The Learning Loop now has a machine-evaluated production-readiness gate
+     that fails closed until those samples and drills exist and blocks when the
+     false-critical breaker rate exceeds 2%.
 2. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
@@ -255,8 +258,10 @@ silently train agents or expand daemon authority.
      tuning history, action/ReAct receipts, and guarded-autonomy storage schema
      now have owned modules. The ratchet still reports five historical growth
      regressions. Stage-outcome classifiers now have a dedicated workflow-engine
-     module with focused compatibility coverage; the remaining reduction target
-     is 4,808 lines across three files, so this item remains open rather than
+     module with focused compatibility coverage. Learning-loop commands,
+     provider execution, scheduling, and dashboard rendering were added in
+     owned modules without raising the CLI ceiling; the remaining reduction
+     target is 4,807 lines across three files, so this item remains open rather than
      resetting the baseline.
 ## Phase 1: Shared Platform Hardening
 
@@ -491,6 +496,85 @@ Goal: improve quality and cost while keeping personalization auditable and porta
   - Principle: maximize safe autonomy for observation, reports, scoring, proposal generation, and Agent Workflow-created learning state; require approval for dangerous, behavior-changing, networked, reusable-bundle, command, provider, production, or private-data actions.
   - Done: document the local-first architecture in [Local Learning Daemon](local-learning-daemon.md), then add the read-only `learning-report` CLI, `/learning` dashboard page, and `/api/learning-report` JSON endpoint.
   - Done: use local learning proposal outcomes to drive daemon observe/propose/apply-approved design.
+
+### Strategic Program: Continuous Learning Loop
+
+Goal: let agents and daemon lanes ask one another bounded questions, assess
+answers against evidence, and improve through the existing evaluation and
+promotion pipeline without allowing popularity, reciprocal scoring, or model
+confidence to grant authority.
+
+1. **Define peer-learning contracts.**
+   - Priority: critical
+   - Specify versioned question, response, rubric, assessment, calibration,
+     disagreement, experiment, and outcome records with project, agent/model,
+     evidence, expiry, and permitted-use provenance.
+   - Progress: foundational schemas and validation are implemented in
+     `packages/learning-loop`; self-questioning and self-rating fail closed.
+2. **Add read-only agent-to-agent exchanges with receipts.**
+   - Priority: critical
+   - Let agents and daemon lanes request bounded specialist answers using only
+     explicitly allowed evidence. Persist immutable exchange hashes and
+     participant/evidence lineage without granting command or write authority.
+   - Progress: deterministic evidence-bound exchange receipts are implemented;
+     atomic project-local persistence, read-only reviewer orchestration, and a
+     provider-backed execution adapter are implemented. Questions can be queued
+     explicitly and executed immediately or by the opt-in daemon scheduler.
+3. **Aggregate independent reviews while preserving disagreement.**
+   - Priority: high
+   - Require at least two distinct reviewers for behavior-changing evidence;
+     retain dispersion and dissent instead of hiding it in an average.
+   - Progress: calibrated weighted aggregation and explicit disagreement are
+     implemented as a reusable pure contract and persisted with exchange state.
+4. **Calibrate reviewers against verified outcomes.**
+   - Priority: high
+   - Weight peer assessments using deterministic checks, holdouts, human
+     feedback, sample coverage, and predictive agreement. Distinguish poor
+     performance from insufficient evidence.
+   - Progress: minimum calibration samples and verified/human agreement weights
+     and durable project-local calibration history are implemented.
+5. **Feed qualified conclusions into existing proposals.**
+   - Priority: high
+   - Convert only independently verified, human-confirmed conclusions into
+     prompt, workflow, context, or routing proposals. Peer ratings remain
+     advisory and never directly modify behavior.
+   - Progress: the proposal boundary is implemented and routes eligible evidence
+     into a content-hashed shadow experiment without direct write authority.
+6. **Reuse shadow evaluation, canary promotion, and rollback.**
+   - Priority: high
+   - Compare proposed changes against frozen baselines and representative
+     holdouts, then use existing approval, staged canary, quarantine, and
+     rollback controls.
+   - Progress: peer-derived candidates now start as frozen-baseline shadow
+     experiments. They reuse the existing evidence thresholds, require human
+     approval before canary exposure, advance through staged canaries, and
+     rollback or quarantine on regression.
+7. **Add Learning Loop dashboard and daemon scheduling.**
+   - Priority: medium
+   - Show questions, participants, evidence, reviewer calibration, disagreement,
+     proposals, experiments, promotion state, and why-change lineage. Let the
+     learning daemon schedule bounded exchanges under frequency and cost budgets.
+   - Progress: a body-free dashboard report, dedicated `/learning` view, and
+     no-store JSON API expose questions, calibrated results, disagreement, and
+     experiment state without private response bodies. Read-only scheduling
+     enforces daily exchange, queue-depth, cost, and quiet-hour budgets and is
+     integrated into daemon ticks behind `AGENTFLOW_LEARNING_LOOP_AUTO_RUN`.
+8. **Add adversarial and reliability coverage.**
+   - Priority: critical
+   - Test self-rating, reciprocal score inflation, reviewer concentration,
+     circular grading, prompt injection, poisoned/stale evidence, duplicate
+     exchanges, provider failure, interrupted reviews, and rollback.
+   - Progress: the committed fault matrix covers self-rating, reciprocal score
+     inflation, reviewer concentration, circular grading, instruction-like and
+     stale evidence, duplicate exchanges, provider failure, interrupted review,
+     and canary rollback. A production-evidence gate separately requires 100
+     representative runs, measured recovery and reviewer burden, passing drills,
+     zero unsafe or invalid writes, and at most 2% false-critical breaker trips.
+
+Exit gate: a learning conclusion can be traced from source evidence through
+independent assessments and deterministic verification to a reviewed proposal,
+shadow comparison, canary result, and reversible promotion. No peer score may
+raise authority or bypass project policy.
 
 - [x] Local learning proposal inbox.
   - Generate learning proposals from run, feedback, failure, routing, tuning, and eval evidence.

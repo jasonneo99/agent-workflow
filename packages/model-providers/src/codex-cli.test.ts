@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliTimeoutMs, type CodexCliRunner } from "./codex-cli.js";
+import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliTimeoutMs, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -92,6 +92,28 @@ test("Codex CLI model selection honors override, tier, base, then CLI default", 
     else process.env.CODEX_CLI_MODEL = previousBase;
     if (previousFast === undefined) delete process.env.CODEX_CLI_MODEL_FAST;
     else process.env.CODEX_CLI_MODEL_FAST = previousFast;
+  }
+});
+
+test("Codex CLI JSONL usage is normalized for route accounting", () => {
+  assert.deepEqual(parseCodexCliUsage([
+    JSON.stringify({ type: "thread.started", thread_id: "synthetic" }),
+    JSON.stringify({ type: "turn.completed", usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 30 } })
+  ].join("\n")), { inputTokens: 120, cachedInputTokens: 20, reasoningTokens: undefined, outputTokens: 30, totalTokens: 150 });
+});
+
+test("Codex CLI JSONL output has a configurable bounded allowance", () => {
+  const previous = process.env.CODEX_CLI_OUTPUT_MAX_BYTES;
+  try {
+    delete process.env.CODEX_CLI_OUTPUT_MAX_BYTES;
+    assert.equal(configuredCodexCliOutputMaxBytes(), 8_000_000);
+    process.env.CODEX_CLI_OUTPUT_MAX_BYTES = "500000";
+    assert.equal(configuredCodexCliOutputMaxBytes(), 1_000_000);
+    process.env.CODEX_CLI_OUTPUT_MAX_BYTES = "99999999";
+    assert.equal(configuredCodexCliOutputMaxBytes(), 32_000_000);
+  } finally {
+    if (previous === undefined) delete process.env.CODEX_CLI_OUTPUT_MAX_BYTES;
+    else process.env.CODEX_CLI_OUTPUT_MAX_BYTES = previous;
   }
 });
 

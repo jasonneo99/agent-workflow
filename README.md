@@ -6,7 +6,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 
 - **25 specialist agents** — architecture, frontend, backend, security, UX, testing, model improvement, docs, and more
 - **20 composable workflows** — build features, review PRs, debug failures, improve model routing, make architecture decisions, investigate performance, and check release readiness
-- **BYO model first** — use any OpenAI-compatible model gateway, plus Codex CLI, OpenAI, Anthropic, Muse, Bedrock, Kiro, and local adapters
+- **BYO model first** — use any OpenAI-compatible model gateway, plus Codex CLI, OpenAI, Anthropic, Gemini, Muse, Bedrock, Kiro, and local adapters
 - **Any MCP client** — run the same workflows from terminal, VS Code, Cursor, Codex, or automation
 - **Adaptive routing** — select ready providers and models from fresh per-agent/task evidence while preserving exact overrides and policy boundaries
 - **Cost-optimized routing** — fast models for simple tasks, reasoning models for complex ones
@@ -81,6 +81,7 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 | `openai` | Models available to the configured OpenAI project | `OPENAI_API_KEY` |
 | `codex-cli` | Codex CLI using ChatGPT subscription authentication | `codex login` |
 | `anthropic` | Claude through the Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `gemini` | Gemini through Google's official OpenAI-compatible API | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
 | `openai-compatible` | Legacy BYO-compatible alias | `OPENAI_COMPATIBLE_BASE_URL` + model name |
 | `kiro` | Optional Kiro CLI adapter | `kiro-cli login` or `KIRO_API_KEY` |
@@ -124,8 +125,14 @@ ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=auto
 npm run agentflow -- provider-use anthropic --check
 
+# Google Gemini
+GEMINI_API_KEY=...
+GEMINI_MODEL=gemini-3.8-flash
+npm run agentflow -- provider-use gemini --check
+
 # AWS Bedrock
-aws sso login # when your AWS profile uses SSO
+aws sso login --profile agentflow-bedrock
+AWS_PROFILE=agentflow-bedrock
 AWS_REGION=us-east-1
 BEDROCK_MODEL=auto
 npm run agentflow -- provider-use bedrock --check

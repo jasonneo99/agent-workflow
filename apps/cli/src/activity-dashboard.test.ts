@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+const stylesSource = readFileSync(new URL("./dashboard/styles.ts", import.meta.url), "utf8");
 
 test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /requestUrl\.pathname === "\/activity"/u);
@@ -10,6 +11,12 @@ test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /One chronological, redacted view/u);
   assert.match(source, /Prompt bodies, model response bodies, credentials, private file contents/u);
   assert.match(source, /\["activity", "\/activity", "Activity", "list"\]/u);
+});
+
+test("home human intervention renders as a compact keyboard-scrollable list", () => {
+  assert.match(source, /class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0"/u);
+  assert.match(stylesSource, /\.ops-approval-list \{ display: grid; align-content: start; max-height: 268px; overflow-y: auto/u);
+  assert.match(stylesSource, /\.ops-approval-row \{[^}]+min-height: 40px; padding: 5px 2px/u);
 });
 
 test("activity aggregation includes durable and project-local event sources", () => {
@@ -33,6 +40,17 @@ test("run detail exposes an in-place live progress log", () => {
   assert.match(source, /fetch\('\/api\/run-progress\?id='/u);
   assert.match(source, /next update in 2s/u);
   assert.doesNotMatch(source, /meta http-equiv=\\"refresh\\" content=\\"5\\"/u);
+});
+
+test("workflow runs expose evidence-based live ETA estimates", () => {
+  assert.match(source, /eta: estimateRunEta\(\{ run, tasks: \[\{ status: run\.status \}\], historicalRuns: runs \}\)/u);
+  assert.match(source, /eta: estimateRunEta\(\{ run: details\.run, tasks: details\.tasks, historicalRuns \}\)/u);
+  assert.match(source, /id="run-live-eta"/u);
+  assert.match(source, /payload\.eta\.confidence/u);
+  assert.match(source, /<th>ETA<\/th>/u);
+  assert.match(source, /estimateQueueItemEta\(item, historicalRuns\)/u);
+  assert.match(source, /<strong>ETA<\/strong>/u);
+  assert.match(source, /renderOpsAgentFlow\(health\.queue, runs\)/u);
 });
 
 test("run detail acts as a live governed command center", () => {

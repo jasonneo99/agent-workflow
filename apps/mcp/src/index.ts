@@ -1093,14 +1093,14 @@ server.registerTool(
   "agentflow_status",
   {
     title: "AgentFlow status",
-    description: "Show recent workflow runs or details for one run.",
+    description: "Show recent workflow runs or details for one run, including evidence-based ETA, confidence, and reason.",
     inputSchema: {
       runId: z.string().optional().describe("Workflow run id."),
       limit: z.number().int().positive().max(100).optional().describe("Number of recent runs to show."),
-      artifacts: z.boolean().optional().describe("Include artifact URIs when inspecting a run.")
+      artifacts: z.boolean().optional().describe("Include artifact URIs when inspecting a run."), json: z.boolean().optional().describe("Return machine-readable run and ETA metadata for voice and assistant clients.")
     }
   },
-  async ({ runId, limit, artifacts }) => {
+  async ({ runId, limit, artifacts, json }) => {
     const args = ["status"];
     if (runId) {
       args.push("--run", runId);
@@ -1110,7 +1110,7 @@ server.registerTool(
     } else if (limit) {
       args.push("--limit", String(limit));
     }
-    return toolResult(await runAgentflow(args, { timeoutMs: 60_000 }));
+    return toolResult(await runAgentflow([...args, ...(json ? ["--json"] : [])], { timeoutMs: 60_000 }));
   }
 );
 
@@ -1876,7 +1876,7 @@ server.registerTool(
     title: "AgentFlow provider use",
     description: "Switch or update the Agent Workflow model provider in .env, for requests like 'use BYO model', 'update my model to openai', or 'use Kiro'.",
     inputSchema: {
-      provider: z.enum(["mock", "byo", "openai", "anthropic", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
+      provider: z.enum(["mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
       check: z.boolean().optional().describe("Run provider-check after switching.")
     }
   },
