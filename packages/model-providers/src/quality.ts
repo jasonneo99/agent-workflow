@@ -135,6 +135,8 @@ export function scoreStageOutput(input: StageExecutionInput, output: StageExecut
   let score = 0;
   const completionViolation = unfulfilledCompletionReason(input, output);
   if (completionViolation) reasons.push(completionViolation);
+  const blockedOutcome = output.outcome === "blocked";
+  if (blockedOutcome) reasons.push("stage outcome is blocked and does not satisfy the expected result");
 
   if (output.summary.trim().length >= 40) {
     score += 0.22;
@@ -177,13 +179,13 @@ export function scoreStageOutput(input: StageExecutionInput, output: StageExecut
     reasons.push("output appears generic");
   }
 
-  const normalizedScore = completionViolation ? 0 : Math.min(1, Number(score.toFixed(2)));
+  const normalizedScore = completionViolation ? 0 : Math.min(blockedOutcome ? 0.6 : 1, Number(score.toFixed(2)));
   return {
     score: normalizedScore,
     threshold,
-    passed: normalizedScore >= threshold,
+    passed: !blockedOutcome && normalizedScore >= threshold,
     reasons,
-    retryRecommended: normalizedScore < threshold
+    retryRecommended: blockedOutcome || normalizedScore < threshold
   };
 }
 

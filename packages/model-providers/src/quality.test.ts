@@ -23,6 +23,22 @@ test("implementation completion fails closed when the output says no implementat
   assert.equal(quality.score, 0);
 });
 
+test("blocked lifecycle output cannot receive a perfect passing quality score", () => {
+  const output = {
+    outcome: "blocked",
+    blockedReason: "A required external dependency is unavailable.",
+    summary: "The stage produced detailed evidence but remains blocked by an unavailable external dependency.",
+    artifact: { findings: ["The external service is unreachable."], nextAction: "Restore the dependency and retry." },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+  const quality = scoreStageOutput({ ...input, workflowId: "provider-smoke", workflowTask: "Verify the provider contract." }, output);
+  assert.equal(quality.passed, false);
+  assert.equal(quality.retryRecommended, true);
+  assert.ok(quality.score <= 0.6);
+  assert.match(quality.reasons.join(" "), /outcome is blocked/iu);
+});
+
 test("review stages may correctly report that they made no source changes", () => {
   const output = {
     outcome: "completed",

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding } from "./prompts.js";
+import { advisoryPolicyAnalysisIsFinding, buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding } from "./prompts.js";
 
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
 
@@ -86,6 +86,64 @@ test("review evidence gaps become findings while real authority blockers remain 
     requestedFileWrites: []
   });
   assert.equal(reviewEvidenceGapIsFinding(reviewInput, missingDesignSystem), true);
+});
+
+test("provider smoke policy analysis completes instead of inventing an approval blocker", () => {
+  const analysisInput = {
+    runId: "run-policy",
+    taskId: "task-policy",
+    projectConfig: project,
+    workflowId: "provider-smoke",
+    workflowTask: "Define when provider fallback preserves a valid result and when the run remains blocked.",
+    stageId: "contract",
+    agentId: "task-triager",
+    agentName: "Task Triage",
+    agentPrompt: "Return the requested decision.",
+    stageGoal: "Verify provider contract compliance by returning concise structured output.",
+    compiledBrief: "Project policy evidence.",
+    priorReceipts: []
+  };
+  const parsed = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "Defining provider fallback criteria involves policy decision-making that cannot be automated without additional context or approval.",
+    summary: "The policy decision cannot be automated.",
+    findings: ["Fallback needs evidence boundaries."],
+    nextAction: "Review the policy.",
+    requestedCommands: [],
+    requestedFileWrites: []
+  });
+  assert.equal(advisoryPolicyAnalysisIsFinding(analysisInput, parsed), true);
+  const output = buildStageExecutionOutput(analysisInput, parsed, { provider: "local" });
+  assert.equal(output.outcome, "completed");
+  assert.equal(output.blockedReason, undefined);
+  assert.equal(output.artifact.evidenceGapReclassifiedAsFinding, true);
+});
+
+test("provider smoke retains concrete external approval blockers", () => {
+  const input = {
+    runId: "run-policy",
+    taskId: "task-policy",
+    projectConfig: project,
+    workflowId: "provider-smoke",
+    workflowTask: "Define the production fallback result.",
+    stageId: "contract",
+    agentId: "task-triager",
+    agentName: "Task Triage",
+    agentPrompt: "Return the requested decision.",
+    stageGoal: "Verify provider contract compliance.",
+    compiledBrief: "Project policy evidence.",
+    priorReceipts: []
+  };
+  const parsed = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "Production deployment approval is required to inspect the protected resource.",
+    summary: "The protected resource is unavailable.",
+    findings: [],
+    nextAction: "Request production approval.",
+    requestedCommands: [],
+    requestedFileWrites: []
+  });
+  assert.equal(advisoryPolicyAnalysisIsFinding(input, parsed), false);
 });
 
 test("stage prompt reserves a bounded section for named commit evidence", () => {
