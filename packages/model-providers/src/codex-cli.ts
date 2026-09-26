@@ -45,6 +45,7 @@ const stageSchema = {
     findings: { type: "array", items: { type: "string" } },
     nextAction: { type: "string" },
     requestedCommands: { type: "array", items: { type: "string" } },
+    requestedFileReads: { type: "array", items: { type: "string" } },
     requestedFileWrites: {
       type: "array",
       items: {
@@ -55,7 +56,7 @@ const stageSchema = {
       }
     }
   },
-  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileWrites"]
+  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileReads", "requestedFileWrites"]
 };
 
 const fileSummarySchema = {

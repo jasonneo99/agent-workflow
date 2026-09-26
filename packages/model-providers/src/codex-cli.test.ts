@@ -27,14 +27,14 @@ const stageInput = {
 } as unknown as StageExecutionInput;
 
 test("Codex CLI provider requires ChatGPT auth by default and normalizes structured stage output", async () => {
-  const calls: Array<{ prompt: string; model?: string; workingDirectory?: string }> = [];
+  const calls: Array<{ prompt: string; model?: string; workingDirectory?: string; schema: Record<string, unknown> }> = [];
   const runner: CodexCliRunner = {
     async authStatus() { return "Logged in using ChatGPT"; },
     async execute(input) {
-      calls.push({ prompt: input.prompt, model: input.model, workingDirectory: input.workingDirectory });
+      calls.push({ prompt: input.prompt, model: input.model, workingDirectory: input.workingDirectory, schema: input.schema });
       return {
         model: input.model ?? "codex-default",
-        output: JSON.stringify({ summary: "Plan ready.", findings: ["bounded"], nextAction: "review", requestedCommands: [], requestedFileWrites: [] })
+        output: JSON.stringify({ summary: "Plan ready.", findings: ["bounded"], nextAction: "review", requestedCommands: [], requestedFileReads: [], requestedFileWrites: [] })
       };
     }
   };
@@ -52,6 +52,9 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.match(calls[0]?.prompt ?? "", /Avoid broad repository scans/i);
     assert.match(calls[0]?.prompt ?? "", /Resolve named commits with bounded git show\/diff/);
     assert.equal(calls[0]?.workingDirectory, "/tmp/synthetic-project");
+    const schema = calls[0]?.schema as { properties?: Record<string, unknown>; required?: string[] };
+    assert.ok(schema.properties?.requestedFileReads);
+    assert.ok(schema.required?.includes("requestedFileReads"));
   } finally {
     if (previous === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
     else process.env.CODEX_CLI_MODEL_STANDARD = previous;
