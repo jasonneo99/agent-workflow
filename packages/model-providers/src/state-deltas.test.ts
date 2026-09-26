@@ -100,7 +100,7 @@ test("renderDeltaLog: shows ops with markers including retractions", () => {
   assert.match(log, /^- c:/m);
 });
 
-test("fileReadDelta: success delta carries bytes and short sha", () => {
+test("fileReadDelta: success delta carries bytes and full sha", () => {
   const d = fileReadDelta({
     path: "src/auth/token.ts",
     bytesRead: 4820,
@@ -111,7 +111,7 @@ test("fileReadDelta: success delta carries bytes and short sha", () => {
   assert.equal(d.op, "assert");
   assert.equal(d.key, "file:src/auth/token.ts");
   assert.match(d.fact, /read 4820 bytes/);
-  assert.match(d.fact, /sha256:abcdef123456/);
+  assert.match(d.fact, /sha256:abcdef1234567890/);
 });
 
 test("fileReadDelta: denial delta records the reason, never blocks", () => {

@@ -137,7 +137,7 @@ export function fileReadDelta(input: {
       assertedAt
     };
   }
-  const sha = input.sha256 ? ` sha256:${input.sha256.slice(0, 12)}` : "";
+  const sha = input.sha256 ? ` sha256:${input.sha256}` : "";
   const truncated = input.truncated ? " (truncated at policy max)" : "";
   return {
     op: "assert",

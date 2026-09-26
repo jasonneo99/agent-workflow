@@ -43,6 +43,8 @@ export interface StageExecutionInput {
     path: string;
     content: string;
     truncated: boolean;
+    /** Full-file digest, even when the policy-limited content is truncated. */
+    sha256?: string;
     error?: string;
   }>;
   /** Typed state deltas recorded by the runtime this stage (AIR phase-1 spike).

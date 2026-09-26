@@ -68,8 +68,8 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "File contents you requested to read (fresh from disk this stage):",
     input.fileReads?.length
       ? input.fileReads.map((item) => [
-        `### ${item.path}${item.truncated ? " (truncated)" : ""}`,
-        item.error ? `READ ERROR: ${item.error}` : truncate(item.content, 12000)
+        `### ${item.path}${item.truncated ? " (truncated at policy max)" : ""}${item.sha256 ? ` sha256:${item.sha256}` : ""}`,
+        item.error ? `READ ERROR: ${item.error}` : item.content
       ].join("\n")).join("\n\n")
       : "None yet. Use requestedFileReads when you need to inspect source before acting.",
     "",

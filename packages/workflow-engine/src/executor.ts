@@ -332,7 +332,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       // executor reads them under the read-path policy, and the model is asked
       // again with the contents in context. Reads are informational: a denied
       // or missing file is reported back, never a stage blocker.
-      const stageFileReads: Array<{ path: string; content: string; truncated: boolean; error?: string }> = [];
+      const stageFileReads: Array<{ path: string; content: string; truncated: boolean; sha256?: string; error?: string }> = [];
       const stageStateDeltas: StateDelta[] = [];
       const seenReadPaths = new Set<string>();
       const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
@@ -399,7 +399,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             stageFileReads.push({
               path: readResult.relativePath,
               content: readResult.content,
-              truncated: readResult.truncated
+              truncated: readResult.truncated,
+              sha256: readResult.sha256
             });
             stageStateDeltas.push(fileReadDelta({
               path: readResult.relativePath,

@@ -36,14 +36,18 @@ test("stage prompt instructs API providers to request file reads and shows read 
 });
 
 test("stage prompt renders requested file contents for re-prompt context", () => {
+  const content = `export const answer = 42;\n${"x".repeat(13000)}`;
+  const sha256 = "a".repeat(64);
   const prompt = buildStagePrompt(baseInput({
     fileReads: [
-      { path: "src/app.ts", content: "export const answer = 42;", truncated: false }
+      { path: "src/app.ts", content, truncated: false, sha256 }
     ]
   }));
   assert.match(prompt, /File contents you requested to read/u);
   assert.match(prompt, /src\/app\.ts/u);
   assert.match(prompt, /answer = 42/u);
+  assert.match(prompt, new RegExp(`sha256:${sha256}`, "u"));
+  assert.ok(prompt.includes(content));
 });
 
 test("normalizeStageArtifact parses requestedFileReads as strings and {path} objects", () => {
