@@ -6,7 +6,7 @@ import { recordRunAction } from "../../storage/src/postgres.js";
 type StageRead = { path: string; content: string; truncated: boolean; sha256?: string; error?: string };
 
 export function isRecoverableFileMutationFailure(message: string): boolean {
-  return /(?:context mismatch|hunk count mismatch|malformed patch|preimage|expected hash|hash mismatch|stale)/iu.test(message);
+  return /(?:context mismatch|removal mismatch|hunk count mismatch|hunk starts outside|invalid hunk header|unsupported hunk line|no unified-diff hunks|malformed patch|preimage|expected hash|hash mismatch|stale)/iu.test(message);
 }
 
 export function fileWriteRejectionRecovered(actions: unknown[], rejected: unknown): boolean {

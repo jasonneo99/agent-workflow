@@ -425,7 +425,11 @@ test("recoverable patch conflicts refresh the file and retry inside the same sta
 
 test("malformed patch hunk counts are recoverable inside the same stage", () => {
   assert.equal(isRecoverableFileMutationFailure("File patch rejected: hunk count mismatch; expected -2/+80, received -2/+75."), true);
+  assert.equal(isRecoverableFileMutationFailure("File patch rejected: hunk starts outside the target at old line 1."), true);
+  assert.equal(isRecoverableFileMutationFailure("File patch rejected: removal mismatch at old line 1."), true);
   assert.equal(isRecoverableFileMutationFailure("File write rejected by blocked path pattern"), false);
+  assert.equal(isRecoverableFileMutationFailure("File patch rejected: path escapes the project root."), false);
+  assert.equal(isRecoverableFileMutationFailure("File patch rejected: patch is 500000 bytes, max is 200000."), false);
 });
 
 test("npm pre-flight is hooked where the executor resolves the command cwd", () => {
