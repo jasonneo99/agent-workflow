@@ -413,6 +413,15 @@ test("verify-stage command failures re-enter the action loop with a retry budget
   assert.match(source, /commandFailureDelta\(/u);
 });
 
+test("recoverable patch conflicts refresh the file and retry inside the same stage", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const retrySource = readFileSync(new URL("./file-mutation-retry.ts", import.meta.url), "utf8");
+  assert.match(source, /isRecoverableFileMutationFailure\(rejectionMessage\)/u);
+  assert.match(retrySource, /file_write_retry_scheduled/u);
+  assert.match(retrySource, /Regenerate only this patch against the refreshed file content/u);
+  assert.match(source, /fileWriteRejectionRecovered\(actionResults, action\)/u);
+});
+
 test("npm pre-flight is hooked where the executor resolves the command cwd", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.match(source, /npmPreflightDiagnostic\(commandLine, localProjectRootUri\)/u);

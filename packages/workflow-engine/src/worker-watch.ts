@@ -13,6 +13,7 @@ export type WorkerWatchInput = {
   workerPlatform?: NodeJS.Platform;
   providerRecoveryCooldownMs?: number;
   recoverProvider?: (providerId: string) => Promise<boolean>;
+  waitForWake?: (timeoutMs: number) => Promise<unknown>;
   shouldStop: () => boolean;
   onTick: (result: WorkerResult) => void | Promise<void>;
 };
@@ -50,7 +51,8 @@ export async function runWorkerWatchLoop(
       result.quarantinedProviderIds = [...quarantinedProviders.keys()];
     }
     await input.onTick(result);
-    await new Promise((resolve) => setTimeout(resolve, input.intervalMs));
+    if (input.waitForWake) await input.waitForWake(input.intervalMs);
+    else await new Promise((resolve) => setTimeout(resolve, input.intervalMs));
   }
 }
 

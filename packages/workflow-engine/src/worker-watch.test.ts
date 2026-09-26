@@ -35,3 +35,21 @@ test("watch worker replenishes an idle slot when another stage unlocks work", as
   });
   assert.equal(unlockedClaimed, true);
 });
+
+test("watch worker waits on the runtime event subscriber between idle ticks", async () => {
+  let stopped = false;
+  let waits = 0;
+  await runWorkerWatchLoop({
+    limitPerTick: 1,
+    intervalMs: 2_000,
+    shouldStop: () => stopped,
+    onTick: () => undefined,
+    waitForWake: async (timeoutMs) => {
+      assert.equal(timeoutMs, 2_000);
+      waits += 1;
+      stopped = true;
+      return "event";
+    }
+  }, async () => empty());
+  assert.equal(waits, 1);
+});

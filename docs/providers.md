@@ -67,18 +67,24 @@ CODEX_CLI_AUTH_MODE=chatgpt
 # Optional; omit to use the Codex CLI default model.
 CODEX_CLI_MODEL=
 AGENTFLOW_CODEX_SESSION_REUSE=1
+AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION=0
 ```
 
-Workflow-scoped Codex session reuse is enabled by default. It preserves the
-read-only sandbox while avoiding repeated repository orientation between stages.
-The runtime stores only a mode-0600 run-to-thread pointer under the operating
+Stage-scoped Codex session reuse is enabled by default. It preserves bounded
+read/retry context without replaying every previous stage into later turns.
+Direct checkout inspection is disabled by default: the provider consumes the
+compiled brief and uses governed `requestedFileReads` for exact missing source.
+Set `AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION=1` only when a workflow explicitly
+needs Codex's read-only repository exploration.
+
+The runtime stores only a mode-0600 stage-to-thread pointer under the operating
 system temporary directory, expires it after 24 hours, and never places prompt
 content in that pointer. Set `AGENTFLOW_CODEX_SESSION_REUSE=0` for strict
 one-process/one-session isolation.
 
 The adapter invokes `codex exec` with a read-only sandbox, temporary schema and
 output files, and a strict JSON output contract. Workflow runs retain their
-Codex session only for bounded continuation; standalone summaries remain
+Codex session only for bounded same-stage continuation; standalone summaries remain
 ephemeral. It does not read or copy the
 Codex credential cache, and it removes `OPENAI_API_KEY` and `OPENAI_ADMIN_KEY`
 from the child environment so an API credential cannot silently replace the

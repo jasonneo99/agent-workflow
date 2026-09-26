@@ -11,7 +11,9 @@ import { findRecentDuplicateRun } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
 import { stableJson, workflowDefinitionHash } from "./registry.js";
+import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
 export { databaseUrl, withClient } from "./client.js";
+export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
 export { seedRegistry, workflowDefinitionHash } from "./registry.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
 export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
@@ -19,18 +21,14 @@ export { appendProvenanceClaim, assertStageAuthority, issueStageAuthorityGrant, 
 export { listWorkflowReuseEvidence } from "./reuse.js"; export { transitionWorkflowRun, type WorkflowRunTransitionInput } from "./run-transitions.js"; export { supersedeWorkflowRun } from "./run-supersession.js";
 export {
   claimActionApprovalExecution,
-  completeApprovalRequestRun,
-  decideActionApproval,
-  dismissSupersededActionApprovals,
-  getActionApproval,
-  listActionApprovals,
-  markActionApprovalExecution,
+  completeApprovalRequestRun, decideActionApproval, dismissSupersededActionApprovals,
+  getActionApproval, listActionApprovals, markActionApprovalExecution,
   recoverInterruptedActionApprovalExecutions,
-  requestActionApproval,
-  type ActionApprovalStatus
+  requestActionApproval, type ActionApprovalStatus
 } from "./action-approvals.js";
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
+    await client.query(runtimeEventFunctionSql);
     await client.query(`
       ALTER TABLE workflow_runs
       ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
@@ -51,6 +49,7 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS replacement_run_id uuid REFERENCES workflow_runs(id),
       ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
     `);
+    await client.query(workflowTaskEventTriggerSql);
     await client.query(`
       CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx
       ON workflow_runs(replacement_run_id)
@@ -234,6 +233,7 @@ export async function migrateStorage(): Promise<void> {
         UNIQUE(run_id, task_id, action_type, idempotency_key)
       )
     `);
+    await client.query(actionApprovalEventTriggerSql);
     await client.query(`
       ALTER TABLE action_approvals
       ADD COLUMN IF NOT EXISTS decided_role text

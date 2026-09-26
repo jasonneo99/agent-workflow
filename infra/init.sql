@@ -205,6 +205,28 @@ CREATE TABLE IF NOT EXISTS action_approvals (
   UNIQUE(run_id, task_id, action_type, idempotency_key)
 );
 
+CREATE OR REPLACE FUNCTION agentflow_emit_runtime_event() RETURNS trigger AS $$
+BEGIN
+  PERFORM pg_notify('agentflow_runtime_events', json_build_object(
+    'table', TG_TABLE_NAME,
+    'operation', TG_OP,
+    'id', NEW.id,
+    'status', NEW.status
+  )::text);
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS workflow_tasks_runtime_event ON workflow_tasks;
+CREATE TRIGGER workflow_tasks_runtime_event
+AFTER INSERT OR UPDATE OF status, available_at ON workflow_tasks
+FOR EACH ROW EXECUTE FUNCTION agentflow_emit_runtime_event();
+
+DROP TRIGGER IF EXISTS action_approvals_runtime_event ON action_approvals;
+CREATE TRIGGER action_approvals_runtime_event
+AFTER INSERT OR UPDATE OF status ON action_approvals
+FOR EACH ROW EXECUTE FUNCTION agentflow_emit_runtime_event();
+
 CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
 ON action_approvals(status, created_at);
 

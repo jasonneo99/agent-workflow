@@ -15,6 +15,8 @@ import type { StageExecutionInput, StageExecutionOutput } from "../../model-prov
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
+import { fileWriteRejectionRecovered, isRecoverableFileMutationFailure, prepareRejectedPatchRetry } from "./file-mutation-retry.js";
+export { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
@@ -36,6 +38,7 @@ import {
   requestActionApproval,
   startWorkflowTask,
   withProjectExecutionLock,
+  createWorkflowEventSubscriber,
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 import { createRenewingStageAuthority } from "./stage-authority.js";
@@ -168,7 +171,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
       };
       const localProjectRootUri = projectResolution.localRootUri;
-      const actionResults = [];
+      const actionResults: unknown[] = [];
       const snapshotProject = projectConfigSchema.parse(task.projectConfig);
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
       const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
@@ -543,12 +546,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.failed += 1;
         continue;
       }
-
-      // Verify-stage command retry (Fix 2): the action loops below re-run when
-      // a verify-type stage command fails and budget remains; the agent is
-      // re-invoked with the failure evidence folded into its stage input.
       const verifyRetryBudget = verifyRetryBudgetFromEnv();
       let verifyRetriesRemaining = verifyRetryBudget;
+      let mutationRetriesRemaining = Math.min(2, verifyRetryBudget);
       let verifyRetryRound = 0;
       let verifyRetryRequested = false;
       let verifyEnvironmentalBlock: { summary: string; reason: string; files: string[] } | null = null;
@@ -779,18 +779,19 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               ? await withProjectExecutionLock({ projectRootUri: task.projectRootUri, resource: serializationResource }, executeCommand)
               : await executeCommand();
           } catch (error) {
+            const rejectionMessage = error instanceof Error ? error.message : String(error);
             const rejectionArtifactUri = await recordRunAction({
               runId: task.runId,
               taskId: task.taskId,
               agentId: task.agentId,
               actionType: "local_command_rejected",
               target: commandLine,
-              summary: error instanceof Error ? error.message : String(error),
+              summary: rejectionMessage,
               artifactKind: "action_rejection",
               artifactContent: {
                 actionType: "local_command",
                 target: commandLine,
-                error: error instanceof Error ? error.message : String(error),
+                error: rejectionMessage,
                 requestedByTaskId: task.taskId,
                 requestedByStageId: task.stageId
               }
@@ -799,7 +800,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               type: "local_command_rejected",
               commandLine,
               artifactUri: rejectionArtifactUri,
-              error: error instanceof Error ? error.message : String(error)
+              error: rejectionMessage
             });
             await recordBoundedReactLoopReceipt({
               task,
@@ -819,7 +820,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               resultReceipt: {
                 status: "rejected",
                 artifactUri: rejectionArtifactUri,
-                error: error instanceof Error ? error.message : String(error)
+                error: rejectionMessage
               }
             });
             continue;
@@ -1218,18 +1219,19 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               () => executeAllowedFileMutation({ request: fileWrite, payload: filePayload, isPatch, expectedHash, cwd: localProjectRootUri, project })
             );
           } catch (error) {
+            const rejectionMessage = error instanceof Error ? error.message : String(error);
             const rejectionArtifactUri = await recordRunAction({
               runId: task.runId,
               taskId: task.taskId,
               agentId: task.agentId,
               actionType: "file_write_rejected",
               target: fileWrite.path,
-              summary: error instanceof Error ? error.message : String(error),
+              summary: rejectionMessage,
               artifactKind: "action_rejection",
               artifactContent: {
                 actionType: "file_write",
                 target: fileWrite.path,
-                error: error instanceof Error ? error.message : String(error),
+                error: rejectionMessage,
                 requestedByTaskId: task.taskId,
                 requestedByStageId: task.stageId
               }
@@ -1238,7 +1240,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               type: "file_write_rejected",
               path: fileWrite.path,
               artifactUri: rejectionArtifactUri,
-              error: error instanceof Error ? error.message : String(error)
+              error: rejectionMessage
             });
             await recordBoundedReactLoopReceipt({
               task,
@@ -1258,9 +1260,30 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               resultReceipt: {
                 status: "rejected",
                 artifactUri: rejectionArtifactUri,
-                error: error instanceof Error ? error.message : String(error)
+                error: rejectionMessage
               }
             });
+            if (isPatch && mutationRetriesRemaining > 0 && isRecoverableFileMutationFailure(rejectionMessage)) {
+              mutationRetriesRemaining -= 1;
+              await prepareRejectedPatchRetry({ path: fileWrite.path, cwd: localProjectRootUri, project, rejectionMessage, rejectionArtifactUri, runId: task.runId, stageId: task.stageId, agentId: task.agentId, taskId: task.taskId, retriesRemaining: mutationRetriesRemaining, reads: stageFileReads, deltas: stageStateDeltas });
+              await assertLeaseOwned();
+              await assertStageGuard(false);
+              const retryStartedAt = Date.now();
+              const retry = await executeWithProviderFallback({
+                providerId: route.providerId,
+                stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
+                policy: { ...fallbackPolicy, chains: {}, maxRetries: 0 },
+                providerFactory: providerFromEnv
+              });
+              await recordDirectProviderUsage({ stage: routedStageInput, attempts: retry.attempts, output: retry.output, latencyMs: Date.now() - retryStartedAt }).catch(() => 0);
+              fallbackAttempts = [...fallbackAttempts, ...retry.attempts];
+              output = retry.output;
+              quality = scoreStageOutput(routedStageInput, output);
+              actualProviderId = retry.actualProvider;
+              actualModel = retry.actualModel;
+              verifyRetryRequested = true;
+              continue verifyActionRounds;
+            }
             continue;
           }
           const summary = summarizeFileMutation(writeResult, isPatch);
@@ -1342,6 +1365,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const incompleteActions = actionResults.filter((action) => {
         const type = typeof action === "object" && action && "type" in action ? String(action.type) : "";
         if (type === "file_read_rejected") return false;
+        if (type === "file_write_rejected" && fileWriteRejectionRecovered(actionResults, action)) return false;
         return type.endsWith("_approval_pending") || type.endsWith("_rejected") || type.includes("_side_effect_");
       });
       if (incompleteActions.length > 0) {
@@ -1691,6 +1715,11 @@ function finiteTelemetryNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-export function runWorkerWatch(input: WorkerWatchInput): Promise<void> {
-  return runWorkerWatchLoop(input, runWorkerOnce);
+export async function runWorkerWatch(input: WorkerWatchInput): Promise<void> {
+  const subscriber = await createWorkflowEventSubscriber().catch(() => null);
+  try {
+    return await runWorkerWatchLoop({ ...input, waitForWake: subscriber ? (timeoutMs) => subscriber.wait(timeoutMs) : undefined }, runWorkerOnce);
+  } finally {
+    await subscriber?.close();
+  }
 }

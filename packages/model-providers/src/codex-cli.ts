@@ -16,7 +16,7 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; workingDirectory?: string; sessionKey?: string };
+type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; reasoningEffort?: "low" | "medium"; workingDirectory?: string; sessionKey?: string };
 type CodexCliRunResult = { output: string; model: string; usage?: StageExecutionOutput["usage"] };
 export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
 export interface CodexCliDiagnostic {
@@ -98,18 +98,23 @@ export class CodexCliProvider implements ModelProvider {
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
     await this.requireReady();
     const model = configuredModelForTier(input.modelTier, input.modelOverride);
+    const reasoningEffort = input.modelTier === "reasoning" ? "medium" : "low";
+    const workingDirectory = configuredCodexCliDirectRepoInspection() ? input.projectRootUri : undefined;
     const result = await this.runner.execute({
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
-        input.projectRootUri
+        workingDirectory
           ? "Treat the supplied stage context and prior artifacts as primary. Avoid broad repository scans and repeated orientation. Inspect only a small, task-relevant path when the supplied evidence is insufficient; otherwise request exact additional files through requestedFileReads. Resolve named commits with bounded git show/diff when required. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
-          : "No project checkout is available. Do not inspect unrelated filesystem locations, execute commands, or claim side effects.",
+          : "Direct repository inspection is disabled for this stage. Use the compiled evidence first and request only exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
       schema: stageSchema,
       model,
-      workingDirectory: input.projectRootUri,
-      sessionKey: input.runId
+      reasoningEffort,
+      workingDirectory,
+      // Preserve a stage's bounded read/retry context without replaying the
+      // entire workflow history into every later stage.
+      sessionKey: input.taskId
     });
     const parsed = normalizeStageArtifact(extractJsonObject(result.output) as StageJsonArtifact);
     return {
@@ -176,7 +181,7 @@ export function createCodexCliRunner(): CodexCliRunner {
       const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
       return `${result.stdout}\n${result.stderr}`.trim();
     },
-    execute: async ({ prompt, schema, model, workingDirectory, sessionKey }) => {
+    execute: async ({ prompt, schema, model, reasoningEffort, workingDirectory, sessionKey }) => {
       return withCodexCliProcessLock(async () => {
         const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
         const schemaPath = path.join(temporaryDir, "output-schema.json");
@@ -189,6 +194,7 @@ export function createCodexCliRunner(): CodexCliRunner {
             ? [
               "exec", "resume", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
               "--output-schema", schemaPath, "--output-last-message", outputPath,
+              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
               ...(model ? ["--model", model] : []), reusableSession, "-"
             ]
             : [
@@ -196,7 +202,9 @@ export function createCodexCliRunner(): CodexCliRunner {
               "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
               "--sandbox", "read-only", "--cd", executionDirectory,
               "--output-schema", schemaPath, "--output-last-message", outputPath,
-              "--color", "never", ...(model ? ["--model", model] : []), "-"
+              "--color", "never",
+              ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
+              ...(model ? ["--model", model] : []), "-"
             ];
           const processResult = await runProcess(binary, args, prompt, executionDirectory);
           if (!reusableSession && sessionKey) {
@@ -218,6 +226,10 @@ export function createCodexCliRunner(): CodexCliRunner {
 
 export function configuredCodexCliSessionReuse(): boolean {
   return !/^(?:0|false|off|no)$/iu.test(process.env.AGENTFLOW_CODEX_SESSION_REUSE?.trim() ?? "");
+}
+
+export function configuredCodexCliDirectRepoInspection(): boolean {
+  return /^(?:1|true|on|yes)$/iu.test(process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION?.trim() ?? "");
 }
 
 export function parseCodexCliThreadId(jsonl: string): string | undefined {

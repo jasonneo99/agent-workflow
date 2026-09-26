@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliSessionReuse, configuredCodexCliTimeoutMs, parseCodexCliThreadId, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
+import { buildCodexCliDiagnostic, CodexCliProvider, configuredCodexCliDirectRepoInspection, configuredCodexCliModelForTier, configuredCodexCliOutputMaxBytes, configuredCodexCliSessionReuse, configuredCodexCliTimeoutMs, parseCodexCliThreadId, parseCodexCliUsage, type CodexCliRunner } from "./codex-cli.js";
 import type { StageExecutionInput } from "./types.js";
 
 const stageInput = {
@@ -27,11 +27,11 @@ const stageInput = {
 } as unknown as StageExecutionInput;
 
 test("Codex CLI provider requires ChatGPT auth by default and normalizes structured stage output", async () => {
-  const calls: Array<{ prompt: string; model?: string; workingDirectory?: string; schema: Record<string, unknown> }> = [];
+  const calls: Array<{ prompt: string; model?: string; reasoningEffort?: string; workingDirectory?: string; sessionKey?: string; schema: Record<string, unknown> }> = [];
   const runner: CodexCliRunner = {
     async authStatus() { return "Logged in using ChatGPT"; },
     async execute(input) {
-      calls.push({ prompt: input.prompt, model: input.model, workingDirectory: input.workingDirectory, schema: input.schema });
+      calls.push({ prompt: input.prompt, model: input.model, reasoningEffort: input.reasoningEffort, workingDirectory: input.workingDirectory, sessionKey: input.sessionKey, schema: input.schema });
       return {
         model: input.model ?? "codex-default",
         output: JSON.stringify({ summary: "Plan ready.", findings: ["bounded"], nextAction: "review", requestedCommands: [], requestedFileReads: [], requestedFileWrites: [] })
@@ -39,7 +39,9 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     }
   };
   const previous = process.env.CODEX_CLI_MODEL_STANDARD;
+  const previousInspection = process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
   process.env.CODEX_CLI_MODEL_STANDARD = "codex-test-model";
+  process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = "1";
   try {
     const provider = new CodexCliProvider(runner);
     assert.equal((await provider.check()).ready, true);
@@ -48,6 +50,8 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
     assert.equal(result.artifact.provider, "codex-cli");
     assert.equal(result.artifact.model, "codex-test-model");
     assert.equal(calls[0]?.model, "codex-test-model");
+    assert.equal(calls[0]?.reasoningEffort, "low");
+    assert.equal(calls[0]?.sessionKey, "task-codex-cli");
     assert.match(calls[0]?.prompt ?? "", /supplied stage context and prior artifacts as primary/i);
     assert.match(calls[0]?.prompt ?? "", /Avoid broad repository scans/i);
     assert.match(calls[0]?.prompt ?? "", /Resolve named commits with bounded git show\/diff/);
@@ -58,6 +62,21 @@ test("Codex CLI provider requires ChatGPT auth by default and normalizes structu
   } finally {
     if (previous === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
     else process.env.CODEX_CLI_MODEL_STANDARD = previous;
+    if (previousInspection === undefined) delete process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
+    else process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = previousInspection;
+  }
+});
+
+test("Codex CLI direct repository inspection is opt-in", () => {
+  const previous = process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
+  try {
+    delete process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
+    assert.equal(configuredCodexCliDirectRepoInspection(), false);
+    process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = "true";
+    assert.equal(configuredCodexCliDirectRepoInspection(), true);
+  } finally {
+    if (previous === undefined) delete process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION;
+    else process.env.AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION = previous;
   }
 });
 
