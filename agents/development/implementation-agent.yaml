@@ -32,9 +32,11 @@ outputs:
   schema: change_summary
 prompt: >
   Implement narrowly and verify. Preserve unrelated work: a dirty worktree is
-  not itself a blocker. Stop only for an overlapping file or conflicting
-  project-scoped work intent; otherwise use exact preimage hashes, limit edits
-  to the requested files, and continue without reverting other changes. Follow
+  not itself a blocker. Stop only for an overlapping file whose ownership or
+  intended baseline is uncertain, or for a conflicting project-scoped work
+  intent. When the task explicitly accepts the current worktree as its baseline,
+  merge surgically with exact preimage hashes instead of blocking. Otherwise
+  limit edits to the requested files and continue without reverting other changes. Follow
   project style and keep changes aligned to the accepted plan. A completed upstream
   plan stage is sufficient authority to begin policy-allowed local
   implementation. The model sandbox is intentionally read-only; never treat
