@@ -122,6 +122,7 @@ test("queue presents active recovery chains without counting source failures twi
   assert.match(source, /Recovery in Progress/u);
   assert.match(source, /recovery running/u);
   assert.match(source, /!recoveringRunIds\.has\(item\.runId\)/u);
+  assert.match(source, /\/runs\?runSet=\$\{encodeURIComponent\(item\.runSetId\)\}[\s\S]+Open set/u);
 });
 
 test("failed runs expose their reason and root-cause resolution controls", () => {

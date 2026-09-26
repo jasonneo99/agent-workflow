@@ -28179,7 +28179,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, h
             <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.task)}</a></h2>
             <p class="muted">Run ${escapeHtml(item.runId.slice(0, 8))} · started ${renderDashboardDateTime(item.startedAt)}</p>
           </div>
-          <a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a>
+          <div class="actions"><a class="button secondary" href="/runs?runSet=${encodeURIComponent(item.runSetId)}">${iconLabel("layers", "Open set")}</a><a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a></div>
         </div>
         ${attention}
         <div class="queue-stage-summary">
