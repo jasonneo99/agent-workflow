@@ -32,6 +32,7 @@ import { fileURLToPath } from "node:url";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
+import { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
 
 test("active workers adopt only the current project auto-approval threshold", () => {
   const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "none", allowed_write_paths: ["docs/**"] } });
@@ -420,6 +421,11 @@ test("recoverable patch conflicts refresh the file and retry inside the same sta
   assert.match(retrySource, /file_write_retry_scheduled/u);
   assert.match(retrySource, /Regenerate only this patch against the refreshed file content/u);
   assert.match(source, /fileWriteRejectionRecovered\(actionResults, action\)/u);
+});
+
+test("malformed patch hunk counts are recoverable inside the same stage", () => {
+  assert.equal(isRecoverableFileMutationFailure("File patch rejected: hunk count mismatch; expected -2/+80, received -2/+75."), true);
+  assert.equal(isRecoverableFileMutationFailure("File write rejected by blocked path pattern"), false);
 });
 
 test("npm pre-flight is hooked where the executor resolves the command cwd", () => {

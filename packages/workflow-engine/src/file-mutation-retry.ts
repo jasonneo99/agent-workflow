@@ -3,10 +3,10 @@ import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import type { StateDelta } from "../../model-providers/src/state-deltas.js";
 import { recordRunAction } from "../../storage/src/postgres.js";
 
-type StageRead = { path: string; content: string; truncated: boolean; error?: string };
+type StageRead = { path: string; content: string; truncated: boolean; sha256?: string; error?: string };
 
 export function isRecoverableFileMutationFailure(message: string): boolean {
-  return /(?:context mismatch|preimage|expected hash|hash mismatch|stale)/iu.test(message);
+  return /(?:context mismatch|hunk count mismatch|malformed patch|preimage|expected hash|hash mismatch|stale)/iu.test(message);
 }
 
 export function fileWriteRejectionRecovered(actions: unknown[], rejected: unknown): boolean {
@@ -33,7 +33,7 @@ export async function prepareRejectedPatchRetry(input: {
   deltas: StateDelta[];
 }): Promise<void> {
   const refreshed = await executeAllowedFileRead({ relativePath: input.path, cwd: input.cwd, project: input.project });
-  const read = { path: input.path, content: refreshed.content, truncated: refreshed.truncated };
+  const read = { path: input.path, content: refreshed.content, truncated: refreshed.truncated, sha256: refreshed.sha256 };
   const prior = input.reads.findIndex((item) => item.path === input.path);
   if (prior >= 0) input.reads[prior] = read;
   else input.reads.push(read);
