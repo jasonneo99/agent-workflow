@@ -12,8 +12,11 @@ import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.j
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
 import { stableJson, workflowDefinitionHash } from "./registry.js";
 import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
+import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
+import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 export { databaseUrl, withClient } from "./client.js";
 export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
+export type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 export { seedRegistry, workflowDefinitionHash } from "./registry.js";
 export { deleteProjectFiles, getProjectIndexState, upsertProject, upsertProjectFiles, upsertProjectIndexState, type ProjectIndexState } from "./project-index.js";
 export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents, recordSideEffectOnce, releaseWorkIntent, renewWorkIntent, withProjectExecutionLock } from "./reliability.js";
@@ -29,6 +32,7 @@ export {
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(runtimeEventFunctionSql);
+    await client.query(workflowRunSetMigrationSql);
     await client.query(`
       ALTER TABLE workflow_runs
       ADD COLUMN IF NOT EXISTS policy_profile text NOT NULL DEFAULT 'local',
@@ -501,42 +505,14 @@ export interface ProjectFileSummary {
   updatedAt: string;
 }
 
-export interface WorkflowQueueItem {
-  runId: string;
-  workflowId: string;
-  runStatus: string;
-  task: string;
-  projectName: string;
-  projectRootUri: string;
-  startedAt: string;
-  finishedAt: string | null;
-  blockedReason?: string | null;
-  failedReason?: string | null;
-  totalTasks: number;
-  queuedTasks: number;
-  runningTasks: number;
-  completedTasks: number;
-  failedTasks: number;
-  cancelledTasks: number;
-  nextStageId: string | null;
-  nextAgentId: string | null;
-  runningStageId: string | null;
-  runningAgentId: string | null;
-  runningWorkerId: string | null;
-  runningLeaseExpiresAt: string | null;
-  oldestQueuedAt: string | null;
-  oldestRunningAt: string | null;
-  recoveryRunId: string | null;
-  recoveryRunStatus: string | null;
-  recoveryStartedAt: string | null;
-  recoveryRelation: "replay" | "repair" | null;
-}
 export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string }): Promise<WorkflowQueueItem[]> {
   return withClient(async (client) => {
     const projectRootUri = options?.projectRootUri?.trim() || null;
     const result = await client.query<WorkflowQueueItem>(
       `select
          wr.id::text as "runId",
+         wr.run_set_id::text as "runSetId",
+         (select count(*)::int from workflow_runs history where history.run_set_id = wr.run_set_id) as "runSetSize",
          wr.workflow_id as "workflowId",
          wr.status as "runStatus",
          wr.task,
@@ -602,6 +578,7 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
             where active.run_id = wr.id
               and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
+         and ${queueRunSetRepresentativeSql}
        group by wr.id, p.id
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
@@ -1388,9 +1365,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
            model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
-           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, ${inheritedRunSetSql})
          returning id`,
         [
           projectId,
@@ -1686,9 +1663,9 @@ export async function replayWorkflowRun(input: {
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
            model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
-           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, null)
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, null, ${inheritedRunSetSql})
          returning id`,
         [
           projectId,
@@ -2690,37 +2667,6 @@ export async function findRunActionByIdempotencyKey(input: {
   });
 }
 
-export interface WorkflowRunStatus {
-  id: string;
-  status: string;
-  workflowId: string;
-  task: string;
-  autonomy: string;
-  policyProfile: string;
-  policySnapshotHash: string;
-  modelTierOverride: string | null;
-  providerOverride: string | null;
-  evaluationMetadata: Record<string, unknown>;
-  replacementRunId?: string | null;
-  replacementRunStatus?: string | null;
-  replacementRunStartedAt?: string | null;
-  workflowDefinitionVersion?: string;
-  workflowDefinitionHash?: string;
-  constructionRationale?: Record<string, unknown>;
-  projectName: string;
-  projectRootUri: string;
-  startedAt: string;
-  finishedAt: string | null;
-  blockedReason?: string | null;
-  failedReason?: string | null;
-  dismissed?: boolean;
-  superseded?: boolean;
-  stateVersion?: string;
-  leaseEpoch?: string;
-  leaseOwner?: string | null;
-  leaseExpiresAt?: string | null;
-}
-
 export interface WorkflowTaskStatus {
   id: string;
   stageId: string;
@@ -2959,7 +2905,7 @@ export interface ArtifactLifecycleStatus {
   projectRootUri: string;
 }
 
-export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus[]> {
+export async function listWorkflowRuns(limit: number, options?: { runSetId?: string }): Promise<WorkflowRunStatus[]> {
   return withClient(async (client) => {
     const result = await client.query<WorkflowRunStatus>(
       `select
@@ -2973,6 +2919,8 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.run_set_id::text as "runSetId",
+         (select count(*)::int from workflow_runs history where history.run_set_id = wr.run_set_id) as "runSetSize",
          wr.workflow_definition_version as "workflowDefinitionVersion",
          wr.workflow_definition_hash as "workflowDefinitionHash",
          wr.construction_rationale as "constructionRationale",
@@ -3013,9 +2961,10 @@ export async function listWorkflowRuns(limit: number): Promise<WorkflowRunStatus
          exists (select 1 from action_receipts superseded where superseded.run_id = wr.id and superseded.action_type = 'failed_run_superseded') as superseded
        from workflow_runs wr
        join projects p on p.id = wr.project_id
+       where ($2::uuid is null or wr.run_set_id = $2::uuid)
        order by wr.started_at desc
        limit $1`,
-      [limit]
+      [limit, options?.runSetId ?? null]
     );
     return result.rows;
   });
@@ -3121,6 +3070,8 @@ export async function listWorkflowRunsForProject(input: {
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.run_set_id::text as "runSetId",
+         (select count(*)::int from workflow_runs history where history.run_set_id = wr.run_set_id) as "runSetSize",
          wr.workflow_definition_version as "workflowDefinitionVersion",
          wr.workflow_definition_hash as "workflowDefinitionHash",
          wr.construction_rationale as "constructionRationale",
@@ -3238,6 +3189,8 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.model_tier_override as "modelTierOverride",
          wr.provider_override as "providerOverride",
          wr.evaluation_metadata as "evaluationMetadata",
+         wr.run_set_id::text as "runSetId",
+         (select count(*)::int from workflow_runs history where history.run_set_id = wr.run_set_id) as "runSetSize",
          replacement.id as "replacementRunId",
          replacement.status as "replacementRunStatus",
          replacement.started_at as "replacementRunStartedAt",

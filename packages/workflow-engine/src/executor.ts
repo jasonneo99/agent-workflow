@@ -50,7 +50,6 @@ export type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
 import { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 export { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 import { runWorkerWatchLoop, type WorkerWatchInput } from "./worker-watch.js";
-
 export function applyCurrentAutoApprovalThreshold(
   snapshot: ReturnType<typeof projectConfigSchema.parse>,
   current: ReturnType<typeof projectConfigSchema.parse>,

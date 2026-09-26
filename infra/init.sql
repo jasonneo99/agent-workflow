@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   lease_owner text,
   lease_expires_at timestamptz,
   replacement_run_id uuid REFERENCES workflow_runs(id),
+  run_set_id uuid NOT NULL DEFAULT gen_random_uuid(),
   compiled_brief_uri text,
   started_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
@@ -85,6 +86,9 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
 
 CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx
 ON workflow_runs(replacement_run_id);
+
+CREATE INDEX IF NOT EXISTS workflow_runs_run_set_idx
+ON workflow_runs(run_set_id, started_at DESC);
 
 CREATE TABLE IF NOT EXISTS workflow_run_transitions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

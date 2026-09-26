@@ -121,6 +121,17 @@ test("queue items expose replay and repair recovery relationships without rewrit
   assert.doesNotMatch(queue, /with recursive descendants as/u);
 });
 
+test("run sets group immutable recovery history behind one queue representative", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const runSets = readFileSync(new URL("./run-sets.ts", import.meta.url), "utf8");
+  assert.match(runSets, /ADD COLUMN IF NOT EXISTS run_set_id uuid/u);
+  assert.match(runSets, /sourceRunId'[\s\S]+replayOfRunId/u);
+  assert.match(source, /wr\.run_set_id::text as "runSetId"/u);
+  assert.match(runSets, /member\.run_set_id = wr\.run_set_id/u);
+  assert.match(source, /history\.run_set_id = wr\.run_set_id/u);
+  assert.match(source, /run_set_id\)[\s\S]+inheritedRunSetSql/u);
+});
+
 test("queue and dashboard lookups have indexes for recovery, receipts, and task state", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /CREATE INDEX IF NOT EXISTS workflow_runs_status_started_idx[\s\S]+ON workflow_runs\(status, started_at DESC\)/u);
@@ -140,9 +151,10 @@ test("migration moves legacy metadata lineage onto the indexed replacement relat
 
 test("queue and run detail expose the latest recorded stage failure reason", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const types = readFileSync(new URL("./workflow-run-types.ts", import.meta.url), "utf8");
   assert.match(source, /ar\.action_type = 'stage_failed'[\s\S]+as "failedReason"/u);
   assert.match(source, /metadata->>'failureReason'/u);
-  assert.match(source, /failedReason\?: string \| null/u);
+  assert.match(types, /failedReason\?: string \| null/u);
 });
 
 test("evaluation failures remain evidence instead of actionable queue items", () => {

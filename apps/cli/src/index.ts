@@ -27744,14 +27744,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     response.end(renderBundleTrustHtml(readiness, requestUrl.searchParams));
     return;
   }
-
   if (requestUrl.pathname === "/runs") {
-    const runs = await listWorkflowRuns(100);
+    const runs = await listWorkflowRuns(100, { runSetId: requestUrl.searchParams.get("runSet")?.trim() || undefined });
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderRunsHtml(runs, requestUrl.searchParams));
     return;
   }
-
   if (requestUrl.pathname === "/activity") {
     const [report, projects] = await Promise.all([
       loadUnifiedActivityReport(requestUrl.searchParams),
@@ -28194,6 +28192,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, h
           <div><strong>Queue</strong><span>${formatNumber(item.runningTasks)} running · ${formatNumber(item.queuedTasks)} waiting</span></div>
           <div><strong>Worker</strong><span>${escapeHtml(item.runningWorkerId ?? "Not leased")}</span></div>
           <div><strong>Oldest active</strong><span>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</span></div>
+          <div><strong>History</strong><span><a href="/runs?runSet=${encodeURIComponent(item.runSetId)}">${formatNumber(item.runSetSize)} related run${item.runSetSize === 1 ? "" : "s"}</a></span></div>
         </div>
         <div class="queue-card-footer">
           <div class="queue-primary-actions">${queueItemPrimaryForms(item)}</div>
@@ -29482,9 +29481,9 @@ function renderUnifiedActivityHtml(report: UnifiedActivityReport, projects: Dash
   <section class="panel"><h2>Coverage and privacy</h2><ul>${report.notes.map((note) => `<li>${escapeHtml(note)}</li>`).join("")}</ul></section>
   </main></body></html>`;
 }
-
 function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
-  const rows = runs.map((run) => {
+  const selectedRunSet = params.get("runSet")?.trim(), visibleRuns = selectedRunSet ? runs.filter((run) => run.runSetId === selectedRunSet) : runs;
+  const rows = visibleRuns.map((run) => {
     const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
     return `
     <tr>
@@ -29512,7 +29511,6 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
     </tr>
   `;
   }).join("");
-
   return `<!doctype html>
 <html>
 <head>
@@ -29532,6 +29530,7 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
       <a class="button secondary" href="/api/runs">JSON</a>
     </div>
     ${renderDashboardFlash(params)}
+    ${selectedRunSet ? `<section class="panel"><strong>Related run history</strong><p class="muted">Run set ${escapeHtml(selectedRunSet)} · ${formatNumber(visibleRuns.length)} run${visibleRuns.length === 1 ? "" : "s"}</p><a href="/runs">Show all runs</a></section>` : ""}
     ${renderDashboardActionHistory()}
     <section class="panel">
       <h2>Recent Runs</h2>
@@ -34621,6 +34620,7 @@ function renderRunDetailHtml(input: {
     </div>
     ${renderDashboardFlash(input.params)}
     ${renderDashboardActionHistory()}
+    ${(input.run.runSetSize ?? 1) > 1 && input.run.runSetId ? `<section class="panel"><strong>Run history</strong><p class="muted">This run belongs to set ${escapeHtml(input.run.runSetId)} with ${formatNumber(input.run.runSetSize ?? 1)} immutable attempts.</p><a href="/runs?runSet=${encodeURIComponent(input.run.runSetId)}">View related runs →</a></section>` : ""}
     <div id="run-continuation">${renderRunContinuationBanner(input.run)}</div>
     <section id="run-stage-timeline" class="panel run-stage-timeline-panel">
       ${renderRunStageTimeline(input.tasks)}

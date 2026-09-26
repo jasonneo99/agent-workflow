@@ -1,0 +1,65 @@
+export interface WorkflowQueueItem {
+  runId: string;
+  runSetId: string;
+  runSetSize: number;
+  workflowId: string;
+  runStatus: string;
+  task: string;
+  projectName: string;
+  projectRootUri: string;
+  startedAt: string;
+  finishedAt: string | null;
+  blockedReason?: string | null;
+  failedReason?: string | null;
+  totalTasks: number;
+  queuedTasks: number;
+  runningTasks: number;
+  completedTasks: number;
+  failedTasks: number;
+  cancelledTasks: number;
+  nextStageId: string | null;
+  nextAgentId: string | null;
+  runningStageId: string | null;
+  runningAgentId: string | null;
+  runningWorkerId: string | null;
+  runningLeaseExpiresAt: string | null;
+  oldestQueuedAt: string | null;
+  oldestRunningAt: string | null;
+  recoveryRunId: string | null;
+  recoveryRunStatus: string | null;
+  recoveryStartedAt: string | null;
+  recoveryRelation: "replay" | "repair" | null;
+}
+
+export interface WorkflowRunStatus {
+  id: string;
+  runSetId?: string;
+  runSetSize?: number;
+  status: string;
+  workflowId: string;
+  task: string;
+  autonomy: string;
+  policyProfile: string;
+  policySnapshotHash: string;
+  modelTierOverride: string | null;
+  providerOverride: string | null;
+  evaluationMetadata: Record<string, unknown>;
+  replacementRunId?: string | null;
+  replacementRunStatus?: string | null;
+  replacementRunStartedAt?: string | null;
+  workflowDefinitionVersion?: string;
+  workflowDefinitionHash?: string;
+  constructionRationale?: Record<string, unknown>;
+  projectName: string;
+  projectRootUri: string;
+  startedAt: string;
+  finishedAt: string | null;
+  blockedReason?: string | null;
+  failedReason?: string | null;
+  dismissed?: boolean;
+  superseded?: boolean;
+  stateVersion?: string;
+  leaseEpoch?: string;
+  leaseOwner?: string | null;
+  leaseExpiresAt?: string | null;
+}
