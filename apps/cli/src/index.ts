@@ -29505,7 +29505,7 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td><strong>${escapeHtml(workflowDisplayName(run.workflowId))}</strong><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
-      <td>${escapeHtml(run.task)}</td>
+      <td class="run-task-cell">${run.task.length > 140 ? `<details class="run-task-details"><summary>${escapeHtml(`${run.task.slice(0, 140).trimEnd()}…`)}</summary><div>${escapeHtml(run.task)}</div></details>` : escapeHtml(run.task)}</td>
       <td>${renderDashboardDateTime(run.startedAt)}</td>
       <td title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</td>
     </tr>

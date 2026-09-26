@@ -125,6 +125,13 @@ test("queue presents active recovery chains without counting source failures twi
   assert.match(source, /\/runs\?runSet=\$\{encodeURIComponent\(item\.runSetId\)\}[\s\S]+Open set/u);
 });
 
+test("run history truncates long tasks behind an inline disclosure", () => {
+  assert.match(source, /class="run-task-cell"/u);
+  assert.match(source, /run\.task\.length > 140/u);
+  assert.match(source, /<details class="run-task-details"><summary>/u);
+  assert.match(stylesSource, /\.run-task-cell \{[^}]+max-width: 420px/u);
+});
+
 test("failed runs expose their reason and root-cause resolution controls", () => {
   assert.match(source, /Reason Failed/u);
   assert.match(source, /failedRunResolution\(run\.failedReason\)/u);

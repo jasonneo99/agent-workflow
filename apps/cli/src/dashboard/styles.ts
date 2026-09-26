@@ -44,6 +44,10 @@ export function dashboardCss(): string {
     table { width: 100%; border-collapse: collapse; background: white; border: 1px solid #e2e7f0; }
     th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid #e8edf5; font-size: 14px; vertical-align: top; }
     th { color: #4b5870; background: #f0f3f8; font-size: 12px; text-transform: uppercase; }
+    .run-task-cell { width: min(34vw, 420px); max-width: 420px; }
+    .run-task-details summary { cursor: pointer; color: #334155; line-height: 1.4; }
+    .run-task-details[open] summary { margin-bottom: 8px; color: #1d4ed8; }
+    .run-task-details div { color: #475569; line-height: 1.45; overflow-wrap: anywhere; }
     a { color: #1d4ed8; text-decoration: none; }
     pre { overflow: auto; background: #101828; color: #eef4ff; padding: 14px; font-size: 13px; line-height: 1.45; }
     .markdown-view { white-space: pre-wrap; word-break: break-word; }
