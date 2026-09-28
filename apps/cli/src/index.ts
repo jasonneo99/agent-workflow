@@ -174,6 +174,7 @@ import { dashboardRunDurationMs, formatDashboardDuration } from "./dashboard/hom
 import { aggregateRunEtas, estimateRunEta, type AggregateRunEta, type RunEta } from "./dashboard/run-eta.js";
 import { dashboardIcon, type DashboardIconName } from "./dashboard/icons.js";
 import { resolveTrainingProjectChoices } from "./dashboard/training-projects.js";
+import { logicalProjectIdentityKeys } from "./dashboard/project-identity.js";
 import { renderStudioHtml } from "./dashboard/studio.js";
 import { registerRepositoryMaintenanceCommand } from "./commands/repository-maintenance.js";
 import { registerContextThresholdCommands } from "./commands/context-thresholds.js";
@@ -16503,19 +16504,18 @@ async function loadDashboardProjectDetail(rootUri: string): Promise<DashboardPro
     allowWrites: Boolean(config.policies?.allow_wide_open || (config.actions?.allowed_write_paths?.length ?? 0) > 0)
   };
 }
-
 async function resolveDashboardProjectPath(rootUri: string): Promise<DashboardProjectPathResolution> {
   return resolveLocalProjectPath(rootUri);
 }
-
 async function loadDashboardProjectIdentityGroups(projects: DashboardProjectSummary[]): Promise<DashboardProjectIdentityGroup[]> {
   const resolutions = await Promise.all(projects.map(async (project) => ({
     project,
     resolution: await resolveDashboardProjectPath(project.rootUri)
   })));
+  const identityKeys = logicalProjectIdentityKeys(resolutions);
   const grouped = new Map<string, Array<(typeof resolutions)[number]>>();
   for (const item of resolutions) {
-    const key = item.resolution.localPathExists ? item.resolution.localRootUri : item.resolution.storageRootUri;
+    const key = identityKeys.get(item) ?? item.resolution.storageRootUri;
     grouped.set(key, [...(grouped.get(key) ?? []), item]);
   }
   return [...grouped.entries()]
