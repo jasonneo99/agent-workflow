@@ -52,6 +52,14 @@ test("engine promotes on revision/rejection feedback signals", () => {
   assert.equal(decision.feedbackSignals.length, 2);
 });
 
+test("engine bounds and deduplicates feedback signals before recording route rationale", () => {
+  const oversized = `Reviewer rejected the route because ${"detail ".repeat(80)}\n## unrelated document`;
+  const decision = engine.decide(engineInput({ known: [oversized, oversized] }));
+  assert.equal(decision.feedbackSignals.length, 1);
+  assert.ok(decision.feedbackSignals[0]!.length <= 180);
+  assert.doesNotMatch(decision.reason, /unrelated document/u);
+});
+
 test("engine approves local holdout only when all gates pass", () => {
   const base = [
     "Local Holdout Promotion",

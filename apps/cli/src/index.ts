@@ -32558,7 +32558,7 @@ function renderLocalRouteDecisionDrilldownHtml(
         <td>${escapeHtml(group.providerId)} / ${escapeHtml(group.modelTier)}<br><span class="muted">${formatNumber(group.runs)} receipt(s)</span></td>
         <td>${group.averageQuality ?? "n/a"}<br><span class="muted">${group.averageLatencyMs === null ? "latency n/a" : `${formatNumber(group.averageLatencyMs)}ms avg`}</span></td>
         <td>${group.fallbackCount}<br><span class="muted">${group.runs ? Number((group.fallbackCount / group.runs).toFixed(2)) : 0} fallback rate</span></td>
-        <td>${escapeHtml(explanation.reason)}<br><strong>Next:</strong> ${escapeHtml(explanation.nextAction)}</td>
+        <td><span>${escapeHtml(truncateText(explanation.reason, 220))}</span>${explanation.reason.length > 220 ? `<details class="run-task-details"><summary>View rationale</summary><div>${escapeHtml(truncateText(explanation.reason, 1200))}</div></details>` : ""}<strong>Next:</strong> ${escapeHtml(explanation.nextAction)}</td>
         <td>${routeDecisionFeedbackForm(trends.projectRootUri, group)}</td>
       </tr>
     `;

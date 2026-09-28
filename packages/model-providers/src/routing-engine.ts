@@ -93,7 +93,7 @@ export class RuleBasedRoutingEngine implements RoutingDecisionEngine {
     const feedbackSignals = [
       ...input.known.filter((line) => /revised|rejected/i.test(line)),
       ...input.state.filter((entry) => /revised|rejected/i.test(`${entry.key} ${entry.fact}`)).map((entry) => `${entry.key}: ${entry.fact}`)
-    ].slice(0, 3);
+    ].map(compactFeedbackSignal).filter(Boolean).filter((signal, index, signals) => signals.indexOf(signal) === index).slice(0, 3);
     const promoteFastStages = feedbackSignals.length > 0;
 
     const holdoutMarker = input.known.some((line) => line.trim().toLowerCase() === "local holdout promotion");
@@ -142,6 +142,11 @@ export class RuleBasedRoutingEngine implements RoutingDecisionEngine {
       reason: reasons.length ? `rules-v1: ${reasons.join("; ")}` : "rules-v1: no routing signals in header"
     };
   }
+}
+
+function compactFeedbackSignal(signal: string): string {
+  const firstLine = signal.split(/\r?\n/u, 1)[0]?.replace(/\s+/gu, " ").trim() ?? "";
+  return firstLine.length > 180 ? `${firstLine.slice(0, 177).trimEnd()}...` : firstLine;
 }
 
 export const defaultRoutingEngine: RoutingDecisionEngine = new RuleBasedRoutingEngine();

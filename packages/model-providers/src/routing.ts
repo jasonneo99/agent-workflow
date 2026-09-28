@@ -90,8 +90,7 @@ export async function selectModelRoute(
           routeEngineNote([preferenceDecision, learnedDecision]),
           autoRoute?.reason ?? "",
           latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
-          modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : "",
-          preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
+          modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : ""
         ].filter(Boolean).join(" ")
       : [
         `Adaptive routing selected ${providerId} for ${modelTier} stage ${input.workflowId}/${input.stageId} (${input.agentId}).`,
@@ -100,8 +99,7 @@ export async function selectModelRoute(
         taskEvidence?.reason ?? "",
         routeEngineNote([preferenceDecision, learnedDecision]),
         latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
-        modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : "",
-        preference.feedbackSignals.length ? `Feedback signals: ${preference.feedbackSignals.join("; ")}` : ""
+        modelTier !== latencyTier ? `Promoted from ${latencyTier} because prior project feedback includes revision or rejection signal.` : ""
         ].filter(Boolean).join(" "),
       latencyTier !== requestedModelTier ? `Downshifted from ${requestedModelTier} for a bounded routine stage with no high-risk task signal.` : "",
       capabilityFallback?.reason ?? ""
@@ -174,7 +172,8 @@ function decideRouting(
 function routeEngineNote(decisions: Array<{ decision: RoutingEngineDecision; escalated: boolean } | undefined>): string {
   const parts = decisions
     .filter((d): d is { decision: RoutingEngineDecision; escalated: boolean } => Boolean(d))
-    .map((d) => `${d.escalated ? "escalated:" : "engine:"} ${d.decision.reason}`);
+    .map((d) => `${d.escalated ? "escalated:" : "engine:"} ${d.decision.reason}`)
+    .filter((part, index, all) => all.indexOf(part) === index);
   return parts.length ? `Routing engine: ${parts.join(" | ")}` : "";
 }
 
