@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
-import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, workflowAcceptanceTask } from "./quality.js";
+import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, workflowAcceptanceTask } from "./quality.js";
 
 const input = {
   stageId: "implement",
@@ -327,4 +327,18 @@ test("review workflow finalizers are not misclassified as product delivery stage
     requestedFileWrites: []
   } as StageExecutionOutput;
   assert.equal(unfulfilledCompletionReason(reviewInput, output), null);
+});
+
+test("delivery verifiers require a successful governed command receipt", () => {
+  const verifierInput = {
+    ...input,
+    workflowId: "debug-failure",
+    stageId: "verify",
+    agentId: "auto-test-runner",
+    workflowTask: "Fix the failing reliability check",
+    stagePattern: { type: "verifier", requiresVerifier: false, promotionGate: "evaluation", stopConditions: [] }
+  } as StageExecutionInput;
+  assert.match(verificationCompletionReason(verifierInput, [] as unknown[] ) ?? "", /successful governed verification command/iu);
+  assert.match(verificationCompletionReason(verifierInput, [{ commandLine: "npm run check", exitCode: 1, timedOut: false }]) ?? "", /successful governed verification command/iu);
+  assert.equal(verificationCompletionReason(verifierInput, [{ commandLine: "npm run check", exitCode: 0, timedOut: false }]), null);
 });

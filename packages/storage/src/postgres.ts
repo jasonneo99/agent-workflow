@@ -7,7 +7,7 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
 import { transitionWorkflowRun } from "./run-transitions.js";
-import { findRecentDuplicateRun } from "./run-deduplication.js";
+import { findRecentDuplicateRun, findReplayConflict } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
 import { stableJson, workflowDefinitionHash } from "./registry.js";
@@ -1495,6 +1495,7 @@ export async function replayWorkflowRun(input: {
         projectId: string;
         projectName: string;
         projectRootUri: string;
+        startedAt: string;
         projectProfile: string;
         projectConfig: Record<string, unknown>;
         workflowId: string;
@@ -1520,6 +1521,7 @@ export async function replayWorkflowRun(input: {
            p.id::text as "projectId",
            p.name as "projectName",
            p.root_uri as "projectRootUri",
+           wr.started_at::text as "startedAt",
            p.profile as "projectProfile",
            p.config as "projectConfig",
            wr.workflow_id as "workflowId",
@@ -1575,6 +1577,42 @@ export async function replayWorkflowRun(input: {
           completedTasks: counts.completedTasks,
           skippedTasks: counts.skippedTasks,
           queuedTasks: Math.max(0, counts.tasks - counts.completedTasks)
+        };
+      }
+      const logicalProjectId = String((sourceRun.projectConfig as { project?: { id?: unknown } }).project?.id ?? sourceRun.projectRootUri).trim();
+      const replayConflict = await findReplayConflict(client, {
+        sourceRunId: input.sourceRunId,
+        sourceStartedAt: sourceRun.startedAt,
+        logicalProjectId,
+        workflowId: sourceRun.workflowId,
+        task: sourceRun.task
+      });
+      if (replayConflict) {
+        await client.query(
+          `update workflow_runs
+              set replacement_run_id = $2::uuid,
+                  updated_at = now()
+            where id = $1::uuid and replacement_run_id is null`,
+          [input.sourceRunId, replayConflict.id]
+        );
+        await client.query(
+          `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+           values ($1::uuid, 'workflow-orchestrator', 'workflow_replay_suppressed', $2, $3, $4::jsonb)`,
+          [
+            input.sourceRunId,
+            replayConflict.id,
+            `Replay suppressed because equivalent ${replayConflict.status} run ${replayConflict.id} already owns the logical project work.`,
+            JSON.stringify({ actor: input.actor, logicalProjectId, workflowId: sourceRun.workflowId, conflictingRunId: replayConflict.id, conflictingRunStatus: replayConflict.status })
+          ]
+        );
+        await client.query("commit");
+        return {
+          projectId: sourceRun.projectId,
+          runId: replayConflict.id,
+          tasks: replayConflict.tasks,
+          completedTasks: replayConflict.completedTasks,
+          skippedTasks: 0,
+          queuedTasks: Math.max(0, replayConflict.tasks - replayConflict.completedTasks)
         };
       }
       const workflow = sourceRun.workflowSnapshot ?? sourceRun.workflowDefinition;

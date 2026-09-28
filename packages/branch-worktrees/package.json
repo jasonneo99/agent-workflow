@@ -1,0 +1,7 @@
+{
+  "name": "@agent-workflow/branch-worktrees",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts"
+}

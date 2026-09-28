@@ -50,6 +50,7 @@ test("init.sql syncs performance tables and hot-path indexes for fresh installs"
 test("perf harness scripts execute real HTTP workloads and enforce comparisons", () => {
   const baseline = readFileSync(new URL("../../../scripts/performance-baseline.ts", import.meta.url), "utf8");
   const compare = readFileSync(new URL("../../../scripts/performance-compare.ts", import.meta.url), "utf8");
+  const workflowCompare = readFileSync(new URL("../../../scripts/workflow-speed-compare.ts", import.meta.url), "utf8");
   const docs = readFileSync(new URL("../../../docs/performance/speed-tests.md", import.meta.url), "utf8");
   assert.match(baseline, /workloadHash/);
   assert.match(baseline, /fetch/);
@@ -57,6 +58,11 @@ test("perf harness scripts execute real HTTP workloads and enforce comparisons",
   assert.match(compare, /--candidate/);
   assert.match(compare, /--budget/);
   assert.match(compare, /process\.exitCode = 1/);
+  assert.match(workflowCompare, /--direct/);
+  assert.match(workflowCompare, /--workflow/);
+  assert.match(workflowCompare, /--max-multiplier/);
+  assert.match(workflowCompare, /compareWorkflowToDirect/);
+  assert.match(workflowCompare, /process\.exitCode = 1/);
   assert.match(docs, /performance_baselines/);
   assert.match(docs, /performance_metrics/);
   assert.match(docs, /EXPLAIN ANALYZE/);

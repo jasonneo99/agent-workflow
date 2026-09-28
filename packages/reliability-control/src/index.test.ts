@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { assertFence, assertTransition, deriveRunState, evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, objectiveHash, releaseRequiresRollback, reliabilityFailureScenarios, sideEffectKey, workIntentsConflict } from "./index.js";
+import { assertFence, assertTransition, deriveRunState, evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, normalizeReliabilityEvidence, objectiveHash, releaseRequiresRollback, reliabilityFailureScenarios, sideEffectKey, workIntentsConflict } from "./index.js";
 
 test("authoritative state machine rejects terminal rewrites and derives run state from stages", () => {
   assert.doesNotThrow(() => assertTransition("queued", "leased"));
@@ -44,4 +44,16 @@ test("the deterministic failure matrix covers every reliability boundary", () =>
     { owner: "daemon", objectiveHash: "two", fileScopes: ["packages"] }
   ), true);
   assert.equal(releaseRequiresRollback({ switched: true, healthPassed: true, servicesReady: false }), true);
+});
+
+test("reliability evidence accepts only measured non-negative values", () => {
+  assert.deepEqual(normalizeReliabilityEvidence({ duplicateSideEffects: 0, recoveryDurationsMs: [1200], fleetFalseCriticals: 0, rollbackDurationsMs: [800] }), {
+    duplicateSideEffects: 0,
+    recoveryDurationsMs: [1200],
+    fleetFalseCriticals: 0,
+    rollbackDurationsMs: [800]
+  });
+  assert.throws(() => normalizeReliabilityEvidence({ recoveryDurationsMs: [] }), /non-empty array/u);
+  assert.throws(() => normalizeReliabilityEvidence({ duplicateSideEffects: -1 }), /non-negative/u);
+  assert.throws(() => normalizeReliabilityEvidence({ fleetFalseCriticals: "0" }), /finite non-negative/u);
 });

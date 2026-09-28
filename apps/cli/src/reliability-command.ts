@@ -2,7 +2,7 @@
 import "dotenv/config";
 import fs from "node:fs/promises";
 import { acquireWorkIntent, listWorkIntents, releaseWorkIntent, renewWorkIntent, withClient } from "../../../packages/storage/src/postgres.js";
-import { evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, type ReliabilityFailureEvidence, type ReliabilitySample } from "../../../packages/reliability-control/src/index.js";
+import { evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, normalizeReliabilityEvidence, type ReliabilityEvidence, type ReliabilitySample } from "../../../packages/reliability-control/src/index.js";
 
 function arg(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`); return index >= 0 ? process.argv[index + 1] : undefined;
@@ -22,10 +22,9 @@ async function reliabilitySample(): Promise<ReliabilitySample> {
   });
 }
 
-type ReliabilityEvidence = Partial<Pick<ReliabilitySample, "duplicateSideEffects" | "recoveryDurationsMs" | "fleetFalseCriticals" | "rollbackDurationsMs">> & { scenarios?: ReliabilityFailureEvidence[] };
 async function loadEvidence(): Promise<ReliabilityEvidence> {
   const evidencePath = arg("evidence");
-  return evidencePath ? JSON.parse(await fs.readFile(evidencePath, "utf8")) as ReliabilityEvidence : {};
+  return evidencePath ? normalizeReliabilityEvidence(JSON.parse(await fs.readFile(evidencePath, "utf8"))) : {};
 }
 
 async function main(): Promise<void> {
@@ -43,7 +42,10 @@ async function main(): Promise<void> {
     console.log(JSON.stringify({ kind: "agentflow_reliability_failure_matrix", generatedAt: new Date().toISOString(), status: scenarios.some((entry) => entry.status === "attention") ? "attention" : scenarios.some((entry) => entry.status === "unknown") ? "unknown" : "pass", scenarios }, null, 2)); return;
   }
   const [sample, evidence] = await Promise.all([reliabilitySample(), loadEvidence()]);
-  Object.assign(sample, evidence, { scenarios: undefined });
+  if (evidence.duplicateSideEffects !== undefined) sample.duplicateSideEffects = evidence.duplicateSideEffects;
+  if (evidence.recoveryDurationsMs !== undefined) sample.recoveryDurationsMs = evidence.recoveryDurationsMs;
+  if (evidence.fleetFalseCriticals !== undefined) sample.fleetFalseCriticals = evidence.fleetFalseCriticals;
+  if (evidence.rollbackDurationsMs !== undefined) sample.rollbackDurationsMs = evidence.rollbackDurationsMs;
   console.log(JSON.stringify({ kind: "agentflow_reliability_slo_report", generatedAt: new Date().toISOString(), sample, ...evaluateReliabilitySlos(sample) }, null, 2));
 }
 main().catch((error) => { console.error(error instanceof Error ? error.message : String(error)); process.exitCode = 1; });

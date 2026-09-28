@@ -471,6 +471,7 @@ This index maps every committed runtime package to its primary feature area.
 | Package | Primary capability |
 | --- | --- |
 | `agent-registry` | Agent, workflow, project, schedule, and bundle schema registry. |
+| `branch-worktrees` | Isolated parallel branch planning, verified integration, and cleanup. |
 | `bundle-trust` | Signing, verification, trust policy, compatibility, and upgrades. |
 | `cli-smoke` | Packaged CLI smoke validation. |
 | `client-capabilities` | Versioned client/runtime capability negotiation. |
@@ -516,6 +517,7 @@ This index maps every committed runtime package to its primary feature area.
 | `schema-registry` | Discoverable JSON Schema resources. |
 | `storage` | PostgreSQL persistence, migrations, queueing, receipts, and graph data. |
 | `training-discovery` | Official-source discovery, quarantine, and proposal lifecycle. |
+| `typed-decisions` | Provider-neutral decision holdouts, calibration, promotion gates, and receipts. |
 | `workflow-engine` | Compilation, queue execution, action loop, recovery, and telemetry. |
 | `workflow-inspector` | Workflow graph and policy inspection. |
 | `workflow-optimizer` | Event-driven optimization, budgets, simulation, and receipts. |

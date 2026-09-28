@@ -78,6 +78,7 @@
     "dashboard:sla": "node scripts/dashboard-sla-canary.mjs",
     "performance:baseline": "tsx scripts/performance-baseline.ts",
     "performance:compare": "tsx scripts/performance-compare.ts",
+    "performance:workflow-compare": "tsx scripts/workflow-speed-compare.ts",
     "agentflow": "tsx apps/cli/src/index.ts",
     "artifacts": "tsx apps/cli/src/index.ts artifacts",
     "accepted-outcomes": "tsx apps/cli/src/index.ts accepted-outcomes",

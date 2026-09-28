@@ -50,3 +50,34 @@ export function compareRegression(input: { baselineP95: number; candidateP95: nu
 export function calcThroughput(count: number, durationMs: number): number {
   return durationMs > 0 ? (count / durationMs) * 1000 : 0;
 }
+
+export type WorkflowTiming = {
+  totalMs: number;
+  queueDelayMs: number;
+  modelLatencyMs: number;
+  commandExecutionMs: number;
+  approvalWaitMs: number;
+  orchestrationOverheadMs: number;
+  retries: number;
+  usefulParallelism: number;
+};
+
+export function compareWorkflowToDirect(input: { direct: WorkflowTiming; workflow: WorkflowTiming; maximumMultiplier: number }) {
+  const valid = (timing: WorkflowTiming) => Object.values(timing).every((value) => Number.isFinite(value) && value >= 0);
+  if (!valid(input.direct) || !valid(input.workflow) || input.direct.totalMs <= 0 || input.maximumMultiplier < 1) throw new Error("Workflow comparison requires finite non-negative measurements and a positive direct baseline");
+  const multiplier = input.workflow.totalMs / input.direct.totalMs;
+  const contributors = [
+    ["queue", input.workflow.queueDelayMs],
+    ["model", input.workflow.modelLatencyMs],
+    ["command", input.workflow.commandExecutionMs],
+    ["approval", input.workflow.approvalWaitMs],
+    ["orchestration", input.workflow.orchestrationOverheadMs]
+  ] as const;
+  const dominantContributor = [...contributors].sort((left, right) => right[1] - left[1])[0]?.[0] ?? "unknown";
+  const recommendations = [] as string[];
+  if (input.workflow.queueDelayMs > input.direct.totalMs * 0.1) recommendations.push("Reduce queue delay or increase eligible worker capacity.");
+  if (input.workflow.orchestrationOverheadMs > input.direct.totalMs * 0.2) recommendations.push("Collapse redundant stages or reuse fresh evidence.");
+  if (input.workflow.usefulParallelism < 1.2 && input.workflow.totalMs > input.direct.totalMs) recommendations.push("Parallelize independent stages after conflict analysis.");
+  if (input.workflow.retries > input.direct.retries) recommendations.push("Address retry causes before relaxing latency budgets.");
+  return { multiplier, passed: multiplier <= input.maximumMultiplier, dominantContributor, recommendations };
+}

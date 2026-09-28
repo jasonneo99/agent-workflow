@@ -88,6 +88,33 @@ export type ReliabilityFailureEvidence = {
   scenario: typeof reliabilityFailureScenarios[number]; outcome: "pass" | "attention"; observedAt: string; artifact?: string;
 };
 
+export type ReliabilityEvidence = Partial<Pick<ReliabilitySample, "duplicateSideEffects" | "recoveryDurationsMs" | "fleetFalseCriticals" | "rollbackDurationsMs">> & { scenarios?: ReliabilityFailureEvidence[] };
+
+function finiteNonNegative(value: unknown, field: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new Error(`${field} must be a finite non-negative number`);
+  return value;
+}
+
+function durationList(value: unknown, field: string): number[] {
+  if (!Array.isArray(value) || value.length === 0) throw new Error(`${field} must be a non-empty array`);
+  return value.map((entry, index) => finiteNonNegative(entry, `${field}[${index}]`));
+}
+
+export function normalizeReliabilityEvidence(value: unknown): ReliabilityEvidence {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Reliability evidence must be a JSON object");
+  const source = value as Record<string, unknown>;
+  const evidence: ReliabilityEvidence = {};
+  if (source.duplicateSideEffects !== undefined) evidence.duplicateSideEffects = finiteNonNegative(source.duplicateSideEffects, "duplicateSideEffects");
+  if (source.fleetFalseCriticals !== undefined) evidence.fleetFalseCriticals = finiteNonNegative(source.fleetFalseCriticals, "fleetFalseCriticals");
+  if (source.recoveryDurationsMs !== undefined) evidence.recoveryDurationsMs = durationList(source.recoveryDurationsMs, "recoveryDurationsMs");
+  if (source.rollbackDurationsMs !== undefined) evidence.rollbackDurationsMs = durationList(source.rollbackDurationsMs, "rollbackDurationsMs");
+  if (source.scenarios !== undefined) {
+    if (!Array.isArray(source.scenarios)) throw new Error("scenarios must be an array");
+    evidence.scenarios = source.scenarios as ReliabilityFailureEvidence[];
+  }
+  return evidence;
+}
+
 export function evaluateReliabilityFailureScenarios(evidence: ReliabilityFailureEvidence[] = []) {
   return reliabilityFailureScenarios.map((id) => {
     const observations = evidence.filter((entry) => entry.scenario === id);

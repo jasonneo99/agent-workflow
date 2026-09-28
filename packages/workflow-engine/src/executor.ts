@@ -8,7 +8,7 @@ import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedF
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
-import { scoreStageOutput, unfulfilledCompletionReason } from "../../model-providers/src/quality.js";
+import { scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import { buildMemoryContextForStage, recordStageMemoryGraph } from "./memory-graph-wiring.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
@@ -50,29 +50,8 @@ export type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
 import { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 export { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 import { runWorkerWatchLoop, type WorkerWatchInput } from "./worker-watch.js";
-export function applyCurrentAutoApprovalThreshold(
-  snapshot: ReturnType<typeof projectConfigSchema.parse>,
-  current: ReturnType<typeof projectConfigSchema.parse>,
-  environment: NodeJS.ProcessEnv = process.env
-): ReturnType<typeof projectConfigSchema.parse> {
-  const autopilotSetting = environment.AGENTFLOW_APPROVAL_AUTOPILOT?.trim().toLowerCase();
-  const environmentThreshold = environment.AGENTFLOW_APPROVAL_AUTOPILOT_MAX_RISK?.trim().toLowerCase();
-  const configuredThreshold = current.actions.auto_approve_max_risk;
-  const effectiveThreshold = autopilotSetting === "on" || autopilotSetting === "true" || autopilotSetting === "1"
-    ? environmentThreshold === "low" || environmentThreshold === "medium" || environmentThreshold === "high"
-      ? environmentThreshold
-      : "medium"
-    : autopilotSetting === "off" || autopilotSetting === "false" || autopilotSetting === "0"
-      ? "none"
-      : configuredThreshold;
-  return projectConfigSchema.parse({
-    ...snapshot,
-    actions: {
-      ...snapshot.actions,
-      auto_approve_max_risk: effectiveThreshold
-    }
-  });
-}
+import { applyCurrentAutoApprovalThreshold } from "./approval-threshold.js";
+export { applyCurrentAutoApprovalThreshold } from "./approval-threshold.js";
 
 export class LostWorkflowTaskLeaseError extends Error {
   constructor(taskId: string) {
@@ -1385,6 +1364,23 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         });
         stageTelemetry.end("blocked", "Required actions were rejected or are awaiting approval.");
+        clearInterval(leaseHeartbeat);
+        result.failed += 1;
+        continue;
+      }
+      const verificationViolation = verificationCompletionReason(routedStageInput, actionResults);
+      if (verificationViolation) {
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          summary: verificationViolation,
+          reason: verificationViolation,
+          artifact: { ...output.artifact, outcome: "blocked", blockedReason: verificationViolation, actionResults }
+        });
+        stageTelemetry.end("blocked", verificationViolation);
         clearInterval(leaseHeartbeat);
         result.failed += 1;
         continue;

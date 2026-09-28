@@ -233,9 +233,13 @@ silently train agents or expand daemon authority.
      issuance and provider-breaker revalidation. A scoped breaker drill proved
      stale-grant denial, lease invalidation, and human re-enable generations.
      Reliability accounting now excludes incomplete side-effect reservations,
-     so the live completed-mutation sample reports 896/896 durable receipts.
+     so the latest live completed-mutation sample reports 1,046/1,046 durable
+     receipts, zero expired running tasks, and zero invalid completed runs.
      Sustained samples, timed recovery and rollback drills, duplicate-effect and
      false-critical evidence, and a reviewed promotion canary remain required.
+     Reliability evidence imports now validate measured non-negative counters
+     and non-empty duration samples before they can influence the SLO report;
+     absent evidence remains unknown rather than being inferred as zero.
      The Learning Loop now has a machine-evaluated production-readiness gate
      that fails closed until those samples and drills exist and blocks when the
      false-critical breaker rate exceeds 2%.
@@ -258,7 +262,12 @@ silently train agents or expand daemon authority.
      generation while remaining in PostgreSQL recovery, reproduced an expiring
      Redis proof key, and passed PostgreSQL, Redis, and object-store health
      monitors. Destructive promotion and rollback remain maintenance-window
-     work and are not inferred from replication readiness.
+     work and are not inferred from replication readiness. A fresh read-only
+     storage verification again matched every durable table fingerprint and
+     confirmed service reachability, but correctly reported attention because
+     source and target resolved to the same shared plane. A fresh read-only
+     restore-lineage drill passed; independent-plane promotion and rollback
+     remain the unresolved acceptance boundary.
 4. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
@@ -274,7 +283,7 @@ silently train agents or expand daemon authority.
      module with focused compatibility coverage. Learning-loop commands,
      provider execution, scheduling, and dashboard rendering were added in
      owned modules without raising the CLI ceiling; the remaining reduction
-     target is 4,807 lines across three files, so this item remains open rather than
+     target is 4,814 lines across three files, so this item remains open rather than
      resetting the baseline.
 ## Phase 1: Shared Platform Hardening
 
@@ -352,6 +361,80 @@ Goal: improve quality and cost while keeping personalization auditable and porta
 - [x] Evaluation harness for comparing providers, tiers, and prompts.
   - Compare quality, fallback, latency, estimated cost, and feedback outcomes.
   - Support synthetic benchmark projects and project-local private evals.
+
+- [ ] Evidence-gated typed-decision router: rules control plus interchangeable local and hosted candidates.
+  - Milestone: 10 Model / Provider Intelligence
+  - Priority: medium
+  - Goal: use small non-generative decision models for bounded classification,
+    routing, tool selection, risk triage, and first-pass evaluation without
+    replacing reasoning models, deterministic policy, or human authority.
+  - Contract: define one provider-neutral typed-decision interface for boolean,
+    bounded-choice, and ordinal-score questions, including probability,
+    confidence, inconclusive/error states, latency, model provenance, policy
+    version, and metadata-only receipts. Never accept generated prose as a
+    governed decision or expose private prompt/output bodies in shared evidence.
+  - Phase 1 — deterministic baseline: turn the existing rules routing engine
+    into the control arm, assemble scrubbed synthetic and project-local private
+    holdouts, and measure accuracy, calibration, false approvals, abstention,
+    latency, resource use, and escalation rate by task class.
+  - Phase 2 — candidate registry and provenance gate: define optional adapters
+    for Laya, Jev, Eikos, AutoJev, and future compatible typed-decision models.
+    Do not encode a universal winner. Before a candidate enters evaluation,
+    verify its publisher, model and runtime license, weights or endpoint
+    availability, supported hardware, data handling, update policy, and
+    reproducible benchmark configuration. Keep weights, credentials, runtime
+    installation, endpoints, and hardware configuration outside the core
+    source tree.
+  - Progress: a provider-neutral `typed-decisions` foundation now validates
+    candidate provenance, models boolean/choice/ordinal holdouts, scores
+    accuracy, calibration, false approvals, abstention, latency, and cost by
+    task class, fails closed to deterministic rules, and emits metadata-only
+    hashed evaluation receipts. Runtime adapters and real candidate holdouts
+    remain intentionally unpromoted.
+  - Phase 3 — matched shadow evaluation: run every available candidate read-only
+    beside the rules control and current-model baseline on the same versioned
+    holdouts. It must not route work, approve actions, change risk, or block
+    execution while evidence is collected. Score each decision class separately,
+    including prompt injection, PII, RAG faithfulness, tool routing, complaint
+    routing, commit type, search relevance, workflow triage, and approval-risk
+    classification. Report accuracy, class balance, calibration, false approvals,
+    abstention and no-answer rate, latency, resource use, cost, and escalation
+    rate; aggregate averages are discovery evidence, not promotion evidence.
+  - Phase 4 — per-task routing tournament: select the fastest and least costly
+    candidate that clears the quality, calibration, privacy, availability, and
+    resource thresholds for each decision class. Allow different agents and
+    daemon lanes to use different winners. Re-evaluate on model, runtime,
+    policy, hardware, or holdout changes, and retain availability-aware fallback
+    order rather than a fixed Laya-to-Jev migration path.
+  - Phase 5 — bounded promotion: permit only holdout-approved low-risk task
+    classes with confidence and calibration thresholds, explicit abstention,
+    deterministic-policy rechecks, a heavier-model or human escalation path,
+    drift monitoring, per-project opt-in, visible provider attribution, and
+    one-step rollback to rules. Jev and any other hosted candidate additionally
+    require an explicit data policy, operator-supplied credentials, network
+    approval, cost limits, and redacted inputs. Agent Workflow must remain fully
+    functional without any optional model or proprietary endpoint.
+  - Phase 6 — judge experiment: evaluate typed multi-criterion judging as a
+    cheap first pass for agent outputs. Code-verifiable facts remain local
+    deterministic checks; inconclusive, conflicting, high-risk, or weakly
+    calibrated verdicts escalate to the existing evaluator or a human. A judge
+    verdict alone cannot authorize writes, commands, deployments, security
+    decisions, or completion claims.
+  - Phase 7 — continuous challenger evaluation: periodically rerun the matched
+    holdouts for active providers and newly discovered candidates, preserving
+    historical receipts and alerting on drift or contradictory evidence. New
+    public benchmark claims may nominate a challenger but cannot change routing
+    authority without local holdout evidence and the normal promotion gate.
+  - Promotion gate: require representative holdouts, no regression against the
+    deterministic and current-model baselines, bounded false-approval rate,
+    stable calibration, acceptable latency/cost, open-source-boundary review,
+    visible dashboard attribution, reversible project-local configuration, and
+    explicit approval before any decision model gains runtime authority.
+  - Exit gate: publish reproducible per-task comparison receipts for rules and
+    every evaluated candidate; promote only the task classes supported by
+    evidence; record rejected or inconclusive candidates truthfully; and
+    document fallback order, rollback, unavailability, privacy, licensing,
+    hardware demand, cost, and model-update behavior.
 
 - [x] Local LLM / first-class local model provider and hybrid routing.
   - Milestone: 5 Model Intelligence Layer
@@ -1143,10 +1226,21 @@ this file directly, so roadmap updates automatically flow into `/roadmap` and
   - Target: simple work at no more than 1.2x direct execution latency, medium work at no more than 1.5x, and complex/high-risk work at no more than 2x.
   - Next: add governed per-branch Git worktree isolation, overlap prediction, conflict-aware merge ordering, branch verification receipts, and automatic cleanup so parallel same-project writes do not share a mutable checkout.
   - Next: measure direct baseline, queue time, orchestration overhead, model time, approval time, retries, and useful parallelism per run; then use that evidence to tune classification and reuse fresh evidence safely.
+  - Progress: the branch-worktree package now validates safe branch paths,
+    predicts overlapping write scopes, topologically orders dependency-aware
+    integration, keeps managed worktrees outside the primary checkout, creates
+    bounded branches from an immutable base, requires passing verification
+    receipts before ordered merges, and removes only successfully integrated
+    worktrees and branches. Wiring this lifecycle into worker stage execution
+    and durable receipts remains open.
   - Progress: per-run OpenTelemetry reports now include queue delay, model
     latency, measured approval wait, orchestration overhead, retry count, and
-    useful parallelism. A direct-execution comparison baseline and evidence-led
-    tuning remain.
+    useful parallelism. The comparison contract now requires a measured direct
+    baseline, enforces workflow multipliers, identifies dominant contributors,
+    and emits evidence-based tuning hints. One current workflow sample was
+    captured; a fail-closed `performance:workflow-compare` command now consumes
+    explicit direct/workflow timing evidence, while its matched direct baseline
+    and evidence-led tuning remain.
 
 - [x] Task: create a live roadmap dashboard with list and Gantt-style views.
   - Milestone: 3 Developer Dashboard

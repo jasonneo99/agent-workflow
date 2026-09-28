@@ -96,6 +96,18 @@ function artifactHasSuccessfulVerificationCommand(artifact: Record<string, unkno
   });
 }
 
+export function verificationCompletionReason(input: StageExecutionInput, actionResults: unknown[]): string | null {
+  const acceptanceTask = workflowAcceptanceTask(input.workflowTask);
+  const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix)\b/iu.test(acceptanceTask);
+  const deliveryWorkflow = !input.workflowId
+    || ["build-feature", "debug-failure", "dependency-upgrade", "data-migration", "wide-open-automation"].includes(input.workflowId);
+  const verifier = input.stagePattern?.type === "verifier" || input.agentId === "auto-test-runner" || /(?:^|[-_])verify(?:$|[-_])/iu.test(input.stageId);
+  if (!deliveryWorkflow || !deliveryIntent || !verifier) return null;
+  return artifactHasSuccessfulVerificationCommand({ actionResults })
+    ? null
+    : "Delivery verification stage cannot complete without a successful governed verification command receipt.";
+}
+
 export function unfulfilledCompletionReason(input: StageExecutionInput, output: StageExecutionOutput): string | null {
   if (output.outcome !== "completed") return null;
   const deliveryWorkflow = !input.workflowId

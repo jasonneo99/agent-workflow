@@ -22,6 +22,12 @@ npm run dashboard:sla -- --project . --samples 3 --warm-budget-ms 800
 npm run performance:baseline -- --project . --base-url http://127.0.0.1:17888 --samples 20
 npm run performance:compare -- --project . --baseline <baseline-id> --candidate <candidate-id> --budget 10
 
+# Compare one measured governed workflow with the same task executed directly.
+# Both JSON files must contain totalMs, queueDelayMs, modelLatencyMs,
+# commandExecutionMs, approvalWaitMs, orchestrationOverheadMs, retries, and
+# usefulParallelism as finite non-negative numbers.
+npm run performance:workflow-compare -- --direct <direct-timing.json> --workflow <workflow-timing.json> --max-multiplier 1.5
+
 # manual EXPLAIN
 psql $DATABASE_URL -c "EXPLAIN ANALYZE SELECT * FROM workflow_runs WHERE project_id='...' AND status='running' ORDER BY created_at DESC LIMIT 20;"
 ```
@@ -38,6 +44,13 @@ The supported harness measures actual `/api/queue`, `/api/runs`, and
 memory before one typed storage write so observer I/O is outside timed regions.
 The baseline and candidate must have the same workload hash and enough samples;
 HTTP failures or a breached p95 budget make comparison exit nonzero.
+
+The direct-versus-workflow comparison also exits nonzero when the configured
+multiplier is exceeded. It identifies the dominant measured contributor and
+emits bounded tuning suggestions, but it does not invent a direct baseline from
+workflow history. Use the same task, source revision, provider/model, and
+acceptance checks for both measurements; otherwise record the comparison as
+non-equivalent rather than using it to tune routing.
 
 Microbenchmarks, database query plans, and end-to-end dashboard SLA canaries are
 different evidence classes. Do not label filesystem or serialization timing as
