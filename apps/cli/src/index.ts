@@ -173,6 +173,7 @@ import { dashboardCss, roadmapDashboardCss } from "./dashboard/styles.js";
 import { dashboardRunDurationMs, formatDashboardDuration } from "./dashboard/home-metrics.js";
 import { aggregateRunEtas, estimateRunEta, type AggregateRunEta, type RunEta } from "./dashboard/run-eta.js";
 import { dashboardIcon, type DashboardIconName } from "./dashboard/icons.js";
+import { resolveTrainingProjectChoices } from "./dashboard/training-projects.js";
 import { renderStudioHtml } from "./dashboard/studio.js";
 import { registerRepositoryMaintenanceCommand } from "./commands/repository-maintenance.js";
 import { registerContextThresholdCommands } from "./commands/context-thresholds.js";
@@ -26191,8 +26192,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
     try {
       if (!project || !id || !allowed.has(status as TrainingProposalDecisionStatus)) throw new Error("Project, proposal, and a valid decision are required.");
+      const { selected: projectDir } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), project, process.cwd());
       await decideTrainingProposal({
-        projectDir: path.resolve(process.cwd(), project),
+        projectDir,
         id,
         status: status as Exclude<TrainingProposalDecisionStatus, "pending">,
         reviewer: form.get("reviewer")?.trim() || "dashboard-operator",
@@ -26215,10 +26217,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     response.end(JSON.stringify(runsWithEta, null, 2));
     return;
   }
-
   if (requestUrl.pathname === "/api/training-proposals") {
-    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? process.cwd();
-    const inbox = await readTrainingProposalInbox(path.resolve(process.cwd(), project));
+    const requested = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT;
+    const { selected } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), requested, process.cwd());
+    const inbox = await readTrainingProposalInbox(selected);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
     response.end(JSON.stringify(inbox, null, 2));
     return;
@@ -27629,17 +27631,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
     return;
   }
-
   if (requestUrl.pathname === "/training-proposals") {
     const projects = await listProjectStorageSummaries(100);
-    const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? process.cwd();
-    const projectDir = path.resolve(process.cwd(), project);
+    const { projects: localProjects, selected: projectDir } = await resolveTrainingProjectChoices(projects, requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT, process.cwd());
     const [inbox, report] = await Promise.all([
       readTrainingProposalInbox(projectDir),
       readLatestTrainingDiscoveryReport(projectDir)
     ]);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderTrainingProposalsHtml(inbox, report, projects, project, requestUrl.searchParams));
+    response.end(renderTrainingProposalsHtml(inbox, report, localProjects, projectDir, requestUrl.searchParams));
     return;
   }
 
