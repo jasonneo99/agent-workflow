@@ -34,6 +34,30 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
   assert.match(prompt, /PINNED KEYWORD CONTRACT: BUILD means create, verify, package, and deliver a usable product/u);
   assert.match(prompt, /provider sandbox is intentionally read-only and is never itself a blocker/u);
   assert.match(prompt, /evidence gaps do not block the review itself/u);
+  assert.match(prompt, /Distinguish implementing a consent gate from exercising the gated authority/u);
+  assert.match(prompt, /authenticated text or voice channel/u);
+});
+
+test("stage prompt allows local implementation of a financial consent gate without granting purchase authority", () => {
+  const prompt = buildStagePrompt({
+    runId: "run-consent",
+    taskId: "task-consent",
+    projectConfig: project,
+    workflowId: "build-feature",
+    workflowTask: "Make the assistant able to request more provider credits by asking me first.",
+    stageId: "implement",
+    agentId: "implementation-agent",
+    agentName: "Implementation Agent",
+    agentPrompt: "Implement narrowly.",
+    stageGoal: "Implement and test the approval-gated request flow.",
+    compiledBrief: "The project has an authenticated text and voice request channel.",
+    priorReceipts: []
+  });
+
+  assert.match(prompt, /authorizes policy-allowed local implementation and tests of that gate/u);
+  assert.match(prompt, /does not authorize the eventual external action/u);
+  assert.match(prompt, /amount or bounded scope/u);
+  assert.match(prompt, /require a new decision when material terms change/u);
 });
 
 test("review evidence gaps become findings while real authority blockers remain blocked", () => {
