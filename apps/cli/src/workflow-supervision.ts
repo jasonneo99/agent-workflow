@@ -105,7 +105,10 @@ export function workflowDeliveryRepairReason(
     const actions = item.actionResults ?? item.artifact?.actionResults;
     const text = `${item.summary ?? ""} ${JSON.stringify(item.artifact ?? {})}`;
     const explicitlyMissing = /no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|(?:remains?|is|was|were) unverified|verification .* (?:absent|unsupported|pending)|promotion gate failed/iu.test(text);
-    return !explicitlyMissing && ((Array.isArray(commands) && commands.length > 0) || (Array.isArray(actions) && actions.length > 0));
+    if (explicitlyMissing) return false;
+    if ((Array.isArray(commands) && commands.length > 0) || (Array.isArray(actions) && actions.length > 0)) return true;
+    const summary = String(item.summary ?? "");
+    return summary.trim().length >= 20 && /tests?\s+passed|verification\s+(passed|complete|successful)|\d+\s+tests?\s+run/i.test(summary);
   });
 
   if (run.status === "completed" && !hasProductWrite) {
