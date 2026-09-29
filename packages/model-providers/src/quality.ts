@@ -133,6 +133,11 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (deliveryWorkflow && deliveryIntent && implementationStage) {
     return "Delivery implementation stage cannot complete without at least one governed product file write; planning or inspection alone does not satisfy the user acceptance contract.";
   }
+  // Verification providers describe commands before the governed executor has
+  // run them. Do not treat truthful "results are pending" language as a final
+  // completion claim while executable verification requests are still present;
+  // the executor will run them and ask the stage to evaluate their receipts.
+  if (deliveryVerifier && (output.requestedCommands?.length ?? 0) > 0) return null;
   const text = `${output.summary} ${JSON.stringify(output.artifact)}`.toLowerCase();
   if (deliveryVerifier && /(?:remains?|is|was|were) unverified|no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|verification .* (?:absent|unsupported|pending)|promotion .* not approved/iu.test(text)) {
     return "Delivery verification stage claimed completion while explicitly reporting that required verification was not performed.";

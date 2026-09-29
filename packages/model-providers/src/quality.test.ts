@@ -294,6 +294,32 @@ test("verification prose cannot replace an executed verification receipt", () =>
   assert.match(unfulfilledCompletionReason(finalizerInput, output) ?? "", /no completed verification evidence/iu);
 });
 
+test("verification commands execute before pending-result prose is judged incomplete", () => {
+  const verifyInput = {
+    ...input,
+    workflowId: "build-feature",
+    stageId: "verify",
+    agentId: "auto-test-runner",
+    workflowTask: "Implement and verify a consent-gated provider action.",
+    stagePattern: { type: "verifier", requiresVerifier: false, promotionGate: "evaluation", stopConditions: [] },
+    priorStageArtifacts: [{
+      stageId: "implement",
+      agentId: "implementation-agent",
+      summary: "Implemented the feature.",
+      artifact: { actionResults: [{ type: "file_write", path: "src/consent.ts", artifactUri: "db://write/consent" }] }
+    }]
+  };
+  const output = {
+    outcome: "completed",
+    summary: "Requested focused tests through the governed executor; results are pending.",
+    artifact: { findings: ["Verification commands are ready."], nextAction: "Run the requested commands." },
+    requestedCommands: ["npm test"],
+    requestedFileWrites: []
+  } as StageExecutionOutput;
+
+  assert.equal(unfulfilledCompletionReason(verifyInput, output), null);
+});
+
 test("checkpoint evidence rejects receipt-only implementation and accepts executed verification", () => {
   assert.equal(completedStageProvidesPinnedBuildEvidence({
     workflowTask: "Build a finished application",
