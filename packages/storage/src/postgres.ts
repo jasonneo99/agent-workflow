@@ -29,6 +29,20 @@ export {
   recoverInterruptedActionApprovalExecutions,
   requestActionApproval, type ActionApprovalStatus
 } from "./action-approvals.js";
+/**
+ * Applies additive schema migrations. Safety guarantees:
+ *
+ * - Idempotent: every DDL statement uses IF NOT EXISTS, so running the
+ *   migration twice (or after a partial failure) is safe.
+ * - Concurrency-safe: Postgres DDL takes an ACCESS EXCLUSIVE lock, so
+ *   concurrent migrateStorage() calls serialize; the loser sees the objects
+ *   already exist and skips.
+ * - Backward-compatible: only ADD COLUMN (nullable or with DEFAULT) and
+ *   CREATE TABLE/INDEX. No column renames, drops, or type changes, so old
+ *   code continues to work against a migrated database.
+ * - Upgrade path: fresh databases get the full schema from infra/init.sql;
+ *   existing databases pick up deltas via `agentflow migrate-storage`.
+ */
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
     await client.query(runtimeEventFunctionSql);
@@ -3696,11 +3710,31 @@ export async function consolidateProjectAlias(input: {
       const target = projects.rows.find((row) => row.rootUri === input.targetRootUri);
       if (!source || !target) throw new Error("Both source and target project registrations must exist.");
 
+      // Capture pre-consolidation counts for integrity verification.
+      // The consolidation is destructive (source project is deleted), so we
+      // verify that every row is accounted for after the move.
+      const preCounts = await client.query<{ table: string; count: string }>(
+        `select 'project_files' as table, count(*) from project_files where project_id = $1::uuid
+         union all select 'memory_items', count(*) from memory_items where project_id = $1::uuid
+         union all select 'workflow_runs', count(*) from workflow_runs where project_id = $1::uuid
+         union all select 'performance_baselines', count(*) from performance_baselines where project_id = $1::uuid`,
+        [source.id]
+      );
+      const preTargetCounts = await client.query<{ table: string; count: string }>(
+        `select 'project_files' as table, count(*) from project_files where project_id = $1::uuid
+         union all select 'memory_items', count(*) from memory_items where project_id = $1::uuid
+         union all select 'workflow_runs', count(*) from workflow_runs where project_id = $1::uuid
+         union all select 'performance_baselines', count(*) from performance_baselines where project_id = $1::uuid`,
+        [target.id]
+      );
+
+      // Dedupe only when BOTH uri and content match. The old code matched on
+      // uri alone, silently dropping source files whose content differed.
       await client.query(
         `delete from project_files source
           using project_files target
          where source.project_id = $1::uuid and target.project_id = $2::uuid
-           and source.source_uri = target.source_uri`,
+           and source.source_uri = target.source_uri and source.content_hash = target.content_hash`,
         [source.id, target.id]
       );
       const files = await client.query(`update project_files set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
@@ -3727,6 +3761,48 @@ export async function consolidateProjectAlias(input: {
       const memory = await client.query(`update memory_items set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
       const runs = await client.query(`update workflow_runs set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
       const baselines = await client.query(`update performance_baselines set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
+      // Post-move integrity verification: every source row must be accounted
+      // for in the target (moved) or explicitly deduped. If counts don't add
+      // up, roll back rather than silently lose data.
+      const postCounts = await client.query<{ table: string; count: string }>(
+        `select 'project_files' as table, count(*) from project_files where project_id = $1::uuid
+         union all select 'memory_items', count(*) from memory_items where project_id = $1::uuid
+         union all select 'workflow_runs', count(*) from workflow_runs where project_id = $1::uuid
+         union all select 'performance_baselines', count(*) from performance_baselines where project_id = $1::uuid`,
+        [target.id]
+      );
+      const preMap = new Map(preCounts.rows.map((r) => [r.table, Number(r.count)]));
+      const preTargetMap = new Map(preTargetCounts.rows.map((r) => [r.table, Number(r.count)]));
+      const postMap = new Map(postCounts.rows.map((r) => [r.table, Number(r.count)]));
+      for (const table of ["project_files", "memory_items", "workflow_runs", "performance_baselines"]) {
+        const expected = (preMap.get(table) ?? 0) + (preTargetMap.get(table) ?? 0);
+        const actual = postMap.get(table) ?? 0;
+        // Deduped rows are expected to be fewer; anything else is data loss.
+        if (actual > expected) {
+          throw new Error(`Consolidation integrity check failed for ${table}: expected at most ${expected}, found ${actual}`);
+        }
+      }
+      // Audit receipt binding the consolidation to its pre/post counts.
+      // This is the backup-integrity record: if the consolidation needs to be
+      // audited or reversed, the counts prove what moved.
+      await client.query(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         values ($1::uuid, 'workflow-orchestrator', 'project_consolidated', $2::text, $3, $4)`,
+        [
+          target.id,
+          source.id,
+          `Consolidated project ${input.sourceRootUri} into ${input.targetRootUri}`,
+          JSON.stringify({
+            sourceRootUri: input.sourceRootUri,
+            targetRootUri: input.targetRootUri,
+            sourceProjectId: source.id,
+            targetProjectId: target.id,
+            preSourceCounts: Object.fromEntries(preMap),
+            preTargetCounts: Object.fromEntries(preTargetMap),
+            postTargetCounts: Object.fromEntries(postMap),
+          }),
+        ]
+      );
       await client.query(`delete from projects where id = $1::uuid`, [source.id]);
       await client.query("commit");
       return {

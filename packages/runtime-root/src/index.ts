@@ -115,7 +115,7 @@ export async function resolveLocalProjectPath(rootUri: string, options: ResolveL
   const macHomePrefix = `/Users/${userName}`;
 
   const macHomeCandidate = applyRootAlias(storageRootUri, linuxHomePrefix, macHomePrefix);
-  if (macHomeCandidate && await exists(macHomeCandidate)) {
+  if (macHomeCandidate && await isAgentWorkflowProjectDir(macHomeCandidate, exists)) {
     return {
       storageRootUri,
       localRootUri: macHomeCandidate,
@@ -127,7 +127,7 @@ export async function resolveLocalProjectPath(rootUri: string, options: ResolveL
   }
 
   const linuxHomeCandidate = applyRootAlias(storageRootUri, macHomePrefix, linuxHomePrefix);
-  if (linuxHomeCandidate && await exists(linuxHomeCandidate)) {
+  if (linuxHomeCandidate && await isAgentWorkflowProjectDir(linuxHomeCandidate, exists)) {
     return {
       storageRootUri,
       localRootUri: linuxHomeCandidate,
@@ -139,7 +139,7 @@ export async function resolveLocalProjectPath(rootUri: string, options: ResolveL
   }
 
   const localProjectsCandidate = path.join(homeDir, "Projects", path.basename(storageRootUri));
-  if (await exists(localProjectsCandidate)) {
+  if (await isAgentWorkflowProjectDir(localProjectsCandidate, exists)) {
     return {
       storageRootUri,
       localRootUri: localProjectsCandidate,
@@ -172,4 +172,16 @@ async function pathExists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+async function isAgentWorkflowProjectDir(
+  target: string,
+  exists: (p: string) => boolean | Promise<boolean>
+): Promise<boolean> {
+  // Heuristic path mappings (mac-home, linux-home, projects-basename) must
+  // verify project identity, not just path existence. A matching directory
+  // name is not proof it is the same project — require the .agent-workflow
+  // marker directory to avoid mapping to an unrelated folder.
+  if (!(await exists(target))) return false;
+  return await exists(path.join(target, ".agent-workflow"));
 }

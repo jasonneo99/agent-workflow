@@ -129,7 +129,17 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
       return `Pinned BUILD contract violated: no completed verification evidence proves that the created product works. ${PINNED_BUILD_CONTRACT}`;
     }
   }
-  if ((output.requestedFileWrites ?? []).some((write) => isProductWritePath(write.path))) return null;
+  // A product write must be substantive: non-empty content that actually changes
+  // the file. An empty write or a no-op touch does not prove delivery.
+  const hasSubstantiveProductWrite = (output.requestedFileWrites ?? []).some((write) => {
+    if (!isProductWritePath(write.path)) return false;
+    const content = typeof write.content === "string" ? write.content : "";
+    // Require meaningful content: at least 10 non-whitespace characters.
+    // This rejects empty files and trivial placeholders while allowing
+    // legitimate small changes.
+    return content.replace(/\s/g, "").length >= 10;
+  });
+  if (hasSubstantiveProductWrite) return null;
   if (deliveryWorkflow && deliveryIntent && implementationStage) {
     return "Delivery implementation stage cannot complete without at least one governed product file write; planning or inspection alone does not satisfy the user acceptance contract.";
   }

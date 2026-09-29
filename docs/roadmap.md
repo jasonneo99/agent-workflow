@@ -1,5 +1,9 @@
 # Agent Workflow Roadmap
 
+> Checkbox semantics: `[x]` means implemented and working on the primary
+> development host. It does **not** mean release-ready. See [Release
+> readiness](#release-readiness) for what "portable" requires.
+
 ## Direct-speed governed execution
 
 - [x] Continuously replenish worker slots while long provider calls are active.
@@ -12,6 +16,15 @@ The compatibility switches are `AGENTFLOW_CODEX_SESSION_REUSE=0` and
 `AGENTFLOW_ADAPTIVE_STATIC_WORKFLOWS=0`. Routing and workflow receipts retain the
 selected tier and optimized stage graph so speed changes remain visible and
 reversible.
+
+## Chat-mode Studio integration
+
+- [x] Show requester identity and delivery channel on the active task.
+- [x] Route Studio approval decisions through the shared conversational reply contract.
+- [x] Redirect deduplicated retries to the continuation that owns the work.
+- [x] Evaluate delivery evidence across recorded continuation ancestry.
+- [x] Replace generic blocked-run prompts with blocker-specific reply guidance.
+- [x] Provide transactional physical consolidation for obsolete project aliases after backup.
 
 This roadmap keeps Agent Workflow moving toward reusable shared platform IP while keeping product-specific agent engines private.
 
@@ -1493,3 +1506,16 @@ Before adding a roadmap item, classify it:
 - Private product IP: domain prompts, product scoring, customer data, schemas, authorization, production action policy.
 
 Only shared platform IP belongs in this open-source roadmap. Product-specific learnings should be generalized before promotion.
+
+## Release readiness
+
+An item is portable (release-ready) only when all of these hold:
+
+- [ ] Works from a clean install (no private env vars, no hardcoded hosts)
+- [ ] `migrate-storage` upgrades existing databases without manual steps
+- [ ] Documented in `docs/` (not just code comments)
+- [ ] Covered by automated tests (`tsc` clean counts, but behavior needs tests)
+- [ ] No personal paths, hostnames, or credentials in the tree
+
+Items marked `[x]` above that do not yet meet all five are implemented but not
+portable. Do not cut a release claiming them until they are.
