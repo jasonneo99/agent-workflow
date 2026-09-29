@@ -52,11 +52,12 @@ export function findSupersedingDeliveryReceipt(
   const taskIds = new Set(task.match(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/giu) ?? []);
   for (const receipt of receipts) {
     const text = `${receipt.path}\n${receipt.content}`;
+    const advisoryReceipt = /(?:^|[-_.\/])(?:architecture|design|inspection|plan|planning|proposal|review)(?:[-_.\/]|$)/iu.test(receipt.path);
     const completionEvidence = /(?:completion|complete|completed|delivery|delivered|installed|release)/iu.test(receipt.path)
       && /(?:^|\n)#{1,3}\s+(?:completed|verification|installed verification|delivery)/imu.test(receipt.content)
       && /\b(?:passed|installed|delivered|completed|verified)\b/iu.test(receipt.content);
     const disclaimer = /\b(?:planning only|no implementation|no files (?:were )?changed|no tests (?:were )?(?:run|executed))\b/iu.test(receipt.content);
-    if (!completionEvidence || disclaimer) continue;
+    if (advisoryReceipt || !completionEvidence || disclaimer) continue;
     const receiptIds = new Set(text.match(/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/giu) ?? []);
     const exactLineage = [...taskIds].some((id) => receiptIds.has(id));
     const terms = receiptTerms(text);

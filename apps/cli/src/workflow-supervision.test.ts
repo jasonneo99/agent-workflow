@@ -178,6 +178,13 @@ test("plans and inspection-only receipts cannot suppress a required repair", () 
   ]), null);
 });
 
+test("architecture receipts cannot suppress a required delivery repair", () => {
+  assert.equal(findSupersedingDeliveryReceipt("Implement and verify the dynamic feature delivery", [{
+    path: ".agent-workflow/receipts/dynamic-feature-delivery-3a4092e2235e-architecture.md",
+    content: "# Dynamic feature delivery architecture\n## Completed\nArchitecture review completed.\n## Verification\nDesign constraints verified."
+  }]), null);
+});
+
 test("generic completion receipts cannot suppress unrelated delivery work", () => {
   assert.equal(findSupersedingDeliveryReceipt("Build and deliver the recruiting application login interface", [{
     path: ".agent-workflow/receipts/milestone-release-complete.md",
