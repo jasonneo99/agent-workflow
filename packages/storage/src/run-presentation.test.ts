@@ -29,12 +29,12 @@ Continue this durable Agent Workflow conversation. Inspect current project evide
 Selected context:
 [file: private-runtime.json]`,
     workflowId: "dynamic-feature-delivery-7aa47b3d0816",
-    projectName: "jarvis"
+    projectName: "Sample Desktop Assistant"
   });
-  assert.equal(result.title, "Dynamic Feature Delivery 7aa47b3d0816 for jarvis");
+  assert.equal(result.title, "Dynamic Feature Delivery 7aa47b3d0816 for Sample Desktop Assistant");
   assert.equal(
     result.description,
-    "Continue the current requested work for jarvis through the dynamic feature delivery 7aa47b3d0816 workflow. Open “Original request” for the exact submitted context."
+    "Continue the current requested work for Sample Desktop Assistant through the dynamic feature delivery 7aa47b3d0816 workflow. Open “Original request” for the exact submitted context."
   );
 });
 
