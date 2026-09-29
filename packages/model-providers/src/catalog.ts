@@ -40,11 +40,20 @@ export function normalizeModelSelectionPolicy(value?: string): ModelSelectionPol
   return "best-coding";
 }
 
-export function selectModelFromCatalog(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy } = {}): string | undefined {
+type CatalogSelectionOptions = { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy; taskClass?: "coding" | "reasoning" | "general" };
+
+export function selectModelFromCatalog(modelIds: string[], tier: ModelTier, options: CatalogSelectionOptions = {}): string | undefined {
   return explainModelCatalogSelection(modelIds, tier, options).selectedModel;
 }
 
-export function explainModelCatalogSelection(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy } = {}): CatalogSelectionExplanation {
+export function rankModelsFromCatalog(modelIds: string[], tier: ModelTier, options: CatalogSelectionOptions = {}): string[] {
+  return explainModelCatalogSelection(modelIds, tier, options)
+    .candidates
+    .filter((candidate) => candidate.eligible)
+    .map((candidate) => candidate.id);
+}
+
+export function explainModelCatalogSelection(modelIds: string[], tier: ModelTier, options: CatalogSelectionOptions = {}): CatalogSelectionExplanation {
   const provider = options.provider ?? "compatible";
   const policy = options.policy ?? modelSelectionPolicyFromEnv();
   const candidates = uniqueModelIds(modelIds)
