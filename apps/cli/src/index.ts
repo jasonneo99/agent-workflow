@@ -45,6 +45,7 @@ import { runDaemonLearningLoopSchedule } from "./learning/learning-loop-daemon.j
 import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
 import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
+import { formatServerConversationReport, isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "./dashboard/question-chat.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
 import { parsePositiveInteger, parseNonNegativeInteger, parseOptionalNumber, parseBoundedPositiveInteger, parseDashboardRunLimit } from "./numeric-options.js";
@@ -15287,22 +15288,24 @@ async function findServerQueueRunByIdempotency(input: {
 
 const serverConversationCache = new Map<string, { requestHash: string; report: ServerConversationReport }>();
 
-async function processSynchronousConversation(body: unknown, request?: http.IncomingMessage): Promise<ServerConversationReport> {
+async function processSynchronousConversation(body: unknown, request?: http.IncomingMessage, options: { trustedLocalDashboard?: boolean } = {}): Promise<ServerConversationReport> {
   const parsed = parseConversationRequest(body);
   const requestHash = conversationRequestHash(parsed);
   const cacheKey = `${parsed.projectId}:${parsed.actor}:${parsed.idempotencyKey}`;
   let conversationRateLimit: ReturnType<typeof checkServerQueueRateLimit> | undefined;
   if (request) {
-    const auth = validateServerMutationAuth(request);
-    if (!auth.ok) {
-      const blocked = blockedConversationReport(parsed, requestHash, "Authenticated server access is required.");
-      await appendConversationAuditEvent(request, parsed, blocked);
-      return blocked;
-    }
-    if (!envFlag("AGENTFLOW_SERVER_MODE")) {
-      const blocked = blockedConversationReport(parsed, requestHash, "AGENTFLOW_SERVER_MODE=1 is required for the remote conversation endpoint.");
-      await appendConversationAuditEvent(request, parsed, blocked);
-      return blocked;
+    if (!options.trustedLocalDashboard) {
+      const auth = validateServerMutationAuth(request);
+      if (!auth.ok) {
+        const blocked = blockedConversationReport(parsed, requestHash, "Authenticated server access is required.");
+        await appendConversationAuditEvent(request, parsed, blocked);
+        return blocked;
+      }
+      if (!envFlag("AGENTFLOW_SERVER_MODE")) {
+        const blocked = blockedConversationReport(parsed, requestHash, "AGENTFLOW_SERVER_MODE=1 is required for the remote conversation endpoint.");
+        await appendConversationAuditEvent(request, parsed, blocked);
+        return blocked;
+      }
     }
     conversationRateLimit = checkServerQueueRateLimit({ request, actor: parsed.actor, limitPerMinute: serverRequestLimits().rateLimitPerMinute });
     if (!conversationRateLimit.ok) {
@@ -15456,7 +15459,7 @@ function blockedConversationReport(parsed: ConversationRequest, requestHash: str
 }
 
 async function appendConversationAuditEvent(request: http.IncomingMessage, parsed: ConversationRequest, report: ServerConversationReport, rateLimit?: ReturnType<typeof checkServerQueueRateLimit>): Promise<void> {
-  const auth = validateServerMutationAuth(request);
+  const auth = isTrustedLocalDashboardRequest(request) ? { ok: true as const, method: "local-dashboard" } : validateServerMutationAuth(request);
   await safeAppendServerRequestAuditEvent({
     kind: "agentflow_server_request_audit_event",
     version: 1,
@@ -15490,12 +15493,6 @@ async function appendConversationAuditEvent(request: http.IncomingMessage, parse
       { label: "governed operation boundary", status: report.status === "blocked" ? "fail" : "pass" }
     ]
   });
-}
-
-function formatServerConversationReport(report: ServerConversationReport): string {
-  if (report.assistant) return `${report.assistant.text}\n\nProvider: ${report.assistant.actualProvider}/${report.assistant.actualModel ?? "default"}${report.assistant.fallbackUsed ? " (fallback)" : ""}`;
-  if (report.operation) return `${report.status}: ${report.operation.workflowId}${report.operation.runId ? ` run=${report.operation.runId}` : " requires governed queue authorization"}`;
-  return `blocked: ${report.error ?? "conversation request rejected"}`;
 }
 
 function validateServerMutationAuth(request: http.IncomingMessage): { ok: true; method: string } | { ok: false; method: string; error: string } {
@@ -26762,7 +26759,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const limits = serverRequestLimits();
     try {
       const body = await readJsonBody(request, limits.maxBodyBytes);
-      const report = await processSynchronousConversation(body, request);
+      const report = await processSynchronousConversation(body, request, { trustedLocalDashboard: isTrustedLocalDashboardRequest(request) });
       const statusCode = report.status === "blocked" ? 403 : report.status === "queued" ? 201 : 200;
       response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
       response.end(JSON.stringify(report, null, 2));
@@ -27970,6 +27967,7 @@ function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>,
         ${renderOpsMetric("Active projects", formatNumber(activeProjects), `${health.projects.length} registered`, health.projects.slice(0, 10).map((project) => project.runCount), "violet")}
       </div>
     </section>
+    ${renderDashboardQuestionPanel(health.projects, process.env.AGENTFLOW_DASHBOARD_PROJECT ?? rootDir)}
     <div class="ops-chart-grid">
       <section class="ops-panel ops-span-2"><div class="ops-panel-heading"><div><h2>Workflow throughput</h2><span>Runs by final state · rolling 7 days</span></div><a href="/runs">View runs</a></div>${renderOpsThroughputChart(throughput)}</section>
       <section class="ops-panel"><div class="ops-panel-heading"><div><h2>Run health</h2><span>Current state distribution</span></div></div>${renderOpsStatusChart(runs)}</section>

@@ -879,6 +879,22 @@ export function dashboardCss(): string {
     .ops-approvals-panel { display: flex; flex-direction: column; align-self: start; width: 100%; }
     .ops-empty { min-height: 130px; display: grid; place-content: center; gap: 4px; text-align: center; color: var(--ops-muted); font-size: 11px; }
     .ops-empty strong { font-size: 12px; }
+    .ops-question-panel { margin-bottom: 12px; }
+    .ops-question-status { color: var(--ops-teal) !important; font-size: 10px !important; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
+    .ops-question-thread { display: grid; align-content: start; gap: 9px; min-height: 104px; max-height: 320px; overflow-y: auto; padding: 12px; border: 1px solid var(--ops-line); background: var(--ops-panel-2); scrollbar-gutter: stable; }
+    .ops-question-empty { display: grid; place-content: center; gap: 4px; min-height: 78px; color: var(--ops-muted); text-align: center; font-size: 11px; }
+    .ops-question-turn { width: min(82%, 920px); padding: 10px 12px; border: 1px solid var(--ops-line); background: var(--ops-panel); }
+    .ops-question-turn.user { justify-self: end; border-color: #27647c; background: rgba(21, 223, 243, .06); }
+    .ops-question-turn.assistant { justify-self: start; border-color: #4d4586; background: rgba(146, 112, 255, .07); }
+    .ops-question-turn strong { display: block; margin-bottom: 4px; color: var(--ops-text); font-size: 10px; }
+    .ops-question-turn p { margin: 0; color: var(--ops-text); font-size: 12px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+    .ops-question-turn small { display: block; margin-top: 6px; color: var(--ops-muted); font-size: 9px; }
+    .ops-question-form { display: grid; grid-template-columns: minmax(180px, .35fr) minmax(320px, 1.65fr) auto; gap: 10px; align-items: end; margin-top: 10px; }
+    .ops-question-form label { display: grid; gap: 5px; color: var(--ops-muted); font-size: 10px; font-weight: 750; }
+    .ops-question-form select, .ops-question-form textarea { width: 100%; min-width: 0; }
+    .ops-question-form textarea { min-height: 52px; resize: vertical; }
+    .ops-question-form button { min-height: 52px; }
+    .ops-question-note { margin: 8px 0 0; color: var(--ops-muted); font-size: 9px; }
     .ops-home .start-work { margin-top: 12px; }
     .ops-home .human-section-heading { border-color: var(--ops-line); }
     .ops-home .advanced-options { border-color: var(--ops-line); }
@@ -1010,6 +1026,7 @@ export function dashboardCss(): string {
       .ops-chart-grid { grid-template-columns: 1fr; }
       .ops-span-2 { grid-column: auto; }
       .ops-lower-grid { grid-template-columns: 1fr; }
+      .ops-question-form { grid-template-columns: minmax(150px, .4fr) minmax(0, 1.6fr) auto; }
       .queue-card-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .queue-worker-form { grid-template-columns: repeat(2, minmax(0, 1fr)) auto; }
       .advanced-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1043,6 +1060,9 @@ export function dashboardCss(): string {
       .ops-metric:nth-child(-n+4) { border-bottom: 1px solid var(--ops-line); }
       .ops-neural-line { padding-inline: 12px; }
       .ops-flow-list > a { grid-template-columns: minmax(74px, 1fr) 45px minmax(74px, 1fr); }
+      .ops-question-form { grid-template-columns: 1fr; }
+      .ops-question-form button { min-height: 42px; }
+      .ops-question-turn { width: 94%; }
       .ops-flow-list small { display: none; }
       .ops-chart-frame { height: 180px; }
       .ops-runs-panel .table-wrap { overflow-x: auto; }

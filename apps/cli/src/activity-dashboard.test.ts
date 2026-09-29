@@ -4,6 +4,7 @@ import test from "node:test";
 
 const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 const stylesSource = readFileSync(new URL("./dashboard/styles.ts", import.meta.url), "utf8");
+const questionChatSource = readFileSync(new URL("./dashboard/question-chat.ts", import.meta.url), "utf8");
 
 test("dashboard exposes a unified redacted activity timeline and API", () => {
   assert.match(source, /requestUrl\.pathname === "\/activity"/u);
@@ -17,6 +18,18 @@ test("home human intervention renders as a compact keyboard-scrollable list", ()
   assert.match(source, /class="ops-approval-list" role="region" aria-label="Human intervention items" tabindex="0"/u);
   assert.match(stylesSource, /\.ops-approval-list \{ display: grid; align-content: start; max-height: 268px; overflow-y: auto/u);
   assert.match(stylesSource, /\.ops-approval-row \{[^}]+min-height: 40px; padding: 5px 2px/u);
+});
+
+test("home exposes a bounded governed question chat", () => {
+  assert.match(source, /renderDashboardQuestionPanel\(health\.projects, process\.env\.AGENTFLOW_DASHBOARD_PROJECT \?\? rootDir\)/u);
+  assert.match(questionChatSource, /id="dashboard-question-form"/u);
+  assert.match(questionChatSource, /id="dashboard-question-thread"[^>]+role="log"/u);
+  assert.match(questionChatSource, /fetch\("\/api\/server-conversation"/u);
+  assert.match(questionChatSource, /capabilityMode:\s*"conversation"/u);
+  assert.match(questionChatSource, /This request needs the governed/u);
+  assert.match(questionChatSource, /isTrustedLocalDashboardRequest/u);
+  assert.match(stylesSource, /\.ops-question-thread \{[^}]+max-height: 320px; overflow-y: auto/u);
+  assert.match(stylesSource, /\.ops-question-form \{[^}]+grid-template-columns/u);
 });
 
 test("activity aggregation includes durable and project-local event sources", () => {
