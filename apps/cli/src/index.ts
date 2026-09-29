@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { gzipSync } from "node:zlib";
@@ -7079,6 +7080,15 @@ type AgentImprovementCandidate = {
   validationPlan: string[];
   autoApplyEligible: boolean;
   approvalRequired: boolean;
+  patternId: string;
+  outcomeWeight: number;
+  outcomeEvidence: { approvals: number; rejections: number } | null;
+};
+
+type AgentImprovementOutcomeWeight = {
+  weight: number;
+  approvals: number;
+  rejections: number;
 };
 
 type AgentImprovementPatchPlan = {
@@ -7106,6 +7116,7 @@ type AgentImprovementPatch = {
   approvalRequired: boolean;
   autoApplyEligible: boolean;
   changedFields: AgentImprovementCandidate["suggestedMutableFields"];
+  patternId: string;
   rationale: string;
   validation: {
     schemaValid: boolean;
@@ -7211,6 +7222,7 @@ type AgentImprovementPromotionItem = {
   approvalRequired: boolean;
   recommendation: string;
   rationale: string;
+  patternId: string;
 };
 
 type AgentImprovementPromotionReceiptLog = {
@@ -7236,6 +7248,7 @@ type AgentImprovementPromotionReceipt = {
   sourceHash: string;
   rollback: AgentImprovementPromotionItem["rollback"];
   createdAt: string;
+  patternId: string;
 };
 
 type AgentImprovementPromotionDecisionResult = {
@@ -7596,6 +7609,7 @@ type DashboardHomeHealth = {
   approvedExecutableApprovals: DashboardActionApproval[];
   learningDaemon: DashboardLearningDaemonStatus | null;
   learningReceipts: LearningActionReceiptLog | null;
+  agentImprovementPendingPromotions: AgentImprovementPendingProject[];
 };
 
 type DashboardProjectDetail = {
@@ -17007,6 +17021,39 @@ async function writeWorkflowShapeOptimization(projectDir: string, report: Workfl
   await fs.writeFile(path.join(learningDir, "stage-recommendations.md"), formatWorkflowShapeOptimizationMarkdown(report), "utf8");
 }
 
+// Outcome feedback into the scorer (2026-09-28): group promotion receipts by
+// the candidate patternId that produced them and compute a Laplace-smoothed
+// approval rate per pattern. Cold start (no receipts at all, the current
+// reality) yields no map entries, and the candidate builder treats a missing
+// entry as a neutral 0.5 with null evidence. The mechanism ships, but weight
+// influence stays modest until real owner decisions accumulate.
+export async function loadOutcomeWeights(projectDir: string): Promise<Map<string, AgentImprovementOutcomeWeight>> {
+  const receipts = await readAgentImprovementPromotionReceipts(path.resolve(process.cwd(), projectDir)).catch(() => null);
+  const weights = new Map<string, AgentImprovementOutcomeWeight>();
+  if (!receipts) {
+    return weights;
+  }
+  const byPattern = new Map<string, { approvals: number; rejections: number }>();
+  for (const event of receipts.events) {
+    const patternId = event.patternId ?? "legacy";
+    const counts = byPattern.get(patternId) ?? { approvals: 0, rejections: 0 };
+    if (event.status === "approved") {
+      counts.approvals += 1;
+    } else if (event.status === "rejected") {
+      counts.rejections += 1;
+    }
+    byPattern.set(patternId, counts);
+  }
+  for (const [patternId, counts] of byPattern) {
+    weights.set(patternId, {
+      weight: (counts.approvals + 1) / (counts.approvals + counts.rejections + 2),
+      approvals: counts.approvals,
+      rejections: counts.rejections
+    });
+  }
+  return weights;
+}
+
 async function loadAgentImprovementReport(input: {
   projectDir: string;
   agentId?: string;
@@ -17038,6 +17085,7 @@ async function loadAgentImprovementReport(input: {
   const focusedRecords = input.agentId
     ? agentRecords.filter((record) => record.agent.id === input.agentId)
     : agentRecords;
+  const outcomeWeights = await loadOutcomeWeights(projectDir);
   const candidates = focusedRecords
     .map((record) => buildAgentImprovementCandidate({
       record,
@@ -17045,10 +17093,11 @@ async function loadAgentImprovementReport(input: {
       runs,
       scorecard,
       reports,
-      stageHealth
+      stageHealth,
+      outcomeWeights
     }))
     .filter((candidate): candidate is AgentImprovementCandidate => candidate !== null)
-    .sort((left, right) => priorityRank(right.priority) - priorityRank(left.priority) || agentImprovementRiskRank(left.riskLevel) - agentImprovementRiskRank(right.riskLevel) || left.agentId.localeCompare(right.agentId));
+    .sort((left, right) => priorityRank(right.priority) - priorityRank(left.priority) || right.outcomeWeight - left.outcomeWeight || agentImprovementRiskRank(left.riskLevel) - agentImprovementRiskRank(right.riskLevel) || left.agentId.localeCompare(right.agentId));
 
   const sharedAgents = agentRecords.filter((record) => record.scope === "shared").length;
   const projectLocalAgents = agentRecords.filter((record) => record.scope === "project-local").length;
@@ -17135,13 +17184,14 @@ async function loadAgentImprovementRecords(projectDir: string): Promise<Array<{
   return [...merged.values()];
 }
 
-function buildAgentImprovementCandidate(input: {
+export function buildAgentImprovementCandidate(input: {
   record: { agent: AgentCard; sourcePath: string; scope: "shared" | "project-local" };
   workflowRefs: Array<{ workflowId: string; stageId: string; subagent: boolean }>;
   runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>;
   scorecard: PreferenceScorecard;
   reports: CostQualityReport[];
   stageHealth: Awaited<ReturnType<typeof listWorkflowStageHealthForRuns>>;
+  outcomeWeights: Map<string, AgentImprovementOutcomeWeight>;
 }): AgentImprovementCandidate | null {
   const { agent } = input.record;
   const joined = [
@@ -17161,6 +17211,7 @@ function buildAgentImprovementCandidate(input: {
   const evidence: string[] = [];
   const mutableFields = new Set<AgentImprovementCandidate["suggestedMutableFields"][number]>();
   const recommendations: string[] = [];
+  const patternKeys: string[] = [];
   let priority: LearningProposalPriority = "low";
   let riskLevel: LearningRiskLevel = "low";
 
@@ -17169,6 +17220,7 @@ function buildAgentImprovementCandidate(input: {
   } else {
     evidence.push("No reusable workflow references this agent yet.");
     recommendations.push("Clarify when this agent should be selected, or keep it out of default workflows until evidence supports it.");
+    patternKeys.push("no-workflow-refs");
     mutableFields.add("use_when");
     priority = "medium";
   }
@@ -17177,6 +17229,7 @@ function buildAgentImprovementCandidate(input: {
     const total = failingStages.reduce((sum, stage) => sum + stage.totalTasks, 0);
     evidence.push(`${failed}/${total} recent task(s) failed in stages connected to this agent.`);
     recommendations.push("Add stronger failure-mode handling, handoff expectations, and verification receipts for stages this agent touches.");
+    patternKeys.push("failing-stages");
     mutableFields.add("prompt");
     mutableFields.add("outputs");
     priority = "high";
@@ -17185,6 +17238,7 @@ function buildAgentImprovementCandidate(input: {
   if (fallbackGroups.length) {
     evidence.push(`${fallbackGroups.length} routing/cost group(s) show fallback or high latency pressure.`);
     recommendations.push("Tune model-tier guidance and context budget so the router can choose cheaper fast models for routine work and reasoning models for risky work.");
+    patternKeys.push("fallback-pressure");
     mutableFields.add("context_budget");
     mutableFields.add("prompt");
     priority = priority === "high" ? priority : "medium";
@@ -17192,17 +17246,20 @@ function buildAgentImprovementCandidate(input: {
   if (!joined.includes("receipt")) {
     evidence.push("Agent card does not explicitly require receipts or auditable evidence.");
     recommendations.push("Add receipt language so autonomous actions leave compact proof of what changed, why, and how it was verified.");
+    patternKeys.push("missing-receipts");
     mutableFields.add("prompt");
   }
   if (!joined.includes("validat") && !joined.includes("test")) {
     evidence.push("Agent card does not strongly name validation or test expectations.");
     recommendations.push("Add role-specific validation expectations before the agent marks work complete.");
+    patternKeys.push("missing-validation");
     mutableFields.add("prompt");
     mutableFields.add("can");
   }
   if ((agent.category === "automatic" || String(agent.autonomy) === "wide-open") && !agent.requires_approval.length) {
     evidence.push("Automatic/high-autonomy agent has no explicit approval boundary entries.");
     recommendations.push("Add explicit danger gates for destructive commands, network/export behavior, privilege expansion, and shared-definition edits.");
+    patternKeys.push("missing-approval-boundary");
     mutableFields.add("requires_approval");
     priority = "high";
     riskLevel = "medium";
@@ -17210,11 +17267,13 @@ function buildAgentImprovementCandidate(input: {
   if ((agent.category === "product" || agent.id.includes("ux")) && !joined.includes("accessib")) {
     evidence.push("Product/UX agent does not explicitly mention accessibility.");
     recommendations.push("Add accessibility, responsive layout, and trust/polish review criteria to the role prompt.");
+    patternKeys.push("missing-accessibility");
     mutableFields.add("prompt");
   }
   if ((agent.category === "development" || agent.id.includes("security")) && !joined.includes("secret") && !joined.includes("auth")) {
     evidence.push("Development/security-adjacent agent card does not explicitly mention auth or secret handling.");
     recommendations.push("Add scoped checks for auth boundaries, secrets, permissions, and blast radius when relevant to the role.");
+    patternKeys.push("missing-secret-handling");
     mutableFields.add("prompt");
   }
   if (!recommendations.length) {
@@ -17222,6 +17281,8 @@ function buildAgentImprovementCandidate(input: {
   }
 
   const autoApplyEligible = input.record.scope === "project-local" && agentImprovementRiskRank(riskLevel) <= agentImprovementRiskRank("medium") && !recommendations.some((item) => /autonomy|approval|permission|privilege|network|export/i.test(item));
+  const patternId = [...patternKeys].sort().join("+");
+  const outcome = input.outcomeWeights.get(patternId);
   return {
     id: `agent-${agent.id.replace(/[^a-z0-9_-]/gi, "-")}-improvement`,
     agentId: agent.id,
@@ -17243,7 +17304,10 @@ function buildAgentImprovementCandidate(input: {
       "Check cost, fallback, failure, and user-feedback deltas before promotion."
     ],
     autoApplyEligible,
-    approvalRequired: !autoApplyEligible
+    approvalRequired: !autoApplyEligible,
+    patternId,
+    outcomeWeight: outcome?.weight ?? 0.5,
+    outcomeEvidence: outcome ? { approvals: outcome.approvals, rejections: outcome.rejections } : null
   };
 }
 
@@ -17294,6 +17358,13 @@ async function buildAgentImprovementPatchPlan(projectDir: string, report: AgentI
     const proposedAgent = proposeAgentImprovement(record.agent, candidate);
     const validation = agentCardSchema.safeParse(proposedAgent);
     const proposedYaml = YAML.stringify(proposedAgent);
+    // Canonicalize before diffing (2026-09-28): YAML.stringify re-serializes
+    // the agent card, so a raw text diff would flag pure re-wrapping churn as
+    // a change. The canonical diff is empty for semantic no-ops, which the
+    // promotion queue already marks superseded instead of pending.
+    const canonicalSourceYaml = canonicalizeAgentImprovementYaml(sourceYaml);
+    const canonicalProposedYaml = canonicalizeAgentImprovementYaml(proposedYaml);
+    const unifiedDiff = buildUnifiedDiff(candidate.sourcePath, canonicalSourceYaml, canonicalProposedYaml);
     patches.push({
       id: `patch-${candidate.id}`,
       candidateId: candidate.id,
@@ -17307,12 +17378,13 @@ async function buildAgentImprovementPatchPlan(projectDir: string, report: AgentI
       approvalRequired: candidate.approvalRequired || candidate.scope === "shared",
       autoApplyEligible: candidate.autoApplyEligible && candidate.scope === "project-local" && validation.success,
       changedFields: candidate.suggestedMutableFields,
-      rationale: candidate.recommendation,
+      patternId: candidate.patternId,
+      rationale: buildGroundedAgentImprovementRationale(candidate, candidate.suggestedMutableFields, unifiedDiff),
       validation: {
         schemaValid: validation.success,
         errors: validation.success ? [] : validation.error.issues.map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
       },
-      unifiedDiff: buildUnifiedDiff(candidate.sourcePath, sourceYaml, proposedYaml),
+      unifiedDiff,
       proposedYaml,
       rollback: {
         restoreSourceHash: sourceHash,
@@ -17414,7 +17486,42 @@ function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-function buildUnifiedDiff(filePath: string, before: string, after: string): string {
+// YAML canonicalization (2026-09-28): agent-card YAML files get rewritten by
+// YAML.stringify when a patch is proposed, so a raw text diff flags pure
+// serialization re-wrapping (flow vs block style, quoting, line wrapping) as a
+// change. Canonicalize both sides through parse/stringify so the diff only
+// ever shows semantic changes. Unparseable text falls back to raw so a broken
+// file can never silently become "no change".
+export function canonicalizeAgentImprovementYaml(text: string): string {
+  try {
+    const parsed = YAML.parse(text);
+    if (parsed === undefined || parsed === null) {
+      return text;
+    }
+    return YAML.stringify(parsed);
+  } catch {
+    return text;
+  }
+}
+
+// Grounded rationales (2026-09-28): the patch rationale used to be the
+// templated candidate recommendation verbatim. Ground it in the actual
+// observation (candidate evidence), the concrete change (changed fields plus
+// canonical diff line stat), then keep the recommendation as the why. The
+// recommendation text is preserved inside the rationale so the risk-boundary
+// eval gate keeps seeing the same danger keywords it matched before.
+export function buildGroundedAgentImprovementRationale(candidate: AgentImprovementCandidate, changedFields: string[], unifiedDiff: string): string {
+  const added = unifiedDiff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length;
+  const removed = unifiedDiff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length;
+  const observed = candidate.evidence.slice(0, 3).join(" ");
+  const fields = changedFields.length ? changedFields.join(", ") : "none";
+  const change = unifiedDiff
+    ? `proposes edits to ${fields} (+${added}/-${removed} canonical diff lines)`
+    : `proposes no semantic change to ${fields} after YAML canonicalization`;
+  return `Observed: ${observed} This patch ${change}. Recommendation: ${candidate.recommendation}`;
+}
+
+export function buildUnifiedDiff(filePath: string, before: string, after: string): string {
   if (before === after) {
     return "";
   }
@@ -17475,7 +17582,7 @@ async function buildAgentImprovementEvalPlan(projectDir: string, patchPlan: Agen
   };
 }
 
-async function buildAgentImprovementEval(
+export async function buildAgentImprovementEval(
   projectDir: string,
   patch: AgentImprovementPatch,
   runs: Awaited<ReturnType<typeof listWorkflowRunsForProject>>,
@@ -17490,32 +17597,40 @@ async function buildAgentImprovementEval(
     {
       id: "schema-valid",
       passed: patch.validation.schemaValid,
-      weight: 25,
+      weight: 20,
       message: patch.validation.schemaValid ? "Proposed YAML validates against the agent schema." : `Schema validation failed: ${patch.validation.errors.join("; ")}`
     },
     {
       id: "rollback-ready",
       passed: Boolean(patch.rollback.restoreSourceHash && patch.rollback.restorePath && sourceCurrent),
-      weight: 20,
+      weight: 15,
       message: sourceCurrent ? "Current source hash matches the patch preview rollback hash." : "Source changed since patch preview; regenerate before promotion."
     },
     {
       id: "holdout-coverage",
       passed: holdoutTasks.length >= 2,
-      weight: 20,
+      weight: 15,
       message: holdoutTasks.length >= 2 ? `${holdoutTasks.length} representative task(s) available for before/after comparison.` : `${holdoutTasks.length} representative task(s) found; collect more runs before promotion.`
     },
     {
       id: "risk-boundary",
       passed: patch.riskLevel !== "high" && !/privilege|provider|network|export|weaker safety|broader autonomy/i.test(patch.rationale),
-      weight: 20,
+      weight: 15,
       message: patch.riskLevel === "high" ? "High-risk patches require manual review." : "Patch stays within low/medium-risk role guidance."
     },
     {
       id: "evidence-signal",
       passed: hasFeedback || fallbackPressure || holdoutTasks.some((task) => task.status === "failed"),
-      weight: 15,
+      weight: 10,
       message: hasFeedback || fallbackPressure ? "Local feedback or routing evidence supports scoring this patch." : "No strong feedback/routing/failure signal yet; treat as speculative."
+    },
+    {
+      id: "semantic-change",
+      passed: patch.unifiedDiff.trim().length > 0,
+      weight: 25,
+      message: patch.unifiedDiff.trim().length > 0
+        ? "Patch changes the canonical agent YAML (not just serialization)."
+        : "Patch carries no semantic change after YAML canonicalization; pure re-wrapping churn cannot be promoted."
     }
   ];
   const score = gates.reduce((sum, gate) => sum + (gate.passed ? gate.weight : 0), 0);
@@ -17581,7 +17696,7 @@ async function writeAgentImprovementEvalPlan(projectDir: string, plan: AgentImpr
   await fs.writeFile(path.join(learningDir, "agent-improvement-evals.md"), formatAgentImprovementEvalPlanMarkdown(plan), "utf8");
 }
 
-function buildAgentImprovementPromotionQueue(
+export function buildAgentImprovementPromotionQueue(
   projectDir: string,
   patchPlan: AgentImprovementPatchPlan,
   evalPlan: AgentImprovementEvalPlan,
@@ -17642,7 +17757,8 @@ function buildAgentImprovementPromotionQueue(
       rollback: evaluation.rollback,
       approvalRequired: patch.scope === "shared" || patch.approvalRequired || !evaluation.autoApplyReady,
       recommendation: evaluation.recommendation,
-      rationale: patch.rationale
+      rationale: patch.rationale,
+      patternId: patch.patternId
     }];
   });
   const currentIds = new Set(items.map((item) => item.id));
@@ -17722,6 +17838,71 @@ async function writeAgentImprovementPromotionQueue(projectDir: string, queue: Ag
   await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
   await fs.writeFile(path.join(learningDir, "agent-improvement-promotions.json"), `${JSON.stringify(queue, null, 2)}\n`, "utf8");
   await fs.writeFile(path.join(learningDir, "agent-improvement-promotions.md"), formatAgentImprovementPromotionQueueMarkdown(queue), "utf8");
+}
+
+// Framework-level pending-promotion notification (2026-09-28): the learning
+// daemon rebuilds the promotion queue every tick, but nothing ever told Jason
+// a promotion was waiting, so decisions piled up unseen. These helpers count
+// undecided (pending/deferred, non-superseded) items straight from the saved
+// queue files, so the dashboard can banner them without rebuilding the full
+// report/patch/eval pipeline on every page load.
+type AgentImprovementPendingProject = {
+  projectRootUri: string;
+  name: string;
+  pending: number;
+  deferred: number;
+  current: boolean;
+};
+
+type AgentImprovementPendingSummary = {
+  projects: AgentImprovementPendingProject[];
+};
+
+export async function countAgentImprovementPendingPromotions(projectDir: string): Promise<{ pending: number; deferred: number } | null> {
+  const queue = await readAgentImprovementPromotionQueue(path.resolve(process.cwd(), projectDir)).catch(() => null);
+  if (!queue) {
+    return null;
+  }
+  return {
+    pending: queue.items.filter((item) => item.status === "pending").length,
+    deferred: queue.items.filter((item) => item.status === "deferred").length
+  };
+}
+
+export async function loadAgentImprovementPendingSummary(projects: DashboardProjectSummary[], selectedLocalDir?: string): Promise<AgentImprovementPendingSummary> {
+  const targets = new Map<string, { projectRootUri: string; name: string }>();
+  for (const project of projects) {
+    targets.set(path.resolve(process.cwd(), project.rootUri), { projectRootUri: project.rootUri, name: project.name || project.rootUri });
+  }
+  const selectedKey = selectedLocalDir ? path.resolve(process.cwd(), selectedLocalDir) : null;
+  if (selectedKey && selectedLocalDir && !targets.has(selectedKey)) {
+    targets.set(selectedKey, { projectRootUri: selectedLocalDir, name: selectedKey });
+  }
+  const entries = await Promise.all([...targets.entries()].map(async ([key, target]) => {
+    const counts = await countAgentImprovementPendingPromotions(target.projectRootUri).catch(() => null);
+    if (!counts || counts.pending + counts.deferred === 0) {
+      return null;
+    }
+    return { ...target, pending: counts.pending, deferred: counts.deferred, current: selectedKey === key };
+  }));
+  return { projects: entries.filter((entry): entry is AgentImprovementPendingProject => entry !== null) };
+}
+
+export function renderAgentImprovementPendingBannerHtml(summary: AgentImprovementPendingSummary | null): string {
+  if (!summary || summary.projects.length === 0) {
+    return "";
+  }
+  const current = summary.projects.find((entry) => entry.current);
+  const others = summary.projects.filter((entry) => entry !== current);
+  const totalFor = (entry: AgentImprovementPendingProject) => entry.pending + entry.deferred;
+  const reviewHref = (entry: AgentImprovementPendingProject) => `/learning?project=${encodeURIComponent(entry.projectRootUri)}&view=agent-improvements`;
+  const currentBlock = current
+    ? `<div><strong>${dashboardIcon("shield")} ${totalFor(current)} agent-improvement promotion${totalFor(current) === 1 ? "" : "s"} awaiting review</strong><span>${current.pending} pending \u00b7 ${current.deferred} deferred \u00b7 ${escapeHtml(current.name)}</span></div><a class="button" href="${escapeHtml(reviewHref(current))}">Review promotions</a>`
+    : "";
+  const othersBlock = others.length
+    ? `<div><span class="muted">Also awaiting review: ${others.map((entry) => `<a href="${escapeHtml(reviewHref(entry))}">${escapeHtml(entry.name)} (${totalFor(entry)})</a>`).join(" \u00b7 ")}</span></div>`
+    : "";
+  return `<section class="panel flash-panel">${currentBlock}${othersBlock}</section>`;
 }
 
 async function readAgentImprovementPromotionReceipts(projectDir: string): Promise<AgentImprovementPromotionReceiptLog> {
@@ -17984,7 +18165,7 @@ function formatAgentImprovementApplyReceiptsMarkdown(receipts: AgentImprovementA
   ].join("\n");
 }
 
-async function decideAgentImprovementPromotions(input: {
+export async function decideAgentImprovementPromotions(input: {
   projectDir: string;
   queue: AgentImprovementPromotionQueue;
   ids: string[] | "all";
@@ -18040,7 +18221,8 @@ async function decideAgentImprovementPromotions(input: {
       sourcePath: item.sourcePath,
       sourceHash: item.sourceHash,
       rollback: item.rollback,
-      createdAt: now
+      createdAt: now,
+      patternId: item.patternId ?? "legacy"
     }];
   });
   const receipts = {
@@ -27593,7 +27775,10 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const learningLoopPromise: Promise<LearningLoopDashboard | null> = project && learningView === "learning-loop"
       ? readLearningLoopState(localLearningDir).then(buildLearningLoopDashboard)
       : Promise.resolve(null);
-    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement, learningLoop] = await Promise.all([
+    const agentImprovementPendingPromise = project
+      ? loadAgentImprovementPendingSummary(projects, path.resolve(process.cwd(), localLearningDir))
+      : Promise.resolve(null);
+    const [report, learningQueue, learningDaemon, learningSettings, learningActionReceipts, learningActionReceiptHealth, supervisor, workflowShape, agentImprovement, learningLoop, agentImprovementPending] = await Promise.all([
       reportPromise,
       learningQueuePromise,
       learningDaemonPromise,
@@ -27603,7 +27788,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       loadDashboardSupervisorStatus(),
       workflowShapePromise,
       agentImprovementPromise,
-      learningLoopPromise
+      learningLoopPromise,
+      agentImprovementPendingPromise
     ]);
     const learningApplicationPlan = learningQueue ? buildGovernedLearningApplicationPlan(learningQueue, "all") : null;
     const agentImprovementEval = agentImprovement
@@ -27623,7 +27809,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         .catch(() => null)
       : null;
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, learningSettings, supervisor, projects, requestUrl.searchParams, projectPath, learningLoop));
+    response.end(renderLearningDashboardHtml(report, learningQueue, learningDaemon, learningApplicationPlan, learningActionReceipts, learningActionReceiptHealth, workflowShape, agentImprovement, agentImprovementEval, agentImprovementPromotion, learningSettings, supervisor, projects, requestUrl.searchParams, projectPath, learningLoop, agentImprovementPending));
     return;
   }
 
@@ -27886,6 +28072,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     listActionApprovals({ status: "pending", limit: 25 }),
     listActionApprovals({ status: "approved", limit: 25 })
   ]);
+  const agentImprovementPendingPromotions = await loadCachedDashboardReport(
+    "dashboard-home:agent-improvement-pending",
+    () => loadAgentImprovementPendingSummary(projects).then((summary) => summary.projects),
+    30_000
+  );
   const health: DashboardHomeHealth = {
     worker,
     supervisor,
@@ -27899,7 +28090,8 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     pendingApprovals,
     approvedExecutableApprovals: approvedExecutableApprovals.filter((approval) => isExecutableApprovalAction(approval.actionType) && !approval.executedAt),
     learningDaemon: null,
-    learningReceipts: null
+    learningReceipts: null,
+    agentImprovementPendingPromotions
   };
   const daemonProject = supervisor.learningProject ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "templates/project";
   [health.learningDaemon, health.learningReceipts] = await Promise.all([
@@ -27913,7 +28105,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 function renderDashboardHtml(runs: Awaited<ReturnType<typeof listWorkflowRuns>>, workflows: Awaited<ReturnType<typeof loadWorkflows>>, health: DashboardHomeHealth, throughput: WorkflowThroughputBucket[]): string {
   const activeRuns = runs.filter((run) => run.status === "queued" || run.status === "leased" || run.status === "running");
   const recentRuns = runs.filter((run) => run.status === "completed" || run.status === "failed").slice(0, 8);
-  const humanInterventions = buildHumanInterventionItems({ pendingApprovals: health.pendingApprovals, approvedExecutableApprovals: health.approvedExecutableApprovals, queue: health.queue, workerStatus: health.worker.status, supervisorStatus: health.supervisor.status, mcpStatus: health.runtimeMonitor.mcpPipeline.status, missingServices: health.services.filter((service) => !service.reachable).map((service) => service.endpoint.name), learningDaemonError: health.learningDaemon?.lastError, approvalBacklogErrors: health.learningDaemon?.approvalBacklogErrors, approvalBacklogWarnings: health.learningDaemon?.approvalBacklogWarnings });
+  const humanInterventions = buildHumanInterventionItems({ pendingApprovals: health.pendingApprovals, approvedExecutableApprovals: health.approvedExecutableApprovals, queue: health.queue, workerStatus: health.worker.status, supervisorStatus: health.supervisor.status, mcpStatus: health.runtimeMonitor.mcpPipeline.status, missingServices: health.services.filter((service) => !service.reachable).map((service) => service.endpoint.name), learningDaemonError: health.learningDaemon?.lastError, approvalBacklogErrors: health.learningDaemon?.approvalBacklogErrors, approvalBacklogWarnings: health.learningDaemon?.approvalBacklogWarnings, agentImprovementPending: health.agentImprovementPendingPromotions });
   const failedRuns = health.queue.filter((item) => item.runStatus === "failed").length;
   const terminalRuns = runs.filter((run) => run.status === "completed" || run.status === "failed");
   const completedRuns = terminalRuns.filter((run) => run.status === "completed").length;
@@ -31159,7 +31351,7 @@ function renderModelImprovementHtml(
 </html>`;
 }
 
-function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null, learningLoop: LearningLoopDashboard | null = null): string {
+function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null, learningLoop: LearningLoopDashboard | null = null, agentImprovementPending: AgentImprovementPendingSummary | null = null): string {
   const learningViews = ["overview", "learning-loop", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"] as const;
   const requestedView = params.get("view");
   const learningView = learningViews.includes(requestedView as typeof learningViews[number]) ? requestedView as typeof learningViews[number] : "overview";
@@ -31220,6 +31412,7 @@ function renderLearningDashboardHtml(report: LearningReport | null, learningQueu
       }).join("")}
     </nav>
     ${renderDashboardFlash(params)}
+    ${renderAgentImprovementPendingBannerHtml(agentImprovementPending)}
     ${renderDashboardActionHistory()}
     ${projectPath ? renderDashboardProjectPathResolutionHtml(projectPath) : ""}
     <section class="panel">
@@ -31611,9 +31804,16 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
     </tr>
   `).join("");
   const evalById = new Map((evalPlan?.evaluations ?? []).map((item) => [item.id, item]));
+  const candidateById = new Map((report.candidates ?? []).map((candidate) => [candidate.id, candidate]));
   const promotionCards = (promotionQueue?.items ?? []).slice(0, 12).map((item) => {
     const evaluation = evalById.get(item.evalId);
     const decisionOpen = item.status === "pending" || item.status === "deferred";
+    const outcomeCandidate = candidateById.get(item.candidateId);
+    const outcomeSummary = outcomeCandidate
+      ? outcomeCandidate.outcomeEvidence
+        ? `Outcome weight ${outcomeCandidate.outcomeWeight.toFixed(2)} from ${outcomeCandidate.outcomeEvidence.approvals} approval(s) and ${outcomeCandidate.outcomeEvidence.rejections} rejection(s) for pattern ${outcomeCandidate.patternId}.`
+        : `Outcome weight ${outcomeCandidate.outcomeWeight.toFixed(2)}: no owner decisions recorded for pattern ${outcomeCandidate.patternId} yet (neutral cold start).`
+      : `Outcome pattern ${item.patternId ?? "unknown"} (candidate not in the current report).`;
     return `<article class="panel nested-panel">
       <div class="section-heading">
         <div><h3>${escapeHtml(item.displayName)}</h3><span class="muted">${escapeHtml(item.agentId)} · ${escapeHtml(item.id)}</span></div>
@@ -31632,6 +31832,7 @@ function renderAgentImprovementHtml(report: AgentImprovementReport, evalPlan: Ag
       </div>
       <p>${escapeHtml(item.recommendation)}</p>
       <p class="muted">${escapeHtml(item.rationale)}</p>
+      <p class="muted">Outcome signal: ${escapeHtml(outcomeSummary)}</p>
       ${evaluation?.holdoutTasks.length ? `<details><summary>Holdout evidence (${evaluation.holdoutTasks.length})</summary><ul>${evaluation.holdoutTasks.map((task) => `<li><strong>${escapeHtml(task.workflowId)}</strong> · ${escapeHtml(task.status)} · ${escapeHtml(task.evidence)}</li>`).join("")}</ul></details>` : ""}
       <details><summary>Proposed source change</summary><pre>${escapeHtml(item.diff)}</pre></details>
       ${decisionOpen ? `<form method="post" action="/api/agent-improvement-promotion-decision" class="inline-action-form">
@@ -46778,7 +46979,25 @@ async function loadProjectTuningNotes(projectDir: string): Promise<string[]> {
   return notes;
 }
 
-program.parseAsync(process.argv).catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+// Import guard: unit tests import pure helpers from this module, which must
+// not launch the CLI as a side effect. Only parse argv when this file is the
+// process entry point (both `tsx apps/cli/src/index.ts` and the compiled
+// dist bin resolve through symlinks, so realpath the entry before comparing).
+function isAgentflowMainModule(): boolean {
+  try {
+    const entry = process.argv[1];
+    if (!entry) {
+      return false;
+    }
+    return fsSync.realpathSync(path.resolve(entry)) === fileURLToPath(import.meta.url);
+  } catch {
+    return false;
+  }
+}
+
+if (isAgentflowMainModule()) {
+  program.parseAsync(process.argv).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}

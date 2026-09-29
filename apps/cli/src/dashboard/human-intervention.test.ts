@@ -21,3 +21,35 @@ test("home intervention work includes decisions, execution, blocked, failed, sta
 test("healthy home state has no human intervention work", () => {
   assert.deepEqual(buildHumanInterventionItems({ pendingApprovals: [], approvedExecutableApprovals: [], queue: [], workerStatus: "running", supervisorStatus: "running", mcpStatus: "ok", missingServices: [] }), []);
 });
+
+test("agent-improvement promotions awaiting review surface as a review item", () => {
+  const items = buildHumanInterventionItems({
+    pendingApprovals: [],
+    approvedExecutableApprovals: [],
+    queue: [],
+    workerStatus: "running",
+    supervisorStatus: "running",
+    mcpStatus: "ok",
+    missingServices: [],
+    agentImprovementPending: [{ projectRootUri: "/tmp/proj", name: "Proj", pending: 2, deferred: 1 }]
+  });
+  assert.equal(items.length, 1);
+  assert.equal(items[0].kind, "agent-promotion");
+  assert.equal(items[0].title, "3 agent-improvement promotions awaiting review");
+  assert.ok(items[0].href.includes("view=agent-improvements"));
+  assert.equal(items[0].action, "Review");
+});
+
+test("agent-improvement pending entries with no undecided items stay silent", () => {
+  const items = buildHumanInterventionItems({
+    pendingApprovals: [],
+    approvedExecutableApprovals: [],
+    queue: [],
+    workerStatus: "running",
+    supervisorStatus: "running",
+    mcpStatus: "ok",
+    missingServices: [],
+    agentImprovementPending: [{ projectRootUri: "/tmp/proj", name: "Proj", pending: 0, deferred: 0 }]
+  });
+  assert.deepEqual(items, []);
+});

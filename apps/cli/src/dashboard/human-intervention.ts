@@ -1,7 +1,7 @@
 export type HumanInterventionItem = {
   id: string;
   severity: "bad" | "warn";
-  kind: "approval" | "execution" | "blocked-run" | "failed-run" | "expired-lease" | "runtime";
+  kind: "approval" | "execution" | "blocked-run" | "failed-run" | "expired-lease" | "runtime" | "agent-promotion";
   title: string;
   detail: string;
   href: string;
@@ -22,6 +22,7 @@ export function buildHumanInterventionItems(input: {
   learningDaemonError?: string | null;
   approvalBacklogErrors?: number;
   approvalBacklogWarnings?: number;
+  agentImprovementPending?: Array<{ projectRootUri: string; name: string; pending: number; deferred: number }>;
   now?: Date;
 }): HumanInterventionItem[] {
   const now = (input.now ?? new Date()).getTime();
@@ -40,5 +41,18 @@ export function buildHumanInterventionItems(input: {
   if (input.learningDaemonError) items.push({ id: "runtime:learning", severity: "bad", kind: "runtime", title: "Repair learning daemon", detail: input.learningDaemonError, href: "/learning?view=diagnostics", action: "Diagnose" });
   const backlog = (input.approvalBacklogErrors ?? 0) + (input.approvalBacklogWarnings ?? 0);
   if (backlog) items.push({ id: "runtime:approval-backlog", severity: (input.approvalBacklogErrors ?? 0) > 0 ? "bad" : "warn", kind: "runtime", title: "Review approval backlog health", detail: `${input.approvalBacklogErrors ?? 0} errors and ${input.approvalBacklogWarnings ?? 0} warnings.`, href: "/approvals", action: "Review" });
+  for (const entry of input.agentImprovementPending ?? []) {
+    const total = entry.pending + entry.deferred;
+    if (total <= 0) continue;
+    items.push({
+      id: `agent-promotion:${entry.projectRootUri}`,
+      severity: "warn",
+      kind: "agent-promotion",
+      title: `${total} agent-improvement promotion${total === 1 ? "" : "s"} awaiting review`,
+      detail: `${entry.name}: ${entry.pending} pending, ${entry.deferred} deferred.`,
+      href: `/learning?project=${encodeURIComponent(entry.projectRootUri)}&view=agent-improvements`,
+      action: "Review"
+    });
+  }
   return [...new Map(items.map((item) => [item.id, item])).values()].sort((a, b) => (a.severity === b.severity ? 0 : a.severity === "bad" ? -1 : 1));
 }
