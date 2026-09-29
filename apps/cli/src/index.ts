@@ -17609,6 +17609,13 @@ function buildAgentImprovementPromotionQueue(
     const sourceHashStillMatches = previous?.sourceHash === patch.sourceHash && previous?.score === evaluation.score;
     const preservedStatus = sourceHashStillMatches && previous?.status !== "superseded" ? previous?.status ?? "pending" : "pending";
     const preserveDecision = sourceHashStillMatches && (preservedStatus === "approved" || preservedStatus === "rejected" || preservedStatus === "deferred");
+    // No-op suppression (2026-09-28): buildUnifiedDiff returns "" when the
+    // proposed YAML is byte-identical to the current source, i.e. the patch
+    // carries no change. Such promotions can never be applied (the apply lane
+    // skips empty diffs) and previously piled up as "pending" forever because
+    // nothing ever retired them. Mark them superseded up front so the queue
+    // only ever shows decisions worth a human's time.
+    const isNoopPromotion = !patch.unifiedDiff;
     return [{
       id,
       patchId: patch.id,
@@ -17617,11 +17624,13 @@ function buildAgentImprovementPromotionQueue(
       agentId: patch.agentId,
       displayName: patch.displayName,
       scope: patch.scope,
-      status: preservedStatus,
+      status: isNoopPromotion ? "superseded" : preservedStatus,
       createdAt: sourceHashStillMatches ? previous?.createdAt ?? generatedAt : generatedAt,
-      decidedAt: preserveDecision ? previous?.decidedAt ?? null : null,
-      reviewer: preserveDecision ? previous?.reviewer ?? null : null,
-      note: preserveDecision ? previous?.note ?? null : null,
+      decidedAt: isNoopPromotion ? generatedAt : (preserveDecision ? previous?.decidedAt ?? null : null),
+      reviewer: preserveDecision && !isNoopPromotion ? previous?.reviewer ?? null : null,
+      note: isNoopPromotion
+        ? "No-op: proposed YAML is identical to the current source; nothing to apply."
+        : (preserveDecision ? previous?.note ?? null : null),
       score: evaluation.score,
       promotionReady: evaluation.promotionReady,
       autoApplyReady: evaluation.autoApplyReady,
