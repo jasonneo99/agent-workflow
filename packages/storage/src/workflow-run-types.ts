@@ -5,8 +5,12 @@ export interface WorkflowQueueItem {
   workflowId: string;
   runStatus: string;
   task: string;
+  displayTitle?: string | null;
+  displayDescription?: string | null;
   projectName: string;
   projectRootUri: string;
+  requester?: string | null;
+  requesterChannel?: string | null;
   startedAt: string;
   finishedAt: string | null;
   blockedReason?: string | null;
@@ -38,6 +42,8 @@ export interface WorkflowRunStatus {
   status: string;
   workflowId: string;
   task: string;
+  displayTitle?: string | null;
+  displayDescription?: string | null;
   autonomy: string;
   policyProfile: string;
   policySnapshotHash: string;
@@ -52,6 +58,8 @@ export interface WorkflowRunStatus {
   constructionRationale?: Record<string, unknown>;
   projectName: string;
   projectRootUri: string;
+  requester?: string | null;
+  requesterChannel?: string | null;
   startedAt: string;
   finishedAt: string | null;
   blockedReason?: string | null;

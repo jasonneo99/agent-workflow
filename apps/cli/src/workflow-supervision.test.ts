@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER, workflowDeliveryRepairReason, workflowRepairLesson, workflowRepairPrevention, workflowRootRepairAction } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, WORKFLOW_ROOT_REPAIR_DIAGNOSIS_ORDER, workflowDeliveryRepairReason, workflowRepairLesson, workflowRepairPrevention, workflowRootRepairAction } from "./workflow-supervision.js";
 
 const run = { workflowId: "build-feature", task: "Build and deliver a fan module", status: "completed" };
 const cliSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
@@ -20,6 +20,12 @@ test("learning daemon replays review evidence gaps with explicit root-repair lin
   assert.match(cliSource, /workflowRootRepairAction\([\s\S]+rootRepairAction === "replay-original"/u);
   assert.match(cliSource, /evaluationMetadataPatch:[\s\S]+source: "workflow-root-repair"[\s\S]+rootRepairKind: "review-evidence-gap"/u);
   assert.match(cliSource, /workflow_root_repair_replayed/u);
+});
+
+test("internal source discovery gaps are recoverable without operator input", () => {
+  assert.equal(isInternalDiscoveryBlocker("The exact implementation and test paths could not be located because repository discovery was unavailable."), true);
+  assert.equal(isInternalDiscoveryBlocker("A production credential and approval are required."), false);
+  assert.match(cliSource, /workflow_internal_discovery_replayed/u);
 });
 
 test("learning daemon health-gates one replay after a recoverable provider failure", () => {

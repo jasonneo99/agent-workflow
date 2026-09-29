@@ -82,7 +82,9 @@ test("never routes polite make, implement, or change requests to review-only wor
   const goals = [
     "Make the shared mobile review window part of regular windows so it can be rearranged by the menu",
     "Please implement the review cards and audit trail",
-    "Can you change the review panel and add verification evidence?"
+    "Can you change the review panel and add verification evidence?",
+    "Finish the desktop assistant's interactive terminal and run its native verification",
+    "Complete the remaining implementation and deliver it"
   ];
   for (const goal of goals) {
     const archetype = selectWorkflowArchetype(goal);

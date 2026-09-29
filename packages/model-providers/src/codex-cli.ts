@@ -46,6 +46,7 @@ const stageSchema = {
     nextAction: { type: "string" },
     requestedCommands: { type: "array", items: { type: "string" } },
     requestedFileReads: { type: "array", items: { type: "string" } },
+    requestedFileSearches: { type: "array", maxItems: 4, items: { type: "string" } },
     requestedFileWrites: {
       type: "array",
       items: {
@@ -56,7 +57,7 @@ const stageSchema = {
       }
     }
   },
-  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileReads", "requestedFileWrites"]
+  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileReads", "requestedFileSearches", "requestedFileWrites"]
 };
 
 const fileSummarySchema = {
@@ -105,7 +106,7 @@ export class CodexCliProvider implements ModelProvider {
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
         workingDirectory
           ? "Treat the supplied stage context and prior artifacts as primary. Avoid broad repository scans and repeated orientation. Inspect only a small, task-relevant path when the supplied evidence is insufficient; otherwise request exact additional files through requestedFileReads. Resolve named commits with bounded git show/diff when required. The sandbox prevents writes. Do not claim mutations or validation that you did not perform; request policy-governed commands and file writes in the structured output."
-          : "Direct repository inspection is disabled for this stage. Use the compiled evidence first and request only exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
+          : "Direct repository inspection is disabled for this stage. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
       schema: stageSchema,

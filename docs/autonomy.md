@@ -20,13 +20,14 @@ Execution policy profiles describe how cautiously Agent Workflow may operate
 against a target environment. They do not select or isolate Agent Workflow's
 Postgres, Redis, or object storage.
 
-Three profiles are built in:
+Four profiles are built in:
 
 | Profile | Behavior |
 | --- | --- |
 | `local` | Preserve the project's configured autonomy, commands, and write paths. |
 | `staging` | Cap autonomy at 2, disable wide-open operation, and require approvals and receipts. |
 | `production` | Cap autonomy at 1 and disable commands and file writes. |
+| `trusted-personal` | Single trusted owner: autonomy 3, ordinary dev work pre-authorized, hard gates on push/deploy/external sends/spend/deletes. See [Chat Mode](chat-mode.md). |
 
 Projects select a default in `.agent-workflow/project.yaml`:
 

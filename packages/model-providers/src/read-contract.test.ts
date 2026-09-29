@@ -89,3 +89,19 @@ test("read requests count as actionable recovery so the stage continues instead 
   assert.equal(withoutRecovery.outcome, "blocked");
   assert.match(withoutRecovery.blockedReason, /Missing schema/u);
 });
+
+test("bounded file searches are normalized and count as actionable recovery", () => {
+  const artifact = normalizeStageArtifact({
+    outcome: "blocked",
+    blockedReason: "The terminal implementation path is unknown.",
+    summary: "Need bounded discovery.",
+    findings: [],
+    nextAction: "Locate the terminal files.",
+    requestedCommands: [],
+    requestedFileWrites: [],
+    requestedFileReads: [],
+    requestedFileSearches: ["terminal view", "x", " terminal tests ", "extra", "overflow"]
+  });
+  assert.equal(artifact.outcome, "completed");
+  assert.deepEqual(artifact.requestedFileSearches, ["terminal view", "terminal tests", "extra", "overflow"]);
+});

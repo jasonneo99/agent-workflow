@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
@@ -42,7 +43,7 @@ import {
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 import { createRenewingStageAuthority } from "./stage-authority.js";
-import { attributeVerifyCommandFailure, commandFailureEligibleForVerifyRetry, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, formatCommandFailureEvidence, npmPreflightDiagnostic, snapshotGitStatus, truncateCommandOutputForError, verifyRetryBudgetFromEnv } from "./command-failure.js";
+import { attributeVerifyCommandFailure, commandFailureEligibleForVerifyRetry, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, fileMutationRetryBudgetFromEnv, formatCommandFailureEvidence, npmPreflightDiagnostic, snapshotGitStatus, truncateCommandOutputForError, verifyRetryBudgetFromEnv } from "./command-failure.js";
 export * from "./command-failure.js";
 import { createStageTelemetry, flushStageTelemetry } from "./stage-telemetry.js";
 import type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
@@ -68,6 +69,35 @@ export function isInternalWorkflowReceiptWrite(relativePath: string): boolean {
   const normalized = relativePath.replace(/\\/g, "/").replace(/^\.\//, "");
   return /^\.agent-workflow\/receipts\/[a-zA-Z0-9._/-]+\.(?:md|json)$/u.test(normalized)
     && !normalized.split("/").includes("..");
+}
+
+export async function boundedProjectFileSearch(projectRootUri: string, query: string): Promise<string[]> {
+  const terms = query.toLowerCase().split(/[^a-z0-9._-]+/u).filter((term) => term.length >= 2).slice(0, 6);
+  if (!terms.length) return [];
+  const matches: string[] = [];
+  let inspected = 0;
+  const walk = async (directory: string, depth: number): Promise<void> => {
+    if (depth > 8 || inspected >= 2500 || matches.length >= 40) return;
+    const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    for (const entry of entries) {
+      if (inspected >= 2500 || matches.length >= 40) break;
+      if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "DerivedData" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage") continue;
+      if (entry.name.startsWith(".") && entry.name !== ".agent-workflow") continue;
+      const absolute = path.join(directory, entry.name);
+      const relative = path.relative(projectRootUri, absolute).replace(/\\/g, "/");
+      inspected += 1;
+      if (entry.isSymbolicLink()) continue;
+      if (entry.isDirectory()) {
+        await walk(absolute, depth + 1);
+        continue;
+      }
+      if (/\.(?:env|pem|key|p12|mobileprovision)$/iu.test(entry.name)) continue;
+      const haystack = relative.toLowerCase();
+      if (terms.every((term) => haystack.includes(term))) matches.push(relative);
+    }
+  };
+  await walk(projectRootUri, 0);
+  return matches.sort((left, right) => left.length - right.length || left.localeCompare(right));
 }
 
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
@@ -313,20 +343,45 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const stageFileReads: Array<{ path: string; content: string; truncated: boolean; sha256?: string; error?: string }> = [];
       const stageStateDeltas: StateDelta[] = [];
       const seenReadPaths = new Set<string>();
+      const seenSearches = new Set<string>();
       const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
       let fileReadIteration = 0;
       const countRequestedActions = (out: typeof output): number =>
-        (out.requestedCommands?.length ?? 0) + (out.requestedFileWrites?.length ?? 0) + (out.requestedFileReads?.length ?? 0);
+        (out.requestedCommands?.length ?? 0) + (out.requestedFileWrites?.length ?? 0) + (out.requestedFileReads?.length ?? 0) + (out.requestedFileSearches?.length ?? 0);
       let readRounds = 0;
       while (readRounds < maxReadRounds) {
+        const pendingSearches = (output.requestedFileSearches ?? []).filter((query) => {
+          const key = query.trim().toLowerCase();
+          if (key.length < 2 || seenSearches.has(key)) return false;
+          seenSearches.add(key);
+          return true;
+        }).slice(0, 4);
         const pendingReads = (output.requestedFileReads ?? []).filter((readPath) => {
           const key = readPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
           if (!key || seenReadPaths.has(key)) return false;
           seenReadPaths.add(key);
           return true;
         });
-        if (pendingReads.length === 0) break;
+        if (pendingReads.length === 0 && pendingSearches.length === 0) break;
         readRounds += 1;
+        for (const query of pendingSearches) {
+          await assertLeaseOwned();
+          const matches = await boundedProjectFileSearch(localProjectRootUri, query);
+          const content = matches.length ? matches.join("\n") : "No matching project-relative paths found.";
+          const artifactUri = await recordRunAction({
+            runId: task.runId,
+            taskId: task.taskId,
+            agentId: task.agentId,
+            actionType: "file_search",
+            target: query,
+            summary: `Found ${matches.length} bounded project path match${matches.length === 1 ? "" : "es"} for \`${query}\`.`,
+            artifactKind: "file_search",
+            artifactContent: { query, matches, bounded: true, maxMatches: 40, requestedByTaskId: task.taskId, requestedByStageId: task.stageId },
+            idempotencyKey: actionIdempotencyKey({ taskId: task.taskId, stageId: task.stageId, agentId: task.agentId, actionType: "file_search", target: query, payload: query, normalizePayload: true })
+          });
+          stageFileReads.push({ path: `search:${query}`, content, truncated: matches.length >= 40 });
+          actionResults.push({ type: "file_search", query, matches, artifactUri });
+        }
         for (const readPath of pendingReads) {
           await assertLeaseOwned();
           fileReadIteration += 1;
@@ -527,7 +582,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       const verifyRetryBudget = verifyRetryBudgetFromEnv();
       let verifyRetriesRemaining = verifyRetryBudget;
-      let mutationRetriesRemaining = Math.min(2, verifyRetryBudget);
+      let mutationRetriesRemaining = fileMutationRetryBudgetFromEnv();
       let verifyRetryRound = 0;
       let verifyRetryRequested = false;
       let verifyEnvironmentalBlock: { summary: string; reason: string; files: string[] } | null = null;
@@ -1260,6 +1315,31 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               quality = scoreStageOutput(routedStageInput, output);
               actualProviderId = retry.actualProvider;
               actualModel = retry.actualModel;
+              const replacementWriteRequested = (output.requestedFileWrites ?? []).some((candidate) => candidate.path === fileWrite.path);
+              if (output.outcome !== "blocked" && !replacementWriteRequested) {
+                const supersededArtifactUri = await recordRunAction({
+                  runId: task.runId,
+                  taskId: task.taskId,
+                  agentId: task.agentId,
+                  actionType: "file_write_retry_superseded",
+                  target: fileWrite.path,
+                  summary: "The refreshed provider response no longer requested the rejected patch; the stale mutation was superseded without changing the file.",
+                  artifactKind: "file_write_retry",
+                  artifactContent: {
+                    rejectionArtifactUri,
+                    rejectionMessage,
+                    refreshedOutcome: output.outcome,
+                    requestedByTaskId: task.taskId,
+                    requestedByStageId: task.stageId
+                  }
+                });
+                actionResults.push({
+                  type: "file_write_retry_superseded",
+                  path: fileWrite.path,
+                  artifactUri: supersededArtifactUri,
+                  rejectionArtifactUri
+                });
+              }
               verifyRetryRequested = true;
               continue verifyActionRounds;
             }

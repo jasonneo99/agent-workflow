@@ -1,5 +1,6 @@
 import { transitionWorkflowRun } from "./run-transitions.js";
 import { withClient } from "./client.js";
+import { notifyRequester } from "./postgres.js";
 
 export interface ActionApprovalStatus {
   id: string;
@@ -157,7 +158,16 @@ export async function requestActionApproval(input: {
         ]
       );
       await client.query("commit");
-      return { approvalId, artifactUri, status: approval.rows[0].status };
+      const result = { approvalId, artifactUri, status: approval.rows[0].status };
+      if (result.status === "pending") {
+        void notifyRequester({
+          runId: input.runId,
+          kind: "approval_needed",
+          title: `Approval needed: ${input.actionType} on ${input.target}`,
+          body: input.rationale
+        });
+      }
+      return result;
     } catch (error) {
       await client.query("rollback");
       throw error;

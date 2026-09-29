@@ -78,6 +78,7 @@ export interface StageExecutionOutput {
     expectedHash?: string | null;
   }>;
   requestedFileReads?: string[];
+  requestedFileSearches?: string[];
 }
 
 export interface FileSummaryInput {

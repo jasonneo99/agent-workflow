@@ -132,8 +132,8 @@ remote, staging, and production projects must not inherit it.
 **Severity:** medium  
 **Status:** open
 
-Studio hides presumed aliases using `/Users/.../Projects`,
-`/home/.../Projects`, and local-share path patterns. This is presentation-only,
+Studio hides presumed aliases using operating-system-specific home-directory
+project roots and local-share path patterns. This is presentation-only,
 but it embeds OS conventions and can hide two distinct projects with similar
 names and suffixes.
 

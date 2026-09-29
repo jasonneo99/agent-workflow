@@ -67,8 +67,9 @@ drains the outbox each cycle via `deliverRunNotifications()`:
 The bundled bridge is `scripts/notify-requester.py`. It reads the notification
 JSON from stdin and delivers through every backend it can:
 
-1. **Phone push** via Heimdall's `POST /mobile/notify` (APNs to your iOS
-   devices) — active when `AGENTFLOW_SERVER_TOKEN` is set.
+1. **Phone push** via a deployment-supplied relay implementing
+   `POST /mobile/notify` — active when both the relay URL and
+   `AGENTFLOW_SERVER_TOKEN` are set.
 2. **macOS Notification Center** on the machine running the daemon — always
    available, no secrets needed.
 
@@ -77,7 +78,7 @@ environment (on macOS, the launchd plist's `EnvironmentVariables`):
 
 ```xml
 <key>AGENTFLOW_NOTIFY_COMMAND</key>
-<string>/Users/jasonmiller/Projects/Agent Workflow/scripts/notify-requester.py</string>
+<string>/path/to/agent-workflow/scripts/notify-requester.py</string>
 ```
 
 then unload/reload the launchd job so the new environment takes effect. When
@@ -178,7 +179,7 @@ then remove the obsolete project row. This never deletes workflow history.
 | `AGENTFLOW_REQUESTER_CHANNEL` | `cli` (`codex` with `CODEX_THREAD_ID`, `command` with `AGENTFLOW_NOTIFY_COMMAND`) | How the requester is reached |
 | `AGENTFLOW_NOTIFY_COMMAND` | unset | Bridge executable receiving notification JSON on stdin; bundled: `scripts/notify-requester.py` (phone push + macOS notification) |
 | `AGENTFLOW_SERVER_TOKEN` | unset | Bearer token enabling the phone-push backend in the bundled bridge |
-| `JARVIS_HEIMDALL_BASE_URL` | unset | Base URL of the phone-push relay (must expose `POST /mobile/notify`); when unset the bridge skips phone push |
+| `AGENTFLOW_PUSH_RELAY_BASE_URL` | unset | Base URL of the phone-push relay (must expose `POST /mobile/notify`); when unset the bridge skips phone push |
 | `AGENTFLOW_FILE_MUTATION_RETRY_BUDGET` | `4` (max `6`) | Stale-hash retry budget |
 | `AGENTFLOW_VERIFY_RETRY_BUDGET` | `2` (max `5`) | Verify-command retry budget |
 
@@ -206,6 +207,6 @@ requester read it. Delivery receipts are transport evidence, not read receipts.
 
 **The bundled bridge keeps no private infrastructure in the tree.**
 `scripts/notify-requester.py` ships with no push-relay URL baked in; set
-`JARVIS_HEIMDALL_BASE_URL` (and `AGENTFLOW_SERVER_TOKEN`) in your deployment
+`AGENTFLOW_PUSH_RELAY_BASE_URL` (and `AGENTFLOW_SERVER_TOKEN`) in your deployment
 environment. The bridge log records notification metadata (id, kind, truncated
 title, delivery outcome) — never message bodies.

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Bridge: deliver an Agent Workflow requester notification to Jason.
+"""Bridge: deliver an Agent Workflow requester notification.
 
 Reads one notification JSON object from stdin (as produced by the
 `run_notifications` outbox):
     {"notificationId": ..., "runId": ..., "kind": ..., "title": ..., "body": ...}
 
 Delivery, in order:
-  1. Heimdall phone push (APNs via POST /mobile/notify) -- only when
-     AGENTFLOW_SERVER_TOKEN is set in this process's environment.
+  1. Optional phone push via POST /mobile/notify -- only when the relay URL
+     and AGENTFLOW_SERVER_TOKEN are set in this process's environment.
   2. macOS Notification Center on this Mac -- always available, no secrets.
 
 Exits 0 when at least one backend reports delivery, 1 otherwise.
@@ -22,15 +22,15 @@ import subprocess
 import sys
 import urllib.request
 
-# Phone-push backend is opt-in: set JARVIS_HEIMDALL_BASE_URL to your push
+# Phone-push backend is opt-in: set AGENTFLOW_PUSH_RELAY_BASE_URL to your push
 # relay's base URL (it must expose POST /mobile/notify). No default is baked
 # in — private infrastructure endpoints do not belong in the open-source tree.
-HEIMDALL_BASE_URL = os.environ.get("JARVIS_HEIMDALL_BASE_URL", "").strip().rstrip("/")
+PUSH_RELAY_BASE_URL = os.environ.get("AGENTFLOW_PUSH_RELAY_BASE_URL", "").strip().rstrip("/")
 
 
-def send_heimdall_push(title: str, body: str) -> bool:
+def send_relay_push(title: str, body: str) -> bool:
     token = os.environ.get("AGENTFLOW_SERVER_TOKEN", "").strip()
-    if not token or not HEIMDALL_BASE_URL:
+    if not token or not PUSH_RELAY_BASE_URL:
         return False
     payload = {
         "title": f"Agent Workflow: {title}"[:100],
@@ -41,7 +41,7 @@ def send_heimdall_push(title: str, body: str) -> bool:
     }
     try:
         request = urllib.request.Request(
-            HEIMDALL_BASE_URL + "/mobile/notify",
+            PUSH_RELAY_BASE_URL + "/mobile/notify",
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Content-Type": "application/json",
@@ -98,7 +98,7 @@ def main() -> int:
     title = str(notification.get("title", "Notification")).strip() or "Notification"
     body = str(notification.get("body", "")).strip()
 
-    push_ok = send_heimdall_push(title, body)
+    push_ok = send_relay_push(title, body)
     macos_ok = send_macos_notification(title, body)
     delivered = push_ok or macos_ok
     _log(json.dumps({"ts": __import__("time").time(), "delivered": delivered,

@@ -14,7 +14,8 @@ export function fileWriteRejectionRecovered(actions: unknown[], rejected: unknow
   const path = String(rejected.path);
   return actions.some((candidate) => Boolean(
     candidate && typeof candidate === "object" && "type" in candidate &&
-    candidate.type === "file_write" && "path" in candidate && String(candidate.path) === path
+    (candidate.type === "file_write" || candidate.type === "file_write_retry_superseded") &&
+    "path" in candidate && String(candidate.path) === path
   ));
 }
 

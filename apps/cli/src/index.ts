@@ -23,6 +23,7 @@ import {
   loadWorkflowRecords,
   loadWorkflows
 } from "../../../packages/agent-registry/src/loaders.js";
+import { addGlobalTrustedCommand, globalTrustedCommandsPath, loadGlobalTrustedCommands, normalizeTrustedCommandPattern, removeGlobalTrustedCommand } from "../../../packages/agent-registry/src/trusted-commands.js";
 import { buildBundleManifest, compareBundleManifests, formatBundleManifest, loadCommittedBundleManifest, writeBundleManifest } from "../../../packages/agent-registry/src/manifest.js";
 import { agentCardSchema, projectConfigSchema, type AgentCard, type ProjectConfig, type WorkflowDefinition } from "../../../packages/agent-registry/src/schemas.js";
 import { compileContext } from "../../../packages/context-compiler/src/index.js";
@@ -55,7 +56,8 @@ import { collectObjectReferences, normalizeObjectArtifactKey, parseMcFindKeys } 
 import { recommendAgents, recommendCommands, recommendContextExcludes, recommendContextIncludes, recommendWorkflows, recommendWritePaths } from "./onboarding-recommendations.js";
 import { findLaterCompletedEquivalentRun } from "./blocked-run-supersession.js";
 import { createOrchestrationPlan, type OrchestrationPlan, type OrchestrationStep } from "./orchestration-plan.js";
-import { findSupersedingDeliveryReceipt, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction, type SupervisedDeliveryReceipt } from "./workflow-supervision.js";
+import { buildRunOutcomeContract } from "./run-outcome.js";
 import { approvalCallbackPrompt, attachCodexOrigin, CODEX_CALLBACK_RECEIPT, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "./codex-callback.js";
 import { probeWorkerProviderCapabilities, probeWorkerProviderExecution } from "./worker-provider-capabilities.js";
 import { buildEvaluationGateReport, buildEvaluationReport, evaluationGateSchema, evaluationScoringProfileSchema, evaluationSuiteSchema, formatEvaluationGateReport, formatEvaluationReport, type EvaluationObservation, type EvaluationScoringProfile } from "../../../packages/evaluation/src/index.js";
@@ -123,10 +125,12 @@ import {
   listWorkflowHandoffs,
   listWorkflowStageHealthForRuns,
   listWorkflowStageRunsForRuns,
+  listPendingRunNotifications,
   listWorkflowRunsForProject,
   listWorkflowRuns,
   migrateStorage,
   markActionApprovalExecution,
+  markRunNotificationDelivered,
   recordRunAction,
   requestActionApproval,
   reconcileStaleTerminalWorkflowRuns,
@@ -145,6 +149,7 @@ import {
   upsertProjectFiles,
   type WorkflowRunStatus
 } from "../../../packages/storage/src/postgres.js";
+import { buildRunPresentation } from "../../../packages/storage/src/run-presentation.js";
 import { executorApprovalTarget, runExecutorApprovalGate, runWorkerOnce, runWorkerWatch } from "../../../packages/workflow-engine/src/executor.js";
 import { assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot, type ExecutorResult, type ExecutorSnapshot } from "../../../packages/executor-adapters/src/index.js";
 import { executeWithProviderFallback, providerFromEnv } from "../../../packages/model-providers/src/index.js";
@@ -168,6 +173,7 @@ import { createCodegenPlan, finishCodegenPlan, listCodegenPlans, readCodegenPlan
 import { inferContextLanguage, readLatestCalibration, resolveSegmentedThresholdPolicy } from "../../../packages/context-calibration/src/index.js";
 import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../packages/dashboard-report-cache/src/index.js";
 import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
+import { recommendRunNextAction } from "./run-recommendation.js";
 import { commitRepositoryMaintenance, scanRepositoryMaintenance, writeRepositoryMaintenanceReceipt, type RepositoryMaintenanceReport } from "../../../packages/repository-maintenance/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../packages/schema-registry/src/index.js";
 import { buildDefinitionMigrationPlan, formatDefinitionMigrationPlan, loadDefinitionMigrationCatalog, type DefinitionMigrationPlan } from "../../../packages/definition-migrations/src/index.js";
@@ -2570,15 +2576,17 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "natural-language goal")
   .option("--policy-profile <name>", "execution policy profile")
+  .option("--requester <name>", "who asked for this run (notified on block/approval)")
+  .option("--requester-channel <channel>", "how to reach the requester: cli, dashboard, codex, command")
   .option("--execution-profile <profile>", "adaptive or full", "adaptive")
   .option("--no-brief", "queue without printing the compiled brief")
-  .action(async (options: { project: string; task: string; policyProfile?: string; executionProfile: string; brief?: boolean }) => {
+  .action(async (options: { project: string; task: string; policyProfile?: string; executionProfile: string; brief?: boolean; requester?: string; requesterChannel?: string }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
     const configuredProject = await loadProjectConfig(projectDir);
     const executionProfile = parseExecutionProfile(options.executionProfile);
     const workflow = constructDynamicWorkflow({ goal: options.task, project: configuredProject, agents: await loadAgentsForProject(projectDir), executionProfile });
     await seedRegistry([], [{ path: `runtime/${workflow.id}.yaml`, value: workflow }]);
-    const result = await queueWorkflow({ workflowId: workflow.id, projectPath: projectDir, task: options.task, policyProfile: options.policyProfile, workflowOverride: workflow });
+    const result = await queueWorkflow({ workflowId: workflow.id, projectPath: projectDir, task: options.task, policyProfile: options.policyProfile, workflowOverride: workflow, requester: options.requester, requesterChannel: options.requesterChannel });
     if (!result.ok) {
       console.error(result.error);
       process.exitCode = 1;
@@ -2597,10 +2605,12 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
   .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
+  .option("--requester <name>", "who asked for this run (notified on block/approval)")
+  .option("--requester-channel <channel>", "how to reach the requester: cli, dashboard, codex, command")
   .option("--no-brief", "queue the run without printing the compiled brief")
   .option("--source-token-budget <number>", "token budget for indexed source summaries")
   .option("--source-max-files <number>", "maximum indexed source summaries to include")
-  .action(async (workflowId: string, options: { project: string; task: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string }) => {
+  .action(async (workflowId: string, options: { project: string; task: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string; requester?: string; requesterChannel?: string }) => {
     const serviceChecks = await checkServices();
     const missing = serviceChecks.filter((check) => !check.reachable);
     if (missing.length) {
@@ -2619,7 +2629,9 @@ program
       task: options.task,
       policyProfile: options.policyProfile,
       sourceTokenBudget: options.sourceTokenBudget,
-      sourceMaxFiles: options.sourceMaxFiles
+      sourceMaxFiles: options.sourceMaxFiles,
+      requester: options.requester,
+      requesterChannel: options.requesterChannel
     });
 
     if (!result.ok) {
@@ -2773,6 +2785,8 @@ program
   .requiredOption("-p, --project <dir>", "project directory")
   .requiredOption("-t, --task <task>", "task description")
   .option("--policy-profile <name>", "execution policy profile (local, staging, production, or project-defined)")
+  .option("--requester <name>", "who asked for this run (notified on block/approval)")
+  .option("--requester-channel <channel>", "how to reach the requester: cli, dashboard, codex, command")
   .option("--skip-index", "skip project indexing before queueing")
   .option("--index-max-files <number>", "maximum project files to index first", "100")
   .option("--full-index", "force a full project index instead of the default incremental refresh")
@@ -2787,6 +2801,8 @@ program
     project: string;
     task: string;
     policyProfile?: string;
+    requester?: string;
+    requesterChannel?: string;
     skipIndex?: boolean;
     indexMaxFiles: string;
     fullIndex?: boolean;
@@ -2851,7 +2867,9 @@ program
       policyProfile: options.policyProfile,
       workflowOverride: workflow,
       sourceTokenBudget: options.sourceTokenBudget,
-      sourceMaxFiles: options.sourceMaxFiles
+      sourceMaxFiles: options.sourceMaxFiles,
+      requester: options.requester,
+      requesterChannel: options.requesterChannel
     });
 
     if (!queued.ok) {
@@ -3508,6 +3526,65 @@ program
     console.log(formatStaleInputWarnings(staleReport).join("\n"));
     console.log("Process queued stages with:");
     console.log("npm run worker -- --limit 6");
+  });
+
+program
+  .command("notifications")
+  .description("List requester notifications queued when runs block or need approval")
+  .option("--pending", "only show undelivered notifications", true)
+  .option("--deliver", "attempt delivery through each notification's channel now")
+  .option("-p, --project <dir>", "project directory (used for codex channel delivery)")
+  .action(async (options: { pending?: boolean; deliver?: boolean; project?: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const pending = await listPendingRunNotifications(100);
+    if (pending.length === 0) {
+      console.log("No pending requester notifications.");
+      return;
+    }
+    for (const notification of pending) {
+      console.log(`- [${notification.kind}] ${notification.title}`);
+      console.log(`  id: ${notification.id}  run: ${notification.runId}  to: ${notification.requester}  channel: ${notification.channel}`);
+      console.log(`  ${notification.body.split("\n")[0]}`);
+    }
+    if (options.deliver === true) {
+      const projectDir = options.project ? path.resolve(process.cwd(), options.project) : process.cwd();
+      const delivered = await deliverRunNotifications(projectDir);
+      console.log(`Delivered ${delivered}/${pending.length} notification(s).`);
+    }
+  });
+
+program
+  .command("reply")
+  .description("Answer a pending approval the way you would in chat: reply <approval-id> approve|reject")
+  .argument("<approval-id>", "approval id from the notification or approvals list")
+  .argument("<decision>", "approve or reject")
+  .option("--actor <name>", "person or tool making the decision", process.env.AGENTFLOW_REQUESTER ?? process.env.USER ?? "cli")
+  .option("--note <text>", "optional note recorded with the decision")
+  .action(async (approvalId: string, decision: string, options: { actor: string; note?: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const result = await processRequesterApprovalReply({ approvalId, decision, actor: options.actor, note: options.note });
+    if (!result.ok) {
+      console.error(result.error);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(result.output);
   });
 
 program
@@ -4845,6 +4922,7 @@ program
             approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
             approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
             await notifyOriginatingCodexTask(targetProjectDir);
+            await deliverRunNotifications(targetProjectDir);
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             projectErrors.push(`${targetProjectDir}: ${message}`);
@@ -6810,6 +6888,14 @@ type DashboardUsageSummary = {
 type DashboardProjectSummary = Awaited<ReturnType<typeof listProjectStorageSummaries>>[number];
 type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
 
+function dashboardRunPresentation(run: { task: string; workflowId: string; projectName: string; displayTitle?: string | null; displayDescription?: string | null }) {
+  const fallback = buildRunPresentation(run);
+  return {
+    title: run.displayTitle?.trim() || fallback.title,
+    description: run.displayDescription?.trim() || fallback.description
+  };
+}
+
 type DashboardProjectIdentityGroup = {
   canonicalRootUri: string;
   primaryRootUri: string;
@@ -7693,6 +7779,13 @@ type DashboardApprovalRuleSummary = {
   functionLabel: string;
   effect: "auto_execute";
   maxBytes?: number;
+};
+type DashboardTrustedCommandSummary = {
+  scope: "global" | "project";
+  pattern: string;
+  projectName?: string;
+  projectRootUri?: string;
+  configPath: string;
 };
 type DashboardArtifactLifecycleRow = Awaited<ReturnType<typeof listArtifactLifecycle>>[number];
 
@@ -8816,6 +8909,14 @@ async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: R
   const findings = collectArtifactFindings(stageOutputs);
   const completedTasks = details.tasks.filter((task) => task.status === "completed").length;
   const failedTasks = details.tasks.filter((task) => task.status === "failed" || task.status === "blocked").length;
+  const pendingApprovals = (await listActionApprovals({ runId, status: "pending", limit: 25 })).map((approval) => ({
+    id: approval.id,
+    actionType: approval.actionType,
+    target: approval.target,
+    stageId: approval.stageId,
+    agentId: approval.agentId,
+    executable: isExecutableApprovalAction(approval.actionType)
+  }));
 
   return {
     ok: true,
@@ -8837,16 +8938,17 @@ async function summarizeWorkflowRun(runId: string): Promise<{ ok: true; value: R
       })),
       keyFindings: findings.length ? findings.slice(0, 8) : details.receipts.slice(-5).map((receipt) => `${receipt.agentId}: ${receipt.summary}`),
       failures: [...failures, ...commandFailures].slice(0, 8),
-      pendingApprovals: (await listActionApprovals({ runId, status: "pending", limit: 25 })).map((approval) => ({
-        id: approval.id,
-        actionType: approval.actionType,
-        target: approval.target,
-        stageId: approval.stageId,
-        agentId: approval.agentId,
-        executable: isExecutableApprovalAction(approval.actionType)
-      })),
+      pendingApprovals,
       artifactUris: artifacts.map((artifact) => `${artifact.kind}: ${artifact.uri}`).slice(0, 12),
-      recommendedNextAction: recommendNextAction(details.run.status, details.run.workflowId, failedTasks, [...failures, ...commandFailures])
+      recommendedNextAction: recommendRunNextAction({
+        status: details.run.status,
+        workflowId: details.run.workflowId,
+        failedTasks,
+        failures: [...failures, ...commandFailures],
+        blockedReason: details.run.blockedReason,
+        pendingApprovals: pendingApprovals.length,
+        replacementRunId: details.run.replacementRunId
+      })
     }
   };
 }
@@ -25080,6 +25182,73 @@ async function loadDashboardApprovalRules(projectRootUri?: string): Promise<Dash
   return rules;
 }
 
+async function loadDashboardTrustedCommands(projects: DashboardProjectSummary[], projectRootUri?: string): Promise<DashboardTrustedCommandSummary[]> {
+  const rows: DashboardTrustedCommandSummary[] = (await loadGlobalTrustedCommands()).map((pattern) => ({
+    scope: "global",
+    pattern,
+    configPath: globalTrustedCommandsPath()
+  }));
+  const selectedProjects = projectRootUri
+    ? projects.filter((project) => path.resolve(project.rootUri) === path.resolve(projectRootUri))
+    : projects;
+  for (const project of selectedProjects) {
+    try {
+      const projectRoot = path.resolve(project.rootUri);
+      const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+      const raw = YAML.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+      const parsed = projectConfigSchema.parse(raw);
+      for (const pattern of parsed.actions.allowed_commands) {
+        rows.push({ scope: "project", pattern, projectName: parsed.project.name, projectRootUri: projectRoot, configPath });
+      }
+    } catch {
+      // Ignore projects whose local config is no longer available from this machine.
+    }
+  }
+  return rows;
+}
+
+async function updateProjectTrustedCommand(input: { projectRootUri: string; pattern: string; operation: "add" | "remove" }): Promise<DashboardFollowUpResult> {
+  if (!input.projectRootUri.trim()) return { ok: false, error: "Choose a project for a project-scoped trusted command." };
+  const projectRoot = path.resolve(input.projectRootUri);
+  const configPath = path.join(projectRoot, ".agent-workflow", "project.yaml");
+  await ensureProjectSubdir(projectRoot, path.dirname(configPath), ".agent-workflow");
+  const pattern = normalizeTrustedCommandPattern(input.pattern);
+  const current = YAML.parse(await fs.readFile(configPath, "utf8")) as Record<string, unknown>;
+  const actions = isRecord(current.actions) ? current.actions : {};
+  const parsed = projectConfigSchema.parse(current);
+  const commands = input.operation === "add"
+    ? [...new Set([...parsed.actions.allowed_commands, pattern])]
+    : parsed.actions.allowed_commands.filter((command) => command !== pattern);
+  const next = { ...current, actions: { ...actions, allowed_commands: commands } };
+  projectConfigSchema.parse(next);
+  const tempPath = `${configPath}.${process.pid}.tmp`;
+  await fs.writeFile(tempPath, YAML.stringify(next), "utf8");
+  await fs.rename(tempPath, configPath);
+  return {
+    ok: true,
+    title: input.operation === "add" ? "Project trusted command added" : "Project trusted command removed",
+    output: [`Pattern: ${pattern}`, `Project: ${projectRoot}`, `Config: ${configPath}`].join("\n")
+  };
+}
+
+async function processDashboardTrustedCommand(form: URLSearchParams, operation: "add" | "remove"): Promise<DashboardFollowUpResult> {
+  try {
+    const scope = form.get("scope") === "global" ? "global" : "project";
+    const pattern = form.get("pattern") ?? "";
+    if (scope === "project") return updateProjectTrustedCommand({ projectRootUri: form.get("project") ?? "", pattern, operation });
+    const result = operation === "add"
+      ? await addGlobalTrustedCommand(pattern)
+      : await removeGlobalTrustedCommand(pattern);
+    return {
+      ok: true,
+      title: operation === "add" ? "Global trusted command added" : "Global trusted command removed",
+      output: [`Pattern: ${normalizeTrustedCommandPattern(pattern)}`, `Config: ${result.filePath}`, "Scope: all projects on this machine"].join("\n")
+    };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 async function removeProjectApprovalRule(input: {
   projectRootUri: string;
   ruleId: string;
@@ -25464,22 +25633,6 @@ function collectFindingValue(value: unknown, findings: string[]): void {
   }
 }
 
-function recommendNextAction(status: string, workflowId: string, failedTasks: number, failures: string[]): string {
-  if (status === "failed" || failedTasks > 0 || failures.length) {
-    return "Run `debug-failure` or a targeted specialist `agent-task` against the failing command or stage.";
-  }
-  if (workflowId.startsWith("agent-task-ux-reviewer")) {
-    return "Ask `frontend-engineer` to implement the highest-impact UX findings, then rerun `ux-reviewer`.";
-  }
-  if (workflowId === "review-pr") {
-    return "Address the highest-risk review findings, then rerun `review-pr` before shipping.";
-  }
-  if (workflowId === "build-feature") {
-    return "Review generated artifacts, run project tests, and prepare a PR or release handoff.";
-  }
-  return "Review artifacts and choose the next specialist or workflow from the findings.";
-}
-
 function formatRunSummary(summary: RunSummary): string {
   return [
     `Run: ${summary.runId}`,
@@ -25845,6 +25998,20 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/trusted-command-add") {
+    const form = await readFormBody(request);
+    const result = await processDashboardTrustedCommand(form, "add");
+    respondDashboardAction(request, response, form, result, "/approval-rules");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/trusted-command-remove") {
+    const form = await readFormBody(request);
+    const result = await processDashboardTrustedCommand(form, "remove");
+    respondDashboardAction(request, response, form, result, "/approval-rules");
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/artifact-lifecycle-action") {
     const form = await readFormBody(request);
     const result = await processDashboardArtifactLifecycleAction({
@@ -25980,6 +26147,18 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       confirmed: true
     });
     respondDashboardAction(request, response, form, result.ok && action === "pause" ? { ...result, title: "Run paused at checkpoint" } : result, "/studio");
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/studio-reply") {
+    const form = await readFormBody(request);
+    const result = await processRequesterApprovalReply({
+      approvalId: form.get("approvalId") ?? "",
+      decision: form.get("decision") ?? "",
+      actor: form.get("actor") ?? "dashboard-requester",
+      note: form.get("note") ?? undefined
+    });
+    respondDashboardAction(request, response, form, result, "/studio");
     return;
   }
 
@@ -26486,8 +26665,22 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/api/projects") {
     const projects = await listProjectStorageSummaries(100);
+    const identities = await loadDashboardProjectIdentityGroups(projects);
+    const canonicalProjects = identities.map((identity) => ({
+      ...identity.projects.find((project) => project.rootUri === identity.primaryRootUri)!,
+      rootUri: identity.canonicalRootUri,
+      name: identity.canonicalName,
+      indexedFiles: identity.totalIndexedFiles,
+      memoryItems: identity.totalMemoryItems,
+      runCount: identity.totalRuns,
+      queuedRuns: identity.projects.reduce((sum, project) => sum + project.queuedRuns, 0),
+      runningRuns: identity.projects.reduce((sum, project) => sum + project.runningRuns, 0),
+      failedRuns: identity.failedRuns,
+      lastRunAt: identity.lastRunAt,
+      aliases: identity.aliases
+    }));
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify(projects, null, 2));
+    response.end(JSON.stringify(canonicalProjects, null, 2));
     return;
   }
 
@@ -27054,8 +27247,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       listActionApprovals({ runId, limit: 100 })
     ]);
     const eta = details.run ? estimateRunEta({ run: details.run, tasks: details.tasks, historicalRuns }) : null;
+    const lineageRunIds: string[] = [];
+    let lineageCursor = details.run ? stringValue(details.run.evaluationMetadata?.sourceRunId) : undefined;
+    while (lineageCursor && lineageRunIds.length < 12 && !lineageRunIds.includes(lineageCursor)) {
+      lineageRunIds.push(lineageCursor);
+      const source = historicalRuns.find((candidate) => candidate.id === lineageCursor);
+      lineageCursor = source ? stringValue(source.evaluationMetadata?.sourceRunId) : undefined;
+    }
+    const lineageArtifacts = (await Promise.all(lineageRunIds.map((sourceRunId) => listArtifacts({ runId: sourceRunId })))).flat();
+    const outcome = details.run ? buildRunOutcomeContract({
+      run: details.run,
+      artifacts: [...artifacts, ...lineageArtifacts],
+      tasks: details.tasks,
+      lineageRunIds,
+      openApprovalCount: approvals.filter(isOpenApproval).length
+    }) : null;
     response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-    response.end(JSON.stringify({ ...details, eta, artifacts, handoffs, approvals }, null, 2));
+    response.end(JSON.stringify({ ...details, eta, outcome, artifacts, handoffs, approvals }, null, 2));
     return;
   }
 
@@ -27667,9 +27875,12 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
   if (requestUrl.pathname === "/approval-rules") {
     const projects = await listProjectStorageSummaries(100);
     const project = requestUrl.searchParams.get("project") ?? undefined;
-    const rules = await loadDashboardApprovalRules(project);
+    const [rules, trustedCommands] = await Promise.all([
+      loadDashboardApprovalRules(project),
+      loadDashboardTrustedCommands(projects, project)
+    ]);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderApprovalRulesHtml(rules, projects, requestUrl.searchParams));
+    response.end(renderApprovalRulesHtml(rules, trustedCommands, projects, requestUrl.searchParams));
     return;
   }
 
@@ -28328,6 +28539,7 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, h
   const failed = queue.filter((item) => item.runStatus === "failed" && !recoveringRunIds.has(item.runId));
   const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
   const cards = queue.filter((item) => !recoveringRunIds.has(item.runId)).map((item) => {
+    const presentation = dashboardRunPresentation(item);
     const eta = estimateQueueItemEta(item, historicalRuns);
     const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
     const currentStage = item.runningStageId
@@ -28375,7 +28587,8 @@ function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, h
         <div class="queue-card-header">
           <div class="queue-card-title">
             <div class="queue-card-eyebrow"><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span><span>${escapeHtml(item.projectName)}</span><span>${escapeHtml(item.workflowId)}</span></div>
-            <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(item.task)}</a></h2>
+            <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(presentation.title)}</a></h2>
+            <p>${escapeHtml(presentation.description)}</p>
             <p class="muted">Run ${escapeHtml(item.runId.slice(0, 8))} · started ${renderDashboardDateTime(item.startedAt)}</p>
           </div>
           <div class="actions"><a class="button secondary" href="/runs?runSet=${encodeURIComponent(item.runSetId)}">${iconLabel("layers", "Open set")}</a><a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a></div>
@@ -28601,7 +28814,7 @@ function renderApprovalsHtml(
         ${filterLink("rejected", "Rejected")}
         ${filterLink("all", "All")}
         ${pendingCount ? `<a class="button" href="${escapeHtml(bulkHref)}">Approve All Pending...</a>` : ""}
-        <a class="button secondary" href="/approval-rules">Always Approved</a>
+        <a class="button secondary" href="/approval-rules">Trusted Commands</a>
       </div>
     </section>
     <section class="panel approval-inbox-panel">
@@ -28960,11 +29173,30 @@ function renderBulkApprovalsHtml(
 
 function renderApprovalRulesHtml(
   rules: DashboardApprovalRuleSummary[],
+  trustedCommands: DashboardTrustedCommandSummary[],
   projects: DashboardProjectSummary[],
   params: URLSearchParams
 ): string {
   const selectedProject = params.get("project") ?? "";
-  const rows = rules.map((rule) => `
+  const returnTo = `/approval-rules${selectedProject ? `?project=${encodeURIComponent(selectedProject)}` : ""}`;
+  const commandRows = trustedCommands.map((command) => `
+    <tr>
+      <td><strong>${command.scope === "global" ? "Global" : "Project"}</strong></td>
+      <td><code>${escapeHtml(command.pattern)}</code></td>
+      <td>${command.scope === "global" ? "All projects on this machine" : `${escapeHtml(command.projectName ?? "Project")}<br><span class="muted">${escapeHtml(command.projectRootUri ?? "")}</span>`}</td>
+      <td><code>${escapeHtml(command.configPath)}</code></td>
+      <td>
+        <form class="approval-form" method="post" action="/api/trusted-command-remove">
+          <input type="hidden" name="scope" value="${command.scope}">
+          <input type="hidden" name="pattern" value="${escapeHtml(command.pattern)}">
+          <input type="hidden" name="project" value="${escapeHtml(command.projectRootUri ?? "")}">
+          <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+          <button class="danger" type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+  `).join("");
+  const ruleRows = rules.map((rule) => `
     <tr>
       <td><strong>${escapeHtml(rule.id)}</strong><br><span class="muted">${escapeHtml(rule.description || "No description")}</span></td>
       <td><code>${escapeHtml(rule.functionLabel)}</code><br><span class="muted">${escapeHtml(rule.effect)}${rule.maxBytes ? ` · max ${escapeHtml(formatBytes(rule.maxBytes))}` : ""}</span></td>
@@ -28974,6 +29206,7 @@ function renderApprovalRulesHtml(
         <form class="approval-form" method="post" action="/api/approval-rule-remove">
           <input type="hidden" name="project" value="${escapeHtml(rule.projectRootUri)}">
           <input type="hidden" name="ruleId" value="${escapeHtml(rule.id)}">
+          <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
           <button class="danger" type="submit">Remove</button>
         </form>
       </td>
@@ -28983,12 +29216,13 @@ function renderApprovalRulesHtml(
     `<option value=""${selectedProject ? "" : " selected"}>All registered projects</option>`,
     ...projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${selectedProject === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`)
   ].join("");
+  const commandProjectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${selectedProject === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
   return `<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Agent Workflow Always Approved</title>
+  <title>Agent Workflow Trusted Commands</title>
   <style>${dashboardCss()}</style>
 </head>
 <body>
@@ -28997,8 +29231,8 @@ function renderApprovalRulesHtml(
     <div class="topbar">
       <div>
         <a href="/approvals">Approvals</a>
-        <h1>Always Approved</h1>
-        <p class="muted">Project-local auto-execute rules for recurring shell and fswrite side effects.</p>
+        <h1>Trusted Commands</h1>
+        <p class="muted">Manage command patterns that are eligible to run for one project or every project on this machine.</p>
       </div>
       <a class="button secondary" href="/api/approval-rules${selectedProject ? `?project=${encodeURIComponent(selectedProject)}` : ""}">JSON</a>
     </div>
@@ -29009,14 +29243,30 @@ function renderApprovalRulesHtml(
       </form>
     </section>
     <section class="panel approval-explainer">
-      <h2>What These Rules Do</h2>
-      <p>Always-approved rules are project-local shortcuts for side effects that already passed human review. They do not bypass allowed command/path policy, size limits, blocklists, or future run policy snapshots.</p>
+      <h2>Add a Trusted Command</h2>
+      <p>Patterns use the same matching syntax as project command policy. For example, <code>gh *</code> or <code>npm *</code>. Project scope updates that project's <code>.agent-workflow/project.yaml</code>; global scope uses a private user-local file and applies on this machine only.</p>
+      <form class="workflow-form" method="post" action="/api/trusted-command-add">
+        <input type="hidden" name="returnTo" value="${escapeHtml(returnTo)}">
+        <label>Scope<select name="scope" required><option value="project">Project</option><option value="global">Global on this machine</option></select></label>
+        <label class="wide">Project<select name="project"><option value="">Choose a project</option>${commandProjectOptions}</select></label>
+        <label class="wide">Command pattern<input name="pattern" required maxlength="500" placeholder="npm *" autocomplete="off"></label>
+        <div class="form-actions"><button type="submit">Add Trusted Command</button></div>
+      </form>
+      <p class="muted">Trusted means policy-eligible, not automatically approved. Blocked-command rules still win, and approval, role, risk, and immutable run-snapshot checks still apply.</p>
     </section>
     <section class="panel">
-      <h2>Rules</h2>
+      <h2>Trusted Command Patterns</h2>
+      <table>
+        <thead><tr><th>Scope</th><th>Pattern</th><th>Applies To</th><th>Config</th><th>Action</th></tr></thead>
+        <tbody>${commandRows || "<tr><td colspan=\"5\">No trusted command patterns found.</td></tr>"}</tbody>
+      </table>
+    </section>
+    <section class="panel approval-explainer">
+      <h2>Auto-execute Rules</h2>
+      <p>These project-local shortcuts allow recurring side effects that already passed human review to execute automatically. They do not bypass trusted command/path policy, size limits, blocklists, or immutable run policy snapshots.</p>
       <table>
         <thead><tr><th>Rule</th><th>Function</th><th>Project</th><th>Config</th><th>Action</th></tr></thead>
-        <tbody>${rows || "<tr><td colspan=\"5\">No always-approved rules found.</td></tr>"}</tbody>
+        <tbody>${ruleRows || "<tr><td colspan=\"5\">No auto-execute rules found.</td></tr>"}</tbody>
       </table>
     </section>
   </main>
@@ -29683,6 +29933,7 @@ function renderUnifiedActivityHtml(report: UnifiedActivityReport, projects: Dash
 function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = new URLSearchParams()): string {
   const selectedRunSet = params.get("runSet")?.trim(), visibleRuns = selectedRunSet ? runs.filter((run) => run.runSetId === selectedRunSet) : runs;
   const rows = visibleRuns.map((run) => {
+    const presentation = dashboardRunPresentation(run);
     const eta = estimateRunEta({ run, tasks: [{ status: run.status }], historicalRuns: runs });
     return `
     <tr>
@@ -29704,7 +29955,7 @@ function renderRunsHtml(runs: DashboardRunStatus[], params: URLSearchParams = ne
       <td><span class="status ${escapeHtml(run.status)}">${escapeHtml(run.status)}</span></td>
       <td><strong>${escapeHtml(workflowDisplayName(run.workflowId))}</strong><br><span class="muted">${escapeHtml(run.workflowId)}</span></td>
       <td>${escapeHtml(run.projectName)}<br><span class="muted">${escapeHtml(run.projectRootUri)}</span></td>
-      <td class="run-task-cell">${run.task.length > 140 ? `<details class="run-task-details"><summary>${escapeHtml(`${run.task.slice(0, 140).trimEnd()}…`)}</summary><div>${escapeHtml(run.task)}</div></details>` : escapeHtml(run.task)}</td>
+      <td class="run-task-cell"><strong>${escapeHtml(presentation.title)}</strong><br><span>${escapeHtml(presentation.description)}</span><details class="run-task-details"><summary>Original request</summary><div>${escapeHtml(run.task)}</div></details></td>
       <td>${renderDashboardDateTime(run.startedAt)}</td>
       <td title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</td>
     </tr>
@@ -38106,6 +38357,8 @@ async function processDashboardQueueAction(input: {
       sourceMaxFiles: "180",
       includeExactSourceExcerpts: true,
       preferImplementationSources: true,
+      requester: details.run.requester ?? undefined,
+      requesterChannel: details.run.requesterChannel ?? undefined,
       evaluationMetadata: { ...inheritedCodexOrigin(details.run.evaluationMetadata), source: "blocked-run-repair", sourceRunId: runId, actor: repairActor }
     });
     if (!queued.ok) return { ok: false, error: queued.error };
@@ -38322,6 +38575,8 @@ async function queueSupervisedWorkflowRepair(input: {
     sourceMaxFiles: "180",
     includeExactSourceExcerpts: true,
     preferImplementationSources: true,
+    requester: input.run.requester ?? undefined,
+    requesterChannel: input.run.requesterChannel ?? undefined,
     evaluationMetadata: { ...inheritedCodexOrigin(input.run.evaluationMetadata), source: "workflow-supervisor-repair", sourceRunId: input.run.id, actor: input.actor, repairWorkflowId }
   });
   if (!queued.ok) return false;
@@ -38513,6 +38768,43 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
     const providerRecoveryNeedsRealProbe = Boolean(repairSource)
       && stringValue(run.evaluationMetadata?.source) === "workflow-root-repair"
       && priorProviderRecoveryKind === "provider-recovered";
+    if (repairSource && run.status === "blocked" && ["blocked-run-repair", "workflow-supervisor-repair"].includes(stringValue(run.evaluationMetadata?.source) ?? "")) {
+      const repairDetails = await getWorkflowRunDetails(run.id);
+      const repairArtifacts = await listArtifacts({ runId: run.id, kind: "stage_output" });
+      const discoveryReason = [
+        run.blockedReason,
+        ...repairArtifacts.map((artifact) => `${stringValue(artifact.content?.blockedReason) ?? ""} ${stringValue(artifact.content?.summary) ?? ""}`)
+      ].filter(Boolean).join(" ");
+      const alreadyRetried = repairDetails.receipts.some((receipt) => receipt.actionType === "workflow_internal_discovery_replayed");
+      const repairApprovals = await listActionApprovals({ runId: run.id, limit: 100 });
+      if (!alreadyRetried && !repairApprovals.some(isOpenApproval) && isInternalDiscoveryBlocker(discoveryReason)) {
+        try {
+          await indexProjectForRun({ projectDir, maxFiles: 180, refine: false, forceRefine: false });
+        } catch {
+          continue;
+        }
+        const replay = await replayWorkflowRun({
+          sourceRunId: run.id,
+          actor: "learning-daemon",
+          reason: "Studio refreshed bounded project discovery and resumed the saved repair checkpoint automatically.",
+          preserveCompletedCheckpoints: true,
+          evaluationMetadataPatch: { source: "workflow-root-repair", sourceRunId: run.id, rootRepairKind: "planning-discovery" }
+        });
+        if (!replay) return 0;
+        await recordRunAction({
+          runId: run.id,
+          agentId: "workflow-orchestrator",
+          actionType: "workflow_internal_discovery_replayed",
+          target: replay.runId,
+          summary: "Studio refreshed bounded project discovery and resumed this internal planning blocker without operator input.",
+          artifactKind: "workflow_root_repair",
+          artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, rootRepairKind: "planning-discovery" },
+          idempotencyKey: `workflow-internal-discovery-${run.id}`
+        });
+        await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon", reason: `Superseded by automatic discovery replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
+        return 1;
+      }
+    }
     if (repairSource && !providerRecoveryNeedsRealProbe) continue;
     const repairReferenceTime = run.finishedAt ?? run.startedAt;
     if (!isWithinAutomaticWorkflowRepairWindow(repairReferenceTime)) continue;
@@ -38740,6 +39032,128 @@ async function notifyOriginatingCodexTask(projectDir: string): Promise<number> {
     return 1;
   }
   return 0;
+}
+
+/**
+ * Chat-mode: deliver pending requester notifications through the run's channel.
+ * - codex: callback into the originating Codex thread (existing mechanism)
+ * - command: pipe JSON to AGENTFLOW_NOTIFY_COMMAND (e.g. a local messaging bridge)
+ * - dashboard/cli/other: marked delivered; surfaced in the dashboard and via
+ *   the `notifications` CLI command.
+ */
+async function deliverOneRunNotification(
+  projectDir: string,
+  notification: { id: string; runId: string; channel: string; kind: string; title: string; body: string }
+): Promise<boolean> {
+  const channel = notification.channel || "dashboard";
+  if (channel === "codex") {
+    try {
+      const details = await getWorkflowRunDetails(notification.runId);
+      const threadId = codexThreadId(details.run?.evaluationMetadata);
+      if (!threadId) return false;
+      return await deliverCodexWorkflowCallback({
+        threadId,
+        projectDir,
+        prompt: `${notification.title}\n\n${notification.body}\n\nReply with: agent-workflow reply <approval-id> approve|reject`
+      });
+    } catch {
+      return false;
+    }
+  }
+  const notifyCommand = process.env.AGENTFLOW_NOTIFY_COMMAND?.trim();
+  if (notifyCommand) {
+    const payload = JSON.stringify({
+      notificationId: notification.id,
+      runId: notification.runId,
+      kind: notification.kind,
+      title: notification.title,
+      body: notification.body
+    });
+    // The command may be a bare executable path (possibly containing
+    // spaces); only split into argv when it is not directly executable.
+    let binary = notifyCommand;
+    let args: string[] = [];
+    try {
+      await fs.access(notifyCommand, fsSync.constants.X_OK);
+    } catch {
+      [binary, ...args] = notifyCommand.split(/\s+/);
+    }
+    return await new Promise((resolve) => {
+      const child = execFile(binary, args, { timeout: 30_000, maxBuffer: 256 * 1024 }, (error) => resolve(!error));
+      child.stdin?.write(payload);
+      child.stdin?.end();
+    });
+  }
+  // No bridge configured: surfaced in the dashboard and via `notifications`.
+  return true;
+}
+
+async function deliverRunNotifications(projectDir: string): Promise<number> {
+  let delivered = 0;
+  let pending: Awaited<ReturnType<typeof listPendingRunNotifications>> = [];
+  try {
+    pending = await listPendingRunNotifications(50);
+  } catch {
+    return 0;
+  }
+  for (const notification of pending) {
+    const ok = await deliverOneRunNotification(projectDir, notification);
+    try {
+      await markRunNotificationDelivered(notification.id, ok);
+    } catch {
+      continue;
+    }
+    if (!ok) continue;
+    delivered += 1;
+    try {
+      await recordRunAction({
+        runId: notification.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "requester_notified",
+        target: notification.id,
+        summary: `Notified requester via ${notification.channel}: ${notification.title}`,
+        artifactKind: "run_notification",
+        artifactContent: { kind: notification.kind, channel: notification.channel }
+      });
+    } catch {
+      /* receipt is best-effort */
+    }
+  }
+  return delivered;
+}
+
+async function processRequesterApprovalReply(input: {
+  approvalId: string;
+  decision: string;
+  actor: string;
+  note?: string;
+}): Promise<DashboardFollowUpResult> {
+  const approvalId = input.approvalId.trim();
+  const normalized = input.decision.trim().toLowerCase();
+  if (!approvalId) return { ok: false, error: "Missing approval id." };
+  if (normalized !== "approve" && normalized !== "reject") {
+    return { ok: false, error: `Decision must be "approve" or "reject", got: ${input.decision}` };
+  }
+  const decided = await decideActionApproval({
+    approvalId,
+    decision: normalized === "approve" ? "approved" : "rejected",
+    actor: input.actor.trim() || "requester",
+    note: input.note?.trim() || `Requester reply: ${normalized}`
+  });
+  if (!decided) return { ok: false, error: `Approval not found or already decided: ${approvalId}` };
+  if (normalized === "reject") {
+    return { ok: true, title: "Approval rejected", runId: decided.runId, output: `Approval ${approvalId}: rejected.\nRun ${decided.runId} remains blocked.` };
+  }
+  const resumed = await resumeBlockedRunAfterResolvedApprovals(decided.runId);
+  return {
+    ok: true,
+    title: "Approval accepted",
+    runId: resumed.replacementRunId ?? decided.runId,
+    redirectToRun: Boolean(resumed.replacementRunId),
+    output: resumed.resumedTasks > 0
+      ? `Approval ${approvalId}: approved.\nRun ${decided.runId} resumed (${resumed.resumedTasks} task(s))${resumed.replacementRunId ? ` as ${resumed.replacementRunId}` : ""}.`
+      : `Approval ${approvalId}: approved.\nRun ${decided.runId} had no blocked tasks eligible to resume.`
+  };
 }
 
 async function processDashboardApprovalAction(input: {
@@ -41656,7 +42070,7 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
       icon: "settings",
       items: [
         ["governance", "/governance", "Governance", "shield"],
-        ["approval-rules", "/approval-rules", "Approval rules", "key"],
+        ["approval-rules", "/approval-rules", "Trusted commands", "key"],
         ["roles", "/roles", "Roles", "users"],
         ["backup-report", "/backup-report", "Backup", "database"],
         ["server-readiness", "/server-readiness", "System readiness", "server"],
@@ -45359,11 +45773,28 @@ function stableStringify(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function resolveDefaultRequester(): string | null {
+  return process.env.AGENTFLOW_REQUESTER?.trim()
+    || process.env.USER?.trim()
+    || process.env.LOGNAME?.trim()
+    || null;
+}
+
+function resolveDefaultRequesterChannel(): string {
+  const configured = process.env.AGENTFLOW_REQUESTER_CHANNEL?.trim();
+  if (configured) return configured;
+  if (process.env.CODEX_THREAD_ID?.trim()) return "codex";
+  if (process.env.AGENTFLOW_NOTIFY_COMMAND?.trim()) return "command";
+  return "cli";
+}
+
 async function queueWorkflow(input: {
   workflowId: string;
   projectPath: string;
   task: string;
   policyProfile?: string;
+  requester?: string;
+  requesterChannel?: string;
   modelTierOverride?: "fast" | "standard" | "reasoning";
   providerOverride?: string;
   evaluationMetadata?: Record<string, unknown>;
@@ -45491,6 +45922,8 @@ async function queueWorkflow(input: {
     modelTierOverride: input.modelTierOverride,
     providerOverride: input.providerOverride,
     evaluationMetadata: attachCodexOrigin({ ...(input.evaluationMetadata ?? {}), latencyOptimization: latencyOptimization.optimization }),
+    requester: input.requester ?? resolveDefaultRequester() ?? undefined,
+    requesterChannel: input.requesterChannel ?? resolveDefaultRequesterChannel(),
     compiledBrief: brief,
     compiledBriefMetadata: {
       runInputSnapshot,
@@ -46984,6 +47417,9 @@ async function loadProjectTuningNotes(projectDir: string): Promise<string[]> {
 // process entry point (both `tsx apps/cli/src/index.ts` and the compiled
 // dist bin resolve through symlinks, so realpath the entry before comparing).
 function isAgentflowMainModule(): boolean {
+  if ((import.meta as ImportMeta & { main?: boolean }).main === true) {
+    return true;
+  }
   try {
     const entry = process.argv[1];
     if (!entry) {

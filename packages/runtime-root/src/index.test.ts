@@ -30,7 +30,7 @@ test("parses project root aliases from environment-style values", () => {
 test("resolves Linux project roots to the current macOS home checkout", async () => {
   const resolution = await resolveLocalProjectPath("/home/example/Projects/project-a", {
     homeDir: "/Users/example",
-    exists: (target) => target === "/Users/example/Projects/project-a"
+    exists: (target) => target === "/Users/example/Projects/project-a" || target === "/Users/example/Projects/project-a/.agent-workflow"
   });
   assert.equal(resolution.storageRootUri, "/home/example/Projects/project-a");
   assert.equal(resolution.localRootUri, "/Users/example/Projects/project-a");

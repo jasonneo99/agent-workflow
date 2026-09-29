@@ -9,6 +9,7 @@ import {
   applyCurrentAutoApprovalThreshold,
   attributeVerifyFailure,
   buildBoundedReactLoopReceiptContent,
+  boundedProjectFileSearch,
   commandFailureEligibleForVerifyRetry,
   commandFailureIsDiagnosticEvidence,
   commandFailurePrecedesGovernedWrites,
@@ -24,7 +25,7 @@ import {
   truncateCommandOutputForError,
   verifyRetryBudgetFromEnv
 } from "./executor.js";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,20 @@ import { fileURLToPath } from "node:url";
 import { runExecutorApprovalGate } from "./executor.js";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { readFileSync } from "node:fs";
-import { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
+import { fileWriteRejectionRecovered, isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
+
+test("bounded project search locates paths without exposing secret files", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agentflow-search-"));
+  try {
+    mkdirSync(join(root, "src", "terminal"), { recursive: true });
+    writeFileSync(join(root, "src", "terminal", "TerminalView.swift"), "safe");
+    writeFileSync(join(root, "terminal.env"), "secret");
+    assert.deepEqual(await boundedProjectFileSearch(root, "terminal view"), ["src/terminal/TerminalView.swift"]);
+    assert.deepEqual(await boundedProjectFileSearch(root, "terminal"), ["src/terminal/TerminalView.swift"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("active workers adopt only the current project auto-approval threshold", () => {
   const snapshot = projectConfigSchema.parse({ project: { name: "snapshot", autonomy: 2 }, actions: { auto_approve_max_risk: "none", allowed_write_paths: ["docs/**"] } });
@@ -180,6 +194,14 @@ test("planning stages treat missing requested deliverables as implementation sco
   assert.equal(shouldContinuePlanningDeliverableGap({
     stageId: "implement",
     output: { outcome: "blocked", blockedReason: "Missing implementation", summary: "No product files exist.", artifact: {} }
+  }), false);
+  assert.equal(shouldContinuePlanningDeliverableGap({
+    stageId: "plan",
+    output: { outcome: "blocked", blockedReason: "Final implementation scoping is blocked on native source references.", summary: "The terminal overlay contract is reconciled.", artifact: {} }
+  }), true);
+  assert.equal(shouldContinuePlanningDeliverableGap({
+    stageId: "plan",
+    output: { outcome: "blocked", blockedReason: "The owner must choose a deployment target.", summary: "A user decision is required.", artifact: {} }
   }), false);
 });
 
@@ -430,6 +452,19 @@ test("malformed patch hunk counts are recoverable inside the same stage", () => 
   assert.equal(isRecoverableFileMutationFailure("File write rejected by blocked path pattern"), false);
   assert.equal(isRecoverableFileMutationFailure("File patch rejected: path escapes the project root."), false);
   assert.equal(isRecoverableFileMutationFailure("File patch rejected: patch is 500000 bytes, max is 200000."), false);
+});
+
+test("a refreshed response can supersede a stale rejected patch without inventing a file write", () => {
+  const rejected = { type: "file_write_rejected", path: "src/example.ts" };
+  assert.equal(fileWriteRejectionRecovered([rejected], rejected), false);
+  assert.equal(fileWriteRejectionRecovered([
+    rejected,
+    { type: "file_write_retry_superseded", path: "src/example.ts" }
+  ], rejected), true);
+  assert.equal(fileWriteRejectionRecovered([
+    rejected,
+    { type: "file_write_retry_superseded", path: "src/other.ts" }
+  ], rejected), false);
 });
 
 test("npm pre-flight is hooked where the executor resolves the command cwd", () => {

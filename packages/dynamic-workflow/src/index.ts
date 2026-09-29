@@ -192,7 +192,7 @@ export function optimizeStaticWorkflowForLatency(
 
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
-  const mutationIntent = /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(?:make|implement|add|create|change|update|build|fix|remove|delete|write)\b/iu.test(goal);
+  const mutationIntent = /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(?:make|implement|add|create|change|update|build|fix|finish|complete|deliver|ship|remove|delete|write)\b/iu.test(goal);
   const selected = workflowArchetypes
     .map((candidate, index) => ({
       candidate,

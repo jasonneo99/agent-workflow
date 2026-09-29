@@ -138,10 +138,11 @@ test("queue presents active recovery chains without counting source failures twi
   assert.match(source, /\/runs\?runSet=\$\{encodeURIComponent\(item\.runSetId\)\}[\s\S]+Open set/u);
 });
 
-test("run history truncates long tasks behind an inline disclosure", () => {
+test("run history presents a concise summary while preserving the original request", () => {
   assert.match(source, /class="run-task-cell"/u);
-  assert.match(source, /run\.task\.length > 140/u);
-  assert.match(source, /<details class="run-task-details"><summary>/u);
+  assert.match(source, /dashboardRunPresentation\(run\)/u);
+  assert.match(source, /<strong>\$\{escapeHtml\(presentation\.title\)\}<\/strong>/u);
+  assert.match(source, /<details class="run-task-details"><summary>Original request<\/summary>/u);
   assert.match(stylesSource, /\.run-task-cell \{[^}]+max-width: 420px/u);
 });
 

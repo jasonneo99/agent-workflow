@@ -78,11 +78,36 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   replacement_run_id uuid REFERENCES workflow_runs(id),
   run_set_id uuid NOT NULL DEFAULT gen_random_uuid(),
   compiled_brief_uri text,
+  requester text,
+  requester_channel text NOT NULL DEFAULT 'dashboard',
   started_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now(),
   finished_at timestamptz,
   CONSTRAINT workflow_runs_status_check CHECK (status IN ('queued','leased','running','completed','blocked','failed','cancelled'))
 );
+
+-- Chat-mode: outbound requester notifications (approval needed / blocked / failed).
+-- Delivery is performed by an external bridge (dashboard, Codex callback, or
+-- AGENTFLOW_NOTIFY_COMMAND); the framework only records intent here.
+CREATE TABLE IF NOT EXISTS run_notifications (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  channel text NOT NULL DEFAULT 'dashboard',
+  kind text NOT NULL,
+  title text NOT NULL,
+  body text NOT NULL DEFAULT '',
+  status text NOT NULL DEFAULT 'pending',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  delivered_at timestamptz,
+  CONSTRAINT run_notifications_status_check CHECK (status IN ('pending','delivered','failed')),
+  CONSTRAINT run_notifications_kind_check CHECK (kind IN ('approval_needed','blocked','failed','message'))
+);
+
+CREATE INDEX IF NOT EXISTS run_notifications_pending_idx
+ON run_notifications(status, created_at) WHERE status = 'pending';
+
+CREATE INDEX IF NOT EXISTS run_notifications_run_idx
+ON run_notifications(run_id);
 
 CREATE INDEX IF NOT EXISTS workflow_runs_replacement_run_idx
 ON workflow_runs(replacement_run_id);

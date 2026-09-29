@@ -10,6 +10,11 @@ export const COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES = 20;
 export const COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS = 4000;
 export const VERIFY_COMMAND_RETRY_BUDGET_DEFAULT = 2;
 export const VERIFY_COMMAND_RETRY_BUDGET_MAX = 5;
+// Chat-mode self-healing: stale preimage hashes are usually a read race, not a
+// real conflict. Give file mutations their own, more generous retry budget so a
+// transiently stale hash re-reads and retries instead of blocking the stage.
+export const FILE_MUTATION_RETRY_BUDGET_DEFAULT = 4;
+export const FILE_MUTATION_RETRY_BUDGET_MAX = 6;
 
 export function truncateCommandOutputForError(
   output: string,
@@ -53,6 +58,14 @@ export function verifyRetryBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): 
   const parsed = Number.parseInt(raw, 10);
   if (!Number.isFinite(parsed)) return VERIFY_COMMAND_RETRY_BUDGET_DEFAULT;
   return Math.min(VERIFY_COMMAND_RETRY_BUDGET_MAX, Math.max(0, parsed));
+}
+
+export function fileMutationRetryBudgetFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AGENTFLOW_FILE_MUTATION_RETRY_BUDGET?.trim();
+  if (!raw) return FILE_MUTATION_RETRY_BUDGET_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return FILE_MUTATION_RETRY_BUDGET_DEFAULT;
+  return Math.min(FILE_MUTATION_RETRY_BUDGET_MAX, Math.max(0, parsed));
 }
 
 export function npmPreflightDiagnostic(commandLine: string, cwd: string): string | null {

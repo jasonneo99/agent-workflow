@@ -15,6 +15,7 @@ export interface StageJsonArtifact {
     expectedHash?: string | null;
   }>;
   requestedFileReads: string[];
+  requestedFileSearches: string[];
 }
 
 export interface FileSummaryJsonArtifact {
@@ -80,7 +81,7 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- An implementation or finalizer stage must return blocked when required product changes or verification are still absent and no policy-allowed requested action will produce them.",
     "- The model provider sandbox is intentionally read-only and is never itself a blocker. Do not attempt direct mutation or report that the sandbox prevented implementation; express every allowed edit through requestedFileWrites and every allowed verification through requestedCommands so the governed executor can apply them.",
     "- Preserve unrelated dirty work. A dirty worktree is not itself a blocker. Stop only when an intended file overlaps an existing change whose ownership or intended baseline is uncertain, or when a conflicting project-scoped work intent exists. If the task explicitly accepts the current worktree as its baseline, inspect the exact preimage and merge surgically instead of blocking. Leave unrelated files untouched.",
-    "- Structured requests are the executable contract. Never say that a read, write, or command was requested unless its exact path or command is present in requestedFileReads, requestedFileWrites, or requestedCommands in the same response.",
+    "- Structured requests are the executable contract. Never say that a read, write, or command was requested unless its exact path or command is present in requestedFileReads, requestedFileWrites, or requestedCommands in the same response. Never say that a search was requested unless its query is present in requestedFileSearches.",
     "- Prior receipts and artifacts are historical evidence. Words such as blocked, failed, or could not inside a completed prior-stage artifact do not make the current stage blocked.",
     "- Do not claim project context is missing when the compiled brief or prior artifacts contain project-specific evidence. Use the available evidence and name any narrow verification gap as a finding.",
     "- Review, audit, and advisory stages must report missing implementation proof or incomplete acceptance evidence as findings with recommended follow-up. Those evidence gaps do not block the review itself; block only for a real unavailable authority, external dependency, approval, or required input that prevents producing any useful review result.",
@@ -90,14 +91,15 @@ export function buildStagePrompt(input: StageExecutionInput): string {
     "- A terminal blocker must identify the specific unavailable authority, external dependency, approval, or required input and explain why no allowed action or existing artifact can resolve it.",
     "",
     "Return JSON with:",
-    "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites/requestedFileReads contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
+    "- outcome: completed when the stage goal was achieved or when requestedCommands/requestedFileWrites/requestedFileReads/requestedFileSearches contain the bounded policy-allowed actions needed to finish it; blocked only when no requested action can resolve the missing context, authority, implementation, or verification",
     "- blockedReason: concise reason when outcome is blocked; otherwise an empty string",
     "- summary: one or two sentences describing the stage result",
     "- findings: concrete observations, risks, or decisions",
     "- nextAction: the next useful workflow action",
     "- requestedCommands: exact commands from the allowed command policy only; do not use shell operators, pipes, redirects, variables, or command chaining; use [] when no command is necessary",
     "- requestedFileWrites: project-relative files under allowed write paths only. For a compact or new file, provide path and full content, with patch/expectedHash null. For a surgical edit to a large existing file, provide path, a unified-diff patch containing @@ hunks, and the SHA-256 expectedHash of the exact preimage, with content null. Never provide both content and patch. Use [] unless an edit is necessary",
-    "- requestedFileReads: project-relative files to inspect, under allowed read paths only; files you list here are read and shown to you, then you are asked again so you can act on what you read; request reads first whenever you need source context instead of guessing; use [] when no inspection is needed"
+    "- requestedFileReads: project-relative files to inspect, under allowed read paths only; files you list here are read and shown to you, then you are asked again so you can act on what you read; request reads first whenever you need source context instead of guessing; use [] when no inspection is needed",
+    "- requestedFileSearches: one to four short filename/path queries when you do not know the exact source path; Studio returns a bounded project-relative path inventory, then asks you again; do not use shell syntax or broad single-character queries; use [] when exact paths are already known"
   ].join("\n");
 }
 
@@ -216,7 +218,10 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
       })
       .filter((item): item is string => Boolean(item && item.length > 0))
     : [];
-  const hasActionableRecovery = requestedCommands.length > 0 || requestedFileWrites.length > 0 || requestedFileReads.length > 0;
+  const requestedFileSearches = Array.isArray(value.requestedFileSearches)
+    ? value.requestedFileSearches.filter((item): item is string => typeof item === "string" && item.trim().length >= 2).map((item) => item.trim()).slice(0, 4)
+    : [];
+  const hasActionableRecovery = requestedCommands.length > 0 || requestedFileWrites.length > 0 || requestedFileReads.length > 0 || requestedFileSearches.length > 0;
   const outcome = (explicitlyBlocked || legacyBlocked) && !hasActionableRecovery ? "blocked" : "completed";
   return {
     outcome,
@@ -226,7 +231,8 @@ export function normalizeStageArtifact(value: Partial<StageJsonArtifact>): Stage
     nextAction: typeof value.nextAction === "string" ? value.nextAction : "",
     requestedCommands,
     requestedFileWrites,
-    requestedFileReads
+    requestedFileReads,
+    requestedFileSearches
   };
 }
 
@@ -241,6 +247,7 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
     requestedCommands: parsed.requestedCommands,
     requestedFileWrites: parsed.requestedFileWrites,
     requestedFileReads: parsed.requestedFileReads,
+    requestedFileSearches: parsed.requestedFileSearches,
     artifact: {
       ...provider,
       runId: input.runId,
@@ -259,6 +266,7 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
       requestedCommands: parsed.requestedCommands,
       requestedFileWrites: parsed.requestedFileWrites,
       requestedFileReads: parsed.requestedFileReads,
+      requestedFileSearches: parsed.requestedFileSearches,
       summary: parsed.summary
     }
   };
@@ -266,7 +274,7 @@ export function buildStageExecutionOutput(input: StageExecutionInput, parsed: St
 
 export function advisoryPolicyAnalysisIsFinding(input: StageExecutionInput, parsed: StageJsonArtifact): boolean {
   if (parsed.outcome !== "blocked" || input.workflowId !== "provider-smoke") return false;
-  if (parsed.requestedCommands.length || parsed.requestedFileWrites.length || parsed.requestedFileReads.length) return false;
+  if (parsed.requestedCommands.length || parsed.requestedFileWrites.length || parsed.requestedFileReads.length || parsed.requestedFileSearches.length) return false;
   const task = `${input.workflowTask} ${input.stageGoal}`;
   if (!/\b(?:define|explain|compare|classify|recommend|describe)\b/iu.test(task)) return false;
   const reason = `${parsed.blockedReason} ${parsed.summary}`;

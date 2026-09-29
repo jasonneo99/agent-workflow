@@ -24,6 +24,17 @@ test("storage SQL does not reuse one parameter with conflicting casts", () => {
   assert.deepEqual(failures, []);
 });
 
+test("project alias consolidation is transactional and preserves durable run history", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const implementation = source.slice(source.indexOf("export async function consolidateProjectAlias"));
+  assert.match(implementation, /await client\.query\("begin"\)/u);
+  assert.match(implementation, /update workflow_runs set project_id/u);
+  assert.match(implementation, /update project_files set project_id/u);
+  assert.match(implementation, /update memory_items set project_id/u);
+  assert.match(implementation, /delete from projects where id/u);
+  assert.match(implementation, /await client\.query\("rollback"\)/u);
+});
+
 test("queue action receipt inserts use separate uuid and text parameters", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
 

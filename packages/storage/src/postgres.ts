@@ -14,6 +14,7 @@ import { stableJson, workflowDefinitionHash } from "./registry.js";
 import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
 import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
 import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
+import { buildRunPresentation } from "./run-presentation.js";
 export { databaseUrl, withClient } from "./client.js";
 export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
 export type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
@@ -555,6 +556,8 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          wr.workflow_id as "workflowId",
          wr.status as "runStatus",
          wr.task,
+         wr.construction_rationale->'presentation'->>'title' as "displayTitle",
+         wr.construction_rationale->'presentation'->>'description' as "displayDescription",
          p.name as "projectName",
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
@@ -1416,7 +1419,11 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const workflowVersion = String(input.workflowVersion ?? "1");
       const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
       const evaluationMetadataJson = JSON.stringify(input.evaluationMetadata ?? {});
-      const constructionRationaleJson = JSON.stringify(input.constructionRationale ?? {});
+      const presentation = buildRunPresentation({ task: input.task, workflowId: input.workflow.id, projectName: input.projectName });
+      const constructionRationale = input.constructionRationale && typeof input.constructionRationale === "object" && !Array.isArray(input.constructionRationale)
+        ? input.constructionRationale as Record<string, unknown>
+        : {};
+      const constructionRationaleJson = JSON.stringify({ ...constructionRationale, presentation });
       const compiledBriefJson = input.compiledBrief
         ? JSON.stringify({ text: input.compiledBrief, metadata: input.compiledBriefMetadata ?? {} })
         : null;
@@ -3121,6 +3128,8 @@ export async function listWorkflowRuns(limit: number, options?: { runSetId?: str
          wr.status,
          wr.workflow_id as "workflowId",
          wr.task,
+         wr.construction_rationale->'presentation'->>'title' as "displayTitle",
+         wr.construction_rationale->'presentation'->>'description' as "displayDescription",
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",
@@ -3272,6 +3281,8 @@ export async function listWorkflowRunsForProject(input: {
          wr.status,
          wr.workflow_id as "workflowId",
          wr.task,
+         wr.construction_rationale->'presentation'->>'title' as "displayTitle",
+         wr.construction_rationale->'presentation'->>'description' as "displayDescription",
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",
@@ -3391,6 +3402,8 @@ export async function getWorkflowRunDetails(runId: string): Promise<{
          wr.status,
          wr.workflow_id as "workflowId",
          wr.task,
+         wr.construction_rationale->'presentation'->>'title' as "displayTitle",
+         wr.construction_rationale->'presentation'->>'description' as "displayDescription",
          wr.autonomy,
          wr.policy_profile as "policyProfile",
          wr.policy_snapshot_hash as "policySnapshotHash",

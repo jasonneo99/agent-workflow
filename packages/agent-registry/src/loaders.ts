@@ -10,6 +10,7 @@ import {
   workflowSchema,
   type ProjectConfig
 } from "./schemas.js";
+import { loadGlobalTrustedCommands, type TrustedCommandFileOptions } from "./trusted-commands.js";
 
 export interface RegistryRecord<T> {
   path: string;
@@ -48,8 +49,19 @@ export async function loadWorkflowRecords(rootDir: string): Promise<RegistryReco
   })));
 }
 
-export async function loadProjectConfig(projectDir: string): Promise<ProjectConfig> {
-  return loadYamlFile(path.join(projectDir, ".agent-workflow", "project.yaml"), projectConfigSchema);
+export async function loadProjectConfig(projectDir: string, trustedCommandOptions: TrustedCommandFileOptions = {}): Promise<ProjectConfig> {
+  const [project, globalTrustedCommands] = await Promise.all([
+    loadYamlFile(path.join(projectDir, ".agent-workflow", "project.yaml"), projectConfigSchema),
+    loadGlobalTrustedCommands(trustedCommandOptions)
+  ]);
+  if (globalTrustedCommands.length === 0) return project;
+  return projectConfigSchema.parse({
+    ...project,
+    actions: {
+      ...project.actions,
+      allowed_commands: [...new Set([...project.actions.allowed_commands, ...globalTrustedCommands])]
+    }
+  });
 }
 
 export function byId<T extends { id: string }>(items: T[]): Map<string, T> {

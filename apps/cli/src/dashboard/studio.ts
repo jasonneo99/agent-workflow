@@ -65,17 +65,20 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
         <div id="run-list" class="run-list"><div class="rail-loading">Loading workflow history…</div></div>
       </section>
       <button class="new-task-button" id="new-task" type="button">${icon("plus")} Start a task</button>
-      <div class="rail-footer"><span class="health-dot"></span><span>Local runtime</span><b>Connected</b></div>
+      <div class="rail-footer"><span id="live-dot" class="health-dot"></span><span>Local runtime</span><b id="live-status">Connecting…</b></div>
     </aside>
 
     <main class="task-workspace" id="task-workspace" aria-live="polite">
       <section class="task-pane">
         <div class="task-scroll">
           <div id="studio-notice" class="studio-notice" hidden></div>
+          <div id="continuation-banner" class="continuation-banner" hidden></div>
+          <section id="needs-input-card" class="needs-input-card" hidden><span class="needs-input-mark">!</span><div><strong id="needs-input-title">Studio needs something</strong><p id="needs-input-detail"></p><small id="needs-input-prompt"></small></div><div class="needs-input-actions"><button id="needs-input-answer" type="button">Reply with what’s missing</button><button id="needs-input-retry" type="button">Try automatically</button></div></section>
           <div class="task-kicker"><span id="run-short">RUN</span><span id="task-status" class="status-token">Loading</span></div>
           <section id="approval-banner" class="approval-banner" hidden>${icon("shield")}<span><strong>Approval required</strong><small id="approval-summary">Review the requested action before this workflow can continue.</small></span><div id="inline-approval-actions"></div></section>
           <h1 id="task-title">Loading your workflow…</h1>
           <p id="task-summary">Connecting to Agent Workflow and finding the most recent task.</p>
+          <section id="outcome-card" class="outcome-card" hidden><span id="outcome-mark" class="outcome-mark"></span><div><strong id="outcome-title"></strong><p id="outcome-detail"></p></div></section>
           <div id="stage-strip" class="stage-strip" aria-label="Workflow progress"></div>
           <div class="run-toolbar" id="run-toolbar"><button type="button" data-run-action="pause">Pause</button><button type="button" data-run-action="resume-checkpoint">Resume</button><button type="button" data-run-action="retry-failed">Retry</button><button type="button" data-run-action="replay-run">Replay</button><button type="button" data-run-action="cancel">Cancel</button></div>
           <div class="activity-header"><h2>Task thread</h2><a id="open-run" href="/runs">Open full run ${icon("chevron")}</a></div>
@@ -131,13 +134,48 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
 function studioScript(): string {
   return String.raw`
     (() => {
-      const state = { runs: [], approvals: [], projects: [], details: null, workspace: null, plan: [], planMeta: null, tab: "changes", query: "", refreshTimer: null };
+      const state = { runs: [], approvals: [], projects: [], details: null, workspace: null, plan: [], planMeta: null, tab: "changes", query: "", refreshTimer: null, refreshInFlight: false, eventStream: null, polling: false, historicalRunId: null };
       const $ = (id) => document.getElementById(id);
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"})[char]);
       const short = (value, length = 78) => value && value.length > length ? value.slice(0, length - 1) + "…" : value || "Untitled task";
       const label = (value) => String(value || "").replace(/[-_]+/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
       const time = (value) => value ? new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" }).format(new Date(value)) : "Pending";
-      const statusClass = (value) => ["completed", "running", "failed", "queued"].includes(value) ? value : "queued";
+      const statusClass = (value) => ["completed", "running", "failed", "blocked", "cancelled", "queued"].includes(value) ? value : "queued";
+      const taskTitle = (value) => {
+        const text = String(value || "").replace(/\s+/g, " ").trim();
+        const repair = text.match(/^Repair supervised Agent Workflow run ([0-9a-f-]+)/i);
+        if (repair) return "Repair supervised run " + repair[1].slice(0, 8);
+        const withoutGuardrail = text.replace(/^GUARDRAIL:.*?(?=(Continue|Build|Implement|Fix|Review|Investigate|Explain|Create|Add|Update)\b)/i, "");
+        const sentence = withoutGuardrail.match(/(?:^|\.\s+)((?:Continue|Build|Implement|Fix|Review|Investigate|Explain|Create|Add|Update)\b[^.?!]*(?:[.?!]|$))/i)?.[1] || withoutGuardrail;
+        return short(sentence.trim(), 120);
+      };
+      const projectOptions = (projects) => {
+        const roots = new Set(projects.map((project) => project.rootUri || project.projectRootUri).filter(Boolean));
+        const visible = projects.filter((project) => {
+          const root = String(project.rootUri || project.projectRootUri || "");
+          const name = project.name || project.projectName || "Project";
+          if (!root) return false;
+          if (/\/.local\/share\/agent-workflow\/[0-9a-f]{12,}$/i.test(root) && projects.some((candidate) => (candidate.name || candidate.projectName) === name && /\/Projects\//.test(String(candidate.rootUri || candidate.projectRootUri || "")))) return false;
+          if (/^\/home\/[^/]+\/Projects\//.test(root)) {
+            const suffix = root.replace(/^\/home\/[^/]+/, "");
+            if ([...roots].some((candidate) => /^\/Users\/[^/]+/.test(String(candidate)) && String(candidate).endsWith(suffix))) return false;
+          }
+          return true;
+        });
+        const unique = [...new Map(visible.map((project) => [project.rootUri || project.projectRootUri, project])).values()];
+        const counts = unique.reduce((map, project) => { const name = project.name || project.projectName || "Project"; map.set(name, (map.get(name) || 0) + 1); return map; }, new Map());
+        return unique.map((project) => {
+          const root = project.rootUri || project.projectRootUri;
+          const name = project.name || project.projectName || root;
+          const parts = String(root).split("/").filter(Boolean);
+          const suffix = counts.get(name) > 1 ? " — " + parts.slice(-2).join("/") : "";
+          return '<option value="' + esc(root) + '">' + esc(name + suffix) + '</option>';
+        }).join("");
+      };
+      function setConnection(mode, text) {
+        $("live-status").textContent = text;
+        $("live-dot").className = "health-dot " + mode;
+      }
 
       async function fetchJson(url) {
         const response = await fetch(url, { headers: { accept: "application/json" } });
@@ -148,14 +186,17 @@ function studioScript(): string {
       function renderRuns() {
         const query = state.query.trim().toLowerCase();
         const visible = state.runs.filter((run) => !query || [run.task, run.projectName, run.workflowId, run.status].some((value) => String(value || "").toLowerCase().includes(query))).slice(0, 12);
-        $("run-list").innerHTML = visible.map((run) => '<button class="run-row ' + (state.details?.run?.id === run.id ? 'selected' : '') + '" data-run="' + esc(run.id) + '"><span class="run-state ' + statusClass(run.status) + '"></span><span><strong>' + esc(short(run.task, 42)) + '</strong><small>' + esc(run.projectName) + ' · ' + esc(label(run.status)) + '</small></span></button>').join("") || '<div class="rail-loading">' + (query ? 'No tasks match “' + esc(state.query) + '”.' : 'No workflow runs yet.') + '</div>';
-        document.querySelectorAll("[data-run]").forEach((button) => button.addEventListener("click", () => selectRun(button.dataset.run)));
+        $("run-list").innerHTML = visible.map((run) => '<button class="run-row ' + (state.details?.run?.id === run.id ? 'selected' : '') + '" data-run="' + esc(run.id) + '"><span class="run-state ' + statusClass(run.status) + '"></span><span><strong>' + esc(short(taskTitle(run.task), 42)) + '</strong><small>' + esc(run.projectName) + ' · ' + esc(label(run.status)) + '</small></span></button>').join("") || '<div class="rail-loading">' + (query ? 'No tasks match “' + esc(state.query) + '”.' : 'No workflow runs yet.') + '</div>';
+        document.querySelectorAll("[data-run]").forEach((button) => button.addEventListener("click", () => {
+          state.historicalRunId = button.dataset.run;
+          selectRun(button.dataset.run, true);
+        }));
       }
 
       function stageStatus(stage, index, tasks) {
         const status = stage.status || "queued";
         const completedBefore = tasks.slice(0, index).every((task) => task.status === "completed");
-        return status === "completed" ? "completed" : status === "running" ? "running" : status === "failed" ? "failed" : completedBefore ? "queued" : "pending";
+        return status === "completed" ? "completed" : status === "running" ? "running" : status === "failed" ? "failed" : status === "blocked" ? "blocked" : status === "cancelled" ? "cancelled" : completedBefore ? "queued" : "pending";
       }
 
       function renderTask() {
@@ -168,8 +209,8 @@ function studioScript(): string {
         $("run-short").textContent = run.id.slice(0, 8).toUpperCase();
         $("task-status").textContent = label(run.status);
         $("task-status").className = "status-token " + statusClass(run.status);
-        $("task-title").textContent = run.task || "Untitled task";
-        $("task-summary").textContent = label(run.workflowId) + " · " + (run.projectRootUri || run.projectName);
+        $("task-title").textContent = taskTitle(run.task);
+        $("task-summary").textContent = label(run.workflowId) + " · " + (run.projectRootUri || run.projectName) + (run.requester ? " · Requested by " + run.requester + " via " + label(run.requesterChannel || "dashboard") : "");
         $("open-run").href = "/run?id=" + encodeURIComponent(run.id);
         $("evidence-json").href = "/api/run?id=" + encodeURIComponent(run.id);
         $("command-project").value = run.projectRootUri || "";
@@ -177,6 +218,13 @@ function studioScript(): string {
         $("accept-run").value = run.id;
         $("command-return").value = "/studio?run=" + encodeURIComponent(run.id);
         $("accept-return").value = "/studio?run=" + encodeURIComponent(run.id);
+        const continuation = $("continuation-banner");
+        continuation.hidden = !run.replacementRunId;
+        if (run.replacementRunId) continuation.innerHTML = '<strong>Historical task</strong><span>Work continued in run ' + esc(run.replacementRunId.slice(0, 8).toUpperCase()) + '.</span><button type="button" data-continuation="' + esc(run.replacementRunId) + '">Open current continuation →</button>';
+        continuation.querySelector("[data-continuation]")?.addEventListener("click", (event) => {
+          state.historicalRunId = null;
+          selectRun(event.currentTarget.dataset.continuation);
+        });
         const runApprovals = state.approvals.filter((approval) => approval.runId === run.id);
         const approvalBanner = $("approval-banner");
         approvalBanner.hidden = runApprovals.length === 0;
@@ -184,8 +232,9 @@ function studioScript(): string {
           $("approval-summary").textContent = runApprovals.length === 1
             ? label(runApprovals[0].actionType) + ": " + short(runApprovals[0].target || runApprovals[0].rationale, 92)
             : runApprovals.length + " actions are waiting for your decision.";
-          $("inline-approval-actions").innerHTML = runApprovals.map((approval) => '<form method="post" action="/api/approval-action"><input type="hidden" name="returnTo" value="/studio?run=' + esc(run.id) + '"><input type="hidden" name="approvalId" value="' + esc(approval.id) + '"><input type="hidden" name="actorRole" value="operator"><button name="decision" value="approved">Approve</button><button name="decision" value="rejected">Reject</button></form>').join("");
+          $("inline-approval-actions").innerHTML = runApprovals.map((approval) => '<form method="post" action="/api/studio-reply"><input type="hidden" name="returnTo" value="/studio?run=' + esc(run.id) + '"><input type="hidden" name="approvalId" value="' + esc(approval.id) + '"><input type="hidden" name="actor" value="' + esc(run.requester || "dashboard-requester") + '"><button name="decision" value="approve">Approve</button><button name="decision" value="reject">Reject</button></form>').join("");
         }
+        renderOutcome(run, details.outcome, runApprovals);
 
         $("stage-strip").innerHTML = tasks.map((task, index) => {
           const status = stageStatus(task, index, tasks);
@@ -202,6 +251,28 @@ function studioScript(): string {
         loadWorkspace(run.projectRootUri);
         renderEvidence();
         renderRuns();
+      }
+
+      function renderOutcome(run, contract, approvals) {
+        const result = contract || { state: "in_progress", title: "Work is in progress", detail: "Studio is loading outcome evidence.", acceptReady: false };
+        const outcome = $("outcome-card");
+        outcome.hidden = false;
+        outcome.className = "outcome-card " + (result.state === "incomplete" ? "partial" : statusClass(run.status));
+        $("outcome-mark").textContent = result.state === "delivered" || result.state === "advisory_complete" ? "✓" : result.state === "failed" ? "×" : result.state === "in_progress" ? "→" : "!";
+        $("outcome-title").textContent = result.title;
+        $("outcome-detail").textContent = result.detail;
+        const needsInput = $("needs-input-card");
+        needsInput.hidden = run.status !== "blocked" || approvals.length > 0;
+        if (!needsInput.hidden) {
+          const reason = run.blockedReason || "The workflow stopped without recording a specific prerequisite.";
+          const internal = /source|path|context|project map|implementation detail|test location/i.test(reason) && !/approval|permission|credential|quota|choose|decision/i.test(reason);
+          $("needs-input-title").textContent = internal ? "Studio can retry this discovery automatically" : "Studio needs your input";
+          $("needs-input-detail").textContent = reason;
+          $("needs-input-prompt").textContent = result.inputPrompt || "";
+          $("needs-input-retry").hidden = !internal;
+          $("needs-input-answer").hidden = internal;
+        }
+        $("accept-form").hidden = !result.acceptReady;
       }
 
       function artifactBody(artifact) {
@@ -279,11 +350,17 @@ function studioScript(): string {
         renderEvidence();
       }
 
-      async function selectRun(runId) {
+      async function selectRun(runId, allowHistorical = false) {
         history.replaceState(null, "", "/studio?run=" + encodeURIComponent(runId));
         $("task-workspace").classList.add("is-loading");
         try {
           state.details = await fetchJson("/api/run?id=" + encodeURIComponent(runId));
+          const replacement = state.details?.run?.replacementRunId;
+          if (replacement && !allowHistorical && replacement !== runId) {
+            state.historicalRunId = null;
+            history.replaceState(null, "", "/studio?run=" + encodeURIComponent(replacement));
+            state.details = await fetchJson("/api/run?id=" + encodeURIComponent(replacement));
+          }
           renderTask();
         } catch (error) {
           $("activity-feed").innerHTML = '<div class="error-state">Could not load this run. ' + esc(error.message) + '</div>';
@@ -309,16 +386,25 @@ function studioScript(): string {
         if (!run) return;
         const response = await fetch("/api/studio-run-action", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" }, body: new URLSearchParams({ action, runId: run.id, project: run.projectRootUri || "" }) });
         if (!response.ok) throw new Error(await response.text());
+        const result = await response.json().catch(() => ({}));
+        if (result.runId && result.runId !== run.id) {
+          state.historicalRunId = null;
+          await selectRun(result.runId);
+          history.replaceState({}, "", "/studio?run=" + encodeURIComponent(result.runId));
+          return;
+        }
         await refresh(false);
       }
 
       async function refresh(selectInitial = true) {
+        if (state.refreshInFlight || document.hidden) return;
+        state.refreshInFlight = true;
         try {
           const [runs, approvals, projects] = await Promise.all([fetchJson("/api/runs"), fetchJson("/api/approvals?status=open"), fetchJson("/api/projects")]);
           state.runs = runs;
           state.approvals = approvals;
           state.projects = projects;
-          const options = projects.map((project) => '<option value="' + esc(project.rootUri || project.projectRootUri) + '">' + esc(project.name || project.projectName || project.rootUri || project.projectRootUri) + '</option>').join("");
+          const options = projectOptions(projects);
           if (options) { $("project-switcher").innerHTML = options; $("dialog-project").innerHTML = options; }
           if (approvals.length) { $("approval-count").hidden = false; $("approval-count").textContent = approvals.length; }
           const params = new URLSearchParams(location.search);
@@ -326,12 +412,14 @@ function studioScript(): string {
           const notice = params.get("notice") || params.get("error");
           if (notice) { $("studio-notice").hidden = false; $("studio-notice").classList.toggle("error", params.has("error")); $("studio-notice").textContent = notice; }
           const initial = (selectInitial ? runs.find((run) => run.id === requested) : runs.find((run) => run.id === state.details?.run?.id)) || runs.find((run) => run.status === "running" || run.status === "queued") || runs[0];
-          if (initial) await selectRun(initial.id); else { renderRuns(); renderEmpty(); }
+          if (initial) await selectRun(initial.id, state.historicalRunId === initial.id); else { renderRuns(); renderEmpty(); }
+          setConnection(state.polling ? "polling" : "live", state.polling ? "Polling" : "Live");
         } catch (error) {
+          setConnection("offline", "Disconnected");
           $("task-title").textContent = "Studio could not connect";
           $("task-summary").textContent = error.message;
           $("activity-feed").innerHTML = '<div class="error-state">Check the local dashboard runtime and reload this page.</div>';
-        }
+        } finally { state.refreshInFlight = false; }
       }
       const load = refresh;
 
@@ -378,6 +466,8 @@ function studioScript(): string {
       $("project-switcher").addEventListener("change", (event) => { const run = state.runs.find((item) => item.projectRootUri === event.target.value); if (run) selectRun(run.id); else { $("dialog-project").value = event.target.value; openDialog(); } });
       document.querySelectorAll("[data-run-action]").forEach((button) => button.addEventListener("click", async () => { try { await runAction(button.dataset.runAction); } catch (error) { $("studio-notice").hidden = false; $("studio-notice").classList.add("error"); $("studio-notice").textContent = error.message; } }));
       $("request-changes").addEventListener("click", () => { $("command-task").focus(); $("command-task").value = "Revise this work: "; });
+      $("needs-input-answer").addEventListener("click", () => { $("command-task").focus(); $("command-task").value = (state.details?.outcome?.inputPrompt || "Provide the missing information:") + " "; });
+      $("needs-input-retry").addEventListener("click", async () => { try { await runAction("resume-checkpoint"); } catch (error) { $("studio-notice").hidden = false; $("studio-notice").classList.add("error"); $("studio-notice").textContent = error.message; } });
       $("task-search").addEventListener("input", (event) => { state.query = event.target.value; renderRuns(); });
       document.addEventListener("keydown", (event) => {
         if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); $("task-search").focus(); $("task-search").select(); }
@@ -389,8 +479,15 @@ function studioScript(): string {
         renderEvidence();
       }));
       load();
-      if (window.EventSource) { const events = new EventSource("/api/studio-events"); events.addEventListener("refresh", () => { clearTimeout(state.refreshTimer); state.refreshTimer = setTimeout(() => refresh(false), 180); }); }
-      else setInterval(() => refresh(false), 5000);
+      if (window.EventSource) {
+        const events = new EventSource("/api/studio-events");
+        state.eventStream = events;
+        events.addEventListener("open", () => { state.polling = false; setConnection("live", "Live"); });
+        events.addEventListener("refresh", () => { clearTimeout(state.refreshTimer); state.refreshTimer = setTimeout(() => refresh(false), 180); });
+        events.addEventListener("error", () => { state.polling = true; setConnection("polling", "Polling"); });
+      } else { state.polling = true; setConnection("polling", "Polling"); }
+      setInterval(() => refresh(false), 5000);
+      document.addEventListener("visibilitychange", () => { if (!document.hidden) refresh(false); });
     })();
   `;
 }
@@ -441,6 +538,8 @@ function studioCss(): string {
     .run-state.running { background: var(--lime); box-shadow: 0 0 0 3px rgba(132,240,108,.08); }
     .run-state.completed { background: #5a9f58; }
     .run-state.failed { background: var(--red); }
+    .run-state.blocked { background: var(--amber); }
+    .run-state.cancelled { background: #59636a; }
     .run-state.queued { border: 1px solid #9ba5ab; background: transparent; }
     .rail-loading { padding: 18px 10px; color: var(--faint); font-size: 11px; line-height: 1.5; }
     .new-task-button { min-height: 38px; display: flex; justify-content: center; align-items: center; gap: 8px; border: 1px solid #3a454b; background: #181e22; color: var(--text); font-size: 12px; font-weight: 650; cursor: pointer; }
@@ -448,18 +547,38 @@ function studioCss(): string {
     .rail-footer { display: grid; grid-template-columns: 8px 1fr auto; gap: 7px; align-items: center; padding: 15px 8px 2px; color: var(--muted); font-size: 10px; }
     .rail-footer b { color: #69756f; font-weight: 500; }
     .health-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--lime); }
+    .health-dot.polling { background: var(--amber); }
+    .health-dot.offline { background: var(--red); }
     .task-workspace { min-height: 100vh; margin-left: var(--rail-width); padding-top: var(--top); display: grid; grid-template-columns: minmax(440px, 54%) minmax(420px, 46%); opacity: 1; transition: opacity .15s ease; }
     .task-workspace.is-loading { opacity: .7; }
     .task-pane { min-width: 0; height: calc(100vh - var(--top)); display: grid; grid-template-rows: minmax(0,1fr) auto; border-right: 1px solid var(--line); }
     .task-scroll { min-height: 0; overflow: auto; padding: 27px 26px 22px; }
     .studio-notice { margin: 0 0 14px; border-left: 2px solid var(--lime); background: rgba(132,240,108,.08); padding: 9px 11px; color: #bdeab5; font-size: 10px; }
     .studio-notice.error { border-left-color: var(--red); background: rgba(240,107,107,.08); color: #efaaaa; }
+    .continuation-banner { margin: 0 0 14px; display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; align-items: center; border: 1px solid #7c612f; border-left: 2px solid var(--amber); background: rgba(242,184,75,.07); padding: 9px 11px; color: #d8c28f; font-size: 10px; }
+    .continuation-banner[hidden] { display: none; }
+    .continuation-banner button { border: 1px solid #8b682e; background: transparent; color: var(--amber); padding: 5px 8px; cursor: pointer; }
+    .needs-input-card, .outcome-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; margin: 0 0 14px; padding: 11px 12px; border: 1px solid var(--line); background: var(--surface); }
+    .needs-input-card[hidden], .outcome-card[hidden] { display: none; }
+    .needs-input-card { border-color: #7c612f; background: rgba(242,184,75,.07); }
+    .needs-input-mark, .outcome-mark { display: grid; place-items: center; width: 25px; height: 25px; border: 1px solid currentColor; border-radius: 50%; color: var(--amber); font-weight: 800; }
+    .needs-input-card p, .outcome-card p { margin: 3px 0 0; color: var(--muted); font-size: 11px; line-height: 1.45; }
+    .needs-input-actions { display: flex; gap: 7px; }
+    .needs-input-actions button { border: 1px solid #8b682e; background: transparent; color: var(--amber); padding: 6px 9px; cursor: pointer; }
+    .outcome-card.running .outcome-mark, .outcome-card.queued .outcome-mark { color: var(--lime); }
+    .outcome-card.completed { border-color: #315c36; background: rgba(132,240,108,.05); }
+    .outcome-card.completed .outcome-mark { color: var(--lime); }
+    .outcome-card.blocked, .outcome-card.partial { border-color: #7c612f; }
+    .outcome-card.failed { border-color: #713737; }
+    .outcome-card.failed .outcome-mark { color: var(--red); }
     .task-kicker { display: flex; align-items: center; gap: 8px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
     .task-kicker > span:first-child { border: 1px solid #3c474d; padding: 4px 6px; }
     .status-token { border: 1px solid #465158; padding: 4px 7px; color: #b2bbc0; }
     .status-token.running { border-color: #54844c; color: var(--lime); }
     .status-token.completed { border-color: #426a43; color: #8ed486; }
     .status-token.failed { border-color: #804747; color: #f28b8b; }
+    .status-token.blocked { border-color: #7c612f; color: var(--amber); }
+    .status-token.cancelled { border-color: #59636a; color: #8e999f; }
     .approval-banner { margin: 14px 0 0; min-height: 48px; display: grid; grid-template-columns: 18px minmax(0,1fr) auto; gap: 10px; align-items: center; border: 1px solid #7c612f; border-left: 2px solid var(--amber); background: rgba(242,184,75,.07); padding: 8px 10px; color: var(--amber); }
     .approval-banner[hidden] { display: none; }
     .approval-banner > span strong, .approval-banner > span small { display: block; }
@@ -479,9 +598,12 @@ function studioCss(): string {
     .stage.completed .stage-node { border-color: var(--lime); background: var(--lime); color: #10200d; font-weight: 800; }
     .stage.running .stage-node { border: 2px solid var(--lime); box-shadow: inset 0 0 0 4px var(--bg); background: var(--lime); color: transparent; }
     .stage.failed .stage-node { border-color: var(--red); color: var(--red); }
+    .stage.blocked .stage-node { border-color: var(--amber); color: var(--amber); }
+    .stage.cancelled .stage-node { border-color: #59636a; color: #737e84; }
     .stage strong { overflow: hidden; padding-top: 3px; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
     .stage small { color: var(--faint); font-size: 10px; }
     .stage.running small { color: var(--lime); }
+    .stage.blocked small { color: var(--amber); }
     .activity-header { display: flex; align-items: center; justify-content: space-between; padding-bottom: 11px; border-bottom: 1px solid var(--line); }
     .run-toolbar { display: flex; flex-wrap: wrap; gap: 6px; margin: -16px 0 24px; }
     .run-toolbar button { border: 1px solid #39444a; background: #151b1e; color: #aeb6ba; padding: 6px 9px; font-size: 9px; cursor: pointer; }
@@ -497,6 +619,8 @@ function studioCss(): string {
     .activity-item.completed .activity-node { border-color: var(--lime); background: var(--lime); color: #10200d; font-weight: 800; }
     .activity-item.running .activity-node { border-color: var(--lime); color: var(--lime); }
     .activity-item.failed .activity-node { border-color: var(--red); color: var(--red); }
+    .activity-item.blocked .activity-node { border-color: var(--amber); color: var(--amber); }
+    .activity-item.cancelled .activity-node { border-color: #59636a; color: #737e84; }
     .activity-meta { display: flex; align-items: baseline; gap: 10px; }
     .activity-meta strong { font-size: 11px; }
     .activity-meta time { color: var(--faint); font: 9px ui-monospace, monospace; }

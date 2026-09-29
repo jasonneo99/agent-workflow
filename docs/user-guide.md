@@ -706,6 +706,11 @@ configuration remains in the target project's `.agent-workflow/` directory.
 
 ## 9. Run Workflows From CLI
 
+> Chat Mode: runs can record who asked for them (`--requester`, `--requester-channel`),
+> notify that person when the run blocks or needs approval, and accept a plain
+> `reply <approval-id> approve|reject` answer. Full details in
+> [Chat Mode](chat-mode.md).
+
 Run one specialist agent directly:
 
 ```bash
@@ -1141,6 +1146,13 @@ npm run worker -- --watch --worker-id review-lane --project /path/to/api --concu
 When a worker claims a stage, enterprise storage records the worker id and a
 lease expiration timestamp. The Queue page shows the current running stage,
 owning worker, and lease deadline so interrupted work is easier to diagnose.
+Every new run also receives a deterministic human-facing title and concise
+description when it is created. These card labels combine the selected
+workflow, project, and meaningful request text; they omit known orchestration
+and guardrail boilerplate and never invent missing task details. Queue and Runs
+cards use those labels, while **Original request** preserves the exact submitted
+text for audit and troubleshooting. Older runs receive the same presentation as
+a read-time fallback without rewriting their immutable history.
 The Settings page shows the active worker's project scope and concurrency from
 the heartbeat file. When multiple workers write heartbeats, it also lists the
 discovered worker lanes from `.agent-workflow/runtime/workers/`.
@@ -1419,6 +1431,8 @@ npm run agentflow -- request-approval \
   --rationale "Owner-approved maintenance window for trusted local automation."
 ```
 
+Use **Settings → Trusted commands** to manage command allowlist patterns independently from approval shortcuts. Project patterns are stored in the selected project's `.agent-workflow/project.yaml` under `actions.allowed_commands`. Global patterns are private to the current machine and stored in `~/.config/agent-workflow/trusted-commands.yaml`; set `AGENTFLOW_TRUSTED_COMMANDS_FILE` to override that location. Patterns such as `gh *` and `npm *` use the existing command-policy matcher. Blocked commands always win, and trusting a command does not bypass approval thresholds, role gates, execution claims, or immutable run policy snapshots.
+
 Use narrowly scoped approval rules for recurring low-risk local actions that should still be policy controlled but do not need a fresh click every time. Rules live in `.agent-workflow/project.yaml`, are included in each run's immutable policy snapshot, and only match actions that already pass `allowed_commands` or `allowed_write_paths` plus the blocklists.
 
 The Learning settings approval-autopilot switch also persists its threshold as
@@ -1474,8 +1488,10 @@ for the same file write, and **Always fswrite\*** for future file-write requests
 request, but already queued workflow runs keep their original policy snapshot;
 future runs pick up the new project config.
 
-Use the dashboard **Always Approved** page or `approval-rules` command to audit
-and remove rules later. Removing a rule edits only that project's
+Use the dashboard **Trusted Commands** page or `approval-rules` command to audit
+and remove auto-execute rules later. The dashboard keeps trusted command policy
+and auto-execute rules in separate sections so their authority is explicit.
+Removing a rule edits only that project's
 `.agent-workflow/project.yaml`, validates the updated config, and makes future
 matching actions ask for approval again unless another rule still matches.
 

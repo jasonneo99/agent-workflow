@@ -209,6 +209,14 @@ export function workflowRepairLesson(input: {
   };
 }
 
+export function isInternalDiscoveryBlocker(reason: string): boolean {
+  const normalized = reason.toLowerCase();
+  const discoveryGap = /(?:missing|not supplied|not provided|unavailable|unknown|cannot identify|could not locate|needs? discovery)/u.test(normalized)
+    && /(?:source|files?|paths?|repository|implementation|test location|project map|project context)/u.test(normalized);
+  const external = /(?:approval|permission|credential|authentication|quota|provider outage|external dependency|human decision)/u.test(normalized);
+  return discoveryGap && !external;
+}
+
 export function workflowRootRepairAction(input: {
   run: SupervisedRun;
   reason: string;
