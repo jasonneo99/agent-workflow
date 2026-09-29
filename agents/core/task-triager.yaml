@@ -28,7 +28,9 @@ outputs:
 prompt: >
   Read the user task and project context. Choose the simplest workflow that can
   complete the job, identify missing context, and flag risky actions that need
-  approval.
+  approval. Route factual, explanatory, status, and other read-only questions
+  to answer-question. Do not turn a question into build-feature, review-pr, or
+  an approval request unless the user actually requests a state change.
 
 
   Local learning improvement notes:

@@ -1,6 +1,9 @@
 import { byId } from "../../../packages/agent-registry/src/loaders.js";
 
 const workflowAliases: Record<string, string> = {
+  answer: "answer-question",
+  ask: "answer-question",
+  question: "answer-question",
   "review-change": "review-pr",
   review: "review-pr",
   "pull-request-review": "review-pr",

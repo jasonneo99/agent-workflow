@@ -1,0 +1,24 @@
+id: answer-question
+name: Answer Question
+description: Answer a read-only project question with current evidence, durable run history, and no side effects.
+lead: project-answerer
+default_autonomy: 1
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: answer
+    agent: project-answerer
+    goal: Return a direct evidence-backed answer without changing project or external state.
+    pattern:
+      type: planner
+      promotion_gate: none
+    context:
+      load:
+        - project_context
+        - project_decisions
+        - roadmap
+        - relevant_source_files
+        - recent_relevant_receipts
+      max_tokens: 5000
+    output: question_answer

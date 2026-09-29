@@ -2,12 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { createOrchestrationPlan } from "./orchestration-plan.js";
 
-test("routes roadmap questions to one read-only project specialist", () => {
+test("routes roadmap questions to one durable read-only workflow", () => {
   const plan = createOrchestrationPlan({ projectDir: "/tmp/example-project", task: "What are the next 10 items on the roadmap for this project?" });
   assert.equal(plan.steps.length, 1);
-  assert.equal(plan.steps[0]?.kind, "agent");
-  assert.equal(plan.steps[0]?.target, "technical-architect");
-  assert.doesNotMatch(plan.steps[0]?.task ?? "", /make changes/iu);
+  assert.equal(plan.steps[0]?.kind, "workflow");
+  assert.equal(plan.steps[0]?.target, "answer-question");
+  assert.equal(plan.steps[0]?.task, "What are the next 10 items on the roadmap for this project?");
+  assert.equal(plan.steps[0]?.adaptive, true);
+});
+
+test("keeps conversational how and status questions out of implementation workflows", () => {
+  for (const task of ["How does replay suppression work?", "Tell me the current project status", "Which provider is active?"]) {
+    const plan = createOrchestrationPlan({ projectDir: "/tmp/example-project", task });
+    assert.deepEqual(plan.steps.map((step) => step.target), ["answer-question"]);
+  }
 });
 
 test("does not downgrade an implementation request containing roadmap", () => {

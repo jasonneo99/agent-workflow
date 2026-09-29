@@ -62,6 +62,7 @@ private product scoring belong outside this repository.
 | Workflow | Feature description |
 | --- | --- |
 | `accessibility-review` | Audits accessibility barriers, prioritizes remediation, and verifies regression coverage. |
+| `answer-question` | Answers read-only project questions from current context and evidence with a durable answer artifact and no side effects. |
 | `architecture-decision` | Compares architectural options and records a reviewable decision with consequences. |
 | `build-feature` | Plans, creates, verifies, packages, and delivers a usable feature; planning alone cannot satisfy BUILD. |
 | `ci-triage` | Classifies CI failures, isolates the cause, prepares a correction, and verifies affected checks. |

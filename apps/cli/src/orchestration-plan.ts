@@ -34,10 +34,11 @@ export function createOrchestrationPlan(input: { projectDir: string; task: strin
   if (asksProjectQuestion) {
     addStep({
       title: "Project question",
-      reason: "The request asks for read-only project information, so use one context-aware specialist instead of a multi-stage review.",
-      kind: "agent",
-      target: "technical-architect",
-      task: `Inspect the project's durable context and relevant source files, then answer this question directly without making changes: ${input.task}`
+      reason: "The request asks for read-only project information, so use the durable question-answer workflow instead of an implementation or review workflow.",
+      kind: "workflow",
+      target: "answer-question",
+      task: input.task,
+      adaptive: true
     });
     return { projectDir: input.projectDir, task: input.task, executionProfile, steps };
   }

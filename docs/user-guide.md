@@ -561,6 +561,7 @@ http://127.0.0.1:17888/api/discovery
 Current workflow ids:
 
 ```text
+answer-question
 build-feature
 debug-failure
 maintain-context
@@ -569,6 +570,16 @@ provider-smoke
 review-pr
 ship-release
 wide-open-automation
+```
+
+Use `answer-question` when a client needs a durable, auditable answer to a
+project question without starting implementation, requesting approvals, or
+changing files. Natural-language orchestration routes read-only questions here
+automatically:
+
+```bash
+npm run agentflow -- run answer-question --project /path/to/project --task "What is blocking the current release?"
+npm run agentflow -- orchestrate --project /path/to/project --task "How does the approval policy work?"
 ```
 
 Use `review-pr` for reviewing local changes, PR-like work, or risk-sensitive areas.

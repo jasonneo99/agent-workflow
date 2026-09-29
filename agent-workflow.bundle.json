@@ -13,13 +13,13 @@
     "mcp": ">=1.29.0"
   },
   "counts": {
-    "agents": 25,
-    "workflows": 20,
-    "files": 45
+    "agents": 26,
+    "workflows": 21,
+    "files": 47
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "9da796e6ade12e23a4407ceef89729852dfe624a64d3d4e778f1f4d711c28979"
+    "value": "a94048358ecc9b1116c5ddb43cb9891db5140c0e6afbb5144e080df899c7cf43"
   },
   "agents": [
     {
@@ -58,9 +58,14 @@
       "checksum": "77787da0106fe19c89179f729d69a5005b69deaa9eabef4e7632c4a67e031f94"
     },
     {
+      "id": "project-answerer",
+      "path": "agents/core/project-answerer.yaml",
+      "checksum": "762a443afd53793c0c2a0131ab8bb1e6daa12a2e1338be237551a9774dfded78"
+    },
+    {
       "id": "task-triager",
       "path": "agents/core/task-triager.yaml",
-      "checksum": "fd7895aa93085c43edb215c5b19afb3453225105ce8d130e53de4dfba6ebd7b7"
+      "checksum": "061dc5cf8ddb6ffddbb27934c9b016c744719bd812231f327e8d260372feeb96"
     },
     {
       "id": "workflow-orchestrator",
@@ -153,6 +158,11 @@
       "id": "accessibility-review",
       "path": "workflows/accessibility-review.yaml",
       "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
+    },
+    {
+      "id": "answer-question",
+      "path": "workflows/answer-question.yaml",
+      "checksum": "871ea45247705122e234187baa49c3631414405ccc1ec6e6edaa8ea29dd8fba4"
     },
     {
       "id": "architecture-decision",
@@ -280,8 +290,12 @@
       "checksum": "77787da0106fe19c89179f729d69a5005b69deaa9eabef4e7632c4a67e031f94"
     },
     {
+      "path": "agents/core/project-answerer.yaml",
+      "checksum": "762a443afd53793c0c2a0131ab8bb1e6daa12a2e1338be237551a9774dfded78"
+    },
+    {
       "path": "agents/core/task-triager.yaml",
-      "checksum": "fd7895aa93085c43edb215c5b19afb3453225105ce8d130e53de4dfba6ebd7b7"
+      "checksum": "061dc5cf8ddb6ffddbb27934c9b016c744719bd812231f327e8d260372feeb96"
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
@@ -354,6 +368,10 @@
     {
       "path": "workflows/accessibility-review.yaml",
       "checksum": "48b8fedb74c10ce478d66e7437000565750a1ab8d256fde8d31ba5ef8fd58fa0"
+    },
+    {
+      "path": "workflows/answer-question.yaml",
+      "checksum": "871ea45247705122e234187baa49c3631414405ccc1ec6e6edaa8ea29dd8fba4"
     },
     {
       "path": "workflows/architecture-decision.yaml",
