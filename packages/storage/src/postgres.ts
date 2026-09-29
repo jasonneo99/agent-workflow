@@ -51,7 +51,32 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS lease_owner text,
       ADD COLUMN IF NOT EXISTS lease_expires_at timestamptz,
       ADD COLUMN IF NOT EXISTS replacement_run_id uuid REFERENCES workflow_runs(id),
-      ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now()
+      ADD COLUMN IF NOT EXISTS updated_at timestamptz NOT NULL DEFAULT now(),
+      ADD COLUMN IF NOT EXISTS requester text,
+      ADD COLUMN IF NOT EXISTS requester_channel text NOT NULL DEFAULT 'dashboard'
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS run_notifications (
+        id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+        run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+        channel text NOT NULL DEFAULT 'dashboard',
+        kind text NOT NULL,
+        title text NOT NULL,
+        body text NOT NULL DEFAULT '',
+        status text NOT NULL DEFAULT 'pending',
+        created_at timestamptz NOT NULL DEFAULT now(),
+        delivered_at timestamptz,
+        CONSTRAINT run_notifications_status_check CHECK (status IN ('pending','delivered','failed')),
+        CONSTRAINT run_notifications_kind_check CHECK (kind IN ('approval_needed','blocked','failed','message'))
+      )
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS run_notifications_pending_idx
+      ON run_notifications(status, created_at) WHERE status = 'pending'
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS run_notifications_run_idx
+      ON run_notifications(run_id)
     `);
     await client.query(workflowTaskEventTriggerSql);
     await client.query(`
@@ -1100,8 +1125,8 @@ export async function dismissFailedWorkflowRun(input: {
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const runResult = await client.query<{ id: string }>(
-        `select wr.id::text
+      const runResult = await client.query<{ id: string; status: string }>(
+        `select wr.id::text, wr.status
          from workflow_runs wr
          where wr.id = $1 and wr.status in ('failed', 'blocked', 'cancelled')
          for update`,
@@ -1111,10 +1136,17 @@ export async function dismissFailedWorkflowRun(input: {
         await client.query("rollback");
         return false;
       }
+      const priorStatus = runResult.rows[0].status;
       await client.query(
         `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
          values ($1::uuid, 'workflow-orchestrator', 'failed_run_dismissed', $2::text, $3, $4)`,
-        [input.runId, input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false })]
+        [input.runId, input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false, priorStatus })]
+      );
+      // Move to cancelled so every view consistently hides the dismissed run.
+      // The receipt above preserves the audit trail and the prior status.
+      await client.query(
+        `update workflow_runs set status = 'cancelled', updated_at = now() where id = $1::uuid`,
+        [input.runId]
       );
       await client.query("commit");
       return true;
@@ -1131,20 +1163,47 @@ export async function reinstateFailedWorkflowRun(input: {
   reason: string;
 }): Promise<boolean> {
   return withClient(async (client) => {
-    const result = await client.query<{ id: string }>(
-      `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-       select wr.id, 'workflow-orchestrator', 'failed_run_reinstated', wr.id::text, $2, $3
-       from workflow_runs wr
-       where wr.id = $1::uuid
-         and wr.status in ('failed', 'blocked', 'cancelled')
-         and exists (
-           select 1 from action_receipts dismissed
-           where dismissed.run_id=wr.id and dismissed.action_type in ('failed_run_dismissed','failed_run_superseded')
-         )
-       returning id::text`,
-      [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason })]
-    );
-    return Boolean(result.rows[0]);
+    await client.query("begin");
+    try {
+      const dismissed = await client.query<{ metadata: { priorStatus?: string } }>(
+        `select ar.metadata
+         from action_receipts ar
+         where ar.run_id = $1::uuid
+           and ar.action_type in ('failed_run_dismissed','failed_run_superseded')
+         order by ar.created_at desc
+         limit 1
+         for update`,
+        [input.runId]
+      );
+      if (!dismissed.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      const priorStatus = dismissed.rows[0].metadata?.priorStatus;
+      const restoreTo = priorStatus === "failed" || priorStatus === "blocked" ? priorStatus : "blocked";
+      const result = await client.query<{ id: string }>(
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
+         select wr.id, 'workflow-orchestrator', 'failed_run_reinstated', wr.id::text, $2, $3
+         from workflow_runs wr
+         where wr.id = $1::uuid
+           and wr.status in ('failed', 'blocked', 'cancelled')
+         returning id::text`,
+        [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, restoredStatus: restoreTo })]
+      );
+      if (!result.rows[0]) {
+        await client.query("rollback");
+        return false;
+      }
+      await client.query(
+        `update workflow_runs set status = $2, updated_at = now() where id = $1::uuid`,
+        [input.runId, restoreTo]
+      );
+      await client.query("commit");
+      return true;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 
@@ -1175,6 +1234,10 @@ export async function dismissAllFailedWorkflowRuns(input: {
          select id, 'workflow-orchestrator', 'failed_run_dismissed', id::text, $2, $3
          from workflow_runs where id = any($1::uuid[])`,
         [runIds, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: true, projectRootUri: input.projectRootUri ?? null })]
+      );
+      await client.query(
+        `update workflow_runs set status = 'cancelled', updated_at = now() where id = any($1::uuid[])`,
+        [runIds]
       );
       await client.query("commit");
       return runIds.length;
@@ -1312,6 +1375,8 @@ export interface CreateRunInput {
   constructionRationale?: unknown;
   compiledBrief?: string;
   compiledBriefMetadata?: Record<string, unknown>;
+  requester?: string;
+  requesterChannel?: string;
 }
 export async function createWorkflowRun(input: CreateRunInput): Promise<{ projectId: string; runId: string; tasks: number; deduplicated?: boolean }> {
   return withClient(async (client) => {
@@ -1365,9 +1430,10 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
            model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
-           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id,
+           requester, requester_channel
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, ${inheritedRunSetSql})
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, ${inheritedRunSetSql}, $16, $17)
          returning id`,
         [
           projectId,
@@ -1384,7 +1450,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
           workflowVersion,
           workflowHash,
           constructionRationaleJson,
-          null
+          null,
+          input.requester ?? null,
+          input.requesterChannel ?? "dashboard"
         ]
       );
       const runId = runResult.rows[0].id;
@@ -1516,6 +1584,8 @@ export async function replayWorkflowRun(input: {
         compiledBrief: string | null;
         compiledBriefMetadata: Record<string, unknown> | null;
         replacementRunId: string | null;
+        requester: string | null;
+        requesterChannel: string | null;
       }>(
         `select
            p.id::text as "projectId",
@@ -1540,6 +1610,8 @@ export async function replayWorkflowRun(input: {
            wr.workflow_definition_hash as "workflowDefinitionHash",
            wr.construction_rationale as "constructionRationale",
            wr.replacement_run_id::text as "replacementRunId",
+           wr.requester as "requester",
+           wr.requester_channel as "requesterChannel",
            artifact.content->>'text' as "compiledBrief",
            artifact.content->'metadata' as "compiledBriefMetadata"
          from workflow_runs wr
@@ -1701,9 +1773,10 @@ export async function replayWorkflowRun(input: {
            project_id, workflow_id, status, task, autonomy,
            policy_profile, policy_snapshot, policy_snapshot_hash,
            model_tier_override, provider_override, evaluation_metadata, workflow_snapshot,
-           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id
+           workflow_definition_version, workflow_definition_hash, construction_rationale, compiled_brief_uri, run_set_id,
+           requester, requester_channel
          )
-         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, null, ${inheritedRunSetSql})
+         values ($1, $2, 'queued', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, null, ${inheritedRunSetSql}, $15, $16)
          returning id`,
         [
           projectId,
@@ -1719,7 +1792,9 @@ export async function replayWorkflowRun(input: {
           JSON.stringify(workflow),
           sourceRun.workflowDefinitionVersion,
           sourceRun.workflowDefinitionHash || workflowDefinitionHash(workflow),
-          JSON.stringify(sourceRun.constructionRationale)
+          JSON.stringify(sourceRun.constructionRationale),
+          sourceRun.requester ?? null,
+          sourceRun.requesterChannel ?? "dashboard"
         ]
       );
       const runId = runResult.rows[0].id;
@@ -2542,6 +2617,87 @@ export async function blockWorkflowTask(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+  await notifyRequester({
+    runId: input.runId,
+    kind: "blocked",
+    title: `Run blocked: ${input.summary}`,
+    body: input.reason
+  });
+}
+
+export interface RequesterNotification {
+  runId: string;
+  kind: "approval_needed" | "blocked" | "failed" | "message";
+  title: string;
+  body?: string;
+  channel?: string;
+}
+
+/**
+ * Chat-mode: record an outbound notification for the run's requester.
+ * Never throws: notification intent must not break the run lifecycle.
+ * Delivery happens out-of-band (dashboard, Codex callback, AGENTFLOW_NOTIFY_COMMAND).
+ */
+export async function notifyRequester(input: RequesterNotification): Promise<string | null> {
+  try {
+    return await withClient(async (client) => {
+      const run = await client.query<{ requester: string | null; requester_channel: string | null }>(
+        `select requester, requester_channel from workflow_runs where id = $1`,
+        [input.runId]
+      );
+      const channel = input.channel ?? run.rows[0]?.requester_channel ?? "dashboard";
+      const dedupe = await client.query<{ id: string }>(
+        `select id from run_notifications
+         where run_id = $1 and kind = $2 and title = $3 and status = 'pending'
+         limit 1`,
+        [input.runId, input.kind, input.title]
+      );
+      if (dedupe.rows[0]) return dedupe.rows[0].id;
+      const inserted = await client.query<{ id: string }>(
+        `insert into run_notifications (run_id, channel, kind, title, body)
+         values ($1, $2, $3, $4, $5)
+         returning id`,
+        [input.runId, channel, input.kind, input.title, input.body ?? ""]
+      );
+      await client.query(`select pg_notify('agentflow_runtime_events', $1)`, [
+        JSON.stringify({ type: "run_notification", notificationId: inserted.rows[0].id, runId: input.runId })
+      ]);
+      return inserted.rows[0].id;
+    });
+  } catch {
+    return null;
+  }
+}
+
+export async function listPendingRunNotifications(limit = 50): Promise<Array<{
+  id: string; runId: string; channel: string; kind: string;
+  title: string; body: string; createdAt: string; requester: string | null;
+}>> {
+  return withClient(async (client) => {
+    const r = await client.query(
+      `select n.id::text as "id", n.run_id::text as "runId", n.channel as "channel",
+              n.kind as "kind", n.title as "title", n.body as "body",
+              n.created_at::text as "createdAt", wr.requester as "requester"
+       from run_notifications n
+       join workflow_runs wr on wr.id = n.run_id
+       where n.status = 'pending'
+       order by n.created_at asc
+       limit $1`,
+      [limit]
+    );
+    return r.rows;
+  });
+}
+
+export async function markRunNotificationDelivered(notificationId: string, ok: boolean): Promise<void> {
+  await withClient(async (client) => {
+    await client.query(
+      `update run_notifications
+       set status = $2, delivered_at = now()
+       where id = $1`,
+      [notificationId, ok ? "delivered" : "failed"]
+    );
   });
 }
 
@@ -3519,5 +3675,71 @@ export async function getLatestMemory(input: {
       [input.projectRootUri, input.limit ?? 10]
     );
     return result.rows;
+  });
+}
+
+export async function consolidateProjectAlias(input: {
+  sourceRootUri: string;
+  targetRootUri: string;
+}): Promise<{ sourceProjectId: string; targetProjectId: string; movedRuns: number; movedFiles: number; movedMemoryItems: number; movedBaselines: number }> {
+  if (!input.sourceRootUri.trim() || !input.targetRootUri.trim() || input.sourceRootUri === input.targetRootUri) {
+    throw new Error("Project alias consolidation requires distinct source and target roots.");
+  }
+  return withClient(async (client) => {
+    await client.query("begin");
+    try {
+      const projects = await client.query<{ id: string; rootUri: string }>(
+        `select id::text, root_uri as "rootUri" from projects where root_uri = any($1::text[]) for update`,
+        [[input.sourceRootUri, input.targetRootUri]]
+      );
+      const source = projects.rows.find((row) => row.rootUri === input.sourceRootUri);
+      const target = projects.rows.find((row) => row.rootUri === input.targetRootUri);
+      if (!source || !target) throw new Error("Both source and target project registrations must exist.");
+
+      await client.query(
+        `delete from project_files source
+          using project_files target
+         where source.project_id = $1::uuid and target.project_id = $2::uuid
+           and source.source_uri = target.source_uri`,
+        [source.id, target.id]
+      );
+      const files = await client.query(`update project_files set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
+
+      await client.query(
+        `insert into project_index_state (project_id, head_commit, indexed_files, deleted_files, metadata, updated_at)
+         select $2::uuid, head_commit, indexed_files, deleted_files, metadata, updated_at
+           from project_index_state where project_id = $1::uuid
+         on conflict (project_id) do update set
+           indexed_files = greatest(project_index_state.indexed_files, excluded.indexed_files),
+           deleted_files = greatest(project_index_state.deleted_files, excluded.deleted_files),
+           updated_at = greatest(project_index_state.updated_at, excluded.updated_at)`,
+        [source.id, target.id]
+      );
+      await client.query(`delete from project_index_state where project_id = $1::uuid`, [source.id]);
+
+      await client.query(
+        `delete from memory_items source
+          using memory_items target
+         where source.project_id = $1::uuid and target.project_id = $2::uuid
+           and source.source_uri = target.source_uri and source.content_hash = target.content_hash`,
+        [source.id, target.id]
+      );
+      const memory = await client.query(`update memory_items set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
+      const runs = await client.query(`update workflow_runs set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
+      const baselines = await client.query(`update performance_baselines set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
+      await client.query(`delete from projects where id = $1::uuid`, [source.id]);
+      await client.query("commit");
+      return {
+        sourceProjectId: source.id,
+        targetProjectId: target.id,
+        movedRuns: runs.rowCount ?? 0,
+        movedFiles: files.rowCount ?? 0,
+        movedMemoryItems: memory.rowCount ?? 0,
+        movedBaselines: baselines.rowCount ?? 0
+      };
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }

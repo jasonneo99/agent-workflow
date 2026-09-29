@@ -91,6 +91,83 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
       allowed_commands: [],
       allowed_write_paths: []
     }
+  },
+  // Chat-mode: the owner trusts the agent like a conversational assistant.
+  // Ordinary dev work (read/edit project files, run commands and tests) is
+  // pre-authorized; genuinely external or destructive actions still raise an
+  // approval, which is delivered to the requester as a conversation instead
+  // of parking in a queue.
+  "trusted-personal": {
+    autonomy: 3,
+    policies: {
+      allow_wide_open: true,
+      require_approval_for_external_actions: true,
+      require_receipts: true
+    },
+    actions: {
+      auto_approve_max_risk: "medium",
+      allowed_commands: [
+        // Package managers: test/run/install only; publish is blocked below.
+        "npm test *",
+        "npm run *",
+        "npm install *",
+        "npm ci *",
+        "npm ls *",
+        "npm view *",
+        "npx *",
+        "node *",
+        "tsc *",
+        // Git: explicit safe subcommands only. No broad "git *" — dangerous
+        // subcommands must never be allowlisted by accident. The blocklist
+        // below remains as defense in depth.
+        "git status *",
+        "git diff *",
+        "git log *",
+        "git show *",
+        "git branch *",
+        "git add *",
+        "git commit *",
+        "git stash *",
+        "git fetch *",
+        "git pull *",
+        // GitHub CLI: read-only operations only.
+        "gh pr view *",
+        "gh pr list *",
+        "gh issue view *",
+        "gh issue list *",
+        "gh repo view *",
+        "gh run view *",
+        "gh run list *",
+        "gh status *",
+        "python3 *",
+        "pytest *",
+        "make *",
+        // Read-only shell utilities.
+        "ls *",
+        "cat *",
+        "head *",
+        "tail *",
+        "wc *",
+        "find *",
+        "grep *",
+        "rg *",
+        "diff *",
+        "echo *"
+      ],
+      blocked_commands: [
+        "rm *",
+        "sudo *",
+        "npm publish *",
+        "git reset *",
+        "git clean *",
+        "git checkout *",
+        "git push *",
+        "chmod *",
+        "chown *"
+      ],
+      allowed_write_paths: ["**"],
+      blocked_write_paths: [".git/**", "node_modules/**", ".env", ".env.*"]
+    }
   }
 };
 
