@@ -35,9 +35,11 @@ For a complete codebase-wide inventory, start with the [Feature Catalog](feature
 27. [Roadmap](roadmap.md): shared-platform direction and next implementation phases.
 28. [Open Source Boundary](open-source-boundary.md): what belongs in the framework versus private product agent engines.
 29. [Autonomy Policy](autonomy.md): what each autonomy level allows.
-30. [Profiles](profiles.md): enterprise and simple initialization profiles.
-31. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
-32. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
+30. [Chat Mode](chat-mode.md): requester-aware runs, self-healing retries, the trusted-personal policy profile, and conversational approvals.
+31. [Architecture Drift Report — 2026-09-29](architecture-drift-report-2026-09-29.md): reconciliation of requester-aware Studio and recovery changes, with unresolved portability, identity, evidence, and release gaps.
+32. [Profiles](profiles.md): enterprise and simple initialization profiles.
+33. [Codex MCP Install](mcp-codex-app.md): Codex-specific MCP setup. Use [MCP Client Setup](mcp-clients.md) for generic clients.
+34. [Scrubbed Examples](examples/README.md): synthetic shareable exports for docs and issue reports.
 
 ## Fast Path
 
