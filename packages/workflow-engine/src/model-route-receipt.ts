@@ -12,6 +12,8 @@ export function buildModelRouteReceiptContent(input: {
     route: input.route,
     fallbackProviderId: input.fallbackProviderId,
     fallbackUsed: input.fallbackUsed,
+    modelAttempts: input.output.modelAttempts ?? [],
+    providerAttempts: input.output.artifact.providerAttempts ?? [],
     usage: input.output.usage,
     latencyMs: input.latencyMs,
     stagePattern: input.stagePattern,

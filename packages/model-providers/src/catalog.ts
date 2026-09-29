@@ -1,4 +1,5 @@
 import type { ModelTier } from "./types.js";
+import type { StageExecutionInput } from "./types.js";
 
 export type ModelSelectionPolicy = "lowest-cost" | "balanced" | "best-coding" | "maximum-reasoning";
 
@@ -7,7 +8,8 @@ export type CatalogModelSelection = {
   source: "env" | "catalog";
 };
 
-export type CatalogProviderKind = "openai" | "compatible" | "bedrock";
+export type CatalogProviderKind = "openai" | "anthropic" | "compatible" | "bedrock";
+export type ModelTaskClass = "coding" | "review" | "reasoning" | "general";
 
 export type CatalogCandidate = {
   id: string;
@@ -17,6 +19,7 @@ export type CatalogCandidate = {
   versionRank: number;
   sizeRank: number;
   familyRank: number;
+  taskRank: number;
   totalRank: number;
 };
 
@@ -40,18 +43,25 @@ export function normalizeModelSelectionPolicy(value?: string): ModelSelectionPol
   return "best-coding";
 }
 
-export function selectModelFromCatalog(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy } = {}): string | undefined {
+export function selectModelFromCatalog(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy; taskClass?: ModelTaskClass } = {}): string | undefined {
   return explainModelCatalogSelection(modelIds, tier, options).selectedModel;
 }
 
-export function explainModelCatalogSelection(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy } = {}): CatalogSelectionExplanation {
+export function rankModelsFromCatalog(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy; taskClass?: ModelTaskClass } = {}): string[] {
+  return explainModelCatalogSelection(modelIds, tier, options).candidates
+    .filter((candidate) => candidate.eligible)
+    .map((candidate) => candidate.id);
+}
+
+export function explainModelCatalogSelection(modelIds: string[], tier: ModelTier, options: { provider?: CatalogProviderKind; policy?: ModelSelectionPolicy; taskClass?: ModelTaskClass } = {}): CatalogSelectionExplanation {
   const provider = options.provider ?? "compatible";
   const policy = options.policy ?? modelSelectionPolicyFromEnv();
   const candidates = uniqueModelIds(modelIds)
-    .map((id) => scoreModel(id, tier, policy, provider))
+    .map((id) => scoreModel(id, tier, policy, provider, options.taskClass ?? "general"))
     .sort((a, b) =>
       Number(b.eligible) - Number(a.eligible) ||
       b.tierRank - a.tierRank ||
+      b.taskRank - a.taskRank ||
       b.versionRank - a.versionRank ||
       b.sizeRank - a.sizeRank ||
       b.familyRank - a.familyRank ||
@@ -81,10 +91,13 @@ function excludedReason(id: string, provider: CatalogProviderKind): string | und
   if (provider === "openai") {
     return /^gpt-/u.test(normalized) ? undefined : "not an OpenAI GPT model";
   }
+  if (provider === "anthropic") {
+    return /^claude-/u.test(normalized) ? undefined : "not an Anthropic Claude model";
+  }
   return undefined;
 }
 
-function scoreModel(id: string, tier: ModelTier, policy: ModelSelectionPolicy, provider: CatalogProviderKind): CatalogCandidate {
+function scoreModel(id: string, tier: ModelTier, policy: ModelSelectionPolicy, provider: CatalogProviderKind, taskClass: ModelTaskClass): CatalogCandidate {
   const normalized = id.toLowerCase();
   const reason = excludedReason(id, provider);
   const ranks = {
@@ -92,14 +105,30 @@ function scoreModel(id: string, tier: ModelTier, policy: ModelSelectionPolicy, p
     versionRank: reason ? 0 : versionRank(normalized),
     sizeRank: reason ? 0 : sizeRank(normalized),
     familyRank: reason ? 0 : familyRank(normalized)
+    ,taskRank: reason ? 0 : taskRank(normalized, taskClass)
   };
   return {
     id,
     eligible: !reason,
     excludedReason: reason,
     ...ranks,
-    totalRank: ranks.tierRank * 1000 + ranks.versionRank * 100 + ranks.sizeRank + ranks.familyRank
+    totalRank: ranks.tierRank * 10_000 + ranks.taskRank * 1000 + ranks.versionRank * 100 + ranks.sizeRank + ranks.familyRank
   };
+}
+
+export function inferModelTaskClass(input: Pick<StageExecutionInput, "workflowId" | "stageId" | "agentId" | "stageGoal">): ModelTaskClass {
+  const text = `${input.workflowId} ${input.stageId} ${input.agentId} ${input.stageGoal}`.toLowerCase();
+  if (/implement|frontend|backend|database|code|build|migration/u.test(text)) return "coding";
+  if (/review|security|verify|test|quality|audit/u.test(text)) return "review";
+  if (/architect|reason|incident|triage|strategy|plan/u.test(text)) return "reasoning";
+  return "general";
+}
+
+function taskRank(id: string, taskClass: ModelTaskClass): number {
+  if (taskClass === "coding") return /codex|coder|code/u.test(id) ? 10 : /sol|sonnet|terra|pro/u.test(id) ? 6 : 3;
+  if (taskClass === "review") return /reason|thinking|astra|opus|sol|sonnet|codex|coder/u.test(id) ? 8 : 4;
+  if (taskClass === "reasoning") return /reason|thinking|astra|opus|r1|o\d/u.test(id) ? 10 : /sol|sonnet|pro/u.test(id) ? 7 : 3;
+  return 5;
 }
 
 function tierRank(id: string, tier: ModelTier, policy: ModelSelectionPolicy): number {

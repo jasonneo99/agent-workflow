@@ -2,7 +2,20 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import test from "node:test";
-import { selectModelRoute } from "./routing.js";
+import { providerFallbackCandidates, selectModelRoute } from "./routing.js";
+
+test("provider fallbacks consider every configured live provider without using mock", () => {
+  const previous = process.env.AGENTFLOW_AUTO_PROVIDERS;
+  const previousFallback = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+  try {
+    process.env.AGENTFLOW_AUTO_PROVIDERS = "openai,bedrock,byo,local,kiro";
+    process.env.AGENTFLOW_FALLBACK_PROVIDER = "bedrock";
+    assert.deepEqual(providerFallbackCandidates("openai", "reasoning"), ["bedrock", "byo", "local", "kiro"]);
+  } finally {
+    if (previous === undefined) delete process.env.AGENTFLOW_AUTO_PROVIDERS; else process.env.AGENTFLOW_AUTO_PROVIDERS = previous;
+    if (previousFallback === undefined) delete process.env.AGENTFLOW_FALLBACK_PROVIDER; else process.env.AGENTFLOW_FALLBACK_PROVIDER = previousFallback;
+  }
+});
 
 test("approved local holdout notes select local for fast adaptive stages", async () => {
   const server = createServer((request, response) => {

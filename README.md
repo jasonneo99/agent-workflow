@@ -88,7 +88,7 @@ Switch providers by changing `DEFAULT_MODEL_PROVIDER` in `.env`:
 ```bash
 # Smart routing across configured providers
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,anthropic,bedrock,openai,openai-compatible,kiro
 AGENTFLOW_MODEL_POLICY=best-coding
 
 # Local model runtime: Ollama, LM Studio, llama.cpp-compatible endpoints
@@ -363,6 +363,7 @@ and MCP tool list independently of the Codex private stdio connection.
 - [Agent Roster](docs/agent-roster.md): available agents
 - [Architecture](docs/architecture.md): runtime and storage design
 - [Roadmap](docs/roadmap.md): shared-platform direction and next implementation phases
+- [Local-Only Learning and Guarded Autonomy](docs/local-only-learning-guarded-autonomy.md): reliability, calibrated authority, provenance, breakers, and evidence-gated learning
 - [Evaluation Harness](docs/evaluations.md): provider, tier, and prompt comparison suites
 - [Open Source Boundary](docs/open-source-boundary.md): what belongs in the framework versus private product agent engines
 - [Autonomy Policy](docs/autonomy.md): automation levels and guardrails

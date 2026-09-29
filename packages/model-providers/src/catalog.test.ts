@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { explainModelCatalogSelection, selectModelFromCatalog } from "./catalog.js";
+import { explainModelCatalogSelection, rankModelsFromCatalog, selectModelFromCatalog } from "./catalog.js";
 
 test("generic catalog selection prefers efficient local models for fast stages", () => {
   const catalog = [
@@ -58,4 +58,20 @@ test("catalog explanation exposes selected candidate and excluded non-text model
   const excluded = report.candidates.filter((candidate) => !candidate.eligible);
   assert.deepEqual(excluded.map((candidate) => candidate.id).sort(), ["gpt-image-1", "text-embedding-3-large"]);
   assert.ok(excluded.every((candidate) => candidate.excludedReason));
+});
+
+test("catalog ranking keeps every eligible model available for fallback", () => {
+  const ranked = rankModelsFromCatalog([
+    "gpt-5.6-luna",
+    "gpt-5.3-codex",
+    "gpt-6-astra",
+    "text-embedding-3-large"
+  ], "standard", { provider: "openai", policy: "best-coding" });
+  assert.deepEqual(ranked, ["gpt-5.3-codex", "gpt-5.6-luna", "gpt-6-astra"]);
+});
+
+test("task specialization prefers coding and reasoning families appropriately", () => {
+  const models = ["gpt-6-astra", "gpt-5.3-codex", "gpt-5.6-luna"];
+  assert.equal(rankModelsFromCatalog(models, "standard", { provider: "openai", taskClass: "coding" })[0], "gpt-5.3-codex");
+  assert.equal(rankModelsFromCatalog(models, "reasoning", { provider: "openai", taskClass: "reasoning" })[0], "gpt-6-astra");
 });

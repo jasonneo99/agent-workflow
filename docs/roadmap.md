@@ -89,7 +89,10 @@ These milestones organize the detailed roadmap items below:
      local/BYO/OpenAI/Bedrock/Kiro support, model policy selection, cost and
      quality reporting, fallback behavior, and provider-specific overrides.
    - Current status: model selection can use live catalogs and policy scoring;
-     next improvement is stronger holdout evidence before expanding local or
+     ranked task-aware candidate pools now retain every eligible catalog model
+     and can cross configured providers after funding, quota, access, or model
+     availability failures without treating mock output as a live fallback.
+     Next improvement is stronger holdout evidence before expanding local or
      cheaper routing thresholds.
 
 6. **Local Learning Daemon**
@@ -161,6 +164,16 @@ These milestones organize the detailed roadmap items below:
       repository calibration gate are implemented. Segmented threshold learning
       and accepted-workflow outcome accounting remain.
 
+14. **Local-Only Learning And Guarded Autonomy**
+   - Workstreams: end-to-end reliability baselines, calibrated stage authority,
+     provenance-first memory, transactional recovery, evidence-gated local
+     learning, independent breaker controls, and adversarial boundary tests.
+   - Current status: existing evaluation, learning, policy, receipt, lease,
+     checkpoint, and redaction primitives are inputs to this program, but the
+     unified contracts and promotion gates described in
+     [Local-Only Learning and Guarded Autonomy](local-only-learning-guarded-autonomy.md)
+     are not yet implemented.
+
 ## Current Execution Priority
 
 This is the authoritative order for open roadmap work. Phase and milestone
@@ -192,7 +205,18 @@ risk classification, summaries, console/Markdown rendering, and project-local
 persistence now share one independently tested package across CLI, dashboard,
 and daemon paths.
 
-1. **Continue MCP transport diagnosis when the defect reproduces.**
+1. **Ship the Local-Only Learning and Guarded Autonomy first release.**
+   - Priority: critical
+   - Why first: measured reliability, explicit authority, provenance, recovery,
+     and independent safe-stop controls are prerequisites for increasing daemon
+     autonomy or promoting learned behavior.
+   - Ordered slices: Reliability Suite baseline; calibrated autonomy and breaker
+     contract; provenance-first local memory; transactional recovery tests;
+     local proposal/evaluation/promotion loop; adversarial release gates.
+   - Exit gate: the smallest useful release satisfies the measurable criteria
+     in the Phase 6 roadmap and supporting design without enabling new external,
+     provider, production, or shared-definition mutation authority.
+2. **Continue MCP transport diagnosis when the defect reproduces.**
    - Operational priority: P0 interrupt on recurrence
    - Planned-work priority: blocked/external
    - Why conditional: existing repository mitigations and recovery receipts are
@@ -201,7 +225,7 @@ and daemon paths.
      more repository work is justified.
    - Exit gate: capture a reproducible client-side failure boundary or obtain a
      client/runtime fix; keep the documented CLI recovery path available.
-2. **Continue cohesive source-module extraction.**
+3. **Continue cohesive source-module extraction.**
    - Priority: medium
    - Why next: the first CLI, MCP, storage, reporting, and executor seams are
      established, while repository maintenance still reports five production
@@ -915,6 +939,231 @@ foundation is complete.
   - [x] Add dashboard visibility for backup inventory and restore-drill status.
   - [x] Provide documented recovery procedures and automated restore verification.
   - Follow-up: governed server mode owns registered-project routing and shared-runtime readiness.
+
+## Phase 6: Local-Only Learning And Guarded Autonomy
+
+Goal: make Agent Workflow a practical reliability and learning layer for
+increasingly capable agentic systems without claiming that Agent Workflow is
+AGI and without exporting private project intelligence or silently expanding
+authority. The detailed program contract is in
+[Local-Only Learning and Guarded Autonomy](local-only-learning-guarded-autonomy.md).
+
+Program invariants:
+
+- local-only by default: private source, prompts, feedback, receipts, artifacts,
+  memory, and eval cases do not leave the configured local state plane without
+  explicit approval;
+- learning produces evidence-backed proposals, never silent changes to shared
+  agents, workflows, providers, policies, source, or production systems;
+- model confidence is evidence, not authority;
+- authority is stage-scoped, policy-issued, bounded, observable, reversible
+  where possible, and human-overridable;
+- ambiguous evidence, stale or conflicting memory, missing policy, failed
+  verification, and unavailable breakers fail closed;
+- breaker activation preserves queues, work, memory, artifacts, and receipts.
+
+Priority order and dependencies: items 1–2 define the baseline and authority
+contract; item 3 supplies accountable context; item 4 proves execution and
+recovery semantics; item 5 may promote only against 1–4; item 6 independently
+enforces the safe-stop boundary; item 7 becomes a required release gate after
+those contracts exist.
+
+- [ ] Reliability Suite baseline.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: critical
+  - Progress: implementation started with a provider-neutral schema, seven
+    content-hashed synthetic fixtures, required metric-coverage semantics,
+    frozen-baseline construction, scrubbed aggregate export, an isolated
+    content-addressed evaluator process, and focused tests.
+    The first pre-execution snapshot is persisted with unavailable metrics
+    stated explicitly; executing isolated evaluators and accepting a measured
+    baseline remain.
+  - Scope: add reproducible local suites for feature delivery, debugging, PR
+    review, incident response, release readiness, context handoff, and
+    maintenance using deterministic, synthetic, or public fixtures plus hidden
+    acceptance checks.
+  - Measure outcome correctness, verification coverage, human review burden,
+    recovery and rollback success, policy/breaker interventions, unsafe-action
+    attempts, provider/model/version, cost, latency, context size, fallback
+    rate, and calibration between claimed confidence, issued authority, and
+    actual outcome.
+  - Acceptance: a versioned baseline manifest and frozen comparison result cover
+    every representative workflow; every metric reports measured, partial, or
+    unavailable rather than inventing zeroes; fixture hashes and evaluator
+    versions make runs reproducible; private cases remain project-local; a
+    scrubbed aggregate export passes redaction tests and contains no source,
+    prompts, private scoring, tenant paths, or artifact bodies.
+  - Promotion gate: no learned routing, prompt, context, workflow, agent-card,
+    or authority change may cite the suite until holdout separation, hidden
+    checks, minimum coverage, regression budgets, and evaluator-integrity tests
+    pass against a frozen baseline.
+  - Risks: benchmark overfitting, evaluator bias, provider drift, private-data
+    leakage, and misleading incomplete usage coverage.
+  - Rollback: pin the last accepted suite/baseline/evaluator hashes, invalidate
+    affected comparisons, and return all dependent promotions to proposal-only.
+
+- [ ] Calibrated autonomy ladder.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: critical
+  - Progress: version-one preview grant validation now binds requested, ceiling,
+    and issued levels, evidence/policy hashes, effect class, expiry, approval,
+    and breaker generations. Runtime stage integration remains.
+  - Dependency: Reliability Suite metric schema and baseline identity.
+  - Define one stage authority ladder: observe evidence; propose; simulate or
+    dry-run; take bounded reversible local action; request consequential-action
+    approval; execute only after approval and verification.
+  - Represent requested level, maximum policy level, issued level, issuer,
+    evidence/baseline hashes, expiry, budgets, reversibility, required approval,
+    verification, breaker state, and final consumed authority in workflow YAML,
+    immutable run snapshots, receipts, policies, CLI/API, and dashboards.
+  - Acceptance: model text or confidence cannot raise authority; lower layers
+    can only restrict it; every consequential action binds to an unexpired
+    policy-issued grant and verification requirement; advancement beyond the
+    current level requires Reliability Suite evidence and explicit policy
+    approval; dashboards and receipts explain requested, issued, consumed, and
+    denied authority.
+  - Risks: fragmented enforcement, implicit authority in legacy stages, stale
+    approvals, misleading confidence signals, and operational deadlock.
+  - Rollback: atomically reduce the affected scope to observe-only, revoke
+    outstanding authority tokens, preserve state, and require deliberate human
+    re-enable after policy and evidence review.
+
+- [ ] Provenance-first local memory.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: high
+  - Progress: version-one provenance claims and planning/action authorization
+    checks now deny expired, weak, cross-scope, stale, disputed, revoked, or
+    conflicting action evidence. Durable dependency propagation remains.
+  - Dependencies: authority contract and stable project/tenant identity.
+  - Extend each retained claim or decision with source kind and hash, project
+    and tenant scope, creation time, expiry/revalidation rule, evidence strength,
+    dependencies, conflicts, creator, and permitted use (`planning` or
+    `action`). Compact summaries retain references to underlying evidence.
+  - Acceptance: cross-project and cross-tenant reads are denied; expired,
+    conflicting, weak, missing-source, or planning-only memory cannot authorize
+    action; revalidation or human review is required before action use; source
+    mutation invalidates dependent claims; migration and retention tests preserve
+    provenance; exports remain local unless explicitly approved and scrubbed.
+  - Risks: provenance fan-out, false conflict detection, stale summaries,
+    excessive revalidation, and accidental scope broadening during migration.
+  - Rollback: disable action use of the new memory class, retain it as
+    read-only evidence, restore the prior schema snapshot, and invalidate derived
+    summaries without deleting their source records.
+
+- [ ] Transactional execution and recovery tests.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: high
+  - Progress: a fenced transaction receipt and validated transition contract
+    now reject stale lease generations, invalid transitions, and completion
+    without fresh passing verification. Executor integration and broader fault
+    injection remain.
+  - Dependencies: calibrated authority receipts and provenance checks.
+  - Standardize declared preconditions, simulation, idempotency, fenced leases,
+    checkpointed validated transitions, side-effect journals, verification,
+    rollback or compensation, terminal receipts, unresolved-risk reporting, and
+    ambiguity stop conditions across action-capable stages.
+  - Acceptance: fault-injection tests cover process interruption, duplicate
+    delivery, stale workers and approvals, provider retries, tool failures,
+    partial writes, verification failure, compensation failure, and invalid
+    recovery state; stale owners cannot commit; duplicates reuse durable results;
+    recovery never claims completion without fresh verification; every
+    irreversible effect is explicit and approval-gated.
+  - Risks: incomplete compensation, false idempotency, split-brain recovery,
+    hidden side effects, and verification coupled to the failing executor.
+  - Rollback: trip the narrowest breaker, stop new claims, preserve journals and
+    checkpoints, run only approved compensation, and resume from the last
+    verified checkpoint under a new fenced authority token.
+
+- [ ] Outcome-driven local learning promotion loop.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: high
+  - Progress: promotion evidence now enforces insufficient, recommendation-only,
+    canary-eligible, and blocked outcomes using the adopted sample, quality,
+    confidence, safety, recovery, policy, cost, and latency thresholds. Durable
+    candidate queues and canary execution remain.
+  - Dependencies: frozen Reliability Suite baseline, holdouts, authority
+    contract, provenance memory, and transactional receipts.
+  - Capture structured feedback at workflow, stage, agent, provider/model route,
+    context version, policy/authority version, and failure mode. Generate local
+    candidates for routing, prompts, context budgets, workflow shape, and agent
+    cards; compare each candidate to the frozen baseline on representative
+    holdouts; require measured benefit and no safety regression.
+  - Acceptance: recommendation and approval queues are default; automatic apply
+    is limited to policy-permitted low-risk project-owned local overlays; shared
+    assets require review, evaluation evidence, approval, source hash, promotion
+    receipt, canary window, and rollback receipt; degraded post-promotion
+    outcomes trip a breaker and restore the pinned baseline.
+  - Risks: feedback poisoning, correlated train/holdout cases, metric gaming,
+    local optimum lock-in, and promotion races.
+  - Rollback: restore the frozen baseline and prior overlay hash, quarantine the
+    candidate and derived memory, preserve comparison evidence, and require a
+    new evaluation before reconsideration.
+
+- [ ] Breaker controls and safe-stop architecture.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: critical
+  - Progress: version-one breaker records and pre-action authorization now fail
+    closed on unreadable state, reject stale generations, enforce observe-only
+    restrictions, and prevent preview grants from mutating state. Durable
+    distribution, trip receipts, lease revocation, and re-enable flows remain.
+  - Dependencies: calibrated authority grants, durable leases and receipts,
+    provenance checks, and Reliability Suite regression signals.
+  - Add global, project, workflow, agent, provider, and tool-class breakers with
+    policy enforcement outside model output and independently enforced token,
+    cost, time, retry, context, and side-effect budgets. Halt or quarantine on
+    repeated failures, failed verification, policy violations, anomalous tool
+    use, stale/conflicting memory, unexpected authority requests, or evaluation
+    regression.
+  - Acceptance: breaker fixtures prove execution stops even when an agent asks
+    to continue; each activation has a human-readable quarantine receipt;
+    activation preserves queues, work, memory, artifacts, and receipts; stale
+    workers cannot bypass the stop; restart is human-only and rechecks policy,
+    evidence freshness, budgets, and unresolved side effects.
+  - Risks: fail-open enforcement, breaker races, inconsistent distributed
+    state, alert storms, over-broad stops, stale restart approvals, and loss of
+    useful availability.
+  - Rollback: trip the narrowest reliable parent breaker, revoke affected
+    leases and authority grants, preserve all evidence and user work, and keep
+    the scope observe-only until a deliberate human re-enable succeeds.
+
+- [ ] Adversarial reliability and release gates.
+  - Milestone: 14 Local-Only Learning And Guarded Autonomy
+  - Priority: high
+  - Progress: a local-only synthetic suite now covers all eight required threat
+    classes, including attempts to continue after a stop, without network access
+    or private data. Executable assertions and CI release gating remain.
+  - Dependencies: authority, breaker, memory, transaction, and promotion
+    contracts implemented in testable form.
+  - Maintain synthetic fixtures for prompt injection, malicious repository
+    instructions, poisoned/stale memory, contradictory or replayed approvals,
+    secret exposure, cross-project leakage, misleading evaluator output, hostile
+    tool results, and agents that attempt to continue after a breaker.
+  - Acceptance: model output and retrieved project content are treated as
+    untrusted; hidden checks validate outcome rather than self-report; boundary
+    suites pass in CI with zero secret or cross-scope disclosure; release checks
+    block on safety regressions, missing breaker coverage, incomplete metric
+    coverage, or stale baselines; failures produce local quarantine evidence and
+    never upload fixture contents automatically.
+  - Risks: fixture leakage, adversarial overfitting, nondeterminism, excessive
+    false positives, and evaluator compromise.
+  - Rollback: block promotion/release, quarantine the affected evaluator or
+    candidate, pin the last passing gate set, and reduce affected autonomy to
+    observe-only until a human approves re-enable.
+
+Smallest useful first release:
+
+1. commit one versioned local Reliability Suite manifest with one synthetic case
+   for each of the seven representative workflows and a frozen baseline report;
+2. define the authority-and-breaker receipt schemas in preview/observe-only mode;
+3. add one provenance-rich memory claim fixture and one stale/conflict denial;
+4. add interruption, duplicate-action, stale-approval, and breaker-continuation
+   fault tests against existing lease/checkpoint/action-receipt primitives;
+5. produce proposal-only candidate comparison output with no automatic apply;
+6. make the resulting safety and redaction checks required before later phases
+   can promote autonomy.
+
+The first release does not change providers, call live models, enable external
+actions, mutate shared definitions, or grant new production authority.
 
 ## Roadmap Task And Bug Register
 

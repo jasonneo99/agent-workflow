@@ -1,4 +1,5 @@
 import { BedrockProvider } from "./bedrock.js";
+import { AnthropicProvider } from "./anthropic.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
 import { OpenAICompatibleProvider } from "./openai-compatible.js";
@@ -6,6 +7,8 @@ import { OpenAIProvider } from "./openai.js";
 import type { ModelProvider } from "./types.js";
 
 export * from "./local-routing-recommendations.js";
+export * from "./fallback.js";
+export * from "./execution.js";
 
 export function providerFromEnv(providerOverride?: string): ModelProvider {
   const provider = providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
@@ -20,6 +23,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "openai") {
     return new OpenAIProvider();
+  }
+
+  if (provider === "anthropic") {
+    return new AnthropicProvider();
   }
 
   if (provider === "openai-compatible") {
@@ -68,6 +75,9 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.OPENAI_API_KEY) {
     return "openai";
+  }
+  if (process.env.ANTHROPIC_API_KEY) {
+    return "anthropic";
   }
   if (process.env.OPENAI_COMPATIBLE_BASE_URL) {
     return "openai-compatible";

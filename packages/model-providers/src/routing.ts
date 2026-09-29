@@ -1,5 +1,6 @@
 import type { ModelTier, StageExecutionInput } from "./types.js";
 import { providerFromEnv } from "./index.js";
+import { inferModelTaskClass, type ModelTaskClass } from "./catalog.js";
 
 export interface ModelRouteDecision {
   providerId: string;
@@ -19,6 +20,7 @@ const readinessCache = new Map<string, Promise<ProviderReadiness>>();
 
 export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTier" | "providerOverride" | "agentId" | "stageId" | "workflowId" | "compiledBrief">): Promise<ModelRouteDecision> {
   const requestedModelTier = input.modelTier ?? "standard";
+  const taskClass = inferModelTaskClass({ ...input, stageGoal: input.compiledBrief.slice(0, 500) });
   const preference = inferPreferenceTuning(input.compiledBrief);
   const defaultProvider = input.providerOverride ?? process.env.DEFAULT_MODEL_PROVIDER ?? "mock";
   const mode = defaultProvider === "auto" ? "auto" : process.env.AGENTFLOW_ROUTING_MODE === "fixed" ? "fixed" : "adaptive";
@@ -29,7 +31,7 @@ export async function selectModelRoute(input: Pick<StageExecutionInput, "modelTi
   const approvedLocalRoute = mode !== "fixed" && modelTier === "fast" && preference.localHoldoutPromotion.approved
     ? await selectApprovedLocalRoute(preference.localHoldoutPromotion)
     : undefined;
-  const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider) : undefined;
+  const autoRoute = mode === "auto" ? await selectAutoProvider(modelTier, explicitTierProvider, taskClass) : undefined;
   const providerId = mode === "fixed"
     ? defaultProvider
     : approvedLocalRoute?.providerId ?? autoRoute?.providerId ?? tierProvider ?? defaultProvider;
@@ -78,7 +80,7 @@ async function selectApprovedLocalRoute(promotion: LocalHoldoutPreference): Prom
   };
 }
 
-async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: string): Promise<{ providerId: string; reason: string }> {
+async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: string, taskClass: ModelTaskClass = "general"): Promise<{ providerId: string; reason: string }> {
   if (explicitTierProvider && explicitTierProvider !== "auto") {
     return {
       providerId: explicitTierProvider,
@@ -86,7 +88,7 @@ async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: s
     };
   }
 
-  const candidates = autoProviderCandidates(modelTier);
+  const candidates = autoProviderCandidates(modelTier, taskClass);
   const checked: string[] = [];
   for (const providerId of candidates) {
     const readiness = await getProviderReadiness(providerId);
@@ -105,19 +107,33 @@ async function selectAutoProvider(modelTier: ModelTier, explicitTierProvider?: s
   };
 }
 
-function autoProviderCandidates(modelTier: ModelTier): string[] {
+function autoProviderCandidates(modelTier: ModelTier, taskClass: ModelTaskClass = "general"): string[] {
   const configured = splitProviderList(process.env.AGENTFLOW_AUTO_PROVIDERS);
-  if (configured.length) {
-    return unique([...configured, "mock"]);
-  }
+  const preferred = providerPreference(modelTier, taskClass);
+  if (configured.length) return [...preferred.filter((provider) => configured.includes(provider)), ...configured.filter((provider) => !preferred.includes(provider)), "mock"];
+  return [...preferred, "mock"];
+}
 
+function providerPreference(modelTier: ModelTier, taskClass: ModelTaskClass): string[] {
   if (modelTier === "fast") {
-    return ["local", "byo", "bedrock", "openai-compatible", "openai", "kiro", "mock"];
+    return ["local", "byo", "anthropic", "openai", "bedrock", "openai-compatible", "kiro"];
   }
   if (modelTier === "reasoning") {
-    return ["openai", "bedrock", "byo", "local", "openai-compatible", "kiro", "mock"];
+    return taskClass === "review"
+      ? ["anthropic", "openai", "bedrock", "byo", "local", "openai-compatible", "kiro"]
+      : ["openai", "anthropic", "bedrock", "byo", "local", "openai-compatible", "kiro"];
   }
-  return ["local", "byo", "bedrock", "openai", "openai-compatible", "kiro", "mock"];
+  if (taskClass === "coding") return ["openai", "anthropic", "bedrock", "byo", "local", "openai-compatible", "kiro"];
+  if (taskClass === "review" || taskClass === "reasoning") return ["anthropic", "openai", "bedrock", "byo", "local", "openai-compatible", "kiro"];
+  return ["local", "byo", "anthropic", "openai", "bedrock", "openai-compatible", "kiro"];
+}
+
+export function providerFallbackCandidates(primaryProviderId: string, modelTier: ModelTier): string[] {
+  const explicitFallback = process.env.AGENTFLOW_FALLBACK_PROVIDER?.trim();
+  return unique([
+    ...(explicitFallback ? [explicitFallback] : []),
+    ...autoProviderCandidates(modelTier)
+  ]).filter((providerId) => providerId !== primaryProviderId && providerId !== "auto" && providerId !== "mock");
 }
 
 function splitProviderList(value?: string): string[] {

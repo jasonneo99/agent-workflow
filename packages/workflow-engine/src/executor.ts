@@ -2,11 +2,9 @@ import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
-import { providerFromEnv } from "../../model-providers/src/index.js";
-import { scoreStageOutput } from "../../model-providers/src/quality.js";
-import { selectModelRoute } from "../../model-providers/src/routing.js";
 import type { StageExecutionInput } from "../../model-providers/src/types.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
+import { executeRoutedModelStage } from "./model-execution.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
@@ -75,28 +73,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.completed += 1;
         continue;
       }
-      const route = await selectModelRoute(stageInput);
-      const routedStageInput = {
-        ...stageInput,
-        modelTier: route.modelTier
-      };
-      let provider = providerFromEnv(route.providerId);
       const startedAt = Date.now();
-      let output = await provider.executeStage(routedStageInput);
-      let quality = scoreStageOutput(routedStageInput, output);
-      const fallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
-      let fallbackUsed = false;
-
-      if (!quality.passed && fallbackProviderId && fallbackProviderId !== route.providerId) {
-        provider = providerFromEnv(fallbackProviderId);
-        const fallbackOutput = await provider.executeStage(routedStageInput);
-        const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
-        if (fallbackQuality.score >= quality.score) {
-          output = fallbackOutput;
-          quality = fallbackQuality;
-          fallbackUsed = true;
-        }
-      }
+      const { route, output, quality, fallbackProviderId, fallbackUsed } = await executeRoutedModelStage(stageInput);
 
       await recordRunAction({
         runId: task.runId,

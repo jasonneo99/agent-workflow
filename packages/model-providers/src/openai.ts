@@ -11,7 +11,8 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 import type { ModelTier } from "./types.js";
-import { selectModelFromCatalog } from "./catalog.js";
+import { inferModelTaskClass, rankModelsFromCatalog, selectModelFromCatalog, type ModelTaskClass } from "./catalog.js";
+import { classifyModelAttemptFailure, modelCandidatesExhaustedError, type ModelAttemptFailure } from "./fallback.js";
 
 const OPENAI_AUTO_MODEL = "auto";
 
@@ -39,6 +40,14 @@ export async function resolveOpenAIModelForTier(tier: ModelTier | undefined): Pr
     throw new Error("OPENAI_MODEL=auto could not select a model because the OpenAI model catalog was empty or unavailable.");
   }
   return { model: selected, source: "catalog" };
+}
+
+export async function resolveOpenAIModelCandidatesForTier(tier: ModelTier | undefined, taskClass: ModelTaskClass = "general"): Promise<string[]> {
+  const configured = configuredOpenAIModelForTier(tier);
+  if (configured !== OPENAI_AUTO_MODEL) return [configured];
+  const candidates = rankModelsFromCatalog(await loadOpenAIModelCatalog(), tier ?? "standard", { provider: "openai", taskClass });
+  if (!candidates.length) throw new Error("OPENAI_MODEL=auto could not select a model because the OpenAI model catalog was empty or unavailable.");
+  return candidates;
 }
 
 export function selectOpenAIModelFromCatalog(modelIds: string[], tier: ModelTier): string | undefined {
@@ -102,9 +111,12 @@ export class OpenAIProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model } = await resolveOpenAIModelForTier(input.modelTier);
-    const response = await this.client.responses.create({
-      model,
+    const candidates = await resolveOpenAIModelCandidatesForTier(input.modelTier, inferModelTaskClass(input));
+    const attempts: ModelAttemptFailure[] = [];
+    for (const [index, model] of candidates.entries()) {
+      try {
+        const response = await this.client.responses.create({
+          model,
       input: [
         {
           role: "system",
@@ -156,16 +168,24 @@ export class OpenAIProvider implements ModelProvider {
           strict: true
         }
       }
-    });
-
-    const parsed = normalizeStageArtifact(extractJsonObject(response.output_text) as StageJsonArtifact);
-
-    return { ...buildStageExecutionOutput(input, parsed, {
-        provider: this.id,
-        model,
-        modelTier: input.modelTier ?? "standard",
-        responseId: response.id
-    }), usage: { inputTokens: response.usage?.input_tokens, outputTokens: response.usage?.output_tokens, totalTokens: response.usage?.total_tokens } };
+        });
+        const parsed = normalizeStageArtifact(extractJsonObject(response.output_text) as StageJsonArtifact);
+        return { ...buildStageExecutionOutput(input, parsed, {
+            provider: this.id,
+            model,
+            modelTier: input.modelTier ?? "standard",
+            responseId: response.id
+          }), usage: { inputTokens: response.usage?.input_tokens, outputTokens: response.usage?.output_tokens, totalTokens: response.usage?.total_tokens },
+          modelAttempts: attempts.map(({ providerId, model: failedModel, status, category }) => ({ providerId, model: failedModel, status, category })) };
+      } catch (error) {
+        const failure = classifyModelAttemptFailure(error, this.id, model);
+        attempts.push(failure);
+        if (!failure.retryNextModel || index === candidates.length - 1) {
+          throw modelCandidatesExhaustedError(this.id, attempts, error);
+        }
+      }
+    }
+    throw new Error("OpenAI model candidate list was unexpectedly empty.");
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {

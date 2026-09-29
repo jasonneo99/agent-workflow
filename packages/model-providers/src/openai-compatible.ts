@@ -10,7 +10,8 @@ import {
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
-import { selectModelFromCatalog } from "./catalog.js";
+import { inferModelTaskClass, rankModelsFromCatalog, selectModelFromCatalog, type ModelTaskClass } from "./catalog.js";
+import { classifyModelAttemptFailure, modelCandidatesExhaustedError, type ModelAttemptFailure } from "./fallback.js";
 import type { ModelTier } from "./types.js";
 
 const AUTO_MODEL = "auto";
@@ -74,9 +75,12 @@ export class OpenAICompatibleProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model } = await this.resolveModelForTier(input.modelTier);
-    const response = await this.client.chat.completions.create({
-      model,
+    const candidates = await this.resolveModelCandidatesForTier(input.modelTier, inferModelTaskClass(input));
+    const attempts: ModelAttemptFailure[] = [];
+    for (const [index, model] of candidates.entries()) {
+      try {
+        const response = await this.client.chat.completions.create({
+          model,
       messages: [
         {
           role: "system",
@@ -93,16 +97,22 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ],
       response_format: { type: "json_object" },
       temperature: 0.2
-    });
-
-    const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
-
-    return { ...buildStageExecutionOutput(input, parsed, {
-        provider: this.id,
-        model,
-        modelTier: input.modelTier ?? "standard",
-        responseId: response.id
-    }), usage: { inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens, totalTokens: response.usage?.total_tokens } };
+        });
+        const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
+        return { ...buildStageExecutionOutput(input, parsed, {
+            provider: this.id,
+            model,
+            modelTier: input.modelTier ?? "standard",
+            responseId: response.id
+          }), usage: { inputTokens: response.usage?.prompt_tokens, outputTokens: response.usage?.completion_tokens, totalTokens: response.usage?.total_tokens },
+          modelAttempts: attempts.map(({ providerId, model: failedModel, status, category }) => ({ providerId, model: failedModel, status, category })) };
+      } catch (error) {
+        const failure = classifyModelAttemptFailure(error, this.id, model);
+        attempts.push(failure);
+        if (!failure.retryNextModel || index === candidates.length - 1) throw modelCandidatesExhaustedError(this.id, attempts, error);
+      }
+    }
+    throw new Error(`${this.id} model candidate list was unexpectedly empty.`);
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
@@ -169,6 +179,14 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return { model: selected, source: "catalog" };
   }
 
+  private async resolveModelCandidatesForTier(tier: ModelTier | undefined, taskClass: ModelTaskClass = "general"): Promise<string[]> {
+    const configured = this.configuredModelForTier(tier);
+    if (configured !== AUTO_MODEL) return [configured];
+    const candidates = rankModelsFromCatalog(await this.loadModelCatalog(), tier ?? "standard", { provider: "compatible", taskClass });
+    if (!candidates.length) throw new Error(`${this.modelEnv}=auto could not select a model because the endpoint model catalog was empty or unavailable.`);
+    return candidates;
+  }
+
   private async loadModelCatalog(): Promise<string[]> {
     const cacheKey = `${this.id}:${this.baseURL}:${this.modelEnv}`;
     let cached = compatibleCatalogCache.get(cacheKey);
@@ -181,6 +199,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
     return cached;
   }
 }
+
 
 export function openAICompatibleConfigStatus(): { ready: boolean; details: string[] } {
   const details: string[] = [];

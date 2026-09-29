@@ -34,6 +34,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `local` | On-machine Ollama, LM Studio, or llama.cpp-compatible runtime | optional `LOCAL_MODEL_BASE_URL`, optional `LOCAL_MODEL_NAME`, optional `LOCAL_MODEL_API_KEY` |
 | `byo` | Bring your own hosted or enterprise model gateway | `BYO_MODEL_BASE_URL`, optional `BYO_MODEL_NAME`, optional `BYO_MODEL_API_KEY` |
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
+| `anthropic` | Direct Anthropic Claude Messages API execution | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
 | `bedrock` | AWS Bedrock models | AWS credentials, optional `BEDROCK_MODEL`, `AWS_REGION` |
 | `kiro` | Optional Kiro CLI adapter | Kiro CLI login or `KIRO_API_KEY`, optional `KIRO_AGENT` |
@@ -44,7 +45,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,openai,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,anthropic,bedrock,openai,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding
@@ -88,6 +89,11 @@ BEDROCK_MODEL=auto
 BEDROCK_MODEL_FAST=
 BEDROCK_MODEL_STANDARD=
 BEDROCK_MODEL_REASONING=
+
+ANTHROPIC_MODEL=auto
+ANTHROPIC_MODEL_FAST=
+ANTHROPIC_MODEL_STANDARD=
+ANTHROPIC_MODEL_REASONING=
 ```
 
 For catalog-backed providers, `MODEL=auto` refreshes the provider model list
@@ -97,6 +103,23 @@ their `/models` endpoint, and Bedrock uses `ListFoundationModels` for the
 configured AWS region. This lets new model releases appear in the dashboard and
 route selection without a package update. Pin per-tier model variables only
 when you need exact run reproducibility.
+
+Auto selection keeps every eligible text-generation model in a ranked candidate
+pool rather than discarding everything except the first choice. Tier fit remains
+the primary signal so fast stages favor low-latency models and reasoning stages
+favor stronger reasoning models; workflow, stage, and agent intent then prefer
+coding, review, or reasoning-specialized families. If a candidate returns a
+funding, quota, model-access, unsupported-model, or availability 4xx response,
+the provider tries the next ranked model. Authentication failures and ordinary
+malformed requests do not fan out across the catalog.
+
+When a catalog-backed provider exhausts its eligible models for one of those
+availability reasons, auto routing checks the remaining providers allowed by
+`AGENTFLOW_AUTO_PROVIDERS` in task- and tier-appropriate order. Unconfigured or
+unhealthy providers are skipped, `mock` is never used as a live fallback, and
+receipts retain bounded model and provider attempt evidence. Set
+`AGENTFLOW_FALLBACK_PROVIDER` to put a specific live provider first in the
+fallback order.
 
 `AGENTFLOW_MODEL_POLICY` controls how catalog-backed providers choose among
 available models:
@@ -115,7 +138,11 @@ and reasoning choices with provider availability, override source, estimated
 cost class, policy score, tier fit, and top ranked candidates. The matching JSON
 endpoint is `/api/model-catalog`.
 
-Each worker stage records a `model_route` receipt with the selected provider, requested tier, routed tier, estimated cost tier, latency, quality score, and fallback usage. Low-quality outputs can retry through `AGENTFLOW_FALLBACK_PROVIDER`.
+Each worker stage records a `model_route` receipt with the selected provider,
+requested tier, routed tier, estimated cost tier, latency, quality score,
+fallback usage, and bounded failed-attempt evidence. Low-quality outputs can
+still retry through `AGENTFLOW_FALLBACK_PROVIDER` independently of
+availability-driven fallback.
 
 When prior project feedback includes revised or rejected runs, Agent Workflow adds compact preference notes to the compiled brief and conservatively promotes fast stages to standard. The quality report shows both the requested tier and the routed tier so the tuning remains auditable.
 

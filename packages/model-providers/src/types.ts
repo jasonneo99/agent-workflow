@@ -39,6 +39,12 @@ export interface StageExecutionOutput {
     path: string;
     content: string;
   }>;
+  modelAttempts?: Array<{
+    providerId: string;
+    model: string;
+    status: number | null;
+    category: string;
+  }>;
 }
 
 export interface FileSummaryInput {

@@ -11,7 +11,8 @@ import {
   type FileSummaryJsonArtifact,
   type StageJsonArtifact
 } from "./prompts.js";
-import { selectModelFromCatalog } from "./catalog.js";
+import { inferModelTaskClass, rankModelsFromCatalog, selectModelFromCatalog, type ModelTaskClass } from "./catalog.js";
+import { classifyModelAttemptFailure, modelCandidatesExhaustedError, type ModelAttemptFailure } from "./fallback.js";
 
 const AUTO_MODEL = "auto";
 
@@ -83,24 +84,32 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
-    const { model: modelForStage } = await this.resolveModelForTier(input.modelTier);
-    const text = await this.converseJson({
-      system: [
-        "You are executing one stage in a durable agent workflow.",
-        "Return one valid JSON object only.",
-        "Do not claim that files, commands, or external systems changed unless the stage input explicitly includes that evidence."
-      ].join(" "),
-      prompt: buildStagePrompt(input),
-      temperature: 0.2,
-      modelOverride: modelForStage
-    });
-    const parsed = normalizeStageArtifact(extractJsonObject(text) as StageJsonArtifact);
-
-    return buildStageExecutionOutput(input, parsed, {
-        provider: this.id,
-        model: modelForStage,
-        modelTier: input.modelTier ?? "standard"
-    });
+    const candidates = await this.resolveModelCandidatesForTier(input.modelTier, inferModelTaskClass(input));
+    const attempts: ModelAttemptFailure[] = [];
+    for (const [index, modelForStage] of candidates.entries()) {
+      try {
+        const text = await this.converseJson({
+          system: [
+            "You are executing one stage in a durable agent workflow.",
+            "Return one valid JSON object only.",
+            "Do not claim that files, commands, or external systems changed unless the stage input explicitly includes that evidence."
+          ].join(" "),
+          prompt: buildStagePrompt(input),
+          temperature: 0.2,
+          modelOverride: modelForStage
+        });
+        const parsed = normalizeStageArtifact(extractJsonObject(text) as StageJsonArtifact);
+        return {
+          ...buildStageExecutionOutput(input, parsed, { provider: this.id, model: modelForStage, modelTier: input.modelTier ?? "standard" }),
+          modelAttempts: attempts.map(({ providerId, model, status, category }) => ({ providerId, model, status, category }))
+        };
+      } catch (error) {
+        const failure = classifyModelAttemptFailure(error, this.id, modelForStage);
+        attempts.push(failure);
+        if (!failure.retryNextModel || index === candidates.length - 1) throw modelCandidatesExhaustedError(this.id, attempts, error);
+      }
+    }
+    throw new Error(`${this.id} model candidate list was unexpectedly empty.`);
   }
 
   async summarizeFile(input: FileSummaryInput): Promise<FileSummaryOutput> {
@@ -174,12 +183,20 @@ export class BedrockProvider implements ModelProvider {
     return { model: selected, source: "catalog" };
   }
 
+  private async resolveModelCandidatesForTier(tier: ModelTier | undefined, taskClass: ModelTaskClass = "general"): Promise<string[]> {
+    const configured = tier ? configuredModelForTier(tier, this.model) : this.model;
+    if (configured !== AUTO_MODEL) return [configured];
+    const candidates = rankModelsFromCatalog(await this.loadModelCatalog(), tier ?? "standard", { provider: "bedrock", taskClass });
+    return candidates.length ? candidates : [defaultModelTiers[tier ?? "standard"]];
+  }
+
   private async loadModelCatalog(): Promise<string[]> {
     const response = await this.controlClient.send(new ListFoundationModelsCommand({}));
     return [...new Set(response.modelSummaries?.map((model) => model.modelId).filter((modelId): modelId is string => Boolean(modelId)) ?? [])]
       .sort((a, b) => a.localeCompare(b));
   }
 }
+
 
 function providerRecoveryHints(providerId: string, message: string): string[] {
   if (!isCredentialError(message)) {
