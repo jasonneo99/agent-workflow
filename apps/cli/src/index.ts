@@ -42330,6 +42330,8 @@ type TrainingProposalEvaluationView = {
   summary: string | null;
   artifactUri: string | null;
   evidenceHref: string | null;
+  recoveryRunId: string | null;
+  recoveryStatus: string | null;
 };
 
 function trainingEvaluationVerdict(summary: string | null | undefined): "PASS" | "FAIL" | "INCONCLUSIVE" | null {
@@ -42352,12 +42354,15 @@ async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox,
     const measuredPath = projectDir ? path.join(projectDir, ".agent-workflow", "evaluations", item.id.replace(/[^a-zA-Z0-9._-]+/gu, "-"), "measured-holdout.json") : null;
     const measured = measuredPath ? await fs.readFile(measuredPath, "utf8").then((value) => JSON.parse(value) as { verdict?: string; measuredObservations?: number; plannedObservations?: number; failures?: string[] }).catch(() => null) : null;
     const summary = measured?.verdict ? `${measured.verdict}: measured ${measured.measuredObservations ?? 0}/${measured.plannedObservations ?? 0} blinded observations.${measured.failures?.length ? ` ${measured.failures.join(" ")}` : ""}` : runSummary;
+    const recoveryRunId = details.run?.replacementRunId ?? null;
     return [item.id, {
       runId,
       status: details.run?.status ?? "missing",
       summary: summary?.slice(0, 600) ?? null,
       artifactUri: finalArtifact?.uri ?? null,
-      evidenceHref: measured ? `/api/training-holdout-evidence?project=${encodeURIComponent(projectDir ?? "")}&id=${encodeURIComponent(item.id)}` : null
+      evidenceHref: measured ? `/api/training-holdout-evidence?project=${encodeURIComponent(projectDir ?? "")}&id=${encodeURIComponent(item.id)}` : null,
+      recoveryRunId,
+      recoveryStatus: recoveryRunId ? details.run?.replacementRunStatus ?? "unavailable" : null
     }] as const;
   }));
   return new Map(entries);
@@ -42393,7 +42398,8 @@ function renderTrainingProposalActions(item: TrainingProposalInbox["items"][numb
   const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
   const evaluationForm = (label: string) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-evaluation">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
   const verdict = trainingEvaluationVerdict(evaluation?.summary);
-  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">View evaluation run ${escapeHtml(evaluation.runId.slice(0, 8))}</a>${evaluation.evidenceHref ? ` · <a href="${escapeHtml(evaluation.evidenceHref)}">Measured evidence JSON</a>` : ""}<br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(verdict ?? evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
+  const recovery = evaluation?.recoveryRunId ? `<br><span class="muted">Recovery follow-up: <a href="/run?id=${encodeURIComponent(evaluation.recoveryRunId)}">${escapeHtml(evaluation.recoveryRunId.slice(0, 8))}</a> · ${escapeHtml(evaluation.recoveryStatus ?? "unavailable")}. A completed recovery does not replace a missing evaluation verdict.</span>` : "";
+  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">View evaluation run ${escapeHtml(evaluation.runId.slice(0, 8))}</a>${evaluation.evidenceHref ? ` · <a href="${escapeHtml(evaluation.evidenceHref)}">Measured evidence JSON</a>` : ""}<br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(verdict ?? evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}${recovery}</p>` : "";
   if (item.status === "pending") {
     return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
   }
@@ -42405,7 +42411,7 @@ function renderTrainingProposalActions(item: TrainingProposalInbox["items"][numb
       return `<p><strong>Evaluation evidence ready</strong><br><span class="muted">Review the linked run, then accept its generated evidence.</span></p>${evidence}<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<button name="status" value="evaluated" type="submit">Accept evaluation result</button></form>`;
     }
     if (["failed", "blocked", "cancelled", "missing"].includes(evaluation.status)) {
-      return `<p><strong>Evaluation needs attention</strong><br><span class="muted">The linked run did not produce accepted evidence.</span></p>${evidence}${evaluationForm("Retry evaluation")}`;
+      return `<p><strong>Evaluation needs attention</strong><br><span class="muted">The evaluation did not produce an accepted PASS, FAIL, or INCONCLUSIVE verdict. A successful recovery follow-up only proves the recovery workflow completed.</span></p>${evidence}${evaluationForm("Retry evaluation")}`;
     }
     return `<p><strong>Evaluation in progress</strong><br><span class="muted">Evidence will appear here when the linked run reaches a truthful terminal state.</span></p>${evidence}`;
   }

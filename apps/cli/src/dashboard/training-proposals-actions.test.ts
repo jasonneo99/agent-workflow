@@ -11,6 +11,8 @@ test("training proposal actions launch linked evaluations and advance only from 
   assert.match(actions, /evaluation\.status === "completed"[\s\S]+Accept evaluation result/u);
   assert.match(actions, /Evaluation in progress/u);
   assert.match(actions, /Retry evaluation/u);
+  assert.match(actions, /A completed recovery does not replace a missing evaluation verdict/u);
+  assert.match(actions, /successful recovery follow-up only proves the recovery workflow completed/u);
   assert.match(actions, /item\.status === "evaluated"[\s\S]+not promotion eligible[\s\S]+Record promotion decision/u);
   assert.match(actions, /item\.status === "promoted"[\s\S]+No further inbox action is required/u);
   assert.doesNotMatch(actions.slice(actions.indexOf('item.status === "approved"'), actions.indexOf('item.status === "evaluated"')), /Approve evaluation/u);
