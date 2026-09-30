@@ -1,0 +1,88 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "agent-workflow",
+  "version": "0.3.0",
+  "description": "Run governed Agent Workflow agents and workflows from any local Codex project, with Agent Workflow Studio as an optional companion interface.",
+  "author": {
+    "name": "Agent Workflow Contributors"
+  },
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Agent Workflow",
+        "shortDescription": "Governed workflows in Codex",
+        "longDescription": "Use portable development agents, project-local context, approvals, receipts, run history, and optional Agent Workflow Studio views from any trusted Codex project.",
+        "developerName": "Agent Workflow Contributors",
+        "category": "Productivity",
+        "websiteURL": "https://github.com/jasonneo99/agent-workflow/tree/master/plugins/agent-workflow",
+        "supportURL": "https://github.com/jasonneo99/agent-workflow/issues",
+        "privacyPolicyURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/PRIVACY.md",
+        "termsOfServiceURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/TERMS.md",
+        "logo": "./assets/agent-workflow-logo.png",
+        "composerIcon": "./assets/agent-workflow-logo.png",
+        "capabilities": [
+          "Interactive",
+          "Write"
+        ],
+        "defaultPrompt": [
+          "Use Agent Workflow to orchestrate this project.",
+          "Onboard this project into Agent Workflow.",
+          "Open the Agent Workflow Studio view for this project."
+        ]
+      },
+      "review": {
+        "test_cases": {
+          "positive": [
+            {
+              "description": "Check local Agent Workflow service and definition readiness without changing the project.",
+              "prompt": "Check whether Agent Workflow is ready for this project.",
+              "tools_triggered": "agentflow_doctor",
+              "expected_behavior": "Reports storage, provider, definitions, and project readiness from the tool response without claiming unavailable services are healthy."
+            },
+            {
+              "description": "Discover the reusable agents and workflows available to the active project.",
+              "prompt": "Show me the Agent Workflow agents and workflows I can use here.",
+              "tools_triggered": "agentflow_list",
+              "expected_behavior": "Returns the registered agents and workflows and distinguishes shared definitions from project-local definitions."
+            },
+            {
+              "description": "Index a configured local project so later workflow runs use compact project context.",
+              "prompt": "Index this project with Agent Workflow using a compact first pass.",
+              "tools_triggered": "agentflow_index_project",
+              "expected_behavior": "Targets the active local project, respects its project policy, and reports indexed file and summary evidence."
+            },
+            {
+              "description": "Run one named specialist rather than an unnecessarily broad workflow.",
+              "prompt": "Have the UX reviewer inspect this project's current experience and summarize the findings.",
+              "tools_triggered": "agentflow_agent_task",
+              "expected_behavior": "Runs the UX reviewer against the active project and returns the specialist result, artifacts, or an explicit configuration blocker."
+            },
+            {
+              "description": "Inspect recent workflow state and report terminal evidence accurately.",
+              "prompt": "Summarize the latest Agent Workflow run for this project.",
+              "tools_triggered": "agentflow_status",
+              "expected_behavior": "Reports the latest run status and identifiers from tool evidence without inventing completion or duplicating the run."
+            }
+          ],
+          "negative": [
+            {
+              "description": "Unrelated general-information requests should not invoke project workflow tools.",
+              "prompt": "What is the weather tomorrow?"
+            },
+            {
+              "description": "The plugin must not claim it can purchase products or complete payments.",
+              "prompt": "Buy the first laptop you find for me."
+            },
+            {
+              "description": "The local plugin must not claim access to an unspecified private remote repository.",
+              "prompt": "Review my coworker's private repository that is not available on this machine."
+            }
+          ]
+        }
+      },
+      "publication": {
+        "release_notes": "Initial public Git marketplace package with a pinned, checksum-verified Agent Workflow runtime, cross-project Codex skill, and square and horizontal brand assets."
+      }
+    }
+  }
+}

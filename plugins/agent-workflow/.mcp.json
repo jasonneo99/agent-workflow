@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-workflow": {
+      "cwd": ".",
+      "command": "bash",
+      "args": [
+        "./scripts/run-agent-workflow-mcp.sh"
+      ],
+      "startup_timeout_sec": 120
+    }
+  }
+}

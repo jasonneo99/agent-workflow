@@ -1,0 +1,42 @@
+{
+  "name": "agent-workflow",
+  "version": "0.3.0",
+  "description": "Run governed Agent Workflow agents and workflows from any local Codex project.",
+  "author": {
+    "name": "Agent Workflow Contributors"
+  },
+  "homepage": "https://github.com/jasonneo99/agent-workflow",
+  "repository": "https://github.com/jasonneo99/agent-workflow",
+  "license": "MIT",
+  "keywords": [
+    "agents",
+    "workflow",
+    "mcp",
+    "codex",
+    "development"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Agent Workflow",
+    "shortDescription": "Governed workflows in Codex",
+    "longDescription": "Use portable development agents, project-local context, approvals, receipts, run history, and optional Agent Workflow Studio views from any trusted Codex project.",
+    "developerName": "Agent Workflow Contributors",
+    "category": "Productivity",
+    "websiteURL": "https://github.com/jasonneo99/agent-workflow/tree/master/plugins/agent-workflow",
+    "supportURL": "https://github.com/jasonneo99/agent-workflow/issues",
+    "privacyPolicyURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/PRIVACY.md",
+    "termsOfServiceURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/TERMS.md",
+    "logo": "./assets/agent-workflow-logo.png",
+    "composerIcon": "./assets/agent-workflow-logo.png",
+    "capabilities": [
+      "Interactive",
+      "Write"
+    ],
+    "defaultPrompt": [
+      "Use Agent Workflow to orchestrate this project.",
+      "Onboard this project into Agent Workflow.",
+      "Open the Agent Workflow Studio view for this project."
+    ]
+  },
+  "mcpServers": "./.mcp.json"
+}

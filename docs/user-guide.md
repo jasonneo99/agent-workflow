@@ -396,7 +396,23 @@ script path. Use `/api/storage-migrations` for the same metadata as JSON.
 
 ## 3b. Optional Codex Plugin
 
-Agent Workflow is packaged as a personal Codex plugin. Install or reinstall it with:
+Agent Workflow includes a portable local Codex plugin source at
+`plugins/agent-workflow`. It exposes the same Agent Workflow MCP server and
+skill from any trusted Codex project; Agent Workflow Studio remains an optional
+companion UI over that same headless engine.
+
+Distribution packages are self-contained: they include a pinned compiled npm
+runtime and production dependencies. Users do not need an Agent Workflow clone,
+global npm installation, or first-run `npx` download. Node.js 24 or newer is
+still required. Maintainers refresh the generated runtime from the explicit
+`plugins/agent-workflow/runtime-version.json` npm pin before packaging with:
+
+```bash
+node plugins/agent-workflow/scripts/bundle-runtime.mjs
+```
+
+Register a local marketplace entry that points at `plugins/agent-workflow`, then
+install or reinstall the plugin with:
 
 ```bash
 /Applications/ChatGPT.app/Contents/Resources/codex plugin add agent-workflow@personal
@@ -406,6 +422,8 @@ Then start a new Codex task or restart Codex so the plugin skill and MCP tools a
 
 The plugin provides:
 
+- Portable manifest: `<plugin-root>/plugin.json`
+- Portable MCP manifest: `<plugin-root>/mcp.json`
 - Codex skill: `<plugin-root>/skills/agent-workflow/SKILL.md`
 - MCP launcher: `<plugin-root>/scripts/run-agent-workflow-mcp.sh`
 - MCP manifest: `<plugin-root>/.mcp.json`
