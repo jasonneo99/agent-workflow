@@ -11,6 +11,9 @@ test("studio renders the task-first governed workflow surface", () => {
   const html = renderStudioHtml({ workflows, defaultProject: "templates/project" });
 
   assert.match(html, /Agent Workflow Studio/);
+  assert.match(html, /href="\/assets\/agent-workflow-favicon\.png"/);
+  assert.match(html, /src="\/assets\/agent-workflow-mark\.png"/);
+  assert.doesNotMatch(html, /class="brand-mark"/);
   assert.match(html, /id="stage-strip"/);
   assert.match(html, /Changes/);
   assert.match(html, /Tests/);

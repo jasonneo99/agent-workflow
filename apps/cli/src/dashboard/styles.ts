@@ -65,8 +65,11 @@ export function dashboardCss(): string {
     .side-nav a:hover, .side-nav a.active { color: white; background: #1f2937; border-color: #334155; }
     .side-nav a:hover .icon, .side-nav a.active .icon { color: #93c5fd; }
     .human-nav { padding: 24px 16px; gap: 24px; }
-    .nav-brand { display: flex; align-items: center; justify-content: space-between; min-height: 36px; }
-    .nav-brand strong { font-size: 17px; letter-spacing: -.02em; }
+    .nav-brand { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; }
+    .side-nav .nav-brand-link { min-width: 0; min-height: 40px; padding: 2px 0; border: 0; gap: 8px; }
+    .side-nav .nav-brand-link:hover { border-color: transparent; background: transparent; }
+    .nav-brand-link img { width: 34px; height: 34px; flex: 0 0 34px; object-fit: contain; }
+    .nav-brand strong { font-size: 14px; letter-spacing: -.02em; line-height: 1.05; }
     .nav-brand-actions { display: flex; align-items: center; gap: 6px; }
     .theme-toggle { appearance: none; min-height: 30px; padding: 5px 8px; border: 1px solid #334155; border-radius: 6px; background: transparent; color: #cbd5e1; box-shadow: none; font-size: 11px; font-weight: 700; cursor: pointer; }
     .theme-toggle:hover { border-color: #64748b; background: #1f2937; color: #fff; box-shadow: none; }

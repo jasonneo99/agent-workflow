@@ -25922,6 +25922,17 @@ async function writeScheduleState(statePath: string, state: Record<string, { las
 async function handleDashboardRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
   configureDashboardResponse(request, response);
   const requestUrl = new URL(request.url ?? "/", "http://localhost");
+  const brandingAsset = {
+    "/assets/agent-workflow-logo.png": "agent-workflow-logo-v1.png",
+    "/assets/agent-workflow-mark.png": "agent-workflow-mark-v1.png",
+    "/assets/agent-workflow-favicon.png": "agent-workflow-favicon-v1.png"
+  }[requestUrl.pathname];
+  if (brandingAsset) {
+    const asset = await fs.readFile(path.join(rootDir, "docs", "assets", "branding", brandingAsset));
+    response.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" });
+    response.end(asset);
+    return;
+  }
   if (requestUrl.pathname === "/assets/queue-watcher.js") {
     response.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" });
     response.end(queueWatcherScript());
@@ -42119,8 +42130,8 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
     }
   ] as const satisfies ReadonlyArray<{ label: string; id: string; href: string; icon: DashboardIconName; items: ReadonlyArray<readonly [Parameters<typeof dashboardNav>[0], string, string, DashboardIconName]> }>;
   const groupForActive = groups.find((group) => group.items.some(([id]) => id === active) || group.id === active);
-  return `<script>(()=>{const key='agentflow.dashboard.theme';let theme='light';try{theme=window.localStorage.getItem(key)==='dark'?'dark':'light'}catch{}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
-    <div class="nav-brand"><strong>Agent Workflow</strong><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
+  return `<script>(()=>{const icon=document.createElement('link');icon.rel='icon';icon.type='image/png';icon.href='/assets/agent-workflow-favicon.png';document.head.append(icon);const key='agentflow.dashboard.theme';let theme='light';try{theme=window.localStorage.getItem(key)==='dark'?'dark':'light'}catch{}document.documentElement.dataset.theme=theme;window.agentflowToggleTheme=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;try{window.localStorage.setItem(key,next)}catch{}document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=next==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(next==='dark'));button.setAttribute('aria-label',next==='dark'?'Use light theme':'Use dark theme')})};window.addEventListener('DOMContentLoaded',()=>{document.querySelectorAll('[data-theme-toggle]').forEach((button)=>{button.textContent=theme==='dark'?'Light':'Dark';button.setAttribute('aria-pressed',String(theme==='dark'));button.setAttribute('aria-label',theme==='dark'?'Use light theme':'Use dark theme')})})})()</script><nav class="side-nav human-nav" aria-label="Dashboard navigation">
+    <div class="nav-brand"><a class="nav-brand-link" href="/" aria-label="Agent Workflow home"><img src="/assets/agent-workflow-mark.png" alt="" width="34" height="34"><strong>Agent Workflow</strong></a><div class="nav-brand-actions"><button class="theme-toggle" data-theme-toggle type="button" aria-pressed="false" aria-label="Use dark theme" onclick="window.agentflowToggleTheme?.()">Dark</button><button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="dashboard-menu" onclick="const open=this.getAttribute('aria-expanded')==='true';this.setAttribute('aria-expanded',String(!open));document.getElementById('dashboard-menu')?.classList.toggle('open',!open)">${dashboardIcon("list")}<span>Menu</span></button></div></div>
     <div id="dashboard-menu" class="dashboard-menu">
       <a class="primary-nav-link ${active === "dashboard" ? "active" : ""}" ${active === "dashboard" ? 'aria-current="page"' : ""} href="/">${iconLabel("grid", "Home")}</a>
     ${groups.map((group) => {

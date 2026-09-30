@@ -41,13 +41,14 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/png" href="/assets/agent-workflow-favicon.png">
   <title>Agent Workflow Studio</title>
   <style>${studioCss()}</style>
 </head>
 <body>
   <div class="studio-shell">
     <header class="studio-topbar">
-      <a class="studio-brand" href="/studio" aria-label="Agent Workflow Studio home"><span class="brand-mark">&gt;_</span><strong>Agent Workflow Studio</strong></a>
+      <a class="studio-brand" href="/studio" aria-label="Agent Workflow Studio home"><img class="studio-brand-mark" src="/assets/agent-workflow-mark.png" alt="" width="28" height="28"><strong>Agent Workflow Studio</strong></a>
       <div class="studio-crumbs"><select id="project-switcher" aria-label="Switch project"><option value="${escapeHtml(input.defaultProject)}">Projects</option></select><span>/</span><span>Tasks</span><span>/</span><b id="run-crumb">Current</b></div>
       <label class="studio-search" for="task-search">${icon("search")}<input id="task-search" type="search" placeholder="Search tasks" autocomplete="off"><kbd>⌘ K</kbd></label>
       <a class="topbar-link" href="/">Dashboard</a>
@@ -505,7 +506,7 @@ function studioCss(): string {
     .studio-topbar { position: fixed; inset: 0 0 auto 0; z-index: 20; height: var(--top); display: grid; grid-template-columns: var(--rail-width) minmax(0, 1fr) 242px auto; align-items: center; border-bottom: 1px solid var(--line); background: rgba(11,14,16,.97); }
     .studio-brand { height: 100%; display: flex; align-items: center; gap: 11px; padding: 0 18px; color: var(--text); text-decoration: none; border-right: 1px solid var(--line); }
     .studio-brand strong { font-size: 14px; letter-spacing: -.015em; white-space: nowrap; }
-    .brand-mark { display: grid; place-items: center; width: 24px; height: 24px; border: 1px solid #b7c0c5; border-radius: 3px; font: 700 10px/1 ui-monospace, monospace; }
+    .studio-brand-mark { width: 28px; height: 28px; flex: 0 0 28px; object-fit: contain; }
     .studio-crumbs { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 0 24px; color: var(--muted); font-size: 12px; }
     .studio-crumbs b { overflow: hidden; color: #c8ceca; text-overflow: ellipsis; white-space: nowrap; }
     .studio-crumbs select { max-width: 190px; border: 0; background: transparent; color: #c8ceca; font-size: 12px; }

@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/branding/agent-workflow-logo-v1.png" alt="Agent Workflow" width="620">
+</p>
+
 # Agent Workflow
 
 Portable, model-agnostic agent workflows for any codebase. Define reusable AI agent teams and multi-stage workflows, plug in any model provider, and run structured automation across your projects.
