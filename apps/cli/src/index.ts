@@ -4247,10 +4247,11 @@ program
   .requiredOption("--proposal <id>", "approved training proposal id")
   .requiredOption("--design <file>", "project-local holdout design JSON")
   .option("--provider <id>", "provider adapter; defaults to the configured provider")
+  .option("--target <id>", "run only one declared target (useful for resuming missing coverage)")
   .option("--concurrency <number>", "parallel target/arm batches", "2")
   .option("--write", "write the private project-local evidence report")
   .option("--json", "print report JSON")
-  .action(async (options: { project: string; proposal: string; design: string; provider?: string; concurrency: string; write?: boolean; json?: boolean }) => {
+  .action(async (options: { project: string; proposal: string; design: string; provider?: string; target?: string; concurrency: string; write?: boolean; json?: boolean }) => {
     const projectDir = path.resolve(process.cwd(), options.project);
     const designPath = path.resolve(projectDir, options.design);
     const design = JSON.parse(await fs.readFile(designPath, "utf8")) as TrainingHoldoutDesign;
@@ -4259,6 +4260,14 @@ program
     const proposal = inbox.items.find((item) => item.id === options.proposal);
     if (!proposal || !["approved", "evaluated"].includes(proposal.status)) throw new Error("Training holdouts require an approved or previously evaluated proposal.");
     const agents = await loadAgentsForProject(projectDir);
+    const knownAgentIds = new Set(agents.map((agent) => agent.id));
+    const daemonAgents: AgentCard[] = daemonLanes.filter((lane) => design.targets.includes(lane.id) && !knownAgentIds.has(lane.id)).map((lane) => ({
+      id: lane.id, display_name: lane.name, category: "automatic", purpose: lane.purpose, model_strategy: "provider-agnostic", model_tier: "standard", autonomy: 1,
+      use_when: [], avoid_when: [], can: lane.capabilities, cannot: ["mutate during holdout evaluation"], requires_approval: [], context_budget: { max_tokens: 2500, preferred_sources: [] }, outputs: { schema: "structured_summary" },
+      prompt: `${lane.purpose} Evaluate only the supplied synthetic evidence. Keep provider-specific controls scoped to their provider, distinguish missing evidence from findings, and request no side effects.`
+    }));
+    const selectedDesign = options.target ? { ...design, targets: design.targets.filter((target) => target === options.target) } : design;
+    if (options.target && selectedDesign.targets.length === 0) throw new Error(`Target ${options.target} is not declared by this holdout design.`);
     const candidateContext = [
       `Publisher: ${proposal.proposal.publisher}`,
       `Official source: ${proposal.proposal.url}`,
@@ -4267,11 +4276,12 @@ program
       `Required holdout: ${proposal.proposal.holdoutEvaluation}`,
       "Use these concepts only when supported by the synthetic case evidence. Never invent provider controls or facts."
     ].join("\n");
-    const report = await runTrainingHoldout({ design, candidateContext, agents, projectConfig: await loadProjectConfig(projectDir), projectRootUri: projectDir, provider: providerFromEnv(options.provider), concurrency: parseBoundedPositiveInteger(options.concurrency, 2, 8) });
+    const report = await runTrainingHoldout({ design: selectedDesign, candidateContext, agents: [...agents, ...daemonAgents], projectConfig: await loadProjectConfig(projectDir), projectRootUri: projectDir, provider: providerFromEnv(options.provider), concurrency: parseBoundedPositiveInteger(options.concurrency, 2, 8) });
     if (options.write) {
       const outDir = path.join(projectDir, ".agent-workflow", "evaluations", options.proposal.replace(/[^a-zA-Z0-9._-]+/gu, "-"));
       await fs.mkdir(outDir, { recursive: true });
-      await fs.writeFile(path.join(outDir, "measured-holdout.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+      const reportName = options.target ? `measured-holdout-${options.target}.json` : "measured-holdout.json";
+      await fs.writeFile(path.join(outDir, reportName), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
     }
     console.log(options.json ? JSON.stringify(report, null, 2) : [`Training holdout: ${report.verdict}`, `Coverage: ${report.measuredObservations}/${report.plannedObservations}`, `Candidate passed: ${report.metrics.candidatePassed}`, ...report.failures.map((failure) => `- ${failure}`)].join("\n"));
     if (report.verdict === "FAIL") process.exitCode = 2;
