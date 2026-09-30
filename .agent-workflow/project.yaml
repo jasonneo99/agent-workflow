@@ -74,6 +74,7 @@ actions:
     - npm run status
     - npm run agentflow -- list
     - npm run agentflow -- status
+    - npm run agentflow -- training-holdout *
     - npm run index-project -- --project . --max-files 100
   blocked_commands:
     - rm *

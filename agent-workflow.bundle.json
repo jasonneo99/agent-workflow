@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "94b9d0b682884b650939d9e62c4c34f3e96d5d3fe03fb2c6ef616d422b6da5a5"
+    "value": "d6e68484181144bbc32caf0d70a4446cf93b4ad23a72c21cd70caa9a5c1d30db"
   },
   "agents": [
     {
@@ -257,7 +257,7 @@
     {
       "id": "training-evaluation",
       "path": "workflows/training-evaluation.yaml",
-      "checksum": "e94d94aeafbcb4dcf95b2d5d22fb18ec3616e2e03fa9563acdf6fac2a219c775"
+      "checksum": "b902dda266cbc9e2232d6ffb889eeb8290944c2387e0415b64941a83bb0917bf"
     },
     {
       "id": "wide-open-automation",
@@ -452,7 +452,7 @@
     },
     {
       "path": "workflows/training-evaluation.yaml",
-      "checksum": "e94d94aeafbcb4dcf95b2d5d22fb18ec3616e2e03fa9563acdf6fac2a219c775"
+      "checksum": "b902dda266cbc9e2232d6ffb889eeb8290944c2387e0415b64941a83bb0917bf"
     },
     {
       "path": "workflows/wide-open-automation.yaml",

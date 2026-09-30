@@ -50,6 +50,7 @@ import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security
 import { formatServerConversationReport, isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "./dashboard/question-chat.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
 import { mapWithConcurrency } from "./concurrency.js";
+import { runTrainingHoldout, type TrainingHoldoutDesign } from "./training-holdout-runner.js";
 import { parsePositiveInteger, parseNonNegativeInteger, parseOptionalNumber, parseBoundedPositiveInteger, parseDashboardRunLimit } from "./numeric-options.js";
 import { commandPrefixForPackageManager, detectFrameworks, detectLanguages, detectMarkers, detectPackageManager } from "./onboarding-detection.js";
 import { collectObjectReferences, normalizeObjectArtifactKey, parseMcFindKeys } from "./object-artifact-parsing.js";
@@ -4237,6 +4238,45 @@ program
     if (report.rows.some((row) => !row.passed)) {
       process.exitCode = 2;
     }
+  });
+
+program
+  .command("training-holdout")
+  .description("Run a blinded baseline/candidate holdout for one approved training proposal")
+  .requiredOption("-p, --project <dir>", "project directory")
+  .requiredOption("--proposal <id>", "approved training proposal id")
+  .requiredOption("--design <file>", "project-local holdout design JSON")
+  .option("--provider <id>", "provider adapter; defaults to the configured provider")
+  .option("--concurrency <number>", "parallel target/arm batches", "2")
+  .option("--write", "write the private project-local evidence report")
+  .option("--json", "print report JSON")
+  .action(async (options: { project: string; proposal: string; design: string; provider?: string; concurrency: string; write?: boolean; json?: boolean }) => {
+    const projectDir = path.resolve(process.cwd(), options.project);
+    const designPath = path.resolve(projectDir, options.design);
+    const design = JSON.parse(await fs.readFile(designPath, "utf8")) as TrainingHoldoutDesign;
+    if (design.proposal !== options.proposal) throw new Error(`Holdout design ${design.proposal} does not match ${options.proposal}.`);
+    const inbox = await readTrainingProposalInbox(projectDir);
+    const proposal = inbox.items.find((item) => item.id === options.proposal);
+    if (!proposal || !["approved", "evaluated"].includes(proposal.status)) throw new Error("Training holdouts require an approved or previously evaluated proposal.");
+    const agents = await loadAgentsForProject(projectDir);
+    const judge = resolveAgent(agents, "eval-curator");
+    if (!judge) throw new Error("The eval-curator agent is required to score training holdouts.");
+    const candidateContext = [
+      `Publisher: ${proposal.proposal.publisher}`,
+      `Official source: ${proposal.proposal.url}`,
+      `Claimed benefit: ${proposal.proposal.claimedBenefit}`,
+      `Known risks and scope limit: ${proposal.proposal.risks}`,
+      `Required holdout: ${proposal.proposal.holdoutEvaluation}`,
+      "Use these concepts only when supported by the synthetic case evidence. Never invent provider controls or facts."
+    ].join("\n");
+    const report = await runTrainingHoldout({ design, candidateContext, agents, judge, projectConfig: await loadProjectConfig(projectDir), projectRootUri: projectDir, provider: providerFromEnv(options.provider), concurrency: parseBoundedPositiveInteger(options.concurrency, 2, 8) });
+    if (options.write) {
+      const outDir = path.join(projectDir, ".agent-workflow", "evaluations", options.proposal.replace(/[^a-zA-Z0-9._-]+/gu, "-"));
+      await fs.mkdir(outDir, { recursive: true });
+      await fs.writeFile(path.join(outDir, "measured-holdout.json"), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
+    }
+    console.log(options.json ? JSON.stringify(report, null, 2) : [`Training holdout: ${report.verdict}`, `Coverage: ${report.measuredObservations}/${report.plannedObservations}`, `Candidate passed: ${report.metrics.candidatePassed}`, ...report.failures.map((failure) => `- ${failure}`)].join("\n"));
+    if (report.verdict === "FAIL") process.exitCode = 2;
   });
 
 program

@@ -99,6 +99,7 @@ actions:
     - npm run typecheck
     - npm run lint
     - npm run build
+    - npm run agentflow -- training-holdout *
   blocked_commands:
     - rm *
     - git reset *

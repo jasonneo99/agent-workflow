@@ -19,7 +19,7 @@ stages:
     output: training_holdout_plan
   - id: execute-holdout
     agent: test-engineer
-    goal: Execute the approved bounded holdout using existing local fixtures and policy-allowed verification commands. Record commands, outputs, coverage, failures, and unavailable checks truthfully. Missing fixtures, an unavailable runner, or zero measurable coverage must produce a completed INCONCLUSIVE result with the exact evidence gap and next action; do not block solely because measurements are unavailable. Do not modify production behavior.
+    goal: Execute the approved bounded holdout with the governed `npm run agentflow -- training-holdout` command, using the design artifact from the prior stage, the proposal id from the workflow task, `--write`, and a project-relative design path. Record the command, report path, exact observation coverage, verdict, failures, usage, and unavailable checks truthfully. Missing fixtures, an unavailable runner, or zero measurable coverage must produce a completed INCONCLUSIVE result with the exact evidence gap and next action; do not block solely because measurements are unavailable. Do not modify production behavior.
     context:
       load:
         - training_holdout_plan
