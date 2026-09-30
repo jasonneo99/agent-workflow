@@ -26639,8 +26639,11 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         `Rollback plan: ${item.proposal.rollbackPlan}`,
         "Use only public-source concepts and local synthetic/project-safe evidence. Do not change shared agent definitions, tools, authority, routing, executable code, or production behavior. Produce a PASS, FAIL, or INCONCLUSIVE verdict with cited artifacts and measured evidence."
       ].join("\n");
+      const trainingWorkflow = resolveWorkflow(await loadWorkflows(rootDir), "training-evaluation");
+      if (!trainingWorkflow) throw new Error("The training-evaluation workflow is not installed.");
       const queued = await queueWorkflow({
         workflowId: "training-evaluation",
+        workflowOverride: trainingWorkflow,
         projectPath: projectDir,
         task,
         evaluationMetadata: {

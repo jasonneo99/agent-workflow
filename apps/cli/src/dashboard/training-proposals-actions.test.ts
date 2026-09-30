@@ -25,3 +25,8 @@ test("evaluated status requires a completed linked run and derives its note from
   assert.match(source, /details\.run\?\.status !== "completed"/u);
   assert.match(source, /Accepted completed evaluation run/u);
 });
+
+test("training evaluation queueing seeds the exact workflow snapshot before creating the run", () => {
+  assert.match(source, /resolveWorkflow\(await loadWorkflows\(rootDir\), "training-evaluation"\)/u);
+  assert.match(source, /workflowOverride: trainingWorkflow/u);
+});
