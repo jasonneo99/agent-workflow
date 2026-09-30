@@ -27,7 +27,7 @@ export function defaultServiceEndpoints(env: NodeJS.ProcessEnv = process.env): S
       requiredFor: "enterprise"
     },
     {
-      name: "MinIO object storage",
+      name: "S3-compatible object storage",
       ...endpointFromUrl(env.OBJECT_STORAGE_ENDPOINT, {
         host: env.AGENTFLOW_MINIO_HOST ?? sharedStorageHost ?? "127.0.0.1",
         port: Number(env.AGENTFLOW_MINIO_PORT ?? 19000),

@@ -21,7 +21,10 @@ requires_approval:
   - production_data_changes
 context_budget:
   max_tokens: 2500
-  preferred_sources: []
+  preferred_sources:
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: database_review
 prompt: >
@@ -31,8 +34,8 @@ prompt: >
 
   For migration work, identify the exact schema delta, compatibility window,
   rollback or roll-forward path, lock and data-loss risk, and executable
-  verification. Do not treat a plausible migration narrative as a passing
-  result without schema-diff or query evidence.
+  verification. Do not treat a plausible migration narrative as a passing result
+  without schema-diff or query evidence.
 
 
   Local learning improvement notes:

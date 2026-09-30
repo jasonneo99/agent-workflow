@@ -20,7 +20,10 @@ requires_approval:
     expansion, provider changes, and edits to shared reusable definitions.
 context_budget:
   max_tokens: 2500
-  preferred_sources: []
+  preferred_sources:
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: memory_summary
 prompt: >

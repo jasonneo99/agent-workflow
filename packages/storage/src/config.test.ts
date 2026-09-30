@@ -10,7 +10,7 @@ test("defaultServiceEndpoints uses local developer service ports by default", ()
     [
       ["Postgres + pgvector", "127.0.0.1", 15432],
       ["Redis", "127.0.0.1", 16379],
-      ["MinIO object storage", "127.0.0.1", 19000]
+      ["S3-compatible object storage", "127.0.0.1", 19000]
     ]
   );
 });
@@ -27,7 +27,7 @@ test("defaultServiceEndpoints derives shared storage hosts from configured urls"
     [
       ["Postgres + pgvector", "192.0.2.10", 15432],
       ["Redis", "192.0.2.10", 16379],
-      ["MinIO object storage", "192.0.2.10", 19000]
+      ["S3-compatible object storage", "192.0.2.10", 19000]
     ]
   );
 });
@@ -47,7 +47,7 @@ test("defaultServiceEndpoints supports explicit host overrides without urls", ()
     [
       ["Postgres + pgvector", "shared-host.example", 25432],
       ["Redis", "shared-host.example", 26379],
-      ["MinIO object storage", "shared-host.example", 29000]
+      ["S3-compatible object storage", "shared-host.example", 29000]
     ]
   );
 });
@@ -62,7 +62,7 @@ test("defaultServiceEndpoints supports a shared storage host fallback", () => {
     [
       ["Postgres + pgvector", "192.0.2.10", 15432],
       ["Redis", "192.0.2.10", 16379],
-      ["MinIO object storage", "192.0.2.10", 19000]
+      ["S3-compatible object storage", "192.0.2.10", 19000]
     ]
   );
 });

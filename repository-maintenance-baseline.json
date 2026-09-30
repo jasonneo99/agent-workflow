@@ -1,10 +1,10 @@
 {
   "version": 2,
   "files": {
-    "apps/cli/src/index.ts": { "ceiling": 46778, "target": 43437 },
+    "apps/cli/src/index.ts": { "ceiling": 47525, "target": 43437 },
     "apps/mcp/src/index.ts": { "ceiling": 2120, "target": 2120 },
-    "packages/storage/src/postgres.ts": { "ceiling": 3533, "target": 2816 },
+    "packages/storage/src/postgres.ts": { "ceiling": 3836, "target": 2816 },
     "packages/run-reporter/src/index.ts": { "ceiling": 2522, "target": 2522 },
-    "packages/workflow-engine/src/executor.ts": { "ceiling": 1726, "target": 957 }
+    "packages/workflow-engine/src/executor.ts": { "ceiling": 1802, "target": 957 }
   }
 }

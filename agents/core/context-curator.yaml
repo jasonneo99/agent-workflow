@@ -24,6 +24,9 @@ context_budget:
   preferred_sources:
     - .agent-workflow/context.md
     - .agent-workflow/decisions.md
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: context_update
 prompt: >
