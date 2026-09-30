@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-workflow-skills-only",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Discover and install the local-first Agent Workflow plugin for Codex projects without connecting to a hosted Agent Workflow service.",
   "author": {
     "name": "Agent Workflow Contributors"
@@ -12,6 +12,7 @@
         "displayName": "Agent Workflow",
         "shortDescription": "Install local Agent Workflow",
         "longDescription": "Learn how to install and use the self-contained, local-first Agent Workflow plugin in Codex. This directory edition provides onboarding guidance only: it does not connect to a hosted Agent Workflow service and does not expose MCP tools in ChatGPT. The full GitHub edition downloads a pinned runtime and runs it locally so projects, commands, approvals, receipts, and Agent Workflow Studio remain on the user's machine.",
+        "developerName": "Agent Workflow Contributors",
         "category": "Productivity",
         "websiteURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/README.md",
         "supportURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/SUPPORT.md",
@@ -29,7 +30,8 @@
         ]
       },
       "publication": {
-        "release_notes": "Initial skills-only directory edition for discovering, installing, and safely onboarding the self-contained local Agent Workflow plugin."
+        "release_notes": "Initial skills-only directory edition for discovering, installing, and safely onboarding the self-contained local Agent Workflow plugin.",
+        "countries": []
       }
     }
   }

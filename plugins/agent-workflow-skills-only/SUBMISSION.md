@@ -16,11 +16,15 @@ onboarding for the separately installed, self-contained local Codex plugin.
 - The full local plugin is installed from the public Git marketplace and keeps
   project execution on the user's machine.
 
-## Portal fields requiring publisher confirmation
+## Confirmed publication details
 
-- Verified developer or business identity
-- Supported countries or regions
-- Commerce and policy attestations completed by the authorized developer
+- Publisher: use the authorized developer's matching verified identity in the
+  separate public-upload copy and submission portal
+- Availability: all supported countries
+- Commerce: no payments or purchases
+
+Current legal and policy attestations remain dashboard actions for the
+authorized developer and are not encoded as agreement in this package.
 
 ## Suggested review prompts
 
