@@ -32,6 +32,10 @@
       "publication": {
         "release_notes": "Initial skills-only directory edition for discovering, installing, and safely onboarding the self-contained local Agent Workflow plugin.",
         "countries": []
+      },
+      "review": {
+        "commerce": false,
+        "commerce_description": "This plugin does not sell products or process payments."
       }
     }
   }
