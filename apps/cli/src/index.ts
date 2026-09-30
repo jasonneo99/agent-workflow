@@ -99,6 +99,7 @@ import {
 import {
   cancelWorkflowRun,
   completeApprovalRequestRun,
+  countActionApprovals,
   claimActionApprovalExecution,
   createWorkflowRun,
   deleteProjectFiles,
@@ -7787,6 +7788,9 @@ type ApprovalBacklogReport = {
   projectRootUri: string | null;
   statusFilter: string | null;
   staleMinutes: number;
+  total: number;
+  limit: number;
+  truncated: boolean;
   scanned: number;
   counts: Record<string, number>;
   severityCounts: Record<ApprovalBacklogSeverity, number>;
@@ -28872,11 +28876,11 @@ function renderApprovalsHtml(
           <span class="muted">${status === "open" ? "Pending decisions, approved actions ready to run, and failures needing review." : `Showing ${escapeHtml(status)} approval records.`}</span>
         </div>
       </div>
-      <div class="mobile-approval-list">${mobileCards || `<div class="approval-empty"><strong>No ${status === "open" ? "open actions" : `${escapeHtml(status)} approvals`}</strong><span>You’re all caught up.</span></div>`}</div>
+      <div class="mobile-approval-list">${mobileCards || `<div class="approval-empty"><strong>No ${status === "open" ? "open actions" : `${escapeHtml(status)} approvals`}</strong><span>${status === "open" ? "No human decision is waiting. Eligible low/medium local actions may execute automatically and appear in run receipts or Activity instead of creating approval cards." : "You’re all caught up."}</span></div>`}</div>
       <div class="desktop-approval-table table-wrap">
         <table>
           <thead><tr><th>Approval</th><th>Status</th><th>Action</th><th>Target</th><th>Run</th><th>Project</th><th>Rationale</th><th>Decision</th></tr></thead>
-          <tbody>${rows || "<tr><td colspan=\"8\">No approvals found.</td></tr>"}</tbody>
+          <tbody>${rows || `<tr><td colspan="8">${status === "open" ? "No human decision is waiting. Eligible low/medium local actions may execute automatically and appear in run receipts or Activity." : "No approvals found."}</td></tr>`}</tbody>
         </table>
       </div>
     </section>
@@ -29024,13 +29028,13 @@ function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
     </tr>
   `).join("");
   const radarParams = new URLSearchParams();
-  radarParams.set("limit", String(report.scanned || 500));
+  radarParams.set("limit", String(report.limit));
   radarParams.set("staleMinutes", String(report.staleMinutes));
   radarParams.set("status", report.statusFilter ?? "all");
   if (report.projectRootUri) radarParams.set("project", report.projectRootUri);
   const triageHiddenInputs = `
     <input type="hidden" name="project" value="${escapeHtml(report.projectRootUri ?? "")}">
-    <input type="hidden" name="limit" value="${escapeHtml(String(report.scanned || 500))}">
+    <input type="hidden" name="limit" value="${escapeHtml(String(report.limit))}">
     <input type="hidden" name="staleMinutes" value="${escapeHtml(String(report.staleMinutes))}">
   `;
   const triageActions = missingToolFailures || resolvedMissingToolFailures || commandFailures
@@ -29059,7 +29063,8 @@ function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
         <a class="button secondary" href="/api/approval-backlog?${escapeHtml(radarParams.toString())}">JSON</a>
       </div>
       <div class="metric-grid">
-        ${metricCard("Scanned", report.scanned, "recent approvals")}
+        ${metricCard("Total", report.total, "approval records")}
+        ${metricCard("Inspected", report.scanned, report.truncated ? `newest ${formatNumber(report.scanned)}` : "all records")}
         ${metricCard("Pending", report.counts.pending ?? 0, "waiting")}
         ${metricCard("Approved", approvedReadyToExecuteCount, "ready to execute")}
         ${metricCard("Failed", report.counts.failed ?? 0, "errors")}
@@ -29068,7 +29073,7 @@ function renderApprovalBacklogPanel(report: ApprovalBacklogReport): string {
       </div>
       ${triageCards ? `<div class="approval-triage-grid">${triageCards}</div>` : ""}
       ${triageActions}
-      <p class="muted">This radar scans across approval states even when the table below is filtered. Items older than ${formatNumber(report.staleMinutes)} minute(s) are treated as stale. Low/medium eligible items can be cleared by Approval Autopilot; high-risk or failed items stay visible for review.</p>
+      <p class="muted">This radar inspects ${report.truncated ? `the newest ${formatNumber(report.scanned)} of ${formatNumber(report.total)}` : `all ${formatNumber(report.total)}`} approval records across states, even when the table above is filtered. Items older than ${formatNumber(report.staleMinutes)} minute(s) are treated as stale. Low/medium eligible items can be cleared by Approval Autopilot; high-risk or failed items stay visible for review.</p>
       <div class="table-wrap"><table><thead><tr><th>Severity</th><th>Triage</th><th>Target</th><th>Run</th><th>Reason / Next Action</th></tr></thead><tbody>${rows || "<tr><td colspan=\"5\">No warning or error approval backlog items found.</td></tr>"}</tbody></table></div>
     </section>
   `;
@@ -39682,29 +39687,50 @@ async function listActionApprovalsForProjectAliases(input: {
   runId?: string;
   projectRootUri?: string;
   limit: number;
+  order?: "priority" | "recent";
 }): Promise<DashboardActionApproval[]> {
   const rootUris = await resolveStorageRootUrisForLocalProject(input.projectRootUri);
   if (!rootUris) {
     return listActionApprovals({
       status: input.status,
       runId: input.runId,
-      limit: input.limit
+      limit: input.limit,
+      order: input.order
     });
   }
   const rows: DashboardActionApproval[] = [];
   for (const rootUri of rootUris) {
-    const remaining = Math.max(input.limit - rows.length, 0);
-    if (remaining <= 0) break;
     rows.push(...await listActionApprovals({
       status: input.status,
       runId: input.runId,
       projectRootUri: rootUri,
-      limit: remaining
+      limit: input.limit,
+      order: input.order
     }));
   }
   return rows
     .filter((approval, index, list) => list.findIndex((item) => item.id === approval.id) === index)
+    .sort((left, right) => input.order === "recent"
+      ? String(right.createdAt).localeCompare(String(left.createdAt))
+      : 0)
     .slice(0, input.limit);
+}
+
+async function countActionApprovalsForProjectAliases(input: {
+  status?: string;
+  runId?: string;
+  projectRootUri?: string;
+}): Promise<number> {
+  const rootUris = await resolveStorageRootUrisForLocalProject(input.projectRootUri);
+  if (!rootUris) {
+    return countActionApprovals({ status: input.status, runId: input.runId });
+  }
+  const counts = await Promise.all(rootUris.map((projectRootUri) => countActionApprovals({
+    status: input.status,
+    runId: input.runId,
+    projectRootUri
+  })));
+  return counts.reduce((sum, count) => sum + count, 0);
 }
 
 async function resolveStorageRootUrisForLocalProject(projectRootUri?: string): Promise<string[] | undefined> {
@@ -39760,11 +39786,18 @@ async function buildApprovalBacklogReport(input: {
   limit: number;
   staleMinutes: number;
 }): Promise<ApprovalBacklogReport> {
-  const approvals = await listActionApprovalsForProjectAliases({
-    status: input.status,
-    projectRootUri: input.projectRootUri,
-    limit: input.limit
-  });
+  const [approvals, total] = await Promise.all([
+    listActionApprovalsForProjectAliases({
+      status: input.status,
+      projectRootUri: input.projectRootUri,
+      limit: input.limit,
+      order: "recent"
+    }),
+    countActionApprovalsForProjectAliases({
+      status: input.status,
+      projectRootUri: input.projectRootUri
+    })
+  ]);
   const generatedAt = new Date().toISOString();
   const projectConfigs = new Map<string, ProjectConfig | null>();
   const items: ApprovalBacklogItem[] = [];
@@ -39858,6 +39891,9 @@ async function buildApprovalBacklogReport(input: {
     projectRootUri: input.projectRootUri ?? null,
     statusFilter: input.status ?? null,
     staleMinutes: input.staleMinutes,
+    total,
+    limit: input.limit,
+    truncated: total > approvals.length,
     scanned: approvals.length,
     counts: countStrings(approvals.map((approval) => approval.status)),
     severityCounts: {
@@ -39952,7 +39988,8 @@ function formatApprovalBacklogReport(report: ApprovalBacklogReport): string {
   return [
     "Approval backlog radar",
     `Project: ${report.projectRootUri ?? "all"}`,
-    `Scanned: ${report.scanned}`,
+    `Total: ${report.total}`,
+    `Inspected: ${report.scanned}${report.truncated ? ` newest records (limit ${report.limit})` : " (all records)"}`,
     `Counts: ${formatInlineCounts(report.counts) || "none"}`,
     `Severity: info=${report.severityCounts.info ?? 0} warning=${report.severityCounts.warning ?? 0} error=${report.severityCounts.error ?? 0}`,
     "",

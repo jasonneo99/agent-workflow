@@ -24,6 +24,7 @@ export { acquireWorkIntent, claimSideEffect, finalizeSideEffect, listWorkIntents
 export { appendProvenanceClaim, assertStageAuthority, issueStageAuthorityGrant, listCurrentBreakers, persistGuardedTransaction, queuePromotionCandidate, recordCanaryOutcome, revokeProvenanceSource, transitionPromotionCandidate, tripBreaker } from "./guarded-autonomy.js";
 export { listWorkflowReuseEvidence } from "./reuse.js"; export { transitionWorkflowRun, type WorkflowRunTransitionInput } from "./run-transitions.js"; export { supersedeWorkflowRun } from "./run-supersession.js";
 export {
+  countActionApprovals,
   claimActionApprovalExecution,
   completeApprovalRequestRun, decideActionApproval, dismissSupersededActionApprovals,
   getActionApproval, listActionApprovals, markActionApprovalExecution,

@@ -219,8 +219,13 @@ export async function listActionApprovals(input: {
   runId?: string;
   projectRootUri?: string;
   limit?: number;
+  order?: "priority" | "recent";
 } = {}): Promise<ActionApprovalStatus[]> {
   return withClient(async (client) => {
+    const orderBy = input.order === "recent"
+      ? "aa.created_at desc"
+      : `case aa.status when 'pending' then 0 when 'approved' then 1 when 'failed' then 2 when 'dismissed' then 3 when 'executed' then 4 when 'rejected' then 5 else 6 end,
+         aa.created_at desc`;
     const result = await client.query<ActionApprovalStatus>(
       `select ${actionApprovalSelect}
        from action_approvals aa
@@ -229,13 +234,31 @@ export async function listActionApprovals(input: {
        where ($1::text is null or aa.status = $1)
          and ($2::uuid is null or aa.run_id = $2::uuid)
          and ($3::text is null or p.root_uri = $3)
-       order by
-         case aa.status when 'pending' then 0 when 'approved' then 1 when 'failed' then 2 when 'dismissed' then 3 when 'executed' then 4 when 'rejected' then 5 else 6 end,
-         aa.created_at desc
+       order by ${orderBy}
        limit $4`,
       [input.status ?? null, input.runId ?? null, input.projectRootUri ?? null, input.limit ?? 50]
     );
     return result.rows;
+  });
+}
+
+export async function countActionApprovals(input: {
+  status?: string;
+  runId?: string;
+  projectRootUri?: string;
+} = {}): Promise<number> {
+  return withClient(async (client) => {
+    const result = await client.query<{ count: number }>(
+      `select count(*)::int as count
+       from action_approvals aa
+       join workflow_runs wr on wr.id = aa.run_id
+       join projects p on p.id = wr.project_id
+       where ($1::text is null or aa.status = $1)
+         and ($2::uuid is null or aa.run_id = $2::uuid)
+         and ($3::text is null or p.root_uri = $3)`,
+      [input.status ?? null, input.runId ?? null, input.projectRootUri ?? null]
+    );
+    return result.rows[0]?.count ?? 0;
   });
 }
 

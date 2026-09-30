@@ -68,6 +68,13 @@ test("successful approval execution dismisses failed or pending sibling attempts
   assert.match(execution, /Superseded by a successfully executed approval/u);
 });
 
+test("approval backlog can count all records and inspect the newest bounded window", () => {
+  const source = readFileSync(new URL("./action-approvals.ts", import.meta.url), "utf8");
+  assert.match(source, /export async function countActionApprovals/u);
+  assert.match(source, /select count\(\*\)::int as count/u);
+  assert.match(source, /input\.order === "recent"[\s\S]+aa\.created_at desc/u);
+});
+
 test("workers claim only tasks whose pinned or resolved default provider they advertise", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /claimNextWorkflowTask\(input\?: \{[^}]*providerIds\?: string\[\]/u);
