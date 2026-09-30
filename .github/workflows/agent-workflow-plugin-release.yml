@@ -18,6 +18,7 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - run: npm ci --ignore-scripts
       - run: node plugins/agent-workflow/scripts/bundle-runtime.mjs
       - name: Verify bundled runtime without repository fallback
         run: node plugins/agent-workflow/scripts/verify-bundled-runtime.mjs

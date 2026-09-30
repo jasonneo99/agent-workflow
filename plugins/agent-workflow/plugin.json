@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "agent-workflow",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Run governed Agent Workflow agents and workflows from any local Codex project, with Agent Workflow Studio as an optional companion interface.",
   "author": {
     "name": "Agent Workflow Contributors"
