@@ -26618,6 +26618,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     try {
       if (!project || !id || !allowed.has(status as TrainingProposalDecisionStatus)) throw new Error("Project, proposal, and a valid decision are required.");
       const { selected: projectDir } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), project, process.cwd());
+      const current = (await readTrainingProposalInbox(projectDir)).items.find((item) => item.id === id);
+      if (current?.status === status) {
+        respondDashboardAction(request, response, form, {
+          ok: true,
+          title: `Training proposal already ${status}`,
+          output: `No state change was needed for ${id}.`
+        }, "/training-proposals");
+        return;
+      }
       await decideTrainingProposal({
         projectDir,
         id,
@@ -42189,22 +42198,42 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
 function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: TrainingDiscoveryReport | null, projects: DashboardProjectSummary[], selected: string, params: URLSearchParams): string {
   const options = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${project.rootUri === selected ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const pending = inbox.items.filter((item) => item.status === "pending").length;
+  const approved = inbox.items.filter((item) => item.status === "approved").length;
+  const evaluated = inbox.items.filter((item) => item.status === "evaluated").length;
   const rows = inbox.items.slice().sort((left, right) => right.updatedAt.localeCompare(left.updatedAt)).map((item) => `<tr>
     <td><strong>${escapeHtml(item.proposal.publisher)}</strong><br><a href="${escapeHtml(item.proposal.url)}" rel="noreferrer">${escapeHtml(item.sourceId)}</a><br><code>${escapeHtml(item.contentSha256.slice(0, 16))}</code></td>
     <td>${escapeHtml(item.proposal.targets.join(", "))}<br><span class="muted">${escapeHtml(item.proposal.claimedBenefit)}</span></td>
-    <td>${escapeHtml(item.status)}<br><span class="muted">${escapeHtml(item.proposal.confidence)} confidence · ${escapeHtml(item.proposal.license)}</span></td>
+    <td><span class="status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><br><span class="muted">${escapeHtml(item.proposal.confidence)} confidence · ${escapeHtml(item.proposal.license)}</span>${item.reviewer ? `<br><span class="muted">Reviewed by ${escapeHtml(item.reviewer)}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>` : ""}</td>
     <td><span>${escapeHtml(item.proposal.risks)}</span><br><strong>Holdout:</strong> ${escapeHtml(item.proposal.holdoutEvaluation)}</td>
-    <td><form method="post" action="/api/training-proposal-decision">${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}"><input name="note" maxlength="500" placeholder="Decision note"><div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div></form></td>
+    <td>${renderTrainingProposalActions(item, selected, params)}</td>
   </tr>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Training Proposals</title><style>${dashboardCss()}</style></head><body>
   ${dashboardNav("training-proposals")}
   <main><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
   ${renderDashboardFlash(params)}
   <section class="panel"><form method="get" action="/training-proposals"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
-  <section class="metrics">${metricCard("Pending", pending, `${inbox.items.length} total proposals`)}${metricCard("Last discovery", report?.generatedAt ? formatDashboardDateTimeText(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
-  <section class="panel"><h2>Governed inbox</h2><p class="muted">Approval permits a bounded holdout evaluation; it does not change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Decision</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
+  <section class="metrics">${metricCard("Pending decision", pending, `${inbox.items.length} total proposals`)}${metricCard("Evaluation approved", approved, "run bounded holdouts next")}${metricCard("Evaluated", evaluated, "ready for promotion review")}${metricCard("Last discovery", report?.generatedAt ? formatDashboardDateTimeText(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
+  <section class="panel"><h2>Governed inbox</h2><p class="muted">Each row shows its actual next step. Approval permits a bounded holdout evaluation; recording evaluation or promotion does not itself change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Next action</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Manual run</h2><p><code>npm run training-discovery -- --project ${escapeHtml(selected)} --force</code></p><p><a href="/api/training-proposals?project=${encodeURIComponent(selected)}">JSON inbox</a></p></section>
   </main></body></html>`;
+}
+
+function renderTrainingProposalActions(item: TrainingProposalInbox["items"][number], selected: string, params: URLSearchParams): string {
+  const hidden = `${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">`;
+  const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
+  if (item.status === "pending") {
+    return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
+  }
+  if (item.status === "approved") {
+    return `<p><strong>Evaluation approved</strong><br><span class="muted">Run the stated holdout, then record its evidence and outcome.</span></p>${form('<div class="actions"><button name="status" value="evaluated" type="submit">Record evaluation complete</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Evaluation result and evidence", true)}`;
+  }
+  if (item.status === "evaluated") {
+    return `<p><strong>Evaluation recorded</strong><br><span class="muted">Review the evidence before recording a promotion decision.</span></p>${form('<div class="actions"><button name="status" value="promoted" type="submit">Record promotion decision</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Promotion evidence and rollback plan", true)}`;
+  }
+  if (item.status === "promoted") {
+    return '<p><strong>Promotion recorded</strong><br><span class="muted">No further inbox action is required.</span></p>';
+  }
+  return `<p><strong>${escapeHtml(titleCase(item.status))}</strong><br><span class="muted">This proposal has no active inbox action.</span></p>`;
 }
 
 function renderContextGatewayHtml(report: Awaited<ReturnType<typeof loadContextOperatorReport>>, projects: DashboardProjectSummary[], selected: string): string {
