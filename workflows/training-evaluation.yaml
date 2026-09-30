@@ -9,7 +9,10 @@ triggers:
 stages:
   - id: design-holdout
     agent: eval-curator
-    goal: Translate the approved proposal into explicit synthetic cases, baseline expectations, pass/fail criteria, privacy constraints, and rollback conditions. Do not change agent definitions or runtime policy.
+    goal: >-
+      Translate the approved proposal into explicit synthetic cases, baseline expectations, pass/fail criteria, privacy constraints, and rollback conditions.
+      This is a read-only reasoning stage: return the design as the stage artifact without requesting commands, file writes, or a project work intent.
+      Do not change agent definitions or runtime policy.
     context:
       load:
         - project_context
