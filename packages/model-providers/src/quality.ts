@@ -152,7 +152,7 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (deliveryVerifier && /(?:remains?|is|was|were) unverified|no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|verification .* (?:absent|unsupported|pending)|promotion .* not approved/iu.test(text)) {
     return "Delivery verification stage claimed completion while explicitly reporting that required verification was not performed.";
   }
-  const explicitlyIncomplete = /implementation (?:is|remains) (?:incomplete|blocked|absent)|implementation .* not (?:performed|implemented)|no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)|not implemented|feature delivery .* unsupported|product code remains .* pending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(text);
+  const explicitlyIncomplete = /implementation (?:\S+ )*?(?:is|remains?) (?:incomplete|blocked|absent)|implementation .* not (?:performed|implemented)|no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)|not implemented|feature delivery .* unsupported|product code remains .* pending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(text);
   return explicitlyIncomplete ? "Delivery stage claimed completion while explicitly reporting that the requested implementation or finished product was not delivered." : null;
 }
 
