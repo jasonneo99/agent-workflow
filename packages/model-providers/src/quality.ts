@@ -20,16 +20,17 @@ export function hasPinnedBuildIntent(task: string): boolean {
   return /\bbuild\b/iu.test(workflowAcceptanceTask(task));
 }
 
-function priorBuildEvidence(input: StageExecutionInput): { productWrite: boolean; verification: boolean } {
+function priorBuildEvidence(input: StageExecutionInput): { productDelivery: boolean; verification: boolean } {
   const artifacts = input.priorStageArtifacts ?? [];
-  const productWrite = artifacts.some((item) => {
-    return isImplementationStage(item.stageId, item.agentId) && artifactProductWritePaths(item.artifact).some(isProductWritePath);
+  const productDelivery = artifacts.some((item) => {
+    return isImplementationStage(item.stageId, item.agentId)
+      && (artifactProductWritePaths(item.artifact).some(isProductWritePath) || artifactHasSuccessfulDeliveryCommand(item.artifact));
   });
   const verification = artifacts.some((item) => {
     return isVerificationStage(item.stageId, item.agentId)
       && verificationArtifactIsComplete(item.summary, item.artifact);
   });
-  return { productWrite, verification };
+  return { productDelivery, verification };
 }
 
 export function completedStageProvidesPinnedBuildEvidence(input: {
@@ -41,7 +42,8 @@ export function completedStageProvidesPinnedBuildEvidence(input: {
 }): boolean {
   if (!hasPinnedBuildIntent(input.workflowTask)) return true;
   if (isImplementationStage(input.stageId, input.agentId)) {
-    return artifactProductWritePaths(input.artifact).some(isProductWritePath);
+    return artifactProductWritePaths(input.artifact).some(isProductWritePath)
+      || artifactHasSuccessfulDeliveryCommand(input.artifact);
   }
   if (isVerificationStage(input.stageId, input.agentId)) {
     return verificationArtifactIsComplete(input.summary ?? String(input.artifact.summary ?? ""), input.artifact);
@@ -96,6 +98,24 @@ function artifactHasSuccessfulVerificationCommand(artifact: Record<string, unkno
   });
 }
 
+function artifactHasSuccessfulDeliveryCommand(artifact: Record<string, unknown>): boolean {
+  const results = Array.isArray(artifact.actionResults) ? artifact.actionResults : [];
+  return results.some((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return false;
+    const result = item as { commandLine?: unknown; exitCode?: unknown; timedOut?: unknown; type?: unknown };
+    const command = typeof result.commandLine === "string" ? result.commandLine.trim() : "";
+    const deliveryCommand = [
+      /(?:^|\s)xcodebuild\b[^\n]*(?:^|\s)(?:build|archive)(?:\s|$)/iu,
+      /(?:^|\s)(?:ios-deploy\b[^\n]*--bundle|xcrun\s+simctl\s+install)(?:\s|$)/iu,
+      /(?:^|\s)(?:swift|cargo|dotnet)\s+(?:build|publish)(?:\s|$)/iu,
+      /(?:^|\s)(?:gradle|\.\/gradlew)\s+(?:assemble\w*|build|bundle\w*)(?:\s|$)/iu,
+      /(?:^|\s)(?:mvn|\.\/mvnw)\s+(?:package|install)(?:\s|$)/iu,
+      /(?:^|\s)(?:npm|pnpm|yarn)\s+(?:run\s+)?(?:build|bundle|package)(?:\s|$)/iu
+    ].some((pattern) => pattern.test(command));
+    return deliveryCommand && result.exitCode === 0 && result.timedOut !== true && result.type !== "local_command_rejected";
+  });
+}
+
 export function verificationCompletionReason(input: StageExecutionInput, actionResults: unknown[]): string | null {
   const acceptanceTask = workflowAcceptanceTask(input.workflowTask);
   const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix)\b/iu.test(acceptanceTask);
@@ -122,8 +142,8 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (!implementationStage && !deliveryFinalizer && !deliveryVerifier) return null;
   if (pinnedBuild && (deliveryVerifier || deliveryFinalizer)) {
     const evidence = priorBuildEvidence(input);
-    if (!evidence.productWrite) {
-      return `Pinned BUILD contract violated: no prior governed product file write proves that a product was created. ${PINNED_BUILD_CONTRACT}`;
+    if (!evidence.productDelivery) {
+      return `Pinned BUILD contract violated: no prior governed product file write or successful delivery command proves that a product was created. ${PINNED_BUILD_CONTRACT}`;
     }
     if (deliveryFinalizer && !evidence.verification) {
       return `Pinned BUILD contract violated: no completed verification evidence proves that the created product works. ${PINNED_BUILD_CONTRACT}`;
@@ -140,8 +160,9 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
     return content.replace(/\s/g, "").length >= 10;
   });
   if (hasSubstantiveProductWrite) return null;
+  if (artifactHasSuccessfulDeliveryCommand(output.artifact)) return null;
   if (deliveryWorkflow && deliveryIntent && implementationStage) {
-    return "Delivery implementation stage cannot complete without at least one governed product file write; planning or inspection alone does not satisfy the user acceptance contract.";
+    return "Delivery implementation stage cannot complete without at least one governed product file write or successful delivery command receipt; planning or inspection alone does not satisfy the user acceptance contract.";
   }
   // Verification providers describe commands before the governed executor has
   // run them. Do not treat truthful "results are pending" language as a final

@@ -336,6 +336,42 @@ test("checkpoint evidence rejects receipt-only implementation and accepts execut
   }), true);
 });
 
+test("implementation accepts successful governed build and install command receipts", () => {
+  const deliveryInput = { ...input, workflowId: "build-feature", workflowTask: "Build and deliver the iOS application." } as StageExecutionInput;
+  const completed = (commandLine: string) => ({
+    outcome: "completed",
+    summary: "Built and delivered the requested application through the governed command executor.",
+    artifact: { findings: ["The delivery command completed successfully."], nextAction: "Verify the installed application.", actionResults: [{ commandLine, exitCode: 0, timedOut: false }] },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput);
+
+  assert.equal(unfulfilledCompletionReason(deliveryInput, completed("xcodebuild -scheme ExampleApp build")), null);
+  assert.equal(unfulfilledCompletionReason(deliveryInput, completed("ios-deploy --bundle build/ExampleApp.app")), null);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({
+    workflowTask: "Build and deliver the iOS application.",
+    stageId: "implement",
+    agentId: "implementation-agent",
+    artifact: completed("xcodebuild -scheme ExampleApp archive").artifact
+  }), true);
+});
+
+test("implementation does not accept unrelated, failed, timed-out, or rejected commands as delivery evidence", () => {
+  const deliveryInput = { ...input, workflowId: "build-feature", workflowTask: "Build and deliver the iOS application." } as StageExecutionInput;
+  const output = (actionResult: Record<string, unknown>) => ({
+    outcome: "completed",
+    summary: "The command ran through the governed command executor but did not prove delivery.",
+    artifact: { findings: ["No durable product delivery is proven."], nextAction: "Run a successful build.", actionResults: [actionResult] },
+    requestedCommands: [],
+    requestedFileWrites: []
+  } as StageExecutionOutput);
+
+  assert.match(unfulfilledCompletionReason(deliveryInput, output({ commandLine: "npm test", exitCode: 0, timedOut: false })) ?? "", /successful delivery command receipt/iu);
+  assert.match(unfulfilledCompletionReason(deliveryInput, output({ commandLine: "xcodebuild -scheme ExampleApp build", exitCode: 65, timedOut: false })) ?? "", /successful delivery command receipt/iu);
+  assert.match(unfulfilledCompletionReason(deliveryInput, output({ commandLine: "ios-deploy --bundle build/ExampleApp.app", exitCode: 0, timedOut: true })) ?? "", /successful delivery command receipt/iu);
+  assert.match(unfulfilledCompletionReason(deliveryInput, output({ commandLine: "xcodebuild build", exitCode: 0, timedOut: false, type: "local_command_rejected" })) ?? "", /successful delivery command receipt/iu);
+});
+
 test("review workflow finalizers are not misclassified as product delivery stages", () => {
   const reviewInput = {
     ...input,
