@@ -11,7 +11,7 @@ test("training proposal actions launch linked evaluations and advance only from 
   assert.match(actions, /evaluation\.status === "completed"[\s\S]+Accept evaluation result/u);
   assert.match(actions, /Evaluation in progress/u);
   assert.match(actions, /Retry evaluation/u);
-  assert.match(actions, /item\.status === "evaluated"[\s\S]+Record promotion decision/u);
+  assert.match(actions, /item\.status === "evaluated"[\s\S]+not promotion eligible[\s\S]+Record promotion decision/u);
   assert.match(actions, /item\.status === "promoted"[\s\S]+No further inbox action is required/u);
   assert.doesNotMatch(actions.slice(actions.indexOf('item.status === "approved"'), actions.indexOf('item.status === "evaluated"')), /Approve evaluation/u);
 });
@@ -24,6 +24,12 @@ test("evaluated status requires a completed linked run and derives its note from
   assert.match(source, /status === "evaluated"[\s\S]+linked approved evaluation run is required/u);
   assert.match(source, /details\.run\?\.status !== "completed"/u);
   assert.match(source, /Accepted completed evaluation run/u);
+});
+
+test("promotion requires a PASS verdict and non-pass evidence stays reviewable", () => {
+  assert.match(source, /trainingEvaluationVerdict\(summary\) !== "PASS"/u);
+  assert.match(source, /Only a PASS evaluation is eligible for promotion/u);
+  assert.match(source, /View evidence run/u);
 });
 
 test("training evaluation queueing seeds the exact workflow snapshot before creating the run", () => {

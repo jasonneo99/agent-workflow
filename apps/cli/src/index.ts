@@ -26691,7 +26691,13 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         const summary = stringValue(finalArtifact?.content?.summary) ?? stringValue(finalArtifact?.content?.output) ?? "Completed evaluation evidence is attached to the linked run.";
         decisionNote = `Accepted completed evaluation run ${current.evaluation.runId}. Evidence: ${finalArtifact?.uri ?? "run stage outputs"}. ${summary}`.slice(0, 2000);
       }
-      if (status === "promoted" && current?.status !== "evaluated") throw new Error("Only an evaluated proposal can record a promotion decision.");
+      if (status === "promoted") {
+        if (current?.status !== "evaluated" || !current.evaluation?.runId) throw new Error("Only an evaluated proposal can record a promotion decision.");
+        const artifacts = await listArtifacts({ runId: current.evaluation.runId, kind: "stage_output" });
+        const finalArtifact = artifacts.at(-1);
+        const summary = stringValue(finalArtifact?.content?.summary) ?? stringValue(finalArtifact?.content?.output) ?? "";
+        if (trainingEvaluationVerdict(summary) !== "PASS") throw new Error("Only a PASS evaluation is eligible for promotion. Run another holdout after resolving the recorded evidence gaps.");
+      }
       await decideTrainingProposal({
         projectDir,
         id,
@@ -42268,6 +42274,11 @@ type TrainingProposalEvaluationView = {
   artifactUri: string | null;
 };
 
+function trainingEvaluationVerdict(summary: string | null | undefined): "PASS" | "FAIL" | "INCONCLUSIVE" | null {
+  const match = summary?.trim().match(/^(PASS|FAIL|INCONCLUSIVE)\b/u);
+  return match ? match[1] as "PASS" | "FAIL" | "INCONCLUSIVE" : null;
+}
+
 async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox): Promise<Map<string, TrainingProposalEvaluationView>> {
   const entries = await Promise.all(inbox.items.filter((item) => item.evaluation?.runId).map(async (item) => {
     const runId = item.evaluation?.runId as string;
@@ -42319,7 +42330,8 @@ function renderTrainingProposalActions(item: TrainingProposalInbox["items"][numb
   const hidden = `${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">`;
   const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
   const evaluationForm = (label: string) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-evaluation">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
-  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">Evaluation run ${escapeHtml(evaluation.runId.slice(0, 8))}</a><br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
+  const verdict = trainingEvaluationVerdict(evaluation?.summary);
+  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">View evidence run ${escapeHtml(evaluation.runId.slice(0, 8))}</a><br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(verdict ?? evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
   if (item.status === "pending") {
     return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
   }
@@ -42336,7 +42348,10 @@ function renderTrainingProposalActions(item: TrainingProposalInbox["items"][numb
     return `<p><strong>Evaluation in progress</strong><br><span class="muted">Evidence will appear here when the linked run reaches a truthful terminal state.</span></p>${evidence}`;
   }
   if (item.status === "evaluated") {
-    return `<p><strong>Evaluation accepted</strong><br><span class="muted">The linked run is the evidence source for promotion review.</span></p>${evidence}${form('<div class="actions"><button name="status" value="promoted" type="submit">Record promotion decision</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Promotion decision and rollback confirmation", true)}`;
+    if (verdict !== "PASS") {
+      return `<p><strong>Evaluation accepted — not promotion eligible</strong><br><span class="muted">${escapeHtml(verdict ?? "UNKNOWN")} evidence is preserved for review. Resolve the evidence gaps before running a new evaluation.</span></p>${evidence}${form('<div class="actions"><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Review note (optional)")}`;
+    }
+    return `<p><strong>PASS evaluation accepted</strong><br><span class="muted">The linked run is the evidence source for promotion review.</span></p>${evidence}${form('<div class="actions"><button name="status" value="promoted" type="submit">Record promotion decision</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Promotion decision and rollback confirmation", true)}`;
   }
   if (item.status === "promoted") {
     return '<p><strong>Promotion recorded</strong><br><span class="muted">No further inbox action is required.</span></p>';
