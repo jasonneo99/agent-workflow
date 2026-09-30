@@ -26778,6 +26778,15 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     response.end(JSON.stringify(inbox, null, 2));
     return;
   }
+  if (requestUrl.pathname === "/api/training-holdout-evidence") {
+    const requested = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT;
+    const id = requestUrl.searchParams.get("id") ?? "";
+    const { selected } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), requested, process.cwd());
+    const reportPath = path.join(selected, ".agent-workflow", "evaluations", id.replace(/[^a-zA-Z0-9._-]+/gu, "-"), "measured-holdout.json");
+    try { response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(await fs.readFile(reportPath, "utf8")); }
+    catch { response.writeHead(404, { "content-type": "application/json; charset=utf-8" }); response.end(JSON.stringify({ error: "Measured holdout evidence is not available." })); }
+    return;
+  }
 
   if (requestUrl.pathname === "/api/activity") {
     const report = await loadUnifiedActivityReport(requestUrl.searchParams);
@@ -28227,7 +28236,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       readTrainingProposalInbox(projectDir),
       readLatestTrainingDiscoveryReport(projectDir)
     ]);
-    const evaluationViews = await loadTrainingProposalEvaluationViews(inbox);
+    const evaluationViews = await loadTrainingProposalEvaluationViews(inbox, projectDir);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
     response.end(renderTrainingProposalsHtml(inbox, report, localProjects, projectDir, requestUrl.searchParams, evaluationViews));
     return;
@@ -42320,6 +42329,7 @@ type TrainingProposalEvaluationView = {
   status: string;
   summary: string | null;
   artifactUri: string | null;
+  evidenceHref: string | null;
 };
 
 function trainingEvaluationVerdict(summary: string | null | undefined): "PASS" | "FAIL" | "INCONCLUSIVE" | null {
@@ -42327,7 +42337,7 @@ function trainingEvaluationVerdict(summary: string | null | undefined): "PASS" |
   return match ? match[1] as "PASS" | "FAIL" | "INCONCLUSIVE" : null;
 }
 
-async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox): Promise<Map<string, TrainingProposalEvaluationView>> {
+async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox, projectDir?: string): Promise<Map<string, TrainingProposalEvaluationView>> {
   const entries = await Promise.all(inbox.items.filter((item) => item.evaluation?.runId).map(async (item) => {
     const runId = item.evaluation?.runId as string;
     const [details, artifacts] = await Promise.all([
@@ -42335,15 +42345,19 @@ async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox)
       listArtifacts({ runId, kind: "stage_output" }).catch(() => [])
     ]);
     const finalArtifact = artifacts.at(-1) ?? null;
-    const summary = stringValue(finalArtifact?.content?.summary)
+    const runSummary = stringValue(finalArtifact?.content?.summary)
       ?? stringValue(finalArtifact?.content?.output)
       ?? stringValue(finalArtifact?.content?.text)
       ?? null;
+    const measuredPath = projectDir ? path.join(projectDir, ".agent-workflow", "evaluations", item.id.replace(/[^a-zA-Z0-9._-]+/gu, "-"), "measured-holdout.json") : null;
+    const measured = measuredPath ? await fs.readFile(measuredPath, "utf8").then((value) => JSON.parse(value) as { verdict?: string; measuredObservations?: number; plannedObservations?: number; failures?: string[] }).catch(() => null) : null;
+    const summary = measured?.verdict ? `${measured.verdict}: measured ${measured.measuredObservations ?? 0}/${measured.plannedObservations ?? 0} blinded observations.${measured.failures?.length ? ` ${measured.failures.join(" ")}` : ""}` : runSummary;
     return [item.id, {
       runId,
       status: details.run?.status ?? "missing",
       summary: summary?.slice(0, 600) ?? null,
-      artifactUri: finalArtifact?.uri ?? null
+      artifactUri: finalArtifact?.uri ?? null,
+      evidenceHref: measured ? `/api/training-holdout-evidence?project=${encodeURIComponent(projectDir ?? "")}&id=${encodeURIComponent(item.id)}` : null
     }] as const;
   }));
   return new Map(entries);
@@ -42379,7 +42393,7 @@ function renderTrainingProposalActions(item: TrainingProposalInbox["items"][numb
   const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
   const evaluationForm = (label: string) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-evaluation">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
   const verdict = trainingEvaluationVerdict(evaluation?.summary);
-  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">View evidence run ${escapeHtml(evaluation.runId.slice(0, 8))}</a><br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(verdict ?? evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
+  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">View evaluation run ${escapeHtml(evaluation.runId.slice(0, 8))}</a>${evaluation.evidenceHref ? ` · <a href="${escapeHtml(evaluation.evidenceHref)}">Measured evidence JSON</a>` : ""}<br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(verdict ?? evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
   if (item.status === "pending") {
     return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
   }

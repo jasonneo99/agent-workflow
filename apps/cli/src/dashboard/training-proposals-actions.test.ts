@@ -29,7 +29,9 @@ test("evaluated status requires a completed linked run and derives its note from
 test("promotion requires a PASS verdict and non-pass evidence stays reviewable", () => {
   assert.match(source, /trainingEvaluationVerdict\(summary\) !== "PASS"/u);
   assert.match(source, /Only a PASS evaluation is eligible for promotion/u);
-  assert.match(source, /View evidence run/u);
+  assert.match(source, /View evaluation run/u);
+  assert.match(source, /Measured evidence JSON/u);
+  assert.match(source, /\/api\/training-holdout-evidence/u);
 });
 
 test("training evaluation queueing seeds the exact workflow snapshot before creating the run", () => {
