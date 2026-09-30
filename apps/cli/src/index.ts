@@ -3588,6 +3588,31 @@ program
   });
 
 program
+  .command("dismiss")
+  .description("Dismiss a failed or blocked run: moves it to cancelled so it no longer appears in queues")
+  .argument("<run-id>", "workflow run id to dismiss")
+  .option("--reason <text>", "reason recorded in the dismissal receipt", "Dismissed from CLI.")
+  .option("--actor <name>", "person or tool dismissing", process.env.AGENTFLOW_REQUESTER ?? process.env.USER ?? "cli")
+  .action(async (runId: string, options: { reason: string; actor: string }) => {
+    const serviceChecks = await checkServices();
+    const missing = serviceChecks.filter((check) => !check.reachable);
+    if (missing.length) {
+      for (const check of missing) {
+        console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
+      }
+      process.exitCode = 1;
+      return;
+    }
+    const ok = await dismissFailedWorkflowRun({ runId, actor: options.actor, reason: options.reason });
+    if (!ok) {
+      console.error(`Could not dismiss run ${runId}: not found or not in a dismissible state (failed/blocked/cancelled).`);
+      process.exitCode = 1;
+      return;
+    }
+    console.log(`Dismissed run ${runId}.`);
+  });
+
+program
   .command("replay-run")
   .description("Create a new queued run from an existing run's stored task, policy, provider, and compiled context")
   .requiredOption("-r, --run <id>", "source workflow run id")
@@ -12026,7 +12051,19 @@ function parseStaleRunReconcileLimit(value = process.env.AGENTFLOW_STALE_RUN_REC
 }
 
 function agentWorkflowPluginRoot(): string {
-  return path.join(os.homedir(), ".codex", "plugins", "cache", "personal", "agent-workflow", "0.1.0+codex.20260729214514");
+  const sourceRoot = path.join(os.homedir(), "plugins", "agent-workflow");
+  if (fsSync.existsSync(path.join(sourceRoot, ".codex-plugin", "plugin.json"))) return sourceRoot;
+
+  const cacheRoot = path.join(os.homedir(), ".codex", "plugins", "cache", "personal", "agent-workflow");
+  if (!fsSync.existsSync(cacheRoot)) return sourceRoot;
+  const installed = fsSync.readdirSync(cacheRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && fsSync.existsSync(path.join(cacheRoot, entry.name, ".codex-plugin", "plugin.json")))
+    .map((entry) => ({
+      path: path.join(cacheRoot, entry.name),
+      modifiedAt: fsSync.statSync(path.join(cacheRoot, entry.name)).mtimeMs
+    }))
+    .sort((left, right) => right.modifiedAt - left.modifiedAt);
+  return installed[0]?.path ?? sourceRoot;
 }
 
 async function loadRuntimeMonitorReport(input: { checkMcp?: boolean } = {}): Promise<RuntimeMonitorReport> {
