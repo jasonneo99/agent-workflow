@@ -4259,8 +4259,6 @@ program
     const proposal = inbox.items.find((item) => item.id === options.proposal);
     if (!proposal || !["approved", "evaluated"].includes(proposal.status)) throw new Error("Training holdouts require an approved or previously evaluated proposal.");
     const agents = await loadAgentsForProject(projectDir);
-    const judge = resolveAgent(agents, "eval-curator");
-    if (!judge) throw new Error("The eval-curator agent is required to score training holdouts.");
     const candidateContext = [
       `Publisher: ${proposal.proposal.publisher}`,
       `Official source: ${proposal.proposal.url}`,
@@ -4269,7 +4267,7 @@ program
       `Required holdout: ${proposal.proposal.holdoutEvaluation}`,
       "Use these concepts only when supported by the synthetic case evidence. Never invent provider controls or facts."
     ].join("\n");
-    const report = await runTrainingHoldout({ design, candidateContext, agents, judge, projectConfig: await loadProjectConfig(projectDir), projectRootUri: projectDir, provider: providerFromEnv(options.provider), concurrency: parseBoundedPositiveInteger(options.concurrency, 2, 8) });
+    const report = await runTrainingHoldout({ design, candidateContext, agents, projectConfig: await loadProjectConfig(projectDir), projectRootUri: projectDir, provider: providerFromEnv(options.provider), concurrency: parseBoundedPositiveInteger(options.concurrency, 2, 8) });
     if (options.write) {
       const outDir = path.join(projectDir, ".agent-workflow", "evaluations", options.proposal.replace(/[^a-zA-Z0-9._-]+/gu, "-"));
       await fs.mkdir(outDir, { recursive: true });
