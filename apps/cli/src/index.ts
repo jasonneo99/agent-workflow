@@ -42207,20 +42207,22 @@ function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: Train
     <td><span>${escapeHtml(item.proposal.risks)}</span><br><strong>Holdout:</strong> ${escapeHtml(item.proposal.holdoutEvaluation)}</td>
     <td>${renderTrainingProposalActions(item, selected, params)}</td>
   </tr>`).join("");
-  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Training Proposals</title><style>${dashboardCss()}</style></head><body>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Training Proposals</title><style>${dashboardCss()}
+  .training-proposal-table{min-width:1180px;table-layout:fixed}.training-proposal-table th:nth-child(1){width:15%}.training-proposal-table th:nth-child(2){width:24%}.training-proposal-table th:nth-child(3){width:15%}.training-proposal-table th:nth-child(4){width:29%}.training-proposal-table th:nth-child(5){width:17%}.training-proposal-actions input{box-sizing:border-box;width:100%;min-width:0}.training-proposal-actions .actions{display:grid;grid-template-columns:1fr;gap:.4rem;margin-top:.45rem}.training-proposal-actions button{width:100%;white-space:normal}
+  </style></head><body>
   ${dashboardNav("training-proposals")}
   <main><header><div><p class="eyebrow">Learning</p><h1>Training proposals</h1><p>Public-source evidence stays inert until reviewed, evaluated on holdouts, and explicitly promoted.</p></div></header>
   ${renderDashboardFlash(params)}
   <section class="panel"><form method="get" action="/training-proposals"><label>Project<select name="project">${options}</select></label><button type="submit">Inspect</button></form></section>
   <section class="metrics">${metricCard("Pending decision", pending, `${inbox.items.length} total proposals`)}${metricCard("Evaluation approved", approved, "run bounded holdouts next")}${metricCard("Evaluated", evaluated, "ready for promotion review")}${metricCard("Last discovery", report?.generatedAt ? formatDashboardDateTimeText(report.generatedAt) : "never", report?.status ?? "no report")}${metricCard("Sources scanned", report?.scannedSources ?? 0, `${report?.unsafeSources.length ?? 0} quarantined`)}</section>
-  <section class="panel"><h2>Governed inbox</h2><p class="muted">Each row shows its actual next step. Approval permits a bounded holdout evaluation; recording evaluation or promotion does not itself change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Next action</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
+  <section class="panel"><h2>Governed inbox</h2><p class="muted">Each row shows its actual next step. Approval permits a bounded holdout evaluation; recording evaluation or promotion does not itself change shared agent definitions, tools, authority, routing, or executable code.</p><div class="table-wrap"><table class="training-proposal-table"><thead><tr><th>Source</th><th>Targets / benefit</th><th>Status</th><th>Risk / evaluation</th><th>Next action</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No training proposals have been discovered.</td></tr>'}</tbody></table></div></section>
   <section class="panel"><h2>Manual run</h2><p><code>npm run training-discovery -- --project ${escapeHtml(selected)} --force</code></p><p><a href="/api/training-proposals?project=${encodeURIComponent(selected)}">JSON inbox</a></p></section>
   </main></body></html>`;
 }
 
 function renderTrainingProposalActions(item: TrainingProposalInbox["items"][number], selected: string, params: URLSearchParams): string {
   const hidden = `${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">`;
-  const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
+  const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
   if (item.status === "pending") {
     return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
   }
