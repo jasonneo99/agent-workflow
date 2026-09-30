@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { decideTrainingProposal, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoverySource } from "./index.js";
+import { decideTrainingProposal, linkTrainingProposalEvaluation, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoverySource } from "./index.js";
 
 const source: TrainingDiscoverySource = {
   id: "official-test",
@@ -54,7 +54,10 @@ test("discovered evidence enters a governed inbox and decisions are durable", as
   assert.equal(inbox.items[0].status, "pending");
   const decided = await decideTrainingProposal({ projectDir, id: inbox.items[0].id, status: "approved", reviewer: "test", note: "evaluate on holdout" });
   assert.equal(decided.items[0].status, "approved");
+  const linked = await linkTrainingProposalEvaluation({ projectDir, id: inbox.items[0].id, runId: "00000000-0000-4000-8000-000000000001", reviewer: "test" });
+  assert.equal(linked.items[0].evaluation?.runId, "00000000-0000-4000-8000-000000000001");
   assert.match(await fs.readFile(path.join(projectDir, ".agent-workflow", "learning", "training-discovery", "receipts.jsonl"), "utf8"), /"event":"decision"/u);
+  assert.match(await fs.readFile(path.join(projectDir, ".agent-workflow", "learning", "training-discovery", "receipts.jsonl"), "utf8"), /"event":"evaluation_queued"/u);
 });
 
 test("instruction-like external content is quarantined", async () => {

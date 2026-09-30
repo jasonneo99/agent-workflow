@@ -165,7 +165,7 @@ import { buildObservabilityReport, formatObservabilityReport, type Observability
 import { buildWorkflowGraphReport, formatWorkflowGraphReport, type WorkflowGraphReport } from "../../../packages/workflow-inspector/src/index.js";
 import { constructDynamicWorkflow, optimizeStaticWorkflowForLatency, workflowArchetypes } from "../../../packages/dynamic-workflow/src/index.js";
 import { buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../packages/roadmap-planner/src/index.js";
-import { decideTrainingProposal, formatTrainingDiscoveryReport, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, type TrainingProposalInbox } from "../../../packages/training-discovery/src/index.js";
+import { decideTrainingProposal, formatTrainingDiscoveryReport, linkTrainingProposalEvaluation, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery, type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, type TrainingProposalInbox } from "../../../packages/training-discovery/src/index.js";
 import { parseRoadmapSnapshot, readRoadmapSnapshotFromProject, roadmapSnapshotNeedsPublication, serverRoadmapSnapshot, type RoadmapSnapshot, type ServerRoadmapSnapshot } from "../../../packages/roadmap-snapshot/src/index.js";
 import { createRedisLeaseStore, redisLeaseKey, type LeaseStore } from "../../../packages/idempotency-lease/src/index.js";
 import { assertContextProjectPath, buildContextEfficiencyReport, buildShadowObservation, contextCacheKey, contextHoldoutCasesSchema, contextRoutingPolicySchema, decideContextRoute, delegateContextSummary, enforceContextDecision, evaluateContextHoldouts, ProjectContextCache, readContextCacheHealth, readShadowObservations, sha256 as contextSha256, writeShadowObservationBatch, type ContextIntent, type ContextRoutingPolicy } from "../../../packages/context-gateway/src/index.js";
@@ -26609,6 +26609,57 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/training-proposal-evaluation") {
+    const form = await readFormBody(request);
+    const project = form.get("project")?.trim() ?? "";
+    const id = form.get("id")?.trim() ?? "";
+    try {
+      if (!project || !id) throw new Error("Project and proposal are required.");
+      const { selected: projectDir } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), project, process.cwd());
+      const inbox = await readTrainingProposalInbox(projectDir);
+      const item = inbox.items.find((candidate) => candidate.id === id);
+      if (!item) throw new Error(`Unknown training proposal: ${id}`);
+      if (item.status !== "approved") throw new Error("Only approved training proposals can start an evaluation.");
+      if (item.evaluation?.runId) {
+        const existing = await getWorkflowRunDetails(item.evaluation.runId);
+        if (existing.run && ["queued", "leased", "running", "completed"].includes(existing.run.status)) {
+          respondDashboardAction(request, response, form, { ok: true, title: "Evaluation already exists", runId: existing.run.id, output: `Linked evaluation run ${existing.run.id} is ${existing.run.status}.` }, "/training-proposals");
+          return;
+        }
+      }
+      const task = [
+        `Evaluate approved training proposal ${item.id}.`,
+        `Publisher: ${item.proposal.publisher}`,
+        `Source: ${item.proposal.url}`,
+        `Targets: ${item.proposal.targets.join(", ")}`,
+        `Claimed benefit: ${item.proposal.claimedBenefit}`,
+        `Known risks: ${item.proposal.risks}`,
+        `Required holdout: ${item.proposal.holdoutEvaluation}`,
+        `Expected cost: ${item.proposal.expectedCost}`,
+        `Rollback plan: ${item.proposal.rollbackPlan}`,
+        "Use only public-source concepts and local synthetic/project-safe evidence. Do not change shared agent definitions, tools, authority, routing, executable code, or production behavior. Produce a PASS, FAIL, or INCONCLUSIVE verdict with cited artifacts and measured evidence."
+      ].join("\n");
+      const queued = await queueWorkflow({
+        workflowId: "training-evaluation",
+        projectPath: projectDir,
+        task,
+        evaluationMetadata: {
+          source: "training-proposal",
+          trainingProposalId: item.id,
+          trainingProposalSourceId: item.sourceId,
+          trainingProposalContentSha256: item.contentSha256,
+          suiteId: `training-proposal:${item.id}`
+        }
+      });
+      if (!queued.ok) throw new Error(queued.error);
+      await linkTrainingProposalEvaluation({ projectDir, id, runId: queued.run.runId, reviewer: "dashboard-operator" });
+      respondDashboardAction(request, response, form, { ok: true, title: "Training evaluation queued", runId: queued.run.runId, output: `Run ${queued.run.runId} will generate the proposal evidence.` }, "/training-proposals");
+    } catch (error) {
+      respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/training-proposals");
+    }
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/training-proposal-decision") {
     const form = await readFormBody(request);
     const project = form.get("project")?.trim() ?? "";
@@ -26627,12 +26678,23 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
         }, "/training-proposals");
         return;
       }
+      let decisionNote = form.get("note")?.trim() || undefined;
+      if (status === "evaluated") {
+        if (current?.status !== "approved" || !current.evaluation?.runId) throw new Error("A linked approved evaluation run is required.");
+        const details = await getWorkflowRunDetails(current.evaluation.runId);
+        if (details.run?.status !== "completed") throw new Error(`Evaluation run ${current.evaluation.runId} is ${details.run?.status ?? "missing"}; only completed evidence can be accepted.`);
+        const artifacts = await listArtifacts({ runId: current.evaluation.runId, kind: "stage_output" });
+        const finalArtifact = artifacts.at(-1);
+        const summary = stringValue(finalArtifact?.content?.summary) ?? stringValue(finalArtifact?.content?.output) ?? "Completed evaluation evidence is attached to the linked run.";
+        decisionNote = `Accepted completed evaluation run ${current.evaluation.runId}. Evidence: ${finalArtifact?.uri ?? "run stage outputs"}. ${summary}`.slice(0, 2000);
+      }
+      if (status === "promoted" && current?.status !== "evaluated") throw new Error("Only an evaluated proposal can record a promotion decision.");
       await decideTrainingProposal({
         projectDir,
         id,
         status: status as Exclude<TrainingProposalDecisionStatus, "pending">,
         reviewer: form.get("reviewer")?.trim() || "dashboard-operator",
-        note: form.get("note")?.trim() || undefined
+        note: decisionNote
       });
       respondDashboardAction(request, response, form, { ok: true, title: `Training proposal marked ${status}`, output: `Recorded ${status} decision for ${id}.` }, "/training-proposals");
     } catch (error) {
@@ -28108,8 +28170,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       readTrainingProposalInbox(projectDir),
       readLatestTrainingDiscoveryReport(projectDir)
     ]);
+    const evaluationViews = await loadTrainingProposalEvaluationViews(inbox);
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-    response.end(renderTrainingProposalsHtml(inbox, report, localProjects, projectDir, requestUrl.searchParams));
+    response.end(renderTrainingProposalsHtml(inbox, report, localProjects, projectDir, requestUrl.searchParams, evaluationViews));
     return;
   }
 
@@ -42195,7 +42258,36 @@ function dashboardNav(active: "dashboard" | "studio" | "queue" | "approvals" | "
   </nav>`;
 }
 
-function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: TrainingDiscoveryReport | null, projects: DashboardProjectSummary[], selected: string, params: URLSearchParams): string {
+type TrainingProposalEvaluationView = {
+  runId: string;
+  status: string;
+  summary: string | null;
+  artifactUri: string | null;
+};
+
+async function loadTrainingProposalEvaluationViews(inbox: TrainingProposalInbox): Promise<Map<string, TrainingProposalEvaluationView>> {
+  const entries = await Promise.all(inbox.items.filter((item) => item.evaluation?.runId).map(async (item) => {
+    const runId = item.evaluation?.runId as string;
+    const [details, artifacts] = await Promise.all([
+      getWorkflowRunDetails(runId),
+      listArtifacts({ runId, kind: "stage_output" }).catch(() => [])
+    ]);
+    const finalArtifact = artifacts.at(-1) ?? null;
+    const summary = stringValue(finalArtifact?.content?.summary)
+      ?? stringValue(finalArtifact?.content?.output)
+      ?? stringValue(finalArtifact?.content?.text)
+      ?? null;
+    return [item.id, {
+      runId,
+      status: details.run?.status ?? "missing",
+      summary: summary?.slice(0, 600) ?? null,
+      artifactUri: finalArtifact?.uri ?? null
+    }] as const;
+  }));
+  return new Map(entries);
+}
+
+function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: TrainingDiscoveryReport | null, projects: DashboardProjectSummary[], selected: string, params: URLSearchParams, evaluationViews = new Map<string, TrainingProposalEvaluationView>()): string {
   const options = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${project.rootUri === selected ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
   const pending = inbox.items.filter((item) => item.status === "pending").length;
   const approved = inbox.items.filter((item) => item.status === "approved").length;
@@ -42205,7 +42297,7 @@ function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: Train
     <td>${escapeHtml(item.proposal.targets.join(", "))}<br><span class="muted">${escapeHtml(item.proposal.claimedBenefit)}</span></td>
     <td><span class="status ${escapeHtml(item.status)}">${escapeHtml(item.status)}</span><br><span class="muted">${escapeHtml(item.proposal.confidence)} confidence · ${escapeHtml(item.proposal.license)}</span>${item.reviewer ? `<br><span class="muted">Reviewed by ${escapeHtml(item.reviewer)}${item.note ? ` · ${escapeHtml(item.note)}` : ""}</span>` : ""}</td>
     <td><span>${escapeHtml(item.proposal.risks)}</span><br><strong>Holdout:</strong> ${escapeHtml(item.proposal.holdoutEvaluation)}</td>
-    <td>${renderTrainingProposalActions(item, selected, params)}</td>
+    <td>${renderTrainingProposalActions(item, selected, params, evaluationViews.get(item.id))}</td>
   </tr>`).join("");
   return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Training Proposals</title><style>${dashboardCss()}
   .training-proposal-table{min-width:1180px;table-layout:fixed}.training-proposal-table th:nth-child(1){width:15%}.training-proposal-table th:nth-child(2){width:24%}.training-proposal-table th:nth-child(3){width:15%}.training-proposal-table th:nth-child(4){width:29%}.training-proposal-table th:nth-child(5){width:17%}.training-proposal-actions input{box-sizing:border-box;width:100%;min-width:0}.training-proposal-actions .actions{display:grid;grid-template-columns:1fr;gap:.4rem;margin-top:.45rem}.training-proposal-actions button{width:100%;white-space:normal}
@@ -42220,17 +42312,28 @@ function renderTrainingProposalsHtml(inbox: TrainingProposalInbox, report: Train
   </main></body></html>`;
 }
 
-function renderTrainingProposalActions(item: TrainingProposalInbox["items"][number], selected: string, params: URLSearchParams): string {
+function renderTrainingProposalActions(item: TrainingProposalInbox["items"][number], selected: string, params: URLSearchParams, evaluation?: TrainingProposalEvaluationView): string {
   const hidden = `${dashboardReturnInput("/training-proposals", params)}<input type="hidden" name="project" value="${escapeHtml(selected)}"><input type="hidden" name="id" value="${escapeHtml(item.id)}">`;
   const form = (body: string, notePlaceholder: string, noteRequired = false) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<input name="note" maxlength="500" placeholder="${escapeHtml(notePlaceholder)}"${noteRequired ? " required" : ""}>${body}</form>`;
+  const evaluationForm = (label: string) => `<form class="training-proposal-actions" method="post" action="/api/training-proposal-evaluation">${hidden}<button type="submit">${escapeHtml(label)}</button></form>`;
+  const evidence = evaluation ? `<p class="training-evaluation-evidence"><a href="/run?id=${encodeURIComponent(evaluation.runId)}">Evaluation run ${escapeHtml(evaluation.runId.slice(0, 8))}</a><br><span class="status ${escapeHtml(evaluation.status)}">${escapeHtml(evaluation.status)}</span>${evaluation.summary ? `<br><span class="muted">${escapeHtml(evaluation.summary)}</span>` : ""}</p>` : "";
   if (item.status === "pending") {
     return form('<div class="actions"><button name="status" value="approved" type="submit">Approve evaluation</button><button class="secondary" name="status" value="rejected" type="submit">Reject</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Decision note (optional)");
   }
   if (item.status === "approved") {
-    return `<p><strong>Evaluation approved</strong><br><span class="muted">Run the stated holdout, then record its evidence and outcome.</span></p>${form('<div class="actions"><button name="status" value="evaluated" type="submit">Record evaluation complete</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Evaluation result and evidence", true)}`;
+    if (!evaluation) {
+      return `<p><strong>Evaluation approved</strong><br><span class="muted">Agent Workflow will run the stated holdout and collect evidence.</span></p>${evaluationForm("Run evaluation")}`;
+    }
+    if (evaluation.status === "completed") {
+      return `<p><strong>Evaluation evidence ready</strong><br><span class="muted">Review the linked run, then accept its generated evidence.</span></p>${evidence}<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<button name="status" value="evaluated" type="submit">Accept evaluation result</button></form>`;
+    }
+    if (["failed", "blocked", "cancelled", "missing"].includes(evaluation.status)) {
+      return `<p><strong>Evaluation needs attention</strong><br><span class="muted">The linked run did not produce accepted evidence.</span></p>${evidence}${evaluationForm("Retry evaluation")}`;
+    }
+    return `<p><strong>Evaluation in progress</strong><br><span class="muted">Evidence will appear here when the linked run reaches a truthful terminal state.</span></p>${evidence}`;
   }
   if (item.status === "evaluated") {
-    return `<p><strong>Evaluation recorded</strong><br><span class="muted">Review the evidence before recording a promotion decision.</span></p>${form('<div class="actions"><button name="status" value="promoted" type="submit">Record promotion decision</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Promotion evidence and rollback plan", true)}`;
+    return `<p><strong>Evaluation accepted</strong><br><span class="muted">The linked run is the evidence source for promotion review.</span></p>${evidence}${form('<div class="actions"><button name="status" value="promoted" type="submit">Record promotion decision</button><button class="secondary" name="status" value="stale" type="submit">Mark stale</button></div>', "Promotion decision and rollback confirmation", true)}`;
   }
   if (item.status === "promoted") {
     return '<p><strong>Promotion recorded</strong><br><span class="muted">No further inbox action is required.</span></p>';

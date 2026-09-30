@@ -1,0 +1,39 @@
+id: training-evaluation
+name: Training Proposal Evaluation
+description: Convert one approved public-source training proposal into a bounded local holdout, execute it without changing production behavior, and produce reviewable evidence.
+lead: eval-curator
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: design-holdout
+    agent: eval-curator
+    goal: Translate the approved proposal into explicit synthetic cases, baseline expectations, pass/fail criteria, privacy constraints, and rollback conditions. Do not change agent definitions or runtime policy.
+    context:
+      load:
+        - project_context
+        - evaluation_results
+        - run_receipts
+      max_tokens: 5000
+    output: training_holdout_plan
+  - id: execute-holdout
+    agent: test-engineer
+    goal: Execute the approved bounded holdout using existing local fixtures and policy-allowed verification commands. Record commands, outputs, coverage, failures, and unavailable checks truthfully. Do not modify production behavior.
+    context:
+      load:
+        - training_holdout_plan
+        - commands
+        - relevant_source_files
+      max_tokens: 7000
+    output: training_holdout_results
+  - id: review-evidence
+    agent: model-improvement-diagnostician
+    goal: Review the holdout results against the baseline and success criteria. Return PASS, FAIL, or INCONCLUSIVE with cited run evidence, measured benefit, risks, cost impact, and rollback recommendation. Do not promote or apply the proposal.
+    context:
+      load:
+        - training_holdout_plan
+        - training_holdout_results
+        - evaluation_results
+      max_tokens: 5000
+    output: training_evaluation_verdict

@@ -33,6 +33,10 @@ export type TrainingProposalInboxItem = {
   updatedAt: string;
   reviewer?: string;
   note?: string;
+  evaluation?: {
+    runId: string;
+    startedAt: string;
+  };
   proposal: TrainingDiscoveryProposal;
 };
 export type TrainingProposalInbox = { kind: "agentflow_training_proposal_inbox"; version: 1; updatedAt: string; items: TrainingProposalInboxItem[] };
@@ -209,6 +213,21 @@ export async function decideTrainingProposal(input: { projectDir: string; id: st
   inbox.updatedAt = updatedAt;
   await fs.writeFile(inboxPath(input.projectDir), `${JSON.stringify(inbox, null, 2)}\n`, "utf8");
   await appendReceipt(input.projectDir, { at: updatedAt, event: "decision", proposalId: item.id, sourceId: item.sourceId, contentSha256: item.contentSha256, status: item.status, reviewer: input.reviewer, note: input.note });
+  return inbox;
+}
+
+export async function linkTrainingProposalEvaluation(input: { projectDir: string; id: string; runId: string; reviewer: string; now?: Date }): Promise<TrainingProposalInbox> {
+  const inbox = await readTrainingProposalInbox(input.projectDir);
+  const updatedAt = (input.now ?? new Date()).toISOString();
+  const item = inbox.items.find((candidate) => candidate.id === input.id);
+  if (!item) throw new Error(`Unknown training proposal: ${input.id}`);
+  if (item.status !== "approved") throw new Error(`Training proposal ${input.id} must be approved before evaluation can run.`);
+  item.evaluation = { runId: input.runId, startedAt: updatedAt };
+  item.updatedAt = updatedAt;
+  item.reviewer = input.reviewer;
+  inbox.updatedAt = updatedAt;
+  await fs.writeFile(inboxPath(input.projectDir), `${JSON.stringify(inbox, null, 2)}\n`, "utf8");
+  await appendReceipt(input.projectDir, { at: updatedAt, event: "evaluation_queued", proposalId: item.id, sourceId: item.sourceId, contentSha256: item.contentSha256, status: item.status, reviewer: input.reviewer, runId: input.runId });
   return inbox;
 }
 

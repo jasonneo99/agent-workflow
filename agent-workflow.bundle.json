@@ -14,12 +14,12 @@
   },
   "counts": {
     "agents": 26,
-    "workflows": 21,
-    "files": 47
+    "workflows": 22,
+    "files": 48
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "f371033ccfd8435ed732051311a951c5870ec35fc04dd2e91443922ec6d943ed"
+    "value": "a52f9b18637d97ae9bb11fb2a754c66a2fd42a48f0c4d2bc523f40f40137f5e3"
   },
   "agents": [
     {
@@ -255,6 +255,11 @@
       "checksum": "2f4f00e97b7e4f8757319f79fc97b69950b660c5491fedd111cb3ed32148c862"
     },
     {
+      "id": "training-evaluation",
+      "path": "workflows/training-evaluation.yaml",
+      "checksum": "9be40d1bb9cee8d481e0cddc9bd69a8a0120ba04df1b9a897252d53f91f2a78e"
+    },
+    {
       "id": "wide-open-automation",
       "path": "workflows/wide-open-automation.yaml",
       "checksum": "0e84019da0cce28f5f9c6a8e30c0c31830f1d6538fba243324d57d78bd535f5c"
@@ -444,6 +449,10 @@
     {
       "path": "workflows/ship-release.yaml",
       "checksum": "2f4f00e97b7e4f8757319f79fc97b69950b660c5491fedd111cb3ed32148c862"
+    },
+    {
+      "path": "workflows/training-evaluation.yaml",
+      "checksum": "9be40d1bb9cee8d481e0cddc9bd69a8a0120ba04df1b9a897252d53f91f2a78e"
     },
     {
       "path": "workflows/wide-open-automation.yaml",
