@@ -19,7 +19,7 @@ stages:
     output: training_holdout_plan
   - id: execute-holdout
     agent: test-engineer
-    goal: Execute the approved bounded holdout using existing local fixtures and policy-allowed verification commands. Record commands, outputs, coverage, failures, and unavailable checks truthfully. Do not modify production behavior.
+    goal: Execute the approved bounded holdout using existing local fixtures and policy-allowed verification commands. Record commands, outputs, coverage, failures, and unavailable checks truthfully. Missing fixtures, an unavailable runner, or zero measurable coverage must produce a completed INCONCLUSIVE result with the exact evidence gap and next action; do not block solely because measurements are unavailable. Do not modify production behavior.
     context:
       load:
         - training_holdout_plan
@@ -29,7 +29,7 @@ stages:
     output: training_holdout_results
   - id: review-evidence
     agent: model-improvement-diagnostician
-    goal: Review the holdout results against the baseline and success criteria. Return PASS, FAIL, or INCONCLUSIVE with cited run evidence, measured benefit, risks, cost impact, and rollback recommendation. Do not promote or apply the proposal.
+    goal: Review the holdout results against the baseline and success criteria. Return a completed PASS, FAIL, or INCONCLUSIVE verdict with cited run evidence, measured benefit, risks, cost impact, rollback recommendation, and the next evidence needed. Missing measurements are an INCONCLUSIVE verdict, not a workflow blocker. Do not promote or apply the proposal.
     context:
       load:
         - training_holdout_plan
