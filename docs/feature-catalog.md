@@ -268,6 +268,14 @@ private product scoring belong outside this repository.
 - Quiet hours, event wakeups, budgets, backpressure, fair scheduling, and event
   cursors.
 - Compacted, health-checked, duplicate-resistant action receipts.
+- Daily official-source training proposals use a separate governed evaluation
+  lifecycle. Approved proposals can run blinded baseline/candidate holdouts
+  against registered agents and logical daemon lanes without changing runtime
+  prompts, tools, authority, or routing.
+- `agentflow training-holdout` isolates one synthetic case per model call,
+  records project-local observation evidence, rejects requested side effects,
+  and reports PASS, FAIL, or INCONCLUSIVE. A baseline ceiling remains
+  INCONCLUSIVE because equivalent candidate quality is not measured benefit.
 
 ### Learning proposals and application
 
@@ -517,7 +525,7 @@ This index maps every committed runtime package to its primary feature area.
 | `runtime-root` | Packaged and development runtime-path resolution. |
 | `schema-registry` | Discoverable JSON Schema resources. |
 | `storage` | PostgreSQL persistence, migrations, queueing, receipts, and graph data. |
-| `training-discovery` | Official-source discovery, quarantine, and proposal lifecycle. |
+| `training-discovery` | Official-source discovery, quarantine, proposal lifecycle, and measured blinded holdouts. |
 | `typed-decisions` | Provider-neutral decision holdouts, calibration, promotion gates, and receipts. |
 | `workflow-engine` | Compilation, queue execution, action loop, recovery, and telemetry. |
 | `workflow-inspector` | Workflow graph and policy inspection. |
