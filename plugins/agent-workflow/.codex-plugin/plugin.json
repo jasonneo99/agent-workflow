@@ -1,6 +1,6 @@
 {
   "name": "agent-workflow",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Run governed Agent Workflow agents and workflows from any local Codex project.",
   "author": {
     "name": "Agent Workflow Contributors"
@@ -22,8 +22,8 @@
     "longDescription": "Use portable development agents, project-local context, approvals, receipts, run history, and optional Agent Workflow Studio views from any trusted Codex project.",
     "developerName": "Agent Workflow Contributors",
     "category": "Productivity",
-    "websiteURL": "https://github.com/jasonneo99/agent-workflow/tree/master/plugins/agent-workflow",
-    "supportURL": "https://github.com/jasonneo99/agent-workflow/issues",
+    "websiteURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/README.md",
+    "supportURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/SUPPORT.md",
     "privacyPolicyURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/PRIVACY.md",
     "termsOfServiceURL": "https://github.com/jasonneo99/agent-workflow/blob/master/plugins/agent-workflow/TERMS.md",
     "logo": "./assets/agent-workflow-logo.png",
