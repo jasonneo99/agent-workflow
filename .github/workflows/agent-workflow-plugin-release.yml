@@ -26,14 +26,18 @@ jobs:
         run: |
           cd plugins
           zip -qr ../agent-workflow-plugin.zip agent-workflow -x 'agent-workflow/runtime/*'
+          zip -qr ../agent-workflow-skills-only.zip agent-workflow-skills-only
           cd ..
           unzip -t agent-workflow-plugin.zip
+          unzip -t agent-workflow-skills-only.zip
       - uses: actions/upload-artifact@v4
         with:
           name: agent-workflow-plugin
-          path: agent-workflow-plugin.zip
+          path: |
+            agent-workflow-plugin.zip
+            agent-workflow-skills-only.zip
       - name: Attach tagged release asset
         if: startsWith(github.ref, 'refs/tags/plugin-v')
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "${GITHUB_REF_NAME}" agent-workflow-plugin.zip --generate-notes
+        run: gh release create "${GITHUB_REF_NAME}" agent-workflow-plugin.zip agent-workflow-skills-only.zip --generate-notes
