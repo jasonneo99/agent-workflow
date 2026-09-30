@@ -3524,9 +3524,15 @@ program
     console.log(`Run: ${options.run}`);
     console.log(`Completed checkpoints preserved: ${result.completedTasks}/${result.totalTasks}`);
     console.log(`Requeued unfinished stages: ${result.requeuedTasks}`);
+    if (result.replacementRunId) {
+      console.log(`Replacement run: ${result.replacementRunId}`);
+      console.log("The source run remains terminal and immutable; process the replacement run.");
+    }
     console.log(formatStaleInputWarnings(staleReport).join("\n"));
     console.log("Process queued stages with:");
-    console.log("npm run worker -- --limit 6");
+    console.log(result.replacementRunId
+      ? `npm run worker -- --limit 6 # replacement ${result.replacementRunId}`
+      : "npm run worker -- --limit 6");
   });
 
 program
@@ -38982,6 +38988,7 @@ async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemon
         reason: `Superseded by root-repair replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
       return 1;
     }
+    if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued" || receipt.actionType === "workflow_supervisor_repair_queued")) continue;
     if (!missingExistingEvidence && !deliveryReason && !repairableFailure) continue;
     const repaired = await queueSupervisedWorkflowRepair({
       run,
