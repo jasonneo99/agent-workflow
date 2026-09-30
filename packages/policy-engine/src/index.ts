@@ -117,6 +117,10 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
         "npx *",
         "node *",
         "tsc *",
+        // iOS: build, device discovery, and deployment (project must also allow).
+        "xcodebuild build *",
+        "xcrun devicectl *",
+        "ios-deploy *",
         // Git: explicit safe subcommands only. No broad "git *" — dangerous
         // subcommands must never be allowlisted by accident. The blocklist
         // below remains as defense in depth.
