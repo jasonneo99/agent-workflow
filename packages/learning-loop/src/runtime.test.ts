@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { createLearningQuestion, learningResponseSchema, peerAssessmentSchema } from "./index.js";
-import { advanceLearningCanary, buildLearningLoopDashboard, canScheduleLearningExchange, evaluateLearningExperiment, executeProviderBackedPeerExchange, planPeerExchange, queueLearningExperiment, readLearningLoopState, recordLearningCanaryOutcome, recordPeerExchange, recordReviewerCalibration, runScheduledLearningExchange, validateLearningEvidence } from "./runtime.js";
+import { advanceLearningCanary, buildLearningLoopDashboard, canScheduleLearningExchange, evaluateLearningExperiment, executeProviderBackedPeerExchange, planPeerExchange, queueLearningExperiment, readLearningLoopState, recordLearningCanaryOutcome, recordPeerExchange, recordReviewerCalibration, reviewLearningEvidence, runScheduledLearningExchange, validateLearningEvidence } from "./runtime.js";
 import { traceLearningConclusion } from "./reliability.js";
 
 const createdAt = "2026-09-25T12:00:00.000Z";
@@ -23,12 +23,41 @@ test("durable local state records peer exchanges and exposes body-free dashboard
   assert.equal(buildLearningLoopDashboard(state).rawPrivateContentIncluded, false);
 });
 
+test("durable evidence review and reviewer calibration recompute the conclusion", async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-learning-gates-"));
+  await fs.mkdir(path.join(projectDir, ".agent-workflow", "receipts"), { recursive: true });
+  await fs.writeFile(path.join(projectDir, ".agent-workflow", "receipts", "verify.json"), "{}\n");
+  await recordPeerExchange({ projectDir, question, response, assessments: [review("security-reviewer"), review("ux-reviewer")], deterministicChecksPassed: false, humanFeedbackConfirmed: false });
+  await recordReviewerCalibration(projectDir, { reviewerAgentId: "security-reviewer", sampleCount: 4, verifiedAgreement: 0.9, humanAgreement: 0.9 });
+  await recordReviewerCalibration(projectDir, { reviewerAgentId: "ux-reviewer", sampleCount: 4, verifiedAgreement: 0.9, humanAgreement: 0.9 });
+  const aggregate = await reviewLearningEvidence({ projectDir, questionId: question.id, deterministicReceipt: ".agent-workflow/receipts/verify.json", deterministicChecksPassed: true, humanFeedbackConfirmed: true, confirmedBy: "operator" });
+  assert.equal(aggregate.status, "promotion-eligible");
+  assert.deepEqual(aggregate.missingGates, []);
+  const report = buildLearningLoopDashboard(await readLearningLoopState(projectDir), projectDir);
+  assert.equal(report.evidenceDecisions[0]?.confirmedBy, "operator");
+});
+
 test("scheduler enforces frequency, queue, cost, and quiet-hour budgets", () => {
   const base = { maxExchangesPerDay: 3, completedToday: 0, queueDepth: 0, maxQueueDepth: 2, estimatedCostUsd: 0, maxDailyCostUsd: 1 };
   assert.equal(canScheduleLearningExchange(base, new Date("2026-09-25T12:00:00Z")).allowed, true);
   assert.equal(canScheduleLearningExchange({ ...base, completedToday: 3 }).reason, "daily exchange budget exhausted");
   assert.equal(canScheduleLearningExchange({ ...base, queueDepth: 2 }).reason, "learning queue backpressure");
   assert.equal(canScheduleLearningExchange({ ...base, estimatedCostUsd: 1 }).reason, "daily learning cost budget exhausted");
+});
+
+test("dashboard collapses a failed attempt after a successful retry", () => {
+  const state = {
+    version: 1, questions: [], responses: [], assessments: [], calibrations: [], aggregates: [], experiments: [], receipts: [], evidenceDecisions: [],
+    schedulerReceipts: [
+      { id: "failed", questionId: "q", status: "failed", reason: "bad json", startedAt: createdAt, completedAt: createdAt },
+      { id: "passed", questionId: "q", status: "completed", reason: "recovered", startedAt: createdAt, completedAt: "2026-09-25T12:01:00.000Z" }
+    ], updatedAt: createdAt
+  } as Parameters<typeof buildLearningLoopDashboard>[0];
+  const report = buildLearningLoopDashboard(state);
+  assert.equal(report.summary.schedulerFailures, 0);
+  assert.equal(report.summary.historicalSchedulerFailures, 1);
+  assert.equal(report.latestSchedulerReceipts[0]?.status, "completed");
+  assert.equal(report.resolvedSchedulerFailures.length, 1);
 });
 
 test("reviewer planning rotates independent reviewers and remains mutation disabled", () => {
@@ -39,7 +68,7 @@ test("reviewer planning rotates independent reviewers and remains mutation disab
 
 test("qualified peer conclusions enter shadow experiments with stable baseline hashes", async () => {
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-learning-experiment-"));
-  const aggregate = { status: "promotion-eligible" as const, reviewerCount: 2, calibratedScore: 4.5, disagreement: 0.2, risks: [], evidenceHashes: ["check"] };
+  const aggregate = { status: "promotion-eligible" as const, reviewerCount: 2, calibratedReviewerCount: 2, calibratedScore: 4.5, disagreement: 0.2, deterministicChecksPassed: true, humanFeedbackConfirmed: true, missingGates: [], risks: [], evidenceHashes: ["check"] };
   const experiment = await queueLearningExperiment({ projectDir, question, aggregate, target: "agent_prompt", baseline: { prompt: "before" }, candidate: { prompt: "after" } });
   assert.equal(experiment?.status, "shadow");
   assert.notEqual(experiment?.baselineHash, experiment?.candidateHash);
@@ -47,7 +76,7 @@ test("qualified peer conclusions enter shadow experiments with stable baseline h
 
 test("learning experiments reuse promotion thresholds, human canary approval, and rollback", async () => {
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-learning-canary-"));
-  const aggregate = { status: "promotion-eligible" as const, reviewerCount: 2, calibratedScore: 4.5, disagreement: 0.2, risks: [], evidenceHashes: ["check"] };
+  const aggregate = { status: "promotion-eligible" as const, reviewerCount: 2, calibratedReviewerCount: 2, calibratedScore: 4.5, disagreement: 0.2, deterministicChecksPassed: true, humanFeedbackConfirmed: true, missingGates: [], risks: [], evidenceHashes: ["check"] };
   const experiment = await queueLearningExperiment({ projectDir, question, aggregate, target: "workflow_shape", baseline: { stages: 3 }, candidate: { stages: 4 } });
   assert.ok(experiment);
   const evidence = { representative_cases: 30, cases_per_affected_workflow: { build: 30 }, relative_quality_gain: 0.08, absolute_quality_gain_points: 4, confidence_excludes_meaningful_degradation: true, new_severe_safety_violations: 0, verification_regression: 0, recovery_regression: 0, policy_regression: 0, cost_regression: 0, latency_regression: 0 };

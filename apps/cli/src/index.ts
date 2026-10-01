@@ -41,7 +41,7 @@ import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { renderPreferenceScorecardHtml } from "./dashboard/outcome-accuracy.js";
 import { renderLearningLoopHtml } from "./dashboard/learning-loop.js";
 import { buildHumanInterventionItems } from "./dashboard/human-intervention.js";
-import { buildLearningLoopDashboard, readLearningLoopState, type LearningLoopDashboard, type LearningLoopSchedulerReceipt } from "../../../packages/learning-loop/src/index.js";
+import { buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence, type LearningLoopDashboard, type LearningLoopSchedulerReceipt } from "../../../packages/learning-loop/src/index.js";
 import { registerLearningLoopCommand } from "./learning/learning-loop-command.js";
 import { runDaemonLearningLoopSchedule } from "./learning/learning-loop-daemon.js";
 import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
@@ -26009,6 +26009,42 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     return;
   }
 
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-loop-evidence") {
+    const form = await readFormBody(request);
+    try {
+      const projectPath = await resolveDashboardProjectPath(form.get("project") ?? "");
+      await reviewLearningEvidence({
+        projectDir: projectPath.localRootUri,
+        questionId: form.get("questionId") ?? "",
+        deterministicReceipt: form.get("deterministicReceipt") ?? "",
+        deterministicChecksPassed: form.get("deterministicChecksPassed") === "on",
+        humanFeedbackConfirmed: form.get("humanFeedbackConfirmed") === "on",
+        confirmedBy: form.get("confirmedBy") ?? "dashboard-operator"
+      });
+      respondDashboardAction(request, response, form, { ok: true, title: "Learning evidence gates updated", output: "The aggregate was recomputed from durable evidence and current reviewer calibration." }, "/learning?view=learning-loop");
+    } catch (error) {
+      respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/learning?view=learning-loop");
+    }
+    return;
+  }
+
+  if (request.method === "POST" && requestUrl.pathname === "/api/learning-loop-calibration") {
+    const form = await readFormBody(request);
+    try {
+      const projectPath = await resolveDashboardProjectPath(form.get("project") ?? "");
+      await recordReviewerCalibration(projectPath.localRootUri, {
+        reviewerAgentId: form.get("reviewerAgentId")?.trim() ?? "",
+        sampleCount: parsePositiveInteger(form.get("sampleCount") ?? "0", 0),
+        verifiedAgreement: Number(form.get("verifiedAgreement")),
+        humanAgreement: Number(form.get("humanAgreement"))
+      });
+      respondDashboardAction(request, response, form, { ok: true, title: "Reviewer calibration recorded", output: "Affected learning conclusions were recomputed." }, "/learning?view=learning-loop");
+    } catch (error) {
+      respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/learning?view=learning-loop");
+    }
+    return;
+  }
+
   if (request.method === "POST" && requestUrl.pathname === "/api/run-approval-level") {
     const form = await readFormBody(request);
     const result = await processDashboardRunApprovalLevel({
@@ -27703,7 +27739,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
     const projectPath = await resolveDashboardProjectPath(project);
     const state = await readLearningLoopState(projectPath.localRootUri);
     response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
-    response.end(JSON.stringify(buildLearningLoopDashboard(state), null, 2));
+    response.end(JSON.stringify(buildLearningLoopDashboard(state, projectPath.localRootUri), null, 2));
     return;
   }
 
@@ -28179,7 +28215,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       }).catch(() => null)
       : Promise.resolve(null);
     const learningLoopPromise: Promise<LearningLoopDashboard | null> = project && learningView === "learning-loop"
-      ? readLearningLoopState(localLearningDir).then(buildLearningLoopDashboard)
+      ? readLearningLoopState(localLearningDir).then((state) => buildLearningLoopDashboard(state, localLearningDir))
       : Promise.resolve(null);
     const agentImprovementPendingPromise = project
       ? loadAgentImprovementPendingSummary(projects, path.resolve(process.cwd(), localLearningDir))

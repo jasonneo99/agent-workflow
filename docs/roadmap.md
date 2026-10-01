@@ -641,7 +641,9 @@ confidence to grant authority.
      feedback, sample coverage, and predictive agreement. Distinguish poor
      performance from insufficient evidence.
    - Progress: minimum calibration samples and verified/human agreement weights
-     and durable project-local calibration history are implemented.
+     and durable project-local calibration history are implemented. The
+     dashboard now records calibration samples, recomputes affected conclusions,
+     and shows how many independent reviewers actually qualify as calibrated.
 5. **Feed qualified conclusions into existing proposals.**
    - Priority: high
    - Convert only independently verified, human-confirmed conclusions into
@@ -668,6 +670,12 @@ confidence to grant authority.
      experiment state without private response bodies. Read-only scheduling
      enforces daily exchange, queue-depth, cost, and quiet-hour budgets and is
      integrated into daemon ticks behind `AGENTFLOW_LEARNING_LOOP_AUTO_RUN`.
+     Each conclusion now names its missing gates and accepts a project-bounded
+     deterministic receipt plus explicit human confirmation. The receipt view
+     collapses resolved retry failures, provider output gets one structured
+     repair attempt, learning calls use bounded fast-tier context by default,
+     and usage distinguishes priced from subscription or otherwise unpriced
+     calls instead of presenting missing price data as zero.
 8. **Add adversarial and reliability coverage.**
    - Priority: critical
    - Test self-rating, reciprocal score inflation, reviewer concentration,

@@ -19,7 +19,10 @@ test("peer exchanges are immutable, evidence-bound receipts", () => {
 
 test("peer ratings remain advisory without independent verification and human confirmation", () => {
   const aggregate = aggregatePeerAssessments({ assessments: [assessment("test-engineer"), assessment("ux-reviewer")], calibrations: [], deterministicChecksPassed: true, humanFeedbackConfirmed: false });
-  assert.equal(aggregate.status, "advisory");
+  assert.equal(aggregate.status, "insufficient-evidence");
+  assert.equal(aggregate.calibratedReviewerCount, 0);
+  assert.match(aggregate.missingGates.join(" "), /calibrated reviewers/u);
+  assert.match(aggregate.missingGates.join(" "), /Human confirmation/u);
   assert.equal(buildLearningProposal({ question, aggregate, target: "agent_prompt" }).status, "blocked");
 });
 
@@ -34,7 +37,7 @@ test("collusive-looking reciprocal or uniform ratings are not promotion eligible
   const aggregate = aggregatePeerAssessments({ assessments: [assessment("test-engineer", 5), assessment("ux-reviewer", 5)], calibrations: [], deterministicChecksPassed: true, humanFeedbackConfirmed: true, priorPairs: [
     { reviewerAgentId: "test-engineer", respondentAgentId: "security-reviewer" }, { reviewerAgentId: "test-engineer", respondentAgentId: "security-reviewer" }, { reviewerAgentId: "security-reviewer", respondentAgentId: "test-engineer" }, { reviewerAgentId: "security-reviewer", respondentAgentId: "test-engineer" }, { reviewerAgentId: "security-reviewer", respondentAgentId: "test-engineer" }
   ] });
-  assert.equal(aggregate.status, "advisory");
+  assert.equal(aggregate.status, "insufficient-evidence");
   assert.ok(aggregate.risks.includes("reciprocal-rating-concentration"));
   assert.ok(aggregate.risks.includes("uniform-maximum-scores"));
 });
@@ -53,7 +56,7 @@ test("circular grading and concentrated reviewers remain advisory", () => {
     { reviewerAgentId: "test-engineer", respondentAgentId: "docs-maintainer" },
     { reviewerAgentId: "test-engineer", respondentAgentId: "release-manager" }
   ] });
-  assert.equal(aggregate.status, "advisory");
+  assert.equal(aggregate.status, "insufficient-evidence");
   assert.ok(aggregate.risks.includes("circular-grading"));
   assert.ok(aggregate.risks.includes("reviewer-concentration"));
 });

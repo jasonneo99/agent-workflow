@@ -70,8 +70,12 @@ export type ReviewerCalibration = {
 export type PeerAssessmentAggregate = {
   status: "insufficient-evidence" | "advisory" | "promotion-eligible";
   reviewerCount: number;
+  calibratedReviewerCount: number;
   calibratedScore: number | null;
   disagreement: number | null;
+  deterministicChecksPassed: boolean;
+  humanFeedbackConfirmed: boolean;
+  missingGates: string[];
   risks: string[];
   evidenceHashes: string[];
 };
@@ -110,6 +114,9 @@ export function aggregatePeerAssessments(input: {
   const risks = detectPeerRatingRisks(input.assessments, input.priorPairs ?? []);
   const independent = input.assessments.filter((item) => item.reviewerAgentId !== item.respondentAgentId);
   const reviewerIds = new Set(independent.map((item) => item.reviewerAgentId));
+  const calibratedReviewerIds = new Set(independent
+    .filter((assessment) => input.calibrations.some((item) => item.reviewerAgentId === assessment.reviewerAgentId && item.sampleCount >= 3))
+    .map((assessment) => assessment.reviewerAgentId));
   const calibrated = independent.map((assessment) => {
     const calibration = input.calibrations.find((item) => item.reviewerAgentId === assessment.reviewerAgentId);
     const weight = calibration && calibration.sampleCount >= 3
@@ -123,13 +130,25 @@ export function aggregatePeerAssessments(input: {
   const disagreement = score === null || !calibrated.length
     ? null
     : Math.sqrt(calibrated.reduce((sum, item) => sum + (item.score - score) ** 2, 0) / calibrated.length);
-  const enoughEvidence = reviewerIds.size >= 2 && input.deterministicChecksPassed;
+  const missingGates: string[] = [];
+  if (reviewerIds.size < 2) missingGates.push(`Two independent reviews are required; ${reviewerIds.size} available.`);
+  if (calibratedReviewerIds.size < 2) missingGates.push(`Two calibrated reviewers are required; ${calibratedReviewerIds.size} available.`);
+  if (!input.deterministicChecksPassed) missingGates.push("Deterministic verification evidence is not linked.");
+  if (!input.humanFeedbackConfirmed) missingGates.push("Human confirmation is not recorded.");
+  if (score !== null && score < 4) missingGates.push(`Calibrated score ${score.toFixed(2)} is below 4.00.`);
+  if ((disagreement ?? 0) > 0.75) missingGates.push(`Reviewer disagreement ${(disagreement ?? 0).toFixed(2)} exceeds 0.75.`);
+  for (const risk of risks) missingGates.push(`Peer-review risk requires resolution: ${risk}.`);
+  const enoughEvidence = reviewerIds.size >= 2 && calibratedReviewerIds.size >= 2 && input.deterministicChecksPassed;
   const promotionEligible = enoughEvidence && input.humanFeedbackConfirmed && risks.length === 0 && score !== null && score >= 4 && (disagreement ?? Infinity) <= 0.75;
   return {
     status: promotionEligible ? "promotion-eligible" : enoughEvidence ? "advisory" : "insufficient-evidence",
     reviewerCount: reviewerIds.size,
+    calibratedReviewerCount: calibratedReviewerIds.size,
     calibratedScore: score === null ? null : Number(score.toFixed(3)),
     disagreement: disagreement === null ? null : Number(disagreement.toFixed(3)),
+    deterministicChecksPassed: input.deterministicChecksPassed,
+    humanFeedbackConfirmed: input.humanFeedbackConfirmed,
+    missingGates,
     risks,
     evidenceHashes: [...new Set(independent.flatMap((item) => item.evidenceHashes))]
   };

@@ -34,9 +34,18 @@ export type LearningLoopSchedulerReceipt = {
   status: "completed" | "deferred" | "failed";
   reason: string;
   providerId?: string;
-  usage?: { calls: number; inputTokens: number; cachedInputTokens: number; reasoningTokens: number; outputTokens: number; totalTokens: number; costUsd?: number; costCoverageCalls: number };
+  usage?: { calls: number; inputTokens: number; cachedInputTokens: number; reasoningTokens: number; outputTokens: number; totalTokens: number; costUsd?: number; costCoverageCalls: number; unpricedCalls?: number };
   startedAt: string;
   completedAt: string;
+};
+
+export type LearningEvidenceDecision = {
+  questionId: string;
+  deterministicChecksPassed: boolean;
+  deterministicReceipt: string | null;
+  humanFeedbackConfirmed: boolean;
+  confirmedBy: string | null;
+  updatedAt: string;
 };
 
 export type LearningExchangeExecutor = {
@@ -56,6 +65,7 @@ export type LearningLoopState = {
   experiments: LearningExperiment[];
   receipts: Array<ReturnType<typeof createPeerExchangeReceipt>>;
   schedulerReceipts: LearningLoopSchedulerReceipt[];
+  evidenceDecisions: LearningEvidenceDecision[];
   updatedAt: string;
 };
 
@@ -69,7 +79,7 @@ export type LearningLoopBudget = {
   quietHours?: { start: number; end: number };
 };
 
-const emptyState = (): LearningLoopState => ({ version: 1, questions: [], responses: [], assessments: [], calibrations: [], aggregates: [], experiments: [], receipts: [], schedulerReceipts: [], updatedAt: new Date(0).toISOString() });
+const emptyState = (): LearningLoopState => ({ version: 1, questions: [], responses: [], assessments: [], calibrations: [], aggregates: [], experiments: [], receipts: [], schedulerReceipts: [], evidenceDecisions: [], updatedAt: new Date(0).toISOString() });
 
 function statePath(projectDir: string): string {
   return path.join(projectDir, ".agent-workflow", "learning", "learning-loop.json");
@@ -146,7 +156,8 @@ export async function recordPeerExchange(input: {
   humanFeedbackConfirmed: boolean;
 }): Promise<{ aggregate: PeerAssessmentAggregate; receipt: ReturnType<typeof createPeerExchangeReceipt> }> {
   const state = await readLearningLoopState(input.projectDir);
-  const aggregate = aggregatePeerAssessments({ assessments: input.assessments, calibrations: state.calibrations, deterministicChecksPassed: input.deterministicChecksPassed, humanFeedbackConfirmed: input.humanFeedbackConfirmed, priorPairs: state.assessments.map((item) => ({ reviewerAgentId: item.reviewerAgentId, respondentAgentId: item.respondentAgentId })) });
+  const decision = state.evidenceDecisions.find((item) => item.questionId === input.question.id);
+  const aggregate = aggregatePeerAssessments({ assessments: input.assessments, calibrations: state.calibrations, deterministicChecksPassed: decision?.deterministicChecksPassed ?? input.deterministicChecksPassed, humanFeedbackConfirmed: decision?.humanFeedbackConfirmed ?? input.humanFeedbackConfirmed, priorPairs: state.assessments.map((item) => ({ reviewerAgentId: item.reviewerAgentId, respondentAgentId: item.respondentAgentId })) });
   const receipt = createPeerExchangeReceipt(input);
   const now = new Date().toISOString();
   await writeLearningLoopState(input.projectDir, {
@@ -236,8 +247,46 @@ export async function runScheduledLearningExchange(input: {
 }
 
 export async function recordReviewerCalibration(projectDir: string, calibration: ReviewerCalibration): Promise<void> {
+  if (!calibration.reviewerAgentId.trim()) throw new Error("Reviewer agent id is required.");
+  if (!Number.isInteger(calibration.sampleCount) || calibration.sampleCount < 1) throw new Error("Calibration sample count must be a positive integer.");
+  if (![calibration.verifiedAgreement, calibration.humanAgreement].every((value) => Number.isFinite(value) && value >= 0 && value <= 1)) throw new Error("Agreement values must be between 0 and 1.");
   const state = await readLearningLoopState(projectDir);
-  await writeLearningLoopState(projectDir, { ...state, calibrations: [...state.calibrations.filter((item) => item.reviewerAgentId !== calibration.reviewerAgentId), calibration], updatedAt: new Date().toISOString() });
+  const calibrations = [...state.calibrations.filter((item) => item.reviewerAgentId !== calibration.reviewerAgentId), calibration];
+  await writeLearningLoopState(projectDir, { ...state, calibrations, aggregates: recomputeAggregates(state, calibrations), updatedAt: new Date().toISOString() });
+}
+
+export async function reviewLearningEvidence(input: {
+  projectDir: string;
+  questionId: string;
+  deterministicReceipt?: string;
+  deterministicChecksPassed: boolean;
+  humanFeedbackConfirmed: boolean;
+  confirmedBy?: string;
+}): Promise<PeerAssessmentAggregate> {
+  const state = await readLearningLoopState(input.projectDir);
+  const question = state.questions.find((item) => item.id === input.questionId);
+  if (!question) throw new Error(`Unknown learning question: ${input.questionId}`);
+  const receipt = input.deterministicReceipt?.trim() || null;
+  if (input.deterministicChecksPassed && !receipt) throw new Error("Deterministic checks require a durable evidence reference.");
+  if (input.humanFeedbackConfirmed && !input.deterministicChecksPassed) throw new Error("Human confirmation requires linked deterministic verification evidence.");
+  if (receipt) await validateDurableEvidenceReference(input.projectDir, receipt, question.allowedEvidenceHashes);
+  const decision: LearningEvidenceDecision = {
+    questionId: input.questionId,
+    deterministicChecksPassed: input.deterministicChecksPassed,
+    deterministicReceipt: receipt,
+    humanFeedbackConfirmed: input.humanFeedbackConfirmed,
+    confirmedBy: input.humanFeedbackConfirmed ? input.confirmedBy?.trim() || "dashboard-operator" : null,
+    updatedAt: new Date().toISOString()
+  };
+  const assessments = state.assessments.filter((item) => item.questionId === input.questionId);
+  const aggregate = aggregatePeerAssessments({ assessments, calibrations: state.calibrations, deterministicChecksPassed: decision.deterministicChecksPassed, humanFeedbackConfirmed: decision.humanFeedbackConfirmed, priorPairs: state.assessments.filter((item) => item.questionId !== input.questionId).map((item) => ({ reviewerAgentId: item.reviewerAgentId, respondentAgentId: item.respondentAgentId })) });
+  await writeLearningLoopState(input.projectDir, {
+    ...state,
+    evidenceDecisions: [...state.evidenceDecisions.filter((item) => item.questionId !== input.questionId), decision],
+    aggregates: [...state.aggregates.filter((item) => item.questionId !== input.questionId), { questionId: input.questionId, aggregate, recordedAt: decision.updatedAt }],
+    updatedAt: decision.updatedAt
+  });
+  return aggregate;
 }
 
 export function canScheduleLearningExchange(budget: LearningLoopBudget, now = new Date()): { allowed: boolean; reason: string } {
@@ -293,15 +342,20 @@ export async function queueLearningExperiment(input: {
   return experiment;
 }
 
-export function buildLearningLoopDashboard(state: LearningLoopState) {
+export function buildLearningLoopDashboard(state: LearningLoopState, projectDir: string | null = null) {
   const openQuestions = state.questions.filter((question) => !state.responses.some((response) => response.questionId === question.id));
   const disagreements = state.aggregates.filter((item) => (item.aggregate.disagreement ?? 0) > 0.75 || item.aggregate.risks.length > 0);
   const completedQuestionIds = new Set(state.schedulerReceipts.filter((item) => item.status === "completed" && item.questionId).map((item) => item.questionId));
   const historicalSchedulerFailures = state.schedulerReceipts.filter((item) => item.status === "failed").length;
   const unresolvedSchedulerFailures = state.schedulerReceipts.filter((item) => item.status === "failed" && (!item.questionId || !completedQuestionIds.has(item.questionId))).length;
-  const usage = state.schedulerReceipts.reduce((total, item) => ({ calls: total.calls + (item.usage?.calls ?? 0), inputTokens: total.inputTokens + (item.usage?.inputTokens ?? 0), outputTokens: total.outputTokens + (item.usage?.outputTokens ?? 0), totalTokens: total.totalTokens + (item.usage?.totalTokens ?? 0), costUsd: total.costUsd + (item.usage?.costUsd ?? 0), costCoverageCalls: total.costCoverageCalls + (item.usage?.costCoverageCalls ?? 0) }), { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, costCoverageCalls: 0 });
+  const latestByQuestion = new Map<string, LearningLoopSchedulerReceipt>();
+  for (const receipt of state.schedulerReceipts) latestByQuestion.set(receipt.questionId ?? receipt.id, receipt);
+  const latestSchedulerReceipts = [...latestByQuestion.values()].slice(-25);
+  const resolvedSchedulerFailures = state.schedulerReceipts.filter((receipt) => receipt.status === "failed" && receipt.questionId && state.schedulerReceipts.some((later) => later.questionId === receipt.questionId && later.status === "completed" && Date.parse(later.completedAt) >= Date.parse(receipt.completedAt)));
+  const usage = state.schedulerReceipts.reduce((total, item) => ({ calls: total.calls + (item.usage?.calls ?? 0), inputTokens: total.inputTokens + (item.usage?.inputTokens ?? 0), outputTokens: total.outputTokens + (item.usage?.outputTokens ?? 0), totalTokens: total.totalTokens + (item.usage?.totalTokens ?? 0), costUsd: total.costUsd + (item.usage?.costUsd ?? 0), costCoverageCalls: total.costCoverageCalls + (item.usage?.costCoverageCalls ?? 0), unpricedCalls: total.unpricedCalls + (item.usage?.unpricedCalls ?? Math.max(0, (item.usage?.calls ?? 0) - (item.usage?.costCoverageCalls ?? 0))) }), { calls: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, costCoverageCalls: 0, unpricedCalls: 0 });
   return {
     kind: "agentflow_learning_loop_dashboard" as const,
+    projectDir,
     generatedAt: new Date().toISOString(),
     summary: {
       questions: state.questions.length,
@@ -318,8 +372,12 @@ export function buildLearningLoopDashboard(state: LearningLoopState) {
     usage: { ...usage, costUsd: usage.costCoverageCalls ? usage.costUsd : null },
     openQuestions: openQuestions.slice(-25),
     recentAggregates: state.aggregates.slice(-25),
+    calibrations: state.calibrations.slice().sort((a, b) => a.reviewerAgentId.localeCompare(b.reviewerAgentId)),
+    evidenceDecisions: state.evidenceDecisions.slice(-25),
     experiments: state.experiments.slice(-25),
     schedulerReceipts: state.schedulerReceipts.slice(-25),
+    latestSchedulerReceipts,
+    resolvedSchedulerFailures: resolvedSchedulerFailures.slice(-25),
     rawPrivateContentIncluded: false
   };
 }
@@ -341,6 +399,37 @@ function stableJson(value: unknown): string {
 
 function upsertById<T extends { id: string }>(items: T[], item: T): T[] {
   return [...items.filter((old) => old.id !== item.id), item];
+}
+
+function recomputeAggregates(state: LearningLoopState, calibrations = state.calibrations): LearningLoopState["aggregates"] {
+  return state.aggregates.map((item) => {
+    const decision = state.evidenceDecisions.find((candidate) => candidate.questionId === item.questionId);
+    const assessments = state.assessments.filter((assessment) => assessment.questionId === item.questionId);
+    return {
+      ...item,
+      aggregate: aggregatePeerAssessments({
+        assessments,
+        calibrations,
+        deterministicChecksPassed: decision?.deterministicChecksPassed ?? item.aggregate.deterministicChecksPassed ?? false,
+        humanFeedbackConfirmed: decision?.humanFeedbackConfirmed ?? item.aggregate.humanFeedbackConfirmed ?? false,
+        priorPairs: state.assessments.filter((assessment) => assessment.questionId !== item.questionId).map((assessment) => ({ reviewerAgentId: assessment.reviewerAgentId, respondentAgentId: assessment.respondentAgentId }))
+      })
+    };
+  });
+}
+
+async function validateDurableEvidenceReference(projectDir: string, reference: string, allowedEvidenceHashes: string[]): Promise<void> {
+  const hash = reference.match(/^sha256:([a-f0-9]{64})$/iu)?.[1];
+  if (hash) {
+    if (!allowedEvidenceHashes.includes(hash) && !allowedEvidenceHashes.includes(`sha256:${hash}`)) throw new Error("Evidence hash is not in the question allowlist.");
+    return;
+  }
+  if (path.isAbsolute(reference)) throw new Error("Evidence file references must be project-relative.");
+  const resolved = path.resolve(projectDir, reference);
+  const root = `${path.resolve(projectDir)}${path.sep}`;
+  if (!resolved.startsWith(root)) throw new Error("Evidence reference escapes the project root.");
+  const stat = await fs.stat(resolved).catch(() => null);
+  if (!stat?.isFile()) throw new Error(`Evidence reference does not identify a file: ${reference}`);
 }
 
 async function appendSchedulerReceipt(projectDir: string, receipt: LearningLoopSchedulerReceipt): Promise<void> {

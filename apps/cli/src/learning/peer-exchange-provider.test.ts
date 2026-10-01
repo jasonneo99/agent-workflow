@@ -33,3 +33,32 @@ test("provider adapter accepts numeric strings from structured model output", as
   const executor = createProviderLearningExchangeExecutor({ provider, projectRootUri: "/tmp/project", projectConfig, agents: [agent("respondent")] });
   assert.equal((await executor.answer(question)).confidence, 0.75);
 });
+
+test("provider adapter retries malformed structured output once", async () => {
+  let calls = 0;
+  const stages: string[] = [];
+  const provider: ModelProvider = { id: "fixture", async executeStage(input) {
+    calls += 1;
+    stages.push(input.stageId);
+    return calls === 1 ? { summary: "not json", artifact: {} } : { summary: JSON.stringify({ answer: "Recovered", evidenceHashes: ["hash"], confidence: 0.8 }), artifact: {} };
+  } };
+  const executor = createProviderLearningExchangeExecutor({ provider, projectRootUri: "/tmp/project", projectConfig, agents: [agent("respondent")] });
+  assert.equal((await executor.answer(question)).answer, "Recovered");
+  assert.deepEqual(stages, ["answer", "answer-repair"]);
+  assert.equal(executor.usage?.().calls, 2);
+  assert.equal(executor.usage?.().unpricedCalls, 2);
+});
+
+test("provider adapter uses bounded fast learning context", async () => {
+  let captured: Parameters<ModelProvider["executeStage"]>[0] | undefined;
+  const provider: ModelProvider = { id: "fixture", async executeStage(input) {
+    captured = input;
+    return { summary: JSON.stringify({ answer: "Bounded", evidenceHashes: ["hash"], confidence: 0.75 }), artifact: {} };
+  } };
+  const executor = createProviderLearningExchangeExecutor({ provider, projectRootUri: "/tmp/project", projectConfig, agents: [agent("respondent")] });
+  await executor.answer(question);
+  assert.equal(captured?.modelTier, "fast");
+  assert.deepEqual(captured?.priorStageArtifacts, []);
+  assert.deepEqual(captured?.memoryContext, []);
+  assert.ok((captured?.compiledBrief.length ?? Infinity) < 200);
+});
