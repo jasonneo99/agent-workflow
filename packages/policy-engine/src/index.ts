@@ -38,7 +38,11 @@ export function evaluateActionRiskAutoApproval(input: {
     risk = (input.bytes ?? 0) <= 20_000 && /^(\.agent-workflow\/|docs\/|README\.md$|CHANGELOG\.md$)/u.test(normalized) ? "low" : "medium";
   } else if (input.actionType === "local_command") {
     const command = input.target.trim().toLowerCase();
-    if (/(\bsudo\b|\brm\b|\bgit\s+(reset|clean|checkout)\b|\bchmod\b|\bchown\b|\bcurl\b|\bwget\b|\bssh\b|\bscp\b|\bdeploy\b|\bpublish\b|\bprisma\s+migrate\b|\bdocker\b|\blaunchctl\b)/u.test(command)) return null;
+    // Match dangerous executable/subcommand tokens, not substrings inside an
+    // allowlisted executable name. In particular, `ios-deploy` is an approved
+    // iOS device tool and must not be mistaken for a standalone `deploy`
+    // command merely because a hyphen is a regex word boundary.
+    if (/(?:^|\s)(?:sudo|rm|chmod|chown|curl|wget|ssh|scp|deploy|publish|docker|launchctl)(?:\s|$)|(?:^|\s)git\s+(?:reset|clean|checkout)(?:\s|$)|(?:^|\s)prisma\s+migrate(?:\s|$)/u.test(command)) return null;
     risk = /^(npm|pnpm|yarn)\s+(test|run\s+(test|typecheck|lint|validate|check|build)|exec\s+tsc)\b/u.test(command) ? "low" : "medium";
   } else {
     return null;
@@ -121,6 +125,12 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
         "xcodebuild build *",
         "xcrun devicectl *",
         "ios-deploy *",
+        // macOS desktop: build, launch, and delivery (Jason approved 2026-10-01
+        // for the Jarvis overlay terminal widget run; scoped to trusted-personal).
+        "xcodebuild *",
+        "swiftc *",
+        "swift *",
+        "open *",
         // Git: explicit safe subcommands only. No broad "git *" — dangerous
         // subcommands must never be allowlisted by accident. The blocklist
         // below remains as defense in depth.
