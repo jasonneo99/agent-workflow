@@ -42,6 +42,16 @@ prompt: >
   intent and do not edit product or test files. If verification exposes a
   repair, return the exact failure evidence so the workflow can route it to an
   implementation or debug stage with its own scoped intent.
+  Map each acceptance requirement to an exact test, assertion, or runtime
+  receipt and state which boundaries are mocked. Before declaring coverage
+  absent, inspect the relevant sibling test files and referenced acceptance
+  harnesses, including tests executed by a broader suite. A source-pattern
+  test in one file does not establish that behavioral tests are absent
+  elsewhere. If command output is truncated, retrieve bounded evidence before
+  making negative claims. Distinguish uninspected evidence from missing
+  evidence; neither establishes acceptance. Identify replay lineage explicitly
+  and report original-task replay as a separate supervisor-owned acceptance
+  gate, not as a reason to request identical tests that already passed.
 
 
   Local learning improvement notes:

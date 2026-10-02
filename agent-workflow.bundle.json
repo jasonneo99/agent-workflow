@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "127c3090906acb1e30c5a91a8b2cb4b283e4601917524fde395595edede4ee26"
+    "value": "b7ab25c7e5b836f300c7004f10e9c47520278571710948adeafbf00036ec7b45"
   },
   "agents": [
     {
@@ -45,7 +45,7 @@
     {
       "id": "auto-test-runner",
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "895a4acbc2ff5000ab991e2a0e6e25c076f2795e3ca821acbe4a00922928e91e"
+      "checksum": "0480bef39c924cb015445674e29660b2fff59cf1374af105053867bad1b5c560"
     },
     {
       "id": "auto-wide-open-executor",
@@ -284,7 +284,7 @@
     },
     {
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "895a4acbc2ff5000ab991e2a0e6e25c076f2795e3ca821acbe4a00922928e91e"
+      "checksum": "0480bef39c924cb015445674e29660b2fff59cf1374af105053867bad1b5c560"
     },
     {
       "path": "agents/automatic/auto-wide-open-executor.yaml",
