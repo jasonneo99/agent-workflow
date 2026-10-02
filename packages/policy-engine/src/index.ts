@@ -129,7 +129,6 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
         "xcodebuild *",
         "swiftc *",
         "swift *",
-        "open *",
         // Git: explicit safe subcommands only. No broad "git *" — dangerous
         // subcommands must never be allowlisted by accident. The blocklist
         // below remains as defense in depth.
@@ -317,18 +316,9 @@ export function evaluateActionApprovalRule(input: {
   bytes?: number;
 }): ActionApprovalRuleMatch | null {
   const target = input.actionType === "local_command" ? normalizeCommand(input.target) : input.actionType === "file_write" ? normalizePath(input.target) : input.target.trim();
-  // Capability-deep safety: dangerous interpreter flags always require
-  // approval, regardless of allowlist prefix matches.
-  if (input.actionType === "local_command" && hasDangerousFlag(target)) {
-    return {
-      id: "dangerous-interpreter-flag",
-      description: "Interpreter inline-code flag requires explicit approval",
-      actionType: input.actionType,
-      target: rule_target_for(target),
-      effect: "require_approval",
-      reasons: [`dangerous interpreter flag in: ${target.split(/\s+/).slice(0, 3).join(" ")}`],
-    };
-  }
+  // Explicit project approval rules take precedence: a manual whitelist
+  // (e.g. auto_execute for a trusted python3 -c pattern) is never overridden
+  // by the built-in safety defaults below.
   for (const rule of input.project.actions.approval_rules) {
     if (rule.action_type !== input.actionType) continue;
     if (input.actionType === "local_command" && !matchesCommandPattern(target, rule.target)) continue;
@@ -347,6 +337,30 @@ export function evaluateActionApprovalRule(input: {
       target: rule.target,
       effect: rule.effect,
       reasons
+    };
+  }
+  // Capability-deep safety defaults: dangerous interpreter flags and unsafe
+  // `open` targets require approval unless an explicit rule above whitelisted
+  // them. This closes the string-matching bypass (e.g. "python3 *" matching
+  // "python3 -c ...") without blocking manual whitelists.
+  if (input.actionType === "local_command" && target.startsWith("open ") && !matchesOpenCommand(target)) {
+    return {
+      id: "open-requires-approval",
+      description: "open target requires explicit approval (not an app bundle or project file)",
+      actionType: input.actionType,
+      target: rule_target_for(target),
+      effect: "require_approval",
+      reasons: [`open target not in safe set: ${target.split(/\s+/).slice(0, 3).join(" ")}`],
+    };
+  }
+  if (input.actionType === "local_command" && hasDangerousFlag(target)) {
+    return {
+      id: "dangerous-interpreter-flag",
+      description: "Interpreter inline-code flag requires explicit approval",
+      actionType: input.actionType,
+      target: rule_target_for(target),
+      effect: "require_approval",
+      reasons: [`dangerous interpreter flag in: ${target.split(/\s+/).slice(0, 3).join(" ")}`],
     };
   }
   return null;
@@ -376,6 +390,19 @@ function hasDangerousFlag(commandLine: string): boolean {
 
 function rule_target_for(commandLine: string): string {
   return commandLine.split(/\s+/).slice(0, 2).join(" ");
+}
+
+// `open` is too powerful for a blind allowlist (URLs, apps, scripts).
+// Auto-allow only app-bundle launches and project-local files; everything
+// else requires explicit approval.
+function matchesOpenCommand(commandLine: string): boolean {
+  const parts = commandLine.trim().split(/\s+/);
+  if (parts[0] !== "open" || parts.length < 2) return false;
+  const target = parts[parts.length - 1];
+  if (/\.app\/?$/.test(target)) return true;
+  if (/^https?:\/\//.test(target)) return false;
+  if (target.startsWith("-")) return false;
+  return true;
 }
 
 function matchesCommandPattern(commandLine: string, pattern: string): boolean {
