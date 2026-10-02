@@ -673,6 +673,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               type: "local_command_reused",
               commandLine,
               artifactUri: previousCommand.uri,
+              exitCode: previousCommand.content.exitCode,
+              timedOut: previousCommand.content.timedOut,
+              outputPreview: truncateCommandOutputForError(String(previousCommand.content.stdout || previousCommand.content.stderr || ""), 80, 4000),
               reuseArtifactUri
             });
             await recordBoundedReactLoopReceipt({
@@ -955,6 +958,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactUri,
             exitCode: commandResult.exitCode,
             timedOut: commandResult.timedOut,
+            outputPreview: truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000),
             acquiredWorkIntent: acquiredStageIntent(commandLine, commandResult.stdout, commandResult.exitCode, commandResult.timedOut),
             approvalRule: commandApprovalRule ?? undefined
           });

@@ -131,10 +131,6 @@ function artifactHasSuccessfulDeliveryCommand(artifact: Record<string, unknown>)
   });
 }
 
-function outputRequestsDeliveryCommand(output: StageExecutionOutput): boolean {
-  return (output.requestedCommands ?? []).some(isDeliveryCommand);
-}
-
 export function verificationCompletionReason(input: StageExecutionInput, actionResults: unknown[]): string | null {
   // A current check failure remains actionable even when historical task text
   // mentions delivery. Only a later successful execution clears that failure.
@@ -236,7 +232,10 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   // successful receipt can exist. Recognized build/install requests are not
   // completion evidence here; they only prevent this pre-execution contract
   // check from deadlocking the stage before the executor can run them.
-  if (implementationStage && outputRequestsDeliveryCommand(output)) return null;
+  // Diagnostic commands also need execution before implementation can proceed.
+  // This is only a pre-execution deferral: the executor clears pending requests
+  // and rechecks the contract against actual receipts before completion.
+  if (implementationStage && (output.requestedCommands?.length ?? 0) > 0) return null;
   if (deliveryWorkflow && deliveryIntent && implementationStage) {
     return "Delivery implementation stage cannot complete without at least one governed product file write or successful delivery command receipt; planning or inspection alone does not satisfy the user acceptance contract.";
   }

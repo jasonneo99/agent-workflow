@@ -1,5 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { continuationBackoff, continuationResumeReceipt } from "./action-result-continuation.js";
+
+test("checkpoint round trip returns final successful evidence and pending work to the provider", () => {
+  const action = { commandLine: "git diff -- src/example.ts", artifactUri: "db://synthetic/final", exitCode: 0, timedOut: false, outputPreview: "final diagnostic result" };
+  const pendingOutput = { outcome: "completed", summary: "Implementation pending", artifact: {}, requestedCommands: [action.commandLine] };
+  const saved = JSON.parse(JSON.stringify({ round: 1, actionResults: [action], pendingOutput }));
+  const receipt = continuationResumeReceipt("implementation-agent", saved, saved.actionResults);
+  const restored = JSON.parse(receipt.summary.slice(receipt.summary.indexOf("\n") + 1));
+  assert.deepEqual(restored.actionResults, [action]);
+  assert.deepEqual(restored.pendingOutput, pendingOutput);
+  assert.match(receipt.summary, /unfinished/);
+  assert.match(receipt.summary, /not a completed stage/);
+  assert.match(receipt.summary, /not.*repeat executed actions/);
+});
+
+test("reused command observations preserve unchanged-progress backoff", () => {
+  const action = { commandLine: "git diff -- src/example.ts", artifactUri: "db://synthetic/final", exitCode: 0, timedOut: false };
+  const initial = continuationBackoff({}, [action]);
+  const repeated = continuationBackoff(initial, [action, { ...action, type: "local_command_reused", reuseArtifactUri: "db://synthetic/reuse" }]);
+  assert.equal(repeated.progressFingerprint, initial.progressFingerprint);
+  assert.equal(repeated.delaySeconds, 10);
+});
 import {
   COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS,
   COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES,

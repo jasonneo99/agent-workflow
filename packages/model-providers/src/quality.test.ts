@@ -373,7 +373,7 @@ test("command-only delivery requests reach the governed executor before receipts
   assert.equal(scoreStageOutput(deliveryInput, output).passed, true);
 });
 
-test("unrelated command requests cannot bypass the delivery contract", () => {
+test("inspection requests may execute but cannot satisfy the final delivery contract", () => {
   const deliveryInput = { ...input, workflowId: "build-feature", workflowTask: "Build and deliver the iOS application." } as StageExecutionInput;
   const output = {
     outcome: "completed",
@@ -383,7 +383,8 @@ test("unrelated command requests cannot bypass the delivery contract", () => {
     requestedFileWrites: []
   } as StageExecutionOutput;
 
-  assert.match(unfulfilledCompletionReason(deliveryInput, output) ?? "", /successful delivery command receipt/iu);
+  assert.equal(unfulfilledCompletionReason(deliveryInput, output), null);
+  assert.match(unfulfilledCompletionReason(deliveryInput, { ...output, requestedCommands: [] }) ?? "", /successful delivery command receipt/iu);
 });
 
 test("implementation does not accept unrelated, failed, timed-out, or rejected commands as delivery evidence", () => {
@@ -472,6 +473,13 @@ test("passing checks cannot hide an unresolved failing test suite", () => {
     assert.match(verificationCompletionReason(verifierInput, [failed, { commandLine: "npm run validate-boundary", exitCode: 0 }]) ?? "", /Verification command failed/u);
     assert.equal(verificationCompletionReason(verifierInput, [failed, { commandLine, exitCode: 0 }]), null);
   }
+});
+
+test("pending implementation diagnostics defer only the pre-execution completion gate", () => {
+  const stage = { ...input, workflowId: "build-feature", stageId: "implement", agentId: "implementation-agent", workflowTask: "Fix runtime continuation" } as StageExecutionInput;
+  const output = { outcome: "completed", summary: "Requesting diagnostics before editing", artifact: {}, requestedCommands: ["npm run typecheck"], requestedFileWrites: [] } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(stage, output), null);
+  assert.notEqual(unfulfilledCompletionReason(stage, { ...output, requestedCommands: [], artifact: { actionResults: [{ commandLine: "npm run typecheck", exitCode: 0 }] } }), null);
 });
 
 test("final implementation gate consumes executed write receipts but rejects no-op and rejected writes", () => {
