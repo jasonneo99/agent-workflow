@@ -1570,6 +1570,28 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     reason: string;
     actor: string;
   }): Promise<boolean> {
+    // Repair-of-repair cap: a repair run that itself fails is terminal.
+    // Spawning a repair of a repair creates unbounded chains (observed:
+    // N blocked debug-failure runs all repairing the same parent).
+    const runMeta = (input.run.evaluationMetadata ?? {}) as Record<string, unknown>;
+    if (runMeta.source === "workflow-supervisor-repair") {
+      await recordRunAction({
+        runId: input.run.id,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_supervisor_repair_refused",
+        target: String(runMeta.sourceRunId ?? "unknown"),
+        summary: "Repair run failed; refusing to spawn a repair-of-repair. Escalating to operator instead of chaining.",
+        artifactKind: "workflow_supervisor_repair",
+        artifactContent: {
+          sourceRunId: input.run.id,
+          refusedBecause: "repair-of-repair",
+          originalSourceRunId: runMeta.sourceRunId ?? null,
+          finding: input.reason.slice(0, 2000)
+        },
+        idempotencyKey: `workflow-supervisor-repair-refused-${input.run.id}`
+      }).catch(() => undefined);
+      return false;
+    }
     try {
       await indexProjectForRun(ctx, { projectDir: input.projectDir, maxFiles: 180, refine: false, forceRefine: false });
     } catch {
