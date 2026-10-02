@@ -62,6 +62,8 @@ const actionApprovalSelect = `
   p.root_uri as "projectRootUri"
 `;
 
+export const DEFAULT_APPROVAL_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
 export async function requestActionApproval(input: {
   runId: string;
   taskId?: string | null;
@@ -73,6 +75,8 @@ export async function requestActionApproval(input: {
   policyDecision: Record<string, unknown>;
   payload: Record<string, unknown>;
   idempotencyKey: string;
+  /** milliseconds until expiry; defaults to 24h */
+  ttlMs?: number;
 }): Promise<{ approvalId: string; artifactUri: string; status: string }> {
   return withClient(async (client) => {
     await client.query("begin");
@@ -90,9 +94,9 @@ export async function requestActionApproval(input: {
              ), inserted as (
                insert into action_approvals (
                  run_id, task_id, stage_id, agent_id, action_type, target,
-                 rationale, policy_decision, payload, idempotency_key
+                 rationale, policy_decision, payload, idempotency_key, expires_at
                )
-               select $1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10
+               select $1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz
                where not exists (select 1 from existing)
                returning id::text, status
              )
@@ -101,9 +105,9 @@ export async function requestActionApproval(input: {
              select * from inserted`
           : `insert into action_approvals (
                run_id, task_id, stage_id, agent_id, action_type, target,
-               rationale, policy_decision, payload, idempotency_key
+               rationale, policy_decision, payload, idempotency_key, expires_at
              )
-             values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10)
+             values ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11::timestamptz)
              on conflict (run_id, task_id, action_type, idempotency_key) do update
              set updated_at = now()
              returning id::text, status`,
@@ -526,5 +530,21 @@ export async function recoverInterruptedActionApprovalExecutions(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+}
+
+/**
+ * Expire stale pending approvals. Returns the count expired.
+ * Approvals that sit pending past their expires_at are marked expired
+ * so they don't block runs forever.
+ */
+export async function expireStaleApprovals(): Promise<number> {
+  return withClient(async (client) => {
+    const result = await client.query(
+      `update action_approvals
+       set status = 'expired', updated_at = now()
+       where status = 'pending' and expires_at is not null and expires_at < now()`
+    );
+    return result.rowCount ?? 0;
   });
 }

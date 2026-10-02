@@ -30,6 +30,23 @@ export type EgressLogEntry = {
 const egressLog: EgressLogEntry[] = [];
 const MAX_ENTRIES = 1000;
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+function egressLogPath(): string {
+  const dir = process.env.AGENTFLOW_EGRESS_LOG_DIR
+    ?? path.join(os.homedir(), ".agent-workflow", "egress");
+  try { fs.mkdirSync(dir, { recursive: true }); } catch { /* ignore */ }
+  return path.join(dir, "egress.jsonl");
+}
+
+function persistEgress(entry: EgressLogEntry): void {
+  try {
+    fs.appendFileSync(egressLogPath(), JSON.stringify(entry) + "\n");
+  } catch { /* best-effort; never break the provider call */ }
+}
+
 export function logEgress(entry: Omit<EgressLogEntry, "timestamp">): EgressLogEntry {
   const full: EgressLogEntry = {
     ...entry,
@@ -39,7 +56,19 @@ export function logEgress(entry: Omit<EgressLogEntry, "timestamp">): EgressLogEn
   if (egressLog.length > MAX_ENTRIES) {
     egressLog.splice(0, egressLog.length - MAX_ENTRIES);
   }
+  persistEgress(full);
   return full;
+}
+
+/** Read persisted egress entries from disk (survives restarts). */
+export function readPersistedEgressLog(limit = 100): EgressLogEntry[] {
+  try {
+    const content = fs.readFileSync(egressLogPath(), "utf8");
+    const lines = content.trim().split("\n").filter(Boolean);
+    return lines.slice(-limit).map((line) => JSON.parse(line) as EgressLogEntry);
+  } catch {
+    return [];
+  }
 }
 
 export function readEgressLog(limit = 100): EgressLogEntry[] {

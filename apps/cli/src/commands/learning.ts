@@ -3757,8 +3757,14 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         return;
       }
       const projectDir = path.resolve(process.cwd(), options.project);
+      const validKinds: PromotionKind[] = ["agent-improvement", "tuning", "learning"];
+      if (options.kind !== "all" && !validKinds.includes(options.kind as PromotionKind)) {
+        console.error(`Invalid kind: ${options.kind}. Must be one of: all, ${validKinds.join(", ")}`);
+        process.exitCode = 1;
+        return;
+      }
       const kinds: PromotionKind[] = options.kind === "all"
-        ? ["agent-improvement", "tuning", "learning"]
+        ? validKinds
         : [options.kind as PromotionKind];
 
       // Load each kind's queue from its domain file and present unified.

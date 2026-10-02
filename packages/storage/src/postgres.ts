@@ -331,6 +331,14 @@ export async function migrateStorage(): Promise<void> {
       ADD COLUMN IF NOT EXISTS execution_claim_expires_at timestamptz
     `);
     await client.query(`
+      ALTER TABLE action_approvals
+      ADD COLUMN IF NOT EXISTS expires_at timestamptz
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS action_approvals_expires_idx
+      ON action_approvals(expires_at) WHERE status = 'pending'
+    `);
+    await client.query(`
       CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
       ON action_approvals(status, created_at)
     `);

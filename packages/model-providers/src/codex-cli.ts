@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash , randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -322,7 +322,7 @@ function resolveCodexCliBinary(): string {
 async function withCodexCliProcessLock<T>(operation: () => Promise<T>): Promise<T> {
   const lockPrefix = `agentflow-codex-cli-${typeof process.getuid === "function" ? process.getuid() : "user"}`;
   const concurrency = configuredCodexCliConcurrency();
-  const token = `${process.pid}:${Date.now()}:${Math.random().toString(16).slice(2)}`;
+  const token = `${process.pid}:${Date.now()}:${randomUUID()}`;
   const deadline = Date.now() + configuredCodexCliTimeoutMs();
   let handle: Awaited<ReturnType<typeof fs.open>> | undefined;
   let lockPath: string | undefined;

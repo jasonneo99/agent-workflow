@@ -6,6 +6,7 @@ import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, 
 import { loadAgents, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { buildGovernanceReport, formatGovernanceReport } from "../../../../packages/governance/src/index.js";
 import { providerFromEnv, readEgressLog, summarizeEgress } from "../../../../packages/model-providers/src/index.js";
+import { verifyRunReceiptChain } from "../../../../packages/storage/src/postgres.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../../packages/schema-registry/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { parsePositiveInteger } from "../numeric-options.js";
@@ -393,6 +394,27 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         const tokens = e.promptTokens !== undefined ? ` ${e.promptTokens}+${e.completionTokens ?? 0}tok` : "";
         const err = e.error ? ` ERROR: ${e.error.slice(0, 80)}` : "";
         console.log(`${e.timestamp} ${e.providerId} ${e.method} ${e.host}${e.endpoint}${tokens} ${e.durationMs}ms${err}`);
+      }
+    });
+
+  program
+    .command("verify-receipts")
+    .description("Verify the tamper-evident hash chain of action receipts for a run")
+    .requiredOption("--run <id>", "run id to verify")
+    .option("--json", "output as JSON")
+    .action(async (options: { run: string; json?: boolean }) => {
+      const result = await verifyRunReceiptChain(options.run);
+      if (options.json) {
+        console.log(JSON.stringify({ runId: options.run, ...result }, null, 2));
+        return;
+      }
+      if (result.valid) {
+        console.log(`Receipt chain valid: ${result.checked} receipt(s) verified for run ${options.run}.`);
+      } else {
+        console.error(`Receipt chain BROKEN for run ${options.run}:`);
+        console.error(`  Checked: ${result.checked}, broken at index ${result.brokenAt}`);
+        console.error(`  Reason: ${result.reason}`);
+        process.exitCode = 1;
       }
     });
 
