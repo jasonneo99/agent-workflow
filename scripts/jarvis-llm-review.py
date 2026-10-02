@@ -7,7 +7,8 @@ Runs on loki (where the agentflow CLI lives). Each night:
   2. Reviews each file with the `code-review` workflow (technical-architect
      agent) via `agentflow run-and-watch`.
   3. Converts findings to dashboard proposals in the jarvis learnings DB
-     (medium/high risk, never auto-applied), deduplicated by opportunity_id.
+     (medium auto-approved per standing rule, high stays pending),
+     deduplicated by opportunity_id.
 
 Schedule: launchd com.jarvis.llm-review, daily 4:00 AM on loki.
 Bounds: max 5 files/night, ~8k tokens input per file (truncated with note).
