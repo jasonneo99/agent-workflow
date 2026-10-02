@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { logEgress } from "./egress-log.js";
 import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
@@ -27,9 +28,12 @@ export interface CodexCliDiagnostic {
   exitCode?: number;
   errorCode?: string;
   signal?: NodeJS.Signals;
+  /** truncated, secret-redacted subprocess stderr — surfaced, never hashed away */
+  stderrExcerpt?: string;
 }
 type CodexCliProcessError = Error & { code?: string; retryable?: boolean; diagnostic?: CodexCliDiagnostic };
-const codexCliSessions = new Map<string, string>();
+type CodexCliSessionRecord = { threadId: string; resumeCount: number; createdAt: number };
+const codexCliSessions = new Map<string, CodexCliSessionRecord>();
 export type CodexCliRunner = {
   authStatus(): Promise<string>;
   execute(input: CodexCliRunInput): Promise<CodexCliRunResult>;
@@ -190,13 +194,17 @@ export function createCodexCliRunner(): CodexCliRunner {
         try {
           await fs.writeFile(schemaPath, `${JSON.stringify(schema)}\n`, { encoding: "utf8", mode: 0o600 });
           const executionDirectory = workingDirectory?.trim() ? path.resolve(workingDirectory) : temporaryDir;
-          const reusableSession = configuredCodexCliSessionReuse() && sessionKey ? await loadCodexCliSession(sessionKey) : undefined;
-          const args = reusableSession
+          const resumeRecord = configuredCodexCliSessionReuse() && sessionKey ? await loadCodexCliSession(sessionKey) : undefined;
+          // Cap the resume chain: beyond a few resumes the thread's rollout grows
+          // large enough that `exec resume` itself becomes the failure mode
+          // (observed 2026-10-01 on 400k-800k token threads). Start fresh instead.
+          const resumeAttempt = resumeRecord && resumeRecord.resumeCount < configuredCodexCliMaxResumes() ? resumeRecord : undefined;
+          const buildArgs = (resumeThreadId: string | undefined): string[] => resumeThreadId
             ? [
               "exec", "resume", "--ignore-user-config", "--ignore-rules", "--json", "--skip-git-repo-check",
               "--output-schema", schemaPath, "--output-last-message", outputPath,
               ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
-              ...(model ? ["--model", model] : []), reusableSession, "-"
+              ...(model ? ["--model", model] : []), resumeThreadId, "-"
             ]
             : [
               "exec", ...(configuredCodexCliSessionReuse() && sessionKey ? [] : ["--ephemeral"]),
@@ -207,16 +215,30 @@ export function createCodexCliRunner(): CodexCliRunner {
               ...(reasoningEffort ? ["--config", `model_reasoning_effort=\"${reasoningEffort}\"`] : []),
               ...(model ? ["--model", model] : []), "-"
             ];
-          const processResult = await runProcess(binary, args, prompt, executionDirectory);
-          if (!reusableSession && sessionKey) {
-            const threadId = parseCodexCliThreadId(processResult.stdout);
-            if (threadId) {
-              codexCliSessions.set(sessionKey, threadId);
-              await rememberCodexCliSession(sessionKey, threadId);
-              while (codexCliSessions.size > 128) codexCliSessions.delete(codexCliSessions.keys().next().value!);
+          let processResult: { stdout: string; stderr: string };
+          let resumed = false;
+          try {
+            processResult = await runProcess(binary, buildArgs(resumeAttempt?.threadId), prompt, executionDirectory);
+            resumed = Boolean(resumeAttempt);
+          } catch (error) {
+            if (!resumeAttempt || !sessionKey) throw error;
+            // A failed `exec resume` must never fail the stage: the executor
+            // already passes full context via priorReceipts, so resume is a
+            // pure optimization. Forget the poisoned thread and retry once fresh.
+            await forgetCodexCliSession(sessionKey);
+            processResult = await runProcess(binary, buildArgs(undefined), prompt, executionDirectory);
+          }
+          assertCodexCliTurnSucceeded(processResult.stdout);
+          const output = await readCodexCliOutputFile(outputPath);
+          if (sessionKey) {
+            if (resumed) {
+              await bumpCodexCliResumeCount(sessionKey);
+            } else {
+              const threadId = parseCodexCliThreadId(processResult.stdout);
+              if (threadId) await rememberCodexCliSession(sessionKey, threadId);
             }
           }
-          return { output: await fs.readFile(outputPath, "utf8"), model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
+          return { output, model: model ?? "codex-default", usage: parseCodexCliUsage(processResult.stdout) };
         } finally {
           await fs.rm(temporaryDir, { recursive: true, force: true });
         }
@@ -245,25 +267,51 @@ export function parseCodexCliThreadId(jsonl: string): string | undefined {
   return undefined;
 }
 
-async function loadCodexCliSession(sessionKey: string): Promise<string | undefined> {
+async function loadCodexCliSession(sessionKey: string): Promise<CodexCliSessionRecord | undefined> {
   const cached = codexCliSessions.get(sessionKey);
   if (cached) return cached;
   try {
-    const record = JSON.parse(await fs.readFile(codexCliSessionPath(sessionKey), "utf8")) as { threadId?: unknown; createdAt?: unknown };
+    const record = JSON.parse(await fs.readFile(codexCliSessionPath(sessionKey), "utf8")) as { threadId?: unknown; resumeCount?: unknown; createdAt?: unknown };
     if (typeof record.threadId !== "string" || !/^[0-9a-f-]{36}$/iu.test(record.threadId)) return undefined;
     if (typeof record.createdAt !== "number" || Date.now() - record.createdAt > 24 * 60 * 60 * 1000) return undefined;
-    codexCliSessions.set(sessionKey, record.threadId);
-    return record.threadId;
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") return undefined;
+    const entry: CodexCliSessionRecord = {
+      threadId: record.threadId,
+      resumeCount: typeof record.resumeCount === "number" && record.resumeCount >= 0 ? Math.trunc(record.resumeCount) : 0,
+      createdAt: record.createdAt
+    };
+    codexCliSessions.set(sessionKey, entry);
+    return entry;
+  } catch {
     return undefined;
   }
 }
 
 async function rememberCodexCliSession(sessionKey: string, threadId: string): Promise<void> {
+  const record: CodexCliSessionRecord = { threadId, resumeCount: 0, createdAt: Date.now() };
+  codexCliSessions.set(sessionKey, record);
+  while (codexCliSessions.size > 128) codexCliSessions.delete(codexCliSessions.keys().next().value!);
   const directory = codexCliSessionDirectory();
   await fs.mkdir(directory, { recursive: true, mode: 0o700 });
-  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify({ threadId, createdAt: Date.now() })}\n`, { mode: 0o600 });
+  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(record)}\n`, { mode: 0o600 });
+}
+
+async function bumpCodexCliResumeCount(sessionKey: string): Promise<void> {
+  const record = codexCliSessions.get(sessionKey) ?? await loadCodexCliSession(sessionKey);
+  if (!record) return;
+  const updated: CodexCliSessionRecord = { ...record, resumeCount: record.resumeCount + 1 };
+  codexCliSessions.set(sessionKey, updated);
+  await fs.writeFile(codexCliSessionPath(sessionKey), `${JSON.stringify(updated)}\n`, { mode: 0o600 }).catch(() => undefined);
+}
+
+async function forgetCodexCliSession(sessionKey: string): Promise<void> {
+  codexCliSessions.delete(sessionKey);
+  await fs.unlink(codexCliSessionPath(sessionKey)).catch(() => undefined);
+}
+
+/** Max `exec resume` calls before starting a fresh thread (default 3). 0 disables resume. */
+export function configuredCodexCliMaxResumes(): number {
+  const parsed = Number.parseInt(process.env.CODEX_CLI_MAX_RESUMES ?? "", 10);
+  return Number.isFinite(parsed) ? Math.max(0, Math.min(parsed, 32)) : 3;
 }
 
 function codexCliSessionDirectory(): string {
@@ -383,12 +431,62 @@ export function configuredCodexCliOutputMaxBytes(): number {
   return Number.isFinite(parsed) ? Math.max(1_000_000, Math.min(parsed, 32_000_000)) : 8_000_000;
 }
 
+/**
+ * Reproduced 2026-10-01: `codex exec` can exit 0 while its JSONL stream
+ * contains {"type":"turn.failed"} and it never writes --output-last-message.
+ * Without this check the failure surfaces as a bare ENOENT on readFile.
+ */
+function assertCodexCliTurnSucceeded(stdout: string): void {
+  let sawTurnFailed = false;
+  let sawTurnCompleted = false;
+  for (const line of stdout.split(/\r?\n/u)) {
+    if (!line.trim()) continue;
+    try {
+      const event = JSON.parse(line) as { type?: unknown };
+      if (event.type === "turn.failed") sawTurnFailed = true;
+      else if (event.type === "turn.completed") sawTurnCompleted = true;
+    } catch { /* non-JSON lines carry no turn signal */ }
+  }
+  if (sawTurnFailed && !sawTurnCompleted) {
+    throw codexCliProcessError({
+      rawDetail: "codex exec exited 0 but its event stream reported turn.failed and no turn.completed",
+      errorCode: "CODEX_CLI_TURN_FAILED"
+    });
+  }
+}
+
+async function readCodexCliOutputFile(outputPath: string): Promise<string> {
+  try {
+    return await fs.readFile(outputPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      throw codexCliProcessError({
+        rawDetail: "codex exec exited 0 but never wrote the --output-last-message file; the turn likely failed silently",
+        errorCode: "CODEX_CLI_MISSING_OUTPUT"
+      });
+    }
+    throw error;
+  }
+}
+
 async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string): Promise<{ stdout: string; stderr: string }> {
+  const startedAt = Date.now();
   const timeoutMs = configuredCodexCliTimeoutMs();
   const maxBytes = configuredCodexCliOutputMaxBytes();
   const environment: NodeJS.ProcessEnv = { ...process.env, NO_COLOR: "1" };
   delete environment.OPENAI_API_KEY;
   delete environment.OPENAI_ADMIN_KEY;
+  const logSpawn = (outcome: { statusCode?: number; error?: string }): void => {
+    const subcommand = args[0] === "exec" && args[1] === "resume" ? "exec resume" : args[0] === "exec" ? "exec" : args.slice(0, 2).join(" ");
+    logEgress({
+      providerId: "codex-cli",
+      host: "localhost",
+      endpoint: `codex ${subcommand}`,
+      method: "spawn",
+      durationMs: Date.now() - startedAt,
+      ...outcome
+    });
+  };
   return new Promise((resolve, reject) => {
     const child = spawn(binary, args, { cwd, env: environment, stdio: ["pipe", "pipe", "pipe"] });
     const stdout: Buffer[] = [];
@@ -411,11 +509,16 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
     child.on("error", (error) => {
       clearTimeout(timer);
-      reject(codexCliProcessError({ rawDetail: error.message, errorCode: (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED", forcedCategory: "spawn_unavailable" }));
+      const errorCode = (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED";
+      logSpawn({ error: `spawn failed: ${errorCode}` });
+      reject(codexCliProcessError({ rawDetail: error.message, errorCode, forcedCategory: "spawn_unavailable" }));
     });
     child.on("close", (code, signal) => {
       clearTimeout(timer);
-      if (code === 0 && bytes <= maxBytes) resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
+      if (code === 0 && bytes <= maxBytes) {
+        logSpawn({});
+        resolve({ stdout: Buffer.concat(stdout).toString("utf8"), stderr: Buffer.concat(stderr).toString("utf8") });
+      }
       else {
         const rawDetail = Buffer.concat(stderr).toString("utf8") || Buffer.concat(stdout).toString("utf8");
         const errorCode = terminationReason === "output_limit"
@@ -423,11 +526,33 @@ async function runProcess(binary: string, args: string[], input: string | undefi
           : terminationReason === "timeout"
             ? "CODEX_CLI_TIMEOUT"
             : code === null ? "CODEX_CLI_SIGNAL" : `CODEX_CLI_EXIT_${code}`;
+        logSpawn({ statusCode: code ?? undefined, error: codexStderrExcerpt(rawDetail).slice(0, 500) });
         reject(codexCliProcessError({ rawDetail, errorCode, exitCode: code ?? undefined, signal: signal ?? undefined, forcedCategory: terminationReason }));
       }
     });
     child.stdin.end(input);
   });
+}
+
+const CODEX_STDERR_EXCERPT_MAX = 2000;
+
+/**
+ * Collapse, truncate, and redact secrets from subprocess stderr before it is
+ * surfaced in error messages, receipts, or logs. Fixes the 2026-10-01 finding
+ * that failure evidence was hashed into a digest and thrown away.
+ */
+export function codexStderrExcerpt(rawDetail: string): string {
+  const collapsed = rawDetail.replace(/\s+/gu, " ").trim();
+  const truncated = collapsed.length > CODEX_STDERR_EXCERPT_MAX
+    ? `${collapsed.slice(0, CODEX_STDERR_EXCERPT_MAX)}\u2026[truncated]`
+    : collapsed;
+  return truncated
+    // URL-embedded credentials: postgres://user:pass@host -> postgres://[redacted]@host
+    .replace(/:\/\/[^/\s:@]+:[^/\s@]+@/g, "://[redacted]@")
+    // key=value secrets: token=, api_key=, *_secret=, password= (quoted or bare)
+    .replace(/(\b[\w-]*?(?:api[_-]?key|token|secret|password)\b\s*[:=]\s*)(["']?)[^\s"';,]{4,}\2/gi, "$1$2[redacted]$2")
+    .replace(/(bearer\s+)[\w\-./+]{8,}/gi, "$1[redacted]")
+    .replace(/\bsk-[A-Za-z0-9]{8,}[\w-]*/g, "[redacted]");
 }
 
 export function buildCodexCliDiagnostic(input: { rawDetail: string; errorCode?: string; exitCode?: number; signal?: NodeJS.Signals; forcedCategory?: "spawn_unavailable" | "timeout" | "output_limit" }): CodexCliDiagnostic {
@@ -445,11 +570,13 @@ export function buildCodexCliDiagnostic(input: { rawDetail: string; errorCode?: 
                     : "process_exit");
   const retryable = category === "timeout" || category === "transport" || category === "service_unavailable"
     || (category === "spawn_unavailable" && /EAGAIN|EBUSY|ECONN|ETIMEDOUT/iu.test(input.errorCode ?? ""));
+  const stderrExcerpt = normalized ? codexStderrExcerpt(input.rawDetail) : undefined;
   return {
     source: "codex-cli",
     category,
     digest: createHash("sha256").update([input.errorCode ?? "", String(input.exitCode ?? ""), input.signal ?? "", normalized].join("\u001f")).digest("hex"),
     retryable,
+    ...(stderrExcerpt ? { stderrExcerpt } : {}),
     ...(input.exitCode === undefined ? {} : { exitCode: input.exitCode }),
     ...(input.errorCode ? { errorCode: input.errorCode } : {}),
     ...(input.signal ? { signal: input.signal } : {})
@@ -459,7 +586,11 @@ export function buildCodexCliDiagnostic(input: { rawDetail: string; errorCode?: 
 function codexCliProcessError(input: Parameters<typeof buildCodexCliDiagnostic>[0]): CodexCliProcessError {
   const diagnostic = buildCodexCliDiagnostic(input);
   const safeCode = diagnostic.errorCode ? ` [${diagnostic.errorCode}]` : "";
-  const failure = new Error(`Codex CLI ${diagnostic.category.replaceAll("_", " ")}${safeCode} (diagnostic ${diagnostic.digest.slice(0, 12)}).`) as CodexCliProcessError;
+  const exitInfo = diagnostic.exitCode !== undefined
+    ? ` [exit ${diagnostic.exitCode}]`
+    : diagnostic.signal ? ` [${diagnostic.signal}]` : "";
+  const detail = diagnostic.stderrExcerpt ? ` Detail: ${diagnostic.stderrExcerpt.slice(0, 500)}` : "";
+  const failure = new Error(`Codex CLI ${diagnostic.category.replaceAll("_", " ")}${safeCode}${exitInfo} (diagnostic ${diagnostic.digest.slice(0, 12)}).${detail}`) as CodexCliProcessError;
   failure.code = diagnostic.errorCode ?? `CODEX_CLI_${diagnostic.category.toUpperCase()}`;
   failure.retryable = diagnostic.retryable;
   failure.diagnostic = diagnostic;

@@ -32,7 +32,14 @@ export function classifyProviderFailure(error: unknown): ProviderExecutionError 
   const codexDiagnostic = readCodexDiagnostic(candidate?.diagnostic);
   if (codexDiagnostic) {
     const kind = codexDiagnosticKind(codexDiagnostic.category);
-    return new ProviderExecutionError(kind, `Codex CLI ${codexDiagnostic.category.replaceAll("_", " ")} (diagnostic ${codexDiagnostic.digest.slice(0, 12)}).`, status, code);
+    // The executor records failure.message in the run receipt: carry the
+    // redacted stderr excerpt so the evidence survives instead of being
+    // hashed away (2026-10-01 Codex diagnostic).
+    const exitInfo = codexDiagnostic.exitCode !== undefined
+      ? ` [exit ${codexDiagnostic.exitCode}]`
+      : codexDiagnostic.signal ? ` [${codexDiagnostic.signal}]` : "";
+    const detail = codexDiagnostic.stderrExcerpt ? ` Detail: ${codexDiagnostic.stderrExcerpt.slice(0, 500)}` : "";
+    return new ProviderExecutionError(kind, `Codex CLI ${codexDiagnostic.category.replaceAll("_", " ")}${exitInfo} (diagnostic ${codexDiagnostic.digest.slice(0, 12)}).${detail}`, status, code);
   }
   if (status === 401 || status === 403 || /invalid[_ -]?api[_ -]?key|unauthorized|authentication|credential/.test(label)) return new ProviderExecutionError("authentication", "Provider authentication failed.", status, code);
   if (status === 402 || /billing_not_configured|billing verification failed|insufficient_quota|billing[_ -]?hard[_ -]?limit|credit balance|exceeded.*quota|quota.*exhaust/.test(label)) return new ProviderExecutionError("account_quota", "Provider billing is not configured or account quota is exhausted.", status, code);
@@ -45,12 +52,21 @@ export function classifyProviderFailure(error: unknown): ProviderExecutionError 
 
 const codexDiagnosticCategories = new Set(["spawn_unavailable", "timeout", "output_limit", "authentication", "account_quota", "rate_limited", "model_unavailable", "configuration", "transport", "service_unavailable", "schema_or_usage", "process_exit"]);
 
-function readCodexDiagnostic(value: unknown): { category: string; digest: string } | undefined {
+function readCodexDiagnostic(value: unknown): { category: string; digest: string; stderrExcerpt?: string; exitCode?: number; signal?: string } | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   if (record.source !== "codex-cli" || typeof record.category !== "string" || !codexDiagnosticCategories.has(record.category)) return undefined;
   if (typeof record.digest !== "string" || !/^[a-f0-9]{64}$/u.test(record.digest)) return undefined;
-  return { category: record.category, digest: record.digest };
+  const stderrExcerpt = typeof record.stderrExcerpt === "string" && record.stderrExcerpt ? record.stderrExcerpt.slice(0, 2000) : undefined;
+  const exitCode = typeof record.exitCode === "number" ? record.exitCode : undefined;
+  const signal = typeof record.signal === "string" ? record.signal : undefined;
+  return {
+    category: record.category,
+    digest: record.digest,
+    ...(stderrExcerpt ? { stderrExcerpt } : {}),
+    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(signal ? { signal } : {})
+  };
 }
 
 function codexDiagnosticKind(category: string): ProviderFailureKind {
