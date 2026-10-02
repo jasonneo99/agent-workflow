@@ -22,6 +22,7 @@ import { registerLocalLlmCommands } from "./commands/local-llm.js";
 import { registerServerCommands } from "./commands/server.js";
 import { registerContextExtraCommands } from "./commands/context-extra.js";
 import { registerDaemonCommands } from "./commands/daemon.js";
+import { registerEvaluationDaemonCommands } from "./commands/evaluation-daemon.js";
 
 const program = new Command();
 const ctx = createCliContext(import.meta.url);
@@ -57,6 +58,7 @@ registerLocalLlmCommands(program, ctx);
 registerServerCommands(program, ctx);
 registerContextExtraCommands(program, ctx);
 registerDaemonCommands(program, ctx);
+registerEvaluationDaemonCommands(program, ctx);
 
 // Import guard: unit tests import pure helpers from this module, which must
 // not launch the CLI as a side effect. Only parse argv when this file is the

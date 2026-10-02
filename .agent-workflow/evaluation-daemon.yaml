@@ -1,0 +1,26 @@
+# Evaluation daemon configuration.
+# The daemon tick (scripts/evaluation-daemon.ts, run daily via launchd) runs any
+# suite YAML in .agent-workflow/evaluations/ whose newest result is older than
+# interval_hours (or that has never produced a result).
+
+# How often a suite becomes due again (hours). Default: 24 (daily).
+interval_hours: 24
+
+# Which suite files to consider (supports * wildcards).
+suite_glob: "*.yaml"
+
+# Maximum evaluation suites running at the same time per tick.
+max_concurrent: 1
+
+# Project directory passed to `evaluate -p` (relative to the repo root).
+project: "."
+
+# Daily launchd schedule (local time) used by `evaluation-daemon start`.
+hour: 2
+minute: 0
+
+# Per-suite timeout before the run is killed and reported as failed.
+timeout_minutes: 180
+
+# Skip project indexing before each evaluation (faster daemon ticks).
+skip_index: true
