@@ -1,4 +1,5 @@
 import type { CliContext } from "../lib/context.js";
+import { decidePromotions as decideUnifiedPromotions, parsePromotionIds as parseUnifiedPromotionIds, type PromotionKind } from "../../../../packages/promotions/src/index.js";
 import { registerLearningLoopCommand } from "../learning/learning-loop-command.js";
 import { normalizePolicy, verifyBundle } from "../../../../packages/bundle-trust/src/index.js";
 import type { Command } from "commander";
@@ -3734,6 +3735,93 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         events: []
       }));
       console.log(options.json ? JSON.stringify(history, null, 2) : formatTuningApprovalHistory(history));
+    });
+
+  program
+    .command("promotions")
+    .description("Unified promotion queue: list, approve, reject, or defer promotions across all kinds (agent-improvement, tuning, learning)")
+    .requiredOption("-p, --project <dir>", "project directory")
+    .option("--kind <kind>", "promotion kind: agent-improvement, tuning, learning, or all", "all")
+    .option("--ids <ids>", "comma-separated promotion ids or all", "all")
+    .option("--approve <ids>", "comma-separated ids to approve, or all")
+    .option("--reject <ids>", "comma-separated ids to reject, or all")
+    .option("--defer <ids>", "comma-separated ids to defer, or all")
+    .option("--reviewer <name>", "reviewer name")
+    .option("--note <text>", "decision note")
+    .option("--json", "output as JSON")
+    .action(async (options: { project: string; kind: string; ids: string; approve?: string; reject?: string; defer?: string; reviewer?: string; note?: string; json?: boolean }) => {
+      const decisionCount = Number(Boolean(options.approve)) + Number(Boolean(options.reject)) + Number(Boolean(options.defer));
+      if (decisionCount > 1) {
+        console.error("Use exactly one of --approve, --reject, or --defer.");
+        process.exitCode = 1;
+        return;
+      }
+      const projectDir = path.resolve(process.cwd(), options.project);
+      const kinds: PromotionKind[] = options.kind === "all"
+        ? ["agent-improvement", "tuning", "learning"]
+        : [options.kind as PromotionKind];
+
+      // Load each kind's queue from its domain file and present unified.
+      const queues: Array<{ kind: PromotionKind; items: Array<{ id: string; title: string; status: string }> }> = [];
+      for (const kind of kinds) {
+        // Domain queues live under .agent-workflow/learning or .agent-workflow/tuning
+        const queuePath = kind === "tuning"
+          ? path.join(projectDir, ".agent-workflow", "tuning", "promotion-queue.json")
+          : path.join(projectDir, ".agent-workflow", "learning", `${kind}-promotion-queue.json`);
+        const data = await ctx.readJsonFile<{ items?: Array<{ id: string; title?: string; status?: string }> }>(queuePath).catch(() => null);
+        queues.push({
+          kind,
+          items: (data?.items ?? []).map((i) => ({ id: i.id, title: i.title ?? i.id, status: i.status ?? "pending" })),
+        });
+      }
+
+      if (!options.approve && !options.reject && !options.defer) {
+        // List mode
+        if (options.json) {
+          console.log(JSON.stringify(queues, null, 2));
+          return;
+        }
+        for (const q of queues) {
+          console.log(`\n== ${q.kind} (${q.items.length} items) ==`);
+          const filterIds = parseUnifiedPromotionIds(options.ids);
+          for (const item of q.items) {
+            if (filterIds !== "all" && !filterIds.includes(item.id)) continue;
+            console.log(`  [${item.status}] ${item.id}: ${item.title}`);
+          }
+        }
+        return;
+      }
+
+      // Decision mode: apply to each kind's queue file
+      const status = options.approve ? "approved" : options.reject ? "rejected" : "deferred";
+      const ids = parseUnifiedPromotionIds(options.approve ?? options.reject ?? options.defer);
+      let totalDecided = 0;
+      for (const kind of kinds) {
+        const queuePath = kind === "tuning"
+          ? path.join(projectDir, ".agent-workflow", "tuning", "promotion-queue.json")
+          : path.join(projectDir, ".agent-workflow", "learning", `${kind}-promotion-queue.json`);
+        const data = await ctx.readJsonFile<{ items?: any[] }>(queuePath).catch(() => null);
+        if (!data?.items) continue;
+        const unified = {
+          kind, projectDir,
+          items: data.items.map((i: any) => ({
+            id: i.id, kind, title: i.title ?? i.id, description: i.description ?? "",
+            payload: i.payload ?? {}, sourceHash: i.sourceHash ?? "",
+            status: i.status ?? "pending", createdAt: i.createdAt ?? new Date().toISOString(),
+          })),
+          updatedAt: new Date().toISOString(),
+        };
+        const result = decideUnifiedPromotions(unified, { ids, status, reviewer: options.reviewer, note: options.note });
+        totalDecided += result.decided;
+        // Write back preserving original shape
+        const byId = new Map(result.queue.items.map((i) => [i.id, i]));
+        data.items = data.items.map((i: any) => {
+          const u = byId.get(i.id);
+          return u ? { ...i, status: u.status, decidedAt: u.decidedAt, decidedBy: u.decidedBy, decisionNote: u.decisionNote } : i;
+        });
+        await fs.writeFile(queuePath, JSON.stringify(data, null, 2)).catch(() => undefined);
+      }
+      console.log(`${totalDecided} promotion(s) ${status}.`);
     });
 
 }
