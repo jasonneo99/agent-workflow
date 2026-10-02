@@ -170,7 +170,7 @@ export function estimateModelCost(usage: ReturnType<typeof usageFromPayload>, mo
   return Number((((usage.inputTokens - usage.cachedInputTokens) * price.inputPerMillionUsd + usage.cachedInputTokens * (price.cachedInputPerMillionUsd ?? 0) + usage.outputTokens * price.outputPerMillionUsd) / 1_000_000).toFixed(8));
 }
 
-export const MODEL_PRICING_VERSION = "2026-09-25";
+export const MODEL_PRICING_VERSION = "2026-10-01";
 
 export function resolveModelPrice(model: string, pricing: FleetGatewayConfig["modelPricing"]): ModelPricing[string] | undefined {
   if (!pricing) return undefined;
@@ -188,6 +188,9 @@ export function modelPricingFromEnv(value = process.env.AGENTFLOW_MODEL_GATEWAY_
 }
 
 const defaultModelPricing: ModelPricing = {
+  "gpt-6-luna": { inputPerMillionUsd: 0.1, cachedInputPerMillionUsd: 0.01, outputPerMillionUsd: 0.5 },
+  "gpt-6.1-sol": { inputPerMillionUsd: 2, cachedInputPerMillionUsd: 0.1, outputPerMillionUsd: 10 },
+  "gpt-6-astra": { inputPerMillionUsd: 10, cachedInputPerMillionUsd: 1, outputPerMillionUsd: 50 },
   "gpt-5.6-luna": { inputPerMillionUsd: 0.2, cachedInputPerMillionUsd: 0.02, outputPerMillionUsd: 1.2 },
   "gpt-5.6-terra": { inputPerMillionUsd: 2, cachedInputPerMillionUsd: 0.2, outputPerMillionUsd: 12 },
   "gpt-5.6-sol": { inputPerMillionUsd: 4, cachedInputPerMillionUsd: 0.4, outputPerMillionUsd: 20 },

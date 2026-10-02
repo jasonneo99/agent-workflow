@@ -1,4 +1,6 @@
 import path from "node:path";
+import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
+import { continuationBackoff, continuationResumeReceipt, pendingEvidenceReason } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
@@ -7,7 +9,7 @@ import { assertCommandAllowed, commandSerializationResource, executeAllowedComma
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
-import { commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
+import { commandDelta, commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
 import { scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
@@ -21,9 +23,13 @@ export { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
 export { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { evaluateActionApprovalRule, evaluateActionRiskAutoApproval, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { resolveLocalProjectPath } from "../../runtime-root/src/index.js";
-import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOperation, type ExecutorResult } from "../../executor-adapters/src/index.js";
+import { executeBoundExecutorStage } from "./bound-executor.js";
+export { executorApprovalTarget, runExecutorApprovalGate } from "./bound-executor.js";
 import {
   blockWorkflowTask,
+  releaseWorkIntent,
+  checkpointWorkflowTaskContinuation,
+  getArtifactByUri,
   claimSideEffect,
   claimNextWorkflowTask,
   completeWorkflowTask,
@@ -179,7 +185,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
       };
       const localProjectRootUri = projectResolution.localRootUri;
-      const actionResults: unknown[] = [];
+      const savedContinuation = await getArtifactByUri(`db://workflow_tasks/${task.taskId}/continuation`);
+      const continuation = savedContinuation?.runId === task.runId && savedContinuation.taskId === task.taskId
+        ? savedContinuation.content : {};
+      const continuationRound = continuation.round === undefined ? 0 : continuation.round;
+      if (typeof continuationRound !== "number" || !Number.isInteger(continuationRound) || continuationRound < 0 || continuationRound > 3) {
+        throw new Error("Invalid bounded stage continuation round.");
+      }
+      const actionResults: unknown[] = Array.isArray(continuation.actionResults) ? [...continuation.actionResults] : [];
       const snapshotProject = projectConfigSchema.parse(task.projectConfig);
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
       const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
@@ -216,6 +229,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       });
       const routedStageInput = {
         ...stageInput,
+        priorReceipts: [...stageInput.priorReceipts, ...(Array.isArray(continuation.priorReceipts) ? continuation.priorReceipts as StageExecutionInput["priorReceipts"] : []),
+          ...(continuationRound > 0
+            ? [continuationResumeReceipt(task.agentId, continuation, actionResults)]
+            : [])],
+        stateDeltas: (Array.isArray(continuation.stateDeltas) ? continuation.stateDeltas : []) as StateDelta[],
+        fileReads: (Array.isArray(continuation.fileReads) ? continuation.fileReads : []) as NonNullable<StageExecutionInput["fileReads"]>,
         modelTier: route.modelTier,
         modelOverride: route.modelOverride,
         memoryContext
@@ -250,12 +269,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let fallbackUsed = execution.fallbackUsed;
       const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
 
-      const initialCompletionViolation = unfulfilledCompletionReason(routedStageInput, output);
+      const initialCompletionViolation = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
       if (initialCompletionViolation) {
         await assertStageGuard(false);
         const contractRetry = await executeWithProviderFallback({
           providerId: route.providerId,
-          stageInput: routedStageInput,
+          stageInput: { ...routedStageInput, priorReceipts: [...routedStageInput.priorReceipts, { agentId: task.agentId, actionType: "completion_contract_feedback", summary: initialCompletionViolation }] },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
           providerFactory: providerFromEnv
         });
@@ -266,7 +285,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         fallbackProviderId = undefined;
         actualProviderId = contractRetry.actualProvider;
         actualModel = contractRetry.actualModel;
-        const repeatedViolation = unfulfilledCompletionReason(routedStageInput, output);
+        const repeatedViolation = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
         if (repeatedViolation) {
           output = { ...output, outcome: "blocked", blockedReason: repeatedViolation };
           quality = scoreStageOutput(routedStageInput, output);
@@ -340,8 +359,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       // executor reads them under the read-path policy, and the model is asked
       // again with the contents in context. Reads are informational: a denied
       // or missing file is reported back, never a stage blocker.
-      const stageFileReads: Array<{ path: string; content: string; truncated: boolean; sha256?: string; error?: string }> = [];
-      const stageStateDeltas: StateDelta[] = [];
+      const stageFileReads = [...routedStageInput.fileReads];
+      const stageStateDeltas: StateDelta[] = [...routedStageInput.stateDeltas];
       const seenReadPaths = new Set<string>();
       const seenSearches = new Set<string>();
       const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
@@ -349,6 +368,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const countRequestedActions = (out: typeof output): number =>
         (out.requestedCommands?.length ?? 0) + (out.requestedFileWrites?.length ?? 0) + (out.requestedFileReads?.length ?? 0) + (out.requestedFileSearches?.length ?? 0);
       let readRounds = 0;
+      const executePendingReadRounds = async (): Promise<void> => {
       while (readRounds < maxReadRounds) {
         const pendingSearches = (output.requestedFileSearches ?? []).filter((query) => {
           const key = query.trim().toLowerCase();
@@ -527,6 +547,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         actualProviderId = reread.actualProvider;
         actualModel = reread.actualModel;
       }
+      };
+      await executePendingReadRounds();
 
       const routeReceipt = buildModelRouteReceiptContent({ workflowId: task.workflowId, stageId: task.stageId, agentId: task.agentId, route, fallbackProviderId, fallbackUsed, actualProviderId, actualModel, attempts: fallbackAttempts, output, latencyMs: Date.now() - startedAt, stagePattern, quality });
       await recordRunAction({
@@ -573,7 +595,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               attempts: fallbackAttempts
             },
             quality,
-            actionResults: []
+            actionResults
           }
         });
         stageTelemetry.end("blocked", blockedReason);
@@ -582,15 +604,29 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       const verifyRetryBudget = verifyRetryBudgetFromEnv();
       let verifyRetriesRemaining = verifyRetryBudget;
+      let successfulFollowupsRemaining = Math.min(Math.max(stagePattern.maxIterations ?? 4, 3), 6);
       let mutationRetriesRemaining = fileMutationRetryBudgetFromEnv();
       let verifyRetryRound = 0;
+      if (typeof continuation.verifyRetryRound === "number" && Number.isInteger(continuation.verifyRetryRound)
+        && continuation.verifyRetryRound >= 0 && continuation.verifyRetryRound <= 100) {
+        verifyRetryRound = continuation.verifyRetryRound;
+      }
+      let successfulFollowupRound = 0;
       let verifyRetryRequested = false;
+      let unconsumedSuccessfulActionResult: string | null = null;
       let verifyEnvironmentalBlock: { summary: string; reason: string; files: string[] } | null = null;
       verifyActionRounds:
       do {
         verifyRetryRequested = false;
+        // A verifier may need additional exact project evidence after a failed
+        // command before it can select a valid replacement. Process those
+        // newly requested reads/searches inside the retry loop and return the
+        // evidence to the provider instead of prematurely applying the final
+        // verification gate to an informational response.
+        await executePendingReadRounds();
         const totalRequestedActions = countRequestedActions(output);
         let reactIteration = 0;
+        let successfulCommandsThisRound = 0;
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
           reactIteration += 1;
@@ -609,6 +645,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             idempotencyKey: commandIdempotencyKey
           });
           if (previousCommand) {
+            if (previousCommand.content.exitCode === 0 && previousCommand.content.timedOut === false) {
+              successfulCommandsThisRound += 1;
+              routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
+                agentId: task.agentId,
+                actionType: "local_command_reused",
+                summary: `Command ${commandLine} succeeded. Evidence: ${previousCommand.uri}.\n${truncateCommandOutputForError(String(previousCommand.content.stdout || previousCommand.content.stderr || ""), 80, 4000)}`
+              }];
+            }
             const reuseArtifactUri = await recordRunAction({
               runId: task.runId,
               taskId: task.taskId,
@@ -675,6 +719,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                   requestedByStageId: task.stageId
                 }
               });
+              if (!policyError.startsWith("Command is not allowed by project policy:")) {
+                actionResults.push({ type: "local_command_rejected", commandLine, artifactUri: rejectionArtifactUri, error: policyError });
+                continue;
+              }
               const approval = await requestActionApproval({
                 runId: task.runId,
                 taskId: task.taskId,
@@ -814,7 +862,26 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               : await executeCommand();
           } catch (error) {
             const rejectionMessage = error instanceof Error ? error.message : String(error);
-            const rejectionArtifactUri = await recordRunAction({
+            const errorCode = typeof error === "object" && error !== null && "code" in error
+              ? String((error as { code?: unknown }).code ?? "")
+              : "";
+            if (errorCode === "ENOENT") {
+              // A missing optional executable is an executed command failure,
+              // not a policy rejection. Normalize it so executor/verification
+              // recovery can feed the evidence back and select an allowlisted
+              // fallback (for example devicectl after ios-deploy is absent).
+              commandResult = {
+                commandLine,
+                cwd: localProjectRootUri,
+                exitCode: 127,
+                signal: null,
+                stdout: "",
+                stderr: rejectionMessage,
+                durationMs: 0,
+                timedOut: false
+              };
+            } else {
+              const rejectionArtifactUri = await recordRunAction({
               runId: task.runId,
               taskId: task.taskId,
               agentId: task.agentId,
@@ -830,13 +897,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 requestedByStageId: task.stageId
               }
             });
-            actionResults.push({
-              type: "local_command_rejected",
-              commandLine,
-              artifactUri: rejectionArtifactUri,
-              error: rejectionMessage
-            });
-            await recordBoundedReactLoopReceipt({
+              actionResults.push({
+                type: "local_command_rejected",
+                commandLine,
+                artifactUri: rejectionArtifactUri,
+                error: rejectionMessage
+              });
+              await recordBoundedReactLoopReceipt({
               task,
               stagePattern,
               iteration: reactIteration,
@@ -856,8 +923,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 artifactUri: rejectionArtifactUri,
                 error: rejectionMessage
               }
-            });
-            continue;
+              });
+              continue;
+            }
           }
           const summary = [
             `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
@@ -887,8 +955,31 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactUri,
             exitCode: commandResult.exitCode,
             timedOut: commandResult.timedOut,
+            acquiredWorkIntent: acquiredStageIntent(commandLine, commandResult.stdout, commandResult.exitCode, commandResult.timedOut),
             approvalRule: commandApprovalRule ?? undefined
           });
+          if (commandResult.exitCode === 0 && !commandResult.timedOut) {
+            successfulCommandsThisRound += 1;
+            // Keep successful observations in the provider's receipt context too:
+            // folded state can replace older command facts during multi-step repair.
+            routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
+              agentId: task.agentId,
+              actionType: "local_command",
+              summary: `Command ${commandLine} succeeded. Evidence: ${artifactUri}.\n${truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000)}`
+            }];
+            stageStateDeltas.push(commandDelta({
+              command: commandLine,
+              exitCode: commandResult.exitCode,
+              outputPreview: truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000),
+              provenance: {
+                stageId: task.stageId,
+                agentId: task.agentId,
+                actionType: "local_command",
+                taskId: task.taskId,
+                artifactUri
+              }
+            }));
+          }
           await recordBoundedReactLoopReceipt({
             task,
             stagePattern,
@@ -972,9 +1063,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               });
               break verifyActionRounds;
             }
-            // Fix 2: in verify-type stages, feed the failure back to the agent
-            // with a bounded retry budget instead of failing the run outright.
-            // Planner/react stages keep their diagnostic-evidence behavior.
+            // Feed actionable failures back to verification and executor
+            // stages with a bounded retry budget instead of failing the run
+            // outright. This lets delivery stages select an approved fallback
+            // when an optional tool probe fails. Planner/react stages retain
+            // their diagnostic-evidence behavior.
             if (verifyRetriesRemaining > 0 && commandFailureEligibleForVerifyRetry(stagePattern, commandLine)) {
               verifyRetriesRemaining -= 1;
               verifyRetryRound += 1;
@@ -1371,6 +1464,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             path: writeResult.relativePath,
             artifactUri,
             bytesWritten: writeResult.bytesWritten,
+            previousHash: isPatch ? fileWrite.expectedHash : undefined,
             nextHash: writeResult.nextHash,
             approvalRule: fileWriteApprovalRule ?? undefined
           });
@@ -1398,6 +1492,41 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             }
           });
         }
+        const acceptanceGap = verificationCompletionReason(routedStageInput, actionResults)
+          ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] });
+        if (successfulCommandsThisRound > 0 && successfulFollowupsRemaining > 0) {
+          successfulFollowupsRemaining -= 1;
+          // Successful observation must not change a command's execution identity.
+          successfulFollowupRound += 1;
+          await recordRunAction({
+            runId: task.runId,
+            taskId: task.taskId,
+            agentId: task.agentId,
+            actionType: "local_command_success_followup",
+            target: task.stageId,
+            summary: `Action round ${successfulFollowupRound}: returning successful command evidence to ${task.agentId} (${successfulFollowupsRemaining} ${successfulFollowupsRemaining === 1 ? "round" : "rounds"} left).`,
+            artifactKind: "command_followup",
+            artifactContent: { acceptanceGap, followupRound: successfulFollowupRound, retriesRemaining: successfulFollowupsRemaining }
+          });
+          await assertLeaseOwned();
+          await assertStageGuard(false);
+          const followup = await executeWithProviderFallback({
+            providerId: route.providerId,
+            stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
+            policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
+            providerFactory: providerFromEnv
+          });
+          fallbackAttempts = [...fallbackAttempts, ...followup.attempts];
+          output = followup.output;
+          quality = scoreStageOutput(routedStageInput, output);
+          actualProviderId = followup.actualProvider;
+          actualModel = followup.actualModel;
+          verifyRetryRequested = true;
+          continue verifyActionRounds;
+        }
+        if (successfulCommandsThisRound > 0) {
+          unconsumedSuccessfulActionResult = "The bounded action-result follow-up budget was exhausted before the provider consumed the final successful command receipt.";
+        }
       } while (verifyRetryRequested);
       if (verifyEnvironmentalBlock) {
         await blockWorkflowTask({
@@ -1417,6 +1546,58 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
         });
         stageTelemetry.end("blocked", verifyEnvironmentalBlock.reason);
+        clearInterval(leaseHeartbeat);
+        result.failed += 1;
+        continue;
+      }
+      if (unconsumedSuccessfulActionResult) {
+        if (continuationRound < 3) {
+          const backoff = continuationBackoff(continuation, actionResults);
+          await assertLeaseOwned();
+          await checkpointWorkflowTaskContinuation({
+            taskId: task.taskId, runId: task.runId, agentId: task.agentId,
+            workerId: task.workerId!, fencingToken: task.fencingToken,
+            delaySeconds: backoff.delaySeconds,
+            continuation: {
+              ...backoff, verifyRetryRound,
+              version: 1, round: continuationRound + 1, actionResults,
+              pendingOutput: output,
+              priorReceipts: routedStageInput.priorReceipts.slice(-40),
+              stateDeltas: stageStateDeltas.slice(-80), fileReads: stageFileReads.slice(-20)
+            }
+          });
+          stageTelemetry.end("blocked", "Unfinished stage checkpointed for continuation; not completed.");
+          clearInterval(leaseHeartbeat);
+          continue;
+        }
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          summary: unconsumedSuccessfulActionResult,
+          reason: unconsumedSuccessfulActionResult,
+          artifact: { ...output.artifact, outcome: "blocked", blockedReason: unconsumedSuccessfulActionResult, actionResults }
+        });
+        stageTelemetry.end("blocked", unconsumedSuccessfulActionResult);
+        clearInterval(leaseHeartbeat);
+        result.failed += 1;
+        continue;
+      }
+      if (output.outcome === "blocked") {
+        const blockedReason = output.blockedReason?.trim() || output.summary;
+        await blockWorkflowTask({
+          taskId: task.taskId,
+          runId: task.runId,
+          agentId: task.agentId,
+          workerId: task.workerId!,
+          fencingToken: task.fencingToken,
+          summary: output.summary,
+          reason: blockedReason,
+          artifact: { ...output.artifact, outcome: "blocked", blockedReason, actionResults }
+        });
+        stageTelemetry.end("blocked", blockedReason);
         clearInterval(leaseHeartbeat);
         result.failed += 1;
         continue;
@@ -1448,7 +1629,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.failed += 1;
         continue;
       }
-      const verificationViolation = verificationCompletionReason(routedStageInput, actionResults);
+      const verificationViolation = pendingEvidenceReason(output)
+        ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })
+        ?? verificationCompletionReason(routedStageInput, actionResults);
       if (verificationViolation) {
         await blockWorkflowTask({
           taskId: task.taskId,
@@ -1466,6 +1649,17 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
       await assertLeaseOwned();
+      for (const action of actionResults) {
+        const intent = (action as { acquiredWorkIntent?: StageIntent }).acquiredWorkIntent;
+        if (!intent) continue;
+        const released = await releaseWorkIntent(intent);
+        await recordRunAction({
+          runId: task.runId, taskId: task.taskId, agentId: task.agentId,
+          actionType: "stage_work_intent_release", target: intent.owner,
+          summary: released ? "Released stage-acquired work intent before completion." : "Stage-acquired intent already released or superseded; no other ownership changed.",
+          artifactKind: "work_intent_release", artifactContent: { ...intent, released }
+        });
+      }
       await completeWorkflowTask({
         taskId: task.taskId,
         runId: task.runId,
@@ -1534,160 +1728,6 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
 
   await flushStageTelemetry();
   return result;
-}
-
-async function executeBoundExecutorStage(task: Awaited<ReturnType<typeof claimNextWorkflowTask>> & {}, project: ReturnType<typeof projectConfigSchema.parse>, assertLeaseOwned: () => Promise<void> = async () => {}): Promise<void> {
-  if (!task?.executorSnapshot) throw new Error("Executor stage is missing immutable executor evidence.");
-  if (task.executorSnapshot.registeredProjectRoot !== task.projectRootUri) throw new Error("Executor snapshot project root does not match the registered workflow project.");
-  assertExecutorRegistration(task.executorSnapshot, project, task.projectRootUri);
-  const commandLine = operationCommand(task.executorSnapshot.operation);
-  assertCommandAllowed(commandLine, project);
-  const approvalTarget = executorApprovalTarget(task.executorSnapshot);
-  try {
-    const previous = await findRunActionByIdempotencyKey({
-      runId: task.runId,
-      artifactKind: "executor_output",
-      idempotencyKey: task.executorSnapshot.snapshotHash
-    });
-    const previousExecution = previous?.content.execution as { status?: string } | undefined;
-    if (previous && previousExecution?.status === "passed") {
-      await assertLeaseOwned();
-      const reuseArtifactUri = await recordRunAction({
-        runId: task.runId,
-        taskId: task.taskId,
-        agentId: task.agentId,
-        actionType: "executor_adapter_reused",
-        target: `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}`,
-        summary: `Skipped duplicate executor request; reused receipt ${previous.uri}.`,
-        artifactKind: "action_reuse",
-        artifactContent: { snapshot: task.executorSnapshot, originalArtifactUri: previous.uri }
-      });
-      await completeWorkflowTask({
-        taskId: task.taskId,
-        runId: task.runId,
-        agentId: task.agentId,
-        workerId: task.workerId!,
-        fencingToken: task.fencingToken,
-        summary: `Reused ${task.executorSnapshot.operation} result from ${previous.uri}.`,
-        artifact: { executor: task.executorSnapshot, execution: previous.content.execution, actionResults: [{ type: "executor_adapter_reused", artifactUri: previous.uri, reuseArtifactUri }] }
-      });
-      return;
-    }
-    await assertLeaseOwned();
-    const gated = await runExecutorApprovalGate({
-      project,
-      target: approvalTarget,
-      approved: false,
-      execute: () => executeExecutorSnapshot(task.executorSnapshot!, {
-        localFallback: task.executorSnapshot!.localFallback === "explicit"
-          ? async () => localFallbackResult(commandLine, task.projectRootUri, project, task.executorSnapshot!.requestedHost)
-          : undefined
-      })
-    });
-    if (gated.status === "pending") {
-        const approval = await requestActionApproval({
-          runId: task.runId,
-          taskId: task.taskId,
-          stageId: task.stageId,
-          agentId: task.agentId,
-          actionType: "executor_adapter",
-          target: approvalTarget,
-          rationale: `Policy requires approval before executing ${approvalTarget}.`,
-          policyDecision: {
-            approvalRequired: true,
-            allowedByPolicy: true,
-            policyProfile: project.execution.policy_profile
-          },
-          payload: {
-            snapshot: task.executorSnapshot,
-            commandLine,
-            payloadHash: hashText(JSON.stringify(task.executorSnapshot))
-          },
-          idempotencyKey: task.executorSnapshot.snapshotHash
-        });
-        await blockWorkflowTask({
-          taskId: task.taskId,
-          runId: task.runId,
-          agentId: task.agentId,
-          workerId: task.workerId!,
-          fencingToken: task.fencingToken,
-          summary: `Approval pending for ${approvalTarget}.`,
-          reason: `Required executor action ${approvalTarget} is awaiting approval.`,
-          artifact: { executor: task.executorSnapshot, actionResults: [{ type: "executor_adapter_approval_pending", approvalId: approval.approvalId, artifactUri: approval.artifactUri, status: approval.status }] }
-        });
-        return;
-    }
-    const executorApprovalRule = gated.approvalRule;
-    await assertLeaseOwned();
-    const execution = gated.result;
-    const artifactUri = await recordRunAction({
-      runId: task.runId,
-      taskId: task.taskId,
-      agentId: task.agentId,
-      actionType: "executor_adapter",
-      target: `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}`,
-      summary: `${execution.status} on ${execution.executionHost}${execution.fallbackUsed ? " via explicit local fallback" : ""}`,
-      artifactKind: "executor_output",
-      artifactContent: { snapshot: task.executorSnapshot, execution, approvalRule: executorApprovalRule ?? undefined },
-      idempotencyKey: task.executorSnapshot.snapshotHash
-    });
-    if (execution.status !== "passed") throw new Error(`Executor ${task.executorSnapshot.executorId} failed on ${execution.executionHost}.`);
-    await completeWorkflowTask({
-      taskId: task.taskId,
-      runId: task.runId,
-      agentId: task.agentId,
-      workerId: task.workerId!,
-      fencingToken: task.fencingToken,
-      summary: `Executed ${task.executorSnapshot.operation} on ${execution.executionHost}.`,
-      artifact: { executor: task.executorSnapshot, execution, actionResults: [{ type: "executor_adapter", artifactUri }] }
-    });
-  } catch (error) {
-    await recordRunAction({
-      runId: task.runId,
-      taskId: task.taskId,
-      agentId: task.agentId,
-      actionType: "executor_adapter_failed",
-      target: `${task.executorSnapshot.executorId}/${task.executorSnapshot.operation}`,
-      summary: error instanceof Error ? error.message : String(error),
-      artifactKind: "executor_failure",
-      artifactContent: { snapshot: task.executorSnapshot, error: error instanceof Error ? error.message : String(error) },
-      idempotencyKey: `${task.executorSnapshot.snapshotHash}:failure`
-    });
-    throw error;
-  }
-}
-
-export function executorApprovalTarget(snapshot: { executorId: string; operation: string; requestedHost: string; revision: string; registeredProjectRoot: string }): string {
-  return `${snapshot.executorId}/${snapshot.operation}@${snapshot.requestedHost}#${snapshot.revision}:${snapshot.registeredProjectRoot}`;
-}
-
-export async function runExecutorApprovalGate<T>(input: {
-  project: ReturnType<typeof projectConfigSchema.parse>;
-  target: string;
-  approved: boolean;
-  execute: () => Promise<T>;
-}): Promise<{ status: "pending" } | { status: "executed"; result: T; approvalRule: ActionApprovalRuleMatch | null }> {
-  const approvalRule = input.project.policies.require_approval_for_external_actions
-    ? evaluateActionApprovalRule({ project: input.project, actionType: "executor_adapter", target: input.target })
-    : null;
-  if (input.project.policies.require_approval_for_external_actions && !input.approved && !approvalRule) return { status: "pending" };
-  return { status: "executed", result: await input.execute(), approvalRule };
-}
-
-function operationCommand(operation: ExecutorOperation): string {
-  return operation === "typecheck" ? "npm run typecheck" : operation === "validate" ? "npm run validate" : "npm test";
-}
-
-async function localFallbackResult(commandLine: string, cwd: string, project: ReturnType<typeof projectConfigSchema.parse>, requestedHost: string): Promise<ExecutorResult> {
-  const result = await executeAllowedCommand({ commandLine, cwd, project });
-  return {
-    ...result,
-    status: result.exitCode === 0 && !result.timedOut ? "passed" : "failed",
-    requestedHost,
-    executionHost: "local",
-    fallbackUsed: true,
-    artifactReference: null
-  };
 }
 
 async function runWorkerOnceConcurrently(limit: number, options: WorkerRunOptions, concurrency: number): Promise<WorkerResult> {

@@ -148,6 +148,10 @@ function tierRank(id: string, tier: ModelTier, policy: ModelSelectionPolicy): nu
     if (/luna|mini|nano|lite|small|haiku|flash|8b|7b/u.test(id)) return 1;
     return 3;
   }
+  // Current general-purpose Sol models are OpenAI's recommended default for
+  // coding work. Prefer them over older purpose-named Codex models while the
+  // version rank still lets newer Sol releases replace older ones.
+  if (/^gpt-6(?:\.\d+)?-sol(?:-|$)/u.test(id)) return 9;
   if (/coder|code/u.test(id)) return 8;
   if (/terra|sonnet|pro|medium|32b|14b/u.test(id)) return 7;
   if (/sol|large|70b|opus/u.test(id)) return 5;

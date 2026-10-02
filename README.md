@@ -195,6 +195,7 @@ overrides remain authoritative for reproducible runs and one-step rollback.
 
 Override per-tier models where the provider supports it, such as
 `OPENAI_MODEL_FAST`, `OPENAI_MODEL_STANDARD`, `OPENAI_MODEL_REASONING`,
+`CODEX_CLI_MODEL_FAST`, `CODEX_CLI_MODEL_STANDARD`, `CODEX_CLI_MODEL_REASONING`,
 `BYO_MODEL_FAST`, `BYO_MODEL_STANDARD`, `BYO_MODEL_REASONING`,
 `BEDROCK_MODEL_FAST`, `BEDROCK_MODEL_STANDARD`, and
 `BEDROCK_MODEL_REASONING`.

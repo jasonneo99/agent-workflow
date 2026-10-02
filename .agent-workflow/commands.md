@@ -10,7 +10,10 @@ Recommended safe commands for local self-dogfooding:
 - `npm run status`
 - `npm run agentflow -- list`
 - `npm run agentflow -- status`
-- `npm run index-project -- --project . --max-files 100`
+- npm run index-project -- --project . --max-files 100
+- xcodebuild build
+- xcrun devicectl
+- ios-deploy
 
 Project onboarding commands:
 

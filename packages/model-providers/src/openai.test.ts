@@ -8,14 +8,16 @@ test("OpenAI auto catalog selection chooses tier-appropriate newest accessible m
     "gpt-5.6-terra",
     "gpt-5.6-luna",
     "gpt-5.6-sol",
+    "gpt-6-luna",
+    "gpt-6.1-sol",
     "gpt-6-astra",
     "gpt-5.4-mini-2026-03-17",
     "gpt-6-astra-realtime-preview",
     "text-embedding-3-large"
   ];
 
-  assert.equal(selectOpenAIModelFromCatalog(catalog, "fast"), "gpt-5.6-luna");
-  assert.equal(selectOpenAIModelFromCatalog(catalog, "standard"), "gpt-5.6-terra");
+  assert.equal(selectOpenAIModelFromCatalog(catalog, "fast"), "gpt-6-luna");
+  assert.equal(selectOpenAIModelFromCatalog(catalog, "standard"), "gpt-6.1-sol");
   assert.equal(selectOpenAIModelFromCatalog(catalog, "reasoning"), "gpt-6-astra");
 });
 
@@ -23,14 +25,15 @@ test("OpenAI auto catalog selection adopts newer GPT families without exact vers
   const catalog = [
     "gpt-5.6-luna",
     "gpt-5.6-terra",
-    "gpt-6.1-luna",
-    "gpt-6.1-terra",
-    "gpt-6.1-astra"
+    "gpt-5.3-codex",
+    "gpt-6-luna",
+    "gpt-6.1-sol",
+    "gpt-6-astra"
   ];
 
-  assert.equal(selectOpenAIModelFromCatalog(catalog, "fast"), "gpt-6.1-luna");
-  assert.equal(selectOpenAIModelFromCatalog(catalog, "standard"), "gpt-6.1-terra");
-  assert.equal(selectOpenAIModelFromCatalog(catalog, "reasoning"), "gpt-6.1-astra");
+  assert.equal(selectOpenAIModelFromCatalog(catalog, "fast"), "gpt-6-luna");
+  assert.equal(selectOpenAIModelFromCatalog(catalog, "standard"), "gpt-6.1-sol");
+  assert.equal(selectOpenAIModelFromCatalog(catalog, "reasoning"), "gpt-6-astra");
 });
 
 test("provider JSON extraction ignores trailing duplicate or diagnostic content", () => {

@@ -76,6 +76,35 @@ actions:
     - npm run agentflow -- status
     - npm run agentflow -- training-holdout *
     - npm run index-project -- --project . --max-files 100
+    - "npm exec -- node --import tsx --input-type=module -e 'import {
+      unfulfilledCompletionReason, verificationCompletionReason } from
+      \"./packages/model-providers/src/quality.ts\"; const input = { workflowId:
+      \"debug-failure\", workflowTask: \"Implement structured requester
+      lifecycle messaging\", stageId: \"implement\", agentId:
+      \"implementation-agent\", stagePattern: { type: \"executor\" } }; const
+      output = { outcome: \"completed\", summary: \"Implementation remains
+      pending confirmation and requires fresh reads.\", artifact: {},
+      requestedFileWrites: [{ path: \"packages/example.ts\", content: \"export
+      const example = true;\" }], requestedFileReads: [\"packages/example.ts\"]
+      }; console.log(JSON.stringify({ case: \"pending implementation with
+      product write\", expected: \"non-null completion violation\", actual:
+      unfulfilledCompletionReason(input, output) })); const verifier = {
+      ...input, stageId: \"verify\", agentId: \"auto-test-runner\",
+      stagePattern: { type: \"verifier\" } }; for (const commandLine of [\"npm
+      run typecheck\", \"npm run validate-boundary\", \"node --import tsx --test
+      packages/storage/src/run-notification-rendering.test.ts\", \"npm test\"])
+      { console.log(JSON.stringify({ case: commandLine, expected: null, actual:
+      verificationCompletionReason(verifier, [{ commandLine, exitCode: 0,
+      timedOut: false, artifactUri: \"artifact://synthetic/probe\" }]) })); }'"
+    - "npm exec -- node --input-type=module -e 'import fs from \"node:fs\";
+      const lines = fs.readFileSync(\"apps/cli/src/index.ts\",
+      \"utf8\").split(\"\\n\"); const terms = [\"workflow_repair_learning\",
+      \"workflowRepairLesson(\", \"workflowDeliveryRepairReason(\", \"async
+      function queueWorkflow(\"]; const selected = new Set(); for (let i = 0; i
+      < lines.length; i++) { if (terms.some(term => lines[i].includes(term))) {
+      for (let j = Math.max(0, i - 90); j < Math.min(lines.length, i + 180);
+      j++) selected.add(j); } } console.log([...selected].sort((a,b) =>
+      a-b).map(i => `${i+1}: ${lines[i]}`).join(\"\\n\"));'"
   blocked_commands:
     - rm *
     - git reset *

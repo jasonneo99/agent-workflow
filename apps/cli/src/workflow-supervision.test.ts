@@ -123,7 +123,9 @@ test("root repair playbook distinguishes review evidence, delivery, approvals, a
 });
 
 test("repair outcomes reinforce successful strategies and avoid failed ones", () => {
-  const lesson = workflowRepairLesson({ strategy: "replay-original", repairStatus: "completed", completedTasks: 3, failedTasks: 0 });
+  const lesson = workflowRepairLesson({ strategy: "replay-original", repairStatus: "completed", completedTasks: 3, failedTasks: 0, acceptanceVerified: true });
+  assert.equal(workflowRepairLesson({ strategy: "debug-failure", repairStatus: "completed", completedTasks: 4, failedTasks: 0 }).outcome, "observe");
+  assert.equal(workflowRepairLesson({ strategy: "debug-failure", repairStatus: "completed", completedTasks: 4, failedTasks: 0, acceptanceVerified: false }).outcome, "observe");
   assert.equal(lesson.outcome, "reinforce");
   assert.equal(lesson.futureAction, "Reuse replay-original for the same root-cause class when policy and evidence still match.");
   assert.equal(lesson.confidence, 0.9);

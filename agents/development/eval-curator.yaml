@@ -31,6 +31,9 @@ context_budget:
     - .agent-workflow/evaluations/**
     - .agent-workflow/tuning/**
     - docs/evaluations.md
+    - recent relevant receipts
+    - evaluation evidence
+    - project-local tuning notes
 outputs:
   schema: eval_curation_plan
 prompt: >

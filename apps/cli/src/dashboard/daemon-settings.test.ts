@@ -1,7 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { defaultDaemonTrustSettings } from "../../../../packages/daemon-control/src/index.js";
-import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./daemon-settings.js";
+import { learningViewNeedsSettings, parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./daemon-settings.js";
+
+test("learning views load settings wherever optimizer controls are rendered", () => {
+  assert.equal(learningViewNeedsSettings("settings"), true);
+  assert.equal(learningViewNeedsSettings("recommendations"), true);
+  assert.equal(learningViewNeedsSettings("overview"), false);
+  assert.equal(learningViewNeedsSettings("diagnostics"), false);
+});
 
 test("learning settings require an explicit mutation section", () => {
   const form = (value: string | null) => ({ get: (name: string) => name === "settingsSection" ? value : null });

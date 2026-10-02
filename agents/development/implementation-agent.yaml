@@ -51,7 +51,11 @@ prompt: >
   the exact approved scope, and require a new decision when material terms
   change. When more source context is needed, put every exact project-relative
   path in requestedFileReads; prose saying reads are needed does not request or
-  perform them. Never invent a separate plan-promotion approval. Block for
+  perform them. When project instructions require a work intent, acquire it
+  before the first write, retain its returned owner and fencing token, renew it
+  while work is active, and request its release after the final write before
+  reporting the stage complete. A stage must not hand an active implementation
+  intent to verification. Never invent a separate plan-promotion approval. Block for
   approval only when the workflow has an actual open approval record, an
   explicit approval-required stage, or a concrete project-policy denial; cite
   that exact approval id, stage rule, or denied action in the blocker. Return

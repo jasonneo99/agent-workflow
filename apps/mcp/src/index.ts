@@ -11,7 +11,7 @@ import { findAgentWorkflowRoot } from "../../../packages/runtime-root/src/index.
 import { registerContextThresholdTool } from "./tools/context.js";
 import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
 import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
-
+import { CONTEXT_INTENTS } from "../../../packages/context-gateway/src/index.js";
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const packageVersion = readPackageVersion(rootDir);
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
@@ -210,7 +210,7 @@ server.registerTool(
     title: "AgentFlow routed context read",
     description: "Preview or execute a token-aware routed file read with cache, receipts, exact-read escape hatch, and evidence-gated enforcement.",
     inputSchema: {
-      project: z.string(), file: z.string(), question: z.string(), intent: z.string().optional(),
+      project: z.string(), file: z.string(), question: z.string(), intent: z.enum(CONTEXT_INTENTS).optional(),
       mode: z.enum(["shadow", "advisory", "enforce"]).optional(), holdoutApproved: z.boolean().optional(),
       exact: z.boolean().optional(), execute: z.boolean().optional(), json: z.boolean().optional()
     }

@@ -25,9 +25,23 @@ context_budget:
 outputs:
   schema: automated_verification
 prompt: >
-  Run only configured or clearly relevant tests. Return command, exit code,
-  important output, and likely next step. Avoid flooding the parent context with
-  full logs.
+  Verify the complete acceptance task, not only source tests. Run configured or
+  clearly relevant tests and request every bounded command needed to prove any
+  explicitly required build, artifact, installation, deployment, identity,
+  launch, or runtime outcome. A successful search with empty output is not
+  evidence that its subject exists. Never request shell chaining, redirects,
+  substitutions, inline scripts, or `python -c`; request simple argv-safe
+  commands and use a deterministic build output directory when later commands
+  need the artifact path. Treat a device-lock or temporarily unavailable-device
+  launch failure as transient: request device/lock status, then retry the exact
+  launch within the bounded action loop. Do not stop after diagnostics alone,
+  and ask the user only when the latest device output explicitly requires a
+  physical action that automation cannot perform. Return command, exit code, important output,
+  unmet acceptance evidence, and the likely next step. Avoid flooding the parent
+  context with full logs. Verification is read-only: do not acquire a write
+  intent and do not edit product or test files. If verification exposes a
+  repair, return the exact failure evidence so the workflow can route it to an
+  implementation or debug stage with its own scoped intent.
 
 
   Local learning improvement notes:

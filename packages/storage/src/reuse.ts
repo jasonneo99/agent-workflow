@@ -59,6 +59,8 @@ export async function listWorkflowReuseEvidence(input: {
            ) route_usage on true
           where p.root_uri = $1
             and wr.status = 'completed'
+            and not exists (select 1 from action_receipts rejection
+              where rejection.run_id = wr.id and rejection.action_type = 'workflow_acceptance_rejected')
             and ($2::text is null or wr.workflow_id = $2)
           group by wr.id, brief.content, latest_stage.content, route_usage."measuredTokens", route_usage."measuredCostUsd"
           order by wr.finished_at desc
@@ -72,6 +74,9 @@ export async function listWorkflowReuseEvidence(input: {
            from memory_items mi
            join projects p on p.id = mi.project_id
           where p.root_uri = $1
+            and not exists (select 1 from action_receipts rejection
+              where rejection.action_type = 'workflow_acceptance_rejected'
+                and rejection.run_id::text = mi.metadata->>'repairRunId')
           order by mi.updated_at desc
           limit $2`,
         [input.projectRootUri, limit]

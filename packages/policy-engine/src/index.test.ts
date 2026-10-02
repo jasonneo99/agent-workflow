@@ -144,6 +144,16 @@ test("risk threshold auto-approves eligible local actions but keeps dangerous ac
   })?.id, "risk-threshold-medium");
   assert.equal(evaluateActionRiskAutoApproval({
     project: autonomousProject,
+    actionType: "local_command",
+    target: "ios-deploy --version"
+  })?.id, "risk-threshold-medium");
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
+    actionType: "local_command",
+    target: "deploy production"
+  }), null);
+  assert.equal(evaluateActionRiskAutoApproval({
+    project: autonomousProject,
     actionType: "file_write",
     target: "src/feature.ts",
     bytes: 25_000

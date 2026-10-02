@@ -1,3 +1,35 @@
+/** Persist unfinished stage state and yield its lease without promoting the stage. */
+export async function checkpointWorkflowTaskContinuation(input: {
+  taskId: string; runId: string; agentId: string; workerId: string; fencingToken: string;
+  continuation: Record<string, unknown>; delaySeconds: number;
+}): Promise<void> {
+  if (!Number.isInteger(input.delaySeconds) || input.delaySeconds < 1 || input.delaySeconds > 3600) {
+    throw new Error("Continuation delay must be an integer between 1 and 3600 seconds.");
+  }
+  const content = JSON.stringify(input.continuation);
+  if (Buffer.byteLength(content, "utf8") > 4_000_000) throw new Error("Continuation checkpoint exceeds the 4000000-byte limit.");
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      await assertActiveTaskFence(client, input);
+      const owner = await client.query(`select 1 from workflow_tasks where id=$1::uuid and run_id=$2::uuid and agent_id=$3`, [input.taskId, input.runId, input.agentId]);
+      if (owner.rowCount !== 1) throw new Error("Continuation task identity mismatch.");
+      const uri = `db://workflow_tasks/${input.taskId}/continuation`;
+      await client.query(`insert into artifacts (run_id, task_id, kind, uri, content) values ($1::uuid,$2::uuid,'stage_continuation',$3,$4::jsonb) on conflict (uri) do update set content=excluded.content`, [input.runId, input.taskId, uri, content]);
+      await client.query(`update workflow_tasks set status='queued', started_at=null, finished_at=null, worker_id=null, lease_expires_at=null, available_at=now()+($3::int * interval '1 second') where id=$1::uuid and run_id=$2::uuid`, [input.taskId, input.runId, input.delaySeconds]);
+      await client.query(`update workflow_runs set lease_owner=null, lease_expires_at=null where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint and not exists (select 1 from workflow_tasks where run_id=$1::uuid and status in ('leased','running'))`, [input.runId, input.workerId, input.fencingToken]);
+      await client.query(`insert into action_receipts (run_id,agent_id,action_type,target,summary,metadata) values ($1::uuid,$2,'stage_continuation_scheduled',$3,$4,$5::jsonb)`, [input.runId, input.agentId, input.taskId, "Unfinished stage checkpointed for bounded continuation.", JSON.stringify({ uri, delaySeconds: input.delaySeconds, fencingToken: input.fencingToken })]);
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+}
+
+// Continuations use a separate artifact kind; they are never completed-stage
+// outputs and cannot satisfy downstream dependency or checkpoint promotion.
+
 import type pg from "pg";
 import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
@@ -1654,15 +1686,17 @@ export async function replayWorkflowRun(input: {
           tasks: number;
           completedTasks: number;
           skippedTasks: number;
+          queuedTasks: number;
         }>(
           `select count(*)::int as tasks,
                   count(*) filter (where status = 'completed')::int as "completedTasks",
-                  0::int as "skippedTasks"
+                  0::int as "skippedTasks",
+                  count(*) filter (where status = 'queued')::int as "queuedTasks"
              from workflow_tasks
             where run_id = $1::uuid`,
           [sourceRun.replacementRunId]
         );
-        const counts = existing.rows[0] ?? { tasks: 0, completedTasks: 0, skippedTasks: 0 };
+        const counts = existing.rows[0] ?? { tasks: 0, completedTasks: 0, skippedTasks: 0, queuedTasks: 0 };
         await client.query("commit");
         return {
           projectId: sourceRun.projectId,
@@ -1670,7 +1704,7 @@ export async function replayWorkflowRun(input: {
           tasks: counts.tasks,
           completedTasks: counts.completedTasks,
           skippedTasks: counts.skippedTasks,
-          queuedTasks: Math.max(0, counts.tasks - counts.completedTasks)
+          queuedTasks: counts.queuedTasks
         };
       }
       const logicalProjectId = String((sourceRun.projectConfig as { project?: { id?: unknown } }).project?.id ?? sourceRun.projectRootUri).trim();
@@ -3698,6 +3732,11 @@ export async function getLatestMemory(input: {
        from memory_items mi
        join projects p on p.id = mi.project_id
        where p.root_uri = $1
+         and not exists (
+           select 1 from action_receipts rejection
+           where rejection.action_type = 'workflow_acceptance_rejected'
+             and rejection.run_id::text = mi.metadata->>'repairRunId'
+         )
        order by mi.updated_at desc
        limit $2`,
       [input.projectRootUri, input.limit ?? 10]

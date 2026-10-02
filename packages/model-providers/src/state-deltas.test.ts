@@ -51,7 +51,18 @@ test("fold: update records the previous fact for ~ rendering", () => {
   const record = facts.get("confidence");
   assert.equal(record?.fact, "0.93");
   assert.equal(record?.previousFact, "0.61");
-  assert.match(renderFactSet(facts), /~ confidence: 0\.61 -> 0\.93/);
+  assert.match(renderFactSet(facts), /~ confidence: 0\.93 \(previous: 0\.61\)/);
+});
+
+test("recent command evidence survives a full context budget and repeated observations", () => {
+  const facts = foldStateDeltas([
+    delta({ key: "cmd:probe", fact: "old result" }),
+    delta({ key: "large-read", fact: "x".repeat(5000) }),
+    delta({ key: "cmd:probe", fact: "new result: regression passed" })
+  ]);
+  const prompt = renderFactSet(facts, 4000);
+  assert.match(prompt, /^\+ cmd:probe: new result: regression passed/);
+  assert.doesNotMatch(prompt, /old result/);
 });
 
 test("fold: retract removes the fact; retracting a missing key is a no-op", () => {

@@ -137,7 +137,21 @@ function matchesPattern(commandLine: string, pattern: string): boolean {
 }
 
 function containsShellMetacharacters(commandLine: string): boolean {
-  return /[;&|<>`$(){}[\]\n\r]/.test(commandLine);
+  let quote: string | null = null;
+  for (const character of commandLine) {
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "'" || character === '"') {
+      quote = character;
+    } else if (/[;&|<>`$(){}[\]\n\r]/.test(character)) {
+      return true;
+    }
+  }
+  // Quoted arguments are passed literally to spawn with shell:false.
+  // Reject incomplete quoting rather than silently changing argument boundaries.
+  return quote !== null;
 }
 
 function isLikelyLongRunningServerCommand(commandLine: string): boolean {

@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { registerValidateCommand } from "./commands/validate.js";
+import { registerBundleInspectionCommands } from "./commands/bundle-inspection.js";
 import fsSync from "node:fs";
 import type { Dirent, Stats } from "node:fs";
 import fs from "node:fs/promises";
@@ -41,11 +43,12 @@ import { renderDaemonControl } from "./dashboard/daemon-control.js";
 import { renderPreferenceScorecardHtml } from "./dashboard/outcome-accuracy.js";
 import { renderLearningLoopHtml } from "./dashboard/learning-loop.js";
 import { buildHumanInterventionItems } from "./dashboard/human-intervention.js";
+import { codexCliModelSummary, codexCliTierModelPreview } from "./dashboard/codex-provider.js";
 import { buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence, type LearningLoopDashboard, type LearningLoopSchedulerReceipt } from "../../../packages/learning-loop/src/index.js";
 import { registerLearningLoopCommand } from "./learning/learning-loop-command.js";
 import { runDaemonLearningLoopSchedule } from "./learning/learning-loop-daemon.js";
 import { listWorkflowRunThroughput, type WorkflowThroughputBucket } from "../../../packages/storage/src/workflow-throughput.js";
-import { parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
+import { learningViewNeedsSettings, parseLearningSettingsSection, selectDaemonTrustSettings, selectLearningProjectRoot } from "./dashboard/daemon-settings.js";
 import { publicHttpError, serializeInlineScriptJson } from "./dashboard/security.js";
 import { formatServerConversationReport, isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "./dashboard/question-chat.js";
 import { isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer, type ModelComparisonSchedule, type ModelRoutingOptimizerReport } from "./learning/model-routing-optimizer.js";
@@ -702,214 +705,8 @@ program
     }
   });
 
-program
-  .command("validate")
-  .description("Validate agent cards and workflow definitions")
-  .action(async () => {
-    const agents = await loadAgents(rootDir);
-    const workflows = await loadWorkflows(rootDir);
-    const committedManifest = await loadCommittedBundleManifest(rootDir);
-    const agentIds = new Set(agents.map((agent) => agent.id));
-    const errors: string[] = [];
-
-    for (const workflow of workflows) {
-      if (!agentIds.has(workflow.lead)) {
-        errors.push(`workflow ${workflow.id} references missing lead agent ${workflow.lead}`);
-      }
-
-      for (const stage of workflow.stages) {
-        if (!agentIds.has(stage.agent)) {
-          errors.push(`workflow ${workflow.id} stage ${stage.id} references missing agent ${stage.agent}`);
-        }
-
-        for (const subagent of stage.subagents) {
-          if (!agentIds.has(subagent)) {
-            errors.push(`workflow ${workflow.id} stage ${stage.id} references missing subagent ${subagent}`);
-          }
-        }
-      }
-    }
-
-    if (committedManifest) {
-      const currentManifest = await buildBundleManifest(rootDir);
-      errors.push(...compareBundleManifests(committedManifest, currentManifest));
-    }
-
-    if (errors.length) {
-      for (const error of errors) {
-        console.error(`ERROR: ${error}`);
-      }
-      process.exitCode = 1;
-      return;
-    }
-
-    console.log(`Validated ${agents.length} agents and ${workflows.length} workflows.`);
-    if (committedManifest) {
-      console.log(`Bundle manifest ${committedManifest.bundle.version} checksum ${committedManifest.checksum.value}`);
-    }
-  });
-
-program
-  .command("contract-test")
-  .description("Run contract tests for reusable definitions, project-local agents, and provider adapters")
-  .option("--definitions <dir>", "definition bundle root with agents/ and workflows/", rootDir)
-  .option("-p, --project <dir>", "project directory with optional .agent-workflow/agents")
-  .option("--provider <provider>", "provider adapter to check", "mock")
-  .option("--live-provider", "allow execution against non-mock providers")
-  .option("--json", "print machine-readable contract report")
-  .action(async (options: { definitions: string; project?: string; provider: string; liveProvider?: boolean; json?: boolean }) => {
-    const providerId = normalizeProviderRef(options.provider);
-    const provider = providerFromEnv(providerId);
-    if (provider.id !== "mock" && !options.liveProvider) {
-      console.error(`Provider ${provider.id} will be loaded but not executed. Pass --live-provider to run the adapter contract against a live model.`);
-    }
-    const report = await runDefinitionContractTests({
-      definitionsDir: path.resolve(process.cwd(), options.definitions),
-      projectDir: options.project ? path.resolve(process.cwd(), options.project) : undefined,
-      provider,
-      liveProvider: Boolean(options.liveProvider)
-    });
-    console.log(options.json ? JSON.stringify(report, null, 2) : formatContractTestReport(report));
-    if (!report.passed) process.exitCode = 1;
-  });
-
-program
-  .command("bundle-manifest")
-  .description("Print or write the versioned reusable agent/workflow bundle manifest")
-  .option("--write", "write agent-workflow.bundle.json")
-  .action(async (options: { write?: boolean }) => {
-    const manifest = await buildBundleManifest(rootDir);
-    if (options.write) {
-      const outputPath = await writeBundleManifest(rootDir, manifest);
-      console.log(`Wrote ${path.relative(rootDir, outputPath)}`);
-    } else {
-      console.log(formatBundleManifest(manifest));
-    }
-  });
-
-program
-  .command("bundle-compat")
-  .description("Check the current bundle against runtime, Node.js, and MCP compatibility requirements")
-  .option("--runtime-version <version>", "Agent Workflow runtime version to check; defaults to this package version")
-  .option("--node-version <version>", "Node.js version to check; defaults to the current process version")
-  .option("--mcp-version <version>", "MCP SDK version to check; defaults to the manifest MCP requirement")
-  .option("--json", "print machine-readable compatibility report")
-  .action(async (options: { runtimeVersion?: string; nodeVersion?: string; mcpVersion?: string; json?: boolean }) => {
-    const manifest = await loadCommittedBundleManifest(rootDir);
-    if (!manifest) throw new Error("Bundle manifest is missing.");
-    const packageJson = await readJsonFile<{ version?: string }>(path.join(rootDir, "package.json"));
-    const report = buildBundleCompatibilityReport(manifest, {
-      agentWorkflow: options.runtimeVersion ?? packageJson?.version ?? "0.0.0",
-      node: options.nodeVersion ?? process.version.slice(1),
-      mcp: options.mcpVersion ?? manifest.compatibility.mcp
-    });
-    console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleCompatibilityReport(report));
-    if (!report.compatible) process.exitCode = 2;
-  });
-
-program
-  .command("bundle-registry")
-  .description("List trusted bundle registry entries and local install status")
-  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
-  .option("--json", "print machine-readable registry report")
-  .action(async (options: { registry: string; json?: boolean }) => {
-    const registryPath = path.resolve(process.cwd(), options.registry);
-    const registry = await loadBundleRegistry(registryPath);
-    const manifest = await loadCommittedBundleManifest(rootDir);
-    const report = buildBundleRegistryReport({
-      registry,
-      registryPath,
-      installedManifest: manifest,
-      installedChecksum: manifest?.checksum.value
-    });
-    console.log(options.json ? JSON.stringify(report, null, 2) : formatBundleRegistryReport(report));
-  });
-
-program
-  .command("bundle-pin")
-  .description("Prepare or write a project-local bundle version pin")
-  .requiredOption("-p, --project <dir>", "project directory")
-  .option("--bundle-id <id>", "registry bundle id", "agent-workflow-core")
-  .option("--version <version>", "version to pin; defaults to registry latest")
-  .option("--checksum <sha256>", "optional expected bundle checksum")
-  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
-  .option("--actor <id>", "actor recorded in the pin", process.env.USER ?? "local-user")
-  .option("--reason <text>", "reason recorded in the pin", "Project-local bundle version pin.")
-  .option("--write", "write .agent-workflow/bundle-pin.json")
-  .option("--json", "print machine-readable pin plan")
-  .action(async (options: { project: string; bundleId: string; version?: string; checksum?: string; registry: string; actor: string; reason: string; write?: boolean; json?: boolean }) => {
-    const registryPath = path.resolve(process.cwd(), options.registry);
-    const registry = await loadBundleRegistry(registryPath);
-    const plan = buildBundlePinPlan({
-      registry,
-      projectDir: path.resolve(process.cwd(), options.project),
-      bundleId: options.bundleId,
-      version: options.version,
-      checksum: options.checksum,
-      actor: options.actor,
-      reason: options.reason,
-      write: Boolean(options.write)
-    });
-    if (options.write && plan.pin) {
-      await writeBundlePin(plan);
-    }
-    console.log(options.json ? JSON.stringify(plan, null, 2) : formatBundlePinPlan(plan));
-    if (plan.status === "unknown-bundle") process.exitCode = 2;
-  });
-
-program
-  .command("bundle-lifecycle-plan")
-  .description("Prepare reviewed upgrade or rollback command plans without executing them")
-  .requiredOption("-p, --project <dir>", "project directory")
-  .option("--bundle-id <id>", "registry bundle id", "agent-workflow-core")
-  .option("--mode <mode>", "upgrade or rollback", "upgrade")
-  .option("--target-version <version>", "target version; required for rollback and defaults to registry latest for upgrade")
-  .option("--registry <file>", "bundle registry JSON file", defaultBundleRegistryPath)
-  .option("--write", "write .agent-workflow/bundle-lifecycle-plan.json")
-  .option("--json", "print machine-readable lifecycle plan")
-  .action(async (options: { project: string; bundleId: string; mode: string; targetVersion?: string; registry: string; write?: boolean; json?: boolean }) => {
-    if (options.mode !== "upgrade" && options.mode !== "rollback") throw new Error("--mode must be upgrade or rollback");
-    const registryPath = path.resolve(process.cwd(), options.registry);
-    const registry = await loadBundleRegistry(registryPath);
-    const plan = buildBundleLifecyclePlan({
-      registry,
-      projectDir: path.resolve(process.cwd(), options.project),
-      bundleId: options.bundleId,
-      mode: options.mode,
-      targetVersion: options.targetVersion,
-      write: Boolean(options.write)
-    });
-    if (options.write && plan.status === "ready") {
-      await writeBundleLifecyclePlan(plan);
-    }
-    console.log(options.json ? JSON.stringify(plan, null, 2) : formatBundleLifecyclePlan(plan));
-    if (plan.status !== "ready") process.exitCode = 2;
-  });
-
-program
-  .command("bundle-upgrade-preview")
-  .description("Preview project bundle migration notes and safe upgrade actions without changing files")
-  .option("-p, --project <dir>", "project directory with .agent-workflow/bundle-state.json")
-  .option("--from-version <version>", "source bundle version to compare from")
-  .option("--from-checksum <checksum>", "source bundle checksum to compare from")
-  .option("--from-bundle-id <id>", "source bundle id to compare from")
-  .option("--json", "print machine-readable upgrade preview")
-  .action(async (options: { project?: string; fromVersion?: string; fromChecksum?: string; fromBundleId?: string; json?: boolean }) => {
-    const manifest = await loadCommittedBundleManifest(rootDir);
-    if (!manifest) throw new Error("Bundle manifest is missing.");
-    const statePath = options.project ? path.join(path.resolve(process.cwd(), options.project), ".agent-workflow", "bundle-state.json") : undefined;
-    const state = statePath ? await readJsonFile<ProjectBundleState>(statePath) : null;
-    const preview = buildBundleUpgradePreview(manifest, {
-      state: state ?? undefined,
-      statePath,
-      fromVersion: options.fromVersion,
-      fromChecksum: options.fromChecksum,
-      fromBundleId: options.fromBundleId
-    });
-    console.log(options.json ? JSON.stringify(preview, null, 2) : formatBundleUpgradePreview(preview));
-    if (preview.status === "checksum-drift" || preview.status === "different-bundle") process.exitCode = 2;
-  });
-
+registerValidateCommand(program, rootDir);
+registerBundleInspectionCommands(program, rootDir, defaultBundleRegistryPath, readJsonFile);
 program
   .command("bundle-adopt")
   .description("Record the current reusable bundle as adopted by a project")
@@ -928,49 +725,6 @@ program
     }
     console.log(`${result.status === "written" ? "Recorded" : "Skipped existing"} bundle state: ${statePath}`);
     if (result.status === "skipped") console.log("Use --force after reviewing bundle-upgrade-preview to replace the recorded baseline.");
-  });
-
-program
-  .command("definition-migrations")
-  .description("Preview definition contract migration steps, validation, and rollback guidance")
-  .option("-p, --project <dir>", "project directory with .agent-workflow/bundle-state.json")
-  .option("--from-version <version>", "source bundle version to compare from")
-  .option("--from-checksum <checksum>", "source bundle checksum to compare from")
-  .option("--json", "print machine-readable migration plan")
-  .action(async (options: { project?: string; fromVersion?: string; fromChecksum?: string; json?: boolean }) => {
-    const manifest = await loadCommittedBundleManifest(rootDir);
-    if (!manifest) throw new Error("Bundle manifest is missing.");
-    const catalog = await loadDefinitionMigrationCatalog(rootDir);
-    const statePath = options.project ? path.join(path.resolve(process.cwd(), options.project), ".agent-workflow", "bundle-state.json") : undefined;
-    const state = statePath ? await readJsonFile<ProjectBundleState>(statePath) : null;
-    const plan = buildDefinitionMigrationPlan({
-      manifest,
-      catalog,
-      state: state ?? undefined,
-      statePath,
-      fromVersion: options.fromVersion,
-      fromChecksum: options.fromChecksum
-    });
-    console.log(options.json ? JSON.stringify(plan, null, 2) : formatDefinitionMigrationPlan(plan));
-  });
-
-program
-  .command("bundle-verify")
-  .description("Verify bundle integrity, signature, compatibility, and signer trust")
-  .option("--policy <policy>", "allow, warn, or require", process.env.AGENTFLOW_BUNDLE_TRUST_POLICY ?? "allow")
-  .option("--json", "print machine-readable verification")
-  .action(async (options: { policy: string; json?: boolean }) => {
-    if (!["allow", "warn", "require"].includes(options.policy)) throw new Error("--policy must be allow, warn, or require");
-    const result = await verifyBundle(rootDir, options.policy as BundleTrustPolicy);
-    if (options.json) console.log(JSON.stringify(result, null, 2));
-    else {
-      console.log(`Bundle ${result.bundleId}@${result.bundleVersion}: ${result.status}`);
-      console.log(`Policy: ${result.policy} (${result.allowed ? "allowed" : "rejected"})`);
-      console.log(`Signer: ${result.signerId ?? "none"}`);
-      console.log(`Fingerprint: ${result.keyFingerprint ?? "none"}`);
-      for (const reason of result.reasons) console.log(`- ${reason}`);
-    }
-    if (!result.allowed) process.exitCode = 2;
   });
 
 program
@@ -7256,6 +7010,9 @@ type AgentImprovementOutcomeWeight = {
   approvals: number;
   rejections: number;
 };
+
+const AGENT_IMPROVEMENT_NEGATIVE_OUTCOME_MIN_EVIDENCE = 5;
+const AGENT_IMPROVEMENT_NEGATIVE_OUTCOME_MAX_WEIGHT = 1 / 3;
 
 type AgentImprovementPatchPlan = {
   kind: "agentflow_agent_improvement_patch_plan";
@@ -17477,16 +17234,27 @@ export function buildAgentImprovementCandidate(input: {
     return null;
   }
 
-  const autoApplyEligible = input.record.scope === "project-local" && agentImprovementRiskRank(riskLevel) <= agentImprovementRiskRank("medium") && !recommendations.some((item) => /autonomy|approval|permission|privilege|network|export/i.test(item));
   const patternId = [...patternKeys].sort().join("+");
   const outcome = input.outcomeWeights.get(patternId);
+  const outcomeEvidenceCount = outcome ? outcome.approvals + outcome.rejections : 0;
+  const negativeOutcomeEvidence = Boolean(outcome
+    && outcomeEvidenceCount >= AGENT_IMPROVEMENT_NEGATIVE_OUTCOME_MIN_EVIDENCE
+    && outcome.weight <= AGENT_IMPROVEMENT_NEGATIVE_OUTCOME_MAX_WEIGHT);
+  const learnedPriority: LearningProposalPriority = negativeOutcomeEvidence
+    ? priority === "high" ? "medium" : "low"
+    : priority;
+  if (negativeOutcomeEvidence && outcome) {
+    evidence.push(`Owner decisions rejected this pattern ${outcome.rejections}/${outcomeEvidenceCount} times; automatic application is disabled and priority is reduced.`);
+  }
+  const baseAutoApplyEligible = input.record.scope === "project-local" && agentImprovementRiskRank(riskLevel) <= agentImprovementRiskRank("medium") && !recommendations.some((item) => /autonomy|approval|permission|privilege|network|export/i.test(item));
+  const autoApplyEligible = baseAutoApplyEligible && !negativeOutcomeEvidence;
   return {
     id: `agent-${agent.id.replace(/[^a-z0-9_-]/gi, "-")}-improvement`,
     agentId: agent.id,
     displayName: agent.display_name,
     scope: input.record.scope,
     category: agent.category,
-    priority,
+    priority: learnedPriority,
     riskLevel,
     sourcePath: input.record.sourcePath,
     currentRoleSummary: agent.purpose,
@@ -28192,7 +27960,7 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
       : Promise.resolve(null);
     const learningQueuePromise = project && learningView === "approvals" ? readLearningApprovalQueue(localLearningDir).catch(() => null) : Promise.resolve(null);
     const learningDaemonPromise = project && (learningView === "diagnostics" || learningView === "settings") ? loadLearningDaemonStatus(localLearningDir) : Promise.resolve(null);
-    const learningSettingsPromise = project && learningView === "settings" ? readLearningSettings(localLearningDir).catch(() => null) : Promise.resolve(null);
+    const learningSettingsPromise = project && learningViewNeedsSettings(learningView) ? readLearningSettings(localLearningDir).catch(() => null) : Promise.resolve(null);
     const learningActionReceiptsPromise = project && learningView === "diagnostics"
       ? readLearningActionReceipts(localLearningDir).catch(() => emptyLearningActionReceipts(path.resolve(process.cwd(), localLearningDir)))
       : Promise.resolve(null);
@@ -28454,9 +28222,9 @@ async function handleDashboardRequest(request: http.IncomingMessage, response: h
 
   if (requestUrl.pathname === "/providers") {
     const dashboardUrl = dashboardUrlFromRequest(request);
-    const info = await loadCachedDashboardReport(`dashboard-info:${dashboardUrl}`, () => withTimeout(
-      loadDashboardInfo(dashboardUrlFromRequest(request)),
-      3000,
+    const info = await loadCachedDashboardReport(`providers-info:${dashboardUrl}`, () => withTimeout(
+      loadDashboardProvidersInfo(dashboardUrl),
+      8000,
       () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
     ));
     response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -36438,6 +36206,12 @@ async function loadDashboardInfoFast(dashboardUrl: string): Promise<DashboardInf
   };
 }
 
+async function loadDashboardProvidersInfo(dashboardUrl: string): Promise<DashboardInfo> {
+  const info = await loadDashboardInfoFast(dashboardUrl);
+  info.provider = await describeProvider(info.provider.selected, info.provider.adapter);
+  return info;
+}
+
 async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
   const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_WORKER_HEARTBEAT ?? defaultWorkerHeartbeatPath);
   const lanes = await loadWorkerHeartbeatLanes(heartbeatPath);
@@ -37197,19 +36971,21 @@ async function describeProvider(selected: string, adapter: string): Promise<Dash
   }
   if (selected === "codex-cli") {
     const configuredModel = process.env.CODEX_CLI_MODEL?.trim();
+    const tierModels = codexCliTierModelPreview();
     const status = await inspectCodexCliStatus();
     return {
       selected,
       adapter,
-      model: configuredModel || "CLI default",
-      modelEnv: "CODEX_CLI_MODEL",
+      model: codexCliModelSummary(tierModels),
+      modelEnv: configuredModel ? "CODEX_CLI_MODEL" : "CODEX_CLI_MODEL_*",
       authStatus: status.apiKeyStatus,
-      canSelectModel: Boolean(configuredModel),
-      availableModels: configuredModel ? [configuredModel] : [],
-      providerStatuses: [status],
-      catalogHint: configuredModel
-        ? "This deployment pins a Codex CLI model through CODEX_CLI_MODEL. Remove that value to use the CLI default."
-        : "Codex CLI chooses its authenticated default model. No placeholder model value is written to configuration.",
+      canSelectModel: false,
+      availableModels: [...new Set(tierModels.filter((item) => item.source === "env").map((item) => item.model))],
+      providerStatuses: [{ ...status, tierModels }],
+      tierModels,
+      catalogHint: tierModels.some((item) => item.source === "env")
+        ? "Codex CLI models are pinned by workflow tier. New runs use the effective fast, standard, or reasoning model shown above."
+        : "Codex CLI chooses its authenticated default model for every tier. No placeholder model value is written to configuration.",
       routingConfig: loadRoutingConfig()
     };
   }
@@ -37617,15 +37393,17 @@ function describeProviderFast(selected: string, adapter: string): DashboardInfo[
   }
   if (selected === "codex-cli") {
     const configuredModel = process.env.CODEX_CLI_MODEL?.trim();
+    const tierModels = codexCliTierModelPreview();
     return {
       selected,
       adapter,
-      model: configuredModel || "CLI default",
-      modelEnv: "CODEX_CLI_MODEL",
+      model: codexCliModelSummary(tierModels),
+      modelEnv: configuredModel ? "CODEX_CLI_MODEL" : "CODEX_CLI_MODEL_*",
       authStatus: "Run provider-check to verify ChatGPT authentication",
-      canSelectModel: Boolean(configuredModel),
-      availableModels: configuredModel ? [configuredModel] : [],
-      catalogHint: "Codex CLI uses ChatGPT authentication rather than OPENAI_API_KEY and uses its CLI default model unless CODEX_CLI_MODEL is explicitly configured.",
+      canSelectModel: false,
+      availableModels: [...new Set(tierModels.filter((item) => item.source === "env").map((item) => item.model))],
+      tierModels,
+      catalogHint: "Provider readiness could not be refreshed in time. Tier model settings shown here still reflect this process configuration.",
       routingConfig
     };
   }
@@ -37802,6 +37580,7 @@ async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["pr
 async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>[number]> {
   const selected = (process.env.DEFAULT_MODEL_PROVIDER ?? "").trim() === "codex-cli";
   const configured = selected || Boolean(process.env.CODEX_CLI_BIN || process.env.CODEX_CLI_AUTH_MODE);
+  const tierModels = codexCliTierModelPreview();
   try {
     const provider = providerFromEnv("codex-cli");
     const readiness = provider.check ? await provider.check() : { ready: true, details: ["Codex CLI is ready."] };
@@ -37810,9 +37589,10 @@ async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provi
       label: "Codex CLI / ChatGPT",
       configured,
       status: readiness.ready ? "ready" : "missing",
-      model: process.env.CODEX_CLI_MODEL?.trim() || "CLI default",
+      model: codexCliModelSummary(tierModels),
       apiKeyStatus: readiness.ready ? "ChatGPT authenticated" : "login required",
-      details: readiness.details
+      details: readiness.details,
+      tierModels
     };
   } catch (error) {
     return {
@@ -37820,9 +37600,10 @@ async function inspectCodexCliStatus(): Promise<NonNullable<DashboardInfo["provi
       label: "Codex CLI / ChatGPT",
       configured,
       status: "missing",
-      model: process.env.CODEX_CLI_MODEL?.trim() || "CLI default",
+      model: codexCliModelSummary(tierModels),
       apiKeyStatus: "login required",
-      details: [safeErrorMessage(error)]
+      details: [safeErrorMessage(error)],
+      tierModels
     };
   }
 }

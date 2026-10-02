@@ -1,5 +1,4 @@
 import type pg from "pg";
-import { semanticSimilarity } from "../../reuse-engine/src/index.js";
 
 export interface RunDeduplicationContract {
   projectId: string;
@@ -26,23 +25,10 @@ export interface ReplayConflictCandidate {
   completedTasks: number;
 }
 
-const REPLAY_GENERIC_TERMS = new Set([
-  "agent", "approved", "assistant", "bounded", "build", "complete", "continue",
-  "control", "desktop", "docs", "feature", "governed", "implement",
-  "implementation", "local", "project", "repair", "request", "run", "tests",
-  "verify", "workflow"
-]);
-
-function distinctiveTaskTerms(task: string): Set<string> {
-  return new Set((task.toLowerCase().match(/[a-z0-9][a-z0-9_-]{3,}/gu) ?? [])
-    .filter((term) => !REPLAY_GENERIC_TERMS.has(term)));
-}
-
 export function replayTasksEquivalent(left: string, right: string): boolean {
-  const leftTerms = distinctiveTaskTerms(left);
-  const rightTerms = distinctiveTaskTerms(right);
-  const shared = [...leftTerms].filter((term) => rightTerms.has(term));
-  return shared.length >= 2 && semanticSimilarity(left, right) >= 0.35;
+  // Similar wording is not proof of identical acceptance requirements.
+  // Explicit replacement lineage is handled by replayWorkflowRun separately.
+  return left.trim().length > 0 && left.trim() === right.trim();
 }
 
 export async function findReplayConflict(client: pg.Client, input: {

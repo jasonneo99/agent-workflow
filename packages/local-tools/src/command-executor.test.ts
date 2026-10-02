@@ -31,6 +31,14 @@ test("worker command policy allows finite commands from allowlist", () => {
   assert.doesNotThrow(() => assertCommandAllowed("python3 scripts/check.py", project));
 });
 
+test("quoted program arguments are literal while shell operators remain rejected", () => {
+  assert.doesNotThrow(() => assertCommandAllowed("npm exec -- node -e 'const x = { value: 1 }; console.log(x.value)'", project));
+  for (const command of ["npm test; npm run other", "npm test | other", "npm test > output", "npm exec -- node -e 'unterminated"]) {
+    assert.throws(() => assertCommandAllowed(command, project), /shell metacharacters/);
+  }
+  assert.throws(() => assertCommandAllowed("unknown 'literal;argument'", project), /not allowed by project policy/);
+});
+
 test("worker command environment prepends common developer tool paths", () => {
   const path = withDeveloperToolPath("/custom/bin:/usr/bin");
   assert.equal(path.split(":").slice(0, 3).join(":"), "/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin");

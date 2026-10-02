@@ -64,8 +64,11 @@ npm run agentflow -- provider-use codex-cli --login --device-auth --check
 ```env
 DEFAULT_MODEL_PROVIDER=codex-cli
 CODEX_CLI_AUTH_MODE=chatgpt
-# Optional; omit to use the Codex CLI default model.
+# Optional fallback; tier pins below take precedence.
 CODEX_CLI_MODEL=
+CODEX_CLI_MODEL_FAST=gpt-6-luna
+CODEX_CLI_MODEL_STANDARD=gpt-6.1-sol
+CODEX_CLI_MODEL_REASONING=gpt-6-astra
 AGENTFLOW_CODEX_SESSION_REUSE=1
 AGENTFLOW_CODEX_DIRECT_REPO_INSPECTION=0
 ```
@@ -82,7 +85,10 @@ system temporary directory, expires it after 24 hours, and never places prompt
 content in that pointer. Set `AGENTFLOW_CODEX_SESSION_REUSE=0` for strict
 one-process/one-session isolation.
 
-The adapter invokes `codex exec` with a read-only sandbox, temporary schema and
+The tier pins select OpenAI's current efficient, balanced coding, and strongest
+reasoning models. Update them when the deployment's Codex entitlement exposes a
+new generation; remove them to inherit the Codex CLI default instead. The
+adapter invokes `codex exec` with a read-only sandbox, temporary schema and
 output files, and a strict JSON output contract. Workflow runs retain their
 Codex session only for bounded same-stage continuation; standalone summaries remain
 ephemeral. It does not read or copy the

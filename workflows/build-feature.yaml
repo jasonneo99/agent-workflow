@@ -56,7 +56,7 @@ stages:
     output: change_summary
   - id: verify
     agent: auto-test-runner
-    goal: Run configured tests and summarize verification.
+    goal: Verify the complete user acceptance task with executed test, artifact, delivery, installation, identity, launch, and runtime evidence where explicitly required.
     pattern:
       type: verifier
       promotion_gate: evaluation

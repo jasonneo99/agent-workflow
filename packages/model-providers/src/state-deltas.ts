@@ -69,6 +69,7 @@ export function foldStateDeltas(deltas: StateDelta[]): Map<string, FactRecord> {
     if (existing && delta.op === "update") {
       record.previousFact = existing.fact;
     }
+    facts.delete(key);
     facts.set(key, record);
   }
   return facts;
@@ -88,11 +89,12 @@ function clampConfidence(value: number | undefined): number {
 export function renderFactSet(facts: Map<string, FactRecord>, maxChars = 4000): string {
   if (facts.size === 0) return "STATE (empty)";
   const lines: string[] = [];
-  for (const [key, record] of facts) {
+  // Budget recent observations first so the next turn sees the action it just ran.
+  for (const [key, record] of [...facts].reverse()) {
     const marker = record.previousFact ? "~" : "+";
     const confidence = record.confidence < 1 ? ` [conf ${record.confidence.toFixed(2)}]` : "";
     const line = record.previousFact
-      ? `${marker} ${key}: ${record.previousFact} -> ${record.fact}${confidence}`
+      ? `${marker} ${key}: ${record.fact}${confidence} (previous: ${record.previousFact})`
       : `${marker} ${key}: ${record.fact}${confidence}`;
     lines.push(line);
   }
@@ -159,7 +161,7 @@ export function commandDelta(input: {
 }): StateDelta {
   const assertedAt = input.assertedAt ?? new Date().toISOString();
   const status = typeof input.exitCode === "number" ? (input.exitCode === 0 ? "ok" : `exit=${input.exitCode}`) : "ran";
-  const preview = input.outputPreview ? `: ${input.outputPreview.slice(0, 160)}` : "";
+  const preview = input.outputPreview ? `: ${input.outputPreview.slice(0, 4000)}` : "";
   return {
     op: "assert",
     key: `cmd:${input.command.slice(0, 120)}`,

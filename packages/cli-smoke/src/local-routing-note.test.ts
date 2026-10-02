@@ -196,6 +196,25 @@ test("learning daemon applies route-feedback recommendation refresh with receipt
     assert.equal(result.status, 0, result.stderr);
   }
 
+  // Generate proposals first, then approve, then apply-approved.
+  const propose = runAgentflow([
+    "learning-daemon",
+    "--project", projectDir,
+    "--mode", "propose",
+    "--once",
+    "--json"
+  ]);
+  assert.equal(propose.status, 0, propose.stderr);
+
+  const approve = runAgentflow([
+    "learning-approvals",
+    "--project", projectDir,
+    "--approve", "all",
+    "--reviewer", "test",
+    "--note", "approved for test"
+  ]);
+  assert.equal(approve.status, 0, approve.stderr);
+
   const daemon = runAgentflow([
     "learning-daemon",
     "--project", projectDir,
@@ -211,7 +230,7 @@ test("learning daemon applies route-feedback recommendation refresh with receipt
   const routeFeedbackProposals = proposals.proposals.filter((proposal) => proposal.kind === "route_feedback");
   assert.equal(routeFeedbackProposals.length, 1);
   assert.equal(routeFeedbackProposals[0].riskLevel, "low");
-  assert.equal(routeFeedbackProposals[0].approvalRequired, false);
+  assert.equal(routeFeedbackProposals[0].approvalRequired, true);
   assert.match(routeFeedbackProposals[0].title, /costly route feedback/i);
 
   const recommendationsPath = path.join(projectDir, ".agent-workflow", "model-improvement", "local-llm-routing-recommendations.json");

@@ -382,7 +382,7 @@ test("command failure evidence is self-diagnosing", () => {
   assert.match(timedOut, /timed out/);
 });
 
-test("verify retry eligibility covers test/verify stages only", () => {
+test("command retry eligibility covers verification and executor recovery", () => {
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "test" }), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "verify" }), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "verifier" }), true);
@@ -391,8 +391,15 @@ test("verify retry eligibility covers test/verify stages only", () => {
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "planner" }, "npm run check"), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "single-shot" }, "npm test"), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "react" }), false);
-  assert.equal(commandFailureEligibleForVerifyRetry({ type: "executor" }), false);
+  assert.equal(commandFailureEligibleForVerifyRetry({ type: "executor" }), true);
   assert.equal(commandFailureEligibleForVerifyRetry({ type: "single-shot" }), false);
+});
+
+test("missing executables become recoverable command evidence", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /errorCode === "ENOENT"/u);
+  assert.match(source, /exitCode: 127/u);
+  assert.match(source, /select an allowlisted[\s\S]*fallback/u);
 });
 
 test("verify retry budget defaults to 2 with env override and clamp", () => {
@@ -443,6 +450,42 @@ test("recoverable patch conflicts refresh the file and retry inside the same sta
   assert.match(retrySource, /file_write_retry_scheduled/u);
   assert.match(retrySource, /Regenerate only this patch against the refreshed file content/u);
   assert.match(source, /fileWriteRejectionRecovered\(actionResults, action\)/u);
+});
+
+test("verify retries can gather newly requested evidence before selecting a replacement command", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /const executePendingReadRounds = async \(\): Promise<void> => \{/u);
+  assert.match(source, /verifyActionRounds:\s+do \{[\s\S]*?await executePendingReadRounds\(\);[\s\S]*?for \(const commandLine/u);
+});
+
+test("successful discovery commands can drive a bounded dependent action round", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /successfulCommandsThisRound/iu);
+  assert.match(source, /commandDelta\(\{/u);
+  assert.match(source, /local_command_success_followup/u);
+  assert.match(source, /successfulFollowupsRemaining = Math\.min/iu);
+  assert.match(source, /if \(successfulCommandsThisRound > 0 && successfulFollowupsRemaining > 0\)/u);
+  assert.doesNotMatch(source, /acceptanceGap && successfulCommandsThisRound/u);
+});
+
+test("bounded exhaustion checkpoints evidence and restores it before the next provider call", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.ok(source.indexOf("const savedContinuation") < source.indexOf("const stageInput"));
+  assert.match(source, /savedContinuation\?\.runId === task\.runId && savedContinuation\.taskId === task\.taskId/u);
+  const exhaustion = source.slice(source.indexOf("if (unconsumedSuccessfulActionResult)"), source.indexOf('if (output.outcome === "blocked")', source.indexOf("if (unconsumedSuccessfulActionResult)")));
+  assert.match(exhaustion, /continuationRound < 3/u);
+  assert.match(exhaustion, /await checkpointWorkflowTaskContinuation/u);
+  assert.match(exhaustion, /round: continuationRound \+ 1, actionResults/u);
+  assert.match(exhaustion, /stateDeltas: stageStateDeltas/u);
+  assert.ok(exhaustion.indexOf("checkpointWorkflowTaskContinuation") < exhaustion.indexOf("blockWorkflowTask"));
+  assert.doesNotMatch(exhaustion, /completeWorkflowTask/u);
+});
+
+test("successful final-round actions cannot complete without consuming their result", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /unconsumedSuccessfulActionResult/u);
+  assert.match(source, /bounded action-result follow-up budget was exhausted/u);
+  assert.match(source, /if \(output\.outcome === "blocked"\)[\s\S]*?blockWorkflowTask/u);
 });
 
 test("malformed patch hunk counts are recoverable inside the same stage", () => {
@@ -579,6 +622,15 @@ test("environmental verify failures block before the retry budget is touched", (
   const attributionIndex = source.indexOf('verifyAttribution.kind === "environmental"');
   const decrementIndex = source.indexOf("verifyRetriesRemaining -= 1");
   assert.ok(attributionIndex >= 0 && decrementIndex > attributionIndex);
+});
+
+test("both early completion gates include authoritative restored action results", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.ok(source.includes('actionType: "completion_contract_feedback", summary: initialCompletionViolation'));
+  assert.ok(source.includes('const acceptanceGap = verificationCompletionReason(routedStageInput, actionResults)\n          ?? unfulfilledCompletionReason'));
+  for (const gate of ["initialCompletionViolation", "repeatedViolation"]) {
+    assert.ok(source.includes(`const ${gate} = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });`));
+  }
 });
 
 test("out-of-policy commands and writes become exact actionable policy approvals", () => {

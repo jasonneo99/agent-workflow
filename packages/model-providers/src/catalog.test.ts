@@ -71,7 +71,7 @@ test("catalog ranking keeps every eligible model available for fallback", () => 
 });
 
 test("task specialization prefers coding and reasoning families appropriately", () => {
-  const models = ["gpt-6-astra", "gpt-5.3-codex", "gpt-5.6-luna"];
-  assert.equal(rankModelsFromCatalog(models, "standard", { provider: "openai", taskClass: "coding" })[0], "gpt-5.3-codex");
+  const models = ["gpt-6-astra", "gpt-6.1-sol", "gpt-6-luna", "gpt-5.3-codex"];
+  assert.equal(rankModelsFromCatalog(models, "standard", { provider: "openai", taskClass: "coding" })[0], "gpt-6.1-sol");
   assert.equal(rankModelsFromCatalog(models, "reasoning", { provider: "openai", taskClass: "reasoning" })[0], "gpt-6-astra");
 });

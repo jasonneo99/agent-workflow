@@ -53,11 +53,14 @@ test("run deduplication keeps explicit retries separate from ordinary duplicate 
   assert.doesNotMatch(calls[1]?.text ?? "", /replayOfRunId/);
 });
 
-test("replay equivalence requires semantic and distinctive task overlap", () => {
+test("replay equivalence requires task identity rather than semantic overlap", () => {
+  assert.equal(replayTasksEquivalent("  Fix queue identity\n", "Fix queue identity"), true);
+  assert.equal(replayTasksEquivalent("", " "), false);
+  assert.equal(replayTasksEquivalent("Fix queue identity and add tests", "Fix queue identity and remove tests"), false);
   assert.equal(replayTasksEquivalent(
     "Continue the approved media playback implementation for the desktop assistant with focused tests",
     "Implement governed local media playback control for the desktop assistant and verify it"
-  ), true);
+  ), false);
   assert.equal(replayTasksEquivalent(
     "Implement media playback control for the desktop assistant",
     "Make the shared mobile chat window rearrangeable in the desktop assistant"
@@ -80,7 +83,7 @@ test("replay conflict search is cross-root but scoped to the logical project", a
     sourceStartedAt: "2026-09-26T10:00:00Z",
     logicalProjectId: "desktop-assistant",
     workflowId: "build-feature",
-    task: "Continue the approved media playback implementation for the desktop assistant with focused tests"
+    task: "Implement governed local media playback control for the desktop assistant and verify it"
   });
   assert.equal(conflict?.id, "active-run");
   assert.match(calls[1]?.text ?? "", /p\.config->'project'->>'id'/u);

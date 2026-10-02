@@ -183,9 +183,10 @@ export function workflowRepairLesson(input: {
   repairStatus: string;
   completedTasks: number;
   failedTasks: number;
+  acceptanceVerified?: boolean;
 }): WorkflowRepairLesson {
   const prevention = workflowRepairPrevention(input.strategy);
-  if (input.repairStatus === "completed" && input.completedTasks > 0 && input.failedTasks === 0) {
+  if (input.acceptanceVerified === true && input.repairStatus === "completed" && input.completedTasks > 0 && input.failedTasks === 0) {
     return {
       outcome: "reinforce",
       futureAction: `Reuse ${input.strategy} for the same root-cause class when policy and evidence still match.`,

@@ -22,9 +22,16 @@ export async function writeLearningProposalFiles(
   const jsonPath = path.join(directory, "proposals.json");
   const markdownPath = path.join(directory, "proposals.md");
   await fs.mkdir(directory, { recursive: true });
+  // Atomic: write to temp files then rename, so concurrent readers never
+  // observe partially-written proposals.
+  const writeAtomic = async (finalPath: string, content: string) => {
+    const tmpPath = `${finalPath}.tmp.${process.pid}`;
+    await fs.writeFile(tmpPath, content, "utf8");
+    await fs.rename(tmpPath, finalPath);
+  };
   await Promise.all([
-    fs.writeFile(jsonPath, `${JSON.stringify(proposalSet, null, 2)}\n`, "utf8"),
-    fs.writeFile(markdownPath, formatLearningProposalMarkdown(proposalSet), "utf8")
+    writeAtomic(jsonPath, `${JSON.stringify(proposalSet, null, 2)}\n`),
+    writeAtomic(markdownPath, formatLearningProposalMarkdown(proposalSet))
   ]);
   return { directory, jsonPath, markdownPath };
 }

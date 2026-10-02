@@ -172,6 +172,48 @@ test("buildAgentImprovementCandidate attaches outcome weights when decisions exi
   assert.deepEqual(candidate.outcomeEvidence, { approvals: 4, rejections: 1 });
 });
 
+test("repeated owner rejection reduces priority and vetoes auto-apply without hiding the candidate", () => {
+  const agent = {
+    id: "project-test-reviewer", display_name: "Project Test Reviewer", category: "operations",
+    autonomy: "supervised", purpose: "Reviews work with receipts and validation.",
+    use_when: [], avoid_when: [], can: [], cannot: [], requires_approval: [],
+    prompt: "Review work with receipts, validation, and tests."
+  } as never;
+  const candidate = buildAgentImprovementCandidate({
+    record: { agent, sourcePath: ".agent-workflow/agents/project-test-reviewer.yaml", scope: "project-local" },
+    workflowRefs: [], runs: [], scorecard: { groups: [], feedbackCounts: {} } as never,
+    reports: [], stageHealth: [],
+    outcomeWeights: new Map([["no-workflow-refs", { weight: 1 / 7, approvals: 0, rejections: 5 }]])
+  });
+  assert.ok(candidate);
+  assert.equal(candidate.priority, "low");
+  assert.equal(candidate.autoApplyEligible, false);
+  assert.equal(candidate.approvalRequired, true);
+  assert.match(candidate.evidence.join(" "), /automatic application is disabled/);
+});
+
+test("insufficient negative evidence remains neutral and acceptance never widens authority", () => {
+  const agent = {
+    id: "shared-test-reviewer", display_name: "Shared Test Reviewer", category: "operations",
+    autonomy: "supervised", purpose: "Reviews work with receipts and validation.",
+    use_when: [], avoid_when: [], can: [], cannot: [], requires_approval: [],
+    prompt: "Review work with receipts, validation, and tests."
+  } as never;
+  const build = (scope: "shared" | "project-local", weight: { weight: number; approvals: number; rejections: number }) => buildAgentImprovementCandidate({
+    record: { agent, sourcePath: "agents/shared-test-reviewer.yaml", scope }, workflowRefs: [], runs: [],
+    scorecard: { groups: [], feedbackCounts: {} } as never, reports: [], stageHealth: [],
+    outcomeWeights: new Map([["no-workflow-refs", weight]])
+  });
+  const insufficient = build("project-local", { weight: 1 / 4, approvals: 0, rejections: 2 });
+  assert.ok(insufficient);
+  assert.equal(insufficient.priority, "medium");
+  assert.equal(insufficient.autoApplyEligible, true);
+  const acceptedShared = build("shared", { weight: 6 / 7, approvals: 5, rejections: 0 });
+  assert.ok(acceptedShared);
+  assert.equal(acceptedShared.autoApplyEligible, false);
+  assert.equal(acceptedShared.approvalRequired, true);
+});
+
 test("patternId propagates from patch to promotion item to decision receipt", async () => {
   const { projectDir, sourcePath, sourceHash } = await makeEvalProject();
   const patch = makePatch({ sourcePath, sourceHash, unifiedDiff: semanticDiff });

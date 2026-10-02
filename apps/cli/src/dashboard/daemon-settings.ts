@@ -7,6 +7,10 @@ export function parseDaemonSettingsRequest(form: Pick<FormData, "get">) {
 
 export type LearningSettingsSection = "daemon-trust" | "workflow-shape";
 
+export function learningViewNeedsSettings(view: string): boolean {
+  return view === "settings" || view === "recommendations";
+}
+
 export function parseLearningSettingsSection(form: Pick<FormData, "get">): LearningSettingsSection | null {
   const value = form.get("settingsSection");
   return value === "daemon-trust" || value === "workflow-shape" ? value : null;

@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "331272153e326aaaff2ee56a65f72fda5a1891e5e0e18f120149cb5c05f77341"
+    "value": "127c3090906acb1e30c5a91a8b2cb4b283e4601917524fde395595edede4ee26"
   },
   "agents": [
     {
@@ -45,7 +45,7 @@
     {
       "id": "auto-test-runner",
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "09643a2f17eec652916c54461850960f7f8b59a13cc75e7a730f13d33b3db0d2"
+      "checksum": "895a4acbc2ff5000ab991e2a0e6e25c076f2795e3ca821acbe4a00922928e91e"
     },
     {
       "id": "auto-wide-open-executor",
@@ -90,7 +90,7 @@
     {
       "id": "eval-curator",
       "path": "agents/development/eval-curator.yaml",
-      "checksum": "767ea8620069ed03031115539e864d724530f0f7d9ef5cb22cd7e9d9cee2dd9f"
+      "checksum": "d95c2b1bead8c37d6728929cb30a5cf959448f8677a48ed5e48a402afefb8318"
     },
     {
       "id": "frontend-engineer",
@@ -100,7 +100,7 @@
     {
       "id": "implementation-agent",
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "8f4529d758284001d6a763358dbd1e6c238cfd34eaf41b93061a0cc4f8ad762e"
+      "checksum": "45dd0e3c8211dd7b5f0c8500ad20d9ba14e043907577c6684d6bfe9ce85a2d79"
     },
     {
       "id": "model-improvement-diagnostician",
@@ -172,7 +172,7 @@
     {
       "id": "build-feature",
       "path": "workflows/build-feature.yaml",
-      "checksum": "1f3c9a7336f2377e6d6858fa8eb88d33aa88659f4c8a0423c8572cadb8f79d44"
+      "checksum": "821216c55acd18cc972c835544d4ff82fc38ba13710449c423b7d285ee880d72"
     },
     {
       "id": "ci-triage",
@@ -284,7 +284,7 @@
     },
     {
       "path": "agents/automatic/auto-test-runner.yaml",
-      "checksum": "09643a2f17eec652916c54461850960f7f8b59a13cc75e7a730f13d33b3db0d2"
+      "checksum": "895a4acbc2ff5000ab991e2a0e6e25c076f2795e3ca821acbe4a00922928e91e"
     },
     {
       "path": "agents/automatic/auto-wide-open-executor.yaml",
@@ -320,7 +320,7 @@
     },
     {
       "path": "agents/development/eval-curator.yaml",
-      "checksum": "767ea8620069ed03031115539e864d724530f0f7d9ef5cb22cd7e9d9cee2dd9f"
+      "checksum": "d95c2b1bead8c37d6728929cb30a5cf959448f8677a48ed5e48a402afefb8318"
     },
     {
       "path": "agents/development/frontend-engineer.yaml",
@@ -328,7 +328,7 @@
     },
     {
       "path": "agents/development/implementation-agent.yaml",
-      "checksum": "8f4529d758284001d6a763358dbd1e6c238cfd34eaf41b93061a0cc4f8ad762e"
+      "checksum": "45dd0e3c8211dd7b5f0c8500ad20d9ba14e043907577c6684d6bfe9ce85a2d79"
     },
     {
       "path": "agents/development/model-improvement-diagnostician.yaml",
@@ -384,7 +384,7 @@
     },
     {
       "path": "workflows/build-feature.yaml",
-      "checksum": "1f3c9a7336f2377e6d6858fa8eb88d33aa88659f4c8a0423c8572cadb8f79d44"
+      "checksum": "821216c55acd18cc972c835544d4ff82fc38ba13710449c423b7d285ee880d72"
     },
     {
       "path": "workflows/ci-triage.yaml",

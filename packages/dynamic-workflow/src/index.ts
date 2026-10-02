@@ -19,7 +19,7 @@ export type StageTemplate = {
 };
 
 export const stageTemplates: Record<string, StageTemplate> = {
-  triage: stage("triage", "task-triager", "Classify the goal, constraints, and relevant project context.", "planner", "task_triage", 2500, ["Scope and constraints are explicit"], "fast"),
+  triage: stage("triage", "task-triager", "Classify the goal, constraints, and relevant project context. INTENT EXPANSION (standing directive): infer the full user intent — ask 'what does done actually look like for the human?' A terse request like 'morning brief' expands to the script PLUS calendar wiring PLUS scheduling PLUS notification delivery. The plan must cover the complete outcome, not just the literal ask. If the full intent is ambiguous, plan the most complete reasonable interpretation and flag the assumption.", "planner", "task_triage", 2500, ["Scope and constraints are explicit", "Full user intent is expanded beyond the literal request"], "fast"),
   architecture: stage("architecture", "technical-architect", "Design the smallest coherent implementation approach.", "planner", "implementation_plan", 5000, ["Plan names boundaries, risks, and verification"], "reasoning"),
   ux: stage("ux", "ux-reviewer", "Specify and review the user experience and accessibility contract.", "planner", "ux_contract", 3500, ["Primary flows and accessibility expectations are explicit"], "standard"),
   database: stage("database", "database-engineer", "Design data changes, compatibility, and rollback.", "planner", "data_plan", 4500, ["Migration and rollback behavior are explicit"], "reasoning"),

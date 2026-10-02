@@ -44,6 +44,9 @@ test("estimates configured model cost", () => {
 
 test("ships versioned default pricing for active OpenAI and Anthropic routes", () => {
   const pricing = modelPricingFromEnv("");
+  assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "gpt-6-luna", pricing), 0.6);
+  assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "gpt-6.1-sol", pricing), 12);
+  assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "gpt-6-astra", pricing), 60);
   assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "gpt-5.6-luna", pricing), 1.4);
   assert.equal(estimateModelCost({ inputTokens: 1_000_000, cachedInputTokens: 0, reasoningTokens: 0, outputTokens: 1_000_000, totalTokens: 2_000_000 }, "claude-sonnet-5", pricing), 12);
   assert.ok(resolveModelPrice("claude-sonnet-5-20260901", pricing));

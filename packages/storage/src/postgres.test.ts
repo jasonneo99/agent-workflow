@@ -254,6 +254,23 @@ test("checkpoint replay atomically reserves one replacement per source run", () 
   assert.match(replay, /set replacement_run_id = \$2::uuid/u);
 });
 
+test("existing replacements do not report blocked or cancelled stages as queued", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const branch = source.slice(source.indexOf("if (sourceRun.replacementRunId)"), source.indexOf("const logicalProjectId", source.indexOf("if (sourceRun.replacementRunId)")));
+  assert.match(branch, /count\(\*\) filter \(where status = 'queued'\)::int as "queuedTasks"/u);
+  assert.match(branch, /queuedTasks: counts\.queuedTasks/u);
+  assert.doesNotMatch(branch, /counts\.tasks - counts\.completedTasks/u);
+});
+
+test("rejected acceptance evidence is excluded from memory and reuse without deleting history", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const memory = source.slice(source.indexOf("export async function getLatestMemory"), source.indexOf("export async function consolidateProjectAlias"));
+  assert.match(memory, /not exists[\s\S]+workflow_acceptance_rejected[\s\S]+repairRunId/u);
+  const reuse = readFileSync(new URL("./reuse.ts", import.meta.url), "utf8");
+  assert.equal((reuse.match(/workflow_acceptance_rejected/gu) ?? []).length, 2);
+  assert.doesNotMatch(memory, /delete from/u);
+});
+
 test("checkpoint replay finalizes immediately when every stage is already complete", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   assert.match(source, /if \(queuedTasks === 0\)[\s\S]+to: "leased"[\s\S]+to: "running"[\s\S]+to: "completed"/u);

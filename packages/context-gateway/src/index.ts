@@ -3,11 +3,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { z } from "zod";
 
-const intentSchema = z.enum([
+export const CONTEXT_INTENTS = [
   "discovery", "summarization", "documentation", "test_inventory", "editing",
   "debugging", "concurrency", "security", "authorization", "migration",
   "public_api", "architecture", "safety_critical", "unknown"
-]);
+] as const;
+
+export const contextIntentSchema = z.enum(CONTEXT_INTENTS);
 
 export const contextRoutingPolicySchema = z.object({
   version: z.literal(1),
@@ -17,8 +19,8 @@ export const contextRoutingPolicySchema = z.object({
   max_exact_slice_tokens: z.number().int().positive(),
   summary_cache_ttl_seconds: z.number().int().positive(),
   automatic_risk_levels: z.array(z.enum(["low", "medium"])).min(1).optional(),
-  low_risk_intents: z.array(intentSchema),
-  frontier_required_intents: z.array(intentSchema),
+  low_risk_intents: z.array(contextIntentSchema),
+  frontier_required_intents: z.array(contextIntentSchema),
   deterministic_extractors: z.array(z.enum(["git_diff", "text_match", "symbols", "imports", "signatures", "config_keys", "test_names"])),
   telemetry: z.object({
     store_file_bodies: z.literal(false),
@@ -32,7 +34,7 @@ export const contextRoutingPolicySchema = z.object({
   }
 });
 
-export type ContextIntent = z.infer<typeof intentSchema>;
+export type ContextIntent = z.infer<typeof contextIntentSchema>;
 export type ContextRoutingPolicy = z.infer<typeof contextRoutingPolicySchema>;
 
 export type ContextRoute = "direct" | "deterministic" | "delegate" | "frontier";

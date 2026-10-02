@@ -16,7 +16,7 @@ test("model route receipts enrich measured usage and preserve routing", () => {
     totalTokens: 1300,
     costUsd: 0.0068,
     costSource: "catalog-estimate",
-    pricingVersion: "2026-09-25"
+    pricingVersion: "2026-10-01"
   });
   assert.equal(receipt.actualProviderId, "openai");
   assert.deepEqual(receipt.route, { providerId: "openai", modelTier: "reasoning" });

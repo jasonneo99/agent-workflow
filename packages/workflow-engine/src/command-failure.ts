@@ -48,7 +48,12 @@ export function formatCommandFailureEvidence(input: {
 
 export function commandFailureEligibleForVerifyRetry(stagePattern: Pick<StagePattern, "type">, commandLine?: string): boolean {
   const type = stagePattern.type.trim().toLowerCase();
-  if (type === "test" || type === "verify" || type === "verifier") return true;
+  // Executor stages also need bounded recovery: delivery workflows commonly
+  // probe an optional tool and must be able to choose an approved fallback
+  // after ENOENT or another actionable command failure. Without this, the
+  // first failed probe terminates the stage before the model can react to its
+  // receipt, creating a permanent blocked-repair loop.
+  if (type === "test" || type === "verify" || type === "verifier" || type === "executor") return true;
   return /^(?:npm\s+(?:test|run\s+(?:check|typecheck|validate)(?:\s|$))|pnpm\s+(?:test|check|typecheck)(?:\s|$)|yarn\s+(?:test|check|typecheck)(?:\s|$))/u.test(commandLine?.trim() ?? "");
 }
 

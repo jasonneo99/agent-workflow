@@ -17,7 +17,7 @@ export interface ActionApprovalRuleMatch {
   description: string;
   actionType: "local_command" | "file_write" | "executor_adapter";
   target: string;
-  effect: "auto_execute";
+  effect: "auto_execute" | "require_approval";
   reasons: string[];
 }
 
@@ -125,8 +125,7 @@ const BUILTIN_POLICY_PROFILES: Record<string, ExecutionPolicyProfile> = {
         "xcodebuild build *",
         "xcrun devicectl *",
         "ios-deploy *",
-        // macOS desktop: build, launch, and delivery (Jason approved 2026-10-01
-        // for the Jarvis overlay terminal widget run; scoped to trusted-personal).
+        // macOS desktop build, launch, and delivery within this trusted profile.
         "xcodebuild *",
         "swiftc *",
         "swift *",
@@ -318,6 +317,18 @@ export function evaluateActionApprovalRule(input: {
   bytes?: number;
 }): ActionApprovalRuleMatch | null {
   const target = input.actionType === "local_command" ? normalizeCommand(input.target) : input.actionType === "file_write" ? normalizePath(input.target) : input.target.trim();
+  // Capability-deep safety: dangerous interpreter flags always require
+  // approval, regardless of allowlist prefix matches.
+  if (input.actionType === "local_command" && hasDangerousFlag(target)) {
+    return {
+      id: "dangerous-interpreter-flag",
+      description: "Interpreter inline-code flag requires explicit approval",
+      actionType: input.actionType,
+      target: rule_target_for(target),
+      effect: "require_approval",
+      reasons: [`dangerous interpreter flag in: ${target.split(/\s+/).slice(0, 3).join(" ")}`],
+    };
+  }
   for (const rule of input.project.actions.approval_rules) {
     if (rule.action_type !== input.actionType) continue;
     if (input.actionType === "local_command" && !matchesCommandPattern(target, rule.target)) continue;
@@ -339,6 +350,32 @@ export function evaluateActionApprovalRule(input: {
     };
   }
   return null;
+}
+
+// Interpreters that can execute inline code via flags. Even if `python3 *`
+// is allowed, `python3 -c "rm -rf /"` must never auto-pass.
+const INTERPRETER_DANGEROUS_FLAGS: Record<string, string[]> = {
+  "python3": ["-c", "-m"],
+  "python": ["-c", "-m"],
+  "node": ["-e", "--eval"],
+  "ruby": ["-e"],
+  "perl": ["-e"],
+  "bash": ["-c"],
+  "sh": ["-c"],
+  "zsh": ["-c"],
+};
+
+function hasDangerousFlag(commandLine: string): boolean {
+  const parts = commandLine.trim().split(/\s+/);
+  if (parts.length < 2) return false;
+  const bin = parts[0].split("/").pop() || "";
+  const flags = INTERPRETER_DANGEROUS_FLAGS[bin];
+  if (!flags) return false;
+  return parts.slice(1).some((p) => flags.includes(p));
+}
+
+function rule_target_for(commandLine: string): string {
+  return commandLine.split(/\s+/).slice(0, 2).join(" ");
 }
 
 function matchesCommandPattern(commandLine: string, pattern: string): boolean {
