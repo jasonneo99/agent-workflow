@@ -35,6 +35,7 @@ import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
 import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers/src/quality.js";
+import { RECEIPT_CHAIN_GENESIS, chainReceipt } from "../../workflow-engine/src/receipt-chain.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
@@ -336,6 +337,15 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_receipts_run_type_created_idx
       ON action_receipts(run_id, action_type, created_at DESC)
+    `);
+    await client.query(`
+      ALTER TABLE action_receipts
+      ADD COLUMN IF NOT EXISTS prev_hash text,
+      ADD COLUMN IF NOT EXISTS receipt_hash text
+    `);
+    await client.query(`
+      CREATE INDEX IF NOT EXISTS action_receipts_run_chain_idx
+      ON action_receipts(run_id, created_at ASC)
     `);
     await client.query(`
       CREATE UNIQUE INDEX IF NOT EXISTS action_approvals_run_level_idempotency_idx
@@ -2850,16 +2860,36 @@ export async function recordRunAction(input: {
       const artifactContent = input.idempotencyKey
         ? { ...input.artifactContent, idempotencyKey: input.idempotencyKey }
         : input.artifactContent;
+      const metadataJson = JSON.stringify(artifactContent);
+      // Tamper-evident chain: link to the previous receipt for this run.
+      const prevRow = await client.query<{ receipt_hash: string | null }>(
+        `select receipt_hash from action_receipts where run_id = $1 order by created_at desc limit 1`,
+        [input.runId]
+      );
+      const prevHash = prevRow.rows[0]?.receipt_hash ?? RECEIPT_CHAIN_GENESIS;
+      const createdAt = new Date().toISOString();
+      const chained = chainReceipt(prevHash, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: input.actionType,
+        target: input.target,
+        summary: input.summary,
+        metadata: metadataJson,
+        createdAt,
+      });
       await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, $2, $3, $4, $5, $6)`,
+        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata, prev_hash, receipt_hash, created_at)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz)`,
         [
           input.runId,
           input.agentId,
           input.actionType,
           input.target,
           input.summary,
-          JSON.stringify(artifactContent)
+          metadataJson,
+          chained.prevHash,
+          chained.receiptHash,
+          createdAt
         ]
       );
 
@@ -2886,6 +2916,33 @@ export async function recordRunAction(input: {
       await client.query("rollback");
       throw error;
     }
+  });
+}
+
+export async function verifyRunReceiptChain(runId: string): Promise<{ valid: boolean; checked: number; brokenAt?: number; reason?: string }> {
+  const { verifyReceiptChain } = await import("../../workflow-engine/src/receipt-chain.js");
+  return withClient(async (client) => {
+    const result = await client.query(
+      `select agent_id, action_type, target, summary, metadata::text as metadata, created_at, prev_hash, receipt_hash
+       from action_receipts where run_id = $1 order by created_at asc`,
+      [runId]
+    );
+    const receipts = result.rows.map((row) => ({
+      runId,
+      agentId: row.agent_id as string,
+      actionType: row.action_type as string,
+      target: row.target as string,
+      summary: row.summary as string,
+      metadata: row.metadata as string,
+      createdAt: (row.created_at as Date).toISOString(),
+      prevHash: (row.prev_hash as string | null) ?? "GENESIS",
+      receiptHash: (row.receipt_hash as string | null) ?? "",
+    }));
+    // Receipts written before chaining have no hash; they anchor as genesis.
+    // Only verify the chained suffix.
+    const firstChained = receipts.findIndex((r) => r.receiptHash !== "");
+    if (firstChained === -1) return { valid: true, checked: 0, reason: "no chained receipts" };
+    return verifyReceiptChain(receipts.slice(firstChained));
   });
 }
 
