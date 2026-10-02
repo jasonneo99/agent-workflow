@@ -2,7 +2,43 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const source = await readFile(new URL("./index.ts", import.meta.url), "utf8");
+const source = (
+  await Promise.all(
+    [
+      "./index.ts",
+      "./commands/system.ts",
+      "./commands/bundle.ts",
+      "./commands/project.ts",
+      "./commands/storage.ts",
+      "./commands/runs.ts",
+      "./commands/approvals.ts",
+      "./commands/learning.ts",
+      "./commands/local-llm.ts",
+      "./commands/server.ts",
+      "./commands/context-extra.ts",
+      "./commands/daemon.ts",
+      "./lib/builders-shared.ts",
+      "./lib/builders-learning.ts",
+      "./lib/builders-server.ts",
+      "./lib/builders-system.ts",
+      "./lib/builders-bundle.ts",
+      "./lib/builders-project.ts",
+      "./lib/builders-storage.ts",
+      "./lib/builders-runs.ts",
+      "./lib/builders-approvals.ts",
+      "./lib/builders-local-llm.ts",
+      "./lib/builders-context.ts",
+      "./lib/context.ts",
+      "./lib/cli-types.ts",
+    ].map(async (p) => {
+      try {
+        return await readFile(new URL(p, import.meta.url), "utf8");
+      } catch {
+        return "";
+      }
+    }),
+  )
+).join("\n");
 
 test("learning daemon heals approvals before expensive analysis", () => {
   assert.match(

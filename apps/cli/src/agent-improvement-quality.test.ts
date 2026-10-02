@@ -15,7 +15,10 @@ import {
   decideAgentImprovementPromotions,
   loadOutcomeWeights,
   renderAgentImprovementPendingBannerHtml
-} from "./index.js";
+} from "./lib/builders-learning.js";
+import type { CliContext } from "./lib/context.js";
+
+const mockCtx = {} as CliContext;
 
 async function makeProjectDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -94,7 +97,7 @@ test("buildGroundedAgentImprovementRationale grounds the rationale in evidence a
 
 test("semantic-change gate fails churn patches so they cannot reach pass", async () => {
   const { projectDir, sourcePath, sourceHash } = await makeEvalProject();
-  const evaluation = await buildAgentImprovementEval(projectDir, makePatch({ sourcePath, sourceHash, unifiedDiff: "" }), evalRuns, evalScorecard);
+  const evaluation = await buildAgentImprovementEval(mockCtx, projectDir, makePatch({ sourcePath, sourceHash, unifiedDiff: "" }), evalRuns, evalScorecard);
   const gate = evaluation.gates.find((item) => item.id === "semantic-change");
   assert.ok(gate, "semantic-change gate present");
   assert.equal(gate.passed, false);
@@ -106,7 +109,7 @@ test("semantic-change gate fails churn patches so they cannot reach pass", async
 
 test("semantic-change gate passes patches with real canonical diffs", async () => {
   const { projectDir, sourcePath, sourceHash } = await makeEvalProject();
-  const evaluation = await buildAgentImprovementEval(projectDir, makePatch({ sourcePath, sourceHash, unifiedDiff: semanticDiff }), evalRuns, evalScorecard);
+  const evaluation = await buildAgentImprovementEval(mockCtx, projectDir, makePatch({ sourcePath, sourceHash, unifiedDiff: semanticDiff }), evalRuns, evalScorecard);
   const gate = evaluation.gates.find((item) => item.id === "semantic-change");
   assert.ok(gate, "semantic-change gate present");
   assert.equal(gate.passed, true);

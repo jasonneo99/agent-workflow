@@ -6,7 +6,32 @@ import { dashboardCss } from "./styles.js";
 
 test("dashboard defaults to light and retains a selectable dark theme", async () => {
   const css = dashboardCss();
-  const source = await readFile(new URL("../index.ts", import.meta.url), "utf8");
+  const source = (
+    await Promise.all(
+      [
+        "../index.ts",
+        "../commands/system.ts",
+        "../commands/bundle.ts",
+        "../commands/project.ts",
+        "../commands/storage.ts",
+        "../commands/runs.ts",
+        "../commands/approvals.ts",
+        "../commands/learning.ts",
+        "../commands/local-llm.ts",
+        "../commands/server.ts",
+        "../commands/context-extra.ts",
+        "../commands/daemon.ts",
+        "../lib/builders-shared.ts",
+        "../lib/builders-server.ts",
+      ].map(async (p) => {
+        try {
+          return await readFile(new URL(p, import.meta.url), "utf8");
+        } catch {
+          return "";
+        }
+      }),
+    )
+  ).join("\n");
 
   assert.match(css, /html:not\(\[data-theme="dark"\]\) \{ color-scheme: light;/u);
   assert.match(css, /html:not\(\[data-theme="dark"\]\) \.ops-pulse-panel/u);

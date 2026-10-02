@@ -2,7 +2,39 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-const source = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
+const source = [
+  "./index.ts",
+  "./commands/system.ts",
+  "./commands/bundle.ts",
+  "./commands/project.ts",
+  "./commands/storage.ts",
+  "./commands/runs.ts",
+  "./commands/approvals.ts",
+  "./commands/learning.ts",
+  "./commands/local-llm.ts",
+  "./commands/server.ts",
+  "./commands/context-extra.ts",
+  "./commands/daemon.ts",
+  "./lib/builders-shared.ts",
+  "./lib/builders-learning.ts",
+      "./lib/builders-server.ts",
+      "./lib/builders-system.ts",
+      "./lib/builders-bundle.ts",
+      "./lib/builders-project.ts",
+      "./lib/builders-storage.ts",
+      "./lib/builders-runs.ts",
+      "./lib/builders-approvals.ts",
+      "./lib/builders-local-llm.ts",
+      "./lib/builders-context.ts",
+      "./lib/context.ts",
+      "./lib/cli-types.ts",
+].map((p) => {
+  try {
+    return readFileSync(new URL(p, import.meta.url), "utf8");
+  } catch {
+    return "";
+  }
+}).join("\n");
 const stylesSource = readFileSync(new URL("./dashboard/styles.ts", import.meta.url), "utf8");
 const questionChatSource = readFileSync(new URL("./dashboard/question-chat.ts", import.meta.url), "utf8");
 
@@ -21,7 +53,7 @@ test("home human intervention renders as a compact keyboard-scrollable list", ()
 });
 
 test("home exposes a bounded governed question chat", () => {
-  assert.match(source, /renderDashboardQuestionPanel\(health\.projects, process\.env\.AGENTFLOW_DASHBOARD_PROJECT \?\? rootDir\)/u);
+  assert.match(source, /renderDashboardQuestionPanel\(health\.projects, process\.env\.AGENTFLOW_DASHBOARD_PROJECT \?\? ctx\.rootDir\)/u);
   assert.match(questionChatSource, /id="dashboard-question-form"/u);
   assert.match(questionChatSource, /id="dashboard-question-thread"[^>]+role="log"/u);
   assert.match(questionChatSource, /fetch\("\/api\/server-conversation"/u);
