@@ -14,12 +14,12 @@
   },
   "counts": {
     "agents": 26,
-    "workflows": 22,
-    "files": 48
+    "workflows": 23,
+    "files": 49
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "b7ab25c7e5b836f300c7004f10e9c47520278571710948adeafbf00036ec7b45"
+    "value": "f8aafe36b3320a3c7e9545149b2ed5f9098971848aff0c24061d1e7fca4f0f4e"
   },
   "agents": [
     {
@@ -178,6 +178,11 @@
       "id": "ci-triage",
       "path": "workflows/ci-triage.yaml",
       "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+    },
+    {
+      "id": "code-review",
+      "path": "workflows/code-review.yaml",
+      "checksum": "8efcf02baf834d8fd076a9ebb2a4ab14940e571f65451b52bb764479986e6fb3"
     },
     {
       "id": "data-migration",
@@ -389,6 +394,10 @@
     {
       "path": "workflows/ci-triage.yaml",
       "checksum": "fafea20b353e988ac9ff36050a02069c023570de70079442c24d4a21313a3b9b"
+    },
+    {
+      "path": "workflows/code-review.yaml",
+      "checksum": "8efcf02baf834d8fd076a9ebb2a4ab14940e571f65451b52bb764479986e6fb3"
     },
     {
       "path": "workflows/data-migration.yaml",

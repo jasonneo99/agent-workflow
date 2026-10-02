@@ -1,0 +1,32 @@
+id: code-review
+name: Code Review
+description: Deep single-file code review for optimizations, risks, and smells. Findings are exported for dashboard proposals; nothing is ever auto-applied.
+lead: technical-architect
+default_autonomy: 2
+triggers:
+  manual: true
+  events: []
+stages:
+  - id: review
+    agent: technical-architect
+    goal: >
+      Review the source file provided in the task description for: performance
+      issues with estimated impact, architectural smells, error-handling gaps,
+      dead code, duplication the AST scanner would miss, and
+      concurrency/correctness risks. For each finding, add exactly one entry to
+      the findings list, formatted as:
+      [category] path/to/file.py:LINE — Title — confidence:high|medium|low
+      Issue: one sentence describing the problem.
+      Fix: one sentence describing the fix.
+      Impact: estimated impact in one sentence.
+      Categories: performance, architecture, error_handling, dead_code,
+      duplication, concurrency_correctness. Report only medium or high
+      confidence findings; drop low-confidence ones. If the file content is
+      truncated, note which sections were not reviewed. Do not request commands
+      or file writes; this is a read-only review.
+    pattern:
+      type: verifier
+      promotion_gate: none
+    context:
+      max_tokens: 8000
+    output: code_review_findings
