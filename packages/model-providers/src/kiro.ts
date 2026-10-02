@@ -1,6 +1,7 @@
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { logEgress } from "./egress-log.js";
 import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
@@ -54,7 +55,10 @@ export class KiroProvider implements ModelProvider {
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
     const modelTier = input.modelTier ?? "standard";
-    const text = await this.runKiroPrompt({
+    const egressStart = Date.now();
+    let text: string;
+    try {
+      text = await this.runKiroPrompt({
       prompt: [
         "You are executing one stage in a durable Agent Workflow run.",
         "Return one valid JSON object only.",
@@ -64,7 +68,12 @@ export class KiroProvider implements ModelProvider {
         buildStagePrompt(input)
       ].join("\n\n"),
       tier: modelTier
-    });
+      });
+    } catch (error) {
+      logEgress({ providerId: this.id, host: "localhost", endpoint: `subprocess:${this.cliBin ?? "kiro-cli"}`, method: "SPAWN", durationMs: Date.now() - egressStart, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    logEgress({ providerId: this.id, host: "localhost", endpoint: `subprocess:${this.cliBin ?? "kiro-cli"}`, method: "SPAWN", durationMs: Date.now() - egressStart });
     const parsed = normalizeStageArtifact(extractJsonObject(stripAnsi(text)) as StageJsonArtifact);
 
     return buildStageExecutionOutput(input, parsed, {

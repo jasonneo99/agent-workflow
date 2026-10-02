@@ -1,4 +1,5 @@
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { logEgress, parseEgressUrl } from "./egress-log.js";
 import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
@@ -161,22 +162,36 @@ export function buildAnthropicMessageRequest(model: string, system: string, prom
 async function anthropicRequest<T>(path: string, body?: unknown): Promise<T> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error("ANTHROPIC_API_KEY is not configured");
-  const response = await fetch(`${process.env.ANTHROPIC_BASE_URL?.replace(/\/$/u, "") || ANTHROPIC_API_URL}${path}`, {
-    method: body === undefined ? "GET" : "POST",
-    headers: {
-      "anthropic-version": ANTHROPIC_VERSION,
-      "content-type": "application/json",
-      "x-api-key": apiKey
-    },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
+  const url = `${process.env.ANTHROPIC_BASE_URL?.replace(/\/$/u, "") || ANTHROPIC_API_URL}${path}`;
+  const { host, endpoint } = parseEgressUrl(url);
+  const method = body === undefined ? "GET" : "POST";
+  const egressStart = Date.now();
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method,
+      headers: {
+        "anthropic-version": ANTHROPIC_VERSION,
+        "content-type": "application/json",
+        "x-api-key": apiKey
+      },
+      body: body === undefined ? undefined : JSON.stringify(body)
+    });
+  } catch (error) {
+    logEgress({ providerId: "anthropic", host, endpoint, method, durationMs: Date.now() - egressStart, error: error instanceof Error ? error.message : String(error) });
+    throw error;
+  }
   if (!response.ok) {
     const requestId = response.headers.get("request-id");
     const payload = await response.json().catch(() => undefined) as { error?: { type?: unknown } } | undefined;
     const code = typeof payload?.error?.type === "string" ? payload.error.type : undefined;
+    logEgress({ providerId: "anthropic", host, endpoint, method, durationMs: Date.now() - egressStart, statusCode: response.status, error: `anthropic error: ${code ?? "unknown"}` });
     throw new AnthropicApiError(response.status, code, requestId);
   }
-  return await response.json() as T;
+  const payload = await response.json() as T;
+  const usage = (payload as unknown as { usage?: { input_tokens?: number; output_tokens?: number } }).usage;
+  logEgress({ providerId: "anthropic", host, endpoint, method, durationMs: Date.now() - egressStart, statusCode: response.status, promptTokens: usage?.input_tokens, completionTokens: usage?.output_tokens });
+  return payload;
 }
 
 function messageText(response: AnthropicMessageResponse): string {

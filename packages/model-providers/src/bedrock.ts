@@ -1,6 +1,7 @@
 import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedrock";
 import { BedrockRuntimeClient, ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
+import { logEgress } from "./egress-log.js";
 import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
@@ -136,7 +137,10 @@ export class BedrockProvider implements ModelProvider {
   }
 
   private async converseJson(input: { system: string; prompt: string; temperature: number; modelOverride?: string }): Promise<string> {
-    const response = await this.runtimeClient.send(new ConverseCommand({
+    const egressStart = Date.now();
+    let response;
+    try {
+      response = await this.runtimeClient.send(new ConverseCommand({
       modelId: input.modelOverride ?? this.model,
       system: [{ text: input.system }],
       messages: [
@@ -148,7 +152,13 @@ export class BedrockProvider implements ModelProvider {
       inferenceConfig: {
         temperature: input.temperature
       }
-    }));
+      }));
+    } catch (error) {
+      logEgress({ providerId: this.id, host: "bedrock-runtime", endpoint: "/converse", method: "POST", durationMs: Date.now() - egressStart, error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
+    const usage = response.usage;
+    logEgress({ providerId: this.id, host: "bedrock-runtime", endpoint: "/converse", method: "POST", durationMs: Date.now() - egressStart, promptTokens: usage?.inputTokens, completionTokens: usage?.outputTokens });
 
     const text = response.output?.message?.content
       ?.map((block) => "text" in block ? block.text ?? "" : "")

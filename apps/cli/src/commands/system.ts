@@ -5,7 +5,7 @@ import { execFileText, loadAgentsForProject, objectValue } from "../lib/builders
 import { loadAutoRoutePreviews, loadGovernanceReport, loadRoleGovernanceReport, updateEnvValue, writeRoleAuditSnapshot } from "../lib/builders-system.js";
 import { loadAgents, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { buildGovernanceReport, formatGovernanceReport } from "../../../../packages/governance/src/index.js";
-import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
+import { providerFromEnv, readEgressLog, summarizeEgress } from "../../../../packages/model-providers/src/index.js";
 import { buildSchemaSummary, buildVsCodeSettings } from "../../../../packages/schema-registry/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { parsePositiveInteger } from "../numeric-options.js";
@@ -354,6 +354,46 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         if (!options.json) return;
       }
       console.log(options.json ? JSON.stringify(report, null, 2) : formatRoleGovernanceReport(report));
+    });
+
+  program
+    .command("egress-log")
+    .description("Show recent outbound network calls made by model providers")
+    .option("--limit <n>", "max entries to show", "50")
+    .option("--summary", "summarize by provider and host instead of listing entries")
+    .option("--json", "output as JSON")
+    .action(async (options: { limit?: string; summary?: boolean; json?: boolean }) => {
+      const limit = parsePositiveInteger(options.limit ?? "50", 50);
+      if (options.summary) {
+        const summary = summarizeEgress();
+        if (options.json) {
+          console.log(JSON.stringify(summary, null, 2));
+          return;
+        }
+        if (summary.length === 0) {
+          console.log("No egress recorded in this session.");
+          return;
+        }
+        console.log("Egress summary (this session):");
+        for (const s of summary) {
+          console.log(`- ${s.providerId} -> ${s.host}: ${s.calls} calls, ${s.promptTokens + s.completionTokens} tokens, ${s.errors} errors`);
+        }
+        return;
+      }
+      const entries = readEgressLog(limit);
+      if (options.json) {
+        console.log(JSON.stringify(entries, null, 2));
+        return;
+      }
+      if (entries.length === 0) {
+        console.log("No egress recorded in this session.");
+        return;
+      }
+      for (const e of entries) {
+        const tokens = e.promptTokens !== undefined ? ` ${e.promptTokens}+${e.completionTokens ?? 0}tok` : "";
+        const err = e.error ? ` ERROR: ${e.error.slice(0, 80)}` : "";
+        console.log(`${e.timestamp} ${e.providerId} ${e.method} ${e.host}${e.endpoint}${tokens} ${e.durationMs}ms${err}`);
+      }
     });
 
 }

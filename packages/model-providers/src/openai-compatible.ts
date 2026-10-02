@@ -12,6 +12,7 @@ import {
 } from "./prompts.js";
 import { selectModelFromCatalog } from "./catalog.js";
 import type { ModelTier } from "./types.js";
+import { logEgress, parseEgressUrl } from "./egress-log.js";
 
 const AUTO_MODEL = "auto";
 const compatibleCatalogCache = new Map<string, Promise<string[]>>();
@@ -80,7 +81,11 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async executeStage(input: StageExecutionInput): Promise<StageExecutionOutput> {
     const model = input.modelOverride ?? (await this.resolveModelForTier(input.modelTier)).model;
-    const response = await this.client.chat.completions.create({
+    const egressStart = Date.now();
+    const { host, endpoint } = parseEgressUrl(this.baseURL);
+    let response;
+    try {
+      response = await this.client.chat.completions.create({
       model,
       messages: [
         {
@@ -98,11 +103,31 @@ export class OpenAICompatibleProvider implements ModelProvider {
       ],
       response_format: { type: "json_object" },
       temperature: 0.2
+      });
+    } catch (error) {
+      logEgress({
+        providerId: this.id,
+        host,
+        endpoint: endpoint + "/chat/completions",
+        method: "POST",
+        durationMs: Date.now() - egressStart,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    const usage = response.usage as typeof response.usage & { prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } };
+    logEgress({
+      providerId: this.id,
+      host,
+      endpoint: endpoint + "/chat/completions",
+      method: "POST",
+      promptTokens: usage?.prompt_tokens,
+      completionTokens: usage?.completion_tokens,
+      durationMs: Date.now() - egressStart,
     });
 
     const parsed = normalizeStageArtifact(extractJsonObject(response.choices[0]?.message.content ?? "") as StageJsonArtifact);
 
-    const usage = response.usage as typeof response.usage & { prompt_tokens_details?: { cached_tokens?: number }; completion_tokens_details?: { reasoning_tokens?: number } };
     return { ...buildStageExecutionOutput(input, parsed, {
         provider: this.id,
         model,
