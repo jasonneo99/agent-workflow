@@ -1,4 +1,103 @@
-import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
+import type { AcceptanceGate, AcceptanceReceiptReference, StructuredAcceptanceContract, StageExecutionInput, StageExecutionOutput } from "./types.js";
+
+export interface ResolvedAcceptanceReceipt extends AcceptanceReceiptReference {
+  projectId: string;
+  passed: boolean;
+}
+
+/** The resolver must load governed artifacts; provider claims are never resolved evidence. */
+export async function structuredAcceptanceReason(
+  contract: StructuredAcceptanceContract,
+  gate: AcceptanceGate,
+  resolve: (reference: AcceptanceReceiptReference) => Promise<ResolvedAcceptanceReceipt | null>
+): Promise<string | null> {
+  return (await structuredAcceptanceDecision(contract, gate, resolve)).reason;
+}
+
+export async function structuredAcceptanceDecision(
+  contract: StructuredAcceptanceContract,
+  gate: AcceptanceGate,
+  resolve: (reference: AcceptanceReceiptReference) => Promise<ResolvedAcceptanceReceipt | null>
+): Promise<{ reason: string | null; findings: Array<{ deliverableId: string; severity: "warn" | "info"; message: string }> }> {
+  const findings: Array<{ deliverableId: string; severity: "warn" | "info"; message: string }> = [];
+  try {
+    const ids = new Set<string>();
+    if (!contract.deliverables.length || !contract.deliverables.some((item) => item.requiredGates.includes(gate))) {
+      return { reason: "Structured acceptance lacks required gate coverage.", findings };
+    }
+    for (const item of contract.deliverables) {
+      if (ids.has(item.id) || !["block", "warn", "info"].includes(item.severity ?? "block")
+        || ((item.severity === "warn" || item.severity === "info") && item.advisory !== true)) {
+        return { reason: "Acceptance severity must be valid, unique and explicitly advisory for nonblocking criteria.", findings };
+      }
+      ids.add(item.id);
+      if (!item.requiredGates.includes(gate)) continue;
+      const reason = await blockingStructuredAcceptanceReason({ ...contract, deliverables: [item] }, gate, resolve);
+      if (!reason) continue;
+      // Malformed or mismatched provenance is always blocking, even for optional checks.
+      const advisoryGap = new Set([
+        `Deliverable ${item.id} is not delivered.`, `Deliverable ${item.id} is not verified.`,
+        `Deliverable ${item.id} has unresolved acceptance gaps.`, `Deliverable ${item.id} lacks ${gate} evidence.`
+      ]).has(reason);
+      if (item.advisory === true && (item.severity === "warn" || item.severity === "info") && advisoryGap) {
+        if (item.receipts[gate]?.length) {
+          const integrity = await blockingStructuredAcceptanceReason({ ...contract,
+            deliverables: [{ ...item, status: "verified", gaps: [] }] }, gate, resolve);
+          if (integrity) return { reason: integrity, findings };
+        }
+        findings.push({ deliverableId: item.id, severity: item.severity, message: reason });
+      } else return { reason, findings };
+    }
+    return { reason: null, findings };
+  } catch { return { reason: "Structured acceptance evidence could not be validated.", findings }; }
+}
+
+async function blockingStructuredAcceptanceReason(
+  contract: StructuredAcceptanceContract,
+  gate: AcceptanceGate,
+  resolve: (reference: AcceptanceReceiptReference) => Promise<ResolvedAcceptanceReceipt | null>
+): Promise<string | null> {
+  try {
+    const validGates: readonly AcceptanceGate[] = ["implementation", "verification", "packaging", "supervision"];
+    if (!validGates.includes(gate)) return "Structured acceptance gate is invalid.";
+    if (contract.version !== 1 || !contract.contractId || !contract.projectId || !contract.originRunId || !contract.taskHash || !contract.subjectHash || !contract.deliverables.length) {
+      return "Structured acceptance contract is missing required identity or deliverables.";
+    }
+    const ids = new Set<string>();
+    if (!contract.deliverables.some((deliverable) => deliverable.requiredGates.includes(gate))) return `Structured acceptance contract lacks ${gate} coverage.`;
+    for (const deliverable of contract.deliverables) {
+      if (!deliverable.id || ids.has(deliverable.id) || !deliverable.description || !deliverable.requiredGates.length) {
+        return "Structured acceptance contract contains invalid or duplicate deliverables.";
+      }
+      ids.add(deliverable.id);
+      if (!Array.isArray(deliverable.requiredGates) || deliverable.requiredGates.some((required) => !validGates.includes(required))
+        || new Set(deliverable.requiredGates).size !== deliverable.requiredGates.length || !Array.isArray(deliverable.gaps)) {
+        return `Deliverable ${deliverable.id} has invalid acceptance fields.`;
+      }
+      if (!deliverable.requiredGates.includes(gate)) continue;
+      if (deliverable.status !== "delivered" && deliverable.status !== "verified") return `Deliverable ${deliverable.id} is not delivered.`;
+      if (gate !== "implementation" && deliverable.status !== "verified") return `Deliverable ${deliverable.id} is not verified.`;
+      if (deliverable.gaps.length > 0) return `Deliverable ${deliverable.id} has unresolved acceptance gaps.`;
+      const references = deliverable.receipts[gate];
+      if (!Array.isArray(references) || !references.length) return `Deliverable ${deliverable.id} lacks ${gate} evidence.`;
+      for (const reference of references) {
+        const evidence = await resolve(reference);
+        if (!reference.artifactUri.startsWith("db://") || !reference.taskId || !reference.stageId || !reference.contentHash || !Number.isFinite(Date.parse(reference.observedAt))
+          || reference.runId !== contract.originRunId || reference.subjectHash !== contract.subjectHash
+          || !evidence || evidence.passed !== true || evidence.projectId !== contract.projectId
+          || evidence.artifactUri !== reference.artifactUri || evidence.runId !== reference.runId || evidence.taskId !== reference.taskId
+          || evidence.stageId !== reference.stageId || evidence.kind !== reference.kind || evidence.contentHash !== reference.contentHash
+          || evidence.observedAt !== reference.observedAt || evidence.subjectHash !== reference.subjectHash) {
+          return `Deliverable ${deliverable.id} has unresolved, failed or mismatched ${gate} evidence.`;
+        }
+      }
+    }
+    return null;
+  } catch {
+    return "Structured acceptance evidence could not be validated.";
+  }
+}
+
 
 export interface StageQualityScore {
   score: number;
@@ -69,9 +168,36 @@ function isVerificationStage(stageId: string, agentId: string): boolean {
 }
 
 function verificationArtifactIsComplete(summary: string, artifact: Record<string, unknown>): boolean {
-  const text = `${summary} ${JSON.stringify(artifact)}`;
-  const explicitlyIncomplete = /(?:remains?|is|was|were) unverified|no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|verification .* (?:absent|unsupported|pending)|(?:product|acceptance|delivery) remains? incomplete/iu.test(text);
-  return !explicitlyIncomplete && artifactHasSuccessfulVerificationCommand(artifact);
+  // Evaluate authored claims independently, not serialized metadata, command
+  // output or historical task instructions. Never join separate sentences.
+  const claims = [summary, artifact.summary, ...(Array.isArray(artifact.findings) ? artifact.findings : [])]
+    .filter((value): value is string => typeof value === "string");
+  const explicitlyIncomplete = claims.some((text) => /(?:remains?|is|was|were) unverified|no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|verification\b[^.!?\n]{0,160}\b(?:absent|unsupported|pending)\b|(?:product|acceptance|delivery) remains? incomplete/iu.test(text));
+  return !explicitlyIncomplete && artifactHasSuccessfulVerificationCommand({
+    actionResults: [
+      ...(Array.isArray(artifact.verificationEvidence) ? artifact.verificationEvidence : []),
+      ...(Array.isArray(artifact.actionResults) ? artifact.actionResults : [])
+    ]
+  });
+}
+
+// Written by the executor, never taken from provider output. Keep reviewed
+// command receipts separate from actions actually executed by this stage.
+export function retainedVerificationEvidence(input: StageExecutionInput, actionResults: unknown[]): unknown[] {
+  if (!(input.stagePattern?.type === "verifier" || isVerificationStage(input.stageId, input.agentId))) return [];
+  const results = [
+    ...(input.priorStageArtifacts ?? []).flatMap(({ artifact }) => Array.isArray(artifact.actionResults) ? artifact.actionResults : []),
+    ...actionResults
+  ];
+  const latest = new Map<string, Record<string, unknown>>();
+  for (const item of results) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const result = item as Record<string, unknown>;
+    if (typeof result.commandLine === "string") latest.set(result.commandLine, result);
+  }
+  return [...latest.values()].filter((result) => typeof result.artifactUri === "string"
+    && result.artifactUri.startsWith("db://")
+    && artifactHasSuccessfulVerificationCommand({ actionResults: [result] }));
 }
 
 function artifactProductWritePaths(artifact: Record<string, unknown>): string[] {
@@ -244,11 +370,17 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   // completion claim while executable verification requests are still present;
   // the executor will run them and ask the stage to evaluate their receipts.
   if (deliveryVerifier && (output.requestedCommands?.length ?? 0) > 0) return null;
-  const text = `${output.summary} ${JSON.stringify(output.artifact)}`.toLowerCase();
-  if (deliveryVerifier && /(?:remains?|is|was|were) unverified|no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|verification .* (?:absent|unsupported|pending)|promotion .* not approved/iu.test(text)) {
+  // Judge individual stage claims, not serialized execution history. Flattening
+  // the whole artifact lets "verification passed" match an unrelated later
+  // "supervisor receipt validation remains pending" (or old command output).
+  const verificationClaims = [output.summary, output.artifact.summary,
+    ...(Array.isArray(output.artifact.findings) ? output.artifact.findings : [])]
+    .filter((claim): claim is string => typeof claim === "string");
+  const missingVerification = /(?:remains?|is|was|were) unverified|no (?:tests?|runtime(?: tests?)?|hardware(?: tests?)?) (?:were )?(?:run|executed)|verification\b[^.!?;\n]*\b(?:absent|unsupported|pending)|promotion\b[^.!?;\n]*\bnot approved/iu;
+  if (deliveryVerifier && verificationClaims.some((claim) => missingVerification.test(claim))) {
     return "Delivery verification stage claimed completion while explicitly reporting that required verification was not performed.";
   }
-  const explicitlyIncomplete = /implementation (?:\S+ )*?(?:is|remains?) (?:incomplete|blocked|absent)|implementation .* not (?:performed|implemented)|no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)|not implemented|feature delivery .* unsupported|product code remains .* pending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(text);
+  const explicitlyIncomplete = verificationClaims.some((claim) => /implementation\b[^.!?;\n]{0,160}\b(?:is|remains?) (?:incomplete|blocked|absent)|implementation\b[^.!?;\n]{0,160}\bnot (?:performed|implemented)|no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)|not implemented|feature delivery\b[^.!?;\n]{0,160}\bunsupported|product code remains\b[^.!?;\n]{0,160}\bpending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(claim));
   return explicitlyIncomplete ? "Delivery stage claimed completion while explicitly reporting that the requested implementation or finished product was not delivered." : null;
 }
 
@@ -256,7 +388,9 @@ export function scoreStageOutput(input: StageExecutionInput, output: StageExecut
   const threshold = Number(process.env.AGENTFLOW_QUALITY_THRESHOLD ?? 0.62);
   const reasons: string[] = [];
   let score = 0;
-  const completionViolation = unfulfilledCompletionReason(input, output);
+  // Structured acceptance is resolved by the runtime, independently of prose.
+  const completionViolation = input.acceptanceContract ? null
+    : unfulfilledCompletionReason(input, output);
   if (completionViolation) reasons.push(completionViolation);
   const blockedOutcome = output.outcome === "blocked";
   if (blockedOutcome) reasons.push("stage outcome is blocked and does not satisfy the expected result");

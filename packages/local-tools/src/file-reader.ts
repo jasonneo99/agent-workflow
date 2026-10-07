@@ -10,6 +10,7 @@ export interface FileReadResult {
   bytesRead: number;
   truncated: boolean;
   sha256: string;
+  lineRange?: { start: number; end: number };
 }
 
 export async function executeAllowedFileRead(input: {
@@ -17,7 +18,12 @@ export async function executeAllowedFileRead(input: {
   cwd: string;
   project: ProjectConfig;
 }): Promise<FileReadResult> {
-  const relativePath = normalizeRelativePath(input.relativePath);
+  const range = /#L([1-9]\d*)-L([1-9]\d*)$/u.exec(input.relativePath);
+  const lineRange = range ? { start: Number(range[1]), end: Number(range[2]) } : undefined;
+  if (lineRange && (!Number.isSafeInteger(lineRange.end) || lineRange.end < lineRange.start || lineRange.end - lineRange.start >= 400)) {
+    throw new Error("File read rejected: line range must contain 1 to 400 lines.");
+  }
+  const relativePath = normalizeRelativePath(range ? input.relativePath.slice(0, range.index) : input.relativePath);
   assertFileReadAllowed(relativePath, input.project);
 
   const absolutePath = path.resolve(input.cwd, relativePath);
@@ -37,11 +43,10 @@ export async function executeAllowedFileRead(input: {
   }
 
   const maxBytes = input.project.actions.max_read_bytes;
-  const bytesToRead = Math.min(fileStat.size, maxBytes);
-  const truncated = fileStat.size > maxBytes;
-
   const handle = await readFile(absolutePath);
-  const slice = handle.subarray(0, bytesToRead);
+  const selected = lineRange ? Buffer.from(handle.toString("utf8").split("\n").slice(lineRange.start - 1, lineRange.end).join("\n")) : handle;
+  const truncated = selected.byteLength > maxBytes;
+  const slice = selected.subarray(0, maxBytes);
   if (slice.includes(0)) {
     throw new Error(`File read failed: ${relativePath} appears to be a binary file.`);
   }
@@ -53,7 +58,8 @@ export async function executeAllowedFileRead(input: {
     content,
     bytesRead: slice.byteLength,
     truncated,
-    sha256: createHash("sha256").update(handle).digest("hex")
+    sha256: createHash("sha256").update(handle).digest("hex"),
+    lineRange
   };
 }
 

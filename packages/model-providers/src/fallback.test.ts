@@ -8,6 +8,16 @@ const policy = (chains: ProviderFallbackPolicy["chains"], overrides: Partial<Pro
 const success = (id: string, model = "model-a"): ModelProvider => ({ id, async executeStage() { return { summary: "ok", artifact: { provider: id, model } }; } });
 const failure = (id: string, error: Error, counter?: { calls: number }): ModelProvider => ({ id, async executeStage() { if (counter) counter.calls += 1; throw error; } });
 
+test("separate calls in the same stage retain distinct invocation identities and direct latency", async () => {
+  resetProviderFallbackCircuits();
+  const input = { providerId: "mock", stageInput, policy: policy({}), providerFactory: () => success("mock") };
+  const first = await executeWithProviderFallback(input);
+  const second = await executeWithProviderFallback(input);
+  assert.notEqual(first.attempts[0].attemptId, second.attempts[0].attemptId);
+  assert.equal(typeof first.attempts[0].latencyMs, "number");
+  assert.ok(first.attempts[0].latencyMs! >= 0);
+});
+
 test("provider failures are classified without preserving provider response bodies", () => {
   assert.equal(classifyProviderFailure({ status: 401, message: "secret response" }).kind, "authentication");
   assert.equal(classifyProviderFailure({ status: 429, code: "insufficient_quota" }).kind, "account_quota");

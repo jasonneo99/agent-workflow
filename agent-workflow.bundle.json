@@ -19,7 +19,7 @@
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "f8aafe36b3320a3c7e9545149b2ed5f9098971848aff0c24061d1e7fca4f0f4e"
+    "value": "d790edefc63aa8b8cc6b524699ae39e9c4b34d77d3dd1817bad327096889f425"
   },
   "agents": [
     {
@@ -70,7 +70,7 @@
     {
       "id": "workflow-orchestrator",
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "f4bbe402bfc9dea77f82fb74eba348d4eb24a31c2377e1bbbd77dee00074ee4d"
+      "checksum": "f44ffacc9e5c8e4ce376d3dc88d927ab34a7b4aedf0a07ef4d2f26a63907fa2b"
     },
     {
       "id": "backend-engineer",
@@ -80,7 +80,7 @@
     {
       "id": "ci-debugger",
       "path": "agents/development/ci-debugger.yaml",
-      "checksum": "714e454cc4bb29880f17bbd803f2f0457fc4ac3658e9803383b65e9247479e29"
+      "checksum": "77aa4bcbd567e52ba73fcef26024f524da0050c3361bce2eafdddef57f7621b7"
     },
     {
       "id": "database-engineer",
@@ -192,7 +192,7 @@
     {
       "id": "debug-failure",
       "path": "workflows/debug-failure.yaml",
-      "checksum": "6ea8baf5a1157d1623896d9224cb111a7b303d333fcd6f3449056da51c620abc"
+      "checksum": "e42f9f30f14d9c057a0e2d34d6193364b8d09871c4fc69cd7713afb4a22a397e"
     },
     {
       "id": "dependency-upgrade",
@@ -309,7 +309,7 @@
     },
     {
       "path": "agents/core/workflow-orchestrator.yaml",
-      "checksum": "f4bbe402bfc9dea77f82fb74eba348d4eb24a31c2377e1bbbd77dee00074ee4d"
+      "checksum": "f44ffacc9e5c8e4ce376d3dc88d927ab34a7b4aedf0a07ef4d2f26a63907fa2b"
     },
     {
       "path": "agents/development/backend-engineer.yaml",
@@ -317,7 +317,7 @@
     },
     {
       "path": "agents/development/ci-debugger.yaml",
-      "checksum": "714e454cc4bb29880f17bbd803f2f0457fc4ac3658e9803383b65e9247479e29"
+      "checksum": "77aa4bcbd567e52ba73fcef26024f524da0050c3361bce2eafdddef57f7621b7"
     },
     {
       "path": "agents/development/database-engineer.yaml",
@@ -405,7 +405,7 @@
     },
     {
       "path": "workflows/debug-failure.yaml",
-      "checksum": "6ea8baf5a1157d1623896d9224cb111a7b303d333fcd6f3449056da51c620abc"
+      "checksum": "e42f9f30f14d9c057a0e2d34d6193364b8d09871c4fc69cd7713afb4a22a397e"
     },
     {
       "path": "workflows/dependency-upgrade.yaml",

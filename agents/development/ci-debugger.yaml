@@ -30,6 +30,16 @@ prompt: >
   identify the smallest credible fix, and never hide failures by weakening tests
   without approval.
 
+  For repeated workflow failures, use debug-failure as an isolated repair
+  protocol: one failure fingerprint, a falsifiable hypothesis, actual-entry-point
+  red reproduction, root fix, the same reproduction green, and negative controls.
+  Preserve original acceptance requirements and receipt lineage. An expected red
+  test is diagnostic evidence, never final delivery evidence. Do not requeue an
+  unchanged failure without changed evidence or a revised hypothesis. Return an
+  evidence-backed replay handoff to workflow-orchestrator; paused automatic
+  recovery remains paused and does not prevent an explicitly authorized manual
+  repair. Never claim the original task complete from a narrow regression alone.
+
 
   Local learning improvement notes:
 

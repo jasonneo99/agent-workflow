@@ -115,7 +115,8 @@ test("learning daemon closes every terminal repair with a reusable local lesson"
   assert.match(cliSource, /learnFromWorkflowRepairs\(target\.projectDir\)[\s\S]+autoRepairOneWorkflowRun/u);
   assert.match(cliSource, /actionType: "workflow_repair_learning"/u);
   assert.match(cliSource, /sourceUri: `agentflow:\/\/repair-learning\/\$\{run\.id\}`/u);
-  assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks \}\)/u);
+  assert.match(cliSource, /workflowRepairLesson\(\{ strategy, repairStatus: run\.status, completedTasks, failedTasks, acceptanceVerified \}\)/u);
+  assert.match(cliSource, /const acceptance = await preflightWorkflowAcceptance\(run\.id, repairOutputs\.at\(-1\)\?\.content \?\? \{\}\);\s+const acceptanceVerified = acceptance\.accepted;/u);
 });
 
 test("root-repair guidance covers approval interruption, replay loops, duplicate continuations, and contract scope", () => {
@@ -155,9 +156,16 @@ test("completed delivery without executed verification is automatically repairab
 test("delivery with governed writes and executed verification needs no repair", () => {
   const reason = workflowDeliveryRepairReason(run, [
     { stageId: "implement", agentId: "implementation-agent", artifact: { requestedFileWrites: [{ path: "src/fan.ts" }] } },
-    { stageId: "verify", agentId: "auto-test-runner", artifact: { requestedCommands: ["npm test"], actionResults: [{ status: "completed" }] } }
+    { stageId: "verify", agentId: "auto-test-runner", artifact: { actionResults: [{ commandLine: "npm test", exitCode: 0, timedOut: false }] } }
   ]);
   assert.equal(reason, null);
+});
+
+test("supervisor accepts built existing code and retained verification but rejects claims alone", () => {
+  const implementation = { stageId: "implement", artifact: { actionResults: [{ commandLine: "npm run build", exitCode: 0 }] } };
+  const verification = { stageId: "verify", summary: "Verification passes. Promotion pending.", artifact: { verificationEvidence: [{ commandLine: "npm test", exitCode: 0, artifactUri: "db://command/test" }] } };
+  assert.equal(workflowDeliveryRepairReason(run, [implementation, verification]), null);
+  assert.match(workflowDeliveryRepairReason(run, [implementation, { stageId: "verify", summary: "Tests passed", requestedCommands: ["npm test"] }]) ?? "", /without executed verification/);
 });
 
 test("blocked authority and policy mismatch is routed to repair", () => {

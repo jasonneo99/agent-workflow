@@ -1,4 +1,9 @@
 import path from "node:path";
+import { reconstructRunWriteFootprint } from "./continuation-ownership.js";
+import { acceptanceGate } from "../../storage/src/acceptance.js";
+import { getWorkflowAcceptanceDecision } from "../../storage/src/postgres.js";
+import { commandEvidencePacket } from "../../storage/src/command-evidence.js";
+import { sourceSubjectHash } from "./source-subject.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
 import { continuationBackoff, continuationResumeReceipt, pendingEvidenceReason } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
@@ -11,10 +16,11 @@ import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedF
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { commandDelta, commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
-import { scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason } from "../../model-providers/src/quality.js";
+import { retainedVerificationEvidence, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason } from "../../model-providers/src/quality.js";
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import { buildMemoryContextForStage, recordStageMemoryGraph } from "./memory-graph-wiring.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
+import { searchProjectFileIndex } from "../../storage/src/project-index.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
@@ -78,15 +84,22 @@ export function isInternalWorkflowReceiptWrite(relativePath: string): boolean {
 }
 
 export async function boundedProjectFileSearch(projectRootUri: string, query: string): Promise<string[]> {
+  return (await boundedProjectFileSearchResult(projectRootUri, query)).matches;
+}
+
+export async function boundedProjectFileSearchResult(projectRootUri: string, query: string): Promise<{ matches: string[]; truncated: boolean; inspected: number }> {
   const terms = query.toLowerCase().split(/[^a-z0-9._-]+/u).filter((term) => term.length >= 2).slice(0, 6);
-  if (!terms.length) return [];
+  if (!terms.length) return { matches: [], truncated: false, inspected: 0 };
   const matches: string[] = [];
   let inspected = 0;
+  let truncated = false;
   const walk = async (directory: string, depth: number): Promise<void> => {
-    if (depth > 8 || inspected >= 2500 || matches.length >= 40) return;
+    if (depth > 8 || inspected >= 2500 || matches.length >= 40) { truncated = true; return; }
     const entries = await fs.readdir(directory, { withFileTypes: true }).catch(() => []);
+    // Runtime receipts must not consume the source-discovery budget before source.
+    entries.sort((a, b) => Number(a.name === ".agent-workflow") - Number(b.name === ".agent-workflow") || a.name.localeCompare(b.name));
     for (const entry of entries) {
-      if (inspected >= 2500 || matches.length >= 40) break;
+      if (inspected >= 2500 || matches.length >= 40) { truncated = true; break; }
       if (entry.name === ".git" || entry.name === "node_modules" || entry.name === "DerivedData" || entry.name === "build" || entry.name === "dist" || entry.name === "coverage") continue;
       if (entry.name.startsWith(".") && entry.name !== ".agent-workflow") continue;
       const absolute = path.join(directory, entry.name);
@@ -103,7 +116,7 @@ export async function boundedProjectFileSearch(projectRootUri: string, query: st
     }
   };
   await walk(projectRootUri, 0);
-  return matches.sort((left, right) => left.length - right.length || left.localeCompare(right));
+  return { matches: matches.sort((left, right) => left.length - right.length || left.localeCompare(right)), truncated, inspected };
 }
 
 export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): Promise<WorkerResult> {
@@ -269,7 +282,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let fallbackUsed = execution.fallbackUsed;
       const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
 
-      const initialCompletionViolation = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
+      const initialCompletionViolation = routedStageInput.acceptanceContract ? null : unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
       if (initialCompletionViolation) {
         await assertStageGuard(false);
         const contractRetry = await executeWithProviderFallback({
@@ -386,8 +399,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         readRounds += 1;
         for (const query of pendingSearches) {
           await assertLeaseOwned();
-          const matches = await boundedProjectFileSearch(localProjectRootUri, query);
-          const content = matches.length ? matches.join("\n") : "No matching project-relative paths found.";
+          const indexed = await searchProjectFileIndex(localProjectRootUri, query).catch(() => null);
+          const fallback = await boundedProjectFileSearchResult(localProjectRootUri, query);
+          const combined = [...new Set([...(indexed ?? []).map((hit) => hit.path), ...fallback.matches])];
+          const matches = combined.slice(0, 40);
+          const truncated = fallback.truncated || combined.length > 40;
+          const inspected = fallback.inspected;
+          const content = (matches.length ? matches.join("\n") : "No matches in the inspected project paths.")
+            + `\nIndex: ${indexed === null ? "unavailable; filesystem fallback used" : "queried; content freshness unverified"}. Read exact files to verify current content; index scope may exclude files.`
+            + (truncated ? "\nSearch budget exhausted: results are incomplete; absence is not established. Request a known exact path." : "");
           const artifactUri = await recordRunAction({
             runId: task.runId,
             taskId: task.taskId,
@@ -396,10 +416,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             target: query,
             summary: `Found ${matches.length} bounded project path match${matches.length === 1 ? "" : "es"} for \`${query}\`.`,
             artifactKind: "file_search",
-            artifactContent: { query, matches, bounded: true, maxMatches: 40, requestedByTaskId: task.taskId, requestedByStageId: task.stageId },
+            artifactContent: { query, matches, indexHits: indexed, freshness: "unverified", bounded: true, truncated, inspected, maxMatches: 40, requestedByTaskId: task.taskId, requestedByStageId: task.stageId },
             idempotencyKey: actionIdempotencyKey({ taskId: task.taskId, stageId: task.stageId, agentId: task.agentId, actionType: "file_search", target: query, payload: query, normalizePayload: true })
           });
-          stageFileReads.push({ path: `search:${query}`, content, truncated: matches.length >= 40 });
+          stageFileReads.push({ path: `search:${query}`, content, truncated });
           actionResults.push({ type: "file_search", query, matches, artifactUri });
         }
         for (const readPath of pendingReads) {
@@ -443,6 +463,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 bytesRead: readResult.bytesRead,
                 truncated: readResult.truncated,
                 sha256: readResult.sha256,
+                lineRange: readResult.lineRange,
                 contentPreview: readResult.content.slice(0, 20000),
                 requestedByTaskId: task.taskId,
                 requestedByStageId: task.stageId
@@ -450,7 +471,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               idempotencyKey: fileReadIdempotencyKey
             });
             stageFileReads.push({
-              path: readResult.relativePath,
+              path: readPath,
               content: readResult.content,
               truncated: readResult.truncated,
               sha256: readResult.sha256
@@ -627,8 +648,27 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         const totalRequestedActions = countRequestedActions(output);
         let reactIteration = 0;
         let successfulCommandsThisRound = 0;
+        const deferredCommands = (output.requestedFileWrites?.length ?? 0) > 0
+          ? output.requestedCommands ?? [] : [];
+        const writeActionStart = actionResults.length;
+        if (deferredCommands.length) output = { ...output, requestedCommands: [] };
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
+          const sourcePaths = stageInput.acceptanceContract?.sourcePaths;
+          const sourceBefore = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths) : undefined;
+          // Only verification commands receive a new evidence identity after
+          // governed mutations. Arbitrary side effects retain their identity.
+          const verificationCommand = !/[;&|<>`$\n\r]/u.test(commandLine)
+            && /^(?:npm (?:test|run (?:test|check|typecheck|validate|build)(?:[-:\w]*))(?:\s|$)|node (?:--test |[\w./-]+\.test\.(?:cjs|mjs|js)$))/u.test(commandLine.trim());
+          const governedWrites = new Map<string, string>();
+          if (verificationCommand) for (const action of actionResults) {
+            if (!action || typeof action !== "object") continue;
+            const write = action as { type?: string; path?: string; nextHash?: string };
+            if ((write.type === "file_write" || write.type === "file_write_reused")
+              && write.path && write.nextHash) governedWrites.set(write.path, write.nextHash);
+          }
+          const writeSubject = governedWrites.size
+            ? hashText(JSON.stringify([...governedWrites].sort(([a], [b]) => a.localeCompare(b)))) : undefined;
           reactIteration += 1;
           const commandIdempotencyKey = actionIdempotencyKey({
             taskId: task.taskId,
@@ -636,7 +676,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             agentId: task.agentId,
             actionType: "local_command",
             target: commandLine,
-            payload: verifyRetryRound > 0 ? `${commandLine}\n# agentflow-verify-retry-round:${verifyRetryRound}` : commandLine,
+            payload: `${verifyRetryRound > 0 ? `${commandLine}\n# agentflow-verify-retry-round:${verifyRetryRound}` : commandLine}${sourceBefore ? `\n# acceptance-source:${sourceBefore}` : ""}${writeSubject ? `\n# governed-write-subject:${writeSubject}` : ""}`,
             normalizePayload: true
           });
           const previousCommand = await findRunActionByIdempotencyKey({
@@ -839,6 +879,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           await assertLeaseOwned();
           let commandResult: CommandExecutionResult;
           try {
+            if (sourcePaths && await sourceSubjectHash(localProjectRootUri, sourcePaths) !== sourceBefore) throw new Error("Acceptance source changed before command execution.");
             const serializationResource = commandSerializationResource(commandLine, localProjectRootUri);
             const executeCommand = () => {
               // Fix 3 pre-flight: `npm run` without a package.json in the
@@ -934,6 +975,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
             commandResult.timedOut ? "after timing out" : `in ${commandResult.durationMs}ms`
           ].join(" ");
+          // Preserve the executed command receipt even if its source was removed or changed.
+          const sourceAfter = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths).catch(() => null) : undefined;
           const artifactUri = await recordRunAction({
             runId: task.runId,
             taskId: task.taskId,
@@ -944,6 +987,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             artifactKind: "command_output",
             artifactContent: {
               ...commandResult,
+              ...(sourcePaths ? { sourcePaths, sourceBefore, sourceAfter,
+                subjectHash: sourceBefore === sourceAfter ? sourceAfter : null } : {}),
               approvalRule: commandApprovalRule ?? undefined,
               requestedByTaskId: task.taskId,
               requestedByStageId: task.stageId
@@ -951,6 +996,15 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             idempotencyKey: commandIdempotencyKey
           });
           const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
+          if (stageInput.acceptanceContract) {
+            const stored = await getArtifactByUri(artifactUri);
+            if (stored?.runId === task.runId && stored.taskId === task.taskId) {
+              routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
+                agentId: task.agentId, actionType: "command_evidence_packet",
+                summary: commandEvidencePacket([{ ...stored, stageId: task.stageId }])
+              }];
+            }
+          }
           if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
           await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
           actionResults.push({
@@ -1031,7 +1085,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             const verifyAttribution = await attributeVerifyCommandFailure({
               outputLines: truncatedOutput.split("\n"),
               cwd: localProjectRootUri,
-              footprintBefore: verifyFootprintBefore
+              footprintBefore: verifyFootprintBefore,
+              ownedFiles: await reconstructRunWriteFootprint(task.runId, localProjectRootUri)
             });
             if (verifyAttribution.kind === "environmental") {
               const envFiles = verifyAttribution.files.join(", ");
@@ -1177,6 +1232,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             actionResults.push({
               type: "file_write_reused",
               path: fileWrite.path,
+              nextHash: typeof previousWrite.content.nextHash === "string" ? previousWrite.content.nextHash : undefined,
               artifactUri: previousWrite.uri,
               reuseArtifactUri
             });
@@ -1396,7 +1452,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             });
             if (isPatch && mutationRetriesRemaining > 0 && isRecoverableFileMutationFailure(rejectionMessage)) {
               mutationRetriesRemaining -= 1;
-              await prepareRejectedPatchRetry({ path: fileWrite.path, cwd: localProjectRootUri, project, rejectionMessage, rejectionArtifactUri, runId: task.runId, stageId: task.stageId, agentId: task.agentId, taskId: task.taskId, retriesRemaining: mutationRetriesRemaining, reads: stageFileReads, deltas: stageStateDeltas });
+              await prepareRejectedPatchRetry({ path: fileWrite.path, cwd: localProjectRootUri, project, rejectionMessage, rejectedPatch: filePayload, rejectionArtifactUri, runId: task.runId, stageId: task.stageId, agentId: task.agentId, taskId: task.taskId, retriesRemaining: mutationRetriesRemaining, reads: stageFileReads, deltas: stageStateDeltas });
               await assertLeaseOwned();
               await assertStageGuard(false);
               const retryStartedAt = Date.now();
@@ -1496,9 +1552,52 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             }
           });
         }
-        const acceptanceGap = verificationCompletionReason(routedStageInput, actionResults)
-          ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] });
-        if (successfulCommandsThisRound > 0 && successfulFollowupsRemaining > 0) {
+        if (deferredCommands.length) {
+          const writesSucceeded = (output.requestedFileWrites ?? []).every((write) =>
+            actionResults.slice(writeActionStart).some((action) => {
+              if (!action || typeof action !== "object") return false;
+              const result = action as { type?: string; path?: string; artifactUri?: string };
+              return (result.type === "file_write" || result.type === "file_write_reused")
+                && result.path === write.path && Boolean(result.artifactUri);
+            }));
+          if (!writesSucceeded) {
+            output = { ...output, outcome: "blocked", blockedReason:
+              "Requested commands require successful governed file-write prerequisites." };
+            break verifyActionRounds;
+          }
+          // Re-enter dispatch without a provider turn. Commands observe finalized
+          // authorized writes, and mutations retain their existing identity.
+          output = { ...output, requestedFileWrites: [], requestedCommands: deferredCommands };
+          verifyRetryRequested = true;
+          continue verifyActionRounds;
+        }
+        const acceptanceGap = routedStageInput.acceptanceContract ? null : (verificationCompletionReason(routedStageInput, actionResults)
+          ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] }));
+        const successfulWritesThisRound = actionResults.slice(writeActionStart).filter((action) => {
+          const result = action as { type?: string; artifactUri?: string };
+          return (result.type === "file_write" || result.type === "file_write_reused") && Boolean(result.artifactUri);
+        }).length;
+        const successfulActionsThisRound = successfulCommandsThisRound + successfulWritesThisRound;
+        // A follow-up call alone is not observation: carry committed writes and
+        // replace stale preimages before either inference or checkpointing.
+        for (const action of actionResults.slice(writeActionStart)) {
+          const write = action as { type?: string; path?: string; artifactUri?: string; nextHash?: string };
+          if (!write.path || !write.artifactUri || !["file_write", "file_write_reused"].includes(write.type ?? "")) continue;
+          routedStageInput.priorReceipts.push({ agentId: task.agentId, actionType: "file_write",
+            summary: `Write committed or reused for ${write.path}. Evidence: ${write.artifactUri}. Recorded postimage: ${write.nextHash ?? "unknown"}. Do not repeat this write; inspect the refreshed current contents.` });
+          for (let index = stageFileReads.length - 1; index >= 0; index--) {
+            if (stageFileReads[index]!.path.replace(/#L\d+-L\d+$/u, "") === write.path) stageFileReads.splice(index, 1);
+          }
+          try {
+            const fresh = await executeAllowedFileRead({ relativePath: write.path, cwd: localProjectRootUri, project });
+            stageFileReads.push({ path: write.path, content: fresh.content, truncated: fresh.truncated, sha256: fresh.sha256 });
+            stageStateDeltas.push(fileReadDelta({ path: write.path, bytesRead: fresh.bytesRead, truncated: fresh.truncated,
+              sha256: fresh.sha256, provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_write", taskId: task.taskId, artifactUri: write.artifactUri } }));
+          } catch (error) {
+            stageFileReads.push({ path: write.path, content: "", truncated: false, error: `Post-write refresh unavailable: ${error instanceof Error ? error.message : String(error)}` });
+          }
+        }
+        if (successfulActionsThisRound > 0 && successfulFollowupsRemaining > 0) {
           successfulFollowupsRemaining -= 1;
           // Successful observation must not change a command's execution identity.
           successfulFollowupRound += 1;
@@ -1506,9 +1605,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             runId: task.runId,
             taskId: task.taskId,
             agentId: task.agentId,
-            actionType: "local_command_success_followup",
+            actionType: successfulCommandsThisRound > 0 ? "local_command_success_followup" : "file_write_success_followup",
             target: task.stageId,
-            summary: `Action round ${successfulFollowupRound}: returning successful command evidence to ${task.agentId} (${successfulFollowupsRemaining} ${successfulFollowupsRemaining === 1 ? "round" : "rounds"} left).`,
+            summary: `Action round ${successfulFollowupRound}: returning successful action evidence to ${task.agentId} (${successfulFollowupsRemaining} ${successfulFollowupsRemaining === 1 ? "round" : "rounds"} left).`,
             artifactKind: "command_followup",
             artifactContent: { acceptanceGap, followupRound: successfulFollowupRound, retriesRemaining: successfulFollowupsRemaining }
           });
@@ -1528,7 +1627,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           verifyRetryRequested = true;
           continue verifyActionRounds;
         }
-        if (successfulCommandsThisRound > 0) {
+        if (successfulActionsThisRound > 0) {
           unconsumedSuccessfulActionResult = "The bounded action-result follow-up budget was exhausted before the provider consumed the final successful command receipt.";
         }
       } while (verifyRetryRequested);
@@ -1554,6 +1653,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.failed += 1;
         continue;
       }
+      // Source evidence needs the same durable, finite continuation as command
+      // results. Exhausting one dispatch is not an unrecoverable task failure.
+      unconsumedSuccessfulActionResult ??= pendingEvidenceReason(output);
       if (unconsumedSuccessfulActionResult) {
         if (continuationRound < 3) {
           const backoff = continuationBackoff(continuation, actionResults);
@@ -1633,9 +1735,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         result.failed += 1;
         continue;
       }
+      const typedGate = acceptanceGate(task.stageId);
+      const typedDecision = routedStageInput.acceptanceContract && typedGate
+        ? await getWorkflowAcceptanceDecision(task.runId, output.artifact, typedGate) : undefined;
       const verificationViolation = pendingEvidenceReason(output)
-        ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })
-        ?? verificationCompletionReason(routedStageInput, actionResults);
+        ?? (routedStageInput.acceptanceContract
+          ? (typedDecision?.mode === "legacy" ? "Enrolled acceptance contract is unavailable." : typedDecision?.reason ?? null)
+          : unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })
+            ?? verificationCompletionReason(routedStageInput, actionResults));
       if (verificationViolation) {
         await blockWorkflowTask({
           taskId: task.taskId,
@@ -1664,6 +1771,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           artifactKind: "work_intent_release", artifactContent: { ...intent, released }
         });
       }
+      if (stageInput.acceptanceContract?.sourcePaths
+        && await sourceSubjectHash(localProjectRootUri, stageInput.acceptanceContract.sourcePaths) !== stageInput.acceptanceContract.subjectHash) {
+        throw new Error("Acceptance source no longer matches the enrolled subject; revalidation is required.");
+      }
       await completeWorkflowTask({
         taskId: task.taskId,
         runId: task.runId,
@@ -1682,6 +1793,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             attempts: fallbackAttempts
           },
           quality,
+          verificationEvidence: retainedVerificationEvidence(routedStageInput, actionResults),
           actionResults
         }
       });

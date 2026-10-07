@@ -1,11 +1,11 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { ModelProvider, StageExecutionInput, StageExecutionOutput } from "./types.js";
 
 export type ProviderFailureKind = "provider_outage" | "rate_limited" | "model_unavailable" | "authentication" | "account_quota" | "configuration" | "unknown";
 export interface ProviderFallbackCandidate { provider: string; model?: string; fleetApproved?: boolean; dataPolicy?: string; }
-export interface ProviderFallbackAttempt { provider: string; model?: string; attempt: number; attemptId: string; outcome: "completed" | "failed" | "skipped"; failureKind?: ProviderFailureKind; reason?: string; }
+export interface ProviderFallbackAttempt { provider: string; model?: string; attempt: number; attemptId: string; latencyMs?: number; outcome: "completed" | "failed" | "skipped"; failureKind?: ProviderFailureKind; reason?: string; }
 export interface ProviderFallbackPolicy { chains: Record<string, ProviderFallbackCandidate[]>; maxRetries: number; circuitFailureThreshold: number; circuitCooldownMs: number; allowQuotaFallback: boolean; }
 export interface ProviderFallbackResult { output: StageExecutionOutput; requestedProvider: string; actualProvider: string; actualModel?: string; fallbackUsed: boolean; attempts: ProviderFallbackAttempt[]; }
 
@@ -141,16 +141,18 @@ export async function executeWithProviderFallback(input: {
       continue;
     }
     for (let retry = 0; retry <= policy.maxRetries; retry += 1) {
+      const invocationStarted = performance.now();
       try {
         const output = await provider.executeStage({ ...input.stageInput, modelOverride: candidate.model });
+        const latencyMs = performance.now() - invocationStarted;
         circuits.delete(circuitKey);
         if (circuitStatePath) await persistCircuits(circuitStatePath);
-        attempts.push(attemptRecord(input.stageInput, candidate, retry, "completed"));
+        attempts.push({ ...attemptRecord(input.stageInput, candidate, retry, "completed"), latencyMs });
         const artifactModel = typeof output.artifact?.model === "string" ? output.artifact.model : undefined;
         return { output, requestedProvider: input.providerId, actualProvider: candidate.provider, actualModel: candidate.model ?? artifactModel, fallbackUsed: candidateIndex > 0, attempts };
       } catch (error) {
         const failure = classifyProviderFailure(error);
-        attempts.push(attemptRecord(input.stageInput, candidate, retry, "failed", failure.kind, failure.message));
+        attempts.push({ ...attemptRecord(input.stageInput, candidate, retry, "failed", failure.kind, failure.message), latencyMs: performance.now() - invocationStarted });
         lastError = failure;
         if (failure.kind === "authentication" || failure.kind === "configuration") throw attachAttempts(failure, attempts);
         const state = circuits.get(circuitKey) ?? { failures: 0 };
@@ -172,7 +174,7 @@ export async function executeWithProviderFallback(input: {
 export function resetProviderFallbackCircuits(): void { circuits.clear(); loadedCircuitPaths.clear(); }
 
 function attemptRecord(input: StageExecutionInput, candidate: ProviderFallbackCandidate, attempt: number, outcome: ProviderFallbackAttempt["outcome"], failureKind?: ProviderFailureKind, reason?: string): ProviderFallbackAttempt {
-  const attemptId = createHash("sha256").update(JSON.stringify({ runId: input.runId, taskId: input.taskId, provider: candidate.provider, model: candidate.model ?? null, attempt })).digest("hex");
+  const attemptId = createHash("sha256").update(JSON.stringify({ runId: input.runId, taskId: input.taskId, provider: candidate.provider, model: candidate.model ?? null, attempt, invocation: randomUUID() })).digest("hex");
   return { provider: candidate.provider, ...(candidate.model ? { model: candidate.model } : {}), attempt, attemptId, outcome, ...(failureKind ? { failureKind } : {}), ...(reason ? { reason } : {}) };
 }
 

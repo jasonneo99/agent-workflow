@@ -10,7 +10,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
 import { databaseUrl } from "../packages/storage/src/client.js";
-import { checkpointWorkflowTaskContinuation, getArtifactByUri, migrateStorage } from "../packages/storage/src/postgres.js";
+import { checkpointWorkflowTaskContinuation, getArtifactByUri, migrateStorage, renewWorkflowTaskLease, completeWorkflowTask } from "../packages/storage/src/postgres.js";
+import { createWorkerIdentity } from "../packages/workflow-engine/src/worker-identity.js";
+import { verifyAcceptanceStorage } from "./acceptance-storage-fixture.js";
 
 const mode = process.argv[2];
 const fixture = { runId: "00000000-0000-4000-8000-000000000001", taskId: "00000000-0000-4000-8000-000000000002", agentId: "continuation-fixture", workerId: "fixture-worker", fencingToken: "7" };
@@ -50,6 +52,15 @@ if (mode) {
     await client.query("insert into workflow_runs(id,status,task,autonomy,lease_epoch,lease_owner,lease_expires_at) values ($1,'running','Synthetic continuation acceptance','guarded',7,$2,now()+interval '5 minutes')", [fixture.runId, fixture.workerId]);
     await client.query("insert into workflow_tasks(id,run_id,stage_id,agent_id,status,idempotency_key,worker_id,lease_generation,lease_expires_at) values ($1,$2,'fixture',$3,'running','synthetic-continuation',$4,7,now()+interval '5 minutes')", [fixture.taskId, fixture.runId, fixture.agentId, fixture.workerId]);
     const request = { ...fixture, continuation, delaySeconds: 2 };
+    const oldIncarnation = createWorkerIdentity("fixture-worker");
+    const currentIncarnation = createWorkerIdentity("fixture-worker");
+    await client.query("update workflow_tasks set worker_id=$2 where id=$1", [fixture.taskId, currentIncarnation.workerId]);
+    const oldOwner = { ...fixture, workerId: oldIncarnation.workerId };
+    assert.equal(await renewWorkflowTaskLease(oldOwner), false);
+    await assert.rejects(completeWorkflowTask({ ...oldOwner, summary: "Must not complete", artifact: {} }), /Stale workflow/);
+    await assert.rejects(checkpointWorkflowTaskContinuation({ ...request, workerId: oldIncarnation.workerId }), /Stale workflow/);
+    await client.query("update workflow_tasks set worker_id=$2 where id=$1", [fixture.taskId, fixture.workerId]);
+    checks.push("retired-incarnation-cannot-renew-complete-or-checkpoint");
     await assert.rejects(checkpointWorkflowTaskContinuation({ ...request, fencingToken: "6" }), /Stale workflow/);
     await assert.rejects(checkpointWorkflowTaskContinuation({ ...request, workerId: "stale-worker" }), /Stale workflow/);
     await assert.rejects(checkpointWorkflowTaskContinuation({ ...request, agentId: "wrong-agent" }), /identity mismatch/);
@@ -77,6 +88,18 @@ if (mode) {
     assert.equal((await client.query("select count(*)::int as n from action_receipts where action_type='stage_continuation_scheduled'")).rows[0].n, 1);
     await assert.rejects(checkpointWorkflowTaskContinuation(request), /Stale workflow/);
     checks.push("queued-with-delay-without-completion", "lease-released", "receipt-persisted", "old-worker-cannot-recheckpoint");
+    const workerEnv = { ...process.env };
+    delete workerEnv.NODE_TEST_CONTEXT;
+    const workers = spawnSync(process.execPath, [
+      "--experimental-test-module-mocks", "--import", "tsx", "--test",
+      fileURLToPath(new URL("./continuation-worker-fixture.ts", import.meta.url))
+    ], { env: workerEnv, encoding: "utf8", timeout: 90_000 });
+    assert.equal(workers.status, 0, workers.stdout + workers.stderr);
+    assert.match(workers.stdout, /CONTINUATION_LIVE_ACCEPTANCE_PASSED/);
+    console.log(workers.stdout);
+    checks.push("real-workers-live-storage-cross-process-acceptance");
+    await verifyAcceptanceStorage(client);
+    checks.push("structured-acceptance-production-completion-and-four-gate-preflight");
   } finally {
     await client?.end();
     if (created) {

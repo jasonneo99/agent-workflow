@@ -34,8 +34,11 @@ const PROVIDER_IDS = [
   "kiro"
 ] as const;
 
-const DUMMY_ENV: Record<string, string> = {
+const DUMMY_ENV: Record<string, string | undefined> = {
   MUSE_API_KEY: "test-muse-key",
+  MUSE_BASE_URL: undefined,
+  MUSE_MODEL: undefined,
+  MUSE_MODEL_STANDARD: undefined,
   OPENAI_API_KEY: "test-openai-key",
   ANTHROPIC_API_KEY: "test-anthropic-key",
   GEMINI_API_KEY: "test-gemini-key",
@@ -51,7 +54,8 @@ function withDummyEnv(): () => void {
   const previous = new Map<string, string | undefined>();
   for (const [key, value] of Object.entries(DUMMY_ENV)) {
     previous.set(key, process.env[key]);
-    process.env[key] = value;
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
   }
   return () => {
     for (const [key, value] of previous) {

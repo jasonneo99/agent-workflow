@@ -7,13 +7,16 @@ import { fileURLToPath } from "node:url";
 
 test("real worker checkpoints and resumes final command results without executing them twice", async (t) => {
   if (!process.env.AGENTFLOW_CONTINUATION_TEST_CHILD) {
+    for (const mode of ["command", "read"]) {
     const childEnv: NodeJS.ProcessEnv = { ...process.env, AGENTFLOW_CONTINUATION_TEST_CHILD: "1" };
+    childEnv.AGENTFLOW_CONTINUATION_TEST_MODE = mode;
     delete childEnv.NODE_TEST_CONTEXT;
     const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--import", "tsx", "--test", fileURLToPath(import.meta.url)], {
       env: childEnv, encoding: "utf8", timeout: 60_000
     });
     assert.equal(child.status, 0, child.stdout + child.stderr);
     assert.match(child.stdout, /CONTINUATION_WORKER_ASSERTIONS_PASSED/);
+    }
     return;
   }
   // Mock external boundaries, not executor orchestration, completion gates, or
@@ -31,6 +34,7 @@ test("real worker checkpoints and resumes final command results without executin
   let executions = 0;
   let providerCalls = 0;
   let resumed = false;
+  const sourceOnly = process.env.AGENTFLOW_CONTINUATION_TEST_MODE === "read";
   const receipts = new Map<string, any>();
   const artifacts = new Map<string, any>();
   const task = {
@@ -77,6 +81,15 @@ test("real worker checkpoints and resumes final command results without executin
   await replace("../../model-providers/src/index.js", {
     executeWithProviderFallback: async ({ stageInput }: any) => {
       providerCalls++;
+      if (sourceOnly) {
+        if (resumed) {
+          assert.ok(stageInput.fileReads.length > 0, "Source observations survive checkpoint");
+          assert.ok(stageInput.priorReceipts.some((receipt: any) => receipt.actionType === "stage_continuation_resumed"));
+        }
+        return { output: { summary: "Source evidence inspected for the fixture.", artifact: { findings: ["Source inspection"] },
+          requestedFileReads: resumed ? [] : ["package.json"], requestedCommands: [] },
+          attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
+      }
       if (resumed) {
         const resume = stageInput.priorReceipts.find((receipt: any) => receipt.actionType === "stage_continuation_resumed");
         assert.ok(resume, "Fresh provider turn must receive continuation context");
@@ -94,6 +107,13 @@ test("real worker checkpoints and resumes final command results without executin
   assert.equal(first.completed, 0, "Exhausted followup budget is not completion");
   assert.equal(completed, undefined);
   assert.equal(checkpoint?.round, 1);
+  if (sourceOnly) {
+    assert.equal(executions, 0);
+    resumed = true;
+    assert.equal((await runWorkerOnce(1, { recoverExpiredLeases: false })).completed, 1);
+    console.log("CONTINUATION_WORKER_ASSERTIONS_PASSED");
+    return;
+  }
   assert.equal(executions, 4, "Final new command executes before checkpoint");
   assert.ok(checkpoint?.actionResults.some((action: any) => action.commandLine === "node --version observation-4" && action.exitCode === 0));
   resumed = true;
@@ -113,6 +133,13 @@ test("unchanged continuation evidence backs off finitely and new evidence resets
     assert.equal(checkpoint.delaySeconds, expected);
   }
   assert.equal(continuationBackoff(checkpoint, [...actions, { commandLine: "npm run typecheck", exitCode: 0 }]).delaySeconds, 5);
+});
+
+test("JSONB object key ordering is not counted as progress", () => {
+  const prior = continuationBackoff({}, [{ commandLine: "npm test", result: { stdout: "ok", exitCode: 0 } }]);
+  const next = continuationBackoff(prior, [{ result: { exitCode: 0, stdout: "ok" }, commandLine: "npm test" }]);
+  assert.equal(next.progressFingerprint, prior.progressFingerprint);
+  assert.equal(next.delaySeconds, 10);
 });
 
 test("reused command receipts are not counted as progress", () => {

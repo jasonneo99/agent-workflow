@@ -1,3 +1,10 @@
+import { completedStageProvidesPinnedBuildEvidence } from "../../../packages/model-providers/src/quality.js";
+
+/** Automatic repair is opt-in; observe and audit paths remain available. */
+export function workflowAutomaticRepairEnabled(value: string | undefined): boolean {
+  return value === "1";
+}
+
 export type SupervisedRun = {
   workflowId: string;
   task: string;
@@ -96,20 +103,16 @@ export function workflowDeliveryRepairReason(
   const implementation = outputs.filter((item) => IMPLEMENTATION_STAGE.test(item.stageId ?? "")
     || ["implementation-agent", "backend-engineer", "frontend-engineer", "database-engineer"].includes(item.agentId ?? ""));
   const verification = outputs.filter((item) => VERIFICATION_STAGE.test(item.stageId ?? "") || item.agentId === "auto-test-runner");
-  const hasProductWrite = implementation.some((item) => {
-    const writes = item.requestedFileWrites ?? item.artifact?.requestedFileWrites;
-    return Array.isArray(writes) && writes.length > 0;
+  // The supervisor must use the same evidence contract as completion/resume.
+  // A successful build of existing code is delivery evidence; requested tests
+  // and prose alone are not executed verification.
+  const hasEvidence = (item: SupervisedStageArtifact, stageId: string, agentId: string) => completedStageProvidesPinnedBuildEvidence({
+    workflowTask: "Build the requested deliverable",
+    stageId, agentId, summary: item.summary,
+    artifact: item.artifact ?? item as Record<string, unknown>
   });
-  const hasExecutedVerification = verification.some((item) => {
-    const commands = item.requestedCommands ?? item.artifact?.requestedCommands;
-    const actions = item.actionResults ?? item.artifact?.actionResults;
-    const text = `${item.summary ?? ""} ${JSON.stringify(item.artifact ?? {})}`;
-    const explicitlyMissing = /no (?:tests?|runtime|hardware) (?:were )?(?:run|executed)|(?:remains?|is|was|were) unverified|verification .* (?:absent|unsupported|pending)|promotion gate failed/iu.test(text);
-    if (explicitlyMissing) return false;
-    if ((Array.isArray(commands) && commands.length > 0) || (Array.isArray(actions) && actions.length > 0)) return true;
-    const summary = String(item.summary ?? "");
-    return summary.trim().length >= 20 && /tests?\s+passed|verification\s+(passed|complete|successful)|\d+\s+tests?\s+run/i.test(summary);
-  });
+  const hasProductWrite = implementation.some((item) => hasEvidence(item, "implement", "implementation-agent"));
+  const hasExecutedVerification = verification.some((item) => hasEvidence(item, "verify", "auto-test-runner"));
 
   if (run.status === "completed" && !hasProductWrite) {
     return "Delivery run was marked completed without governed product-write evidence; planning, receipts, or claims are not implementation.";

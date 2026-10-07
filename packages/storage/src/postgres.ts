@@ -18,7 +18,14 @@ export async function checkpointWorkflowTaskContinuation(input: {
       await client.query(`insert into artifacts (run_id, task_id, kind, uri, content) values ($1::uuid,$2::uuid,'stage_continuation',$3,$4::jsonb) on conflict (uri) do update set content=excluded.content`, [input.runId, input.taskId, uri, content]);
       await client.query(`update workflow_tasks set status='queued', started_at=null, finished_at=null, worker_id=null, lease_expires_at=null, available_at=now()+($3::int * interval '1 second') where id=$1::uuid and run_id=$2::uuid`, [input.taskId, input.runId, input.delaySeconds]);
       await client.query(`update workflow_runs set lease_owner=null, lease_expires_at=null where id=$1::uuid and lease_owner=$2 and lease_epoch=$3::bigint and not exists (select 1 from workflow_tasks where run_id=$1::uuid and status in ('leased','running'))`, [input.runId, input.workerId, input.fencingToken]);
-      await client.query(`insert into action_receipts (run_id,agent_id,action_type,target,summary,metadata) values ($1::uuid,$2,'stage_continuation_scheduled',$3,$4,$5::jsonb)`, [input.runId, input.agentId, input.taskId, "Unfinished stage checkpointed for bounded continuation.", JSON.stringify({ uri, delaySeconds: input.delaySeconds, fencingToken: input.fencingToken })]);
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "stage_continuation_scheduled",
+        target: input.taskId,
+        summary: "Unfinished stage checkpointed for bounded continuation.",
+        metadata: JSON.stringify({ uri, delaySeconds: input.delaySeconds, fencingToken: input.fencingToken })
+      });
       await client.query("commit");
     } catch (error) {
       await client.query("rollback");
@@ -35,10 +42,15 @@ import type { ProjectConfig, WorkflowDefinition } from "../../agent-registry/src
 import { createExecutorSnapshots, type ExecutorSnapshot } from "../../executor-adapters/src/index.js";
 import { resolveExecutionPolicy } from "../../policy-engine/src/index.js";
 import { completedStageProvidesPinnedBuildEvidence } from "../../model-providers/src/quality.js";
-import { RECEIPT_CHAIN_GENESIS, chainReceipt } from "../../workflow-engine/src/receipt-chain.js";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { withClient } from "./client.js";
+import { commandEvidencePacket } from "./command-evidence.js";
+import { loadReplayEvidencePacket } from "./replay-evidence.js";
+import { validateRecoveryCheckpoint } from "./checkpoint-provenance.js";
+import { acceptanceDigest, acceptanceGate, acceptancePreflight, enrollAcceptanceContract, storedAcceptanceDecision } from "./acceptance.js";
+import type { StructuredAcceptanceContract } from "../../model-providers/src/types.js";
+import { deliveryMetrics, type DeliveryMetricRun, type DeliveryMetricReceipt, type DeliveryAudit } from "./delivery-metrics.js";
 import { transitionWorkflowRun } from "./run-transitions.js";
 import { findRecentDuplicateRun, findReplayConflict } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
@@ -48,6 +60,8 @@ import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEve
 import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
 import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 import { buildRunPresentation } from "./run-presentation.js";
+import { enqueueRunNotification, runNotificationOutboxSchemaSql } from "./run-notifications.js";
+export { claimRunNotifications, settleRunNotification, acknowledgeRunNotification } from "./run-notifications.js";
 export { databaseUrl, withClient } from "./client.js";
 export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
 export type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
@@ -119,6 +133,7 @@ export async function migrateStorage(): Promise<void> {
         CONSTRAINT run_notifications_kind_check CHECK (kind IN ('approval_needed','blocked','failed','message'))
       )
     `);
+    await client.query(runNotificationOutboxSchemaSql);
     await client.query(`
       CREATE INDEX IF NOT EXISTS run_notifications_pending_idx
       ON run_notifications(status, created_at) WHERE status = 'pending'
@@ -349,7 +364,8 @@ export async function migrateStorage(): Promise<void> {
     await client.query(`
       ALTER TABLE action_receipts
       ADD COLUMN IF NOT EXISTS prev_hash text,
-      ADD COLUMN IF NOT EXISTS receipt_hash text
+      ADD COLUMN IF NOT EXISTS receipt_hash text,
+      ADD COLUMN IF NOT EXISTS metadata_serialization_version integer
     `);
     await client.query(`
       CREATE INDEX IF NOT EXISTS action_receipts_run_chain_idx
@@ -518,11 +534,14 @@ async function acquireWorkflowRunLease(client: pg.Client, input: {
       [input.runId, input.workerId, input.leaseSeconds]
     );
   const leaseEpoch = authority.rows[0].leaseEpoch;
-  await client.query(
-    `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-     values ($1::uuid, 'workflow-orchestrator', 'workflow_run_lease_acquired', $3, $2, $4)`,
-    [input.runId, `Run authority leased to ${input.workerId}.`, input.taskId, JSON.stringify({ workerId: input.workerId, taskId: input.taskId, leaseEpoch })]
-  );
+  await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_run_lease_acquired",
+        target: input.taskId,
+        summary: `Run authority leased to ${input.workerId}.`,
+        metadata: JSON.stringify({ workerId: input.workerId, taskId: input.taskId, leaseEpoch })
+      });
   return leaseEpoch;
 }
 
@@ -835,21 +854,19 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
         );
         for (const runId of runIds) {
           const tasks = result.rows.filter((row) => row.runId === runId);
-          await client.query(
-            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-             values ($1::uuid, 'workflow-orchestrator', 'expired_worker_lease_requeued', $2::text, $3, $4)`,
-            [
-              runId,
-              runId,
-              input.reason,
-              JSON.stringify({
+          await appendActionReceipt(client, {
+        runId: runId,
+        agentId: "workflow-orchestrator",
+        actionType: "expired_worker_lease_requeued",
+        target: runId,
+        summary: input.reason,
+        metadata: JSON.stringify({
                 actor: input.actor,
                 reason: input.reason,
                 requeuedTasks: tasks.length,
                 tasks
               })
-            ]
-          );
+      });
         }
       }
       await client.query("commit");
@@ -1023,14 +1040,13 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
           updated
         });
         if (updated) {
-          await client.query(
-            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-             values ($1::uuid, 'workflow-orchestrator', 'stale_run_reconciled', $2::text, $3, $4)`,
-            [
-              candidate.runId,
-              candidate.runId,
-              `Reconciled stale ${candidate.runStatus} run to ${candidate.recommendedStatus} because all child tasks were terminal.`,
-              JSON.stringify({
+          await appendActionReceipt(client, {
+        runId: candidate.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "stale_run_reconciled",
+        target: candidate.runId,
+        summary: `Reconciled stale ${candidate.runStatus} run to ${candidate.recommendedStatus} because all child tasks were terminal.`,
+        metadata: JSON.stringify({
                 actor: input.actor ?? "system",
                 previousStatus: candidate.runStatus,
                 newStatus: candidate.recommendedStatus,
@@ -1038,8 +1054,7 @@ export async function reconcileStaleTerminalWorkflowRuns(input: {
                 completedTasks: candidate.completedTasks,
                 cancelledTasks: candidate.cancelledTasks
               })
-            ]
-          );
+      });
         }
       }
       await client.query("commit");
@@ -1080,6 +1095,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
   actor: string;
   reason: string;
   includeFailed?: boolean;
+  revalidatedSubjectHash?: string;
 }): Promise<{
   requeuedTasks: number;
   completedTasks: number;
@@ -1096,7 +1112,8 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         sourceRunId: input.runId,
         actor: input.actor,
         reason: input.reason,
-        preserveCompletedCheckpoints: true
+        preserveCompletedCheckpoints: true,
+        revalidatedSubjectHash: input.revalidatedSubjectHash
       });
       if (replay) {
         await dismissFailedWorkflowRun({
@@ -1155,14 +1172,13 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
         `update workflow_runs set lease_owner = null, lease_expires_at = null where id = $1::uuid`,
         [input.runId]
       );
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', $2::text, $3, $4)`,
-        [
-          input.runId,
-          input.runId,
-          input.reason,
-          JSON.stringify({
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "checkpoint_resume_requested",
+        target: input.runId,
+        summary: input.reason,
+        metadata: JSON.stringify({
             actor: input.actor,
             reason: input.reason,
             includeFailed: input.includeFailed === true,
@@ -1170,8 +1186,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
             completedTasks: counts.rows[0]?.completed ?? 0,
             totalTasks: counts.rows[0]?.total ?? 0
           })
-        ]
-      );
+      });
       await client.query("commit");
       return {
         requeuedTasks: result.rowCount ?? 0,
@@ -1205,11 +1220,14 @@ export async function dismissFailedWorkflowRun(input: {
         return false;
       }
       const priorStatus = runResult.rows[0].status;
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, 'workflow-orchestrator', 'failed_run_dismissed', $2::text, $3, $4)`,
-        [input.runId, input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false, priorStatus })]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "failed_run_dismissed",
+        target: input.runId,
+        summary: input.reason,
+        metadata: JSON.stringify({ actor: input.actor, reason: input.reason, bulk: false, priorStatus })
+      });
       // Move to cancelled so every view consistently hides the dismissed run.
       // The receipt above preserves the audit trail and the prior status.
       await client.query(
@@ -1250,18 +1268,20 @@ export async function reinstateFailedWorkflowRun(input: {
       const priorStatus = dismissed.rows[0].metadata?.priorStatus;
       const restoreTo = priorStatus === "failed" || priorStatus === "blocked" ? priorStatus : "blocked";
       const result = await client.query<{ id: string }>(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         select wr.id, 'workflow-orchestrator', 'failed_run_reinstated', wr.id::text, $2, $3
+        `select wr.id::text
          from workflow_runs wr
          where wr.id = $1::uuid
            and wr.status in ('failed', 'blocked', 'cancelled')
-         returning id::text`,
-        [input.runId, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, restoredStatus: restoreTo })]
+         for update`,
+        [input.runId]
       );
       if (!result.rows[0]) {
         await client.query("rollback");
         return false;
       }
+      await appendActionReceipt(client, { runId: input.runId, agentId: "workflow-orchestrator",
+        actionType: "failed_run_reinstated", target: input.runId, summary: input.reason,
+        metadata: JSON.stringify({ actor: input.actor, reason: input.reason, restoredStatus: restoreTo }) });
       await client.query(
         `update workflow_runs set status = $2, updated_at = now() where id = $1::uuid`,
         [input.runId, restoreTo]
@@ -1297,12 +1317,11 @@ export async function dismissAllFailedWorkflowRuns(input: {
         await client.query("rollback");
         return 0;
       }
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         select id, 'workflow-orchestrator', 'failed_run_dismissed', id::text, $2, $3
-         from workflow_runs where id = any($1::uuid[])`,
-        [runIds, input.reason, JSON.stringify({ actor: input.actor, reason: input.reason, bulk: true, projectRootUri: input.projectRootUri ?? null })]
-      );
+      for (const runId of runIds) {
+        await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator",
+          actionType: "failed_run_dismissed", target: runId, summary: input.reason,
+          metadata: JSON.stringify({ actor: input.actor, reason: input.reason, bulk: true, projectRootUri: input.projectRootUri ?? null }) });
+      }
       await client.query(
         `update workflow_runs set status = 'cancelled', updated_at = now() where id = any($1::uuid[])`,
         [runIds]
@@ -1425,6 +1444,7 @@ export async function listProjectFileSummaries(input: {
 }
 
 export interface CreateRunInput {
+  acceptanceRequirements?: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables">;
   projectName: string;
   projectRootUri: string;
   projectProfile: string;
@@ -1469,7 +1489,9 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       const projectId = projectResult.rows[0].id;
       const workflowVersion = String(input.workflowVersion ?? "1");
       const workflowHash = input.workflowHash ?? workflowDefinitionHash(input.workflow);
-      const evaluationMetadataJson = JSON.stringify(input.evaluationMetadata ?? {});
+      if (input.evaluationMetadata?.acceptanceContract) throw new Error("Use acceptanceRequirements for atomic runtime enrollment.");
+      const evaluationMetadataJson = JSON.stringify({ ...(input.evaluationMetadata ?? {}),
+        ...(input.acceptanceRequirements ? { acceptanceRequirements: input.acceptanceRequirements } : {}) });
       const presentation = buildRunPresentation({ task: input.task, workflowId: input.workflow.id, projectName: input.projectName });
       const constructionRationale = input.constructionRationale && typeof input.constructionRationale === "object" && !Array.isArray(input.constructionRationale)
         ? input.constructionRationale as Record<string, unknown>
@@ -1606,6 +1628,23 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       }
       await client.query(`update workflow_runs set executor_snapshot = $2 where id = $1`, [runId, JSON.stringify(executorSnapshots)]);
 
+      if (input.acceptanceRequirements) {
+        const contract: StructuredAcceptanceContract = { ...input.acceptanceRequirements, version: 1,
+          contractId: `acceptance:${runId}`, projectId, originRunId: runId, taskHash: acceptanceDigest(input.task) };
+        await enrollAcceptanceContract(client, runId, contract);
+        const uri = `db://workflow_runs/${runId}/acceptance_contract/enrollment`;
+        await client.query(`insert into artifacts(run_id,kind,uri,content) values ($1,'acceptance_contract',$2,$3::jsonb)`,
+          [runId, uri, JSON.stringify({ contract })]);
+        await appendActionReceipt(client, {
+        runId: runId,
+        agentId: "workflow-orchestrator",
+        actionType: "acceptance_enrolled",
+        target: uri,
+        summary: "Acceptance requirements enrolled atomically before workers can claim the run.",
+        metadata: JSON.stringify({ contractId: contract.contractId, artifactUri: uri })
+      });
+      }
+
       await client.query("commit");
       return {
         projectId,
@@ -1623,6 +1662,8 @@ export async function replayWorkflowRun(input: {
   sourceRunId: string;
   actor: string;
   reason: string;
+  acceptanceRequirements?: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables">;
+  revalidatedSubjectHash?: string;
   preserveCompletedCheckpoints?: boolean;
   skipStageIds?: string[];
   evaluationMetadataPatch?: Record<string, unknown>;
@@ -1636,6 +1677,7 @@ export async function replayWorkflowRun(input: {
         projectName: string;
         projectRootUri: string;
         startedAt: string;
+        status: string;
         projectProfile: string;
         projectConfig: Record<string, unknown>;
         workflowId: string;
@@ -1664,6 +1706,7 @@ export async function replayWorkflowRun(input: {
            p.name as "projectName",
            p.root_uri as "projectRootUri",
            wr.started_at::text as "startedAt",
+           wr.status,
            p.profile as "projectProfile",
            p.config as "projectConfig",
            wr.workflow_id as "workflowId",
@@ -1700,6 +1743,8 @@ export async function replayWorkflowRun(input: {
         return null;
       }
       if (sourceRun.replacementRunId) {
+        if (input.revalidatedSubjectHash) throw new Error("Source revalidation cannot reuse an existing replacement.");
+        if (input.acceptanceRequirements) throw new Error("Explicit acceptance enrollment cannot reuse an existing replacement; inspect its requirements and replay that execution if needed.");
         const existing = await client.query<{
           tasks: number;
           completedTasks: number;
@@ -1734,6 +1779,8 @@ export async function replayWorkflowRun(input: {
         task: sourceRun.task
       });
       if (replayConflict) {
+        if (input.revalidatedSubjectHash) throw new Error("Source revalidation conflicts with an existing logical work owner.");
+        if (input.acceptanceRequirements) throw new Error("Explicit acceptance enrollment conflicts with an existing logical work owner.");
         await client.query(
           `update workflow_runs
               set replacement_run_id = $2::uuid,
@@ -1741,16 +1788,14 @@ export async function replayWorkflowRun(input: {
             where id = $1::uuid and replacement_run_id is null`,
           [input.sourceRunId, replayConflict.id]
         );
-        await client.query(
-          `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-           values ($1::uuid, 'workflow-orchestrator', 'workflow_replay_suppressed', $2, $3, $4::jsonb)`,
-          [
-            input.sourceRunId,
-            replayConflict.id,
-            `Replay suppressed because equivalent ${replayConflict.status} run ${replayConflict.id} already owns the logical project work.`,
-            JSON.stringify({ actor: input.actor, logicalProjectId, workflowId: sourceRun.workflowId, conflictingRunId: replayConflict.id, conflictingRunStatus: replayConflict.status })
-          ]
-        );
+        await appendActionReceipt(client, {
+        runId: input.sourceRunId,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_replay_suppressed",
+        target: replayConflict.id,
+        summary: `Replay suppressed because equivalent ${replayConflict.status} run ${replayConflict.id} already owns the logical project work.`,
+        metadata: JSON.stringify({ actor: input.actor, logicalProjectId, workflowId: sourceRun.workflowId, conflictingRunId: replayConflict.id, conflictingRunStatus: replayConflict.status })
+      });
         await client.query("commit");
         return {
           projectId: sourceRun.projectId,
@@ -1833,7 +1878,40 @@ export async function replayWorkflowRun(input: {
         ]
       );
       const projectId = projectResult.rows[0].id;
-      const replayMetadata = {
+      if (Object.prototype.hasOwnProperty.call(input.evaluationMetadataPatch ?? {}, "acceptanceContract")) {
+        throw new Error("Replay acceptance requirements are runtime-owned and cannot be patched.");
+      }
+      const sourceAcceptance = sourceRun.evaluationMetadata.acceptanceContract as StructuredAcceptanceContract | undefined;
+      if (sourceAcceptance && input.acceptanceRequirements) {
+        throw new Error("Replay source already has frozen acceptance requirements; replacement is forbidden.");
+      }
+      const replayAcceptance = sourceAcceptance ?? input.acceptanceRequirements;
+      const structuredRecovery = Boolean(sourceAcceptance && input.preserveCompletedCheckpoints
+        && ["failed", "blocked", "cancelled"].includes(sourceRun.status));
+      if (structuredRecovery) {
+        if (input.skipStageIds?.length) throw new Error("Structured recovery cannot skip stages.");
+        const chain = await verifyRunReceiptChain(input.sourceRunId);
+        if (!chain.valid) throw new Error(`Recovery source receipt chain is invalid: ${chain.reason}`);
+        let unfinished = false;
+        for (const stage of workflow.stages) {
+          const task = sourceTaskByStage.get(stage.id);
+          if (task?.status !== "completed") { unfinished = true; continue; }
+          if (unfinished) throw new Error("Structured recovery requires a contiguous completed prefix; refusing to discard checkpoints.");
+          await validateRecoveryCheckpoint(client, { runId: input.sourceRunId, taskId: task.id,
+            stageId: stage.id, artifact: task.artifactContent }, verifyRunReceiptChain);
+        }
+        if (!unfinished) throw new Error("Structured recovery requires an unfinished stage for fresh acceptance validation.");
+      }
+      if (input.revalidatedSubjectHash !== undefined && (!sourceAcceptance?.sourcePaths?.length
+        || !/^[a-f0-9]{64}$/u.test(input.revalidatedSubjectHash))) {
+        throw new Error("Source revalidation requires a frozen source scope and a SHA-256 subject hash.");
+      }
+      if (sourceAcceptance && (sourceAcceptance.projectId !== projectId
+        || sourceAcceptance.originRunId !== input.sourceRunId
+        || sourceAcceptance.taskHash !== acceptanceDigest(sourceRun.task))) {
+        throw new Error("Replay source acceptance identity requires explicit revalidation.");
+      }
+      const replayMetadata: Record<string, unknown> = {
         ...sourceRun.evaluationMetadata,
         ...input.evaluationMetadataPatch,
         replayOfRunId: input.sourceRunId,
@@ -1841,6 +1919,14 @@ export async function replayWorkflowRun(input: {
         replayReason: input.reason,
         checkpointResume: input.preserveCompletedCheckpoints === true,
         skippedStageIds: [...new Set(input.skipStageIds ?? [])]
+      };
+      // Re-enroll unchanged requirements atomically for the new execution. Source
+      // receipts remain immutable history, never acceptance for the replacement.
+      delete replayMetadata.acceptanceContract;
+      delete replayMetadata.recoveryEvidence;
+      if (structuredRecovery) replayMetadata.recoveryEvidence = {
+        sourceRunId: input.sourceRunId, mode: "historical-checkpoints-fresh-acceptance",
+        cleanValidationRequired: true, inheritedReceiptsAccepted: false
       };
       const runResult = await client.query<{ id: string }>(
         `insert into workflow_runs (
@@ -1872,6 +1958,31 @@ export async function replayWorkflowRun(input: {
         ]
       );
       const runId = runResult.rows[0].id;
+      if (replayAcceptance) {
+        await enrollAcceptanceContract(client, runId, {
+          ...replayAcceptance,
+          subjectHash: input.revalidatedSubjectHash ?? replayAcceptance.subjectHash,
+          version: 1,
+          projectId,
+          taskHash: acceptanceDigest(sourceRun.task),
+          contractId: `replay:${runId}`,
+          originRunId: runId,
+          deliverables: sourceAcceptance ? sourceAcceptance.deliverables.map((item) => ({
+            ...item, status: "pending", receipts: {}, gaps: []
+          })) : replayAcceptance.deliverables
+        });
+        await appendActionReceipt(client, {
+        runId: runId,
+        agentId: "workflow-orchestrator",
+        actionType: "acceptance_replay_enrolled",
+        target: input.sourceRunId,
+        summary: "Acceptance requirements enrolled atomically for replay; fresh run-owned evidence required.",
+        metadata: JSON.stringify({ sourceRunId: input.sourceRunId, requirementsDigest: acceptanceDigest(replayAcceptance), legacyEnrollment: !sourceAcceptance, checkpointReuse: structuredRecovery,
+          inheritedReceiptsAccepted: false, cleanValidationRequired: structuredRecovery,
+          previousSubjectHash: replayAcceptance.subjectHash, subjectHash: input.revalidatedSubjectHash ?? replayAcceptance.subjectHash,
+          sourceRevalidated: input.revalidatedSubjectHash !== undefined })
+      });
+      }
       const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
       if (sourceRun.compiledBrief) {
         await client.query(
@@ -1900,7 +2011,7 @@ export async function replayWorkflowRun(input: {
       const taskIds: Record<string, string> = {};
       let completedTasks = 0;
       let skippedTasks = 0;
-      let checkpointChainInvalidated = false;
+      let checkpointChainInvalidated = Boolean(replayAcceptance) && !structuredRecovery;
       const skippedStageIds = new Set(input.skipStageIds ?? []);
       for (const stage of workflow.stages) {
         const sourceTask = sourceTaskByStage.get(stage.id);
@@ -1909,20 +2020,24 @@ export async function replayWorkflowRun(input: {
           && sourceTask.executedApprovalCount === sourceTask.approvalCount;
         const checkpointCandidate = sourceTask?.status === "completed" || actionResolvedCheckpoint;
         const checkpointArtifact = sourceTask?.artifactContent ?? null;
-        const checkpointHasBuildEvidence = checkpointArtifact !== null && completedStageProvidesPinnedBuildEvidence({
+        const checkpointGate = acceptanceGate(stage.id);
+        const checkpointAcceptance = checkpointArtifact && checkpointGate
+          ? await storedAcceptanceDecision(client, input.sourceRunId, checkpointGate, checkpointArtifact) : null;
+        const checkpointHasBuildEvidence = checkpointArtifact !== null && !checkpointAcceptance?.reason && (checkpointAcceptance?.mode === "structured" || completedStageProvidesPinnedBuildEvidence({
           workflowTask: sourceRun.task,
           stageId: stage.id,
           agentId: stage.agent,
           summary: typeof checkpointArtifact.summary === "string" ? checkpointArtifact.summary : "",
           artifact: checkpointArtifact
-        });
-        if (checkpointCandidate && !checkpointHasBuildEvidence) {
+        }));
+        if (!structuredRecovery && checkpointCandidate && !checkpointHasBuildEvidence) {
           checkpointChainInvalidated = true;
         }
         const preserveCheckpoint = !checkpointChainInvalidated
-          && checkpointCandidate
+          && sourceTask !== undefined
+          && (structuredRecovery ? sourceTask?.status === "completed" : checkpointCandidate)
           && checkpointArtifact !== null;
-        const skipStage = skippedStageIds.has(stage.id) && !preserveCheckpoint;
+        const skipStage = !replayAcceptance && skippedStageIds.has(stage.id) && !preserveCheckpoint;
         const taskResult = await client.query<{ id: string }>(
           `insert into workflow_tasks (
              run_id, stage_id, agent_id, status, idempotency_key,
@@ -1957,25 +2072,26 @@ export async function replayWorkflowRun(input: {
                 JSON.stringify({
                   ...sourceTask.artifactContent,
                   checkpointPreservedFromRunId: input.sourceRunId,
-                  checkpointPreservedFromTaskId: sourceTask.id
+                  checkpointPreservedFromTaskId: sourceTask.id,
+                  ...(structuredRecovery ? { checkpointEvidence: {
+                    mode: "historical-only", sourceArtifactHash: acceptanceDigest(sourceTask.artifactContent),
+                    sourceSubjectHash: sourceAcceptance!.subjectHash, freshAcceptanceRequired: true
+                  } } : {})
                 })
               ]
             );
             await client.query(`update workflow_tasks set output_uri = $2 where id = $1::uuid`, [taskId, outputUri]);
           }
-          await client.query(
-            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-             values ($1::uuid, $2, 'stage_checkpoint_preserved', $3, $4, $5::jsonb)`,
-            [
-              runId,
-              stage.agent,
-              taskId,
-              actionResolvedCheckpoint
+          await appendActionReceipt(client, {
+        runId: runId,
+        agentId: stage.agent,
+        actionType: "stage_checkpoint_preserved",
+        target: taskId,
+        summary: actionResolvedCheckpoint
                 ? `Preserved action-resolved checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}; every required action has a durable executed receipt.`
                 : `Preserved completed checkpoint for stage ${stage.id} from immutable run ${input.sourceRunId}.`,
-              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask.id, stageId: stage.id, actionResolvedCheckpoint })
-            ]
-          );
+        metadata: JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask.id, stageId: stage.id, actionResolvedCheckpoint })
+      });
         } else if (skipStage) {
           skippedTasks += 1;
           const outputUri = `db://workflow_tasks/${taskId}/output`;
@@ -1996,17 +2112,14 @@ export async function replayWorkflowRun(input: {
             ]
           );
           await client.query(`update workflow_tasks set output_uri = $2 where id = $1::uuid`, [taskId, outputUri]);
-          await client.query(
-            `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-             values ($1::uuid, $2, 'stage_blocker_ignored', $3, $4, $5::jsonb)`,
-            [
-              runId,
-              stage.agent,
-              taskId,
-              `Explicitly skipped blocked stage ${stage.id}; downstream execution may continue.`,
-              JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask?.id ?? null, stageId: stage.id, actor: input.actor, reason: input.reason })
-            ]
-          );
+          await appendActionReceipt(client, {
+        runId: runId,
+        agentId: stage.agent,
+        actionType: "stage_blocker_ignored",
+        target: taskId,
+        summary: `Explicitly skipped blocked stage ${stage.id}; downstream execution may continue.`,
+        metadata: JSON.stringify({ sourceRunId: input.sourceRunId, sourceTaskId: sourceTask?.id ?? null, stageId: stage.id, actor: input.actor, reason: input.reason })
+      });
         }
       }
       await createWorkflowHandoffsForRun(client, runId, workflow);
@@ -2023,14 +2136,13 @@ export async function replayWorkflowRun(input: {
         await client.query(`update workflow_tasks set executor_snapshot = $3 where run_id = $1 and stage_id = $2`, [runId, stageId, JSON.stringify(snapshot)]);
       }
       await client.query(`update workflow_runs set executor_snapshot = $2 where id = $1`, [runId, JSON.stringify(replayExecutorSnapshots)]);
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, 'workflow-orchestrator', 'workflow_replayed', $2, $3, $4)`,
-        [
-          runId,
-          input.sourceRunId,
-          input.reason,
-          JSON.stringify({
+      await appendActionReceipt(client, {
+        runId: runId,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_replayed",
+        target: input.sourceRunId,
+        summary: input.reason,
+        metadata: JSON.stringify({
             actor: input.actor,
             sourceRunId: input.sourceRunId,
             preserveCompletedCheckpoints: input.preserveCompletedCheckpoints === true,
@@ -2041,8 +2153,7 @@ export async function replayWorkflowRun(input: {
             autonomyOverride: input.autonomyOverride ?? null,
             workflowSnapshot: sourceRun.workflowSnapshot ? "source-run" : "current-registry"
           })
-        ]
-      );
+      });
 
       const queuedTasks = workflow.stages.length - completedTasks - skippedTasks;
       if (queuedTasks === 0) {
@@ -2080,6 +2191,13 @@ export async function replayWorkflowRun(input: {
         [input.sourceRunId, runId]
       );
 
+      await enqueueRunNotification(client, {
+        runId,
+        kind: "recovered",
+        eventKey: `replay:${input.sourceRunId}:${runId}`,
+        title: "Run resumed from checkpoint",
+        body: `Resumed from run ${input.sourceRunId}. ${input.reason}`
+      });
       await client.query("commit");
       return {
         projectId,
@@ -2138,16 +2256,14 @@ export async function setQueuedWorkflowRunAutonomy(input: {
         await client.query("rollback");
         return false;
       }
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, 'workflow-orchestrator', 'run_autonomy_changed', $2, $3, $4::jsonb)`,
-        [
-          input.runId,
-          input.autonomy,
-          `Run approval level changed to ${input.autonomy} before worker claim.`,
-          JSON.stringify({ actor: input.actor, reason: input.reason, policySnapshotHash: input.policySnapshotHash })
-        ]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "run_autonomy_changed",
+        target: input.autonomy,
+        summary: `Run approval level changed to ${input.autonomy} before worker claim.`,
+        metadata: JSON.stringify({ actor: input.actor, reason: input.reason, policySnapshotHash: input.policySnapshotHash })
+      });
       await client.query("commit");
       return true;
     } catch (error) {
@@ -2185,6 +2301,8 @@ async function createWorkflowHandoffsForRun(client: pg.Client, runId: string, wo
 }
 
 export interface ClaimedWorkflowTask {
+  acceptanceContract?: StructuredAcceptanceContract;
+  remainingStageIds?: string[];
   taskId: string;
   runId: string;
   projectRootUri: string;
@@ -2342,6 +2460,9 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
            wr.workflow_id as "workflowId",
            wr.task as "workflowTask",
            wt.stage_id as "stageId",
+           array(select other.stage_id from workflow_tasks other
+             where other.run_id=wt.run_id and other.id<>wt.id
+               and other.status not in ('completed','cancelled') order by other.stage_id) as "remainingStageIds",
            coalesce((
              select stage->>'goal'
              from jsonb_array_elements(coalesce(nullif(wr.workflow_snapshot, '{}'::jsonb), wf.definition)->'stages') stage
@@ -2533,6 +2654,15 @@ export async function completeWorkflowTask(input: {
     await client.query("begin");
     try {
       await assertActiveTaskFence(client, input);
+      const identity = await client.query<{ stageId: string }>(
+        `select stage_id as "stageId" from workflow_tasks where id=$1 and run_id=$2`, [input.taskId, input.runId]
+      );
+      const gate = acceptanceGate(identity.rows[0]?.stageId ?? "");
+      if (gate) {
+        const acceptance = await storedAcceptanceDecision(client, input.runId, gate, input.artifact);
+        if (acceptance.reason) throw new Error(`Structured acceptance rejected completion: ${acceptance.reason}`);
+        if (acceptance.mode === "structured") input.artifact = { ...input.artifact, acceptanceDecision: acceptance };
+      }
       const outputUri = `db://workflow_tasks/${input.taskId}/output`;
       await client.query(
         `insert into artifacts (run_id, task_id, kind, uri, content)
@@ -2579,17 +2709,14 @@ export async function completeWorkflowTask(input: {
         }
       }
 
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, $2, 'stage_completed', $3, $4, $5)`,
-        [
-          input.runId,
-          input.agentId,
-          input.taskId,
-          input.summary,
-          JSON.stringify(input.artifact)
-        ]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "stage_completed",
+        target: input.taskId,
+        summary: input.summary,
+        metadata: JSON.stringify(input.artifact)
+      });
 
       const ready = await client.query<{ id: string }>(
         `select wr.id::text
@@ -2605,6 +2732,16 @@ export async function completeWorkflowTask(input: {
         [input.runId]
       );
       if (ready.rows[0]) {
+        const terminalAcceptance = await acceptancePreflight(client, input.runId, input.artifact);
+        if (terminalAcceptance.decisions.some((decision) => decision.mode === "structured" || decision.reason)
+          && !terminalAcceptance.accepted) {
+          throw new Error(`Structured acceptance rejected terminal completion: ${terminalAcceptance.decisions
+            .filter((decision) => decision.reason).map((decision) => `${decision.gate}: ${decision.reason}`).join("; ")}`);
+        }
+        await client.query(
+          `insert into artifacts(run_id,task_id,kind,uri,content) values ($1,$2,'terminal_acceptance',$3,$4)`,
+          [input.runId, input.taskId, `db://workflow_runs/${input.runId}/terminal_acceptance/${input.taskId}`, JSON.stringify(terminalAcceptance)]
+        );
         await transitionWorkflowRun(client, {
           runId: input.runId,
           to: "completed",
@@ -2666,11 +2803,14 @@ export async function blockWorkflowTask(input: {
          where run_id = $1 and id <> $2 and status in ('queued', 'leased', 'running')`,
         [input.runId, input.taskId]
       );
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, $2, 'stage_blocked', $3, $4, $5)`,
-        [input.runId, input.agentId, input.taskId, input.summary, JSON.stringify({ reason: input.reason, outputUri })]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "stage_blocked",
+        target: input.taskId,
+        summary: input.summary,
+        metadata: JSON.stringify({ reason: input.reason, outputUri })
+      });
       await client.query(
         `update workflow_handoffs
          set status = 'failed', failed_at = now(), updated_at = now()
@@ -2691,12 +2831,6 @@ export async function blockWorkflowTask(input: {
       await client.query("rollback");
       throw error;
     }
-  });
-  await notifyRequester({
-    runId: input.runId,
-    kind: "blocked",
-    title: `Run blocked: ${input.summary}`,
-    body: input.reason
   });
 }
 
@@ -2768,8 +2902,9 @@ export async function markRunNotificationDelivered(notificationId: string, ok: b
   await withClient(async (client) => {
     await client.query(
       `update run_notifications
-       set status = $2, delivered_at = now()
-       where id = $1`,
+       set status = $2,
+           delivered_at = case when $2 = 'delivered' then now() else null end
+       where id = $1 and status in ('pending', 'failed')`,
       [notificationId, ok ? "delivered" : "failed"]
     );
   });
@@ -2812,17 +2947,14 @@ export async function failWorkflowTask(input: {
         }
       }
 
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1, $2, 'stage_failed', $3, $4, $5)`,
-        [
-          input.runId,
-          input.agentId,
-          input.taskId,
-          input.error,
-          JSON.stringify({ error: input.error })
-        ]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "stage_failed",
+        target: input.taskId,
+        summary: input.error,
+        metadata: JSON.stringify({ error: input.error })
+      });
 
       await client.query(
         `update workflow_tasks
@@ -2868,38 +3000,14 @@ export async function recordRunAction(input: {
       const artifactContent = input.idempotencyKey
         ? { ...input.artifactContent, idempotencyKey: input.idempotencyKey }
         : input.artifactContent;
-      const metadataJson = JSON.stringify(artifactContent);
-      // Tamper-evident chain: link to the previous receipt for this run.
-      const prevRow = await client.query<{ receipt_hash: string | null }>(
-        `select receipt_hash from action_receipts where run_id = $1 order by created_at desc limit 1`,
-        [input.runId]
-      );
-      const prevHash = prevRow.rows[0]?.receipt_hash ?? RECEIPT_CHAIN_GENESIS;
-      const createdAt = new Date().toISOString();
-      const chained = chainReceipt(prevHash, {
+      await appendActionReceipt(client, {
         runId: input.runId,
         agentId: input.agentId,
         actionType: input.actionType,
         target: input.target,
         summary: input.summary,
-        metadata: metadataJson,
-        createdAt,
+        metadata: JSON.stringify(artifactContent),
       });
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata, prev_hash, receipt_hash, created_at)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9::timestamptz)`,
-        [
-          input.runId,
-          input.agentId,
-          input.actionType,
-          input.target,
-          input.summary,
-          metadataJson,
-          chained.prevHash,
-          chained.receiptHash,
-          createdAt
-        ]
-      );
 
       const artifactUri = input.idempotencyKey
         ? `db://workflow_runs/${input.runId}/${input.artifactKind}/${input.idempotencyKey}`
@@ -2931,10 +3039,13 @@ export async function verifyRunReceiptChain(runId: string): Promise<{ valid: boo
   const { verifyReceiptChain } = await import("../../workflow-engine/src/receipt-chain.js");
   return withClient(async (client) => {
     const result = await client.query(
-      `select agent_id, action_type, target, summary, metadata::text as metadata, created_at, prev_hash, receipt_hash
+      `select agent_id, action_type, target, summary, metadata::text as metadata, created_at, prev_hash, receipt_hash, metadata_serialization_version
        from action_receipts where run_id = $1 order by created_at asc`,
       [runId]
     );
+    if (result.rows.some((row) => row.receipt_hash && row.prev_hash == null)) {
+      return { valid: false, checked: 0, reason: "hashed receipt is missing prev_hash" };
+    }
     const receipts = result.rows.map((row) => ({
       runId,
       agentId: row.agent_id as string,
@@ -2942,15 +3053,36 @@ export async function verifyRunReceiptChain(runId: string): Promise<{ valid: boo
       target: row.target as string,
       summary: row.summary as string,
       metadata: row.metadata as string,
+      metadataSerializationVersion: (row.metadata_serialization_version as number | null) ?? undefined,
       createdAt: (row.created_at as Date).toISOString(),
       prevHash: (row.prev_hash as string | null) ?? "GENESIS",
       receiptHash: (row.receipt_hash as string | null) ?? "",
     }));
-    // Receipts written before chaining have no hash; they anchor as genesis.
-    // Only verify the chained suffix.
-    const firstChained = receipts.findIndex((r) => r.receiptHash !== "");
-    if (firstChained === -1) return { valid: true, checked: 0, reason: "no chained receipts" };
-    return verifyReceiptChain(receipts.slice(firstChained));
+    // Coverage is a gate: neither legacy prefixes nor intervening unhashed rows
+    // may be hidden behind a valid suffix. Existing history remains immutable.
+    const unchained = receipts.filter((r) => !r.receiptHash).length;
+    if (!receipts.length || unchained) return { valid: false, checked: 0,
+      reason: !receipts.length ? "no receipts to verify" : `${unchained} unchained receipts; full coverage unavailable` };
+    // Hash links, not timestamp ordering, are authoritative. Reject forks,
+    // disconnected segments and cycles, including tied legacy timestamps.
+    const successors = new Map<string, typeof receipts>();
+    for (const receipt of receipts) {
+      const rows = successors.get(receipt.prevHash) ?? [];
+      rows.push(receipt);
+      successors.set(receipt.prevHash, rows);
+    }
+    const ordered: typeof receipts = [];
+    let tip = "GENESIS";
+    const seen = new Set<string>();
+    while (successors.has(tip)) {
+      const next = successors.get(tip)!;
+      if (next.length !== 1 || seen.has(next[0].receiptHash)) return { valid: false, checked: 0, reason: "receipt chain fork or cycle" };
+      ordered.push(next[0]);
+      seen.add(next[0].receiptHash);
+      tip = next[0].receiptHash;
+    }
+    if (ordered.length !== receipts.length) return { valid: false, checked: 0, reason: "disconnected receipt chain" };
+    return verifyReceiptChain(ordered);
   });
 }
 
@@ -3683,6 +3815,66 @@ export async function getArtifactByUri(uri: string): Promise<ArtifactStatus | nu
   });
 }
 
+/** Supervisor uses the same storage-backed evaluator as completion and replay. */
+export async function getWorkflowAcceptanceDecision(runId: string, artifact: Record<string, unknown>, gate: import("../../model-providers/src/types.js").AcceptanceGate = "supervision") {
+  return withClient((client) => storedAcceptanceDecision(client, runId, gate, artifact));
+}
+
+export async function reportWorkflowDeliveryMetrics(runId: string) {
+  const metrics = await withClient(async (client) => {
+    const runs = await client.query<DeliveryMetricRun>(
+      `select id::text,started_at::text as "startedAt",status from workflow_runs
+       where id=$1 or run_set_id=(select run_set_id from workflow_runs where id=$1) order by started_at`, [runId]);
+    const ids = runs.rows.map((run) => run.id);
+    const receipts = await client.query<DeliveryMetricReceipt>(
+      `select id::text,run_id::text as "runId",action_type as "actionType",target,created_at::text as "createdAt",metadata
+       from action_receipts where run_id=any($1::uuid[]) order by created_at`, [ids]);
+    const audits = await client.query<DeliveryAudit>(
+      `select run_id::text as "runId",uri,created_at::text as "createdAt",(content->>'accepted')::boolean as accepted
+       from artifacts where run_id=any($1::uuid[]) and kind='terminal_acceptance'`, [ids]);
+    const approvalRows = await client.query<{ id: string; status: string }>(
+      `select id::text,status from action_approvals where run_id=any($1::uuid[]) order by created_at`, [ids]);
+    const base = deliveryMetrics(runs.rows, receipts.rows, audits.rows);
+    const { approvals: _unknownApprovals, ...unknownReasons } = base.unknownReasons;
+    return { ...base, unknownReasons, approvals: { count: approvalRows.rows.length, rows: approvalRows.rows } };
+  });
+  const uri = await recordRunAction({ runId, agentId: "workflow-orchestrator", actionType: "delivery_metrics",
+    target: "run-set", summary: metrics.verifiedDelivery ? "Receipt-backed verified delivery metrics." : "Delivery remains unverified; unknown measurements retained.",
+    artifactKind: "delivery_metrics", artifactContent: metrics });
+  return { ...metrics, uri };
+}
+
+export async function enrollWorkflowAcceptanceContract(runId: string, contract: StructuredAcceptanceContract): Promise<void> {
+  await withClient(async (client) => {
+    await client.query("begin");
+    try {
+      await enrollAcceptanceContract(client, runId, contract);
+      await client.query("commit");
+    } catch (error) { await client.query("rollback"); throw error; }
+  });
+  await recordRunAction({ runId, agentId: "workflow-orchestrator", actionType: "acceptance_contract_enrolled",
+    target: contract.contractId, summary: "Runtime acceptance requirements frozen before execution.",
+    artifactKind: "acceptance_contract", artifactContent: { contract }, idempotencyKey: `acceptance-contract:${contract.contractId}` });
+}
+
+export async function preflightWorkflowAcceptance(runId: string, artifact: Record<string, unknown>) {
+  const result = await withClient(async (client) => {
+    await client.query("begin isolation level repeatable read read only");
+    try {
+      const preflight = await acceptancePreflight(client, runId, artifact);
+      await client.query("commit");
+      return preflight;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
+  });
+  await recordRunAction({ runId, agentId: "workflow-orchestrator", actionType: "acceptance_preflight",
+    target: "all-downstream-gates", summary: result.accepted ? "All structured acceptance gates passed." : "Acceptance preflight found unresolved or legacy gates.",
+    artifactKind: "acceptance_preflight", artifactContent: result });
+  return result;
+}
+
 export async function getArtifactById(id: string): Promise<ArtifactStatus | null> {
   return withClient(async (client) => {
     const result = await client.query<ArtifactStatus>(
@@ -3702,7 +3894,9 @@ export async function getArtifactById(id: string): Promise<ArtifactStatus | null
   });
 }
 
-async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts">> {
+export async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<ClaimedWorkflowTask, "compiledBrief" | "priorReceipts" | "priorStageArtifacts" | "acceptanceContract">> {
+  const contractResult = await client.query<{ contract: StructuredAcceptanceContract | null }>(
+    `select evaluation_metadata->'acceptanceContract' as contract from workflow_runs where id=$1`, [runId]);
   const briefResult = await client.query<{ text: string }>(
     `select content->>'text' as text
      from artifacts
@@ -3742,9 +3936,30 @@ async function loadStageContext(client: pg.Client, runId: string): Promise<Pick<
     [runId]
   );
 
+  // Preserved checkpoints may reference commands from an immutable ancestor.
+  // Resolve only references in completed stage outputs, within this project.
+  const uris = stageArtifactsResult.rows.flatMap((row) => {
+    const actions = row.artifact.actionResults;
+    return Array.isArray(actions) ? actions.flatMap((action) =>
+      action && typeof action.artifactUri === "string" ? [action.artifactUri] : []) : [];
+  });
+  const evidence = await client.query<{ uri: string; content: Record<string, unknown>; runId: string; taskId: string; stageId: string; createdAt: string }>(
+    `select a.uri, a.content, a.run_id::text as "runId", a.task_id::text as "taskId", wt.stage_id as "stageId", a.created_at::text as "createdAt" from artifacts a
+     join workflow_tasks wt on wt.id=a.task_id and wt.run_id=a.run_id
+     join workflow_runs source on source.id = a.run_id
+     join workflow_runs current_run on current_run.id = $1
+     where a.kind = 'command_output' and source.project_id = current_run.project_id
+       and (a.run_id = $1 or a.uri = any($2::text[]))
+     order by a.created_at desc limit 12`, [runId, uris]);
+  const replayEvidence = await loadReplayEvidencePacket(client, runId);
   return {
     compiledBrief: briefResult.rows[0]?.text ?? "",
-    priorReceipts: receiptsResult.rows,
+    ...(contractResult.rows[0]?.contract ? { acceptanceContract: contractResult.rows[0].contract } : {}),
+    priorReceipts: [...receiptsResult.rows, ...(evidence.rows.length ? [{
+      agentId: "workflow-orchestrator", actionType: "command_evidence_packet",
+      summary: commandEvidencePacket(evidence.rows.reverse())
+    }] : []), ...(replayEvidence ? [{ agentId: "workflow-orchestrator",
+      actionType: "replay_evidence_packet", summary: replayEvidence }] : [])],
     priorStageArtifacts: stageArtifactsResult.rows
   };
 }
@@ -3903,14 +4118,13 @@ export async function consolidateProjectAlias(input: {
       // Audit receipt binding the consolidation to its pre/post counts.
       // This is the backup-integrity record: if the consolidation needs to be
       // audited or reversed, the counts prove what moved.
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, 'workflow-orchestrator', 'project_consolidated', $2::text, $3, $4)`,
-        [
-          target.id,
-          source.id,
-          `Consolidated project ${input.sourceRootUri} into ${input.targetRootUri}`,
-          JSON.stringify({
+      await appendActionReceipt(client, {
+        runId: target.id,
+        agentId: "workflow-orchestrator",
+        actionType: "project_consolidated",
+        target: source.id,
+        summary: `Consolidated project ${input.sourceRootUri} into ${input.targetRootUri}`,
+        metadata: JSON.stringify({
             sourceRootUri: input.sourceRootUri,
             targetRootUri: input.targetRootUri,
             sourceProjectId: source.id,
@@ -3918,9 +4132,8 @@ export async function consolidateProjectAlias(input: {
             preSourceCounts: Object.fromEntries(preMap),
             preTargetCounts: Object.fromEntries(preTargetMap),
             postTargetCounts: Object.fromEntries(postMap),
-          }),
-        ]
-      );
+          })
+      });
       await client.query(`delete from projects where id = $1::uuid`, [source.id]);
       await client.query("commit");
       return {
@@ -3937,3 +4150,4 @@ export async function consolidateProjectAlias(input: {
     }
   });
 }
+import { appendActionReceipt } from "./receipt-writer.js";

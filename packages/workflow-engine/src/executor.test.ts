@@ -32,6 +32,7 @@ import {
   attributeVerifyFailure,
   buildBoundedReactLoopReceiptContent,
   boundedProjectFileSearch,
+  boundedProjectFileSearchResult,
   commandFailureEligibleForVerifyRetry,
   commandFailureIsDiagnosticEvidence,
   commandFailurePrecedesGovernedWrites,
@@ -65,6 +66,25 @@ test("bounded project search locates paths without exposing secret files", async
     writeFileSync(join(root, "terminal.env"), "secret");
     assert.deepEqual(await boundedProjectFileSearch(root, "terminal view"), ["src/terminal/TerminalView.swift"]);
     assert.deepEqual(await boundedProjectFileSearch(root, "terminal"), ["src/terminal/TerminalView.swift"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("runtime artifact volume cannot starve source discovery and budget exhaustion is explicit", async () => {
+  const root = mkdtempSync(join(tmpdir(), "agentflow-search-budget-"));
+  try {
+    mkdirSync(join(root, ".agent-workflow", "receipts"), { recursive: true });
+    for (let i = 0; i < 2501; i++) writeFileSync(join(root, ".agent-workflow", "receipts", `${i}.json`), "{}");
+    mkdirSync(join(root, "packages", "storage", "src"), { recursive: true });
+    writeFileSync(join(root, "packages", "storage", "src", "postgres.ts"), "export {};");
+    const found = await boundedProjectFileSearchResult(root, "postgres");
+    assert.deepEqual(found.matches, ["packages/storage/src/postgres.ts"]);
+    assert.equal(found.truncated, true);
+    assert.equal(found.inspected, 2500);
+    const missing = await boundedProjectFileSearchResult(root, "absent");
+    assert.deepEqual(missing.matches, []);
+    assert.equal(missing.truncated, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -367,12 +387,21 @@ test("command output truncation caps lines and chars for error paths", () => {
   const manyLines = Array.from({ length: 50 }, (_, i) => `line ${i}`).join("\n");
   const truncated = truncateCommandOutputForError(manyLines);
   assert.equal(truncated.split("\n").length, COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES + 1);
-  assert.match(truncated, /showing first 20 of 50 lines/);
+  assert.match(truncated, /head and tail of 50 lines/);
+  assert.ok(truncated.startsWith("line 0"));
+  assert.ok(truncated.endsWith("line 49"));
   assert.equal(truncateCommandOutputForError("a\nb"), "a\nb");
   const longLine = "x".repeat(COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS + 100);
   const charTruncated = truncateCommandOutputForError(longLine);
   assert.ok(charTruncated.length < COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS + 100);
-  assert.match(charTruncated, /showing first 4000 chars/);
+  assert.match(charTruncated, /head and tail/);
+  assert.ok(charTruncated.length <= COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS);
+  const evidence = truncateCommandOutputForError("START\n" + "noise\n".repeat(1000) + "tests 788; fail 0; database removed=true", 80, 4000);
+  assert.ok(evidence.startsWith("START"));
+  assert.ok(evidence.endsWith("tests 788; fail 0; database removed=true"));
+  const singleLine = truncateCommandOutputForError("START" + "x".repeat(9000) + "FINAL_RESULT", 80, 4000);
+  assert.ok(singleLine.startsWith("START"));
+  assert.ok(singleLine.endsWith("FINAL_RESULT"));
 });
 
 test("command failure evidence is self-diagnosing", () => {
@@ -486,7 +515,8 @@ test("successful discovery commands can drive a bounded dependent action round",
   assert.match(source, /commandDelta\(\{/u);
   assert.match(source, /local_command_success_followup/u);
   assert.match(source, /successfulFollowupsRemaining = Math\.min/iu);
-  assert.match(source, /if \(successfulCommandsThisRound > 0 && successfulFollowupsRemaining > 0\)/u);
+  assert.match(source, /if \(successfulActionsThisRound > 0 && successfulFollowupsRemaining > 0\)/u);
+  assert.match(source, /successfulCommandsThisRound \+ successfulWritesThisRound/u);
   assert.doesNotMatch(source, /acceptanceGap && successfulCommandsThisRound/u);
 });
 
@@ -649,9 +679,10 @@ test("environmental verify failures block before the retry budget is touched", (
 test("both early completion gates include authoritative restored action results", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.ok(source.includes('actionType: "completion_contract_feedback", summary: initialCompletionViolation'));
-  assert.ok(source.includes('const acceptanceGap = verificationCompletionReason(routedStageInput, actionResults)\n          ?? unfulfilledCompletionReason'));
+  assert.ok(source.includes('const acceptanceGap = routedStageInput.acceptanceContract ? null : (verificationCompletionReason(routedStageInput, actionResults)\n          ?? unfulfilledCompletionReason'));
   for (const gate of ["initialCompletionViolation", "repeatedViolation"]) {
-    assert.ok(source.includes(`const ${gate} = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });`));
+    const typedGuard = gate === "initialCompletionViolation" ? "routedStageInput.acceptanceContract ? null : " : "";
+    assert.ok(source.includes(`const ${gate} = ${typedGuard}unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });`));
   }
 });
 

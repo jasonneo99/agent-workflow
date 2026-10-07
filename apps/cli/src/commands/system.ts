@@ -404,6 +404,7 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
     .option("--json", "output as JSON")
     .action(async (options: { run: string; json?: boolean }) => {
       const result = await verifyRunReceiptChain(options.run);
+      if (!result.valid) process.exitCode = 1;
       if (options.json) {
         console.log(JSON.stringify({ runId: options.run, ...result }, null, 2));
         return;

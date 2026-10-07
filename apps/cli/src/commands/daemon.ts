@@ -77,6 +77,7 @@ import { BedrockClient, ListFoundationModelsCommand } from "@aws-sdk/client-bedr
 import escapeHtmlText from "escape-html";
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { createWorkerIdentity } from "../../../../packages/workflow-engine/src/worker-identity.js";
 import fsSync, { type Dirent } from "node:fs";
 import fs from "node:fs/promises";
 import http from "node:http";
@@ -854,6 +855,7 @@ type WorkerHeartbeat = {
   protocolVersions: CliContext["protocolVersions"];
   pid: number;
   workerId: string;
+  workerLabel?: string;
   projectRootUri: string | null;
   concurrency: number;
   perProjectConcurrency: number;
@@ -19742,7 +19744,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     .option("-l, --limit <number>", "maximum tasks to execute", "1")
     .option("--watch", "keep polling for queued workflow tasks")
     .option("--interval-ms <number>", "watch polling interval in milliseconds", "2000")
-    .option("--worker-id <id>", "stable worker identity for leases and dashboard visibility")
+    .option("--worker-id <id>", "stable worker lane label; lease ownership includes a unique process incarnation")
     .option("--lease-seconds <number>", "renewable running-task lease duration in seconds", "120")
     .option("-p, --project <dir>", "only claim queued tasks for one project root")
     .option("--all-projects", "use project worker-pool defaults without restricting queue claims to that project")
@@ -19770,7 +19772,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         process.exitCode = 1;
         return;
       }
-      const workerId = normalizeWorkerId(cliOptionValue(options.workerId, ["--worker-id"], workerDefaults.workerId));
+      const { workerId, workerLabel } = createWorkerIdentity(normalizeWorkerId(cliOptionValue(options.workerId, ["--worker-id"], workerDefaults.workerId)));
       const leaseSeconds = Number.parseInt(cliOptionValue(options.leaseSeconds, ["--lease-seconds"], String(workerDefaults.leaseSeconds ?? 120)), 10);
       if (!Number.isFinite(leaseSeconds) || leaseSeconds < 30) {
         console.error("--lease-seconds must be an integer >= 30");
@@ -19820,6 +19822,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ...await ctx.runtimeVersionMetadata,
           pid: process.pid,
           workerId,
+          workerLabel,
           projectRootUri: projectRootUri ?? null,
           concurrency,
           perProjectConcurrency,
@@ -19837,7 +19840,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             ...(tick?.quarantinedProviderIds ?? [])
           ])],
           status,
-          command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerId} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency} --per-project-concurrency ${perProjectConcurrency}`
+          command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerLabel} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency} --per-project-concurrency ${perProjectConcurrency}`
         };
         await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
         await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");

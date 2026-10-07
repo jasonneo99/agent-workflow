@@ -1,7 +1,37 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
-import { assertCommandAllowed, commandSerializationResource, withDeveloperToolPath } from "./command-executor.js";
+import { assertCommandAllowed, commandSerializationResource, withDeveloperToolPath, createBoundedOutputCapture, executeAllowedCommand } from "./command-executor.js";
+
+test("bounded streaming capture preserves head and newest tail across many chunks", () => {
+  const capture = createBoundedOutputCapture(200);
+  capture.append("BUILD START\n");
+  for (let i = 0; i < 1000; i++) capture.append("passed test\n");
+  capture.append("FINAL FAILURE: regression\n");
+  assert.equal(capture.text().length, 200);
+  assert.ok(capture.text().startsWith("BUILD START\n"));
+  assert.ok(capture.text().endsWith("FINAL FAILURE: regression\n"));
+  assert.equal(capture.text().split("[middle truncated]").length, 2);
+  const exact = createBoundedOutputCapture(3);
+  exact.append("abc");
+  assert.equal(exact.text(), "abc");
+  exact.append("d");
+  assert.equal(exact.text().length, 3);
+});
+
+test("executed failing command retains final stdout and stderr summaries within caps", async () => {
+  const script = 'process.stdout.write("START\\n"+"x".repeat(100000)); process.stderr.write("ERROR START\\n"+"y".repeat(100000)); setTimeout(()=>{process.stdout.write("\\nFINAL TEST FAILURE\\n");process.stderr.write("\\nFINAL STACK TRACE\\n");process.exitCode=1},25)';
+  const result = await executeAllowedCommand({
+    commandLine: `${process.execPath} -e '${script}'`, cwd: process.cwd(),
+    project: { ...project, actions: { ...project.actions, allowed_commands: [`${process.execPath} *`] } }
+  });
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.timedOut, false);
+  assert.ok(result.stdout.startsWith("START\n"));
+  assert.ok(result.stdout.endsWith("FINAL TEST FAILURE\n"));
+  assert.ok(result.stderr.endsWith("FINAL STACK TRACE\n"));
+  assert.ok(result.stdout.length <= 2000 && result.stderr.length <= 2000);
+});
 
 const project = {
   actions: {

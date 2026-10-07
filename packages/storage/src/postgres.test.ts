@@ -37,19 +37,13 @@ test("project alias consolidation is transactional and preserves durable run his
 
 test("queue action receipt inserts use separate uuid and text parameters", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
-
-  assert.match(
-    source,
-    /values \(\$1::uuid, 'workflow-orchestrator', 'expired_worker_lease_requeued', \$2::text, \$3, \$4\)/u
-  );
-  assert.match(
-    source,
-    /values \(\$1::uuid, 'workflow-orchestrator', 'checkpoint_resume_requested', \$2::text, \$3, \$4\)/u
-  );
-  assert.match(
-    source,
-    /values \(\$1::uuid, 'workflow-orchestrator', 'failed_run_dismissed', \$2::text, \$3, \$4\)/u
-  );
+  const writer = readFileSync(new URL("./receipt-writer.ts", import.meta.url), "utf8");
+  for (const action of ["expired_worker_lease_requeued", "checkpoint_resume_requested", "failed_run_dismissed"]) {
+    assert.match(source, new RegExp(`appendActionReceipt\\(client, \\{[^}]+actionType: "${action}"[^}]+target:`));
+  }
+  // UUID identity and text target are independently bound by the shared writer.
+  assert.match(writer, /values \(\$1::uuid, \$2, \$3, \$4, \$5, \$6::jsonb/u);
+  assert.match(writer, /input\.runId, input\.agentId, input\.actionType, input\.target/u);
 });
 
 test("successful direct actions dismiss stale approval cards for the same task and target", () => {
@@ -316,7 +310,7 @@ test("stale terminal run reconciliation only repairs terminal child-task runs", 
   );
   assert.match(
     source,
-    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'leased', 'running', 'failed'\)[\s\S]+to: "leased"[\s\S]+to: "running"[\s\S]+'stale_run_reconciled'/u
+    /export async function reconcileStaleTerminalWorkflowRuns[\s\S]+active\.status in \('queued', 'leased', 'running', 'failed'\)[\s\S]+to: "leased"[\s\S]+to: "running"[\s\S]+actionType: "stale_run_reconciled"/u
   );
 });
 

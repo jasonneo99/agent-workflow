@@ -22,6 +22,8 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
+import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
+import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 
 export function registerRunsCommands(program: Command, ctx: CliContext): void {
   function formatOrchestrationPlan(plan: OrchestrationPlan): string {
@@ -397,6 +399,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
   program
     .command("run")
     .description("Queue a workflow run in enterprise storage and print the compiled brief")
+    .option("--acceptance-requirements <file>", "JSON requirements with explicit sourcePaths and pending deliverables; source identity is measured before atomic enrollment")
     .argument("<workflow>", "workflow id")
     .requiredOption("-p, --project <dir>", "project directory")
     .requiredOption("-t, --task <task>", "task description")
@@ -406,7 +409,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .option("--no-brief", "queue the run without printing the compiled brief")
     .option("--source-token-budget <number>", "token budget for indexed source summaries")
     .option("--source-max-files <number>", "maximum indexed source summaries to include")
-    .action(async (workflowId: string, options: { project: string; task: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string; requester?: string; requesterChannel?: string }) => {
+    .action(async (workflowId: string, options: { project: string; task: string; acceptanceRequirements?: string; policyProfile?: string; brief?: boolean; sourceTokenBudget?: string; sourceMaxFiles?: string; requester?: string; requesterChannel?: string }) => {
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -421,6 +424,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
 
       const result = await queueWorkflow(ctx, {
         workflowId,
+        acceptanceRequirementsFile: options.acceptanceRequirements,
         projectPath: options.project,
         task: options.task,
         policyProfile: options.policyProfile,
@@ -923,8 +927,9 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .description("Resume an interrupted run from the last completed checkpoint")
     .requiredOption("-r, --run <id>", "workflow run id")
     .option("--include-failed", "also requeue failed stages after preserving completed checkpoints")
+    .option("--revalidate-source", "bind fresh recovery acceptance to the current frozen source scope")
     .option("--reason <text>", "receipt reason", "Checkpoint resume requested from CLI.")
-    .action(async (options: { run: string; includeFailed?: boolean; reason: string }) => {
+    .action(async (options: { run: string; includeFailed?: boolean; revalidateSource?: boolean; reason: string }) => {
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -936,11 +941,20 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       }
 
       const staleReport = await assessRunStaleInputs(ctx, options.run);
+      let revalidatedSubjectHash: string | undefined;
+      if (options.revalidateSource) {
+        if (!options.includeFailed) throw new Error("Source revalidation requires terminal replacement recovery.");
+        const details = await getWorkflowRunDetails(options.run);
+        const contract = details.run?.evaluationMetadata.acceptanceContract as StructuredAcceptanceContract | undefined;
+        if (!details.run?.projectRootUri || !contract?.sourcePaths?.length) throw new Error("Source revalidation requires an enrolled frozen source scope.");
+        revalidatedSubjectHash = await sourceSubjectHash(details.run.projectRootUri, contract.sourcePaths);
+      }
       const result = await resumeWorkflowRunFromCheckpoint({
         runId: options.run,
         actor: "cli",
         reason: options.reason,
-        includeFailed: options.includeFailed === true
+        includeFailed: options.includeFailed === true,
+        revalidatedSubjectHash
       });
       if (result.totalTasks === 0) {
         console.error(`Run cannot be resumed or does not exist: ${options.run}`);
@@ -991,7 +1005,9 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
     .description("Create a new queued run from an existing run's stored task, policy, provider, and compiled context")
     .requiredOption("-r, --run <id>", "source workflow run id")
     .option("--reason <text>", "receipt reason", "Deterministic replay requested from CLI.")
-    .action(async (options: { run: string; reason: string }) => {
+    .option("--acceptance-requirements <file>", "explicit pending acceptance requirements for a legacy source; frozen contracts cannot be replaced")
+    .option("--revalidate-source", "explicitly bind a clean replay to current bytes of the unchanged frozen source scope")
+    .action(async (options: { run: string; reason: string; acceptanceRequirements?: string; revalidateSource?: boolean }) => {
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -1003,10 +1019,31 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       }
 
       const staleReport = await assessRunStaleInputs(ctx, options.run);
+      let revalidatedSubjectHash: string | undefined;
+      if (options.revalidateSource) {
+        if (options.acceptanceRequirements) throw new Error("Choose legacy enrollment or frozen source revalidation, not both.");
+        const details = await getWorkflowRunDetails(options.run);
+        const contract = details.run?.evaluationMetadata.acceptanceContract as StructuredAcceptanceContract | undefined;
+        if (!details.run?.projectRootUri || !contract?.sourcePaths?.length) throw new Error("Source revalidation requires an enrolled frozen source scope.");
+        revalidatedSubjectHash = await sourceSubjectHash(details.run.projectRootUri, contract.sourcePaths);
+      }
+      let acceptanceRequirements: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables"> | undefined;
+      if (options.acceptanceRequirements) {
+        const file = path.resolve(options.acceptanceRequirements);
+        if ((await fs.stat(file)).size > 256_000) throw new Error("Acceptance requirements exceed 256000 bytes.");
+        const requirements = JSON.parse(await fs.readFile(file, "utf8"));
+        if (!Array.isArray(requirements.sourcePaths) || !Array.isArray(requirements.deliverables)) throw new Error("Acceptance requirements need sourcePaths and pending deliverables.");
+        const details = await getWorkflowRunDetails(options.run);
+        if (!details.run?.projectRootUri) throw new Error("Replay source project root is unavailable.");
+        acceptanceRequirements = { sourcePaths: requirements.sourcePaths, deliverables: requirements.deliverables,
+          subjectHash: await sourceSubjectHash(details.run.projectRootUri, requirements.sourcePaths) };
+      }
       const result = await replayWorkflowRun({
         sourceRunId: options.run,
         actor: "cli",
-        reason: options.reason
+        reason: options.reason,
+        acceptanceRequirements,
+        revalidatedSubjectHash
       });
       if (!result) {
         console.error(`Unknown workflow run: ${options.run}`);

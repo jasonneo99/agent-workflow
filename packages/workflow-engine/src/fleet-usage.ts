@@ -39,7 +39,7 @@ export async function recordDirectProviderUsage(input: DirectUsageInput): Promis
       ...(model ? { model } : {}),
       ...measuredUsage,
       ...(estimatedCostUsd === undefined ? {} : { estimatedCostUsd }),
-      latencyMs: index === completedIndex || index === input.attempts.length - 1 ? input.latencyMs : 0,
+      latencyMs: attempt.latencyMs ?? (index === completedIndex || index === input.attempts.length - 1 ? input.latencyMs : 0),
       status: attempt.outcome === "completed" ? "completed" : "failed",
       requestHash: createHash("sha256").update(attempt.attemptId).update(input.stage.runId).update(input.stage.taskId).digest("hex")
     };

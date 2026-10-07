@@ -1,8 +1,25 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import test from "node:test";
+import test, { beforeEach, afterEach } from "node:test";
 import { autoProviderCandidates, selectModelRoute } from "./routing.js";
+
+// A worker may inherit real tier overrides. Each test defines its own routing
+// scenario and model catalog; those external overrides must not change it.
+const tierEnvironment = ["fast", "standard", "reasoning"].flatMap((tier) =>
+  ["AGENTFLOW_PROVIDER", "LOCAL_MODEL", "MUSE_MODEL"].map((prefix) => `${prefix}_${tier.toUpperCase()}`)
+);
+let savedTierEnvironment: Array<[string, string | undefined]>;
+beforeEach(() => {
+  savedTierEnvironment = tierEnvironment.map((key) => [key, process.env[key]]);
+  for (const key of tierEnvironment) delete process.env[key];
+});
+afterEach(() => {
+  for (const [key, value] of savedTierEnvironment) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+});
 
 test("routine low-risk stages downshift to fast while risky tasks preserve their tier", async () => {
   const previousProvider = process.env.DEFAULT_MODEL_PROVIDER;

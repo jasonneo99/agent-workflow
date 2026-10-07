@@ -21,14 +21,20 @@ export function truncateCommandOutputForError(
   maxLines: number = COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES,
   maxChars: number = COMMAND_FAILURE_ERROR_OUTPUT_MAX_CHARS
 ): string {
+  if (maxChars <= 0) return "";
   const lines = output.split("\n");
-  const head = lines.slice(0, Math.max(1, maxLines)).join("\n");
-  const text = lines.length > maxLines
-    ? `${head}\n… [truncated: showing first ${maxLines} of ${lines.length} lines]`
-    : head;
-  return text.length > maxChars
-    ? `${text.slice(0, Math.max(0, maxChars))}\n… [truncated: showing first ${maxChars} chars]`
-    : text;
+  const lineBudget = Math.max(2, maxLines);
+  const headLines = Math.ceil(lineBudget / 2);
+  const text = lines.length > lineBudget
+    ? [...lines.slice(0, headLines), `… [truncated: head and tail of ${lines.length} lines]`, ...lines.slice(-(lineBudget - headLines))].join("\n")
+    : output;
+  if (text.length <= maxChars) return text;
+  const marker = "\n… [truncated: head and tail]\n";
+  const budget = Math.max(0, maxChars - marker.length);
+  const headChars = Math.ceil(budget / 2);
+  const tailChars = budget - headChars;
+  return maxChars <= marker.length ? text.slice(-Math.max(0, maxChars))
+    : text.slice(0, headChars) + marker + (tailChars ? text.slice(-tailChars) : "");
 }
 
 export function formatCommandFailureEvidence(input: {
@@ -146,11 +152,12 @@ export function attributeVerifyFailure(input: {
   footprintBefore: Set<string> | null;
   footprintAfter: Set<string> | null;
   cwd: string;
+  ownedFiles?: Set<string>;
 }): VerifyFailureAttribution {
   const files = extractVerifyFailureFiles(input.outputLines.join("\n"), input.cwd);
   if (input.footprintBefore === null || input.footprintAfter === null || files.length === 0) return { kind: "agent", files };
   const footprint = diffGitFootprint(input.footprintBefore, input.footprintAfter);
-  return { kind: files.every((file) => !verifyFileInFootprint(file, footprint)) ? "environmental" : "agent", files };
+  return { kind: files.every((file) => !verifyFileInFootprint(file, footprint) && !input.ownedFiles?.has(file)) ? "environmental" : "agent", files };
 }
 
 const execFileAsync = promisify(execFile);
@@ -168,6 +175,7 @@ export async function attributeVerifyCommandFailure(input: {
   outputLines: string[];
   cwd: string;
   footprintBefore: Set<string> | null;
+  ownedFiles?: Set<string>;
 }): Promise<VerifyFailureAttribution> {
   const footprintAfter = input.footprintBefore === null ? null : await snapshotGitStatus(input.cwd);
   return attributeVerifyFailure({ ...input, footprintAfter });

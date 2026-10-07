@@ -1,6 +1,29 @@
 import type { IndexedProjectFile } from "../../project-indexer/src/index.js";
 import { withClient } from "./client.js";
 
+export interface ProjectFileSearchHit { path: string; contentHash: string; indexedAt: string }
+
+/** Discovery hints only: callers must read current files before trusting content. */
+export async function searchProjectFileIndex(projectRoot: string, query: string): Promise<ProjectFileSearchHit[]> {
+  const terms = query.toLowerCase().split(/[^a-z0-9._-]+/u).filter((term) => term.length >= 2).slice(0, 6);
+  if (!terms.length) return [];
+  return withClient(async (client) => {
+    const result = await client.query<ProjectFileSearchHit>(
+      `select pf.source_uri as path, pf.content_hash as "contentHash", pf.updated_at::text as "indexedAt"
+       from project_files pf join projects p on p.id=pf.project_id
+       where p.root_uri=$1
+         and pf.source_uri not like '.agent-workflow/%'
+         and pf.source_uri !~ '(^|/)[.]env($|[.])|[.](pem|key|p12|mobileprovision)$'
+         and not exists (select 1 from unnest($2::text[]) term where position(term in lower(pf.source_uri))=0)
+       order by (lower(pf.source_uri)=lower($3)) desc,
+                (lower(regexp_replace(pf.source_uri, '^.*/', ''))=lower($3)) desc,
+                length(pf.source_uri), pf.source_uri
+       limit 41`, [projectRoot, terms, query.trim()]
+    );
+    return result.rows;
+  });
+}
+
 export async function upsertProject(input: { name: string; rootUri: string; profile: string; config: unknown }): Promise<string> {
   return withClient(async (client) => {
     const result = await client.query<{ id: string }>(

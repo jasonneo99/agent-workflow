@@ -48,3 +48,24 @@ is not considered proven until its recovery and rollback evidence is recorded.
 leases, invalid terminal runs, recovery time, fleet false criticals, and rollback
 time. Expansion of autonomous authority requires a passing report and tested
 recovery for every failure scenario.
+
+## Acceptance and handoff
+
+Use the [structured acceptance contract](architecture.md#structured-reliability-acceptance)
+to retain every deliverable, status, gap and exact governed receipt reference.
+Verification status applies to its assessed gate; packaging and supervision need
+their own fresh evidence. Graph completion and prose do not establish acceptance.
+
+Recorded-artifact preflight covers all four gates before repair retry dispatch.
+Historical replay remains diagnostic; it cannot satisfy fresh delivery gates.
+Repeated failure fingerprints require changed evidence-backed diagnosis or a
+validated fix. Live self-repair remains disabled; enabled-path tests use synthetic data.
+
+Inspect stored evidence through `npm run agentflow -- artifacts --uri <exact-db-uri> --json`
+and run state through `npm run agentflow -- status --run <run-id> --json`.
+These reads do not rerun tests. Do not substitute inline storage imports or database repairs.
+
+Release scoped work intent before verification. Handoff evidence includes focused positive
+and negative lifecycle tests, disposable-storage continuation and replay checks, typecheck,
+build, full tests and OSS boundary validation. Record unknown metrics with their reasons;
+independent supervision audits loaded validated source before fresh original-run acceptance.

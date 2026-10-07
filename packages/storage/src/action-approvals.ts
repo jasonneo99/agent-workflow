@@ -1,6 +1,6 @@
 import { transitionWorkflowRun } from "./run-transitions.js";
 import { withClient } from "./client.js";
-import { notifyRequester } from "./postgres.js";
+import { enqueueRunNotification } from "./run-notifications.js";
 
 export interface ActionApprovalStatus {
   id: string;
@@ -137,17 +137,14 @@ export async function requestActionApproval(input: {
         requestedByStageId: input.stageId,
         status: approval.rows[0].status
       };
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, $2, 'action_approval_requested', $3, $4, $5)`,
-        [
-          input.runId,
-          input.agentId,
-          input.target,
-          `Approval requested for ${input.actionType}: ${input.target}`,
-          JSON.stringify(artifactContent)
-        ]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "action_approval_requested",
+        target: input.target,
+        summary: `Approval requested for ${input.actionType}: ${input.target}`,
+        metadata: JSON.stringify(artifactContent)
+      });
       const artifactUri = `db://workflow_runs/${input.runId}/action_approval/${input.idempotencyKey}`;
       await client.query(
         `insert into artifacts (run_id, task_id, kind, uri, content)
@@ -161,16 +158,17 @@ export async function requestActionApproval(input: {
           JSON.stringify(artifactContent)
         ]
       );
-      await client.query("commit");
       const result = { approvalId, artifactUri, status: approval.rows[0].status };
       if (result.status === "pending") {
-        void notifyRequester({
+        await enqueueRunNotification(client, {
           runId: input.runId,
           kind: "approval_needed",
+          eventKey: `approval:${approvalId}`,
           title: `Approval needed: ${input.actionType} on ${input.target}`,
           body: input.rationale
         });
       }
+      await client.query("commit");
       return result;
     } catch (error) {
       await client.query("rollback");
@@ -196,17 +194,14 @@ export async function completeApprovalRequestRun(input: {
            and status = 'queued'`,
         [input.runId]
       );
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, $2, 'approval_request_completed', $3, $4, $5)`,
-        [
-          input.runId,
-          input.agentId,
-          String(input.metadata.target ?? "approval-request"),
-          input.summary,
-          JSON.stringify(input.metadata)
-        ]
-      );
+      await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: input.agentId,
+        actionType: "approval_request_completed",
+        target: String(input.metadata.target ?? "approval-request"),
+        summary: input.summary,
+        metadata: JSON.stringify(input.metadata)
+      });
       await transitionWorkflowRun(client, { runId: input.runId, to: "leased", actor: input.agentId, reason: "Approval-only run was claimed by the approval service.", idempotencyKey: "approval-run-leased" });
       await transitionWorkflowRun(client, { runId: input.runId, to: "running", actor: input.agentId, reason: "Approval-only run processing started.", idempotencyKey: "approval-run-running" });
       await transitionWorkflowRun(client, { runId: input.runId, to: "completed", actor: input.agentId, reason: input.summary, idempotencyKey: "approval-run-completed" });
@@ -339,16 +334,13 @@ export async function decideActionApproval(input: {
         await client.query("rollback");
         return null;
       }
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, $2, $3, $4, $5, $6)`,
-        [
-          approval.runId,
-          approval.agentId,
-          `action_approval_${input.decision}`,
-          approval.target,
-          `${input.decision} by ${input.actor}${input.note ? `: ${input.note}` : ""}`,
-          JSON.stringify({
+      await appendActionReceipt(client, {
+        runId: approval.runId,
+        agentId: approval.agentId,
+        actionType: `action_approval_${input.decision}`,
+        target: approval.target,
+        summary: `${input.decision} by ${input.actor}${input.note ? `: ${input.note}` : ""}`,
+        metadata: JSON.stringify({
             approvalId: approval.id,
             decision: input.decision,
             actor: input.actor,
@@ -358,8 +350,7 @@ export async function decideActionApproval(input: {
             target: approval.target,
             idempotencyKey: approval.idempotencyKey
           })
-        ]
-      );
+      });
       await client.query("commit");
       return approval;
     } catch (error) {
@@ -427,16 +418,13 @@ export async function markActionApprovalExecution(input: {
           [approval.id, approval.runId, approval.taskId, approval.actionType, approval.target]
         );
       }
-      await client.query(
-        `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-         values ($1::uuid, $2, $3, $4, $5, $6)`,
-        [
-          approval.runId,
-          approval.agentId,
-          `action_approval_${input.status}`,
-          approval.target,
-          input.summary,
-          JSON.stringify({
+      await appendActionReceipt(client, {
+        runId: approval.runId,
+        agentId: approval.agentId,
+        actionType: `action_approval_${input.status}`,
+        target: approval.target,
+        summary: input.summary,
+        metadata: JSON.stringify({
             approvalId: approval.id,
             status: input.status,
             actor: input.actor,
@@ -447,8 +435,7 @@ export async function markActionApprovalExecution(input: {
             artifactUri: input.artifactUri,
             error: input.error
           })
-        ]
-      );
+      });
       await client.query("commit");
       return approval;
     } catch (error) {
@@ -512,17 +499,14 @@ export async function recoverInterruptedActionApprovalExecutions(input: {
         [input.actor]
       );
       for (const approval of result.rows) {
-        await client.query(
-          `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-           values ($1::uuid, $2, 'action_approval_execution_recovered', $3, $4, $5)`,
-          [
-            approval.runId,
-            approval.agentId,
-            approval.target,
-            `Recovered an interrupted ${approval.actionType} execution owned by ${input.actor}; the approved action is eligible for a fresh idempotent execution attempt.`,
-            JSON.stringify({ approvalId: approval.id, actor: input.actor, priorStatus: "executing", nextStatus: "approved" })
-          ]
-        );
+        await appendActionReceipt(client, {
+        runId: approval.runId,
+        agentId: approval.agentId,
+        actionType: "action_approval_execution_recovered",
+        target: approval.target,
+        summary: `Recovered an interrupted ${approval.actionType} execution owned by ${input.actor}; the approved action is eligible for a fresh idempotent execution attempt.`,
+        metadata: JSON.stringify({ approvalId: approval.id, actor: input.actor, priorStatus: "executing", nextStatus: "approved" })
+      });
       }
       await client.query("commit");
       return result.rows;
@@ -548,3 +532,4 @@ export async function expireStaleApprovals(): Promise<number> {
     return result.rowCount ?? 0;
   });
 }
+import { appendActionReceipt } from "./receipt-writer.js";

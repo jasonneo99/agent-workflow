@@ -87,7 +87,7 @@ export async function findRecentDuplicateRun(client: pg.Client, input: RunDedupl
        and wr.provider_override is not distinct from $8
        and wr.workflow_definition_version::text = $9
        and wr.workflow_definition_hash = $10
-       and wr.evaluation_metadata = $11::jsonb
+       and (wr.evaluation_metadata - 'acceptanceContract') = $11::jsonb
        and wr.construction_rationale = $12::jsonb
        and (($13::text is null and not exists (
          select 1 from artifacts a where a.run_id = wr.id and a.kind = 'compiled_brief'

@@ -10,7 +10,13 @@ triggers:
 stages:
   - id: collect
     agent: ci-debugger
-    goal: Gather the smallest useful failure evidence.
+    goal: >
+      Gather the smallest authoritative evidence for one failure. Identify the
+      original task/run, failed stage and receipt, expected behavior, current
+      owner, and existing repair lineage. Distinguish unresolved work from
+      superseded attempts; blocked is not an empty queue. Select one failure
+      fingerprint and a falsifiable hypothesis; do not bundle unrelated defects
+      or duplicate healthy active work. Respect paused recovery and work intents.
     pattern:
       type: planner
       promotion_gate: none
@@ -23,7 +29,21 @@ stages:
     output: ci_diagnosis
   - id: reproduce
     agent: test-engineer
-    goal: Reproduce the failure locally or explain why it cannot be reproduced.
+    goal: >
+      Build a minimal executable reproduction of only the selected failure,
+      exercising the real failing entry point with isolated synthetic data.
+      Ensure fixture files exist before running them. Capture the exact command,
+      expected failure signature and actual red evidence; a missing fixture or
+      unrelated failure is not a reproduction. An expected red result establishes
+      reproduction, not successful product verification. If reproduction is
+      unavailable, identify the specific missing evidence without inventing it.
+      Do not mark this stage complete while reproduction is pending execution.
+      Cite the executed command receipt and observed failure, not merely a fixture
+      or proposed command. Release stage-owned work intents before handing off.
+      On a clean replay after a fix, consume the replay ancestor evidence packet
+      for the observed pre-fix red command, exact artifact URI and source run.
+      Database artifact URIs are not filesystem paths. Historical red can prove
+      the original failure; historical green never replaces fresh verification.
     pattern:
       type: react
       max_iterations: 3
@@ -38,7 +58,14 @@ stages:
     output: reproduction_report
   - id: fix
     agent: implementation-agent
-    goal: Apply the smallest credible fix.
+    goal: >
+      Acquire scoped ownership and fix the demonstrated root cause while
+      preserving unrelated work, policy, provenance and idempotency. Run the
+      same reproduction after the fix, plus negative controls for invalid or
+      stale evidence and relevant replay/restart boundaries. Do not replace
+      required acceptance with warnings to obtain a pass. If the attempt fails,
+      record the changed evidence and revised hypothesis before another bounded
+      experiment; never recursively queue an unchanged repair prompt.
     pattern:
       type: executor
       requires_verifier: true
@@ -52,7 +79,16 @@ stages:
     output: change_summary
   - id: verify
     agent: auto-test-runner
-    goal: Verify the fix and record residual risk.
+    goal: >
+      Independently verify the red-to-green reproduction, negative controls and
+      risk-proportional integration checks from actual receipts. Report a complete
+      deliverables ledger with evidence and remaining gaps. Hand the original
+      task, preserved acceptance requirements, source identity and replay command
+      to the orchestrator. A narrow repair is not original-task delivery: replay
+      the original workflow through all required stages before advancing to the
+      next defect. Do not dispatch recursive repairs from this verifier or claim
+      an unexecuted replay passed. Record elapsed time, attempts, repeated reads,
+      approvals and model latency when measured; otherwise mark them unknown.
     pattern:
       type: verifier
       promotion_gate: evaluation

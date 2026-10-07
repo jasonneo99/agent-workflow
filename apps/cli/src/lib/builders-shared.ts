@@ -1,4 +1,6 @@
 import type { Dirent } from "node:fs";
+import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
+import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 import type { CliContext } from "./context.js";
 import type { ArtifactLifecycleAction, DashboardWorkflowGraphReport, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardFollowUpResult, DashboardProjectPathResolution, RunInputSnapshot, SourceSummaryWithHash, TeamRoleCapability, DashboardWorkflowStageRun, FocusedStageDeltaSummary, FocusedStageOutcomeSummary} from "./cli-types.js";
 import { byId, loadAgents, loadProjectConfig, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
@@ -1472,6 +1474,7 @@ export async function pathIsFile(filePath: string): Promise<boolean> {
 
 
 export async function queueWorkflow(ctx: CliContext, input: {
+  acceptanceRequirementsFile?: string;
   workflowId: string;
   projectPath: string;
   task: string;
@@ -1588,7 +1591,17 @@ export async function queueWorkflow(ctx: CliContext, input: {
     sourceSummaries
   });
 
+  let acceptanceRequirements: Pick<StructuredAcceptanceContract, "subjectHash" | "sourcePaths" | "deliverables"> | undefined;
+  if (input.acceptanceRequirementsFile) {
+    const file = path.resolve(input.acceptanceRequirementsFile);
+    if ((await fs.stat(file)).size > 256_000) throw new Error("Acceptance requirements exceed 256000 bytes.");
+    const requirements = JSON.parse(await fs.readFile(file, "utf8"));
+    if (!Array.isArray(requirements.sourcePaths) || !Array.isArray(requirements.deliverables)) throw new Error("Acceptance requirements need sourcePaths and pending deliverables.");
+    acceptanceRequirements = { sourcePaths: requirements.sourcePaths, deliverables: requirements.deliverables,
+      subjectHash: await sourceSubjectHash(projectDir, requirements.sourcePaths) };
+  }
   const run = await createWorkflowRun({
+    acceptanceRequirements,
     projectName: project.project.name,
     projectRootUri: input.registeredProjectRootUri ?? projectDir,
     projectProfile: project.project.autonomy === "wide-open" ? "enterprise" : "custom",

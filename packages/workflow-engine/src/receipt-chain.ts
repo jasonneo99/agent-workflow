@@ -20,18 +20,39 @@ export type ReceiptChainContent = {
   target: string;
   summary: string;
   metadata: string; // canonical JSON string
+  metadataSerializationVersion?: number;
   createdAt: string; // ISO timestamp
 };
 
+/** Version 2 sorts object keys recursively while retaining array order. */
+export function canonicalReceiptMetadata(metadata: string): string {
+  function encode(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(encode).join(",")}]`;
+    if (value !== null && typeof value === "object") {
+      const object = value as Record<string, unknown>;
+      return `{${Object.keys(object).sort().map((key) =>
+        `${JSON.stringify(key)}:${encode(object[key])}`).join(",")}}`;
+    }
+    return JSON.stringify(value) as string;
+  }
+  return encode(JSON.parse(metadata));
+}
 export function canonicalReceiptJson(content: ReceiptChainContent): string {
+  if (content.metadataSerializationVersion !== undefined && content.metadataSerializationVersion !== 2) {
+    throw new Error(`Unsupported receipt metadata serialization version: ${content.metadataSerializationVersion}`);
+  }
   return JSON.stringify({
     runId: content.runId,
     agentId: content.agentId,
     actionType: content.actionType,
     target: content.target,
     summary: content.summary,
-    metadata: content.metadata,
+    metadata: content.metadataSerializationVersion === 2
+      ? canonicalReceiptMetadata(content.metadata)
+      : content.metadata,
     createdAt: content.createdAt,
+    ...(content.metadataSerializationVersion === 2
+      ? { metadataSerializationVersion: 2 } : {}),
   });
 }
 
@@ -74,13 +95,23 @@ export function verifyReceiptChain(receipts: ChainedReceipt[]): ChainVerificatio
         reason: `prev_hash mismatch at index ${i}: expected ${prevHash.slice(0, 12)}..., got ${r.prevHash.slice(0, 12)}...`,
       };
     }
-    const expected = computeReceiptHash(r.prevHash, r);
+    let expected: string;
+    try {
+      expected = computeReceiptHash(r.prevHash, r);
+    } catch {
+      return {
+        valid: false,
+        checked: i,
+        brokenAt: i,
+        reason: `Invalid metadata or unsupported serialization version at index ${i}`,
+      };
+    }
     if (r.receiptHash !== expected) {
       return {
         valid: false,
         checked: i,
         brokenAt: i,
-        reason: `receipt_hash mismatch at index ${i}: content was modified after chaining`,
+        reason: `receipt_hash mismatch at index ${i}: stored content does not reproduce the recorded hash; legacy serialization may be unrecoverable`,
       };
     }
     prevHash = r.receiptHash;

@@ -9,6 +9,20 @@ import { sha256 } from "./file-writer.js";
 
 const project = projectConfigSchema.parse({ project: { name: "patch-test" }, actions: { allowed_write_paths: ["src/**"], max_write_bytes: 2048 } });
 
+test("mismatch diagnostics distinguish the requested preimage from current text", () => {
+  assert.throws(() => applyUnifiedPatch("actual\n", "@@ -1,1 +1,1 @@\n expected\n"), /patch expected "expected"; file contains "actual"/u);
+  assert.throws(() => applyUnifiedPatch("actual\n", "@@ -1,1 +1,1 @@\n-expected\n+next\n"), /patch expected "expected"; file contains "actual"/u);
+});
+
+test("zero-length old ranges insert after their anchor, including the start", () => {
+  for (const [anchor, expected] of [[0, "new\none\ntwo\n"], [1, "one\nnew\ntwo\n"], [2, "one\ntwo\nnew\n"]] as const) {
+    assert.equal(applyUnifiedPatch("one\ntwo\n", `@@ -${anchor},0 +${anchor + 1},1 @@\n+new\n`).content, expected);
+  }
+  assert.throws(() => applyUnifiedPatch("one\n", "@@ -2,0 +3,1 @@\n+new\n"), /outside the target/);
+  assert.throws(() => applyUnifiedPatch("one\n", "@@ -0,1 +1,1 @@\n-one\n+new\n"), /outside the target/);
+  assert.throws(() => applyUnifiedPatch("one\n", "@@ -0,0 +1,2 @@\n+new\n"), /count mismatch/);
+});
+
 test("applies exact unified-diff hunks", () => {
   const result = applyUnifiedPatch("one\ntwo\nthree\n", "@@ -1,3 +1,3 @@\n one\n-two\n+TWO\n three\n");
   assert.equal(result.content, "one\nTWO\nthree\n");

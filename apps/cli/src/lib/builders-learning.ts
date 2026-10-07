@@ -3787,7 +3787,12 @@ export async function loadOpenAICompatibleModelIds(baseUrl?: string, apiKey?: st
   if (apiKey) {
     headers.authorization = `Bearer ${apiKey}`;
   }
-  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/models`, { headers });
+  // Discovery is advisory control-plane work. A stalled runtime must not pin
+  // a one-shot daemon tick (or its response-body read) indefinitely.
+  const response = await fetch(`${baseUrl.replace(/\/+$/u, "")}/models`, {
+    headers,
+    signal: AbortSignal.timeout(5_000)
+  });
   if (!response.ok) {
     throw new Error(`models API returned ${response.status}`);
   }

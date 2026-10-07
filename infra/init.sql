@@ -161,6 +161,9 @@ CREATE TABLE IF NOT EXISTS action_receipts (
   target text NOT NULL,
   summary text NOT NULL,
   metadata jsonb NOT NULL DEFAULT '{}',
+  prev_hash text,
+  receipt_hash text,
+  metadata_serialization_version integer,
   created_at timestamptz NOT NULL DEFAULT now()
 );
 

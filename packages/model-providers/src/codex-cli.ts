@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import type { FileSummaryInput, FileSummaryOutput, ModelProvider, ModelTier, StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { logEgress } from "./egress-log.js";
+import { acceptanceContractSchema, acceptanceContractShapeError } from "./acceptance-schema.js";
 import {
   buildFileSummaryPrompt,
   buildStageExecutionOutput,
@@ -105,7 +106,7 @@ export class CodexCliProvider implements ModelProvider {
     const model = configuredModelForTier(input.modelTier, input.modelOverride);
     const reasoningEffort = input.modelTier === "reasoning" ? "medium" : "low";
     const workingDirectory = configuredCodexCliDirectRepoInspection() ? input.projectRootUri : undefined;
-    const result = await this.runner.execute({
+    const call: CodexCliRunInput = {
       prompt: [
         "Execute one durable workflow stage. Return only the JSON object required by the supplied schema.",
         workingDirectory
@@ -113,15 +114,38 @@ export class CodexCliProvider implements ModelProvider {
           : "Direct repository inspection is disabled for this stage. Use the compiled evidence first. When the exact path is unknown, request a bounded filename/path lookup through requestedFileSearches, then request exact additional files through requestedFileReads. Do not scan the repository, execute commands, or claim side effects.",
         buildStagePrompt(input)
       ].join("\n\n"),
-      schema: stageSchema,
+      schema: input.acceptanceContract ? {
+        ...stageSchema,
+        properties: { ...stageSchema.properties, acceptanceContract: acceptanceContractSchema(input.acceptanceContract) },
+        required: [...stageSchema.required, "acceptanceContract"]
+      } : stageSchema,
       model,
       reasoningEffort,
       workingDirectory,
       // Preserve a stage's bounded read/retry context without replaying the
       // entire workflow history into every later stage.
       sessionKey: input.taskId
-    });
-    const parsed = normalizeStageArtifact(extractJsonObject(result.output) as StageJsonArtifact);
+    };
+    let result = await this.runner.execute(call);
+    let decoded = extractJsonObject(result.output) as StageJsonArtifact;
+    if (input.acceptanceContract) {
+      const shapeError = (value: unknown): string | null => acceptanceContractShapeError(
+        value !== null && typeof value === "object" && !Array.isArray(value)
+          ? (value as Record<string, unknown>).acceptanceContract : undefined,
+        input.acceptanceContract!
+      );
+      const error = shapeError(decoded);
+      if (error) {
+        result = await this.runner.execute({
+          ...call,
+          prompt: `${call.prompt}\n\nAcceptance schema correction (one attempt): ${error}. Return a complete response matching the same schema. Receipt gates must contain arrays of typed references. Preserve the supplied authoritative contract and references exactly; never fabricate evidence, weaken gates, or downgrade to legacy. If evidence is unavailable, report the gap.`
+        });
+        decoded = extractJsonObject(result.output) as StageJsonArtifact;
+        const correctionError = shapeError(decoded);
+        if (correctionError) throw new Error(`Codex CLI acceptance schema rejected correction: ${correctionError}`);
+      }
+    }
+    const parsed = normalizeStageArtifact(decoded);
     return {
       ...buildStageExecutionOutput(input, parsed, {
       provider: this.id,

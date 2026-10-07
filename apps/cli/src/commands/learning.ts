@@ -22,6 +22,8 @@ import { type RepositoryMaintenanceReport, commitRepositoryMaintenance, scanRepo
 import { type RoadmapSuggestionReport, buildRoadmapSuggestionReport, formatRoadmapSuggestionReport, resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
 import { type CandidateVariantPlan, type TuningApplicationPlan, type TuningApprovalQueue, type TuningHistoryStatus, type TuningPatchPlan, type TuningPatchPlanDocument, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildModelImprovementPlan, buildTuningApplicationPlan, buildTuningApprovalQueue, buildTuningPatchApplicationPlan, buildTuningPatchPlan, decideTuningApprovals, formatCandidateComparisonPlan, formatCostQualityReport, formatModelImprovementPlan, formatPreferenceScorecard, formatTuningApplicationPlan, formatTuningApprovalHistory, formatTuningApprovalQueue, formatTuningApprovalQueueMarkdown, formatTuningPatchPlan, formatTuningProposals, formatWorkflowShapeOptimizationMarkdown, formatWorkflowShapeOptimizationReport } from "../../../../packages/run-reporter/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
+import { getWorkflowAcceptanceDecision, preflightWorkflowAcceptance } from "../../../../packages/storage/src/postgres.js";
+import { reserveSupervisedRepair } from "../../../../packages/storage/src/repair-dispatch.js";
 import { type WorkflowRunStatus, cancelWorkflowRun, decideActionApproval, getWorkflowRunDetails, listActionApprovals, listArtifacts, listProjectStorageSummaries, listWorkflowRunsForProject, markActionApprovalExecution, reconcileStaleTerminalWorkflowRuns, recordRunAction, recoverInterruptedActionApprovalExecutions, replayWorkflowRun, requeueExpiredWorkflowTaskLeases, retryFailedWorkflowRun, supersedeWorkflowRun, upsertMemoryItem } from "../../../../packages/storage/src/postgres.js";
 import { type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, decideTrainingProposal, formatTrainingDiscoveryReport, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery } from "../../../../packages/training-discovery/src/index.js";
 import { fairProjectOrder, runOptimizerCycle } from "../../../../packages/workflow-optimizer/src/index.js";
@@ -32,7 +34,7 @@ import { type ModelComparisonSchedule, type ModelRoutingOptimizerReport, isFleet
 import { parseBoundedPositiveInteger, parsePositiveInteger } from "../numeric-options.js";
 import { normalizeProviderRef } from "../reference-resolution.js";
 import { type TrainingHoldoutDesign, runTrainingHoldout } from "../training-holdout-runner.js";
-import { type SupervisedDeliveryReceipt, findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "../workflow-supervision.js";
+import { type SupervisedDeliveryReceipt, findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowAutomaticRepairEnabled, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "../workflow-supervision.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
@@ -343,27 +345,57 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     return result;
   }
 
+  async function allowAutomaticRepairDispatch(run: { id: string; task: string }, failure: string): Promise<boolean> {
+    if (!workflowAutomaticRepairEnabled(process.env.AGENTFLOW_WORKFLOW_AUTO_REPAIR)) return false;
+    const approvals = await listActionApprovals({ runId: run.id, status: "all", limit: 500 });
+    if (approvals.length >= 500 || approvals.some(isOpenApproval)) return false;
+    const outputs = await listArtifacts({ runId: run.id, kind: "stage_output" });
+    const preflight = await preflightWorkflowAcceptance(run.id, outputs.at(-1)?.content ?? {});
+    await recordRunAction({
+      runId: run.id, agentId: "workflow-orchestrator",
+      actionType: "workflow_repair_preflight", target: run.id,
+      summary: "Recorded all downstream acceptance decisions before repair reservation.",
+      artifactKind: "workflow_repair_preflight",
+      artifactContent: { diagnosticOnly: true, accepted: preflight.accepted, decisions: preflight.decisions }
+    });
+    if (preflight.accepted) return false;
+    return reserveSupervisedRepair({ runId: run.id, task: run.task, failure });
+  }
+
   async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
     if (mode !== "apply-approved") return 0;
+    if (!workflowAutomaticRepairEnabled(process.env.AGENTFLOW_WORKFLOW_AUTO_REPAIR)) return 0;
     const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
     const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
+    // Durable pause receipts gate automatic cleanup and recovery across ancestry.
+    async function automaticRecoverySuppressed(candidate: WorkflowRunStatus): Promise<boolean> {
+      const visited = new Set<string>();
+      let runId = candidate.id;
+      while (true) {
+        if (visited.has(runId)) return true;
+        visited.add(runId);
+        const details = await getWorkflowRunDetails(runId);
+        if (!details.run) return true;
+        if (details.receipts.some((receipt) => receipt.actionType === "workflow_supervisor_repair_suppressed")) return true;
+        if (!repairSources.has(stringValue(details.run.evaluationMetadata?.source) ?? "")) return false;
+        const ancestorId = stringValue(details.run.evaluationMetadata?.sourceRunId);
+        if (!ancestorId) return true;
+        runId = ancestorId;
+      }
+    }
     const deliveryReceipts = await loadProjectDeliveryReceipts(projectDir);
     const activeRepair = runs.find((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && repairSources.has(stringValue(run.evaluationMetadata?.source) ?? ""));
     if (activeRepair) {
+      if (await automaticRecoverySuppressed(activeRepair)) return 0;
       const sourceRunId = stringValue(activeRepair.evaluationMetadata?.sourceRunId);
       const sourceRun = runs.find((candidate) => candidate.id === sourceRunId);
-      const sourceDetails = sourceRun ? await getWorkflowRunDetails(sourceRun.id) : null;
-      const repairSuppressed = sourceDetails?.receipts.some((receipt) => receipt.actionType === "workflow_supervisor_repair_suppressed") ?? false;
-      if (sourceRun && repairSuppressed) {
-        await cancelWorkflowRun(activeRepair.id);
-        return 1;
-      }
       const receipt = sourceRun ? findSupersedingDeliveryReceipt(sourceRun.task, deliveryReceipts) : null;
       if (!sourceRun || !receipt) return 0;
       await dismissRunSupersededByReceipt({ run: sourceRun, receipt, repairRun: activeRepair });
       return 1;
     }
     for (const run of runs.filter((item) => !item.dismissed && (item.status === "blocked" || item.status === "failed" || item.status === "completed"))) {
+      if (await automaticRecoverySuppressed(run)) continue;
       const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId);
       const repairSource = repairSources.has(stringValue(run.evaluationMetadata?.source) ?? "")
         ? runs.find((candidate) => candidate.id === sourceRunId)
@@ -396,6 +428,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           } catch {
             continue;
           }
+          if (!await allowAutomaticRepairDispatch(run, discoveryReason)) continue;
           const replay = await replayWorkflowRun({
             sourceRunId: run.id,
             actor: "learning-daemon",
@@ -440,7 +473,9 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const reason = `${stringValue(output.blockedReason) ?? ""} ${stringValue(output.summary) ?? ""} ${recordedFailure}`.toLowerCase();
       const missingExistingEvidence = /\b(?:missing|not supplied|not provided|unavailable|omits?)\b/u.test(reason)
         && /\b(?:context|source|files?|diff|tests?|evidence|repository|implementation|configuration)\b/u.test(reason);
-      const deliveryReason = workflowDeliveryRepairReason(run, outputs);
+      const acceptance = await getWorkflowAcceptanceDecision(run.id, output);
+      const deliveryReason = acceptance.mode === "structured" || acceptance.reason
+        ? acceptance.reason : workflowDeliveryRepairReason(run, outputs);
       const externallyManagedFailure = /\b(?:auth(?:entication|orization)?|credential|quota|policy|permission|approval|provider|fallback|model route)\b/u.test(reason);
       const repairableFailure = run.status === "failed" && Boolean(recordedFailure) && !externallyManagedFailure;
       const rootRepairAction = workflowRootRepairAction({
@@ -483,6 +518,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           priorReceipts: []
         }).then(() => true, () => false);
         if (!inferenceReady) continue;
+        if (!await allowAutomaticRepairDispatch(run, reason)) continue;
         const replay = await replayWorkflowRun({
           sourceRunId: run.id,
           actor: "learning-daemon",
@@ -516,6 +552,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         } catch {
           continue;
         }
+        if (!await allowAutomaticRepairDispatch(run, reason)) continue;
         const replay = await replayWorkflowRun({
           sourceRunId: run.id,
           actor: "learning-daemon",
@@ -602,6 +639,10 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     receipt: SupervisedDeliveryReceipt;
     repairRun?: WorkflowRunStatus;
   }): Promise<void> {
+    // Narrative project receipts cannot resolve an enrolled acceptance contract.
+    if (Object.prototype.hasOwnProperty.call(input.run.evaluationMetadata ?? {}, "acceptanceContract")
+      || Object.prototype.hasOwnProperty.call(input.repairRun?.evaluationMetadata ?? {}, "acceptanceContract")) return;
+
     const reason = `Superseded by verified project delivery evidence ${input.receipt.path}; immutable history preserved.`;
     if (input.repairRun && ["queued", "leased", "running"].includes(input.repairRun.status)) {
       await cancelWorkflowRun(input.repairRun.id);
@@ -1313,7 +1354,10 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const strategy = stringValue(run.evaluationMetadata?.rootRepairKind)
         ?? stringValue(run.evaluationMetadata?.repairWorkflowId)
         ?? (run.workflowId === "build-feature" ? "build-feature" : run.workflowId === "debug-failure" ? "debug-failure" : "replay-original");
-      const lesson = workflowRepairLesson({ strategy, repairStatus: run.status, completedTasks, failedTasks });
+      const repairOutputs = await listArtifacts({ runId: run.id, kind: "stage_output" });
+      const acceptance = await preflightWorkflowAcceptance(run.id, repairOutputs.at(-1)?.content ?? {});
+      const acceptanceVerified = acceptance.accepted;
+      const lesson = workflowRepairLesson({ strategy, repairStatus: run.status, completedTasks, failedTasks, acceptanceVerified });
       const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId) ?? "unknown";
       await recordRunAction({
         runId: run.id,
@@ -1329,6 +1373,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           repairStatus: run.status,
           completedTasks,
           failedTasks,
+          acceptanceVerified,
           outcome: lesson.outcome,
           futureAction: lesson.futureAction,
           diagnosisOrder: lesson.diagnosisOrder,
@@ -1347,6 +1392,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           repairRunId: run.id,
           rootCauseClass: strategy,
           repairStatus: run.status,
+          acceptanceVerified,
           outcome: lesson.outcome,
           prevention: lesson.prevention,
           confidence: lesson.confidence
@@ -1496,15 +1542,15 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             rationale: approval.rationale
           })
         });
-        if (!delivered) return 0;
+        if (!delivered.transportDelivered) return 0;
         await recordRunAction({
           runId: run.id,
           agentId: "workflow-orchestrator",
           actionType: CODEX_CALLBACK_RECEIPT,
           target,
-          summary: "Delivered an approval request to the originating Codex task.",
+          summary: "Approval callback transport completed; originating-task acknowledgment is unverified.",
           artifactKind: "codex_attention_delivery",
-          artifactContent: { kind: "approval", approvalId: approval.id, threadId },
+          artifactContent: { kind: "approval", approvalId: approval.id, threadId, ...delivered },
           idempotencyKey: `codex-approval-${approval.id}`
         });
         return 1;
@@ -1527,15 +1573,15 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           task: run.task.slice(0, 2000)
         })
       });
-      if (!delivered) return 0;
+      if (!delivered.transportDelivered) return 0;
       await recordRunAction({
         runId: run.id,
         agentId: "workflow-orchestrator",
         actionType: CODEX_CALLBACK_RECEIPT,
         target,
-        summary: "Delivered a workflow failure to the originating Codex task.",
+        summary: "Failure callback transport completed; originating-task acknowledgment is unverified.",
         artifactKind: "codex_attention_delivery",
-        artifactContent: { kind: "failure", status: run.status, threadId },
+        artifactContent: { kind: "failure", status: run.status, threadId, ...delivered },
         idempotencyKey: `codex-failure-${run.id}-${run.status}`
       });
       return 1;
@@ -1599,6 +1645,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       return false;
     }
     const repairWorkflowId = supervisedRepairWorkflowId(input.run, input.reason);
+    if (!await allowAutomaticRepairDispatch(input.run, input.reason)) return false;
     const repairTask = [
       `Repair supervised Agent Workflow run ${input.run.id}.`,
       `Original workflow: ${input.run.workflowId}.`,
@@ -1915,6 +1962,10 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       let action: LearningFailureTriageReport["groups"][number]["action"] = decision.risk === "high" ? "escalated" : "reported";
       if (input.mode === "apply-approved" && decision.retryAfterVerification && verificationPassed && allowed && candidates.length) {
         for (const item of candidates) {
+          if (!item.details.run || !await allowAutomaticRepairDispatch(item.details.run, signature)) {
+            withheldRuns.push(item.failedRun.runId);
+            continue;
+          }
           const requeued = await retryFailedWorkflowRun(item.failedRun.runId);
           attemptedRuns[item.failedRun.runId] = { attemptedAt: generatedAt, signature };
           if (requeued > 0) retriedRuns.push(item.failedRun.runId);
@@ -2799,7 +2850,6 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
               approvalBacklogScanned += update.approvalBacklog.scanned;
               approvalAutopilotEnabled = approvalAutopilotEnabled || update.approvalAutopilotEnabled;
               approvalAutopilotMaxRisk = update.approvalAutopilotMaxRisk;
-              await notifyOriginatingCodexTask(targetProjectDir);
               await deliverRunNotifications(targetProjectDir);
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error);

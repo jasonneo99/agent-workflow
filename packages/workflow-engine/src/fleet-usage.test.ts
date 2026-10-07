@@ -14,12 +14,13 @@ test("direct provider attempts enter the fleet ledger once without prompt bodies
   process.env.AGENTFLOW_FLEET_USAGE_LEDGER = ledger;
   try {
     const stage = { runId: "run", taskId: "task", workflowId: "build-feature", stageId: "plan", projectConfig: { project: { name: "private-project" } } } as StageExecutionInput;
-    const attempts = [{ provider: "anthropic", model: "claude", attempt: 0, attemptId: "attempt", outcome: "completed" as const }];
+    const attempts = [{ provider: "anthropic", model: "claude", attempt: 0, attemptId: "attempt", latencyMs: 7, outcome: "completed" as const }];
     const input = { stage, attempts, output: { summary: "secret output", artifact: { model: "claude" }, usage: { inputTokens: 10, outputTokens: 4, totalTokens: 14 } }, latencyMs: 20 };
     assert.equal(await recordDirectProviderUsage(input), 1);
     assert.equal(await recordDirectProviderUsage(input), 0);
     const receipts = await readFleetUsageReceipts(ledger);
     assert.equal(receipts.length, 1);
+    assert.equal(receipts[0].latencyMs, 7);
     assert.deepEqual({ provider: receipts[0]?.provider, input: receipts[0]?.inputTokens, output: receipts[0]?.outputTokens }, { provider: "anthropic", input: 10, output: 4 });
     assert.doesNotMatch(JSON.stringify(receipts), /secret output|private-project/);
   } finally {

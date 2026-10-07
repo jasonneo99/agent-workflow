@@ -36,6 +36,19 @@ function makeTree(files: Record<string, string>): string {
   return dir;
 }
 
+test("bounded excerpts reach beyond initial byte limit and retain full-file identity", async () => {
+  const cwd = makeTree({ "src/large.ts": Array.from({ length: 500 }, (_, i) => `line ${i + 1}`).join("\n") });
+  const project = makeProject();
+  const full = await executeAllowedFileRead({ cwd, project, relativePath: "src/large.ts" });
+  const excerpt = await executeAllowedFileRead({ cwd, project, relativePath: "src/large.ts#L450-L452" });
+  assert.equal(excerpt.content, "line 450\nline 451\nline 452");
+  assert.equal(excerpt.sha256, full.sha256);
+  assert.equal(excerpt.truncated, false);
+  assert.deepEqual(excerpt.lineRange, { start: 450, end: 452 });
+  await assert.rejects(executeAllowedFileRead({ cwd, project, relativePath: "src/large.ts#L1-L401" }), /1 to 400/u);
+  await assert.rejects(executeAllowedFileRead({ cwd, project, relativePath: "src/secret.pem#L1-L2" }), /blocked/u);
+});
+
 test("read policy allows listed paths and rejects others", () => {
   const project = makeProject();
   assert.doesNotThrow(() => assertFileReadAllowed("src/app.ts", project));

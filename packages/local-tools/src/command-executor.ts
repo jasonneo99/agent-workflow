@@ -58,8 +58,8 @@ export async function executeAllowedCommand(input: {
       shell: false,
       env: createProjectCommandEnv()
     });
-    let stdout = "";
-    let stderr = "";
+    const stdout = createBoundedOutputCapture(maxOutputChars);
+    const stderr = createBoundedOutputCapture(maxOutputChars);
     let timedOut = false;
 
     const timeout = setTimeout(() => {
@@ -68,11 +68,11 @@ export async function executeAllowedCommand(input: {
     }, timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
-      stdout = truncateOutput(stdout + chunk.toString("utf8"), maxOutputChars);
+      stdout.append(chunk.toString("utf8"));
     });
 
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr = truncateOutput(stderr + chunk.toString("utf8"), maxOutputChars);
+      stderr.append(chunk.toString("utf8"));
     });
 
     child.on("error", (error) => {
@@ -87,8 +87,8 @@ export async function executeAllowedCommand(input: {
         cwd: input.cwd,
         exitCode,
         signal,
-        stdout,
-        stderr,
+        stdout: stdout.text(),
+        stderr: stderr.text(),
         durationMs: Date.now() - started,
         timedOut
       });
@@ -183,9 +183,30 @@ function splitCommand(commandLine: string): string[] {
   return tokens;
 }
 
-function truncateOutput(value: string, maxChars: number): string {
-  if (value.length <= maxChars) {
-    return value;
-  }
-  return `${value.slice(0, maxChars)}\n...[truncated ${value.length - maxChars} chars]`;
+/** Retain the invocation preamble and latest diagnostics, never the whole log. */
+export function createBoundedOutputCapture(maxChars: number): { append(chunk: string): void; text(): string } {
+  const limit = Math.max(0, Math.floor(maxChars));
+  const marker = "\n...[middle truncated]...\n".slice(0, limit);
+  const headLimit = Math.floor((limit - marker.length) / 2);
+  const tailLimit = limit - marker.length - headLimit;
+  let head = "";
+  let tail = "";
+  let truncated = false;
+  return {
+    append(chunk) {
+      if (!truncated) {
+        if (head.length + chunk.length <= limit) {
+          head += chunk;
+          return;
+        }
+        // Only this event's input is transiently combined, never past output.
+        tail = tailLimit ? (head + chunk).slice(-tailLimit) : "";
+        head = (head + chunk).slice(0, headLimit);
+        truncated = true;
+      } else {
+        tail = tailLimit ? (tail + chunk).slice(-tailLimit) : "";
+      }
+    },
+    text: () => truncated ? head + marker + tail : head
+  };
 }

@@ -3,9 +3,53 @@ import type { StateDelta } from "./state-deltas.js";
 
 export type ModelTier = "fast" | "standard" | "reasoning";
 
+export type AcceptanceGate = "implementation" | "verification" | "packaging" | "supervision";
+export type DeliverableStatus = "pending" | "delivered" | "verified" | "failed" | "blocked";
+
+/** References are claims until the runtime resolves their governed artifacts. */
+export interface AcceptanceReceiptReference {
+  artifactUri: string;
+  runId: string;
+  taskId: string;
+  stageId: string;
+  kind: "file_write" | "command_output" | "acceptance_audit";
+  contentHash: string;
+  observedAt: string;
+  subjectHash: string;
+}
+
+export interface AcceptanceDeliverable {
+  id: string;
+  description: string;
+  /** Only explicitly advisory criteria may warn or inform instead of blocking. */
+  advisory?: boolean;
+  severity?: "block" | "warn" | "info";
+  requiredGates: AcceptanceGate[];
+  status: DeliverableStatus;
+  receipts: Partial<Record<AcceptanceGate, AcceptanceReceiptReference[]>>;
+  gaps: string[];
+}
+
+/** Persisted separately from narrative completion and provider quality scores. */
+export interface StructuredAcceptanceContract {
+  /** Exact approved source scope for runtime-generated command provenance. */
+  sourcePaths?: string[];
+  version: 1;
+  contractId: string;
+  projectId: string;
+  originRunId: string;
+  taskHash: string;
+  subjectHash: string;
+  deliverables: AcceptanceDeliverable[];
+}
+
 export interface StageExecutionInput {
   runId: string;
   taskId: string;
+  /** Governed run snapshot; provider output cannot replace this contract. */
+  acceptanceContract?: StructuredAcceptanceContract;
+  /** Runtime task graph, excluding this stage and completed/cancelled tasks. */
+  remainingStageIds?: string[];
   /** Resolved local checkout used only by providers that support governed read-only inspection. */
   projectRootUri?: string;
   projectConfig: ProjectConfig;

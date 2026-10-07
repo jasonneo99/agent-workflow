@@ -68,3 +68,19 @@ test("computeReceiptHash is deterministic", () => {
   const c = makeContent(1);
   assert.equal(computeReceiptHash("prev", c), computeReceiptHash("prev", c));
 });
+
+test("version 2 canonicalizes nested objects but preserves array order and legacy hashes", () => {
+  const content = { ...makeContent(1), metadataSerializationVersion: 2,
+    metadata: '{"z":{"b":2,"a":1},"a":[3,2,1]}' };
+  const receipt = chainReceipt(RECEIPT_CHAIN_GENESIS, content);
+  const stored = { ...receipt, metadata: '{"a": [3,2,1], "z": {"a":1,"b":2}}' };
+  assert.deepEqual(verifyReceiptChain([stored]), { valid: true, checked: 1 });
+  for (const mutation of [
+    { metadata: '{"a":[1,2,3],"z":{"a":1,"b":2}}' },
+    { metadata: 'invalid JSON' }, { metadataSerializationVersion: undefined },
+    { metadataSerializationVersion: 99 }, { summary: 'changed' }, { runId: 'different' },
+  ]) assert.equal(verifyReceiptChain([{ ...stored, ...mutation }]).valid, false);
+  const legacy = chainReceipt(RECEIPT_CHAIN_GENESIS, makeContent(1));
+  assert.deepEqual(verifyReceiptChain([legacy]), { valid: true, checked: 1 });
+  assert.equal(verifyReceiptChain([{ ...legacy, metadata: '{"n": 1}' }]).valid, false);
+});

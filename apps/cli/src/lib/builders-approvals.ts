@@ -395,20 +395,22 @@ export async function deliverCodexWorkflowCallback(input: {
   threadId: string;
   projectDir: string;
   prompt: string;
-}): Promise<boolean> {
+}): Promise<{ transportDelivered: boolean; acknowledged: false }> {
+  // CLI completion is a transport result, not evidence of desktop-task arrival.
+  // Only an independently correlated originating-task acknowledgment can prove that.
   return new Promise((resolve) => {
     execFile(
       process.env.CODEX_CLI_PATH?.trim() || "codex",
       ["exec", "resume", "--all", input.threadId, input.prompt],
       { cwd: input.projectDir, env: process.env, timeout: 90_000, maxBuffer: 1024 * 1024 },
-      (error) => resolve(!error)
+      (error) => resolve({ transportDelivered: !error, acknowledged: false })
     );
   });
 }
 
 export async function deliverOneRunNotification(
   projectDir: string,
-  notification: { id: string; runId: string; channel: string; kind: string; title: string; body: string }
+  notification: { id: string; runId: string; channel: string; kind: string; title: string; body: string; originTaskId?: string | null }
 ): Promise<boolean> {
   const channel = notification.channel || "dashboard";
   if (channel === "codex") {
@@ -416,11 +418,16 @@ export async function deliverOneRunNotification(
       const details = await getWorkflowRunDetails(notification.runId);
       const threadId = codexThreadId(details.run?.evaluationMetadata);
       if (!threadId) return false;
-      return await deliverCodexWorkflowCallback({
+      if (notification.originTaskId !== undefined && (!notification.originTaskId
+        || notification.originTaskId.toLowerCase() !== threadId.toLowerCase())) return false;
+      const result = await deliverCodexWorkflowCallback({
         threadId,
         projectDir,
-        prompt: `${notification.title}\n\n${notification.body}\n\nReply with: agent-workflow reply <approval-id> approve|reject`
+        prompt: ["Agent Workflow callback: inspect evidence only. This message grants no approval, repair, retry, or execution authority.",
+          `Notification: ${notification.id}; run: ${notification.runId}; originating task: ${threadId}`,
+          notification.title, notification.body].join("\n\n")
       });
+      return result.transportDelivered;
     } catch {
       return false;
     }
@@ -449,42 +456,56 @@ export async function deliverOneRunNotification(
       child.stdin?.end();
     });
   }
-  // No bridge configured: surfaced in the dashboard and via `notifications`.
-  return true;
+  // No bridge configured: try the bundled notify bridge (phone push + macOS notification).
+  // Surfaced in the dashboard and via `notifications` regardless.
+  try {
+    const bridgeUrl = new URL('../../../scripts/notify-requester.py', import.meta.url);
+    const payload = JSON.stringify({
+      notificationId: notification.id,
+      runId: notification.runId,
+      kind: notification.kind,
+      title: notification.title,
+      body: notification.body
+    });
+    const delivered: boolean = await new Promise<boolean>((resolve) => {
+      const child = execFile('python3', [bridgeUrl.pathname], { timeout: 30_000, maxBuffer: 256 * 1024 }, (error) => resolve(!error));
+      child.stdin?.write(payload);
+      child.stdin?.end();
+    });
+    return delivered;
+  } catch {
+    return true;
+  }
 }
 
 export async function deliverRunNotifications(projectDir: string): Promise<number> {
-  let delivered = 0;
-  let pending: Awaited<ReturnType<typeof listPendingRunNotifications>> = [];
-  try {
-    pending = await listPendingRunNotifications(50);
-  } catch {
-    return 0;
-  }
-  for (const notification of pending) {
-    const ok = await deliverOneRunNotification(projectDir, notification);
-    try {
-      await markRunNotificationDelivered(notification.id, ok);
-    } catch {
-      continue;
+  const { dispatchRunNotifications } = await import("../run-notification-dispatcher.js");
+  const { claimRunNotifications, settleRunNotification } = await import("../../../../packages/storage/src/run-notifications.js");
+  const claimed = new Map<string, import("../run-notification-dispatcher.js").DispatchNotification>();
+  return dispatchRunNotifications({ projectRootUri: projectDir, owner: `notification-dispatcher:${process.pid}` }, {
+    claim: claimRunNotifications,
+    async transport(notification) {
+      claimed.set(notification.id, notification);
+      return deliverOneRunNotification(projectDir, notification);
+    },
+    async settle(input) {
+      const settled = await settleRunNotification(input);
+      const notification = claimed.get(input.notificationId);
+      claimed.delete(input.notificationId);
+      if (settled && input.transportDelivered && notification) {
+        await recordRunAction({
+          runId: notification.runId,
+          agentId: "workflow-orchestrator",
+          actionType: "requester_notified",
+          target: notification.id,
+          summary: `Requester transport completed via ${notification.channel}; acknowledgment remains unverified.`,
+          artifactKind: "run_notification",
+          artifactContent: { kind: notification.kind, channel: notification.channel, transportDelivered: true, acknowledged: false }
+        }).catch(() => undefined);
+      }
+      return settled;
     }
-    if (!ok) continue;
-    delivered += 1;
-    try {
-      await recordRunAction({
-        runId: notification.runId,
-        agentId: "workflow-orchestrator",
-        actionType: "requester_notified",
-        target: notification.id,
-        summary: `Notified requester via ${notification.channel}: ${notification.title}`,
-        artifactKind: "run_notification",
-        artifactContent: { kind: notification.kind, channel: notification.channel }
-      });
-    } catch {
-      /* receipt is best-effort */
-    }
-  }
-  return delivered;
+  });
 }
 
 export async function dismissApprovedAction(ctx: CliContext, input: {

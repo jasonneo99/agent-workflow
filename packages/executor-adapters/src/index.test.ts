@@ -131,7 +131,11 @@ test("adapter passes only the registered operation and exact revision", async ()
   const echoArgs = path.join(directory, "args.sh");
   await writeFile(echoArgs, "#!/bin/sh\nprintf '%s\\n' \"$#:$1:$2\"\nprintf 'job=proof-job\\n'\n", "utf8");
   await chmod(echoArgs, 0o700);
-  const result = await executeExecutorSnapshot(fixture({ max_output_chars: 200 }), { executable: echoArgs });
+  // This checks argument integrity, not startup latency under full-suite load.
+  // The dedicated timeout test above retains its short deadline.
+  const result = await executeExecutorSnapshot(fixture({ max_output_chars: 200, timeout_ms: 10_000 }), { executable: echoArgs });
+  assert.equal(result.timedOut, false);
+  assert.equal(result.exitCode, 0);
   assert.match(result.stdout, new RegExp(`^2:typecheck:${revision}`));
   assert.equal(result.artifactReference, "sharedHost-job://proof-job");
 });

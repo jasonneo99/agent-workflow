@@ -104,7 +104,11 @@ test("Codex CLI provider fails closed when the configured auth mode does not mat
 test("Codex CLI model selection honors override, tier, base, then CLI default", () => {
   const previousBase = process.env.CODEX_CLI_MODEL;
   const previousFast = process.env.CODEX_CLI_MODEL_FAST;
+  const previousStandard = process.env.CODEX_CLI_MODEL_STANDARD;
+  const previousReasoning = process.env.CODEX_CLI_MODEL_REASONING;
   try {
+    delete process.env.CODEX_CLI_MODEL_STANDARD;
+    delete process.env.CODEX_CLI_MODEL_REASONING;
     process.env.CODEX_CLI_MODEL = "base-model";
     process.env.CODEX_CLI_MODEL_FAST = "fast-model";
     assert.equal(configuredCodexCliModelForTier("fast"), "fast-model");
@@ -118,6 +122,10 @@ test("Codex CLI model selection honors override, tier, base, then CLI default", 
     else process.env.CODEX_CLI_MODEL = previousBase;
     if (previousFast === undefined) delete process.env.CODEX_CLI_MODEL_FAST;
     else process.env.CODEX_CLI_MODEL_FAST = previousFast;
+    if (previousStandard === undefined) delete process.env.CODEX_CLI_MODEL_STANDARD;
+    else process.env.CODEX_CLI_MODEL_STANDARD = previousStandard;
+    if (previousReasoning === undefined) delete process.env.CODEX_CLI_MODEL_REASONING;
+    else process.env.CODEX_CLI_MODEL_REASONING = previousReasoning;
   }
 });
 

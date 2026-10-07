@@ -26,7 +26,13 @@ export function continuationBackoff(previous: Record<string, unknown>, actionRes
     const type = String((action as Record<string, unknown>).type ?? "");
     return !type.endsWith("_reused");
   });
-  const progressFingerprint = createHash("sha256").update(JSON.stringify(observations)).digest("hex");
+  // JSONB can reorder object keys; persistence must not masquerade as progress.
+  const canonicalize = (value: unknown): unknown => Array.isArray(value)
+    ? value.map(canonicalize)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => [key, canonicalize(item)]))
+      : value;
+  const progressFingerprint = createHash("sha256").update(JSON.stringify(canonicalize(observations))).digest("hex");
   const priorUnchanged = typeof previous.unchangedRounds === "number"
     && Number.isInteger(previous.unchangedRounds) && previous.unchangedRounds >= 0
     ? Math.min(previous.unchangedRounds, 3) : 0;

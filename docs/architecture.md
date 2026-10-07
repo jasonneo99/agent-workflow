@@ -103,6 +103,31 @@ Unrelated writes or successful diagnostic commands must not make a delivery
 accept-ready. Physical acceptance, deployment, publication, and external side
 effects remain separate evidence gates.
 
+### Structured Reliability Acceptance
+
+Enrolled reliability work uses a typed contract shared by completion, storage
+checkpoints, resume and supervision. Each deliverable has an explicit status,
+required gates, gaps and governed receipt references with artifact, run, task,
+stage, content hash, observation time and subject provenance. Prose and graph
+completion cannot establish acceptance. Missing, failed, stale or cross-run
+evidence fails closed; valid no-edit delivery can pass with governed evidence.
+Legacy compatibility remains covered separately from enrolled acceptance.
+
+Repair preflight evaluates recorded artifacts across implementation,
+verification, packaging and supervision before retry dispatch. Historical replay
+is diagnostic only. Stable failure fingerprints require a changed diagnosis
+backed by evidence or a validated fix before repeated dispatch; transient
+backoff, approval boundaries and immutable history remain in force.
+
+Live self-repair remains disabled; enabled-path tests use isolated synthetic data.
+
+Delivery metrics require concrete receipts for first-attempt verified success,
+time to verified delivery, unnecessary retries, repeated reads and discovery,
+false blocks, approvals, human interventions and model latency. Unknown values
+remain unknown rather than becoming zero. Graph completion is distinct from
+acceptance; independent supervision must audit loaded validated changes before
+fresh original-run acceptance.
+
 ## Project Identity And Consolidation
 
 The dashboard may group registrations that appear to describe the same logical

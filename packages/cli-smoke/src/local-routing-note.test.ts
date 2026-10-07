@@ -5,6 +5,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
+import { loadOpenAICompatibleModelIds } from "../../../apps/cli/src/lib/builders-learning.js";
 
 const rootDir = process.cwd();
 
@@ -40,11 +41,47 @@ async function createProjectWithRoutingNotePlan(): Promise<string> {
 }
 
 function runAgentflow(args: string[]) {
-  return spawnSync(process.execPath, ["--import", "tsx", "apps/cli/src/index.ts", ...args], {
+  const result = spawnSync(process.execPath, ["--import", "tsx", "apps/cli/src/index.ts", ...args], {
     cwd: rootDir,
-    encoding: "utf8"
+    encoding: "utf8",
+    timeout: 30_000,
+    killSignal: "SIGKILL",
+    env: {
+      ...process.env,
+      DEFAULT_MODEL_PROVIDER: "mock",
+      // This tests feedback persistence, not a developer's model server.
+      LOCAL_MODEL_BASE_URL: "http://127.0.0.1:1/v1",
+      LOCAL_MODEL_API_KEY: "",
+      AGENTFLOW_MODEL_COMPARISON_AUTO_RUN: "0",
+      AGENTFLOW_MODEL_ROUTING_AUTO_UPDATE: "0",
+      AGENTFLOW_LEARNING_LOOP_AUTO_RUN: "0",
+      AGENTFLOW_APPROVAL_AUTOPILOT: "0"
+    }
   });
+  assert.equal(result.error, undefined, `CLI subprocess failed or exceeded 30s: ${args[0]}: ${result.error?.message}`);
+  return result;
 }
+
+test("model discovery passes a finite deadline through response body consumption", async (t) => {
+  const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", (milliseconds: number) => {
+    assert.equal(milliseconds, 5_000);
+    return realTimeout(10);
+  });
+  t.mock.method(globalThis, "fetch", async (_url: unknown, options: RequestInit) => ({
+    ok: true,
+    json: () => new Promise((_resolve, reject) => {
+      options.signal!.addEventListener("abort", () => reject(options.signal!.reason), { once: true });
+    })
+  }));
+  // Keep the loop alive: AbortSignal timers are intentionally unref'ed.
+  const keepAlive = setInterval(() => {}, 100);
+  try {
+    await assert.rejects(loadOpenAICompatibleModelIds("http://example.invalid/v1"), { name: "TimeoutError" });
+  } finally {
+    clearInterval(keepAlive);
+  }
+});
 
 async function readJsonFile<T>(filePath: string): Promise<T> {
   return JSON.parse(await fs.readFile(filePath, "utf8")) as T;

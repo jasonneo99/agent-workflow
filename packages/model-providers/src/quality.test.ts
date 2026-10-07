@@ -1,7 +1,39 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
-import { completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, workflowAcceptanceTask } from "./quality.js";
+import { retainedVerificationEvidence, completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, workflowAcceptanceTask } from "./quality.js";
+
+test("reviewed prior command receipts survive verifier completion and checkpoint acceptance", () => {
+  const verifier = { ...input, stageId: "verify", agentId: "auto-test-runner", priorStageArtifacts: [{
+    stageId: "implement", agentId: "implementation-agent", summary: "Built and tested",
+    artifact: { actionResults: [{ type: "local_command", commandLine: "npm test", exitCode: 0, timedOut: false, artifactUri: "db://command/test" }] }
+  }] };
+  const evidence = retainedVerificationEvidence(verifier, []);
+  assert.equal(evidence.length, 1);
+  const checkpoint = { workflowTask: "Build a usable module", stageId: "verify", agentId: "auto-test-runner", summary: "Tests reviewed and passed", artifact: { actionResults: [], verificationEvidence: evidence } };
+  assert.equal(completedStageProvidesPinnedBuildEvidence(checkpoint), true);
+  const finalizer = { ...input, stageId: "package", agentId: "pr-preparer", workflowTask: checkpoint.workflowTask,
+    stagePattern: { type: "finalizer", requiresVerifier: false, promotionGate: "approval", stopConditions: [] },
+    priorStageArtifacts: [
+      { stageId: "implement", agentId: "implementation-agent", summary: "Built", artifact: { actionResults: [{ commandLine: "npm run build", exitCode: 0 }] } },
+      { stageId: checkpoint.stageId, agentId: checkpoint.agentId, summary: checkpoint.summary, artifact: checkpoint.artifact }
+    ] };
+  assert.equal(unfulfilledCompletionReason(finalizer, { outcome: "completed", summary: "Packaged the tested module.", artifact: {}, requestedCommands: [], requestedFileWrites: [] } as StageExecutionOutput), null);
+  const packaged = { outcome: "completed", summary: "Packaged using implementation and runtime receipts. Existing code satisfies the contract.", artifact: {
+    routing: { reason: "historical stage outcome is blocked" }, workflowTask: "Report if not implemented", findings: ["Product built and verified."]
+  }, requestedCommands: [], requestedFileWrites: [] } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(finalizer, packaged), null);
+  assert.match(unfulfilledCompletionReason(finalizer, { ...packaged, summary: "Implementation remains incomplete." }) ?? "", /claimed completion/);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({ ...checkpoint, artifact: { actionResults: [] } }), false);
+  assert.deepEqual(retainedVerificationEvidence(verifier, [{ commandLine: "npm test", exitCode: 1, artifactUri: "db://command/failed" }]), []);
+  assert.deepEqual(retainedVerificationEvidence(verifier, [{ commandLine: "npm test", exitCode: 0, timedOut: true, artifactUri: "db://command/timeout" }]), []);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({ ...checkpoint, summary: "Verification is pending" }), false);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({ ...checkpoint, summary: "Verification passes. Promotion remains pending.", artifact: { ...checkpoint.artifact,
+    workflowTask: "Verification is pending until tests run", routing: { reason: "verification pending" },
+    verificationEvidence: evidence.map((result) => ({ ...(result as object), outputPreview: "test: verification is pending" }))
+  } }), true);
+  assert.equal(completedStageProvidesPinnedBuildEvidence({ ...checkpoint, artifact: { ...checkpoint.artifact, findings: ["Verification is pending"] } }), false);
+});
 
 const input = {
   stageId: "implement",
@@ -133,6 +165,33 @@ test("delivery verification cannot complete while reporting that tests were not 
     stagePattern: { type: "verifier", requiresVerifier: false, promotionGate: "evaluation", stopConditions: [] }
   };
   assert.match(unfulfilledCompletionReason(verifyInput, output) ?? "", /verification was not performed/i);
+});
+
+test("verification completion judges individual current claims rather than unrelated pending follow-up", () => {
+  const verifyInput = {
+    ...input, workflowTask: "Fix and verify continuation delivery.",
+    stageId: "verify", agentId: "auto-test-runner"
+  };
+  const output = {
+    outcome: "completed",
+    summary: "Verification passed all six required checks. Exact suite totals remain uninspected due to presentation truncation.",
+    artifact: {
+      findings: [
+        "Verification command npm test exited 0.",
+        "Hosted-model behavior and deployment are outside this acceptance evidence.",
+        "Replay lineage: verification run preserves accepted checkpoints. Supervisor-owned terminal receipt validation remains pending."
+      ],
+      nextAction: "Supervisor should validate terminal receipts; final reporting remains pending.",
+      actionResults: [{ commandLine: "npm test", exitCode: 0, outputPreview: "Historical fixture: verification remains pending." }]
+    },
+    requestedCommands: [], requestedFileWrites: []
+  } as StageExecutionOutput;
+  assert.equal(unfulfilledCompletionReason(verifyInput, output), null);
+  for (const claim of ["Required verification remains pending.", "Hardware is unverified.", "No runtime tests were run.", "Promotion is not approved."]) {
+    assert.match(unfulfilledCompletionReason(verifyInput, {
+      ...output, artifact: { ...output.artifact, findings: [...output.artifact.findings as string[], claim] }
+    }) ?? "", /verification was not performed/i);
+  }
 });
 
 test("delivery finalizer cannot package an explicitly unimplemented product as complete", () => {

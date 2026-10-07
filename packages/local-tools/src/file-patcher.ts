@@ -104,7 +104,8 @@ export function applyUnifiedPatch(source: string, patch: string): { content: str
     }
     const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(?: .*)?$/u.exec(header);
     if (!match) throw new Error(`File patch rejected: invalid hunk header: ${header}`);
-    const oldStart = Number(match[1]) - 1;
+    // Empty ranges name the line before the insertion (0 means before line 1).
+    const oldStart = Number(match[1]) - (Number(match[2] ?? 1) === 0 ? 0 : 1);
     if (oldStart < sourceCursor || oldStart > sourceLines.length) throw new Error(`File patch rejected: hunk starts outside the target at old line ${match[1]}.`);
     output.push(...sourceLines.slice(sourceCursor, oldStart));
     sourceCursor = oldStart;
@@ -118,10 +119,10 @@ export function applyUnifiedPatch(source: string, patch: string): { content: str
       const marker = line[0];
       const text = line.slice(1);
       if (marker === " ") {
-        if (sourceLines[sourceCursor] !== text) throw new Error(`File patch rejected: context mismatch at old line ${sourceCursor + 1}.`);
+        if (sourceLines[sourceCursor] !== text) throw new Error(`File patch rejected: context mismatch at old line ${sourceCursor + 1}; patch expected ${JSON.stringify(text.slice(0, 240))}; file contains ${JSON.stringify(sourceLines[sourceCursor]?.slice(0, 240) ?? "<end of file>")}. Regenerate from the exact current preimage; do not relax matching.`);
         output.push(text); sourceCursor += 1; removed += 1; added += 1;
       } else if (marker === "-") {
-        if (sourceLines[sourceCursor] !== text) throw new Error(`File patch rejected: removal mismatch at old line ${sourceCursor + 1}.`);
+        if (sourceLines[sourceCursor] !== text) throw new Error(`File patch rejected: removal mismatch at old line ${sourceCursor + 1}; patch expected ${JSON.stringify(text.slice(0, 240))}; file contains ${JSON.stringify(sourceLines[sourceCursor]?.slice(0, 240) ?? "<end of file>")}. Regenerate from the exact current preimage; do not relax matching.`);
         sourceCursor += 1; removed += 1;
       } else if (marker === "+") {
         output.push(text); added += 1;

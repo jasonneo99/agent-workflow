@@ -79,10 +79,24 @@ export async function transitionWorkflowRun(
      ) values ($1::uuid, $2, $3, $4::bigint, $5::bigint, $6, $7, $8, $9)`,
     [input.runId, run.status, input.to, next.stateVersion, next.leaseEpoch, input.actor, input.reason, input.idempotencyKey, JSON.stringify(input.metadata ?? {})]
   );
-  await client.query(
-    `insert into action_receipts (run_id, agent_id, action_type, target, summary, metadata)
-     values ($1::uuid, 'workflow-orchestrator', 'workflow_run_transition', $2::text, $3, $4)`,
-    [input.runId, input.runId, `${run.status} -> ${input.to}: ${input.reason}`, JSON.stringify({ actor: input.actor, from: run.status, to: input.to, stateVersion: next.stateVersion, leaseEpoch: next.leaseEpoch, idempotencyKey: input.idempotencyKey, ...(input.metadata ?? {}) })]
-  );
+  await appendActionReceipt(client, {
+        runId: input.runId,
+        agentId: "workflow-orchestrator",
+        actionType: "workflow_run_transition",
+        target: input.runId,
+        summary: `${run.status} -> ${input.to}: ${input.reason}`,
+        metadata: JSON.stringify({ actor: input.actor, from: run.status, to: input.to, stateVersion: next.stateVersion, leaseEpoch: next.leaseEpoch, idempotencyKey: input.idempotencyKey, ...(input.metadata ?? {}) })
+      });
+  if (input.to === "blocked" || input.to === "failed" || input.to === "completed") {
+    await enqueueRunNotification(client, {
+      runId: input.runId,
+      kind: input.to,
+      eventKey: `transition:${next.stateVersion}`,
+      title: `Run ${input.to}`,
+      body: input.reason
+    });
+  }
   return { changed: true, ...next };
 }
+import { appendActionReceipt } from "./receipt-writer.js";
+import { enqueueRunNotification } from "./run-notifications.js";

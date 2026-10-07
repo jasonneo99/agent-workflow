@@ -3,7 +3,59 @@ import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { advisoryPolicyAnalysisIsFinding, buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding } from "./prompts.js";
 
+test("all recent command packets retain exact acceptance references across a command batch", () => {
+  const packets = Array.from({ length: 7 }, (_, index) => ({ agentId: "test", actionType: "command_evidence_packet", summary: JSON.stringify([{ artifactUri: `db://command/${index}`, acceptanceReference: { observedAt: `2026-01-01T00:00:0${index}.123Z`, contentHash: `hash-${index}` } }]) }));
+  const prompt = buildStagePrompt({ runId: "run", taskId: "task", workflowId: "test", workflowTask: "test", stageId: "fix", stageGoal: "test", agentId: "test", agentName: "test", agentPrompt: "test", compiledBrief: "", projectConfig: projectConfigSchema.parse({ project: { name: "test", autonomy: 2 } }), priorReceipts: packets, priorStageArtifacts: [] });
+  const section = prompt.split("Command evidence (")[1].split("Replay ancestor evidence")[0];
+  for (const packet of packets) assert.ok(section.includes(packet.summary), "Every batch result must reach the provider intact, not only the final command");
+});
+
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
+
+test("patch generation receives absolute line coordinates and strict hunk rules", () => {
+  const prompt = buildStagePrompt({ runId: "run", taskId: "task", projectConfig: project, workflowId: "build-feature", workflowTask: "Edit source", stageId: "implement", agentId: "test", agentName: "Test", agentPrompt: "Edit", stageGoal: "Implement", compiledBrief: "", priorReceipts: [], fileReads: [{ path: "src/example.ts#L40-L41", content: "first\nsecond", truncated: false, sha256: "a".repeat(64) }] });
+  assert.ok(prompt.includes("40|first\n41|second"));
+  assert.ok(prompt.includes("ascending original-file line order"));
+  assert.ok(prompt.includes("old count = context + removals; new count = context + additions"));
+});
+
+test("terminal acceptance responsibilities follow the actual remaining task graph", () => {
+  const input = { runId: "run", taskId: "task", projectConfig: project, workflowId: "debug-failure", workflowTask: "Narrow receipt repair", stageId: "verify", agentId: "test", agentName: "Test", agentPrompt: "Verify", stageGoal: "Hand off", compiledBrief: "", priorReceipts: [], acceptanceContract: { version: 1 as const, contractId: "contract", projectId: "project", originRunId: "run", taskHash: "task", subjectHash: "source", deliverables: [] } };
+  assert.match(buildStagePrompt({ ...input, remainingStageIds: [] }), /No remaining workflow stages/u);
+  assert.match(buildStagePrompt({ ...input, remainingStageIds: [] }), /Do not invent downstream packaging or supervision stages/u);
+  assert.doesNotMatch(buildStagePrompt({ ...input, remainingStageIds: ["package"] }), /No remaining workflow stages/u);
+  assert.doesNotMatch(buildStagePrompt(input), /No remaining workflow stages/u);
+});
+
+test("nonterminal verification explains verified status without granting terminal acceptance", () => {
+  const input = { runId: "run", taskId: "task", projectConfig: project, workflowId: "build-feature", workflowTask: "Verify delivery", stageId: "verify", agentId: "test", agentName: "Test", agentPrompt: "Verify", stageGoal: "Verify", compiledBrief: "", priorReceipts: [], remainingStageIds: ["document", "package"], acceptanceContract: { version: 1 as const, contractId: "contract", projectId: "project", originRunId: "run", taskHash: "task", subjectHash: "source", deliverables: [] } };
+  const prompt = buildStagePrompt(input);
+  assert.match(prompt, /verification, packaging and supervision require verified/u);
+  assert.match(prompt, /Verified at a nonterminal verification stage does not claim terminal acceptance/u);
+  assert.match(prompt, /Keep packaging\/supervision receipts absent until actually assessed/u);
+  assert.match(prompt, /Missing or failed evidence must remain blocking/u);
+  assert.doesNotMatch(prompt, /No remaining workflow stages/u);
+  assert.doesNotMatch(buildStagePrompt({ ...input, acceptanceContract: undefined }), /Deliverable status is assessed at the current gate/u);
+});
+
+test("workflow evidence inspection uses configured CLI rather than inline storage imports", () => {
+  const prompt = buildStagePrompt({ runId: "run", taskId: "task", projectConfig: project, workflowId: "build-feature", workflowTask: "Package", stageId: "package", agentId: "test", agentName: "Test", agentPrompt: "Package", stageGoal: "Package", compiledBrief: "", priorReceipts: [] });
+  assert.match(prompt, /npm run agentflow -- artifacts --uri <exact-db-uri> --json/u);
+  assert.match(prompt, /npm run agentflow -- status --run <current-run-id> --json/u);
+  assert.match(prompt, /Do not use node -e, inline scripts, raw SQL, or direct storage-module imports/u);
+  assert.match(prompt, /Never migrate or modify a database to repair such a diagnostic read/u);
+  assert.match(prompt, /a diagnostic CLI read is not new execution of the tests it displays/u);
+});
+
+test("runtime acceptance requirements and proposals survive prompt and output transport", () => {
+  const contract = { version: 1 as const, contractId: "contract-1", projectId: "project-1", originRunId: "run-1", taskHash: "task-hash", subjectHash: "subject-hash", deliverables: [] };
+  const input = { runId: "run-1", taskId: "task-1", projectConfig: project, workflowId: "build-feature", workflowTask: "Deliver", stageId: "verify", agentId: "test-engineer", agentName: "Test", agentPrompt: "Verify", stageGoal: "Verify", compiledBrief: "", priorReceipts: [], acceptanceContract: contract };
+  assert.ok(buildStagePrompt(input).includes(JSON.stringify(contract)));
+  const parsed = normalizeStageArtifact({ outcome: "completed", acceptanceContract: contract });
+  assert.deepEqual(buildStageExecutionOutput(input, parsed, {}).artifact.acceptanceContract, contract);
+  // Transport must not manufacture an evidence proposal from the enrolled input.
+  assert.equal(buildStageExecutionOutput(input, normalizeStageArtifact({ outcome: "completed" }), {}).artifact.acceptanceContract, undefined);
+});
 
 test("downstream stages receive immutable prior stage artifacts, not receipt summaries alone", () => {
   const prompt = buildStagePrompt({
@@ -18,7 +70,10 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
     agentPrompt: "Implement narrowly.",
     stageGoal: "Apply the approved plan locally.",
     compiledBrief: "Immutable compiled project context.",
-    priorReceipts: [{ agentId: "technical-architect", actionType: "stage_completed", summary: "Plan ready." }],
+    priorReceipts: [
+      { agentId: "technical-architect", actionType: "stage_completed", summary: "Plan ready." },
+      { agentId: "workflow-orchestrator", actionType: "command_evidence_packet", summary: JSON.stringify({ stdoutTail: "x".repeat(500) + "FINAL_TEST_TOTALS_AND_CLEANUP", exitCode: 0 }) }
+    ],
     priorStageArtifacts: [{
       stageId: "plan",
       agentId: "technical-architect",
@@ -28,6 +83,7 @@ test("downstream stages receive immutable prior stage artifacts, not receipt sum
   });
 
   assert.match(prompt, /Immutable compiled project context/u);
+  assert.match(prompt, /FINAL_TEST_TOTALS_AND_CLEANUP/u);
   assert.match(prompt, /Prior stage artifacts \(authoritative outputs from this run\)/u);
   assert.match(prompt, /Edit packages\/runtime\.ts/u);
   assert.match(prompt, /outcome: completed when the stage goal was achieved/u);

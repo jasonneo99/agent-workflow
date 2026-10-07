@@ -47,7 +47,7 @@ test("stage prompt renders requested file contents for re-prompt context", () =>
   assert.match(prompt, /src\/app\.ts/u);
   assert.match(prompt, /answer = 42/u);
   assert.match(prompt, new RegExp(`sha256:${sha256}`, "u"));
-  assert.ok(prompt.includes(content));
+  assert.ok(prompt.includes(content.split("\n").map((line, index) => `${index + 1}|${line}`).join("\n")));
 });
 
 test("normalizeStageArtifact parses requestedFileReads as strings and {path} objects", () => {

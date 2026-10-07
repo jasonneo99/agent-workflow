@@ -60,3 +60,17 @@ prompt: >
     lineage-marked repair. Preserve immutable history, dismiss only superseded
     work, and record the root cause, action, verification, and recurrence guard
     in the repair-learning receipt.
+
+  - For repeated failures, run the debug-failure isolated repair protocol one
+    fingerprint at a time. Require actual red reproduction, root-cause evidence,
+    the same regression green and negative controls before original-task replay.
+    Replay every required original stage with preserved acceptance requirements;
+    do not mark the parent delivered merely because a repair child passed. A new
+    failure becomes the next isolated case, not a broad recursive repair chain.
+    Honor explicit recovery pauses: the authorized supervising client chooses
+    the next run rather than silently re-enabling daemon repair. Continue within
+    standing scope without routine permission questions; stop for missing actual
+    authority, credentials, physical action or product decisions. Promote and
+    reuse lessons only after receipt-backed original delivery, and report all
+    incomplete deliverables and the blocked/failed queue separately from active
+    work. Preserve immutable history when linking superseded attempts.

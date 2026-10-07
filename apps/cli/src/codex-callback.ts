@@ -1,13 +1,15 @@
 export const CODEX_CALLBACK_RECEIPT = "codex_attention_delivered";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
+// RFC 9562 UUID versions 1–8, RFC variant; Nil and Max are not task identities.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu;
 
 export function attachCodexOrigin(
   metadata: Record<string, unknown> | undefined,
   environment: NodeJS.ProcessEnv = process.env
 ): Record<string, unknown> {
   const current = metadata ?? {};
-  if (typeof current.codexThreadId === "string" && UUID.test(current.codexThreadId)) return current;
+  // Explicit metadata must never be replaced by a different environment task.
+  if (Object.prototype.hasOwnProperty.call(current, "codexThreadId")) return current;
   const threadId = environment.CODEX_THREAD_ID?.trim();
   if (!threadId || !UUID.test(threadId)) return current;
   return {
