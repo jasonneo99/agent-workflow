@@ -121,7 +121,8 @@ export async function requestActionApproval(input: {
           input.rationale,
           JSON.stringify(input.policyDecision),
           JSON.stringify(input.payload),
-          input.idempotencyKey
+          input.idempotencyKey,
+          new Date(Date.now() + (input.ttlMs ?? DEFAULT_APPROVAL_TTL_MS)).toISOString()
         ]
       );
       const approvalId = approval.rows[0].id;

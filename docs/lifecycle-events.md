@@ -159,8 +159,8 @@ acknowledgment. `bindOriginTaskBridge` requires an injected supported host
 forwarding capability and checks the returned destination, notification and run
 identities before accepting transport delivery. Missing forwarding support fails
 closed before outbox consumption. Original-task acknowledgment remains separate.
-The dedicated app-server prototype reports only `receiverAcknowledged`, with
-`originAcknowledged: false`; it is not a production bridge and is not enabled.
+The dedicated app-server experiment was retired from the shipping source. It
+proved no originating-task delivery and must not be enabled as a substitute.
 
 The available interactive host send tool is not yet a verified persistent
 background capability. Do not substitute a standalone app-server thread for the
@@ -183,19 +183,19 @@ The storage write-path audit covers `postgres.ts`, `run-transitions.ts`,
 | Governed run transitions | Versioned outbox event and receipt replay |
 | Stage start, complete, block, fail, continuation | Recorded stage event |
 | Approval request, decision, execution result/recovery | Recorded approval event |
-| Run creation | Transactional creation receipt and outbox event; receipt rollback regression |
+| Run creation | Transactional creation event; actual creation/deduplication and rollback integration |
 | Stage cancellations during run cancel/block/fail | Shared transactional per-stage writer; rollback, repeat and terminal-preservation regression |
-| Stage leasing | Transactional stage-leased receipt and outbox event; dedicated lease-path integration coverage remains outstanding |
+| Stage leasing | Actual claim-path event, duplicate suppression and event-failure rollback integration |
 | Manual and expired-lease requeues | Per-stage events for changed rows; scoped PostgreSQL regression |
 | Guarded and checkpoint requeues | Transactional per-stage events; PostgreSQL rollback and recovery regression |
 | Approval execution claim and stale expiration | Transactional events with PostgreSQL rollback regression |
-| Bulk obsolete approval dismissal | Transactional per-approval writer added; dedicated bulk-path regression remains outstanding |
+| Superseded and bulk obsolete approval dismissal | Transactional per-approval writer; both paths, duplicate suppression and event-failure rollback regression |
 | Run dismissal/reinstatement and checkpoint recovery | Public recorded events; PostgreSQL regression |
 | Historical merge import | Must not emit imported evidence as fresh execution |
 
-These are outstanding coverage gaps, not permission to backfill or rewrite
-historical receipts. Closing them requires transactional event writes and
-per-path regression tests before claiming notification on every state change.
+These checks cover the listed lifecycle paths, not permission to backfill or
+rewrite historical receipts. Administrative mutations and alternate bulk paths
+still require audit before claiming notification on every state change.
 
 - Audit every mutation path for event coverage (especially initial creation,
   cancellation of individual stages and approval expiration); the recorded

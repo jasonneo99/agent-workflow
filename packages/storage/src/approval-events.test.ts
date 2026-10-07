@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import pg from "pg";
 import { databaseUrl } from "./postgres.js";
-import { claimActionApprovalExecution, expireStaleApprovals } from "./action-approvals.js";
+import { claimActionApprovalExecution, expireStaleApprovals, requestActionApproval, dismissSupersededActionApprovals, markActionApprovalExecution } from "./action-approvals.js";
 import { runNotificationOutboxSchemaSql } from "./run-notifications.js";
 
 test("approval expiry commits its event once and rolls back when event persistence fails", async () => {
@@ -52,6 +52,42 @@ test("approval expiry commits its event once and rolls back when event persisten
     await client.query("alter table run_notifications add constraint reject_claim_event check (title='impossible') not valid");
     await assert.rejects(claimActionApprovalExecution({ approvalId: id, actor: "replacement" }), /reject_claim_event/u);
     assert.equal((await client.query("select execution_claim_token from action_approvals")).rows[0].execution_claim_token, claimed.claimToken);
+    await client.query("alter table run_notifications drop constraint reject_claim_event");
+    await client.query(`alter table action_approvals alter column id set default gen_random_uuid(), alter column status set default 'pending';
+      create unique index approval_identity on action_approvals(run_id,task_id,action_type,idempotency_key);
+      create temporary table artifacts(run_id uuid,task_id uuid,kind text,uri text unique,content jsonb)`);
+    const request = {runId:id,taskId:id,stageId:"verify",agentId:"synthetic",actionType:"local_command",target:"synthetic-check",
+      rationale:"Synthetic approval",policyDecision:{},payload:{},idempotencyKey:"fresh",ttlMs:60000};
+    const created = await requestActionApproval(request);
+    assert.equal((await requestActionApproval(request)).approvalId,created.approvalId);
+    assert.equal((await client.query("select count(*)::int n from run_notifications where kind='approval_needed'")).rows[0].n,1);
+    const expiry = (await client.query("select expires_at from action_approvals where id=$1",[created.approvalId])).rows[0].expires_at;
+    assert.ok(expiry.getTime()>Date.now() && expiry.getTime()<=Date.now()+60000);
+    const noTask = await requestActionApproval({...request,taskId:null,idempotencyKey:"no-task"});
+    assert.equal((await requestActionApproval({...request,taskId:null,idempotencyKey:"no-task"})).approvalId,noTask.approvalId);
+    const dismiss = {runId:id,taskId:id,actionType:"local_command" as const,target:"synthetic-check",actor:"synthetic"};
+    await client.query("alter table run_notifications add constraint reject_dismiss check(title<>'action approval dismissed') not valid");
+    await assert.rejects(dismissSupersededActionApprovals(dismiss),/reject_dismiss/u);
+    assert.equal((await client.query("select status from action_approvals where id=$1",[created.approvalId])).rows[0].status,"pending");
+    await client.query("alter table run_notifications drop constraint reject_dismiss");
+    assert.equal(await dismissSupersededActionApprovals({...dismiss,target:"wrong"}),0);
+    assert.equal(await dismissSupersededActionApprovals(dismiss),1);
+    assert.equal(await dismissSupersededActionApprovals(dismiss),0);
+    assert.equal((await client.query("select status from action_approvals where id=$1",[noTask.approvalId])).rows[0].status,"pending");
+    assert.equal((await client.query("select count(*)::int n from run_notifications where title='action approval dismissed'")).rows[0].n,1);
+    const winner = await requestActionApproval({...request,idempotencyKey:"winner"});
+    const losers = [];
+    for (const idempotencyKey of ["obsolete-a","obsolete-b"]) losers.push(await requestActionApproval({...request,idempotencyKey}));
+    await client.query("update action_approvals set status='approved' where id=$1",[winner.approvalId]);
+    const finalize = {approvalId:winner.approvalId,status:"executed" as const,actor:"synthetic",summary:"Synthetic execution"};
+    await client.query("alter table run_notifications add constraint reject_bulk check(title<>'action approval dismissed') not valid");
+    await assert.rejects(markActionApprovalExecution(finalize),/reject_bulk/u);
+    assert.equal((await client.query("select status from action_approvals where id=$1",[winner.approvalId])).rows[0].status,"approved");
+    await client.query("alter table run_notifications drop constraint reject_bulk");
+    assert.equal((await markActionApprovalExecution(finalize))?.status,"executed");
+    assert.equal(await markActionApprovalExecution(finalize),null);
+    for(const loser of losers) assert.equal((await client.query("select status from action_approvals where id=$1",[loser.approvalId])).rows[0].status,"dismissed");
+    assert.equal((await client.query("select count(*)::int n from run_notifications where title='action approval dismissed'")).rows[0].n,3);
   } finally {
     pg.Pool.prototype.connect = original;
     await client.end();
