@@ -395,6 +395,7 @@ export async function deliverCodexWorkflowCallback(input: {
   threadId: string;
   projectDir: string;
   prompt: string;
+  onFailure?: (code: string, category: string, diagnostic: string) => void;
 }): Promise<{ transportDelivered: boolean; acknowledged: false }> {
   // CLI completion is a transport result, not evidence of desktop-task arrival.
   // Only an independently correlated originating-task acknowledgment can prove that.
@@ -403,7 +404,21 @@ export async function deliverCodexWorkflowCallback(input: {
       process.env.CODEX_CLI_PATH?.trim() || "codex",
       ["exec", "resume", "--all", input.threadId, input.prompt],
       { cwd: input.projectDir, env: process.env, timeout: 90_000, maxBuffer: 1024 * 1024 },
-      (error) => resolve({ transportDelivered: !error, acknowledged: false })
+      (error, _stdout, stderr) => {
+        if (error) {
+          // Classify locally; never persist raw provider output or credentials.
+          const category = /model.*(?:not supported|not found|does not exist|unavailable)/iu.test(stderr ?? "") ? "model-unavailable"
+            : /(?:auth|unauthorized|login|sign.in|401)/iu.test(stderr ?? "") ? "authentication"
+              : /(?:session|thread).*(?:not found|unknown|missing)/iu.test(stderr ?? "") ? "session-not-found"
+                : /(?:busy|already running|locked|active writer)/iu.test(stderr ?? "") ? "busy"
+                  : error.killed ? "timeout" : "transport-error";
+          const diagnostic = (stderr ?? "").split("\n").filter(line => /^(?:error|Error|ERROR):/u.test(line)).join(" ")
+            .replace(/(?:sk-|Bearer\s+)[A-Za-z0-9_.-]+/giu, "[redacted]")
+            .replace(/\/Users\/[^\s]+/gu, "[local-path]").slice(0, 500);
+          input.onFailure?.(String(error.code ?? "unknown"), category, diagnostic);
+        }
+        resolve({ transportDelivered: !error, acknowledged: false });
+      }
     );
   });
 }
@@ -478,11 +493,11 @@ export async function deliverOneRunNotification(
   }
 }
 
-export async function deliverRunNotifications(projectDir: string): Promise<number> {
+export async function deliverRunNotifications(projectDir: string, notificationId?: string): Promise<number> {
   const { dispatchRunNotifications } = await import("../run-notification-dispatcher.js");
   const { claimRunNotifications, settleRunNotification } = await import("../../../../packages/storage/src/run-notifications.js");
   const claimed = new Map<string, import("../run-notification-dispatcher.js").DispatchNotification>();
-  return dispatchRunNotifications({ projectRootUri: projectDir, owner: `notification-dispatcher:${process.pid}` }, {
+  return dispatchRunNotifications({ projectRootUri: projectDir, owner: `notification-dispatcher:${process.pid}`, notificationId }, {
     claim: claimRunNotifications,
     async transport(notification) {
       claimed.set(notification.id, notification);

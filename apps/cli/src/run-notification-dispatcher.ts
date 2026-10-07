@@ -10,7 +10,7 @@ export interface DispatchNotification {
 }
 
 export interface NotificationDispatcherDependencies {
-  claim(input: { projectRootUri: string; owner: string; limit: number }): Promise<DispatchNotification[]>;
+  claim(input: { projectRootUri: string; owner: string; limit: number; notificationId?: string }): Promise<DispatchNotification[]>;
   transport(notification: DispatchNotification): Promise<boolean>;
   settle(input: {
     projectRootUri: string; owner: string; notificationId: string;
@@ -20,25 +20,32 @@ export interface NotificationDispatcherDependencies {
 
 /** Transport completion never proves originating-task acknowledgment or grants action authority. */
 export async function dispatchRunNotifications(
-  input: { projectRootUri: string; owner: string; limit?: number },
+  input: { projectRootUri: string; owner: string; limit?: number; notificationId?: string },
   dependencies: NotificationDispatcherDependencies
 ): Promise<number> {
   if (!input.projectRootUri.trim() || !input.owner.trim()) {
     throw new Error("Notification dispatch requires an explicit project and owner.");
   }
   const limit = input.limit ?? 50;
+  if (input.notificationId !== undefined && !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(input.notificationId)) {
+    throw new Error("Invalid notification identity.");
+  }
   if (!Number.isInteger(limit) || limit < 1 || limit > 50) {
     throw new Error("Notification dispatch limit must be an integer between 1 and 50.");
   }
   let delivered = 0;
-  for (let attempt = 0; attempt < limit; attempt += 1) {
+  for (let attempt = 0; attempt < (input.notificationId ? 1 : limit); attempt += 1) {
     // Avoid expiring later claims while an earlier transport is busy.
     const notifications = await dependencies.claim({
-      projectRootUri: input.projectRootUri, owner: input.owner, limit: 1
+      projectRootUri: input.projectRootUri, owner: input.owner, limit: 1,
+      ...(input.notificationId ? { notificationId: input.notificationId } : {})
     });
     if (!notifications.length) break;
     if (notifications.length !== 1) throw new Error("Notification claim exceeded its requested bound.");
     const notification = notifications[0];
+    if (input.notificationId && notification.id.toLowerCase() !== input.notificationId.toLowerCase()) {
+      throw new Error("Notification claim did not match the requested identity.");
+    }
     let transportDelivered = false;
     try {
       transportDelivered = await dependencies.transport(notification);

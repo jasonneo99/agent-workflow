@@ -7,6 +7,16 @@ import { approvalCallbackPrompt, attachCodexOrigin, codexThreadId, failureCallba
 
 const threadId = "123e4567-e89b-42d3-a456-426614174000";
 
+test("Studio and Muse origins survive inheritance without becoming Codex origins", () => {
+  for (const channel of ["studio", "muse"]) {
+    const origin = attachCodexOrigin({}, { AGENTFLOW_REQUESTER_CHANNEL: channel, AGENTFLOW_ORIGIN_TASK_ID: "conversation-a", CODEX_THREAD_ID: threadId });
+    assert.deepEqual(origin, { originClient: channel, originTaskId: "conversation-a" });
+    assert.deepEqual(inheritedCodexOrigin(origin), origin);
+    assert.equal(codexThreadId(origin), null);
+    assert.strictEqual(attachCodexOrigin(origin, { CODEX_THREAD_ID: threadId }), origin);
+  }
+});
+
 test("callback process success proves transport only, never task acknowledgment", async () => {
   const source = await readFile(new URL("./lib/builders-approvals.ts", import.meta.url), "utf8");
   const start = source.indexOf("export async function deliverCodexWorkflowCallback(");

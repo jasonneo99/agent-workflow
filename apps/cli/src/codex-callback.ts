@@ -8,6 +8,15 @@ export function attachCodexOrigin(
   environment: NodeJS.ProcessEnv = process.env
 ): Record<string, unknown> {
   const current = metadata ?? {};
+  // An explicitly recorded origin survives continuations and host changes.
+  if (Object.prototype.hasOwnProperty.call(current, "originTaskId")) return current;
+  const origin = environment.AGENTFLOW_ORIGIN_TASK_ID?.trim();
+  const channel = environment.AGENTFLOW_REQUESTER_CHANNEL?.trim();
+  if (!Object.prototype.hasOwnProperty.call(current, "codexThreadId")
+    && origin && /^[a-zA-Z0-9-]{1,160}$/u.test(origin)
+    && channel && /^(studio|muse)$/u.test(channel)) {
+    return { ...current, originClient: channel, originTaskId: origin };
+  }
   // Explicit metadata must never be replaced by a different environment task.
   if (Object.prototype.hasOwnProperty.call(current, "codexThreadId")) return current;
   const threadId = environment.CODEX_THREAD_ID?.trim();
@@ -20,6 +29,10 @@ export function attachCodexOrigin(
 }
 
 export function inheritedCodexOrigin(metadata: Record<string, unknown> | undefined): Record<string, unknown> {
+  if ((metadata?.originClient === "studio" || metadata?.originClient === "muse")
+    && typeof metadata.originTaskId === "string" && /^[a-zA-Z0-9-]{1,160}$/u.test(metadata.originTaskId)) {
+    return { originClient: metadata.originClient, originTaskId: metadata.originTaskId };
+  }
   const threadId = typeof metadata?.codexThreadId === "string" ? metadata.codexThreadId.trim() : "";
   return UUID.test(threadId) ? { originClient: "codex", codexThreadId: threadId } : {};
 }

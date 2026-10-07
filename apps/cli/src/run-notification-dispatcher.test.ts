@@ -94,3 +94,31 @@ test("an oversized storage claim fails closed before transport", async () => {
   }), /exceeded/u);
   assert.equal(sends, 0);
 });
+
+test("exact selection makes at most one attempt even when transport fails", async () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  for (const success of [true, false]) {
+    let claims = 0;
+    let sends = 0;
+    let settlements = 0;
+    assert.equal(await dispatchRunNotifications({ ...scope, notificationId: id }, {
+      async claim(input) { claims++; assert.equal(input.notificationId, id); return [{ ...notification, id }]; },
+      async transport() { sends++; return success; },
+      async settle(input) { settlements++; assert.equal(input.transportDelivered, success); return true; }
+    }), success ? 1 : 0);
+    assert.deepEqual([claims, sends, settlements], [1, 1, 1]);
+  }
+});
+
+test("exact selection never sends an unrelated claim and validates before claim", async () => {
+  let claims = 0;
+  const dependencies: NotificationDispatcherDependencies = {
+    async claim() { claims++; return [notification]; },
+    async transport() { assert.fail("Unexpected transport"); },
+    async settle() { assert.fail("Unexpected settlement"); }
+  };
+  await assert.rejects(dispatchRunNotifications({ ...scope, notificationId: "" }, dependencies), /Invalid notification/u);
+  assert.equal(claims, 0);
+  await assert.rejects(dispatchRunNotifications({ ...scope, notificationId: "00000000-0000-4000-8000-000000000001" }, dependencies), /did not match/u);
+  assert.equal(claims, 1);
+});

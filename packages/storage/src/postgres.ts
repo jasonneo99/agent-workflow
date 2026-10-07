@@ -60,7 +60,8 @@ import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEve
 import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
 import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 import { buildRunPresentation } from "./run-presentation.js";
-import { enqueueRunNotification, runNotificationOutboxSchemaSql } from "./run-notifications.js";
+import { enqueueRunNotification, runNotificationOutboxSchemaSql, engineEventConsumerSchemaSql } from "./run-notifications.js";
+import { notificationSubscriberSchemaSql } from "./notification-subscribers.js";
 export { claimRunNotifications, settleRunNotification, acknowledgeRunNotification } from "./run-notifications.js";
 export { databaseUrl, withClient } from "./client.js";
 export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
@@ -134,6 +135,8 @@ export async function migrateStorage(): Promise<void> {
       )
     `);
     await client.query(runNotificationOutboxSchemaSql);
+    await client.query(notificationSubscriberSchemaSql);
+    await client.query(engineEventConsumerSchemaSql);
     await client.query(`
       CREATE INDEX IF NOT EXISTS run_notifications_pending_idx
       ON run_notifications(status, created_at) WHERE status = 'pending'
@@ -759,14 +762,7 @@ export async function cancelWorkflowRun(runId: string): Promise<boolean> {
         return false;
       }
       await transitionWorkflowRun(client, { runId, to: "cancelled", actor: "operator", reason: "Run cancellation requested.", idempotencyKey: `cancel:${runId}` });
-      await client.query(
-        `update workflow_tasks
-         set status = 'cancelled',
-             finished_at = now()
-         where run_id = $1::uuid
-           and status in ('queued', 'leased', 'running')`,
-        [runId]
-      );
+      await cancelRemainingWorkflowStages(client, { runId, reason: "Stage cancelled by run cancellation." });
       await client.query("commit");
       return true;
     } catch (error) {
@@ -780,7 +776,7 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const result = await client.query<{ id: string }>(
+      const result = await client.query<{ id: string; agent_id: string }>(
         `update workflow_tasks
          set status = 'queued',
              started_at = null,
@@ -790,11 +786,17 @@ export async function requeueRunningWorkflowTasks(runId: string): Promise<number
              available_at = now()
          where run_id = $1::uuid
            and status in ('leased','running')
-         returning id::text`,
+         returning id::text, agent_id`,
         [runId]
       );
       if (result.rowCount && result.rowCount > 0) {
         await client.query(`update workflow_runs set lease_owner = null, lease_expires_at = null where id = $1::uuid and status in ('leased','running')`, [runId]);
+      }
+      for (const task of result.rows.sort((a, b) => a.id.localeCompare(b.id))) {
+        await appendActionReceipt(client, { runId, agentId: task.agent_id,
+          actionType: "stage_requeued", target: task.id,
+          summary: "Active stage requeued for another execution attempt.",
+          metadata: JSON.stringify({ nextStatus: "queued" }) });
       }
       await client.query("commit");
       return result.rowCount ?? 0;
@@ -814,7 +816,7 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
   return withClient(async (client) => {
     await client.query("begin");
     try {
-      const result = await client.query<{ runId: string; taskId: string; workerId: string | null; leaseExpiresAt: string | null }>(
+      const result = await client.query<{ runId: string; taskId: string; agentId: string; workerId: string | null; leaseExpiresAt: string | null }>(
         `with expired as (
            select wt.id, wt.run_id, wt.worker_id, wt.lease_expires_at
            from workflow_tasks wt
@@ -838,11 +840,12 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
          where wt.id = expired.id
          returning wt.run_id::text as "runId",
                    wt.id::text as "taskId",
+                   wt.agent_id as "agentId",
                    expired.worker_id as "workerId",
                    expired.lease_expires_at::text as "leaseExpiresAt"`,
         [input.runId ?? null, input.projectRootUri ?? null]
       );
-      const runIds = [...new Set(result.rows.map((row) => row.runId))];
+      const runIds = [...new Set(result.rows.map((row) => row.runId))].sort();
       if (runIds.length) {
         await client.query(
           `update workflow_runs
@@ -854,6 +857,12 @@ export async function requeueExpiredWorkflowTaskLeases(input: {
         );
         for (const runId of runIds) {
           const tasks = result.rows.filter((row) => row.runId === runId);
+          for (const task of tasks.sort((a, b) => a.taskId.localeCompare(b.taskId))) {
+            await appendActionReceipt(client, { runId, agentId: task.agentId,
+              actionType: "stage_requeued", target: task.taskId,
+              summary: "Stage requeued after its worker lease expired.",
+              metadata: JSON.stringify({ nextStatus: "queued", cause: "expired_worker_lease" }) });
+          }
           await appendActionReceipt(client, {
         runId: runId,
         agentId: "workflow-orchestrator",
@@ -1147,7 +1156,7 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
       }
 
       const resumableStatuses = ["queued", "running"];
-      const result = await client.query<{ id: string }>(
+      const result = await client.query<{ id: string; agentId: string }>(
         `update workflow_tasks
          set status = 'queued',
              started_at = null,
@@ -1157,9 +1166,13 @@ export async function resumeWorkflowRunFromCheckpoint(input: {
              available_at = now()
          where run_id = $1::uuid
            and status = any($2::text[])
-         returning id::text`,
+         returning id::text, agent_id as "agentId"`,
         [input.runId, resumableStatuses]
       );
+      for (const task of result.rows) await appendActionReceipt(client, {
+        runId: input.runId, agentId: task.agentId, actionType: "stage_requeued", target: task.id,
+        summary: "Stage requeued by checkpoint recovery.", metadata: JSON.stringify({ actor: input.actor })
+      });
       const counts = await client.query<{ total: number; completed: number }>(
         `select
            count(*)::int as total,
@@ -1551,6 +1564,8 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
       );
       const runId = runResult.rows[0].id;
       const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
+      await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator",
+        actionType: "workflow_created", target: runId, summary: "Workflow created and queued.", metadata: "{}" });
 
       if (input.compiledBrief) {
         await client.query(
@@ -2512,6 +2527,12 @@ export async function claimNextWorkflowTask(input?: { workerId?: string; leaseSe
         [result.rows[0].taskId, leaseEpoch]
       );
       result.rows[0].fencingToken = leaseEpoch;
+      await appendActionReceipt(client, {
+        runId: result.rows[0].runId, agentId: result.rows[0].agentId,
+        actionType: "stage_leased", target: result.rows[0].taskId,
+        summary: "Stage leased to a worker.",
+        metadata: JSON.stringify({ nextStatus: "leased", leaseEpoch })
+      });
 
       const acceptedHandoffs = await client.query<{ id: string }>(
         `update workflow_handoffs wh set status = 'accepted', accepted_at = now(), updated_at = now()
@@ -2558,6 +2579,9 @@ export async function startWorkflowTask(input: { taskId: string; runId: string; 
         expectedLeaseOwner: input.workerId,
         metadata: { taskId: input.taskId }
       });
+      await appendActionReceipt(client, { runId: input.runId, agentId: "workflow-orchestrator",
+        actionType: "stage_started", target: input.taskId, summary: "Leased worker started stage execution.",
+        metadata: JSON.stringify({ taskId: input.taskId, fencingToken: input.fencingToken }) });
       await client.query("commit");
     } catch (error) { await client.query("rollback"); throw error; }
   });
@@ -2797,12 +2821,8 @@ export async function blockWorkflowTask(input: {
         `update workflow_tasks set status = 'blocked', output_uri = $2, finished_at = now() where id = $1`,
         [input.taskId, outputUri]
       );
-      await client.query(
-        `update workflow_tasks
-         set status = 'cancelled', finished_at = now()
-         where run_id = $1 and id <> $2 and status in ('queued', 'leased', 'running')`,
-        [input.runId, input.taskId]
-      );
+      await cancelRemainingWorkflowStages(client, { runId: input.runId, exceptTaskId: input.taskId,
+        reason: "Stage cancelled because another stage blocked the run." });
       await appendActionReceipt(client, {
         runId: input.runId,
         agentId: input.agentId,
@@ -2956,15 +2976,8 @@ export async function failWorkflowTask(input: {
         metadata: JSON.stringify({ error: input.error })
       });
 
-      await client.query(
-        `update workflow_tasks
-         set status = 'cancelled',
-             finished_at = now()
-         where run_id = $1
-           and id <> $2
-           and status in ('queued', 'leased', 'running')`,
-        [input.runId, input.taskId]
-      );
+      await cancelRemainingWorkflowStages(client, { runId: input.runId, exceptTaskId: input.taskId,
+        reason: "Stage cancelled because another stage failed the run." });
 
       await transitionWorkflowRun(client, {
         runId: input.runId,
@@ -4151,3 +4164,4 @@ export async function consolidateProjectAlias(input: {
   });
 }
 import { appendActionReceipt } from "./receipt-writer.js";
+import { cancelRemainingWorkflowStages } from "./stage-lifecycle.js";

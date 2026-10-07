@@ -28,7 +28,7 @@ import { constructDynamicWorkflow } from "../../../../packages/dynamic-workflow/
 import { type FleetUsageReceipt, readFleetUsageReceipts, summarizeFleetUsage } from "../../../../packages/fleet-model-gateway/src/index.js";
 import { type HighRiskApprovalInbox, buildHighRiskApprovalInbox, redactApprovalCardText } from "../../../../packages/governance/src/high-risk-approval-inbox.js";
 import { type GovernanceReport, buildGovernanceReport } from "../../../../packages/governance/src/index.js";
-import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue } from "../../../../packages/learning-governance/src/index.js";
+import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
 import { type LearningLoopDashboard, buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence } from "../../../../packages/learning-loop/src/index.js";
 import { buildLearningProposalSet } from "../../../../packages/learning-proposals/src/index.js";
 import { executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
@@ -3461,6 +3461,32 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/learning-approval-decision") {
+      const form = await readFormBody(request);
+      try {
+        const projectPath = await resolveDashboardProjectPath(form.get("project") ?? "");
+        const approvalId = form.get("approvalId") ?? "";
+        const decision = form.get("decision") ?? "";
+        if (!approvalId || (decision !== "approved" && decision !== "rejected")) {
+          throw new Error("Missing approvalId or invalid decision");
+        }
+        const queue = await readLearningApprovalQueue(projectPath.localRootUri);
+        const result = decideLearningApprovals({
+          queue,
+          ids: [approvalId],
+          status: decision as "approved" | "rejected",
+          reviewer: "dashboard-operator",
+          note: `Decision via dashboard: ${decision}`
+        });
+        const queuePath = path.join(projectPath.localRootUri, ".agent-workflow", "learning", "approval-inbox.json");
+        await fs.writeFile(queuePath, JSON.stringify(result.queue, null, 2), "utf8");
+        respondDashboardAction(request, response, form, { ok: true, title: `Proposal ${decision}`, output: `Learning proposal ${approvalId} marked as ${decision}.` }, "/learning?view=approvals");
+      } catch (error) {
+        respondDashboardAction(request, response, form, { ok: false, error: error instanceof Error ? error.message : String(error) }, "/learning?view=approvals");
+      }
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/api/learning-loop-calibration") {
       const form = await readFormBody(request);
       try {
@@ -4731,6 +4757,42 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         await safeAppendServerRequestAuditEvent(ctx, buildServerRequestBodyErrorAuditEvent(request, error, "/api/server-orchestrations"));
         response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
         response.end(JSON.stringify({ kind: "agentflow_server_orchestration_report", status: "blocked", error: publicHttpError("The orchestration request was invalid.") }, null, 2));
+      }
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/notification-ack") {
+      const { handleNotificationAcknowledgment } = await import("../notification-ack-http.js");
+      await handleNotificationAcknowledgment(request, response);
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/api/server-run-events") {
+      if (!validateServerMutationAuth(request).ok) {
+        response.writeHead(403, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "Authentication required." }));
+        return;
+      }
+      try {
+        const projectId = requestUrl.searchParams.get("projectId") ?? "";
+        const runId = requestUrl.searchParams.get("runId") ?? "";
+        const project = (await listProjectStorageSummaries(500)).find(item => item.id === projectId);
+        if (!project) {
+          response.writeHead(404).end();
+          return;
+        }
+        const { replayRecordedLifecycleEvents } = await import("../../../../packages/storage/src/recorded-lifecycle.js");
+        const cursor = request.headers["last-event-id"];
+        const events = await replayRecordedLifecycleEvents({ projectRootUri: project.rootUri, runId,
+          after: typeof cursor === "string" ? cursor : requestUrl.searchParams.get("after") ?? undefined });
+        response.writeHead(200, { "content-type": "text/event-stream; charset=utf-8", "cache-control": "no-store", "x-accel-buffering": "no" });
+        response.write("retry: 2000\n\n");
+        for (const event of events) response.write(`id: ${event.cursor}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+        // Bounded replay response. Reconnect using Last-Event-ID for the next page.
+        response.end();
+      } catch {
+        if (!response.headersSent) response.writeHead(400, { "content-type": "application/json" });
+        response.end(JSON.stringify({ error: "Lifecycle replay request failed." }));
       }
       return;
     }
@@ -13267,9 +13329,23 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <tr><td><a href="/run?id=${encodeURIComponent(run.runId)}">${escapeHtml(run.runId.slice(0, 8))}</a></td><td>${escapeHtml(run.workflowId)}</td><td>${escapeHtml(run.task)}</td><td>${renderDashboardDateTime(run.startedAt)}</td><td><div class="actions">${queueRunActionForm(run.runId, "resolve-blocker", "Resolve Blocker")}<a class="button secondary" href="/run?id=${encodeURIComponent(run.runId)}">Inspect</a></div></td></tr>
     `).join("");
     const proposalRows = Object.entries(report.proposalPreview.byKind).map(([kind, count]) => `<tr><td>${escapeHtml(kind)}</td><td>${formatNumber(count)}</td></tr>`).join("");
-    const learningRows = (learningQueue?.items ?? []).map((item) => `
-      <tr><td>${escapeHtml(item.proposalId)}<br><span class="muted">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.proposal.priority)} / ${escapeHtml(item.proposal.riskLevel)}</td><td>${escapeHtml(item.proposal.title)}<br><span class="muted">${escapeHtml(item.proposal.target)}</span></td><td>${escapeHtml(item.proposal.recommendation)}</td></tr>
-    `).join("");
+    const learningRows = (learningQueue?.items ?? []).map((item) => {
+      const actionButtons = item.status === "pending" ? `
+        <form method="post" action="/api/learning-approval-decision" style="display:inline;margin-right:4px">
+          <input type="hidden" name="project" value="${escapeHtml(localProjectDir)}">
+          <input type="hidden" name="approvalId" value="${escapeHtml(item.id)}">
+          <input type="hidden" name="decision" value="approved">
+          <button type="submit" class="compact-button">Approve</button>
+        </form>
+        <form method="post" action="/api/learning-approval-decision" style="display:inline">
+          <input type="hidden" name="project" value="${escapeHtml(localProjectDir)}">
+          <input type="hidden" name="approvalId" value="${escapeHtml(item.id)}">
+          <input type="hidden" name="decision" value="rejected">
+          <button type="submit" class="compact-button secondary">Reject</button>
+        </form>` : `<span class="muted">-</span>`;
+      return `
+      <tr><td>${escapeHtml(item.proposalId)}<br><span class="muted">${escapeHtml(item.id)}</span></td><td>${escapeHtml(item.status)}</td><td>${escapeHtml(item.proposal.priority)} / ${escapeHtml(item.proposal.riskLevel)}</td><td>${escapeHtml(item.proposal.title)}<br><span class="muted">${escapeHtml(item.proposal.target)}</span></td><td>${escapeHtml(item.proposal.recommendation)}</td><td>${actionButtons}</td></tr>
+    `;}).join("");
     const learningCounts = learningQueue ? countStrings(learningQueue.items.map((item) => item.status)) : {};
     const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
       <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
@@ -13319,7 +13395,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <section class="panel">
         <div class="section-heading"><div><h2>Learning Proposal Inbox</h2><span class="muted">${learningQueue ? `pending=${learningCounts.pending ?? 0} approved=${learningCounts.approved ?? 0} rejected=${learningCounts.rejected ?? 0}` : "No local inbox written yet."}</span></div></div>
         <p class="muted">Generate the inbox with <code>${escapeHtml(proposalCommand)}</code>. Low/medium-risk items auto-approve in autonomous mode; high-risk items wait here for review.</p>
-        <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>Proposal</th><th>Status</th><th>Priority/Risk</th><th>Target</th><th>Recommendation</th><th>Actions</th></tr></thead><tbody>${learningRows || "<tr><td colspan=\"5\">No learning proposal inbox found.</td></tr>"}</tbody></table></div>
       </section>
       <section class="panel">
         <div class="section-heading"><div><h2>Approved Application Plan</h2><span class="muted">${learningApplicationPlan ? `${learningApplicationPlan.actions.length} planned action(s)` : "No approved application plan yet."}</span></div></div>

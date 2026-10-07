@@ -1,4 +1,5 @@
 import type pg from "pg";
+import { lifecycleResultSnapshot, runLifecycleEvent } from "./lifecycle-event.js";
 import { assertWorkflowRunFence, assertWorkflowRunTransition, isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 
 export type WorkflowRunTransitionInput = {
@@ -72,11 +73,12 @@ export async function transitionWorkflowRun(
     [input.runId, input.to, ["completed", "blocked", "failed", "cancelled"]]
   );
   const next = updated.rows[0];
-  await client.query(
+  const transition = await client.query<{ occurredAt: string }>(
     `insert into workflow_run_transitions (
        run_id, from_status, to_status, state_version, lease_epoch,
        actor, reason, idempotency_key, metadata
-     ) values ($1::uuid, $2, $3, $4::bigint, $5::bigint, $6, $7, $8, $9)`,
+     ) values ($1::uuid, $2, $3, $4::bigint, $5::bigint, $6, $7, $8, $9)
+     returning created_at::text as "occurredAt"`,
     [input.runId, run.status, input.to, next.stateVersion, next.leaseEpoch, input.actor, input.reason, input.idempotencyKey, JSON.stringify(input.metadata ?? {})]
   );
   await appendActionReceipt(client, {
@@ -87,13 +89,24 @@ export async function transitionWorkflowRun(
         summary: `${run.status} -> ${input.to}: ${input.reason}`,
         metadata: JSON.stringify({ actor: input.actor, from: run.status, to: input.to, stateVersion: next.stateVersion, leaseEpoch: next.leaseEpoch, idempotencyKey: input.idempotencyKey, ...(input.metadata ?? {}) })
       });
-  if (input.to === "blocked" || input.to === "failed" || input.to === "completed") {
+  {
+    // Freeze references and content digests at completion; later artifact edits
+    // cannot silently turn replay into new evidence. Retrieval still requires auth.
+    const artifacts = input.to === "completed" ? (await client.query<{
+      uri: string; kind: string; content: unknown;
+    }>(`select uri,kind,content from artifacts where run_id=$1::uuid
+        and kind = any($2::text[]) order by uri limit 51`, [input.runId,
+      ["stage_output", "acceptance_contract", "acceptance_preflight", "delivery_metrics"]])).rows : [];
+    const event = runLifecycleEvent({ runId: input.runId, stateVersion: next.stateVersion,
+      from: run.status, to: input.to, occurredAt: transition.rows[0].occurredAt, reason: input.reason,
+      result: input.to === "completed" ? lifecycleResultSnapshot(input.runId, artifacts) : null });
     await enqueueRunNotification(client, {
       runId: input.runId,
-      kind: input.to,
+      kind: input.to === "blocked" || input.to === "failed" || input.to === "completed"
+        ? input.to : "progress",
       eventKey: `transition:${next.stateVersion}`,
       title: `Run ${input.to}`,
-      body: input.reason
+      body: JSON.stringify(event)
     });
   }
   return { changed: true, ...next };

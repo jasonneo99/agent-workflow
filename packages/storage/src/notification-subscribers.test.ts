@@ -1,0 +1,53 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import pg from "pg";
+import { randomUUID } from "node:crypto";
+import { databaseUrl } from "./client.js";
+import { notificationSubscriberSchemaSql, registerNotificationSubscriber, revokeNotificationSubscriber, claimSubscriberNotification, settleSubscriberNotification, acknowledgeSubscriberNotification } from "./notification-subscribers.js";
+
+test("independent subscriber deliveries and receiver credentials preserve project isolation", async () => {
+  const client = new pg.Client({ connectionString: databaseUrl() });
+  const connect = pg.Pool.prototype.connect;
+  try {
+    await client.connect();
+    await client.query("set search_path to pg_temp");
+    await client.query("create temporary table projects(id uuid primary key,root_uri text)");
+    await client.query("create temporary table workflow_runs(id uuid primary key,project_id uuid)");
+    await client.query("create temporary table run_notifications(id uuid primary key,run_id uuid,kind text,title text,body text)");
+    await client.query(notificationSubscriberSchemaSql);
+    const runId = randomUUID(); const notificationId = randomUUID(); const foreignRun = randomUUID();
+    await client.query("insert into projects values($1,'/synthetic'),($2,'/foreign')", [runId,foreignRun]);
+    await client.query("insert into workflow_runs values($1,$1),($2,$2)", [runId,foreignRun]);
+    await client.query("insert into run_notifications values($1,$2,'completed','Result','Synthetic')", [notificationId,runId]);
+    pg.Pool.prototype.connect = (async () => Object.assign(client,{ release() {} })) as unknown as typeof connect;
+    const first = await registerNotificationSubscriber({ projectRootUri: "/synthetic",channel: "webhook",taskId: "receiver-a" });
+    const second = await registerNotificationSubscriber({ projectRootUri: "/synthetic",channel: "webhook",taskId: "receiver-b" });
+    const foreign = await registerNotificationSubscriber({ projectRootUri: "/foreign",channel: "webhook",taskId: "receiver-a" });
+    const scope = { projectRootUri: "/synthetic",subscriberId: first.subscriberId,notificationId,owner: "consumer-a" };
+    assert.deepEqual(await claimSubscriberNotification({ ...scope,subscriberId: foreign.subscriberId }), []);
+    const [a] = await claimSubscriberNotification(scope);
+    const [b] = await claimSubscriberNotification({ ...scope,subscriberId: second.subscriberId });
+    assert.equal(a.originTaskId,"receiver-a"); assert.equal(b.originTaskId,"receiver-b");
+    assert.deepEqual(await claimSubscriberNotification(scope), []);
+    assert.equal(await acknowledgeSubscriberNotification({ token:first.token,notificationId,runId }),false);
+    assert.equal(await settleSubscriberNotification({ ...scope,claimToken:b.claimToken,transportDelivered:true }),false);
+    assert.equal(await settleSubscriberNotification({ ...scope,claimToken:a.claimToken,transportDelivered:true }),true);
+    assert.equal(await acknowledgeSubscriberNotification({ token:second.token,notificationId,runId }),false);
+    assert.equal(await acknowledgeSubscriberNotification({ token:foreign.token,notificationId,runId }),false);
+    assert.equal(await acknowledgeSubscriberNotification({ token:first.token,notificationId,runId:foreignRun }),false);
+    assert.equal(await acknowledgeSubscriberNotification({ token:first.token,notificationId,runId }),true);
+    assert.equal(await acknowledgeSubscriberNotification({ token:first.token,notificationId,runId }),true);
+    assert.equal(await settleSubscriberNotification({ ...scope,subscriberId:second.subscriberId,claimToken:b.claimToken,transportDelivered:false }),true);
+    const rows = (await client.query("select subscriber_id,status,acknowledged_at,available_at>now() as backoff from notification_deliveries order by subscriber_id")).rows;
+    assert.equal(rows.find(row=>row.subscriber_id===first.subscriberId).status,"delivered");
+    assert.ok(rows.find(row=>row.subscriber_id===first.subscriberId).acknowledged_at);
+    assert.equal(rows.find(row=>row.subscriber_id===second.subscriberId).status,"failed");
+    assert.equal(rows.find(row=>row.subscriber_id===second.subscriberId).backoff,true);
+    assert.equal(rows.find(row=>row.subscriber_id===second.subscriberId).acknowledged_at,null);
+    assert.equal(await revokeNotificationSubscriber({ subscriberId:first.subscriberId,projectRootUri:"/foreign" }),false);
+    assert.equal(await revokeNotificationSubscriber({ subscriberId:first.subscriberId,projectRootUri:"/synthetic" }),true);
+    assert.equal(await acknowledgeSubscriberNotification({ token:first.token,notificationId,runId }),false);
+    const stored = (await client.query("select token_hash from notification_subscribers where id=$1",[first.subscriberId])).rows[0];
+    assert.notEqual(stored.token_hash,first.token);
+  } finally { pg.Pool.prototype.connect=connect; await client.end(); }
+});

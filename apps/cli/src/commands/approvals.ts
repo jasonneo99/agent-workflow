@@ -555,8 +555,13 @@ export function registerApprovalsCommands(program: Command, ctx: CliContext): vo
     .description("List requester notifications queued when runs block or need approval")
     .option("--pending", "only show undelivered notifications", true)
     .option("--deliver", "attempt delivery through each notification's channel now")
+    .option("--notification <id>", "deliver only this exact notification once; requires --deliver and --project")
     .option("-p, --project <dir>", "project directory (used for codex channel delivery)")
-    .action(async (options: { pending?: boolean; deliver?: boolean; project?: string }) => {
+    .action(async (options: { pending?: boolean; deliver?: boolean; project?: string; notification?: string }) => {
+      if (options.notification !== undefined && (!options.deliver || !options.project
+        || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(options.notification))) {
+        throw new Error("Exact notification delivery requires a UUID, --deliver and --project.");
+      }
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -564,6 +569,11 @@ export function registerApprovalsCommands(program: Command, ctx: CliContext): vo
           console.error(`MISSING: ${check.endpoint.name} - ${check.message}`);
         }
         process.exitCode = 1;
+        return;
+      }
+      if (options.notification) {
+        const delivered = await deliverRunNotifications(path.resolve(process.cwd(), options.project!), options.notification);
+        console.log(`Transport-delivered: ${delivered}; acknowledgment unverified. No unrelated notifications selected.`);
         return;
       }
       const pending = await listPendingRunNotifications(100);
@@ -580,6 +590,56 @@ export function registerApprovalsCommands(program: Command, ctx: CliContext): vo
         const projectDir = options.project ? path.resolve(process.cwd(), options.project) : process.cwd();
         const delivered = await deliverRunNotifications(projectDir);
         console.log(`Delivered ${delivered}/${pending.length} notification(s).`);
+      }
+    });
+
+  program
+    .command("engine-events")
+    .description("Private local NDJSON lifecycle stream; stdin ACK only after durable client receipt")
+    .option("-p, --project <dir>", "optional project filter; default is all registered projects")
+    .requiredOption("--consumer <id>", "stable private local client identity; independent acknowledgment state")
+    .option("--task <id>", "restrict to one originating conversation")
+    .action(async (options: { project?: string; consumer: string; task?: string }) => {
+      const { runOriginEventStream } = await import("../origin-event-stream.js");
+      await runOriginEventStream({ ...options, project: options.project ? path.resolve(options.project) : undefined });
+    });
+
+  program
+    .command("notification-consumer")
+    .description("Consume one exact outbox notification through an explicitly configured signed webhook")
+    .requiredOption("-p, --project <dir>", "authorized project directory")
+    .requiredOption("--notification <id>", "exact notification UUID")
+    .requiredOption("--channel <channel>", "authorized notification channel")
+    .requiredOption("--task <id>", "authenticated destination task binding")
+    .requiredOption("--endpoint <url>", "administrator-approved webhook endpoint")
+    .option("--subscriber <id>", "use independent delivery state for this registered subscriber")
+    .option("--secret-env <name>", "environment variable holding the signing secret", "AGENTFLOW_WEBHOOK_SECRET")
+    .option("--checks <count>", "maximum eligibility checks (1-100)", "30")
+    .option("--interval-ms <milliseconds>", "time between eligibility checks", "2000")
+    .option("--loopback-test", "allow HTTP to numeric loopback for an isolated test")
+    .action(async (options: { project: string; notification: string; channel: string; task: string; endpoint: string; subscriber?: string; secretEnv: string; checks: string; intervalMs: string; loopbackTest?: boolean }) => {
+      const { createWebhookHost, consumeHostNotification } = await import("../notification-webhook.js");
+      const { claimRunNotifications, settleRunNotification } = await import("../../../../packages/storage/src/run-notifications.js");
+      const { claimSubscriberNotification, settleSubscriberNotification } = await import("../../../../packages/storage/src/notification-subscribers.js");
+      const projectRootUri = path.resolve(process.cwd(), options.project);
+      const host = createWebhookHost({ projectRootUri, channel: options.channel, taskId: options.task,
+        endpoint: options.endpoint, secret: process.env[options.secretEnv] ?? "", allowLoopbackHttp: options.loopbackTest === true });
+      const controller = new AbortController();
+      const stop = (): void => controller.abort();
+      process.once("SIGTERM", stop);
+      process.once("SIGINT", stop);
+      try {
+        const result = await consumeHostNotification({ projectRootUri, owner: `webhook-consumer:${process.pid}`,
+          notificationId: options.notification, maxChecks: Number(options.checks), intervalMs: Number(options.intervalMs),
+          signal: controller.signal }, host, options.subscriber ? {
+          claim: input => claimSubscriberNotification({ ...input, notificationId: options.notification, subscriberId: options.subscriber! }),
+          settle: input => settleSubscriberNotification({ ...input, subscriberId: options.subscriber! })
+        } : { claim: claimRunNotifications, settle: settleRunNotification });
+        console.log(JSON.stringify(result));
+        if (!result.transportDelivered) process.exitCode = 1;
+      } finally {
+        process.removeListener("SIGTERM", stop);
+        process.removeListener("SIGINT", stop);
       }
     });
 

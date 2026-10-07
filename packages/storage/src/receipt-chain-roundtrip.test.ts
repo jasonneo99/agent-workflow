@@ -3,6 +3,10 @@ import test from "node:test";
 import pg from "pg";
 import { databaseUrl, recordRunAction, verifyRunReceiptChain, transitionWorkflowRun } from "./postgres.js";
 import { computeReceiptHash } from "../../workflow-engine/src/receipt-chain.js";
+import { runNotificationOutboxSchemaSql } from "./run-notifications.js";
+import { createHash } from "node:crypto";
+import { appendActionReceipt } from "./receipt-writer.js";
+import { replayRecordedLifecycleEvents } from "./recorded-lifecycle.js";
 
 // Real PostgreSQL JSONB conversion; all test relations are session-local.
 test("untouched receipt survives PostgreSQL JSONB round trip", async () => {
@@ -12,14 +16,21 @@ test("untouched receipt survives PostgreSQL JSONB round trip", async () => {
     await client.connect();
     await client.query("set search_path to pg_temp");
     await client.query(`create temporary table workflow_runs (
-      id uuid primary key, status text, state_version bigint default 0,
+      id uuid primary key, project_id uuid, status text, state_version bigint default 0,
       lease_epoch bigint default 0, lease_owner text, lease_expires_at timestamptz,
-      finished_at timestamptz
+      finished_at timestamptz, requester_channel text default 'dashboard', evaluation_metadata jsonb default '{}'
     )`);
     await client.query(`create temporary table workflow_run_transitions (
       run_id uuid, from_status text, to_status text, state_version bigint,
-      lease_epoch bigint, actor text, reason text, idempotency_key text, metadata jsonb
+      lease_epoch bigint, actor text, reason text, idempotency_key text, metadata jsonb,
+      created_at timestamptz default now()
     )`);
+    await client.query(`create temporary table run_notifications (
+      id uuid primary key default gen_random_uuid(), run_id uuid, channel text, kind text,
+      title text, body text, status text default 'pending', created_at timestamptz default now(), delivered_at timestamptz
+    )`);
+    await client.query(runNotificationOutboxSchemaSql);
+    await client.query("create temporary table projects(id uuid primary key,root_uri text)");
     await client.query(`create temporary table action_receipts (
       run_id uuid, agent_id text, action_type text, target text, summary text,
       metadata jsonb, prev_hash text, receipt_hash text, created_at timestamptz default now()
@@ -38,6 +49,8 @@ test("untouched receipt survives PostgreSQL JSONB round trip", async () => {
     pg.Pool.prototype.connect = (async () => isolated) as unknown as typeof originalConnect;
     const runId = "00000000-0000-4000-8000-000000000001";
     await client.query("insert into workflow_runs (id, status) values ($1, 'queued')", [runId]);
+    await client.query("insert into projects values($1,'/synthetic')", [runId]);
+    await client.query("update workflow_runs set project_id=$1 where id=$1", [runId]);
     const artifactContent = { longerKey: { longerNestedKey: "synthetic", a: 1 }, a: true };
     const metadataBeforeStorage = JSON.stringify(artifactContent);
     await recordRunAction({ runId, agentId: "workflow-orchestrator",
@@ -74,6 +87,21 @@ test("untouched receipt survives PostgreSQL JSONB round trip", async () => {
     await transitionWorkflowRun(client, { runId, to: "leased", actor: "synthetic-worker",
       reason: "Synthetic lifecycle transition", idempotencyKey: "synthetic-lease" });
     await client.query("commit");
+    const notification = (await client.query("select body from run_notifications where run_id=$1", [runId])).rows[0];
+    assert.equal(JSON.parse(notification.body).state, "leased");
+    await client.query("begin");
+    await transitionWorkflowRun(client, { runId, to: "leased", actor: "synthetic-worker",
+      reason: "Synthetic lifecycle transition", idempotencyKey: "synthetic-lease" });
+    await client.query("commit");
+    assert.equal((await client.query("select count(*)::int as count from run_notifications")).rows[0].count, 1);
+    await client.query("begin");
+    await transitionWorkflowRun(client, { runId, to: "cancelled", actor: "synthetic-worker",
+      reason: "Synthetic cancellation", idempotencyKey: "synthetic-cancel" });
+    const cancelled = (await client.query("select body from run_notifications where event_key='transition:2'")).rows[0];
+    assert.equal(JSON.parse(cancelled.body).state, "cancelled");
+    await client.query("rollback");
+    assert.equal((await client.query("select count(*)::int as count from run_notifications")).rows[0].count, 1,
+      "rolled-back transitions must not leave a deliverable notification");
     await recordRunAction({ runId, agentId: "workflow-orchestrator", actionType: "synthetic_after_transition",
       target: "synthetic-target", summary: "Receipt after lifecycle transition", artifactKind: "synthetic_after",
       artifactContent: {} });
@@ -91,6 +119,29 @@ test("untouched receipt survives PostgreSQL JSONB round trip", async () => {
       assert.equal((await verifyRunReceiptChain(runId)).valid, false, mutation);
       await client.query("rollback");
     }
+    await client.query("begin");
+    await client.query("insert into artifacts(run_id,kind,uri,content) values ($1,'stage_output','db://synthetic/result',$2)", [runId, JSON.stringify({ summary: "Synthetic deliverable" })]);
+    await transitionWorkflowRun(client, { runId, to: "running", actor: "synthetic-worker", reason: "started", idempotencyKey: "snapshot-running" });
+    await transitionWorkflowRun(client, { runId, to: "completed", actor: "synthetic-worker", reason: "finished", idempotencyKey: "snapshot-completed" });
+    const frozenBody = (await client.query("select body from run_notifications where event_key='transition:3'")).rows[0].body;
+    const frozen = JSON.parse(frozenBody).result;
+    assert.equal(frozen.acceptance, "unverified");
+    assert.deepEqual(frozen.artifacts, [{ uri: "db://synthetic/result", kind: "stage_output", contentSha256: createHash("sha256").update(JSON.stringify({ summary: "Synthetic deliverable" })).digest("hex") }]);
+    await client.query("update artifacts set content='{}' where uri='db://synthetic/result'");
+    assert.equal((await client.query("select body from run_notifications where event_key='transition:3'")).rows[0].body, frozenBody);
+    await client.query("rollback");
+    await client.query("begin");
+    await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator", actionType: "stage_completed", target: "synthetic-stage", summary: "Stage done", metadata: "{}" });
+    await appendActionReceipt(client, { runId, agentId: "workflow-orchestrator", actionType: "action_approval_approved", target: "synthetic-target", summary: "Approved", metadata: JSON.stringify({ approvalId: "synthetic-approval", secret: "must-not-be-exported" }) });
+    const stream = await replayRecordedLifecycleEvents({ projectRootUri: "/synthetic", runId });
+    assert.deepEqual(stream.map(event => event.type), ["run.changed", "stage.changed", "approval.changed"]);
+    assert.equal(stream.at(-1)?.subject, "synthetic-approval");
+    assert.equal(JSON.stringify(stream).includes("must-not-be-exported"), false);
+    assert.deepEqual(await replayRecordedLifecycleEvents({ projectRootUri: "/other", runId }), []);
+    assert.deepEqual(await replayRecordedLifecycleEvents({ projectRootUri: "/synthetic", runId, after: stream[1].cursor }), [stream[2]]);
+    assert.equal((await client.query("select count(*)::int as count from run_notifications where event_key like 'receipt:%'")).rows[0].count, 2);
+    await client.query("rollback");
+    assert.equal((await client.query("select count(*)::int as count from run_notifications where event_key like 'receipt:%'")).rows[0].count, 0);
     // Legacy hashes are never rewritten or silently canonicalized as version 2.
     const legacyHash = computeReceiptHash(row.prev_hash, { ...content, metadataSerializationVersion: undefined });
     await client.query("update pg_temp.action_receipts set metadata_serialization_version=null, receipt_hash=$1", [legacyHash]);

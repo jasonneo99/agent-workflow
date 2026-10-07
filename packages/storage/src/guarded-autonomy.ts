@@ -12,6 +12,7 @@ import {
   type StageAuthorityGrant
 } from "../../guarded-autonomy/src/index.js";
 import { withClient } from "./client.js";
+import { appendActionReceipt } from "./receipt-writer.js";
 
 type BreakerScope = BreakerState["scope"];
 type BreakerKey = { scope: BreakerScope; scopeId: string };
@@ -130,12 +131,24 @@ export async function tripBreaker(input: {
           : input.scope === "agent" ? "wt.agent_id=$1"
           : input.scope === "provider" ? "coalesce(wr.provider_override,'')=$1"
           : "true";
-        await client.query(
+        const parameters = input.scope === "global" || input.scope === "tool_class" ? [] : [input.scopeId];
+        // Lock parents before children, then restrict mutation to those parents.
+        const parents = await client.query<{id:string}>(`select wr.id::text from workflow_runs wr join projects p on p.id=wr.project_id
+          where exists (select 1 from workflow_tasks wt where wt.run_id=wr.id
+            and wt.status in ('leased','running') and ${scopePredicate}) order by wr.id for update of wr`, parameters);
+        const requeued = await client.query<{ id: string; runId: string; agentId: string }>(
           `update workflow_tasks wt set status='queued',worker_id=null,lease_expires_at=null,lease_generation=lease_generation+1,available_at=now()
            from workflow_runs wr join projects p on p.id=wr.project_id
-           where wt.run_id=wr.id and wt.status in ('leased','running') and ${scopePredicate}`,
-          input.scope === "global" || input.scope === "tool_class" ? [] : [input.scopeId]
+           where wt.run_id=wr.id and wt.status in ('leased','running') and ${scopePredicate}
+             and wr.id=any($${parameters.length+1}::uuid[])
+           returning wt.id::text,wt.run_id::text as "runId",wt.agent_id as "agentId"`,
+          [...parameters, parents.rows.map(row=>row.id)]
         );
+        for (const task of requeued.rows.sort((a,b) => a.runId.localeCompare(b.runId) || a.id.localeCompare(b.id))) {
+          await appendActionReceipt(client, { runId: task.runId, agentId: task.agentId,
+            actionType: "stage_requeued", target: task.id, summary: "Stage requeued by autonomy breaker.",
+            metadata: JSON.stringify({ scope: input.scope, generation: result.rows[0].generation }) });
+        }
       }
       await client.query("commit");
       return breakerStateSchema.parse({ schema_version: 1, scope: input.scope, scope_id: input.scopeId, generation: Number(result.rows[0].generation), state: input.state, reason: input.reason, actor: input.actor, created_at: result.rows[0].createdAt.toISOString(), human_authored: input.humanAuthored, evidence_hashes: input.evidenceHashes ?? [] });

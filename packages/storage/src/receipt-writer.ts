@@ -1,5 +1,7 @@
 import type pg from "pg";
 import { chainReceipt, RECEIPT_CHAIN_GENESIS } from "../../workflow-engine/src/receipt-chain.js";
+import { recordedLifecycleEvent } from "./recorded-lifecycle.js";
+import { enqueueRunNotification } from "./run-notifications.js";
 
 /** Append inside the caller's transaction so the action and its receipt are atomic.
  * The parent row lock serializes every writer, including an empty chain. Keep
@@ -35,5 +37,13 @@ export async function appendActionReceipt(client: pg.Client, input: {
      values ($1::uuid, $2, $3, $4, $5, $6::jsonb, $7, $8, $9::timestamptz, 2)`,
     [input.runId, input.agentId, input.actionType, input.target, input.summary,
       input.metadata, receipt.prevHash, receipt.receiptHash, createdAt]);
+  const approvalId = input.actionType.startsWith("action_approval_") ? JSON.parse(input.metadata)?.approvalId : null;
+  const event = recordedLifecycleEvent({ ...input, receiptHash: receipt.receiptHash, createdAt,
+    approvalId: typeof approvalId === "string" ? approvalId : null });
+  // Run transitions and initial approval requests already have outbox writers.
+  if (event && !["workflow_run_transition", "workflow_replayed", "action_approval_requested"].includes(input.actionType)) {
+    await enqueueRunNotification(client, { runId: input.runId, kind: "progress",
+      eventKey: `receipt:${receipt.receiptHash}`, title: input.actionType.replaceAll("_", " "), body: JSON.stringify(event) });
+  }
   await client.query("release savepoint receipt_append");
 }

@@ -284,7 +284,9 @@ export async function dismissSupersededActionApprovals(input: {
   actor: string;
 }): Promise<number> {
   return withClient(async (client) => {
-    const result = await client.query(
+    await client.query("begin");
+    try {
+    const result = await client.query<{ id: string; agent_id: string }>(
       `update action_approvals
           set status = 'dismissed',
               decided_by = coalesce(decided_by, $5),
@@ -296,10 +298,23 @@ export async function dismissSupersededActionApprovals(input: {
           and task_id = $2::uuid
           and action_type = $3
           and target = $4
-          and status in ('pending', 'approved', 'failed')`,
+          and status in ('pending', 'approved', 'failed') returning id::text, agent_id`,
       [input.runId, input.taskId, input.actionType, input.target, input.actor]
     );
+    for (const approval of result.rows) {
+      await appendActionReceipt(client, {
+        runId: input.runId, agentId: approval.agent_id,
+        actionType: "action_approval_dismissed", target: input.target,
+        summary: "Approval superseded by direct policy-allowed execution.",
+        metadata: JSON.stringify({ approvalId: approval.id, nextStatus: "dismissed" })
+      });
+    }
+    await client.query("commit");
     return result.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 
@@ -404,7 +419,7 @@ export async function markActionApprovalExecution(input: {
         return null;
       }
       if (input.status === "executed") {
-        await client.query(
+        const dismissed = await client.query<{ id: string; agent_id: string }>(
           `update action_approvals
               set status = 'dismissed',
                   decision_note = concat_ws(E'\n', nullif(decision_note, ''), 'Superseded by a successfully executed approval for the same action.'),
@@ -414,9 +429,17 @@ export async function markActionApprovalExecution(input: {
               and task_id is not distinct from $3::uuid
               and action_type = $4
               and target = $5
-              and status in ('pending', 'approved', 'failed')`,
+              and status in ('pending', 'approved', 'failed') returning id::text, agent_id`,
           [approval.id, approval.runId, approval.taskId, approval.actionType, approval.target]
         );
+        for (const obsolete of dismissed.rows) {
+          await appendActionReceipt(client, {
+            runId: approval.runId, agentId: obsolete.agent_id,
+            actionType: "action_approval_dismissed", target: approval.target,
+            summary: "Approval superseded by successful approved execution.",
+            metadata: JSON.stringify({ approvalId: obsolete.id, nextStatus: "dismissed" })
+          });
+        }
       }
       await appendActionReceipt(client, {
         runId: approval.runId,
@@ -453,6 +476,8 @@ export async function claimActionApprovalExecution(input: {
 }): Promise<{ approval: ActionApprovalStatus; claimToken: string } | null> {
   const claimSeconds = Math.max(30, Math.min(3600, input.claimSeconds ?? 300));
   return withClient(async (client) => {
+    await client.query("begin");
+    try {
     const result = await client.query<ActionApprovalStatus>(
       `update action_approvals aa
        set status = 'executing',
@@ -473,7 +498,20 @@ export async function claimActionApprovalExecution(input: {
       [input.approvalId, input.actor, input.actorRole ?? null, claimSeconds]
     );
     const approval = result.rows[0];
+    if (approval?.executionClaimToken) {
+      await appendActionReceipt(client, {
+        runId: approval.runId, agentId: approval.agentId,
+        actionType: "action_approval_executing", target: approval.target,
+        summary: "Approved action execution claimed.",
+        metadata: JSON.stringify({ approvalId: approval.id, nextStatus: "executing" })
+      });
+    }
+    await client.query("commit");
     return approval?.executionClaimToken ? { approval, claimToken: approval.executionClaimToken } : null;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 
@@ -524,12 +562,28 @@ export async function recoverInterruptedActionApprovalExecutions(input: {
  */
 export async function expireStaleApprovals(): Promise<number> {
   return withClient(async (client) => {
-    const result = await client.query(
+    await client.query("begin");
+    try {
+    const result = await client.query<{ id: string; run_id: string; agent_id: string; target: string }>(
       `update action_approvals
        set status = 'expired', updated_at = now()
-       where status = 'pending' and expires_at is not null and expires_at < now()`
+       where status = 'pending' and expires_at is not null and expires_at < now()
+       returning id::text, run_id::text, agent_id, target`
     );
+    for (const approval of result.rows.sort((a, b) => a.run_id.localeCompare(b.run_id) || a.id.localeCompare(b.id))) {
+      await appendActionReceipt(client, {
+        runId: approval.run_id, agentId: approval.agent_id,
+        actionType: "action_approval_expired", target: approval.target,
+        summary: "Pending approval expired.",
+        metadata: JSON.stringify({ approvalId: approval.id, priorStatus: "pending", nextStatus: "expired" })
+      });
+    }
+    await client.query("commit");
     return result.rowCount ?? 0;
+    } catch (error) {
+      await client.query("rollback");
+      throw error;
+    }
   });
 }
 import { appendActionReceipt } from "./receipt-writer.js";
