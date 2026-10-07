@@ -36,3 +36,5 @@ templates/project/package-lock.json
 templates/project/src/
 templates/project/test/
 templates/project/docs/
+# Personal dogfooding backlog remains local rather than in the portable kit.
+.agent-workflow/dogfooding-restart.md
