@@ -4356,7 +4356,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     if (requestUrl.pathname === "/api/projects") {
       const projects = await listProjectStorageSummaries(100);
       const identities = await loadDashboardProjectIdentityGroups(projects);
-      const canonicalProjects = identities.map((identity) => ({
+      const canonicalProjects = identities.filter((identity) => identity.visibility === "canonical").map((identity) => ({
         ...identity.projects.find((project) => project.rootUri === identity.primaryRootUri)!,
         rootUri: identity.canonicalRootUri,
         name: identity.canonicalName,
@@ -15053,7 +15053,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function renderProjectsHtml(projects: DashboardProjectSummary[], identities: DashboardProjectIdentityGroup[], aliasMergePlan: DashboardProjectAliasMergePlan): string {
-    const identityRows = identities.map((identity) => `
+    const canonicalIdentities = identities.filter((identity) => identity.visibility === "canonical");
+    const supportingIdentities = identities.filter((identity) => identity.visibility === "supporting");
+    const renderIdentityRow = (identity: DashboardProjectIdentityGroup) => `
       <tr>
         <td><a href="/project?root=${encodeURIComponent(identity.primaryRootUri)}">${escapeHtml(identity.canonicalName)}</a><br><span class="muted">${escapeHtml(identity.canonicalRootUri)}</span></td>
         <td><span class="status ${identity.localPathExists ? "completed" : "queued"}">${identity.localPathExists ? "local" : "remote only"}</span><br><span class="muted">${escapeHtml(identity.source)}</span></td>
@@ -15063,7 +15065,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <td>${formatNumber(identity.totalMemoryItems)}</td>
         <td>${renderDashboardDateTime(identity.lastRunAt, "none")}</td>
       </tr>
-    `).join("");
+    `;
+    const identityRows = canonicalIdentities.map(renderIdentityRow).join("");
+    const supportingIdentityRows = supportingIdentities.map(renderIdentityRow).join("");
     const rows = projects.map((project) => `
       <tr>
         <td><a href="/project?root=${encodeURIComponent(project.rootUri)}">${escapeHtml(project.name)}</a><br><span class="muted">${escapeHtml(project.rootUri)}</span></td>
@@ -15117,15 +15121,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           </div>
         </div>
         <div class="metric-grid">
-          ${metricCard("Identities", identities.length, "logical projects")}
+          ${metricCard("Canonical", canonicalIdentities.length, "top-level projects")}
           ${metricCard("Registered Paths", projects.length, "stored project roots")}
-          ${metricCard("Aliased", identities.filter((identity) => identity.projects.length > 1).length, "multi-path identities")}
-          ${metricCard("Remote Only", identities.filter((identity) => !identity.localPathExists).length, "not mounted here")}
+          ${metricCard("Aliased", canonicalIdentities.filter((identity) => identity.projects.length > 1).length, "multi-path identities")}
+          ${metricCard("Other Roots", supportingIdentities.length, "history and supporting checkouts")}
         </div>
         <table>
           <thead><tr><th>Identity</th><th>Local</th><th>Aliases</th><th>Runs</th><th>Indexed</th><th>Memory</th><th>Last Run</th></tr></thead>
           <tbody>${identityRows || "<tr><td colspan=\"7\">No project identities found.</td></tr>"}</tbody>
         </table>
+        ${supportingIdentities.length ? `<details class="panel-inset"><summary><strong>Other registered roots (${formatNumber(supportingIdentities.length)})</strong> <span class="muted">Temporary, template, remote-only, or supporting checkouts retained for history</span></summary><div class="table-wrap"><table><thead><tr><th>Identity</th><th>Local</th><th>Aliases</th><th>Runs</th><th>Indexed</th><th>Memory</th><th>Last Run</th></tr></thead><tbody>${supportingIdentityRows}</tbody></table></div></details>` : ""}
       </section>
       <section class="panel">
         <div class="section-heading">
@@ -15150,11 +15155,13 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <p class="muted">Execution remains intentionally separate: first create a backup, run storage verification, clear active source runs, and generate an auditable mapping receipt.</p>
       </section>
       <section class="panel">
-        <h2>Registered Project Rows</h2>
-        <table>
-          <thead><tr><th>Project</th><th>Profile</th><th>Indexed</th><th>Memory</th><th>Runs</th><th>Last Run</th><th>Last Indexed</th></tr></thead>
-          <tbody>${rows || "<tr><td colspan=\"7\">No projects found. Run onboarding or index a project first.</td></tr>"}</tbody>
-        </table>
+        <details>
+          <summary><strong>Storage records (${formatNumber(projects.length)})</strong> <span class="muted">Exact registered roots retained for provenance and troubleshooting</span></summary>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Project</th><th>Profile</th><th>Indexed</th><th>Memory</th><th>Runs</th><th>Last Run</th><th>Last Indexed</th></tr></thead>
+            <tbody>${rows || "<tr><td colspan=\"7\">No projects found. Run onboarding or index a project first.</td></tr>"}</tbody>
+          </table></div>
+        </details>
       </section>
     </main>
   </body>

@@ -774,6 +774,7 @@ export type DashboardProjectIdentityGroup = {
   canonicalName: string;
   localPathExists: boolean;
   source: DashboardProjectPathResolution["source"];
+  visibility: "canonical" | "supporting";
   projects: DashboardProjectSummary[];
   totalRuns: number;
   totalIndexedFiles: number;

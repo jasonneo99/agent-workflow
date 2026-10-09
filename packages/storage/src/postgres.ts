@@ -4074,13 +4074,43 @@ export async function consolidateProjectAlias(input: {
         [target.id]
       );
 
-      // Dedupe only when BOTH uri and content match. The old code matched on
-      // uri alone, silently dropping source files whose content differed.
+      const collisionCounts = await client.query<{ table: string; count: string }>(
+        `select 'project_files' as table, count(*)
+           from project_files source
+           join project_files target on target.project_id = $2::uuid
+            and target.source_uri = source.source_uri
+          where source.project_id = $1::uuid
+         union all
+         select 'memory_items', count(*)
+           from memory_items source
+           join memory_items target on target.project_id = $2::uuid
+            and target.source_uri = source.source_uri
+            and target.content_hash = source.content_hash
+          where source.project_id = $1::uuid`,
+        [source.id, target.id]
+      );
+
+      // project_files is unique by (project_id, source_uri). Preserve the newer
+      // indexed evidence when aliases contain the same path with different
+      // content, then remove only the source-side collision before re-parenting.
+      await client.query(
+        `update project_files target set
+           content_hash = source.content_hash,
+           token_estimate = source.token_estimate,
+           summary = source.summary,
+           metadata = source.metadata,
+           updated_at = source.updated_at
+          from project_files source
+         where source.project_id = $1::uuid and target.project_id = $2::uuid
+           and source.source_uri = target.source_uri
+           and source.updated_at > target.updated_at`,
+        [source.id, target.id]
+      );
       await client.query(
         `delete from project_files source
           using project_files target
          where source.project_id = $1::uuid and target.project_id = $2::uuid
-           and source.source_uri = target.source_uri and source.content_hash = target.content_hash`,
+           and source.source_uri = target.source_uri`,
         [source.id, target.id]
       );
       const files = await client.query(`update project_files set project_id = $2::uuid where project_id = $1::uuid`, [source.id, target.id]);
@@ -4120,19 +4150,29 @@ export async function consolidateProjectAlias(input: {
       const preMap = new Map(preCounts.rows.map((r) => [r.table, Number(r.count)]));
       const preTargetMap = new Map(preTargetCounts.rows.map((r) => [r.table, Number(r.count)]));
       const postMap = new Map(postCounts.rows.map((r) => [r.table, Number(r.count)]));
+      const collisionMap = new Map(collisionCounts.rows.map((r) => [r.table, Number(r.count)]));
       for (const table of ["project_files", "memory_items", "workflow_runs", "performance_baselines"]) {
-        const expected = (preMap.get(table) ?? 0) + (preTargetMap.get(table) ?? 0);
+        const expected = (preMap.get(table) ?? 0) + (preTargetMap.get(table) ?? 0) - (collisionMap.get(table) ?? 0);
         const actual = postMap.get(table) ?? 0;
-        // Deduped rows are expected to be fewer; anything else is data loss.
-        if (actual > expected) {
-          throw new Error(`Consolidation integrity check failed for ${table}: expected at most ${expected}, found ${actual}`);
+        if (actual !== expected) {
+          throw new Error(`Consolidation integrity check failed for ${table}: expected exactly ${expected}, found ${actual}`);
         }
       }
       // Audit receipt binding the consolidation to its pre/post counts.
       // This is the backup-integrity record: if the consolidation needs to be
       // audited or reversed, the counts prove what moved.
+      const receiptRun = await client.query<{ id: string }>(
+        `select run.id::text from workflow_runs run where run.project_id = $1::uuid
+           and not exists (
+             select 1 from action_receipts legacy
+              where legacy.run_id = run.id and legacy.receipt_hash is null
+           )
+         order by coalesce(started_at, updated_at) desc, id desc limit 1 for update`,
+        [target.id]
+      );
+      if (!receiptRun.rows[0]) throw new Error("Canonical target must have a workflow run with complete receipt-chain coverage.");
       await appendActionReceipt(client, {
-        runId: target.id,
+        runId: receiptRun.rows[0].id,
         agentId: "workflow-orchestrator",
         actionType: "project_consolidated",
         target: source.id,
@@ -4144,6 +4184,7 @@ export async function consolidateProjectAlias(input: {
             targetProjectId: target.id,
             preSourceCounts: Object.fromEntries(preMap),
             preTargetCounts: Object.fromEntries(preTargetMap),
+            collisionCounts: Object.fromEntries(collisionMap),
             postTargetCounts: Object.fromEntries(postMap),
           })
       });
@@ -4153,7 +4194,7 @@ export async function consolidateProjectAlias(input: {
         sourceProjectId: source.id,
         targetProjectId: target.id,
         movedRuns: runs.rowCount ?? 0,
-        movedFiles: files.rowCount ?? 0,
+        movedFiles: preMap.get("project_files") ?? files.rowCount ?? 0,
         movedMemoryItems: memory.rowCount ?? 0,
         movedBaselines: baselines.rowCount ?? 0
       };

@@ -7,7 +7,7 @@ import { type ProjectConfig } from "../../../../packages/agent-registry/src/sche
 import { resolveContainedProjectPath } from "../../../../packages/roadmap-planner/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { listProjectStorageSummaries } from "../../../../packages/storage/src/postgres.js";
-import { logicalProjectIdentityKeys } from "../dashboard/project-identity.js";
+import { logicalProjectIdentityKeys, projectIdentityVisibility } from "../dashboard/project-identity.js";
 import { commandPrefixForPackageManager, detectFrameworks, detectLanguages, detectMarkers, detectPackageManager } from "../onboarding-detection.js";
 import { recommendAgents, recommendCommands, recommendContextExcludes, recommendContextIncludes, recommendWorkflows, recommendWritePaths } from "../onboarding-recommendations.js";
 import { normalizeLookup } from "../reference-resolution.js";
@@ -763,6 +763,7 @@ export async function loadDashboardProjectIdentityGroups(projects: DashboardProj
         canonicalName: preferred.name,
         localPathExists: items.some((item) => item.resolution.localPathExists),
         source: preferredResolution.source,
+        visibility: projectIdentityVisibility(canonicalRootUri, items.some((item) => item.resolution.localPathExists)),
         projects: projectsInGroup,
         totalRuns: projectsInGroup.reduce((sum, project) => sum + project.runCount, 0),
         totalIndexedFiles: projectsInGroup.reduce((sum, project) => sum + project.indexedFiles, 0),

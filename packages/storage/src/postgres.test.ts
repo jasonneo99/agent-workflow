@@ -31,6 +31,10 @@ test("project alias consolidation is transactional and preserves durable run his
   assert.match(implementation, /update workflow_runs set project_id/u);
   assert.match(implementation, /update project_files set project_id/u);
   assert.match(implementation, /update memory_items set project_id/u);
+  assert.match(implementation, /source\.updated_at > target\.updated_at/u);
+  assert.match(implementation, /expected exactly/u);
+  assert.match(implementation, /select run\.id::text from workflow_runs run where run\.project_id[\s\S]+coalesce\(started_at, updated_at\)/u);
+  assert.match(implementation, /legacy\.receipt_hash is null/u);
   assert.match(implementation, /delete from projects where id/u);
   assert.match(implementation, /await client\.query\("rollback"\)/u);
 });
