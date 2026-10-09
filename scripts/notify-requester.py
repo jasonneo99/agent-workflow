@@ -27,6 +27,32 @@ import urllib.request
 # in — private infrastructure endpoints do not belong in the open-source tree.
 PUSH_RELAY_BASE_URL = os.environ.get("AGENTFLOW_PUSH_RELAY_BASE_URL", "").strip().rstrip("/")
 
+# Optional installed app identity for local branding. Keep private app selection
+# in the caller's runtime configuration; unset uses the notifier's default icon.
+NOTIFICATION_SENDER_BUNDLE_ID = os.environ.get(
+    "AGENTFLOW_NOTIFICATION_SENDER_BUNDLE_ID", ""
+).strip()
+
+_TERMINAL_NOTIFIER_CANDIDATES = (
+    os.path.expanduser("~/.local/bin/terminal-notifier"),
+    "/usr/local/bin/terminal-notifier",
+    "/opt/homebrew/bin/terminal-notifier",
+)
+
+
+def _terminal_notifier_path():
+    for _p in _TERMINAL_NOTIFIER_CANDIDATES:
+        if os.path.isfile(_p) and os.access(_p, os.X_OK):
+            return _p
+    return None
+
+
+def _applescript_safe(text):
+    # AppleScript string literals do NOT process backslash escapes: a
+    # literal double-quote terminates the string and breaks the script
+    # (json-style \" escaping does NOT work). Swap for single quotes.
+    return text.replace('"', "'").replace("\r", " ").replace("\n", " ")
+
 
 def send_relay_push(title: str, body: str) -> bool:
     token = os.environ.get("AGENTFLOW_SERVER_TOKEN", "").strip()
@@ -56,9 +82,26 @@ def send_relay_push(title: str, body: str) -> bool:
 
 
 def send_macos_notification(title: str, body: str) -> bool:
-    # Truncate for AppleScript; escape backslashes and quotes.
-    safe_title = title.replace("\\", "\\\\").replace('"', '\\"')[:120]
-    safe_body = body.replace("\\", "\\\\").replace('"', '\\"')[:400]
+    # Preferred: terminal-notifier, optionally attributed to a configured app.
+    tn = _terminal_notifier_path()
+    if tn:
+        try:
+            result = subprocess.run(
+                [tn, *(["-sender", NOTIFICATION_SENDER_BUNDLE_ID]
+                       if NOTIFICATION_SENDER_BUNDLE_ID else []),
+                 "-title", "Agent Workflow",
+                 "-subtitle", title[:100],
+                 "-message", body[:500]],
+                capture_output=True,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return True
+        except Exception:
+            pass
+    # Fallback: osascript (shows the generic script icon).
+    safe_title = _applescript_safe(title)[:120]
+    safe_body = _applescript_safe(body)[:400]
     script = (
         f'display notification "{safe_body}" '
         f'with title "Agent Workflow" subtitle "{safe_title}"'
