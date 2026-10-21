@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import fg from "fast-glob";
+import { glob } from "glob";
 import YAML from "yaml";
 import {
   AgentCard,
@@ -29,7 +29,7 @@ export async function loadAgents(rootDir: string): Promise<AgentCard[]> {
 }
 
 export async function loadAgentRecords(rootDir: string): Promise<RegistryRecord<AgentCard>[]> {
-  const files = await fg("agents/**/*.yaml", { cwd: rootDir, absolute: true });
+  const files = await glob("agents/**/*.yaml", { cwd: rootDir, absolute: true, nodir: true });
   return Promise.all(files.sort().map(async (file) => ({
     path: path.relative(rootDir, file),
     value: await loadYamlFile(file, agentCardSchema)
@@ -42,7 +42,7 @@ export async function loadWorkflows(rootDir: string): Promise<WorkflowDefinition
 }
 
 export async function loadWorkflowRecords(rootDir: string): Promise<RegistryRecord<WorkflowDefinition>[]> {
-  const files = await fg("workflows/**/*.yaml", { cwd: rootDir, absolute: true });
+  const files = await glob("workflows/**/*.yaml", { cwd: rootDir, absolute: true, nodir: true });
   return Promise.all(files.sort().map(async (file) => ({
     path: path.relative(rootDir, file),
     value: await loadYamlFile(file, workflowSchema)

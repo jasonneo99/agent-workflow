@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import fg from "fast-glob";
+import { glob } from "glob";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -43,7 +43,7 @@ export async function checkSourceSizeRatchet(projectRoot: string, baselineFile =
 }
 
 export async function scanRepositoryMaintenance(projectRoot: string): Promise<RepositoryMaintenanceReport> {
-  const files = await fg(["apps/**/*.{ts,js,mjs}", "packages/**/*.{ts,js,mjs}", "scripts/**/*.{js,mjs,sh}", "infra/**/*.{yaml,yml,sql}"], { cwd: projectRoot, onlyFiles: true, ignore: ["**/dist/**", "**/node_modules/**", "**/*.test.ts"] });
+  const files = await glob(["apps/**/*.{ts,js,mjs}", "packages/**/*.{ts,js,mjs}", "scripts/**/*.{js,mjs,sh}", "infra/**/*.{yaml,yml,sql}"], { cwd: projectRoot, nodir: true, ignore: ["**/dist/**", "**/node_modules/**", "**/*.test.ts"] });
   const findings: RepositoryMaintenanceFinding[] = [];
   const blocks = new Map<string, Array<{ file: string; line: number }>>();
   for (const file of files) {

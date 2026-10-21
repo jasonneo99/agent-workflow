@@ -51,3 +51,11 @@ test("release and publish gates enforce the open-source boundary", () => {
   assert.match(fs.readFileSync(new URL("../../../.github/workflows/publish.yml", import.meta.url), "utf8"), /npm run validate-boundary/u);
   assert.equal(typeof (JSON.parse(fs.readFileSync(new URL("../../../package.json", import.meta.url), "utf8")) as { scripts: Record<string, string> }).scripts.prepublishOnly, "string");
 });
+
+test("GitHub Actions pin the Ubuntu runner image", () => {
+  for (const workflow of ["ci.yml", "publish.yml", "agent-workflow-plugin-release.yml"]) {
+    const source = fs.readFileSync(new URL(`../../../.github/workflows/${workflow}`, import.meta.url), "utf8");
+    assert.doesNotMatch(source, /runs-on:\s*ubuntu-latest/u);
+    assert.match(source, /runs-on:\s*ubuntu-24\.04/u);
+  }
+});

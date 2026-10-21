@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import fg from "fast-glob";
+import { glob } from "glob";
 import { loadAgentRecords, loadWorkflowRecords } from "./loaders.js";
 
 export interface BundleManifest {
@@ -152,7 +152,7 @@ export function compareBundleManifests(expected: BundleManifest, actual: BundleM
 }
 
 async function loadBundleFiles(rootDir: string): Promise<BundleManifestFile[]> {
-  const files = await fg([
+  const files = await glob([
     "agents/**/*.yaml",
     "workflows/**/*.yaml"
   ], { cwd: rootDir, absolute: true });

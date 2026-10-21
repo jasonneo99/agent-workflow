@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import fg from "fast-glob";
+import { glob } from "glob";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import type { ModelProvider } from "../../model-providers/src/index.js";
 import { buildShadowObservation, type ContextRoutingPolicy, type ContextShadowObservation } from "../../context-gateway/src/index.js";
@@ -82,13 +82,12 @@ export async function indexProjectFiles(input: {
     fullIndexFallback = changedFiles === null;
   }
 
-  const files = await fg(include, {
+  const files = await glob(include, {
     cwd: input.projectDir,
     absolute: true,
     dot: true,
     ignore: exclude,
-    onlyFiles: true,
-    unique: true
+    nodir: true
   });
 
   const indexed: IndexedProjectFile[] = [];
