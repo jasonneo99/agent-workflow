@@ -11,6 +11,20 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     environment: npm-publish
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: agentflow
+          POSTGRES_PASSWORD: agentflow
+          POSTGRES_DB: agentflow
+        ports:
+          - 15432:5432
+        options: >-
+          --health-cmd "pg_isready -U agentflow -d agentflow"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
