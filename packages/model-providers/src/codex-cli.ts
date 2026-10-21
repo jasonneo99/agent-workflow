@@ -531,6 +531,15 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     };
     child.stdout.on("data", (chunk: Buffer) => collect(stdout, chunk));
     child.stderr.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    child.stdin.on("error", (error: NodeJS.ErrnoException) => {
+      // A short-lived CLI may exit before consuming the prompt. Its close event
+      // carries the authoritative exit code and stderr; do not let the expected
+      // broken-pipe race mask that diagnostic on Linux runners.
+      if (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED") return;
+      clearTimeout(timer);
+      logSpawn({ error: `stdin failed: ${error.code ?? "CODEX_CLI_STDIN_FAILED"}` });
+      reject(codexCliProcessError({ rawDetail: error.message, errorCode: error.code ?? "CODEX_CLI_STDIN_FAILED", forcedCategory: "spawn_unavailable" }));
+    });
     child.on("error", (error) => {
       clearTimeout(timer);
       const errorCode = (error as NodeJS.ErrnoException).code ?? "CODEX_CLI_SPAWN_FAILED";
