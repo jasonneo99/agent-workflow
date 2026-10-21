@@ -1,0 +1,25 @@
+{
+  "project": [
+    ".agent-workflow/agents/project-reviewer.yaml",
+    ".agent-workflow/bundle-state.json",
+    ".agent-workflow/commands.md",
+    ".agent-workflow/context.md",
+    ".agent-workflow/decisions.md",
+    ".agent-workflow/evaluation-gates.yaml",
+    ".agent-workflow/evaluations/daemon-model-comparison-standard.yaml",
+    ".agent-workflow/project.yaml",
+    ".agent-workflow/schedules.yaml",
+    "AGENTS.md",
+    "package.json"
+  ],
+  "project-simple": [
+    ".agent-workflow/agents/project-reviewer.yaml",
+    ".agent-workflow/bundle-state.json",
+    ".agent-workflow/commands.md",
+    ".agent-workflow/context.md",
+    ".agent-workflow/decisions.md",
+    ".agent-workflow/project.yaml",
+    ".agent-workflow/schedules.yaml",
+    "AGENTS.md"
+  ]
+}

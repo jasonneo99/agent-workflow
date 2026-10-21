@@ -31,6 +31,9 @@ jobs:
       - name: Validate definitions
         run: npm run validate
 
+      - name: Validate open-source boundary
+        run: npm run validate-boundary
+
       - name: Validate scrubbed examples
         run: npm run validate-examples
 

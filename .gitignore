@@ -8,6 +8,12 @@ dist/
 coverage/
 exports/
 *.log
+*.pyc
+__pycache__/
+.agent-workflow/backups/
+.agent-workflow/*acceptance*.json
+.agent-workflow/evaluation-daemon-state.json
+.agent-workflow/evaluation-daemon-tokens.jsonl
 .agent-workflow/schedule-state.json
 .agent-workflow/exports/
 .agent-workflow/evaluations/

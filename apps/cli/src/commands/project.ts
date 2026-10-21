@@ -4,7 +4,7 @@ import type { DashboardProjectAliasMergePlan, OnboardingResult, ProjectDiscovery
 import { writeProjectBundleState } from "../lib/builders-bundle.js";
 import { discoverProjectRoadmap, publishRoadmapSnapshotIfChanged } from "../lib/builders-learning.js";
 import { adoptDiscoveredProjects, analyzeProjectForOnboarding, buildDashboardProjectAliasMergePlan, discoverLocalProjects, ensureConfiguredRoadmapPath, formatDiscoveryAdoptionResult, loadDashboardProjectIdentityGroups, parseSpotlightMode, splitCommaList, writeOnboardingFiles } from "../lib/builders-project.js";
-import { buildReusePlanForTask, exists, loadAgentsForProject, loadSourceSummaries, pathExists, selectWorkflowAgents, walk } from "../lib/builders-shared.js";
+import { buildReusePlanForTask, exists, loadAgentsForProject, loadSourceSummaries, pathExists, selectWorkflowAgents } from "../lib/builders-shared.js";
 import { loadAgents, loadProjectConfig, loadWorkflows } from "../../../../packages/agent-registry/src/loaders.js";
 import { type IdeClient, buildIdeConfigSnippet, mergeIdeConfig } from "../../../../packages/ide-onboarding/src/index.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
@@ -15,13 +15,15 @@ import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { listProjectFileSummaries, listProjectStorageSummaries } from "../../../../packages/storage/src/postgres.js";
 import { parsePositiveInteger } from "../numeric-options.js";
 import { resolveWorkflow } from "../reference-resolution.js";
+import { loadTemplateManifestEntries } from "../template-manifest.js";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 export function registerProjectCommands(program: Command, ctx: CliContext): void {
   async function copyTemplate(templateDir: string, targetDir: string, force: boolean): Promise<{ written: number; skipped: number }> {
-    const entries = await walk(templateDir);
+    const entries = (await loadTemplateManifestEntries(path.dirname(templateDir), path.basename(templateDir)))
+      .map((relativePath) => path.join(templateDir, relativePath));
     let written = 0;
     let skipped = 0;
     for (const sourcePath of entries) {

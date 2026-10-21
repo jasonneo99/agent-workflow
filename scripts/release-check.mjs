@@ -41,6 +41,7 @@ function main() {
   checkPackageContents();
   checkNpmAuth();
   runCheck("Validate definitions", ["npm", ["run", "validate"]]);
+  runCheck("Validate open-source boundary", ["npm", ["run", "validate-boundary"]]);
   runCheck("Validate scrubbed examples", ["npm", ["run", "validate-examples"]]);
   runCheck("Typecheck", ["npm", ["run", "typecheck"]]);
   if (!skipTests) runCheck("Tests", ["npm", ["test"]]);

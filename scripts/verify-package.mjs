@@ -1,5 +1,7 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { packageProvenanceViolations, scanBoundaryFile } from "./open-source-boundary-rules.mjs";
 
 const packed = spawnSync("npm", ["pack", "--dry-run", "--json"], { encoding: "utf8" });
 if (packed.status !== 0) {
@@ -8,6 +10,17 @@ if (packed.status !== 0) {
 }
 const result = JSON.parse(packed.stdout)[0];
 const files = new Set(result.files.map((file) => file.path));
+const trackedFiles = new Set(execFileSync("git", ["ls-files", "-z"], { encoding: "utf8" }).split("\0").filter(Boolean));
+const boundaryViolations = packageProvenanceViolations([...files], trackedFiles);
+for (const file of files) {
+  if (!fs.existsSync(file)) continue;
+  boundaryViolations.push(...scanBoundaryFile(file, fs.readFileSync(file), { packageEntry: true }));
+}
+if (boundaryViolations.length) {
+  console.error("Package violates the open-source boundary:");
+  for (const violation of boundaryViolations) console.error(`- ${violation}`);
+  process.exit(1);
+}
 const required = [
   "dist/apps/cli/src/index.js",
   "dist/apps/mcp/src/index.js",
@@ -17,6 +30,7 @@ const required = [
   "agents/core/workflow-orchestrator.yaml",
   "workflows/build-feature.yaml",
   "templates/project/AGENTS.md",
+  "templates/template-manifest.json",
   "agent-workflow.bundle.json",
   "README.md",
   "LICENSE"
