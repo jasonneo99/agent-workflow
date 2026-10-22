@@ -13319,6 +13319,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, daemonTrustLevels: DaemonTrustSettings, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
+    const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
     const failureRows = report.repeatedFailurePatterns.map((pattern) => `
       <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
     `).join("");
@@ -13350,7 +13351,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
       <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
     `).join("");
-    const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
     const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(localProjectDir)} --write`;
     const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(localProjectDir)} --write`;
     const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(localProjectDir)} --mode apply-approved`;
