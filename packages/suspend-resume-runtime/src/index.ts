@@ -1,5 +1,5 @@
 export type ThreadStatus = "ready" | "running" | "suspended" | "completed";
-export type InputKind = "user_text" | "tool_result";
+export type InputKind = "user_text" | "tool_result" | "tool_event" | "thread_message";
 
 export interface ThreadInput<T = unknown> {
   id: string;
@@ -17,16 +17,21 @@ export interface ToolCall {
 
 export type ConversationEntry =
   | { id: string; sourceInputId: string; role: "user"; kind: "user_text"; content: string }
+  | { id: string; sourceInputId: string; role: "user"; kind: "thread_message"; fromThreadId: string; content: unknown }
   | { id: string; sourceInputId: string; role: "tool"; kind: "tool_result"; toolCallId: string; content: unknown }
   | { id: string; sourceInputId: string; role: "assistant"; kind: "message"; content: string }
-  | { id: string; sourceInputId: string; role: "assistant"; kind: "tool_call"; toolCall: ToolCall; synthetic: false };
+  | { id: string; sourceInputId: string; role: "assistant"; kind: "tool_call"; toolCall: ToolCall; synthetic: boolean };
 
 export interface ThreadState {
   threadId: string;
   revision: number;
   status: ThreadStatus;
   processedInputIds: readonly string[];
+  issuedToolCallIds: readonly string[];
+  answeredToolCallIds: readonly string[];
   pendingDispatch: ToolCall | null;
+  parentThreadId: string | null;
+  childThreadIds: readonly string[];
 }
 
 export interface ConversationStore {
@@ -34,8 +39,9 @@ export interface ConversationStore {
 }
 
 export interface ThreadStateStore {
-  createThread(threadId: string): Promise<ThreadState>;
+  createThread(threadId: string, options?: { parentThreadId?: string }): Promise<ThreadState>;
   loadThread(threadId: string): Promise<ThreadState | null>;
+  linkChild?(parentThreadId: string, childThreadId: string): Promise<void>;
 }
 
 export interface SliceCommit {
@@ -45,6 +51,8 @@ export interface SliceCommit {
   entries: readonly ConversationEntry[];
   status: ThreadStatus;
   pendingDispatch: ToolCall | null;
+  answeredToolCallIds?: readonly string[];
+  issuedToolCallIds?: readonly string[];
 }
 
 export type SliceCommitResult =
@@ -68,6 +76,43 @@ export interface ThreadInputQueue {
   depth(threadId: string): Promise<number>;
 }
 
+export interface AsyncToolContext {
+  threadId: string;
+  toolCall: ToolCall;
+  emit(input: Omit<ThreadInput, "threadId" | "createdAt"> & { createdAt?: string }): Promise<void>;
+}
+
+/** Tools start work and return after registration, never after the work itself. */
+export interface AsyncTool {
+  name: string;
+  execute(context: AsyncToolContext): Promise<void>;
+}
+
+export class AsyncToolDispatcher {
+  readonly #tools = new Map<string, AsyncTool>();
+
+  constructor(tools: readonly AsyncTool[], private readonly queue: ThreadInputQueue) {
+    for (const tool of tools) {
+      assertIdentity(tool.name, "Tool name");
+      if (this.#tools.has(tool.name)) throw new Error(`Duplicate tool: ${tool.name}`);
+      this.#tools.set(tool.name, tool);
+    }
+  }
+
+  async dispatch(input: { threadId: string; toolCall: ToolCall }): Promise<void> {
+    const tool = this.#tools.get(input.toolCall.name);
+    if (!tool) throw new Error(`Unknown tool: ${input.toolCall.name}`);
+    await tool.execute({
+      ...clone(input),
+      emit: async (message) => this.queue.enqueue({
+        ...clone(message),
+        threadId: input.threadId,
+        createdAt: message.createdAt ?? new Date().toISOString()
+      })
+    });
+  }
+}
+
 export interface ModelCompletion {
   message?: string;
   toolCalls?: readonly ToolCall[];
@@ -85,7 +130,7 @@ export interface SliceReceipt {
   sequence: number;
   threadId: string;
   inputId?: string;
-  action: "slice_started" | "slice_committed" | "input_duplicate" | "dispatch_started" | "dispatch_failed" | "thread_suspended";
+  action: "slice_started" | "slice_committed" | "input_duplicate" | "dispatch_started" | "dispatch_failed" | "thread_suspended" | "thread_spawned" | "parent_reported";
   detail?: Record<string, unknown>;
 }
 
@@ -152,7 +197,7 @@ export class InMemorySliceStore implements SliceStore {
   readonly #threads = new Map<string, ThreadState>();
   readonly #conversations = new Map<string, ConversationEntry[]>();
 
-  async createThread(threadId: string): Promise<ThreadState> {
+  async createThread(threadId: string, options: { parentThreadId?: string } = {}): Promise<ThreadState> {
     assertIdentity(threadId, "Thread ID");
     const existing = this.#threads.get(threadId);
     if (existing) return clone(existing);
@@ -161,11 +206,25 @@ export class InMemorySliceStore implements SliceStore {
       revision: 0,
       status: "ready",
       processedInputIds: [],
-      pendingDispatch: null
+      issuedToolCallIds: [],
+      answeredToolCallIds: [],
+      pendingDispatch: null,
+      parentThreadId: options.parentThreadId ?? null,
+      childThreadIds: []
     };
     this.#threads.set(threadId, state);
     this.#conversations.set(threadId, []);
     return clone(state);
+  }
+
+  async linkChild(parentThreadId: string, childThreadId: string): Promise<void> {
+    const parent = this.#threads.get(parentThreadId);
+    const child = this.#threads.get(childThreadId);
+    if (!parent || !child) throw new Error("Both parent and child threads must exist.");
+    if (child.parentThreadId !== parentThreadId) throw new Error("Child parent identity does not match.");
+    if (!parent.childThreadIds.includes(childThreadId)) {
+      this.#threads.set(parentThreadId, { ...parent, revision: parent.revision + 1, childThreadIds: [...parent.childThreadIds, childThreadId] });
+    }
   }
 
   async loadThread(threadId: string): Promise<ThreadState | null> {
@@ -191,6 +250,8 @@ export class InMemorySliceStore implements SliceStore {
       revision: state.revision + 1,
       status: input.status,
       processedInputIds: [...state.processedInputIds, input.inputId],
+      issuedToolCallIds: [...new Set([...state.issuedToolCallIds, ...(input.issuedToolCallIds ?? [])])],
+      answeredToolCallIds: [...new Set([...state.answeredToolCallIds, ...(input.answeredToolCallIds ?? [])])],
       pendingDispatch: clone(input.pendingDispatch)
     };
     const conversation = this.#conversations.get(input.threadId) ?? [];
@@ -218,16 +279,58 @@ export class InMemoryReceiptSink implements SliceReceiptSink {
   }
 }
 
-function inputEntry(message: ThreadInput): ConversationEntry {
+function inputEntries(message: ThreadInput, state: ThreadState): { entries: ConversationEntry[]; answeredToolCallIds: string[] } {
   if (message.kind === "user_text") {
     if (typeof message.payload !== "string") throw new Error("user_text payload must be a string.");
-    return { id: `input:${message.id}`, sourceInputId: message.id, role: "user", kind: "user_text", content: message.payload };
+    return { entries: [{ id: `input:${message.id}`, sourceInputId: message.id, role: "user", kind: "user_text", content: message.payload }], answeredToolCallIds: [] };
   }
-  const payload = message.payload as { toolCallId?: unknown; result?: unknown };
+  if (message.kind === "thread_message") {
+    const payload = message.payload as { fromThreadId?: unknown; content?: unknown };
+    if (!payload || typeof payload !== "object" || typeof payload.fromThreadId !== "string") throw new Error("thread_message payload must include fromThreadId.");
+    return { entries: [{ id: `input:${message.id}`, sourceInputId: message.id, role: "user", kind: "thread_message", fromThreadId: payload.fromThreadId, content: payload.content }], answeredToolCallIds: [] };
+  }
+  const payload = message.payload as { toolCallId?: unknown; originToolCallId?: unknown; eventName?: unknown; result?: unknown };
+  if (message.kind === "tool_event") {
+    if (!payload || typeof payload !== "object" || typeof payload.originToolCallId !== "string" || typeof payload.eventName !== "string") {
+      throw new Error("tool_event payload must include originToolCallId and eventName.");
+    }
+    if (!state.issuedToolCallIds.includes(payload.originToolCallId)) throw new Error(`Unknown originating tool call ${payload.originToolCallId}.`);
+    const syntheticId = `synthetic:${message.id}`;
+    return {
+      entries: [
+        { id: `tool-call:${syntheticId}`, sourceInputId: message.id, role: "assistant", kind: "tool_call", synthetic: true,
+          toolCall: { id: syntheticId, name: "async_event", arguments: { originToolCallId: payload.originToolCallId, eventName: payload.eventName } } },
+        { id: `input:${message.id}`, sourceInputId: message.id, role: "tool", kind: "tool_result", toolCallId: syntheticId, content: payload.result }
+      ],
+      answeredToolCallIds: [syntheticId]
+    };
+  }
   if (!payload || typeof payload !== "object" || typeof payload.toolCallId !== "string") {
     throw new Error("tool_result payload must include toolCallId.");
   }
-  return { id: `input:${message.id}`, sourceInputId: message.id, role: "tool", kind: "tool_result", toolCallId: payload.toolCallId, content: payload.result };
+  if (!state.issuedToolCallIds.includes(payload.toolCallId)) throw new Error(`Unknown tool call ${payload.toolCallId}.`);
+  if (state.answeredToolCallIds.includes(payload.toolCallId)) throw new Error(`Tool call ${payload.toolCallId} already has a result.`);
+  return { entries: [{ id: `input:${message.id}`, sourceInputId: message.id, role: "tool", kind: "tool_result", toolCallId: payload.toolCallId, content: payload.result }], answeredToolCallIds: [payload.toolCallId] };
+}
+
+export class AgentThreadCoordinator {
+  constructor(private readonly dependencies: { store: SliceStore; queue: ThreadInputQueue; receipts: SliceReceiptSink }) {}
+
+  async spawnThread(input: { parentThreadId: string; childThreadId: string; inputId: string; message: unknown }): Promise<void> {
+    const parent = await this.dependencies.store.loadThread(input.parentThreadId);
+    if (!parent) throw new Error(`Unknown parent thread: ${input.parentThreadId}`);
+    await this.dependencies.store.createThread(input.childThreadId, { parentThreadId: input.parentThreadId });
+    await this.dependencies.store.linkChild?.(input.parentThreadId, input.childThreadId);
+    await this.dependencies.queue.enqueue({ id: input.inputId, threadId: input.childThreadId, kind: "thread_message", payload: { fromThreadId: input.parentThreadId, content: input.message }, createdAt: new Date().toISOString() });
+    await this.dependencies.receipts.record({ threadId: input.parentThreadId, inputId: input.inputId, action: "thread_spawned", detail: { childThreadId: input.childThreadId } });
+  }
+
+  async reportToParent(input: { childThreadId: string; inputId: string; report: unknown }): Promise<void> {
+    const child = await this.dependencies.store.loadThread(input.childThreadId);
+    if (!child?.parentThreadId) throw new Error(`Thread ${input.childThreadId} has no parent.`);
+    await this.dependencies.queue.enqueue({ id: input.inputId, threadId: child.parentThreadId, kind: "thread_message", payload: { fromThreadId: input.childThreadId, content: input.report }, createdAt: new Date().toISOString() });
+    await this.dependencies.receipts.record({ threadId: input.childThreadId, inputId: input.inputId, action: "parent_reported", detail: { parentThreadId: child.parentThreadId } });
+  }
 }
 
 export class SuspendResumeRuntime {
@@ -293,7 +396,8 @@ export class SuspendResumeRuntime {
       const completion = await this.dependencies.model.complete({ thread: state, conversation, message });
       const toolCalls = [...(completion.toolCalls ?? [])];
       if (toolCalls.length > 1) throw new Error("A bounded slice may dispatch at most one tool call.");
-      const entries: ConversationEntry[] = [inputEntry(message)];
+      const normalizedInput = inputEntries(message, state);
+      const entries: ConversationEntry[] = [...normalizedInput.entries];
       if (completion.message !== undefined) {
         entries.push({ id: `assistant:${message.id}`, sourceInputId: message.id, role: "assistant", kind: "message", content: completion.message });
       }
@@ -309,7 +413,9 @@ export class SuspendResumeRuntime {
         inputId: message.id,
         entries,
         status: "suspended",
-        pendingDispatch: toolCall
+        pendingDispatch: toolCall,
+        answeredToolCallIds: normalizedInput.answeredToolCallIds,
+        issuedToolCallIds: toolCall ? [toolCall.id] : []
       });
       await lease.ack();
       if (!committed.committed) {

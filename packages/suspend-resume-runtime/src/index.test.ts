@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  AgentThreadCoordinator,
+  AsyncToolDispatcher,
   InMemoryInputQueue,
   InMemoryReceiptSink,
   InMemorySliceStore,
@@ -151,4 +153,50 @@ test("stale revisions cannot commit another turn", async () => {
   const commit = { threadId: "thread-a", expectedRevision: 0, inputId: "input-1", entries: [], status: "suspended" as const, pendingDispatch: null };
   assert.equal((await store.commitSlice(commit)).committed, true);
   await assert.rejects(store.commitSlice({ ...commit, inputId: "input-2" }), /Stale thread revision/u);
+});
+
+test("a second ordinary result is rejected while later async events use synthetic calls", async () => {
+  let completion = 0;
+  const h = harness({ async complete() { completion += 1; return completion === 1
+    ? { toolCalls: [{ id: "build-1", name: "build", arguments: {} }] }
+    : { message: "observed" }; } });
+  await h.store.createThread("thread-a");
+  await h.queue.enqueue(input("start", "thread-a"));
+  await h.runtime.processNext("thread-a");
+  await h.queue.enqueue({ id: "result-1", threadId: "thread-a", kind: "tool_result", payload: { toolCallId: "build-1", result: "started" }, createdAt: "now" });
+  await h.runtime.processNext("thread-a");
+  await h.queue.enqueue({ id: "result-2", threadId: "thread-a", kind: "tool_result", payload: { toolCallId: "build-1", result: "again" }, createdAt: "now" });
+  await assert.rejects(h.runtime.processNext("thread-a"), /already has a result/u);
+  await (await h.queue.lease("thread-a"))?.ack();
+  await h.queue.enqueue({ id: "event-2", threadId: "thread-a", kind: "tool_event", payload: { originToolCallId: "build-1", eventName: "completed", result: "ok" }, createdAt: "now" });
+  await h.runtime.processNext("thread-a");
+  const eventEntries = (await h.store.loadConversation("thread-a")).filter((entry) => entry.sourceInputId === "event-2");
+  assert.equal(eventEntries[0]?.kind, "tool_call");
+  assert.equal(eventEntries[0]?.kind === "tool_call" && eventEntries[0].synthetic, true);
+  assert.equal(eventEntries[1]?.kind, "tool_result");
+});
+
+test("async tools return after start and emit stable queue events later", async () => {
+  const queue = new InMemoryInputQueue();
+  let send: ((input: { id: string; kind: "tool_event"; payload: unknown }) => Promise<void>) | undefined;
+  const dispatcher = new AsyncToolDispatcher([{ name: "build", async execute(context) { send = context.emit; } }], queue);
+  await dispatcher.dispatch({ threadId: "thread-a", toolCall: { id: "build-1", name: "build", arguments: {} } });
+  assert.equal(await queue.depth("thread-a"), 0);
+  await send?.({ id: "event-1", kind: "tool_event", payload: { originToolCallId: "build-1", eventName: "done", result: 1 } });
+  assert.equal(await queue.depth("thread-a"), 1);
+});
+
+test("child detail stays in the child and only an explicit report reaches the parent", async () => {
+  const h = harness({ async complete() { return { message: "processed" }; } });
+  const coordinator = new AgentThreadCoordinator({ store: h.store, queue: h.queue, receipts: h.receipts });
+  await h.store.createThread("parent");
+  await coordinator.spawnThread({ parentThreadId: "parent", childThreadId: "child", inputId: "spawn-1", message: { large: "child-only-detail" } });
+  await h.runtime.processNext("child");
+  assert.equal((await h.store.loadConversation("parent")).length, 0);
+  assert.equal((await h.store.loadConversation("child")).some((entry) => JSON.stringify(entry).includes("child-only-detail")), true);
+  await coordinator.reportToParent({ childThreadId: "child", inputId: "report-1", report: { summary: "done" } });
+  await h.runtime.processNext("parent");
+  const parent = await h.store.loadConversation("parent");
+  assert.equal(parent.some((entry) => JSON.stringify(entry).includes("child-only-detail")), false);
+  assert.equal(parent.some((entry) => JSON.stringify(entry).includes("done")), true);
 });

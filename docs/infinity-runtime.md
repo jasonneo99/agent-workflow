@@ -82,8 +82,9 @@ the model. For a new input it calls the model exactly once and rejects more
 than one tool call. The completed turn is committed before external dispatch.
 
 A failed dispatch remains in thread state. A later slice retries that stable
-tool-call ID without rerunning the model. Tool-side idempotency and result
-delivery are part of the next slice of implementation.
+tool-call ID without rerunning the model. `AsyncToolDispatcher` starts a tool
+and returns after registration. Its bounded `emit` callback later places a
+stable result or event ID on the thread queue; it does not keep a slice alive.
 
 ### Receipts
 
@@ -95,15 +96,23 @@ introduce a parallel receipt chain.
 
 ## History representation
 
-The first slice stores typed user input, tool results, assistant messages, and
+The runtime stores typed user input, tool results, assistant messages, and
 assistant tool calls. Every entry has its own stable ID and the source input
-ID. Synthetic tool calls for asynchronous event streams are deliberately not
-implemented yet. Their next-step contract must:
+ID. Asynchronous event streams use `tool_event` inputs. The runtime expands
+each event into an assistant `async_event` tool call marked `synthetic: true`,
+followed by exactly one result for that synthetic call. This contract:
 
-- mark the assistant call as synthetic in typed metadata;
-- preserve history order;
-- reject a second result for an already answered tool call; and
+- marks the assistant call as synthetic in typed metadata;
+- preserves history order;
+- rejects a second ordinary result for an already answered tool call; and
 - never disguise an event as user text.
+
+## Agent threads
+
+`AgentThreadCoordinator.spawnThread` creates a child with an immutable parent
+identity and sends the initial request only to the child queue. Child history
+is never copied into the parent. `reportToParent` sends one explicit summary as
+an inter-thread queue message. Both operations emit slice receipts.
 
 ## Failure and restart model
 
@@ -111,9 +120,12 @@ implemented yet. Their next-step contract must:
 - A model or commit failure nacks the input for redelivery.
 - A dispatch failure does not rerun the model; the committed pending dispatch
   is retried by a later slice.
-- Process affinity is absent from the interfaces. Restart correctness requires
-  replacing the in-memory queue/store with durable adapters and is not claimed
-  by this initial implementation.
+- `LocalJsonSliceStore` and `LocalJsonInputQueue` atomically replace mode-0600
+  JSON snapshots. Reconstructing every runtime, queue and store object resumes
+  saved threads and skips redelivery without a resident waiting process.
+- The JSON adapters are intentionally local single-writer adapters. They prove
+  restart behavior, not safe multi-process leasing. Production multi-worker
+  operation must use the durable queue design below.
 - Revision fencing rejects stale commits within the local store. Distributed
   fencing will reuse Agent Workflow's existing lease/fencing mechanisms during
   executor integration.
@@ -127,27 +139,55 @@ only canonical tool/approval results back into the input queue. The executor's
 policy checks occur before tool dispatch and its verification/retry behavior
 remains unchanged.
 
-No executor source is changed in this first slice. That keeps the pluggable
-runtime independently testable and avoids mixing the new scheduling model with
-the active DF-RESTART and continuation work already present in the tree.
+`GovernedRuntimeDispatcher` is the initial integration seam. Its authority port
+runs before side effects, then selects either the existing executor or existing
+approval outbox. Both receive the stable result-event identity that must resume
+the thread. `ExistingReceiptChainSink` maps slice facts to the current receipt
+writer rather than creating another chain. These ports allow surgical wiring
+after the ongoing changes in those files settle.
+
+`OriginCallbackBridge` enqueues through the existing `run_notifications`
+outbox. It resumes a thread only when DF-RESTART-01A reports authenticated
+originating-task acknowledgment. A successful transport process, accepted
+queue write, or `delivered` transport state is deliberately insufficient.
+
+## Durable queue decision
+
+The production adapter should be PostgreSQL because Agent Workflow already
+operates durable local PostgreSQL, fencing tokens, and transactional receipts.
+It should add a dedicated inbound table, not reuse outbound
+`run_notifications`:
+
+- stable unique `(thread_id, input_id)` identity;
+- FIFO sequence allocated transactionally per thread;
+- `FOR UPDATE SKIP LOCKED` leasing with owner, fencing token, and expiry;
+- atomic state/history commit plus input acknowledgment in one transaction;
+- expired-lease recovery without treating transport acceptance as processing;
+- project/run foreign keys and bounded payload sizes; and
+- receipt insertion in the same transaction as the state transition.
+
+This remains an inbound queue. `run_notifications` remains the outbound
+callback and approval notification source of truth. AWS queues are neither a
+dependency nor a deployment recommendation.
 
 ## Acceptance and measurements
 
-This slice can prove bounded model calls, per-thread FIFO order, cross-thread
+The runtime now proves bounded model calls, per-thread FIFO order, cross-thread
 parallelism, atomic conversation/idempotency commits, redelivery skipping,
-commit-before-dispatch, dispatch retry without model replay, and zero additional
-model calls while suspended.
+commit-before-dispatch, dispatch retry without model replay, synthetic event
+ordering, child-context isolation, local restart recovery, policy-before-side-
+effect routing, receipt-chain compatibility, and zero additional model calls
+while suspended.
 
-It cannot yet prove overnight approval resumption, restart recovery, durable
-queue behavior, executor policy/receipt integration, or live memory at fleet
-scale. Measurements must be taken from Agent Workflow's implementation and
-reported with the adapter and sample size; external benchmark numbers are not
-Agent Workflow targets.
+It does not yet claim production multi-process queue leasing, live executor
+activation, an overnight wall-clock soak, or live memory at fleet scale.
+Measurements must be taken from Agent Workflow's implementation and reported
+with the adapter and sample size; external benchmark numbers are not Agent
+Workflow targets.
 
-## Next implementation slice
+## Activation boundary
 
-Add the asynchronous tool contract and synthetic event representation with
-focused ordering and idempotency tests. That slice may proceed without owner
-approval if it remains local and synthetic. PostgreSQL queue/store selection,
-executor activation, service restart, deployment, or any live self-repair
-requires a separate reviewed step under existing policy.
+Local interfaces, adapters, and synthetic tests are complete. Wiring the ports
+into a live executor, adding the PostgreSQL inbound queue migration, restarting
+services, deploying, or enabling self-repair changes live behavior and remains
+a separately reviewed activation. Live self-repair is still paused.
