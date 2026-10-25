@@ -62,6 +62,8 @@ import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.
 import { buildRunPresentation } from "./run-presentation.js";
 import { enqueueRunNotification, runNotificationOutboxSchemaSql, engineEventConsumerSchemaSql } from "./run-notifications.js";
 import { notificationSubscriberSchemaSql } from "./notification-subscribers.js";
+import { suspendResumeRuntimeSchemaSql } from "./suspend-resume-runtime.js";
+export { PostgresInputQueue, PostgresSliceStore, enqueueBoundExecutorResult, registerBoundExecutorThread } from "./suspend-resume-runtime.js";
 export { claimRunNotifications, settleRunNotification, acknowledgeRunNotification } from "./run-notifications.js";
 export { databaseUrl, withClient } from "./client.js";
 export { createWorkflowEventSubscriber, type WorkflowEventSubscriber } from "./runtime-events.js";
@@ -137,6 +139,7 @@ export async function migrateStorage(): Promise<void> {
     await client.query(runNotificationOutboxSchemaSql);
     await client.query(notificationSubscriberSchemaSql);
     await client.query(engineEventConsumerSchemaSql);
+    await client.query(suspendResumeRuntimeSchemaSql);
     await client.query(`
       CREATE INDEX IF NOT EXISTS run_notifications_pending_idx
       ON run_notifications(status, created_at) WHERE status = 'pending'

@@ -167,6 +167,36 @@ CREATE TABLE IF NOT EXISTS action_receipts (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS suspend_resume_threads (
+  thread_id text PRIMARY KEY,
+  run_id uuid REFERENCES workflow_runs(id) ON DELETE CASCADE,
+  agent_id text REFERENCES agents(id),
+  revision bigint NOT NULL DEFAULT 0,
+  state jsonb NOT NULL,
+  conversation jsonb NOT NULL DEFAULT '[]',
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS suspend_resume_threads_run_idx ON suspend_resume_threads(run_id);
+
+CREATE TABLE IF NOT EXISTS suspend_resume_inputs (
+  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  thread_id text NOT NULL REFERENCES suspend_resume_threads(thread_id) ON DELETE CASCADE,
+  input_id text NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('user_text','tool_result','tool_event','thread_message')),
+  payload jsonb NOT NULL,
+  source_created_at timestamptz NOT NULL,
+  available_at timestamptz NOT NULL DEFAULT now(),
+  claim_owner text,
+  claim_token uuid,
+  claim_expires_at timestamptz,
+  acknowledged_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE(thread_id, input_id)
+);
+CREATE INDEX IF NOT EXISTS suspend_resume_inputs_ready_idx
+ON suspend_resume_inputs(thread_id, id) WHERE acknowledged_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS workflow_handoffs (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   run_id uuid NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
@@ -261,6 +291,28 @@ FOR EACH ROW EXECUTE FUNCTION agentflow_emit_runtime_event();
 
 CREATE INDEX IF NOT EXISTS action_approvals_status_created_idx
 ON action_approvals(status, created_at);
+
+CREATE OR REPLACE FUNCTION public.agentflow_enqueue_suspend_resume_approval() RETURNS trigger AS $$
+BEGIN
+  IF NEW.status IS DISTINCT FROM OLD.status
+     AND NEW.status IN ('approved','rejected','expired','dismissed')
+     AND nullif(NEW.payload->>'runtimeThreadId','') IS NOT NULL
+     AND nullif(NEW.payload->>'runtimeToolCallId','') IS NOT NULL
+     AND EXISTS (SELECT 1 FROM suspend_resume_threads WHERE thread_id=NEW.payload->>'runtimeThreadId') THEN
+    INSERT INTO suspend_resume_inputs(thread_id,input_id,kind,payload,source_created_at)
+    VALUES(NEW.payload->>'runtimeThreadId','approval:' || NEW.id::text || ':' || NEW.status,'tool_event',
+      jsonb_build_object('originToolCallId',NEW.payload->>'runtimeToolCallId','eventName','approval_' || NEW.status,
+        'result',jsonb_build_object('approvalId',NEW.id::text,'status',NEW.status,'decisionNote',NEW.decision_note)),now())
+    ON CONFLICT(thread_id,input_id) DO NOTHING;
+  END IF;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS action_approval_suspend_resume ON action_approvals;
+CREATE TRIGGER action_approval_suspend_resume
+AFTER UPDATE OF status ON action_approvals
+FOR EACH ROW EXECUTE FUNCTION public.agentflow_enqueue_suspend_resume_approval();
 
 CREATE UNIQUE INDEX IF NOT EXISTS action_approvals_run_level_idempotency_idx
 ON action_approvals(run_id, action_type, idempotency_key)

@@ -187,7 +187,17 @@ Workflow targets.
 
 ## Activation boundary
 
-Local interfaces, adapters, and synthetic tests are complete. Wiring the ports
-into a live executor, adding the PostgreSQL inbound queue migration, restarting
-services, deploying, or enabling self-repair changes live behavior and remains
-a separately reviewed activation. Live self-repair is still paused.
+The owner authorized local storage, executor, and service activation on October
+25, 2026. The additive PostgreSQL inbound queue is installed, bound-executor
+dispatches register stable runtime threads, executor outcomes enter the inbound
+queue, and approval status changes emit stable synthetic events through a
+database trigger. Policy, approvals, workflow lifecycle, and
+`run_notifications` remain authoritative; this is a shadow canary and does not
+replace workflow scheduling yet.
+
+Promotion from shadow canary to authoritative scheduling requires clean live
+PostgreSQL adapter tests through the application connection, an overnight
+approval soak, and explicit rollback evidence. The live schema, fresh-database
+bootstrap, restart recovery, competing-lease fencing, and approval trigger have
+been validated locally. Activation remains shadow-only until the soak and
+rollback gates are satisfied. Live self-repair remains paused.
