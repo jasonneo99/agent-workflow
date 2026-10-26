@@ -31,7 +31,7 @@ export async function loadAgents(rootDir: string): Promise<AgentCard[]> {
 export async function loadAgentRecords(rootDir: string): Promise<RegistryRecord<AgentCard>[]> {
   const files = await glob("agents/**/*.yaml", { cwd: rootDir, absolute: true, nodir: true });
   return Promise.all(files.sort().map(async (file) => ({
-    path: path.relative(rootDir, file),
+    path: path.relative(rootDir, file).split(path.sep).join("/"),
     value: await loadYamlFile(file, agentCardSchema)
   })));
 }
@@ -44,7 +44,7 @@ export async function loadWorkflows(rootDir: string): Promise<WorkflowDefinition
 export async function loadWorkflowRecords(rootDir: string): Promise<RegistryRecord<WorkflowDefinition>[]> {
   const files = await glob("workflows/**/*.yaml", { cwd: rootDir, absolute: true, nodir: true });
   return Promise.all(files.sort().map(async (file) => ({
-    path: path.relative(rootDir, file),
+    path: path.relative(rootDir, file).split(path.sep).join("/"),
     value: await loadYamlFile(file, workflowSchema)
   })));
 }
