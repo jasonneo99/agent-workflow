@@ -118,6 +118,12 @@ test("dismissed terminal runs remain immutable history but leave the actionable 
   assert.match(source, /export async function listWorkflowQueue[\s\S]+reinstated\.created_at > dismissed\.created_at/u);
 });
 
+test("project queue scopes lineage before recursive family expansion", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  assert.match(queue, /queuePresentationSql\(identityFamilies, "\$2"\)/u);
+});
+
 test("superseded terminal runs are explicit history and leave the actionable queue", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const supersession = readFileSync(new URL("./run-supersession.ts", import.meta.url), "utf8");

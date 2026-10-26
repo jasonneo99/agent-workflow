@@ -55,9 +55,12 @@ import { transitionWorkflowRun } from "./run-transitions.js";
 import { findRecentDuplicateRun, findReplayConflict } from "./run-deduplication.js";
 import { isWorkflowRunState, type WorkflowRunState } from "./run-state-machine.js";
 import { guardedAutonomySchemaSql } from "./guarded-autonomy-schema.js";
+import { projectIdentitySchemaSql, registerProjectIdentityScope, projectIdentitySchemaAvailable } from "./project-identity.js";
+import { projectRegistrationRoot } from "./project-registration-root.js";
 import { stableJson, workflowDefinitionHash } from "./registry.js";
 import { actionApprovalEventTriggerSql, runtimeEventFunctionSql, workflowTaskEventTriggerSql } from "./runtime-events.js";
 import { inheritedRunSetSql, queueRunSetRepresentativeSql, workflowRunSetMigrationSql } from "./run-sets.js";
+import { queuePresentationSql, relatedQueueCountsSql, relatedRunIdsSql } from "./queue-lineage.js";
 import type { WorkflowQueueItem, WorkflowRunStatus } from "./workflow-run-types.js";
 import { buildRunPresentation } from "./run-presentation.js";
 import { enqueueRunNotification, runNotificationOutboxSchemaSql, engineEventConsumerSchemaSql } from "./run-notifications.js";
@@ -97,6 +100,7 @@ export {
  */
 export async function migrateStorage(): Promise<void> {
   await withClient(async (client) => {
+    await client.query(projectIdentitySchemaSql);
     await client.query(runtimeEventFunctionSql);
     await client.query(workflowRunSetMigrationSql);
     await client.query(`
@@ -621,13 +625,15 @@ export interface ProjectFileSummary {
   updatedAt: string;
 }
 
-export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string }): Promise<WorkflowQueueItem[]> {
+export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?: string; latestRelated?: boolean }): Promise<WorkflowQueueItem[]> {
   return withClient(async (client) => {
+    const identityFamilies = options?.latestRelated ? await projectIdentitySchemaAvailable(client) : false;
     const projectRootUri = options?.projectRootUri?.trim() || null;
     const result = await client.query<WorkflowQueueItem>(
-      `select
+      `${options?.latestRelated ? queuePresentationSql(identityFamilies, "$2") : ""} select
          wr.id::text as "runId",
          wr.run_set_id::text as "runSetId",
+         ${options?.latestRelated ? relatedQueueCountsSql : 'null::int as "relatedRunCount", null::int as "relatedOpenRunCount"'},
          (select count(*)::int from workflow_runs history where history.run_set_id = wr.run_set_id) as "runSetSize",
          wr.workflow_id as "workflowId",
          wr.status as "runStatus",
@@ -673,7 +679,8 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
        from workflow_runs wr
        join projects p on p.id = wr.project_id
        join workflow_tasks wt on wt.run_id = wr.id
-       where ($2::text is null or p.root_uri = $2)
+       ${options?.latestRelated ? "join queue_families qf on qf.latest_id=wr.id and qf.open_count>0" : ""}
+       where ($2::text is null or ${options?.latestRelated ? "exists (select 1 from workflow_runs family_member join projects family_project on family_project.id=family_member.project_id where family_member.id=any(qf.members) and family_project.root_uri=$2)" : "p.root_uri = $2"})
          -- Evaluation failures are comparison evidence, not actionable workflow
          -- failures. They remain visible on the Evaluations surface.
          and not (wr.status in ('failed', 'blocked') and wr.evaluation_metadata ? 'suiteId')
@@ -690,14 +697,14 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
                  and reinstated.created_at > dismissed.created_at
              )
          )
-         and (wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
+         and (${options?.latestRelated ? "true or " : ""}wr.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           or exists (
             select 1 from workflow_tasks active
             where active.run_id = wr.id
               and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
-         and ${queueRunSetRepresentativeSql}
-       group by wr.id, p.id
+         and ${options?.latestRelated ? "true" : queueRunSetRepresentativeSql}
+       group by wr.id, p.id ${options?.latestRelated ? ", qf.related_count, qf.open_count, qf.version_set_id, qf.attempts" : ""}
        order by
          case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
          coalesce(min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
