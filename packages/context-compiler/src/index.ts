@@ -1,8 +1,10 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { contextInfluence, influenceHash, type ContextInfluence, type ContextInfluenceReference } from "../../project-evidence/src/influence.js";
 import type { AgentCard, ProjectConfig, WorkflowDefinition } from "../../agent-registry/src/schemas.js";
 
 export interface CompileInput {
+  onInfluence?: (influence: ContextInfluence) => void;
   task: string;
   projectDir: string;
   project: ProjectConfig;
@@ -15,6 +17,8 @@ export interface CompileInput {
     score?: number;
     matchedTerms?: string[];
     selectionReason?: string;
+    contentHash?: string;
+    updatedAt?: string;
   }>;
   sourceExcerpts?: SourceExcerptEvidence[];
   preferenceNotes?: string[];
@@ -34,9 +38,10 @@ export interface SourceExcerptEvidence {
 }
 
 export async function compileContext(input: CompileInput): Promise<string> {
+  const references: ContextInfluenceReference[] = [];
   const agentIndex = new Map(input.agents.map((agent) => [agent.id, agent]));
   const lead = agentIndex.get(input.workflow.lead);
-  const projectFiles = await readProjectContextFiles(input.projectDir);
+  const projectFiles = await readProjectContextFiles(input.projectDir, references);
   const tuningNotes = input.tuningNotes ?? await readProjectTuningNotes(input.projectDir);
 
   const stageBriefs = input.workflow.stages.map((stage) => {
@@ -56,7 +61,7 @@ export async function compileContext(input: CompileInput): Promise<string> {
     ].join("\n");
   });
 
-  return [
+  const brief = [
     "# Compiled Agent Workflow Brief",
     "",
     `Task: ${input.task}`,
@@ -97,6 +102,15 @@ export async function compileContext(input: CompileInput): Promise<string> {
     "## Agent Instructions",
     input.agents.map(formatAgent).join("\n\n")
   ].join("\n");
+  const at = new Date().toISOString();
+  for (const source of input.sourceSummaries ?? []) references.push({ kind: "indexed_summary", key: source.sourceUri, includedHash: influenceHash(source.summary), sourceHash: source.contentHash, observedAt: source.updatedAt ?? null, freshness: "unverified", confidence: "indexed", target: { type: "file", value: source.sourceUri } });
+  for (const source of input.sourceExcerpts ?? []) references.push({ kind: "excerpt", key: source.sourceUri, includedHash: influenceHash(source.content), sourceHash: source.contentSha256, observedAt: null, freshness: source.kind === "source_file" ? "unverified" : "historical", confidence: "recorded", truncated: source.truncated, ...(source.kind === "source_file" ? { target: { type: "file" as const, value: source.sourceUri } } : {}) });
+  for (const note of tuningNotes) references.push({ kind: "tuning", key: note.relativePath, includedHash: influenceHash(note.content), observedAt: at, freshness: "read_at_compile", confidence: "recorded", target: { type: "file", value: note.relativePath } });
+  for (const [index, note] of (input.preferenceNotes ?? []).entries()) references.push({ kind: "preference", key: `preference:${index}`, includedHash: influenceHash(note), observedAt: null, freshness: "historical", confidence: "recorded" });
+  for (const agent of input.agents) references.push({ kind: "agent", key: agent.id, includedHash: influenceHash(formatAgent(agent)), observedAt: at, freshness: "read_at_compile", confidence: "recorded" });
+  references.push({ kind: "workflow", key: input.workflow.id, includedHash: influenceHash(stageBriefs.join("\n\n")), observedAt: at, freshness: "read_at_compile", confidence: "recorded" });
+  input.onInfluence?.(contextInfluence(brief, references));
+  return brief;
 }
 
 function formatSourceExcerpts(excerpts: SourceExcerptEvidence[]): string {
@@ -178,7 +192,7 @@ function formatSourceSummaries(summaries: Array<{ sourceUri: string; tokenEstima
   ].filter(Boolean).join("\n")).join("\n\n");
 }
 
-async function readProjectContextFiles(projectDir: string): Promise<string> {
+async function readProjectContextFiles(projectDir: string, references: ContextInfluenceReference[]): Promise<string> {
   const candidates = [
     "AGENTS.md",
     ".agent-workflow/context.md",
@@ -191,6 +205,7 @@ async function readProjectContextFiles(projectDir: string): Promise<string> {
     const absolutePath = path.join(projectDir, relativePath);
     try {
       const raw = await fs.readFile(absolutePath, "utf8");
+      references.push({ kind: "file", key: relativePath, includedHash: influenceHash(raw.trim()), sourceHash: influenceHash(raw), observedAt: new Date().toISOString(), freshness: "read_at_compile", confidence: "recorded", target: { type: "file", value: relativePath } });
       sections.push(`### ${relativePath}\n${raw.trim()}`);
     } catch {
       sections.push(`### ${relativePath}\n_missing_`);

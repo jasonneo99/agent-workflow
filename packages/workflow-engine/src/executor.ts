@@ -7,7 +7,7 @@ import { sourceSubjectHash } from "./source-subject.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
 import { continuationBackoff, continuationResumeReceipt, pendingEvidenceReason } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
@@ -23,6 +23,7 @@ import type { StageExecutionInput, StageExecutionOutput } from "../../model-prov
 import { searchProjectFileIndex } from "../../storage/src/project-index.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
+import { providerWithInfluence, stageContextInfluence } from "./context-influence.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { fileWriteRejectionRecovered, isRecoverableFileMutationFailure, prepareRejectedPatchRetry } from "./file-mutation-retry.js";
 export { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
@@ -227,7 +228,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       if (task.executorSnapshot) {
         const assertExecutorAuthority = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
         await assertExecutorAuthority(true);
+        const executorInfluence = await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence", target: task.stageId,
+          summary: "Context and governed snapshot prepared for the bound executor; authority is checked separately.", artifactKind: "context_influence", idempotencyKey: randomUUID(),
+          artifactContent: { ...stageContextInfluence(stageInput), phase: "executor_input", stageId: task.stageId, executorSnapshotHash: task.executorSnapshot.snapshotHash, compiledBriefUri: `db://workflow_runs/${task.runId}/compiled-brief` } });
         await executeBoundExecutorStage(task, project, assertLeaseOwned);
+        await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence_result", target: executorInfluence,
+          summary: "Executor returned; consult its existing approval and output receipts for outcome.", artifactKind: "context_influence_result", idempotencyKey: randomUUID(),
+          artifactContent: { schemaVersion: 1, authority: "none", phase: "executor_returned", stageId: task.stageId, influenceReceiptUri: executorInfluence } });
         clearInterval(leaseHeartbeat);
         result.completed += 1;
         continue;
@@ -257,7 +264,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       let execution;
       try {
         await assertStageGuard(false);
-        execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
+        execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId)) });
       } catch (error) {
         const failure = classifyProviderFailure(error);
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: failure.attempts, latencyMs: Date.now() - startedAt }).catch(() => 0);
@@ -289,7 +296,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           providerId: route.providerId,
           stageInput: { ...routedStageInput, priorReceipts: [...routedStageInput.priorReceipts, { agentId: task.agentId, actionType: "completion_contract_feedback", summary: initialCompletionViolation }] },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-          providerFactory: providerFromEnv
+          providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
         });
         fallbackAttempts = [...fallbackAttempts, ...contractRetry.attempts];
         output = contractRetry.output;
@@ -314,7 +321,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             providerId: route.providerId,
             stageInput: routedStageInput,
             policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-            providerFactory: providerFromEnv
+            providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
           });
           fallbackAttempts = [...fallbackAttempts, ...primaryRetry.attempts];
           output = primaryRetry.output;
@@ -338,7 +345,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       if (!quality.passed && qualityFallbackProviderId && qualityFallbackProviderId !== actualProviderId) {
         try {
           await assertStageGuard(false);
-          const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerFromEnv });
+          const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId)) });
           const fallbackOutput = qualityExecution.output;
           const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
           await recordDirectProviderUsage({ stage: routedStageInput, attempts: qualityExecution.attempts, output: fallbackOutput, latencyMs: Date.now() - startedAt }).catch(() => 0);
@@ -557,7 +564,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           providerId: route.providerId,
           stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-          providerFactory: providerFromEnv
+          providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
         });
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: reread.attempts, output: reread.output, latencyMs: Date.now() - readRoundStartedAt }).catch(() => 0);
         fallbackAttempts = [...fallbackAttempts, ...reread.attempts];
@@ -1170,7 +1177,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 providerId: route.providerId,
                 stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
                 policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-                providerFactory: providerFromEnv
+                providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
               });
               await recordDirectProviderUsage({
                 stage: routedStageInput,
@@ -1460,7 +1467,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 providerId: route.providerId,
                 stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
                 policy: { ...fallbackPolicy, chains: {}, maxRetries: 0 },
-                providerFactory: providerFromEnv
+                providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
               });
               await recordDirectProviderUsage({ stage: routedStageInput, attempts: retry.attempts, output: retry.output, latencyMs: Date.now() - retryStartedAt }).catch(() => 0);
               fallbackAttempts = [...fallbackAttempts, ...retry.attempts];
@@ -1617,7 +1624,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             providerId: route.providerId,
             stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
             policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-            providerFactory: providerFromEnv
+            providerFactory: providerId => providerWithInfluence(providerFromEnv(providerId))
           });
           fallbackAttempts = [...fallbackAttempts, ...followup.attempts];
           output = followup.output;
