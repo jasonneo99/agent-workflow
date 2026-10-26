@@ -10,6 +10,7 @@ import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import type { ContextRoutingPolicy } from "../../context-gateway/src/index.js";
 
 const execFileAsync = promisify(execFile);
+import { buildProjectEvidenceGraph } from "../../project-evidence/src/index.js";
 const contextPolicy: ContextRoutingPolicy = {
   version: 1, mode: "shadow", direct_read_max_tokens: 100, delegation_min_tokens: 200,
   max_exact_slice_tokens: 300, summary_cache_ttl_seconds: 3600,
@@ -161,4 +162,18 @@ test("indexing emits privacy-safe shadow observations without changing read beha
   assert.equal(result.contextObservations[0].fileBodyStored, false);
   assert.equal(result.contextObservations[0].recommendedRoute, "delegate");
   assert.doesNotMatch(JSON.stringify(result.contextObservations), /context data/u);
+});
+
+test("a full index refresh backfills structured evidence without changing the content hash", async () => {
+  const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-index-evidence-"));
+  try {
+    await fs.writeFile(path.join(projectDir, "requirements.md"), "# Requirements\n## R1: Keep attribution\n");
+    const first = await indexProjectFiles({ projectDir, project, maxFiles: 10 });
+    const refreshed = await indexProjectFiles({ projectDir, project, maxFiles: 10, existingSummaries: first.files });
+    assert.equal(refreshed.files[0].contentHash, first.files[0].contentHash);
+    assert.deepEqual(refreshed.files[0].metadata.evidenceEntries, [{ kind: "requirement", title: "R1: Keep attribution", line: 2 }]);
+    const graph = buildProjectEvidenceGraph("synthetic", { files: refreshed.files.map(file => ({ ...file, updatedAt: "2026-01-01" })), runs: [], artifacts: [], tasks: [] });
+    assert.equal(graph.nodes.find(node => node.kind === "requirement")?.source.hash, first.files[0].contentHash);
+    assert.equal(graph.relationships[0].type, "contains");
+  } finally { await fs.rm(projectDir, { recursive: true, force: true }); }
 });

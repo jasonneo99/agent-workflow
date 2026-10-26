@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
+import { extractEvidenceEntries } from "../../project-evidence/src/index.js";
 import { glob } from "glob";
 import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import type { ModelProvider } from "../../model-providers/src/index.js";
@@ -150,7 +151,8 @@ export async function indexProjectFiles(input: {
         metadata: {
           bytes: stat.size,
           extension: path.extname(filePath),
-          reused: true
+          reused: true,
+          evidenceEntries: extractEvidenceEntries(relativePath, content)
         }
       });
       if (input.contextGateway) contextObservations.push(buildShadowObservation({
@@ -167,6 +169,7 @@ export async function indexProjectFiles(input: {
     changed += existing?.contentHash === contentHash ? 0 : 1;
     let summary = deterministicSummary;
     const metadata: Record<string, unknown> = {
+      evidenceEntries: extractEvidenceEntries(relativePath, content),
       bytes: stat.size,
       extension: path.extname(filePath),
       indexHeadCommit: headCommit,

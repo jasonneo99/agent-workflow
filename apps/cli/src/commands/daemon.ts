@@ -65,6 +65,12 @@ import { renderPreferenceScorecardHtml } from "../dashboard/outcome-accuracy.js"
 import { isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "../dashboard/question-chat.js";
 import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
+import { renderContextInfluenceHtml } from "../dashboard/context-influence.js";
+import { readContextInfluence } from "../../../../packages/storage/src/context-influence.js";
+import { renderProjectEvidenceHtml } from "../dashboard/project-evidence.js";
+import { renderEvidenceSource } from "../dashboard/project-evidence-source.js";
+import { readProjectEvidenceGraph } from "../../../../packages/storage/src/project-evidence.js";
+import type { ProjectEvidenceGraph } from "../../../../packages/project-evidence/src/index.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
 import { dashboardCss, roadmapDashboardCss } from "../dashboard/styles.js";
 import { resolveTrainingProjectChoices } from "../dashboard/training-projects.js";
@@ -5472,6 +5478,41 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const plan = buildTuningApplicationPlan(proposals, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all"));
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ...plan, mode: "dry-run" }, null, 2));
+      return;
+    }
+
+    if (requestUrl.pathname === "/studio/influence" || requestUrl.pathname === "/api/context-influence") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      const project = path.resolve(requestUrl.searchParams.get("project") || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+      const run = requestUrl.searchParams.get("run") ?? "";
+      if (!/^[a-f0-9-]{36}$/i.test(run)) { response.writeHead(400); response.end("A workflow run identifier is required."); return; }
+      try {
+        const view = await readContextInfluence(project,run);
+        const json = requestUrl.pathname === "/api/context-influence";
+        response.writeHead(200, { "content-type": json ? "application/json; charset=utf-8" : "text/html; charset=utf-8", "cache-control": "no-store" });
+        response.end(json ? JSON.stringify(view) : renderContextInfluenceHtml(view));
+      } catch { response.writeHead(503, { "content-type": "text/plain; charset=utf-8" }); response.end("Context influence history is unavailable. Check storage health and retry."); }
+      return;
+    }
+
+    if (requestUrl.pathname === "/studio/context" || requestUrl.pathname === "/api/project-evidence") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      const project = path.resolve(requestUrl.searchParams.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+      let graph: ProjectEvidenceGraph;
+      try { graph = await readProjectEvidenceGraph(project); }
+      catch { graph = { schemaVersion: 1, project, generatedAt: new Date().toISOString(), authority: "none", status: "unavailable", truncated: false, nodes: [], relationships: [], warnings: [] }; }
+      const json = requestUrl.pathname === "/api/project-evidence";
+      if (!json && requestUrl.searchParams.get("source") === "1") {
+        const node = graph.nodes.find(node => node.id === requestUrl.searchParams.get("node"));
+        try {
+          if (!node) throw new Error("Evidence not found");
+          const html = await renderEvidenceSource(project, node);
+          response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); response.end(html);
+        } catch { response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); response.end("Evidence source is unavailable or outside the preview boundary. Return to project context and refresh the index."); }
+        return;
+      }
+      response.writeHead(graph.status === "unavailable" ? 503 : 200, { "content-type": json ? "application/json; charset=utf-8" : "text/html; charset=utf-8", "cache-control": "no-store" });
+      response.end(json ? JSON.stringify(graph) : renderProjectEvidenceHtml(graph, { kind: requestUrl.searchParams.get("kind") ?? undefined, selected: requestUrl.searchParams.get("node") ?? undefined }));
       return;
     }
 

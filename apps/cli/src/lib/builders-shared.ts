@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
 import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 import type { CliContext } from "./context.js";
+import { influenceHash, type ContextInfluence } from "../../../../packages/project-evidence/src/influence.js";
 import type { ArtifactLifecycleAction, DashboardWorkflowGraphReport, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardFollowUpResult, DashboardProjectPathResolution, RunInputSnapshot, SourceSummaryWithHash, TeamRoleCapability, DashboardWorkflowStageRun, FocusedStageDeltaSummary, FocusedStageOutcomeSummary} from "./cli-types.js";
 import { byId, loadAgents, loadProjectConfig, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
 import { buildBundleManifest } from "../../../../packages/agent-registry/src/manifest.js";
@@ -24,6 +25,7 @@ import { resolveLocalProjectPath } from "../../../../packages/runtime-root/src/i
 import { claimActionApprovalExecution, createWorkflowRun, decideActionApproval, deleteProjectFiles, findRunActionByIdempotencyKey, getActionApproval, getArtifactById, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listWorkflowReuseEvidence, markActionApprovalExecution, recordRunAction, resumeWorkflowRunFromCheckpoint, seedRegistry, upsertProject, upsertProjectFiles, upsertProjectIndexState } from "../../../../packages/storage/src/postgres.js";
 import { executorApprovalTarget, runExecutorApprovalGate } from "../../../../packages/workflow-engine/src/executor.js";
 import { attachCodexOrigin } from "../codex-callback.js";
+import { executeContextCorrection } from "../../../../packages/storage/src/context-corrections.js";
 import { parsePositiveInteger } from "../numeric-options.js";
 import { resolveWorkflow } from "../reference-resolution.js";
 import { execFile } from "node:child_process";
@@ -353,7 +355,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
       ].join("\n")
     };
   }
-  if (!["artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter", "project_policy_change"].includes(approval.actionType)) {
+  if (!["context_correction", "artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter", "project_policy_change"].includes(approval.actionType)) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
 
@@ -391,7 +393,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     });
   }
 
-  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : approval.actionType === "project_policy_change" ? "project_policy_change" : "";
+  const artifactKind = approval.actionType === "context_correction" ? "context_correction" : approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : approval.actionType === "project_policy_change" ? "project_policy_change" : "";
   if (!artifactKind) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
@@ -425,6 +427,11 @@ export async function executeApprovedAction(ctx: CliContext, input: {
   }
 
   try {
+    if (approval.actionType === "context_correction") {
+      const artifactUri = await executeContextCorrection({approvalId:approval.id, claimToken:executionClaimToken, actor:input.actor});
+      await markActionApprovalExecution({approvalId:approval.id,status:"executed",actor:input.actor,actorRole:input.actorRole,summary:"Attributed context correction recorded.",artifactUri,executionClaimToken});
+      return {ok:true,title:"Context correction recorded",runId:approval.runId,output:`Approval: ${approval.id}\nArtifact: ${artifactUri}`};
+    }
     if (approval.actionType === "project_policy_change") {
       return executeProjectPolicyChangeApproval({ approval, actor: input.actor, actorRole: input.actorRole, executionClaimToken });
     }
@@ -1113,7 +1120,7 @@ export function isDismissedApproval(approval: Pick<DashboardActionApproval, "dec
 }
 
 export function isExecutableApprovalAction(actionType: string): boolean {
-  return actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "project_policy_change" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
+  return actionType === "context_correction" || actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "project_policy_change" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
 }
 
 export function isOpenApproval(approval: DashboardActionApproval): boolean {
@@ -1574,7 +1581,12 @@ export async function queueWorkflow(ctx: CliContext, input: {
   const reuseAdvisory = governedReusePlan.candidates[0]
     ? [`Governed reuse advisory only: ${governedReusePlan.recommendation} from run ${governedReusePlan.candidates[0].runId}; operator approval is required before any stage or result is reused.`]
     : [];
+  let compiledInfluence: ContextInfluence | undefined;
   const brief = await compileContext({
+    onInfluence: value => {
+      if (reuseAdvisory.length && governedReusePlan.candidates[0]) value.references.push({ kind: "prior_run", key: governedReusePlan.candidates[0].runId, includedHash: influenceHash(reuseAdvisory.join("\n")), observedAt: null, freshness: "historical", confidence: "recorded", target: { type: "run", value: governedReusePlan.candidates[0].runId } });
+      compiledInfluence = value;
+    },
     task: input.task,
     projectDir,
     project,
@@ -1622,6 +1634,7 @@ export async function queueWorkflow(ctx: CliContext, input: {
     requesterChannel: input.requesterChannel ?? resolveDefaultRequesterChannel(),
     compiledBrief: brief,
     compiledBriefMetadata: {
+      contextInfluence: compiledInfluence,
       runInputSnapshot,
       governedReusePlan,
       latencyOptimization: latencyOptimization.optimization

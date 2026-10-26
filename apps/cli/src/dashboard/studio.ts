@@ -58,6 +58,7 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
       <nav aria-label="Studio navigation">
         <a class="rail-link active" href="/studio">${icon("activity")}<span>Active task</span></a>
         <a class="rail-link" href="/projects">${icon("folder")}<span>Projects</span></a>
+        <a class="rail-link" href="/studio/context?project=${encodeURIComponent(input.defaultProject)}">${icon("file")}<span>Project context</span></a>
         <a class="rail-link" href="/runs">${icon("file")}<span>Run history</span></a>
         <a class="rail-link" href="/approvals?status=open">${icon("shield")}<span>Approvals</span><i id="approval-count" hidden>0</i></a>
       </nav>
@@ -79,6 +80,7 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
           <section id="approval-banner" class="approval-banner" hidden>${icon("shield")}<span><strong>Approval required</strong><small id="approval-summary">Review the requested action before this workflow can continue.</small></span><div id="inline-approval-actions"></div></section>
           <h1 id="task-title">Loading your workflow…</h1>
           <p id="task-summary">Connecting to Agent Workflow and finding the most recent task.</p>
+          <a id="context-influence-link" hidden>Why these inputs?</a>
           <section id="outcome-card" class="outcome-card" hidden><span id="outcome-mark" class="outcome-mark"></span><div><strong id="outcome-title"></strong><p id="outcome-detail"></p></div></section>
           <div id="stage-strip" class="stage-strip" aria-label="Workflow progress"></div>
           <div class="run-toolbar" id="run-toolbar"><button type="button" data-run-action="pause">Pause</button><button type="button" data-run-action="resume-checkpoint">Resume</button><button type="button" data-run-action="retry-failed">Retry</button><button type="button" data-run-action="replay-run">Replay</button><button type="button" data-run-action="cancel">Cancel</button></div>
@@ -218,6 +220,8 @@ function studioScript(): string {
         $("command-workflow").value = run.workflowId || "build-feature";
         $("accept-run").value = run.id;
         $("command-return").value = "/studio?run=" + encodeURIComponent(run.id);
+        $("context-influence-link").hidden = false;
+        $("context-influence-link").href = "/studio/influence?project=" + encodeURIComponent(run.projectRootUri || "") + "&run=" + encodeURIComponent(run.id);
         $("accept-return").value = "/studio?run=" + encodeURIComponent(run.id);
         const continuation = $("continuation-banner");
         continuation.hidden = !run.replacementRunId;

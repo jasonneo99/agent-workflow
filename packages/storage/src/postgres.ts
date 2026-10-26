@@ -48,6 +48,7 @@ import { withClient } from "./client.js";
 import { commandEvidencePacket } from "./command-evidence.js";
 import { loadReplayEvidencePacket } from "./replay-evidence.js";
 import { validateRecoveryCheckpoint } from "./checkpoint-provenance.js";
+import { appendPlanContextInfluence } from "./context-influence.js";
 import { acceptanceDigest, acceptanceGate, acceptancePreflight, enrollAcceptanceContract, storedAcceptanceDecision } from "./acceptance.js";
 import type { StructuredAcceptanceContract } from "../../model-providers/src/types.js";
 import { deliveryMetrics, type DeliveryMetricRun, type DeliveryMetricReceipt, type DeliveryAudit } from "./delivery-metrics.js";
@@ -1568,6 +1569,7 @@ export async function createWorkflowRun(input: CreateRunInput): Promise<{ projec
         actionType: "workflow_created", target: runId, summary: "Workflow created and queued.", metadata: "{}" });
 
       if (input.compiledBrief) {
+        await appendPlanContextInfluence(client, { runId, text: input.compiledBrief, influence: input.compiledBriefMetadata?.contextInfluence, artifactUri: compiledBriefUri });
         await client.query(
           `insert into artifacts (run_id, kind, uri, content)
            values ($1, 'compiled_brief', $2, $3)
@@ -2000,6 +2002,7 @@ export async function replayWorkflowRun(input: {
       }
       const compiledBriefUri = `db://workflow_runs/${runId}/compiled-brief`;
       if (sourceRun.compiledBrief) {
+        await appendPlanContextInfluence(client, { runId, text: sourceRun.compiledBrief, influence: sourceRun.compiledBriefMetadata?.contextInfluence, artifactUri: compiledBriefUri, replaySourceRunId: input.sourceRunId });
         await client.query(
           `insert into artifacts (run_id, kind, uri, content)
            values ($1, 'compiled_brief', $2, $3)`,
