@@ -13,6 +13,7 @@ export interface WorkflowQueueItem {
   requesterChannel?: string | null;
   startedAt: string;
   finishedAt: string | null;
+  latestActivityAt: string;
   blockedReason?: string | null;
   failedReason?: string | null;
   totalTasks: number;

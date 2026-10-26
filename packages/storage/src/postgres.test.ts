@@ -124,6 +124,14 @@ test("project queue scopes lineage before recursive family expansion", () => {
   assert.match(queue, /queuePresentationSql\(identityFamilies, "\$2"\)/u);
 });
 
+test("queue cards sort by the latest durable family activity", () => {
+  const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
+  const queue = source.slice(source.indexOf("export async function listWorkflowQueue"), source.indexOf("export async function cancelWorkflowRun"));
+  assert.match(queue, /max\(receipt\.created_at\)[\s\S]+max\(approval\.updated_at\)[\s\S]+task_activity\.finished_at/u);
+  assert.match(queue, /"latestActivityAt" desc,[\s\S]+wr\.id desc/u);
+  assert.doesNotMatch(queue, /case wr\.status when 'running' then 0/u);
+});
+
 test("superseded terminal runs are explicit history and leave the actionable queue", () => {
   const source = readFileSync(new URL("./postgres.ts", import.meta.url), "utf8");
   const supersession = readFileSync(new URL("./run-supersession.ts", import.meta.url), "utf8");

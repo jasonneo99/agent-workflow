@@ -644,6 +644,14 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
          p.root_uri as "projectRootUri",
          wr.started_at::text as "startedAt",
          wr.finished_at::text as "finishedAt",
+         greatest(
+           wr.updated_at,
+           coalesce((select max(activity_run.updated_at) from workflow_runs activity_run where activity_run.id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at),
+           coalesce((select max(receipt.created_at) from action_receipts receipt where receipt.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at),
+           coalesce((select max(approval.updated_at) from action_approvals approval where approval.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at),
+           coalesce((select max(greatest(task_activity.available_at,coalesce(task_activity.started_at,task_activity.available_at),coalesce(task_activity.finished_at,task_activity.available_at)))
+             from workflow_tasks task_activity where task_activity.run_id=any(${options?.latestRelated ? "qf.members" : "array[wr.id]"})),wr.updated_at)
+         )::text as "latestActivityAt",
          null::text as "recoveryRunId",
          null::text as "recoveryRunStatus",
          null::text as "recoveryStartedAt",
@@ -704,10 +712,10 @@ export async function listWorkflowQueue(limit = 50, options?: { projectRootUri?:
               and active.status in ('queued', 'leased', 'running', 'failed', 'blocked')
           ))
          and ${options?.latestRelated ? "true" : queueRunSetRepresentativeSql}
-       group by wr.id, p.id ${options?.latestRelated ? ", qf.related_count, qf.open_count, qf.version_set_id, qf.attempts" : ""}
+       group by wr.id, p.id ${options?.latestRelated ? ", qf.related_count, qf.open_count, qf.version_set_id, qf.attempts, qf.members" : ""}
        order by
-         case wr.status when 'running' then 0 when 'queued' then 1 when 'blocked' then 2 when 'failed' then 3 else 4 end,
-         coalesce(min(coalesce(wt.started_at, wt.available_at)) filter (where wt.status in ('leased', 'running')), min(wt.available_at) filter (where wt.status = 'queued'), wr.started_at) asc
+         "latestActivityAt" desc,
+         wr.id desc
        limit $1`,
       [limit, projectRootUri]
     );
