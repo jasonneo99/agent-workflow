@@ -66,3 +66,41 @@ test("approval status trigger enqueues one stable resume event", async (context)
     throw error;
   }
 });
+
+test("approval and rejection events survive a runtime restart without duplication", async (context) => {
+  try { await isolatedRuntime(async (client) => {
+    const threadId = "acceptance-restart-thread";
+    const toolCallId = "acceptance-tool";
+    const storeBeforeRestart = new PostgresSliceStore();
+    await storeBeforeRestart.createThread(threadId);
+    await storeBeforeRestart.commitSlice({ threadId,expectedRevision:0,inputId:"dispatch:acceptance-tool",status:"suspended",pendingDispatch:null,
+      issuedToolCallIds:[toolCallId],entries:[{id:"tool-call",sourceInputId:"dispatch:acceptance-tool",role:"assistant",kind:"tool_call",synthetic:false,
+        toolCall:{id:toolCallId,name:"bound_executor",arguments:{operation:"typecheck"}}}] });
+    const approvals = [
+      ["00000000-0000-4000-8000-000000000011", "approved"],
+      ["00000000-0000-4000-8000-000000000012", "rejected"]
+    ] as const;
+    for (const [id,status] of approvals) {
+      await client.query("insert into action_approvals values($1,'pending',$2::jsonb,null)",[id,JSON.stringify({runtimeThreadId:threadId,runtimeToolCallId:toolCallId})]);
+      await client.query("update action_approvals set status=$2,decision_note=$3 where id=$1",[id,status,`${status} during acceptance`]);
+      await client.query("update action_approvals set status=$2 where id=$1",[id,status]);
+    }
+    // New objects represent a restarted process: no in-memory queue, lease, or thread state is reused.
+    const storeAfterRestart = new PostgresSliceStore();
+    const queueAfterRestart = new PostgresInputQueue();
+    const observed:string[]=[];
+    const runtimeAfterRestart = new SuspendResumeRuntime({store:storeAfterRestart,queue:queueAfterRestart,receipts:new InMemoryReceiptSink(),dispatchTool:async()=>undefined,
+      model:{async complete(input){observed.push(String(input.message.payload&&(input.message.payload as {eventName?:string}).eventName));return{message:"continued"};}}});
+    assert.equal((await runtimeAfterRestart.processNext(threadId)).outcome,"suspended");
+    assert.equal((await runtimeAfterRestart.processNext(threadId)).outcome,"suspended");
+    assert.equal((await runtimeAfterRestart.processNext(threadId)).outcome,"idle");
+    assert.deepEqual(observed,["approval_approved","approval_rejected"]);
+    assert.equal(await queueAfterRestart.depth(threadId),0);
+    const state=await storeAfterRestart.loadThread(threadId);
+    assert.equal(state?.status,"suspended");
+    assert.deepEqual(state?.answeredToolCallIds,approvals.map(([id,status])=>`synthetic:approval:${id}:${status}`));
+  }); } catch (error) {
+    if (error instanceof Error && /Connection terminated|ECONNREFUSED/u.test(error.message)) { context.skip("local PostgreSQL unavailable"); return; }
+    throw error;
+  }
+});

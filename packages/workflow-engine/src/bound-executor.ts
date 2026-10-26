@@ -5,6 +5,7 @@ import { assertExecutorRegistration, executeExecutorSnapshot, type ExecutorOpera
 import { evaluateActionApprovalRule, type ActionApprovalRuleMatch } from "../../policy-engine/src/index.js";
 import { blockWorkflowTask, completeWorkflowTask, findRunActionByIdempotencyKey, recordRunAction, requestActionApproval, type ClaimedWorkflowTask } from "../../storage/src/postgres.js";
 import { enqueueBoundExecutorResult, registerBoundExecutorThread } from "../../storage/src/suspend-resume-runtime.js";
+import { shouldRecordSuspendResumeCanary } from "./suspend-resume-canary.js";
 const hashText = (value: string): string => createHash("sha256").update(value).digest("hex");
 
 export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, project: ProjectConfig, assertLeaseOwned: () => Promise<void> = async () => {}): Promise<void> {
@@ -14,9 +15,10 @@ export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, proje
   const commandLine = operationCommand(task.executorSnapshot.operation);
   assertCommandAllowed(commandLine, project);
   const approvalTarget = executorApprovalTarget(task.executorSnapshot);
+  const recordCanary = shouldRecordSuspendResumeCanary();
   const runtimeToolCallId = `executor:${task.executorSnapshot.snapshotHash}`;
-  const runtimeThreadId = await registerBoundExecutorThread({ runId: task.runId, taskId: task.taskId, agentId: task.agentId,
-    toolCallId: runtimeToolCallId, toolName: "bound_executor", arguments: { target: approvalTarget, snapshotHash: task.executorSnapshot.snapshotHash } });
+  const runtimeThreadId = recordCanary ? await registerBoundExecutorThread({ runId: task.runId, taskId: task.taskId, agentId: task.agentId,
+    toolCallId: runtimeToolCallId, toolName: "bound_executor", arguments: { target: approvalTarget, snapshotHash: task.executorSnapshot.snapshotHash } }) : null;
   try {
     const previous = await findRunActionByIdempotencyKey({
       runId: task.runId,
@@ -36,7 +38,7 @@ export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, proje
         artifactKind: "action_reuse",
         artifactContent: { snapshot: task.executorSnapshot, originalArtifactUri: previous.uri }
       });
-      await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
+      if (runtimeThreadId) await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
         eventId: `executor-result:${task.executorSnapshot.snapshotHash}:reused`, eventName: "executor_reused",
         result: { status: "passed", artifactUri: previous.uri, reused: true } });
       await completeWorkflowTask({
@@ -79,12 +81,11 @@ export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, proje
             snapshot: task.executorSnapshot,
             commandLine,
             payloadHash: hashText(JSON.stringify(task.executorSnapshot)),
-            runtimeThreadId,
-            runtimeToolCallId
+            ...(runtimeThreadId ? { runtimeThreadId, runtimeToolCallId } : {})
           },
           idempotencyKey: task.executorSnapshot.snapshotHash
         });
-        await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
+        if (runtimeThreadId) await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
           eventId: `approval:${approval.approvalId}:requested`, eventName: "approval_requested",
           result: { approvalId: approval.approvalId, status: approval.status } });
         await blockWorkflowTask({
@@ -114,7 +115,7 @@ export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, proje
       idempotencyKey: task.executorSnapshot.snapshotHash
     });
     if (execution.status !== "passed") throw new Error(`Executor ${task.executorSnapshot.executorId} failed on ${execution.executionHost}.`);
-    await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
+    if (runtimeThreadId) await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
       eventId: `executor-result:${task.executorSnapshot.snapshotHash}:passed`, eventName: "executor_completed",
       result: { status: execution.status, artifactUri, executionHost: execution.executionHost } });
     await completeWorkflowTask({
@@ -138,7 +139,7 @@ export async function executeBoundExecutorStage(task: ClaimedWorkflowTask, proje
       artifactContent: { snapshot: task.executorSnapshot, error: error instanceof Error ? error.message : String(error) },
       idempotencyKey: `${task.executorSnapshot.snapshotHash}:failure`
     });
-    await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
+    if (runtimeThreadId) await enqueueBoundExecutorResult({ threadId: runtimeThreadId, toolCallId: runtimeToolCallId,
       eventId: `executor-result:${task.executorSnapshot.snapshotHash}:failed`, eventName: "executor_failed",
       result: { status: "failed", error: error instanceof Error ? error.message : String(error) } });
     throw error;

@@ -187,6 +187,14 @@ Workflow targets.
 
 ## Activation boundary
 
+The bound-executor integration runs as a shadow canary by default. Set
+`AGENTFLOW_SUSPEND_RESUME_CANARY=off` to roll back runtime recording while the
+existing workflow executor continues unchanged. `authoritative` is a reserved
+mode: it is only eligible after a real executor canary, both approval outcomes,
+restart recovery, rollback, and receipt-chain verification pass independent
+acceptance. The current scheduler remains authoritative until that promotion is
+made explicitly.
+
 The owner authorized local storage, executor, and service activation on October
 25, 2026. The additive PostgreSQL inbound queue is installed, bound-executor
 dispatches register stable runtime threads, executor outcomes enter the inbound
