@@ -59,6 +59,29 @@ npm run smoke
 
 This verifies Docker services, workflow definitions, queueing, storage, receipts, artifacts, and worker execution.
 
+### Governed project containers
+
+Projects may opt into Agent Workflow-managed Compose lifecycle by adding the
+exact command `npm run agentflow -- containers *` to `actions.allowed_commands`.
+Use the structured wrapper rather than granting raw `docker *` authority:
+
+```bash
+# Preview the exact isolated stack and command (default).
+npm run containers -- --project /path/to/project --action start --compose-file compose.yaml --services api,db
+
+# Execute after project-policy and Compose safety checks.
+npm run containers -- --project /path/to/project --action start --compose-file compose.yaml --services api,db --execute
+npm run containers -- --project /path/to/project --action stop --compose-file compose.yaml --execute
+```
+
+The wrapper assigns a stable project-scoped Compose name and writes intent and
+result receipts to `.agent-workflow/receipts/container-lifecycle.jsonl`.
+Shutdown uses `docker compose stop`; it does not remove volumes. Privileged
+containers, host namespaces/devices, explicit container names, external build
+contexts, paths outside the project, Docker-socket mounts, and unknown services
+are rejected before Docker runs. MCP clients use `agentflow_containers` with
+the same preview-first contract and checks.
+
 `npm run bundle-manifest` prints the versioned reusable agent/workflow bundle manifest. Run `npm run bundle-manifest -- --write` after changing shared files under `agents/` or `workflows/`; `npm run validate` checks the committed manifest checksum.
 
 `npm run agentflow -- bundle-compat` checks the committed bundle against the

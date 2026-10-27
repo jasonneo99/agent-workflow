@@ -111,6 +111,31 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_containers",
+  {
+    title: "AgentFlow governed containers",
+    description: "Preview or execute start, stop, restart, or status for a project-owned Compose stack. Rejects privileged access, external host mounts, engine-socket mounts, and unrelated services.",
+    inputSchema: {
+      project: z.string().describe("Absolute or relative project directory."),
+      action: z.enum(["start", "stop", "restart", "status"]).describe("Bounded lifecycle action."),
+      composeFile: z.string().optional().describe("Project-relative Compose file; defaults to compose.yaml."),
+      services: z.string().optional().describe("Comma-separated exact service names; omit for the whole project stack."),
+      execute: z.boolean().optional().describe("Execute after validation. Omit for a dry-run preview."),
+      actor: z.string().optional().describe("Requesting actor recorded in project-local receipts."),
+      json: z.boolean().optional().describe("Return machine-readable result JSON.")
+    }
+  },
+  async ({ project, action, composeFile, services, execute, actor, json }) => toolResult(await runAgentflow([
+    "containers", "--project", project, "--action", action,
+    ...(composeFile ? ["--compose-file", composeFile] : []),
+    ...(services ? ["--services", services] : []),
+    ...(execute ? ["--execute"] : []),
+    ...(actor ? ["--actor", actor] : []),
+    ...(json ? ["--json"] : [])
+  ], { timeoutMs: 120_000 }))
+);
+
+server.registerTool(
   "agentflow_contract_test",
   {
     title: "AgentFlow contract test",

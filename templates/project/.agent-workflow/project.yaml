@@ -100,6 +100,9 @@ actions:
     - npm run lint
     - npm run build
     - npm run agentflow -- training-holdout *
+    # Enables only Agent Workflow's governed, project-owned Compose wrapper.
+    # Raw docker commands remain outside worker authority.
+    - npm run agentflow -- containers *
   blocked_commands:
     - rm *
     - git reset *

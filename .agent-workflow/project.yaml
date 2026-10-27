@@ -75,6 +75,7 @@ actions:
     - npm run agentflow -- list
     - npm run agentflow -- status
     - npm run agentflow -- training-holdout *
+    - npm run agentflow -- containers *
     - npm run index-project -- --project . --max-files 100
     - "npm exec -- node --import tsx --input-type=module -e 'import {
       unfulfilledCompletionReason, verificationCompletionReason } from

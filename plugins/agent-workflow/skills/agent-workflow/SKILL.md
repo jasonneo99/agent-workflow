@@ -56,6 +56,13 @@ When the user asks for Studio:
 ## Safety
 
 - Respect each target project's action policy and allowed write paths.
+- When a task needs project containers, use `agentflow_containers` instead of
+  raw Docker commands. Preview first unless the user already authorized
+  execution; execute only for a project that explicitly allows
+  `npm run agentflow -- containers *`. Start, stop, restart, or inspect only the
+  project-owned Compose stack. Never bypass its rejection of privileged access,
+  host namespaces/devices, external host paths, engine-socket mounts, explicit
+  container names, or unrelated services.
 - Acquire and honor project work intents for write-capable work.
 - Treat approval-required results as stop conditions until the user decides.
 - Never expose provider keys, `.env` values, private context, or unsanitized

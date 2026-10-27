@@ -1527,3 +1527,16 @@ An item is portable (release-ready) only when all of these hold:
 
 Items marked `[x]` above that do not yet meet all five are implemented but not
 portable. Do not cut a release claiming them until they are.
+
+### Governed project container lifecycle
+
+- [x] Add a reusable preview-first CLI and MCP operation for starting, stopping,
+  restarting, and inspecting project-owned Compose stacks.
+- [x] Isolate stacks with a stable project-scoped Compose name and retain
+  project-local intent/result receipts without treating lifecycle success as
+  workflow acceptance.
+- [x] Reject privileged mode, host namespaces and devices, engine-socket or
+  out-of-project mounts, external build/config/secret paths, explicit container
+  names, unrelated services, and destructive volume removal before execution.
+- [ ] Publish and verify the capability from a clean installed runtime; source
+  completion does not establish release or installed-runtime adoption.

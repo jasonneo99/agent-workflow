@@ -39,6 +39,8 @@ actions:
     - npm test
     - npm run typecheck
     - npm run lint
+    # Enables only Agent Workflow's governed, project-owned Compose wrapper.
+    - npm run agentflow -- containers *
   blocked_commands:
     - rm *
     - git reset *
