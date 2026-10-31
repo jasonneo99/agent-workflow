@@ -13,6 +13,7 @@ import {assertCommandAllowed} from '../../local-tools/src/command-executor.js';
 import {assertFilePathAllowed} from '../../local-tools/src/file-writer.js';
 import {isVerificationCommand} from '../../workflow-engine/src/action-result-continuation.js';
 import {sourceSubjectHash} from '../../workflow-engine/src/source-subject.js';
+import {ENVIRONMENT_COMMAND} from '../../run-environments/src/schema.js';
 
 export interface ScopedChangeReviewInput {
  sourceRunId:string;projectId:string;projectRootUri:string;familyId:string;
@@ -33,7 +34,11 @@ const equal=(a:unknown,b:unknown)=>acceptanceDigest(a)===acceptanceDigest(b);
 const hash=(v:unknown)=>typeof v==='string'&&/^[a-f0-9]{64}$/u.test(v);
 const active="('reserved','running','uncertain')";
 export function scopedChangeReviewPolicy(project:ProjectConfig,commands:string[]):ProjectConfig {
- return projectConfigSchema.parse({...project,actions:{...project.actions,allowed_write_paths:[],allowed_commands:commands,approval_rules:[],isolate_command_writes:true}});
+ const environmentCapability=project.execution.environments&&project.actions.allowed_commands.includes(ENVIRONMENT_COMMAND)?[ENVIRONMENT_COMMAND]:[];
+ // Keep only literal permissions already granted for the reviewed commands.
+ // Broad rules and permissions for unrelated actions never enter the review.
+ const approvalRules=project.actions.approval_rules.filter(rule=>rule.action_type==='local_command'&&commands.includes(rule.target));
+ return projectConfigSchema.parse({...project,actions:{...project.actions,allowed_write_paths:[],allowed_commands:[...new Set([...commands,...environmentCapability])],approval_rules:approvalRules,isolate_command_writes:true}});
 }
 
 /** A fresh grant for reviewing a current change, NOT an original-root recovery,

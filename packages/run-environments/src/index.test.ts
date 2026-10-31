@@ -9,6 +9,7 @@ import { dockerfileFor, ENVIRONMENT_COMMAND, planRunEnvironment, runEnvironmentC
   type ProcessResult, type ProcessRunner, type EnvironmentPlan } from "./index.js";
 import { environmentProfileSchema } from "./schema.js";
 import { testEvidence } from "./evidence.js";
+import { scopedChangeReviewPolicy } from "../../storage/src/scoped-change-review.js";
 
 const digest = "a".repeat(64), imageId = `sha256:${"b".repeat(64)}`;
 const tap = "# tests 2\n# suites 0\n# pass 2\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n";
@@ -77,6 +78,28 @@ test("profiles are selected per run, workflow, stage and command without changin
     assert.equal(selectEnvironment(f.project, { runId: "r", workflowId: "build-feature", stageId: "verify" }, "node --test tests/index.test.js"), "other");
     assert.equal(selectEnvironment(f.project, { runId: "r", stageId: "repair" }, "node --version"), "test");
     await assert.rejects(executeAllowedCommand({ ...f, commandLine: "node forbidden.js", environmentContext: { runId: "r" } }), /not allowed/u);
+  } finally { await f.cleanup(); }
+});
+
+test("a narrowed read-only review executes its declared environment and rejects nested runner invocation", async () => {
+  const f = await fixture(); try {
+    const command = "node --test tests/index.test.js";
+    const project = projectConfigSchema.parse({ ...f.project, execution: { environments: { default_profile: "review", profiles: { review: {
+      kind: "native", platform: `${process.platform}/${process.arch === "x64" ? "amd64" : process.arch}`,
+      source_paths: ["src", "tests"], readiness: [{ argv: ["node", "--test", "tests/index.test.js"] }],
+      verification: [{ commands: [command], format: "node-test", expected_tests: 1 }]
+    } } } } });
+    const narrowed = scopedChangeReviewPolicy(project, [command]);
+    const result = await executeAllowedCommand({ cwd: f.cwd, project: narrowed, commandLine: command,
+      environmentContext: { runId: "scoped-review", requireVerification: true } });
+    assert.equal(result.environment?.status, "ready", result.stderr);
+    assert.equal(result.verificationRecipe?.passed, 1);
+    assert.equal(result.verificationRecipe?.skipped, 0);
+    await assert.rejects(executeAllowedCommand({ cwd: f.cwd, project: narrowed,
+      commandLine: "npm run agentflow -- environments --command unrelated",
+      environmentContext: { runId: "scoped-review" } }), /nested agent command/u);
+    await assert.rejects(executeAllowedCommand({ cwd: f.cwd, project: narrowed,
+      commandLine: "node unrelated.js", environmentContext: { runId: "scoped-review" } }), /not allowed/u);
   } finally { await f.cleanup(); }
 });
 

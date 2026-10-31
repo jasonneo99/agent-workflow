@@ -15,6 +15,7 @@ import {reserveScopedChangeReviewOnClient as reserveOnClient,attachScopedChangeR
 import {finishQueueCoordinatorOnClient} from './queue-coordinator.js';
 import {coordinatorClaimFenceSql} from './coordinator-claim-fence.js';
 import {verifyRunReceiptChainOnClient} from './postgres.js';
+import {ENVIRONMENT_COMMAND} from '../../run-environments/src/schema.js';
 
 test('scoped review policy removes writes/approval shortcuts, preserves unrelated restrictions',()=>{
  const original=projectConfigSchema.parse({project:{name:'review-fixture'},actions:{allowed_write_paths:['src/**'],allowed_commands:['npm run typecheck'],blocked_commands:['ssh *']}});
@@ -22,6 +23,25 @@ test('scoped review policy removes writes/approval shortcuts, preserves unrelate
  assert.deepEqual(narrowed.actions.allowed_write_paths,[]);assert.deepEqual(narrowed.actions.approval_rules,[]);
  assert.equal(narrowed.actions.isolate_command_writes,true);assert.deepEqual(narrowed.actions.blocked_commands,['ssh *']);
  assert.deepEqual(original.actions.allowed_write_paths,['src/**']);
+});
+
+test('scoped reviews retain declared environment capability and only exact reviewed command permissions',()=>{
+ const command='node --test tests/example.test.js';
+ const original=projectConfigSchema.parse({project:{name:'review-fixture'},execution:{environments:{profiles:{test:{
+  kind:'native',platform:'darwin/arm64',source_paths:['src/example.js'],readiness:[{argv:['node','--version']}]
+ }}}},actions:{allowed_commands:[command,ENVIRONMENT_COMMAND,'node unrelated.js'],approval_rules:[
+  {id:'broad',action_type:'local_command',target:'node *'},
+  {id:'exact',action_type:'local_command',target:command},
+  {id:'other',action_type:'local_command',target:'node unrelated.js'},
+  {id:'writer',action_type:'file_write',target:'src/**'}
+ ]}});
+ const narrowed=scopedChangeReviewPolicy(original,[command]);
+ assert.deepEqual(narrowed.actions.allowed_commands,[command,ENVIRONMENT_COMMAND]);
+ assert.deepEqual(narrowed.actions.approval_rules.map(rule=>rule.id),['exact']);
+ assert.deepEqual(narrowed.actions.allowed_write_paths,[]);
+ assert.equal(narrowed.actions.isolate_command_writes,true);
+ const undeclared=projectConfigSchema.parse({...original,execution:{...original.execution,environments:undefined}});
+ assert.deepEqual(scopedChangeReviewPolicy(undeclared,[command]).actions.allowed_commands,[command]);
 });
 
 test('actual PostgreSQL scoped review preserves source history, single-verifier fencing and consumed grants',async()=>{
