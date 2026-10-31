@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
 import process from "node:process";
+import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import dotenv from "dotenv";
@@ -18,6 +19,7 @@ dotenv.config({ path: path.join(rootDir, ".agent-workflow", "runtime.env"), quie
 const runtimeDir = path.join(rootDir, ".agent-workflow", "runtime");
 const supervisorLockPath = path.join(runtimeDir, "supervisor.lock");
 const supervisorHeartbeatPath = path.join(runtimeDir, "supervisor-heartbeat.json");
+const supervisorEventPath = path.join(runtimeDir, "supervisor-events.jsonl");
 const workerHeartbeatPath = path.join(runtimeDir, "worker-heartbeat.json");
 const workerHeartbeatDir = path.join(runtimeDir, "workers");
 const learningScope = normalizeLearningScope(process.env.AGENTFLOW_LEARNING_SCOPE ?? (process.env.AGENTFLOW_LEARNING_ALL_PROJECTS === "0" ? "project" : "all-projects"));
@@ -29,8 +31,8 @@ const learningProject = process.env.AGENTFLOW_LEARNING_PROJECT
 const learningHeartbeatPath = path.join(learningProject, ".agent-workflow", "learning", "daemon-status.json");
 const dashboardPort = Number.parseInt(process.env.AGENTFLOW_DASHBOARD_PORT ?? "17888", 10);
 const workerLimit = Number.parseInt(process.env.AGENTFLOW_WORKER_LIMIT ?? "6", 10);
-const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "4", 10);
-const workerPerProjectConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_PER_PROJECT_CONCURRENCY ?? "2", 10);
+const workerConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_CONCURRENCY ?? "7", 10);
+const workerPerProjectConcurrency = Number.parseInt(process.env.AGENTFLOW_WORKER_PER_PROJECT_CONCURRENCY ?? "7", 10);
 const workerId = process.env.AGENTFLOW_WORKER_ID ?? "supervised-local";
 const workerIntervalMs = Number.parseInt(process.env.AGENTFLOW_WORKER_INTERVAL_MS ?? "2000", 10);
 const learningEnabled = process.env.AGENTFLOW_LEARNING_DAEMON !== "0";
@@ -38,12 +40,23 @@ const learningMode = normalizeLearningMode(process.env.AGENTFLOW_LEARNING_MODE ?
 const learningLimit = Number.parseInt(process.env.AGENTFLOW_LEARNING_LIMIT ?? "50", 10);
 const learningIntervalMs = Number.parseInt(process.env.AGENTFLOW_LEARNING_INTERVAL_MS ?? "60000", 10);
 const learningDaemonId = process.env.AGENTFLOW_LEARNING_DAEMON_ID ?? "supervised-learning";
+const queuePartnerEnabled = process.env.AGENTFLOW_QUEUE_PARTNER !== "0";
+const queuePartnerIntervalMs = Number.parseInt(process.env.AGENTFLOW_QUEUE_PARTNER_INTERVAL_MS ?? "5000", 10);
 const monitorIntervalMs = Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_INTERVAL_MS ?? "5000", 10);
+const restartWindowMs = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_WINDOW_MS ?? "60000", 10), 60_000);
+const restartLimit = boundedPositiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_LIMIT ?? "3", 10), 3, 20);
+const restartCooldownMs = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_COOLDOWN_MS ?? "120000", 10), 120_000);
+const restartStableMs = positiveNumber(Number.parseInt(process.env.AGENTFLOW_SUPERVISOR_RESTART_STABLE_MS ?? "120000", 10), 120_000);
 const configuredProject = process.env.AGENTFLOW_PROJECT ? path.resolve(process.cwd(), process.env.AGENTFLOW_PROJECT) : null;
 const configuredWorkerPoolProfile = process.env.AGENTFLOW_WORKER_POOL_PROFILE;
 const once = process.argv.includes("--once");
 
 const children = new Map();
+const childStartedAt = new Map();
+const restartBreakers = new Map();
+const recordedExits = new WeakSet();
+const pendingSupervisorEvents = [];
+let supervisorEventWriteError = null;
 let workerLanes = [];
 let stopping = false;
 let ticks = 0;
@@ -82,9 +95,9 @@ async function main() {
   await startManagedProcesses();
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
-  await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
+  await writeHeartbeat("running", supervisionMessage());
   console.log(`Agent Workflow supervisor: http://127.0.0.1:${dashboardPort}`);
-  console.log(`Press Ctrl-C to stop dashboard, worker${learningEnabled ? ", and learning daemon" : ""} processes started by this supervisor.`);
+  console.log(`Press Ctrl-C to stop ${supervisedProcessNames()} processes started by this supervisor.`);
 
   while (!stopping) {
     await sleep(monitorIntervalMs);
@@ -212,26 +225,30 @@ async function startManagedProcesses() {
       startLearningDaemon();
     }
   }
+  if (queuePartnerEnabled) {
+    startQueuePartner();
+  }
 }
 
 async function monitor() {
   ticks += 1;
+  resetStableRestartBreakers();
   for (const [name, child] of children) {
     if (child.exitCode !== null || child.signalCode !== null) {
       children.delete(name);
       if (!stopping) {
-        console.log(`${name} exited; restarting.`);
         if (name === "dashboard") {
           await startDashboardIfNeeded();
         }
         if (name.startsWith("worker:")) {
           const lane = workerLanes.find((item) => `worker:${item.id}` === name);
-          if (lane) {
-            startWorker(lane);
-          }
+          if (lane) startWorker(lane);
         }
         if (name === "learning-daemon" && learningEnabled) {
-          startLearningDaemon();
+          if (startLearningDaemon()) console.log("Learning daemon exited; restarting.");
+        }
+        if (name === "queue-partner" && queuePartnerEnabled) {
+          if (startQueuePartner()) console.log("Queue Partner exited; restarting.");
         }
       }
     }
@@ -241,16 +258,20 @@ async function monitor() {
   }
   for (const lane of workerLanes) {
     if (!children.has(`worker:${lane.id}`) && !(await isWorkerHeartbeatFresh(lane.heartbeatPath, lane.intervalMs))) {
-      console.log(`Worker lane ${lane.id} heartbeat is stale or missing; starting worker.`);
-      startWorker(lane);
+      if (startWorker(lane)) console.log(`Worker lane ${lane.id} heartbeat is stale or missing; starting worker.`);
     }
   }
   if (learningEnabled && !children.has("learning-daemon") && !(await isLearningHeartbeatFresh())) {
-    console.log("Learning daemon heartbeat is stale or missing; starting learning daemon.");
-    startLearningDaemon();
+    if (startLearningDaemon()) console.log("Learning daemon heartbeat is stale or missing; starting learning daemon.");
+  }
+  if (queuePartnerEnabled && !children.has("queue-partner")) {
+    if (startQueuePartner()) console.log("Queue Partner coordinator is not running; starting it.");
   }
   await pruneDeadWorkerHeartbeatRegistry();
-  await writeHeartbeat("running", learningEnabled ? "supervising dashboard, worker, and learning daemon" : "supervising dashboard and worker");
+  await flushSupervisorEvents();
+  const held = activeRestartBreakers();
+  const journalDegraded = Boolean(supervisorEventWriteError || pendingSupervisorEvents.length);
+  await writeHeartbeat(held.length || journalDegraded ? "degraded" : "running", supervisionMessage(held, journalDegraded));
 }
 
 async function pruneDeadWorkerHeartbeatRegistry() {
@@ -283,8 +304,9 @@ async function startDashboardIfNeeded() {
     console.log(`Dashboard port ${dashboardPort} is already in use; leaving existing dashboard process alone.`);
     return;
   }
-  console.log("Dashboard port is no longer open; starting dashboard.");
-  startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
+  const started = startChild("dashboard", ["run", "agentflow", "--", "dashboard", "--port", String(dashboardPort)]);
+  if (started) console.log("Dashboard port is no longer open; starting dashboard.");
+  return started;
 }
 
 function startWorker(lane) {
@@ -315,7 +337,7 @@ function startWorker(lane) {
   if (!lane.projectScoped) {
     args.push("--all-projects");
   }
-  startChild(`worker:${lane.id}`, args);
+  return startChild(`worker:${lane.id}`, args);
 }
 
 function startLearningDaemon() {
@@ -340,26 +362,137 @@ function startLearningDaemon() {
   } else {
     args.push("--project", learningProject);
   }
-  startChild("learning-daemon", args);
+  return startChild("learning-daemon", args);
+}
+
+function startQueuePartner() {
+  return startChild("queue-partner", [
+    "run",
+    "agentflow",
+    "--",
+    "queue-coordinator",
+    "--all-queued-projects",
+    "--manage-self-repair",
+    "--autonomous-recovery",
+    "--execute",
+    "--watch",
+    "--interval-ms",
+    String(positiveNumber(queuePartnerIntervalMs, 5000))
+  ]);
+}
+
+function supervisedProcessNames() {
+  return ["dashboard", "worker", learningEnabled ? "learning daemon" : null, queuePartnerEnabled ? "Queue Partner" : null]
+    .filter(Boolean)
+    .join(", ");
+}
+
+function supervisionMessage(held = activeRestartBreakers(), journalDegraded = Boolean(supervisorEventWriteError || pendingSupervisorEvents.length)) {
+  const conditions = [];
+  if (held.length) conditions.push(`restart held for ${held.map((item) => item.name).join(", ")}`);
+  if (journalDegraded) conditions.push("supervisor event journal awaiting retry");
+  return `supervising ${supervisedProcessNames()}${conditions.length ? `; ${conditions.join("; ")}` : ""}`;
 }
 
 function startChild(name, npmArgs) {
+  if (!canStartChild(name)) return false;
   const child = spawn("npm", npmArgs, {
     cwd: rootDir,
     env: { ...process.env, AGENTFLOW_SUPERVISOR: "1" },
     stdio: ["ignore", "inherit", "inherit"]
   });
   children.set(name, child);
-  child.once("exit", () => {
+  childStartedAt.set(name, Date.now());
+  child.once("exit", (exitCode, signal) => {
+    recordChildExit(name, child, exitCode, signal);
     if (children.get(name) === child) {
       children.delete(name);
+      childStartedAt.delete(name);
     }
   });
-  child.once("error", () => {
+  child.once("error", (error) => {
+    recordChildExit(name, child, null, error?.code ?? "spawn-error");
     if (children.get(name) === child) {
       children.delete(name);
+      childStartedAt.delete(name);
     }
   });
+  return true;
+}
+
+function recordChildExit(name, child, exitCode, signal) {
+  if (stopping || recordedExits.has(child)) return;
+  recordedExits.add(child);
+  const now = Date.now();
+  const startedAt = childStartedAt.get(name) ?? now;
+  const previous = restartBreakers.get(name);
+  const priorExits = now - startedAt >= restartStableMs ? [] : previous?.exits ?? [];
+  const exits = [...priorExits.filter((at) => now - at <= restartWindowMs), now];
+  const openUntil = exits.length >= restartLimit ? now + restartCooldownMs : 0;
+  restartBreakers.set(name, { exits, openUntil, lastExitAt: now, exitCode, signal });
+  if (openUntil) {
+    console.error(`${name} exited ${exits.length} times inside ${restartWindowMs}ms; holding restarts until ${new Date(openUntil).toISOString()}.`);
+    queueSupervisorEvent("restart_breaker_opened", name, {
+      attemptsInWindow: exits.length,
+      retryAfter: new Date(openUntil).toISOString(),
+      exitCode,
+      signal
+    });
+  }
+}
+
+function canStartChild(name) {
+  const breaker = restartBreakers.get(name);
+  if (!breaker?.openUntil) return true;
+  const now = Date.now();
+  if (now < breaker.openUntil) return false;
+  restartBreakers.delete(name);
+  console.log(`${name} restart cooldown elapsed; allowing one bounded recovery attempt.`);
+  queueSupervisorEvent("restart_recovery_attempted", name, { attemptsInWindow: breaker.exits.length });
+  return true;
+}
+
+function resetStableRestartBreakers() {
+  const now = Date.now();
+  for (const [name, startedAt] of childStartedAt) {
+    if (children.has(name) && now - startedAt >= restartStableMs && restartBreakers.has(name)) {
+      restartBreakers.delete(name);
+      queueSupervisorEvent("restart_breaker_recovered", name, { stableForMs: now - startedAt });
+    }
+  }
+}
+
+function activeRestartBreakers() {
+  const now = Date.now();
+  return [...restartBreakers.entries()]
+    .filter(([, breaker]) => breaker.openUntil > now)
+    .map(([name, breaker]) => ({ name, ...breaker }))
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function queueSupervisorEvent(action, target, metadata) {
+  pendingSupervisorEvents.push({
+    id: randomUUID(),
+    action,
+    target,
+    metadata,
+    createdAt: new Date().toISOString()
+  });
+  if (pendingSupervisorEvents.length > 100) pendingSupervisorEvents.splice(0, pendingSupervisorEvents.length - 100);
+}
+
+async function flushSupervisorEvents() {
+  while (pendingSupervisorEvents.length) {
+    try {
+      await fs.appendFile(supervisorEventPath, `${JSON.stringify(pendingSupervisorEvents[0])}\n`, "utf8");
+      pendingSupervisorEvents.shift();
+      supervisorEventWriteError = null;
+    } catch (error) {
+      supervisorEventWriteError = error instanceof Error ? error.message : String(error);
+      return false;
+    }
+  }
+  return true;
 }
 
 async function isWorkerHeartbeatFresh(filePath = workerHeartbeatPath, fallbackIntervalMs = workerIntervalMs) {
@@ -413,6 +546,7 @@ async function writeHeartbeat(status, message) {
   const dashboardManaged = children.has("dashboard");
   const workerManaged = [...children.keys()].some((name) => name.startsWith("worker:"));
   const learningManaged = children.has("learning-daemon");
+  const queuePartnerManaged = children.has("queue-partner");
   await fs.writeFile(supervisorHeartbeatPath, `${JSON.stringify({
     ...runtimeVersionMetadata,
     pid: process.pid,
@@ -432,6 +566,29 @@ async function writeHeartbeat(status, message) {
     learningIntervalMs: positiveNumber(learningIntervalMs, 60000),
     learningLimit: positiveNumber(learningLimit, 50),
     learningHeartbeatPath,
+    queuePartnerEnabled,
+    queuePartnerManaged,
+    queuePartnerIntervalMs: positiveNumber(queuePartnerIntervalMs, 5000),
+    restartPolicy: {
+      limit: restartLimit,
+      windowMs: restartWindowMs,
+      cooldownMs: restartCooldownMs,
+      stableMs: restartStableMs
+    },
+    restartBreakers: activeRestartBreakers().map((breaker) => ({
+      name: breaker.name,
+      attemptsInWindow: breaker.exits.length,
+      lastExitAt: new Date(breaker.lastExitAt).toISOString(),
+      retryAfter: new Date(breaker.openUntil).toISOString(),
+      exitCode: breaker.exitCode,
+      signal: breaker.signal
+    })),
+    supervisorEventJournal: {
+      path: supervisorEventPath,
+      pending: pendingSupervisorEvents.length,
+      status: supervisorEventWriteError ? "degraded" : "ready",
+      error: supervisorEventWriteError
+    },
     daemonLanes: supervisedDaemonLaneStatus(learningEnabled),
     workerLimit,
     workerConcurrency,

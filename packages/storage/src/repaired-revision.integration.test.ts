@@ -1,0 +1,127 @@
+import assert from "node:assert/strict";
+import {randomUUID} from "node:crypto";
+import test from "node:test";
+import {withClient} from "./client.js";
+import {acceptanceDigest,acceptancePreflight} from "./acceptance.js";
+import {queueCoordinatorSchemaSql,type CoordinatorClaim} from "./queue-coordinator.js";
+import {repairedRevisionSchemaSql,repairRevisionManifestHash,captureRepairRevisionBaselineOnClient,
+ recordRepairRevisionCandidateOnClient,attestRepairedRevisionOnClient,verifyRepairedRevisionAttestationOnClient,type RepairRevisionHooks} from "./repaired-revision.js";
+
+test("repaired revision requires governed preimages and independent equivalent fresh verification",async()=>{
+ await withClient(async c=>{await c.query("begin");try{
+  const schema=`revision_test_${randomUUID().replaceAll("-","")}`;
+  await c.query(`create schema ${schema};set local search_path to ${schema},public;
+   create table projects(id uuid primary key,root_uri text);
+   create table workflow_runs(id uuid primary key,project_id uuid,task text,status text,evaluation_metadata jsonb,policy_snapshot jsonb,started_at timestamptz,run_set_id uuid default gen_random_uuid(),provider_override text default 'mock',model_tier_override text default 'standard');
+   create table workflow_tasks(id uuid primary key,run_id uuid,status text,stage_id text);
+   create table action_approvals(id uuid primary key,run_id uuid,status text);
+   create table action_receipts(id uuid primary key,run_id uuid,action_type text,target text,metadata jsonb,created_at timestamptz default clock_timestamp());
+   create table artifacts(id uuid primary key,run_id uuid,kind text,content jsonb,created_at timestamptz default clock_timestamp(),task_id uuid,uri text);
+   create table work_intents(project_id uuid,owner text,fencing_token bigint,file_scopes jsonb,expires_at timestamptz);`);
+  await c.query(queueCoordinatorSchemaSql);await c.query(repairedRevisionSchemaSql);
+  const project=randomUUID(),source=randomUUID(),repair=randomUUID(),verify=randomUUID(),family=`${project}:${randomUUID()}`;
+  const paths=["src/feature.ts"],pre=[{path:paths[0],mode:420,hash:"preimage"}],post=[{path:paths[0],mode:420,hash:"repaired"}];
+  let manifest=pre,chainValid=true,accepted=true;
+  const hooks:RepairRevisionHooks={manifest:async()=>manifest,chain:async()=>chainValid,audit:async()=>{},preflight:async()=>({accepted})};
+  await c.query("insert into projects values($1,'/synthetic/canonical')",[project]);
+  const contract={version:1,contractId:`original:${source}`,originRunId:source,projectId:project,taskHash:acceptanceDigest("Original feature"),subjectHash:repairRevisionManifestHash(pre),sourcePaths:paths,
+   deliverables:[{id:"feature",description:"Original complete feature",requiredGates:["implementation","verification","packaging","supervision"],status:"pending",receipts:{},gaps:[]}]};
+  await c.query("insert into workflow_runs(id,project_id,task,status,evaluation_metadata,policy_snapshot,started_at) values($1,$2,'Original feature','blocked',$3,'{}',clock_timestamp())",[source,project,JSON.stringify({acceptanceContract:contract})]);
+  async function claim(role:"repair"|"verifier",child:string):Promise<CoordinatorClaim>{
+   const id=randomUUID(),owner=`fixture:${role}`;
+   await c.query("insert into work_intents values($1,$2,9,$3,now()+interval '10 minutes')",[project,owner,JSON.stringify(paths)]);
+   const q=await c.query("insert into queue_coordinator_assignments(id,family_id,project_id,source_run_id,role,lane,owner,fingerprint,intent_fence,file_scopes,state,child_run_id) values($1,$2,$3,$4,$5,1,$6,$7,'9',$8,'running',$9) returning fence::text",[id,family,project,source,role,owner,role,JSON.stringify(paths),child]);
+   return {id,fence:q.rows[0].fence,familyId:family,sourceRunId:source,projectId:project,projectRootUri:"/synthetic/canonical",role,lane:1,owner,fingerprint:role,intentFence:"9",fileScopes:paths};
+  }
+  // Child rows exist before assignment FK; provenance is bound after claim ID exists.
+  await c.query("insert into workflow_runs(id,project_id,task,status,evaluation_metadata,policy_snapshot,started_at) values($1,$2,'Repair','completed','{}','{}',clock_timestamp())",[repair,project]);
+  const repairClaim=await claim("repair",repair);
+  const childMetadata=(q:CoordinatorClaim)=>({sourceRunId:source,queueCoordinatorClaimId:q.id,queueCoordinatorFence:q.fence,originalAcceptanceDigest:acceptanceDigest(contract)});
+  await c.query("update workflow_runs set evaluation_metadata=$2 where id=$1",[repair,JSON.stringify(childMetadata(repairClaim))]);
+  const frozen=JSON.stringify((await c.query("select * from workflow_runs where id=$1",[source])).rows);
+  manifest=post;
+  await assert.rejects(captureRepairRevisionBaselineOnClient(c,repairClaim,hooks),/preimage/);
+  manifest=pre;await captureRepairRevisionBaselineOnClient(c,repairClaim,hooks);manifest=post;
+  await assert.rejects(recordRepairRevisionCandidateOnClient(c,repairClaim,hooks),/file-write/);
+  await c.query("insert into artifacts(id,run_id,kind,content) values($1,$2,'file_write',$3)",[randomUUID(),repair,JSON.stringify({relativePath:paths[0],previousHash:"wrong",nextHash:"repaired"})]);
+  await assert.rejects(recordRepairRevisionCandidateOnClient(c,repairClaim,hooks),/preimage/);
+  await c.query("update artifacts set content=$2 where run_id=$1",[repair,JSON.stringify({relativePath:paths[0],previousHash:"preimage",nextHash:"repaired"})]);
+  await c.query("insert into action_receipts(id,run_id,action_type,target,metadata) values($1,$2,'file_write',$3,$4)",[randomUUID(),repair,paths[0],JSON.stringify({relativePath:paths[0],previousHash:"preimage",nextHash:"repaired"})]);
+  await c.query("insert into action_approvals values($1,$2,'pending')",[randomUUID(),repair]);
+  await assert.rejects(recordRepairRevisionCandidateOnClient(c,repairClaim,hooks),/approvals/);
+  await c.query("update action_approvals set status='approved'");
+  chainValid=false;await assert.rejects(recordRepairRevisionCandidateOnClient(c,repairClaim,hooks),/chain/);chainValid=true;
+  await c.query("savepoint provider_repair");
+  await c.query("update workflow_runs set provider_override='other-provider' where id=$1",[repair]);
+  await assert.rejects(recordRepairRevisionCandidateOnClient(c,repairClaim,hooks),/provider|routing|provenance/i);
+  await c.query("rollback to savepoint provider_repair");
+  const candidate=await recordRepairRevisionCandidateOnClient(c,repairClaim,hooks);
+  await assert.rejects(attestRepairedRevisionOnClient(c,repairClaim,candidate.id,repair,hooks),/claim/);
+  await c.query("update queue_coordinator_assignments set state='held' where id=$1",[repairClaim.id]);
+  await c.query("insert into workflow_runs(id,project_id,task,status,evaluation_metadata,policy_snapshot,started_at) values($1,$2,'Independent verification','completed','{}',$3,clock_timestamp()+interval '1 second')",[verify,project,JSON.stringify({actions:{allowed_write_paths:[]}})]);
+  const verifierClaim=await claim("verifier",verify);
+  const verifierContract={...contract,contractId:`verification:${verify}`,originRunId:verify,taskHash:acceptanceDigest("Independent verification"),subjectHash:candidate.repairedHash};
+  const metadata={...childMetadata(verifierClaim),repairedRevisionCandidateId:candidate.id,repairedRevisionSourceRunId:source,acceptanceContract:verifierContract};
+  await c.query("update workflow_runs set evaluation_metadata=$2 where id=$1",[verify,JSON.stringify(metadata)]);
+  await c.query("insert into artifacts(id,run_id,kind,content) values($1,$2,'stage_output','{}')",[randomUUID(),verify]);
+  async function denied(sql:string,params:unknown[],pattern:RegExp){await c.query("savepoint negative");try{await c.query(sql,params);await assert.rejects(attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,hooks),pattern);}finally{await c.query("rollback to savepoint negative");}}
+  await denied("update workflow_runs set project_id=$2 where id=$1",[verify,randomUUID()],/provenance/);
+  await denied("update workflow_runs set provider_override='other-provider' where id=$1",[verify],/provider|routing|provenance/i);
+  await denied("update workflow_runs set model_tier_override='reasoning' where id=$1",[verify],/provider|routing|provenance/i);
+  await denied("update workflow_runs set evaluation_metadata=jsonb_set(evaluation_metadata,'{originalAcceptanceDigest}','\"other-contract\"') where id=$1",[verify],/acceptance|contract|provenance|routing/i);
+  await denied("update workflow_runs set evaluation_metadata=jsonb_set(evaluation_metadata,'{acceptanceContract,deliverables,0,description}','\"Weakened task\"') where id=$1",[verify],/equivalent/);
+  await denied("update workflow_runs set started_at='2000-01-01' where id=$1",[verify],/Fresh/);
+  await denied("update workflow_runs set policy_snapshot=$2 where id=$1",[verify,JSON.stringify({actions:{allowed_write_paths:paths}})],/read-only/);
+  await denied("insert into action_approvals values($1,$2,'pending')",[randomUUID(),verify],/approvals/);
+  await denied("insert into action_approvals values($1,$2,'pending')",[randomUUID(),source],/approval/i);
+  const sibling=randomUUID();
+  await c.query("insert into workflow_runs(id,project_id,task,status,evaluation_metadata,policy_snapshot,started_at) values($1,$2,'Historical sibling','blocked',$3,'{}',clock_timestamp())",[sibling,randomUUID(),JSON.stringify({sourceRunId:source})]);
+  await denied("insert into action_approvals values($1,$2,'pending')",[randomUUID(),sibling],/approval/i);
+  await denied("update workflow_runs set status='running' where id=$1",[sibling],/activity/i);
+  accepted=false;await assert.rejects(attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,hooks),/acceptance/);accepted=true;
+  manifest=pre;await assert.rejects(attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,hooks),/source/);manifest=post;
+  // Actual structured acceptance resolver, not an always-true preflight hook.
+  const taskId=randomUUID(),uri=`db://workflow_runs/${verify}/verification/executed`;
+  await c.query("insert into workflow_tasks values($1,$2,'completed','verify')",[taskId,verify]);
+  const command={commandLine:"npm run test",exitCode:0,timedOut:false,subjectHash:candidate.repairedHash,
+   sourcePaths:paths,sourceBefore:candidate.repairedHash,sourceAfter:candidate.repairedHash};
+  const inserted=await c.query("insert into artifacts(id,run_id,task_id,kind,uri,content) values($1,$2,$3,'command_output',$4,$5) returning created_at",[randomUUID(),verify,taskId,uri,JSON.stringify(command)]);
+  const reference={artifactUri:uri,kind:"command_output",runId:verify,taskId,stageId:"verify",contentHash:acceptanceDigest(command),observedAt:inserted.rows[0].created_at.toISOString(),subjectHash:candidate.repairedHash};
+  const receipts=Object.fromEntries(["implementation","verification","packaging","supervision"].map(g=>[g,[reference]]));
+  const proposal={acceptanceContract:{...verifierContract,deliverables:verifierContract.deliverables.map(d=>({...d,status:"verified",receipts}))}};
+  await c.query("update artifacts set content=$2 where run_id=$1 and kind='stage_output'",[verify,JSON.stringify(proposal)]);
+  const realHooks={...hooks,preflight:acceptancePreflight};
+  assert.equal((await acceptancePreflight(c,verify,proposal)).accepted,true,"All four required gates resolve actual governed command artifacts");
+  await c.query("savepoint failed_command");
+  await c.query("update artifacts set content=jsonb_set(content,'{exitCode}','1') where uri=$1",[uri]);
+  await assert.rejects(attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,realHooks),/acceptance/);
+  await c.query("rollback to savepoint failed_command");
+  await c.query("savepoint stale_command");
+  await c.query("update artifacts set content=jsonb_set(content,'{sourceAfter}','\"stale\"') where uri=$1",[uri]);
+  await assert.rejects(attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,realHooks),/acceptance/);
+  await c.query("rollback to savepoint stale_command");
+  const attestation=await attestRepairedRevisionOnClient(c,verifierClaim,candidate.id,verify,realHooks);
+  assert.equal(attestation.originalWorkflowUnchanged,true);
+  const current=()=>verifyRepairedRevisionAttestationOnClient(c,source,candidate.repairedHash,realHooks);
+  assert.equal(await current(),true);
+  await c.query("savepoint later_approval");
+  await c.query("insert into action_approvals values($1,$2,'pending')",[randomUUID(),source]);
+  await assert.rejects(current(),/approval/i);
+  await c.query("rollback to savepoint later_approval");
+  await c.query("savepoint later_write");
+  await c.query("insert into artifacts(id,run_id,kind,content) values($1,$2,'file_write','{}')",[randomUUID(),verify]);
+  assert.equal(await current(),false);
+  await c.query("rollback to savepoint later_write");
+  await c.query("savepoint later_command");
+  await c.query("update artifacts set content=jsonb_set(content,'{exitCode}','1') where uri=$1",[uri]);
+  assert.equal(await current(),false);
+  await c.query("rollback to savepoint later_command");
+  manifest=pre;assert.equal(await current(),false);manifest=post;
+  assert.equal(await verifyRepairedRevisionAttestationOnClient(c,source,"unrelated-hash",realHooks),false);
+  assert.equal(JSON.stringify((await c.query("select * from workflow_runs where id=$1",[source])).rows),frozen);
+  assert.equal((await c.query("select count(*)::int n from repaired_revision_records")).rows[0].n,3);
+  await c.query("savepoint immutable");
+  await assert.rejects(c.query("update repaired_revision_records set digest='forged' where id=$1",[candidate.id]),/immutable/);
+  await c.query("rollback to savepoint immutable");
+ }finally{await c.query("rollback");}});
+});

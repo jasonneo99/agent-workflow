@@ -1746,7 +1746,7 @@ Configure it with:
 
 ```bash
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,gemini,openai,anthropic,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=byo,bedrock,deepseek,gemini,openai,anthropic,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 ```

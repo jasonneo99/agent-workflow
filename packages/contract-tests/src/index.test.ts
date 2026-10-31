@@ -15,6 +15,7 @@ test("contract tests pass built-in definitions with mock provider", async () => 
   });
   assert.equal(report.passed, true);
   assert.ok(report.results.some((result) => result.id === "provider.mock.execute" && result.status === "pass"));
+  assert.ok(report.results.some((result) => result.id === 'agents.runtime-receipt-closure' && result.status === 'pass'));
 });
 
 test("contract tests skip non-mock provider execution unless live is enabled", async () => {

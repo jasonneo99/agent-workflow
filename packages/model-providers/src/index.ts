@@ -1,5 +1,6 @@
 import { BedrockProvider } from "./bedrock.js";
 import { CodexCliProvider } from "./codex-cli.js";
+import { DeepSeekProvider } from "./deepseek.js";
 import { GeminiProvider } from "./gemini.js";
 import { KiroProvider } from "./kiro.js";
 import { MockProvider } from "./mock.js";
@@ -30,6 +31,10 @@ export function providerFromEnv(providerOverride?: string): ModelProvider {
 
   if (provider === "codex-cli") {
     return new CodexCliProvider();
+  }
+
+  if (provider === "deepseek") {
+    return new DeepSeekProvider();
   }
 
   if (provider === "anthropic") {
@@ -93,6 +98,9 @@ function resolveAutoProviderFallback(): string {
   }
   if (process.env.ANTHROPIC_API_KEY) {
     return "anthropic";
+  }
+  if (process.env.DEEPSEEK_API_KEY) {
+    return "deepseek";
   }
   if (process.env.MUSE_API_KEY) {
     return "muse";

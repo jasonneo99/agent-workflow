@@ -82,7 +82,9 @@ test("training proposal actions launch linked evaluations and advance only from 
   const actions = source.slice(source.indexOf("function renderTrainingProposalActions"));
   assert.match(actions, /item\.status === "pending"[\s\S]+Approve evaluation/u);
   assert.match(actions, /item\.status === "approved"[\s\S]+Run evaluation/u);
-  assert.match(actions, /evaluation\.status === "completed"[\s\S]+Accept evaluation result/u);
+  assert.match(actions, /evaluation\.status === "completed" && evaluation\.evidenceComplete[\s\S]+Accept evaluation result/u);
+  assert.match(actions, /Evaluation needs evidence/u);
+  assert.match(actions, /item\.status === "needs-evidence"[\s\S]+Retry measured evaluation/u);
   assert.match(actions, /Evaluation in progress/u);
   assert.match(actions, /Retry evaluation/u);
   assert.match(actions, /A completed recovery does not replace a missing evaluation verdict/u);
@@ -100,11 +102,13 @@ test("evaluated status requires a completed linked run and derives its note from
   assert.match(source, /status === "evaluated"[\s\S]+linked approved evaluation run is required/u);
   assert.match(source, /details\.run\?\.status !== "completed"/u);
   assert.match(source, /Accepted completed evaluation run/u);
+  assert.match(source, /isCompleteTrainingHoldoutReport\(report\)/u);
+  assert.match(source, /status: "needs-evidence"/u);
 });
 
 test("promotion requires a PASS verdict and non-pass evidence stays reviewable", () => {
-  assert.match(source, /trainingEvaluationVerdict\(summary\) !== "PASS"/u);
-  assert.match(source, /Only a PASS evaluation is eligible for promotion/u);
+  assert.match(source, /report\.verdict !== "PASS"/u);
+  assert.match(source, /Only a complete measured PASS evaluation is eligible for promotion/u);
   assert.match(source, /View evaluation run/u);
   assert.match(source, /Measured evidence JSON/u);
   assert.match(source, /\/api\/training-holdout-evidence/u);

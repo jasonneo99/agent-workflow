@@ -1,4 +1,6 @@
 import type { CliContext } from "../lib/context.js";
+import { withClient } from "../../../../packages/storage/src/client.js";
+import { finishDashboardError, workflowDisplayName } from "../dashboard-http.js";
 import type { Command } from "commander";
 import type { AgentImprovementEvalPlan, AgentImprovementPromotionQueue, AgentImprovementReport, ApprovalAutopilotRisk, ApprovalBacklogCategory, ApprovalBacklogItem, ApprovalBacklogReport, ArtifactLifecycleAction, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardApprovalRuleSummary, DashboardCandidateComparisonReport, DashboardEvaluationSuite, DashboardFeedbackBucket, DashboardFeedbackInboxItem, DashboardFeedbackInboxReport, DashboardFeedbackTarget, DashboardFollowUpResult, DashboardInfo, DashboardLaunchAgentStatus, DashboardLearningDaemonStatus, DashboardLocalHoldoutRoutingStatus, DashboardLocalLlmRoutingDecisionTimeline, DashboardLocalLlmRoutingNoteApplicationStatus, DashboardLocalProviderEvidence, DashboardProjectAliasMergePlan, DashboardProjectIdentityGroup, DashboardProjectPathResolution, DashboardProjectSummary, DashboardRoleAuditExportSummary, DashboardRoleGovernanceReport, DashboardRouteReceiptTrendGroup, DashboardRouteReceiptTrendReport, DashboardRunStatus, DashboardSupervisorStatus, DashboardWorkerLane, DashboardWorkerStatus, FeedbackRating, LearningActionReceiptHealth, LearningActionReceiptLog, LearningDaemonMode, LearningFailureTriageReport, LearningReport, LearningRouteFeedbackGroup, LearningRouteFeedbackSummary, LearningSettings, LocalLlmBenchmarkReceiptReport, LocalLlmCacheTrendReport, LocalLlmCostLedgerReport, LocalLlmDownloadRecommendationReport, LocalLlmInstallationPlanReport, LocalLlmInventoryReport, LocalLlmPrunePlanReport, LocalLlmRoutingDecisionSnapshotReport, LocalLlmRoutingRecommendationReport, LocalLlmSetupChecklistReport, LocalLlmSetupGuideReport, ObjectArtifactProofReport, OfflineFallbackReport, ProjectDiscoveryReport, RunSummary, RuntimeMcpCleanupResult, RuntimeMonitorReport, RuntimeStaleRunReconciliationResult, ServerApprovalActionPlanReport, ServerApprovalActionTestAdapterReport, ServerAuthHardeningReport, ServerMutationControlReport, ServerProjectRegistryReport, ServerReadinessCheckStatus, ServerReadinessReport, ServerRequestAuditEvent, ServerRequestAuditReport, StorageMergeEvidenceListing, AgentImprovementPendingProject, AgentImprovementPendingSummary} from "../lib/cli-types.js";
 import {countAgentImprovementPendingPromotions, renderAgentImprovementPendingBannerHtml} from "../lib/builders-learning.js";
@@ -23,6 +25,15 @@ import { type DaemonTrustSettings, type FleetProjectScope, classifyFleetProject,
 import { buildDaemonControlStatus } from "../../../../packages/daemon-control/src/status.js";
 import { isDurableDashboardReportKey, readDashboardReportSnapshot, writeDashboardReportSnapshot } from "../../../../packages/dashboard-report-cache/src/index.js";
 import { queueSnapshotSignature, queueWatcherScript } from "../../../../packages/dashboard/src/queue-watcher.js";
+import {withQueueCardActivity,type QueueCardActivity} from '../lib/queue-card-activity.js';
+import {withQueueWaitReasons,type QueueWaitReason} from '../lib/queue-wait-reasons.js';
+import {QueueCardSnapshotCache,type QueueCardSnapshot} from '../lib/queue-card-snapshot.js';
+import {queueLatencyBudget} from '../lib/queue-latency-budget.js';
+import { signWorkerHeartbeat, verifyWorkerHeartbeat, workerRuntimeBuildDigest, type WorkerHeartbeatAttestation, type WorkerHeartbeatTrustDecision, type WorkerHeartbeatTrustStore } from "../lib/worker-heartbeat-attestation.js";
+import { applyWorkerHostRegistryPlan, buildWorkerHostRegistryPlan, type WorkerHostRegistryAction } from "../lib/worker-host-registry.js";
+import { ingestRemoteWorkerHeartbeat, loadRemoteWorkerHeartbeatHealth } from "../lib/worker-heartbeat-ingestion.js";
+import {queueCardActivityScript,renderQueueCardActivityLine} from '../dashboard/queue-card-activity.js';
+import {queueCardRefreshScript} from '../dashboard/queue-card-refresh.js';
 import { type DefinitionMigrationPlan, buildDefinitionMigrationPlan, loadDefinitionMigrationCatalog } from "../../../../packages/definition-migrations/src/index.js";
 import { constructDynamicWorkflow } from "../../../../packages/dynamic-workflow/src/index.js";
 import { type FleetUsageReceipt, readFleetUsageReceipts, summarizeFleetUsage } from "../../../../packages/fleet-model-gateway/src/index.js";
@@ -31,7 +42,7 @@ import { type GovernanceReport, buildGovernanceReport } from "../../../../packag
 import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
 import { type LearningLoopDashboard, buildLearningLoopDashboard, readLearningLoopState, recordReviewerCalibration, reviewLearningEvidence } from "../../../../packages/learning-loop/src/index.js";
 import { buildLearningProposalSet } from "../../../../packages/learning-proposals/src/index.js";
-import { executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
+import { executeAllowedCommand, probeCommandExecutionCapabilities, type ExecutionCapabilityProbe } from "../../../../packages/local-tools/src/command-executor.js";
 import { type CatalogCandidate, type CatalogProviderKind, type ModelSelectionPolicy, explainModelCatalogSelection, normalizeModelSelectionPolicy } from "../../../../packages/model-providers/src/catalog.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { configuredOpenAIModelForTier, loadOpenAIModelCatalog, resolveOpenAIModelForTier, selectOpenAIModelFromCatalog } from "../../../../packages/model-providers/src/openai.js";
@@ -40,15 +51,20 @@ import { type ObservabilityReport, buildObservabilityReport } from "../../../../
 import { canonicalJsonHash, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { type GovernedReusePlan } from "../../../../packages/reuse-engine/src/index.js";
 import { type ServerRoadmapSnapshot, parseRoadmapSnapshot, serverRoadmapSnapshot } from "../../../../packages/roadmap-snapshot/src/index.js";
+import { resolveContainedProjectPath, type RoadmapSuggestionReport } from "../../../../packages/roadmap-planner/src/index.js";
 import { type CostQualityReport, type PreferenceScorecard, type TuningApprovalHistory, type TuningHistoryStatus, type TuningProposalSet, type WorkflowShapeOptimizationReport, buildCandidateComparisonPlan, buildTuningApplicationPlan, buildTuningProposals, formatCandidateComparisonPlan, formatTuningApplicationPlan } from "../../../../packages/run-reporter/src/index.js";
 import { defaultServiceEndpoints } from "../../../../packages/storage/src/config.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { type StorageMigrationPlan } from "../../../../packages/storage/src/migration-plan.js";
-import { cancelWorkflowRun, decideActionApproval, dismissAllFailedWorkflowRuns, dismissFailedWorkflowRun, getActionApproval, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listActivityEvents, listArtifactLifecycle, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listStaleTerminalWorkflowRuns, listWorkflowHandoffs, listWorkflowQueue, listWorkflowRuns, listWorkflowRunsForProject, listWorkflowStageHealthForRuns, listWorkflowStageRunsForRuns, reconcileStaleTerminalWorkflowRuns, recordRunAction, replayWorkflowRun, requestActionApproval, requeueExpiredWorkflowTaskLeases, requeueRunningWorkflowTasks, resumeWorkflowRunFromCheckpoint, retryFailedWorkflowRun, seedRegistry, setQueuedWorkflowRunAutonomy } from "../../../../packages/storage/src/postgres.js";
-import { buildRunPresentation } from "../../../../packages/storage/src/run-presentation.js";
+import { acquireWorkIntent, cancelWorkflowRun, decideActionApproval, dismissAllFailedWorkflowRuns, dismissFailedWorkflowRun, getActionApproval, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listActivityEvents, listArtifactLifecycle, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listStaleTerminalWorkflowRuns, listWorkflowHandoffs, listWorkflowQueue, listWorkflowRuns, listWorkflowRunsForProject, listWorkflowStageHealthForRuns, listWorkflowStageRunsForRuns, reconcileStaleTerminalWorkflowRuns, recordRunAction, releaseWorkIntent, replayWorkflowRun, requestActionApproval, requeueExpiredWorkflowTaskLeases, requeueRunningWorkflowTasks, resumeWorkflowRunFromCheckpoint, retryFailedWorkflowRun, seedRegistry, setQueuedWorkflowRunAutonomy } from "../../../../packages/storage/src/postgres.js";
+import { authorizeCoordinatorHistoryAction, prepareCoordinatorHistoryAction } from "../../../../packages/storage/src/coordinator-history-archive.js";
+import { legacyGuideEvidenceInventory, legacyGuideEvidenceInventoryPage, reduceLegacyGuideEvidenceSnapshot } from "../../../../packages/storage/src/queue-partner-guide-legacy-inventory.js";
+import { queuePartnerGuideRegistryHoldMetrics } from "../../../../packages/storage/src/queue-partner-guide-holds.js";
+import { buildQueueCardTitle, buildRunPresentation } from "../../../../packages/storage/src/run-presentation.js";
 import { type StorageVerificationReport, buildStorageVerificationReport } from "../../../../packages/storage/src/verification.js";
 import { type WorkflowThroughputBucket, listWorkflowRunThroughput } from "../../../../packages/storage/src/workflow-throughput.js";
 import { type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, type TrainingProposalInbox, decideTrainingProposal, linkTrainingProposalEvaluation, readLatestTrainingDiscoveryReport, readTrainingProposalInbox } from "../../../../packages/training-discovery/src/index.js";
+import { buildTrainingHoldoutDesign, isCompleteTrainingHoldoutReport, persistTrainingHoldoutDesign, readTrainingHoldoutReport } from "../training-holdout-runner.js";
 import { runWorkerOnce, runWorkerWatch } from "../../../../packages/workflow-engine/src/executor.js";
 import { type WorkflowGraphReport, buildWorkflowGraphReport } from "../../../../packages/workflow-inspector/src/index.js";
 import { authenticateSharedBrainRequest, createAssistantIntent, optimizerDashboardReport, previewAssistantPlan, readOptimizerEvents, readOptimizerState, sharedBrainSummary } from "../../../../packages/workflow-optimizer/src/index.js";
@@ -63,9 +79,33 @@ import { type DashboardIconName, dashboardIcon } from "../dashboard/icons.js";
 import { renderLearningLoopHtml } from "../dashboard/learning-loop.js";
 import { renderPreferenceScorecardHtml } from "../dashboard/outcome-accuracy.js";
 import { isTrustedLocalDashboardRequest, renderDashboardQuestionPanel } from "../dashboard/question-chat.js";
+import { renderQueuePartnerOverlay } from "../dashboard/queue-partner-overlay.js";
+import {renderQueuePartnerHistory} from '../dashboard/queue-partner-history.js';
+import {queueHistoryScript,renderQueueHistoryPanel} from '../dashboard/queue-history.js';
+import {queueLifecyclePresentation} from '../dashboard/queue-lifecycle.js';
+import {queueHistoryRangeMinutes,recordAndLoadQueueHistory} from '../lib/queue-history.js';
+import {discardGuideEvidenceReductionCheckpoint,guideEvidenceCheckpointStorageKey,loadOrCreateGuideEvidenceCheckpointKey,persistGuideEvidenceReductionCheckpoint,readGuideEvidenceReductionCheckpoint} from '../lib/guide-evidence-checkpoint-store.js';
+import {loadQueuePartnerHistoryForRuns,type QueuePartnerHistorySummary} from '../lib/queue-partner-memory.js';
+import { buildQueuePartnerActivity } from "../lib/queue-partner-activity.js";
+import {readPartnerQueueObservation} from '../lib/queue-partner-observation.js';
+import { buildPartnerWorkHistory } from '../lib/partner-work-history.js';
+import { parsePartnerMessage, processPartnerMessage, isPartnerStatusMessage } from "../lib/queue-partner-chat.js";
+import { buildPartnerConversationHistory } from "../lib/queue-partner-context.js";
+import { createPartnerChatAdapter, hasPartnerApprovalEffect, isTrustedPartnerCommandRequest } from "../lib/queue-partner-chat-storage.js";
+import { createQueuePartnerAdapter, createQueuePartnerRequestLedger, queuePartnerItems, queuePartnerOwner } from "../lib/queue-partner-queue.js";
+import { loadPartnerProject, partnerProjectAccess } from "../lib/queue-partner-projects.js";
+import type { PartnerMessage, PartnerItem } from "../lib/queue-partner-chat.js";
+import { buildQueueStatusReport, parseQueueStatusProject } from "../lib/queue-status.js";
+import { renderQueueStatusHtml } from "../dashboard/queue-status.js";
 import { type AggregateRunEta, type RunEta, aggregateRunEtas, estimateRunEta } from "../dashboard/run-eta.js";
 import { publicHttpError, serializeInlineScriptJson } from "../dashboard/security.js";
 import { renderStudioHtml } from "../dashboard/studio.js";
+import { renderProjectEvidenceHtml } from "../dashboard/project-evidence.js";
+import { renderContextInfluenceHtml } from "../dashboard/context-influence.js";
+import { readContextInfluence } from "../../../../packages/storage/src/context-influence.js";
+import { renderEvidenceSource } from "../dashboard/project-evidence-source.js";
+import { readProjectEvidenceGraph } from "../../../../packages/storage/src/project-evidence.js";
+import type { ProjectEvidenceGraph } from "../../../../packages/project-evidence/src/index.js";
 import { dashboardCss, roadmapDashboardCss } from "../dashboard/styles.js";
 import { resolveTrainingProjectChoices } from "../dashboard/training-projects.js";
 import { parseBoundedPositiveInteger, parseDashboardRunLimit, parseNonNegativeInteger, parseOptionalNumber, parsePositiveInteger } from "../numeric-options.js";
@@ -373,7 +413,7 @@ type DashboardHomeHealth = {
 };
 
 type DashboardModelCatalogProvider = {
-  providerId: "openai" | "anthropic" | "gemini" | "byo" | "openai-compatible" | "bedrock";
+  providerId: "openai" | "anthropic" | "deepseek" | "gemini" | "byo" | "openai-compatible" | "bedrock";
   label: string;
   configured: boolean;
   status: "ready" | "missing" | "not configured";
@@ -458,9 +498,34 @@ type DashboardProjectDetail = {
   }>;
   initialized: boolean;
   allowWrites: boolean;
+  roadmapSuggestions: RoadmapSuggestionReport | null;
+  roadmapSuggestionDecisions: RoadmapSuggestionDecisionLog;
+  learningDaemon: DashboardLearningDaemonStatus | null;
 };
 
-type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number];
+type RoadmapSuggestionDecision = {
+  suggestionId: string;
+  proposalId: string | null;
+  title: string;
+  decision: "approved" | "deferred" | "dismissed";
+  decidedAt: string;
+  note: string;
+};
+
+type RoadmapSuggestionDecisionLog = {
+  kind: "agentflow_roadmap_suggestion_decisions";
+  projectRootUri: string;
+  updatedAt: string | null;
+  decisions: RoadmapSuggestionDecision[];
+};
+
+type DashboardQueueItem = Awaited<ReturnType<typeof listWorkflowQueue>>[number]&{liveActivity?:QueueCardActivity;waitReason?:QueueWaitReason};
+type DashboardQueueSnapshot = {
+  queue: DashboardQueueItem[];
+  historicalRuns: DashboardRunStatus[];
+  partnerProjects: Array<{id:string;name:string;rootUri:string}>;
+  partnerHistory: Record<string,QueuePartnerHistorySummary>;
+};
 
 type DashboardRoleAuditViewResult =
   | {
@@ -809,6 +874,7 @@ type TrainingProposalEvaluationView = {
   summary: string | null;
   artifactUri: string | null;
   evidenceHref: string | null;
+  evidenceComplete: boolean;
   recoveryRunId: string | null;
   recoveryStatus: string | null;
 };
@@ -856,7 +922,14 @@ type WorkerHeartbeat = {
   pid: number;
   workerId: string;
   workerLabel?: string;
+  hostId?: string;
+  runtimeBuildDigest?: string;
+  attestation?: WorkerHeartbeatAttestation;
   projectRootUri: string | null;
+  projectId?: string | null;
+  projectIdentityId?: string | null;
+  projectIdentityGeneration?: number | null;
+  sourceRevision?: string | null;
   concurrency: number;
   perProjectConcurrency: number;
   startedAt: string;
@@ -869,12 +942,37 @@ type WorkerHeartbeat = {
   failed: number;
   providerIds: string[];
   unavailableProviderIds: string[];
+  executionCapabilities?: string[];
+  executionCapabilityProbes?: Array<ExecutionCapabilityProbe&{runtimeVersion:string}>;
+  executionCapabilityProbeIntervalMs?: number;
   status: "starting" | "running" | "stopping" | "stopped";
   command: string;
 };
 
+
 export function registerDaemonCommands(program: Command, ctx: CliContext): void {
   const RUN_APPROVAL_LEVELS = ["0", "1", "2", "3", "4", "5", "wide-open"] as const;
+  const acceptedRemoteHeartbeatSequence = new Map<string,string>();
+  const workerTrustStorePath = path.resolve(process.env.AGENTFLOW_WORKER_TRUST_STORE ?? path.join(ctx.rootDir,".agent-workflow","runtime","trusted-worker-hosts.json"));
+
+  async function loadWorkerTrustStore():Promise<WorkerHeartbeatTrustStore>{
+    try{
+      const parsed=JSON.parse(await fs.readFile(workerTrustStorePath,"utf8")) as WorkerHeartbeatTrustStore;
+      return parsed?.schemaVersion===1&&Array.isArray(parsed.hosts)?parsed:{schemaVersion:1,hosts:[]};
+    }catch{return {schemaVersion:1,hosts:[]};}
+  }
+
+  function evaluateWorkerHeartbeatTrust(heartbeat:Partial<WorkerHeartbeat>,trustStore:WorkerHeartbeatTrustStore):Omit<WorkerHeartbeatTrustDecision,"state">&{state:WorkerHeartbeatTrustDecision["state"]|"trusted-local"}{
+    const hostId=typeof heartbeat.hostId==="string"?heartbeat.hostId:null;
+    const localProcess=typeof heartbeat.pid==="number"&&isProcessAlive(heartbeat.pid)&&(hostId===null||hostId===os.hostname());
+    if(localProcess)return {trusted:true,state:"trusted-local",reason:"Heartbeat belongs to a live process on this host.",hostId:hostId??os.hostname(),runtimeBuildDigest:typeof heartbeat.runtimeBuildDigest==="string"?heartbeat.runtimeBuildDigest:null,sequence:heartbeat.attestation?.sequence??null};
+    const remote=verifyWorkerHeartbeat({heartbeat:heartbeat as Record<string,unknown>,trustStore,latestSequenceByHost:acceptedRemoteHeartbeatSequence});
+    if(remote.trusted&&remote.hostId&&remote.sequence){
+      const prior=acceptedRemoteHeartbeatSequence.get(remote.hostId);
+      if(prior===undefined||BigInt(remote.sequence)>BigInt(prior))acceptedRemoteHeartbeatSequence.set(remote.hostId,remote.sequence);
+    }
+    return remote;
+  }
 
   async function acquireDashboardRequestSlot(): Promise<() => void> {
     if (dashboardActiveRequests >= dashboardMaxConcurrentRequests) {
@@ -933,6 +1031,67 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       title: "Roadmap item recorded",
       output: `${itemTitle} was added to docs/roadmap.md with milestone ${milestone} and ${priority} priority.`
     };
+  }
+
+  async function readRoadmapSuggestionDecisions(projectDir: string): Promise<RoadmapSuggestionDecisionLog> {
+    const filePath = path.join(projectDir, ".agent-workflow", "learning", "roadmap-suggestion-decisions.json");
+    const result = await readDashboardJsonFile<RoadmapSuggestionDecisionLog>(filePath, (value) =>
+      value.kind === "agentflow_roadmap_suggestion_decisions" && Array.isArray(value.decisions)
+    );
+    return result.value ?? { kind: "agentflow_roadmap_suggestion_decisions", projectRootUri: projectDir, updatedAt: null, decisions: [] };
+  }
+
+  async function decideRoadmapSuggestion(form: URLSearchParams): Promise<DashboardFollowUpResult> {
+    const projectPath = await resolveDashboardProjectPath(form.get("project") ?? "");
+    const projectDir = projectPath.localRootUri;
+    const suggestionId = cleanRoadmapFormText(form.get("suggestionId") ?? "");
+    const decision = form.get("decision");
+    if (!suggestionId || !["approved", "deferred", "dismissed"].includes(decision ?? "")) {
+      return { ok: false, error: "A valid roadmap suggestion and decision are required." };
+    }
+    const suggestionResult = await readDashboardJsonFile<RoadmapSuggestionReport>(
+      path.join(projectDir, ".agent-workflow", "learning", "roadmap-suggestions.json"),
+      (value) => value.kind === "agentflow_roadmap_suggestions" && Array.isArray(value.suggestions)
+    );
+    const suggestion = suggestionResult.value?.suggestions.find((item) => item.id === suggestionId);
+    if (!suggestion) return { ok: false, error: "That suggestion is no longer present. Refresh the project page." };
+    const note = cleanRoadmapFormText(form.get("note") ?? "");
+    const log = await readRoadmapSuggestionDecisions(projectDir);
+    const entry: RoadmapSuggestionDecision = {
+      suggestionId,
+      proposalId: suggestion.proposalId ?? null,
+      title: suggestion.title,
+      decision: decision as RoadmapSuggestionDecision["decision"],
+      decidedAt: new Date().toISOString(),
+      note
+    };
+    log.projectRootUri = projectDir;
+    log.updatedAt = entry.decidedAt;
+    log.decisions = [...log.decisions.filter((item) => item.suggestionId !== suggestionId), entry];
+    const learningDir = path.join(projectDir, ".agent-workflow", "learning");
+    await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+    await fs.writeFile(path.join(learningDir, "roadmap-suggestion-decisions.json"), `${JSON.stringify(log, null, 2)}\n`, "utf8");
+
+    if (entry.decision === "approved" && suggestion.source === "learning-evidence") {
+      const config = await loadProjectConfig(projectDir);
+      const roadmapPath = await resolveContainedProjectPath({ projectRootUri: projectDir, relativePath: config.project.roadmap_path, label: "project.roadmap_path" });
+      const markdown = await fs.readFile(roadmapPath, "utf8").catch((error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return "# Roadmap\n";
+        throw error;
+      });
+      const normalizedTitle = suggestion.title.toLowerCase().replace(/[^a-z0-9]+/gu, " ").trim();
+      const alreadyPresent = markdown.split(/\r?\n/u).some((line) => line.toLowerCase().replace(/[^a-z0-9]+/gu, " ").includes(normalizedTitle));
+      if (!alreadyPresent) {
+        const evidence = (suggestion.evidence ?? []).slice(0, 3).join("; ");
+        const item = `\n- [ ] ${suggestion.title}\n  - Priority: ${suggestion.priority ?? "medium"}\n  - Source: ${suggestion.proposalId ?? suggestion.id}\n  - Rationale: ${suggestion.rationale ?? "Evidence-backed daemon proposal."}${evidence ? `\n  - Evidence: ${evidence}` : ""}\n`;
+        const heading = "## Agent Workflow Suggestions";
+        const nextMarkdown = markdown.includes(heading)
+          ? markdown.replace(heading, `${heading}${item}`)
+          : `${markdown.trimEnd()}\n\n${heading}\n${item}`;
+        await fs.writeFile(roadmapPath, nextMarkdown, "utf8");
+      }
+    }
+    return { ok: true, title: `Suggestion ${entry.decision}`, output: `${suggestion.title} was ${entry.decision}${entry.decision === "approved" ? " and added to the configured project roadmap" : ""}.` };
   }
 
   function approvalApprovedActionForms(approvalId: string): string {
@@ -2037,6 +2196,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   const dashboardReportCache = new Map<string, { expiresAt: number; value: unknown }>();
   const dashboardReportCacheTtlMs = 30_000;
+  const queueCardSnapshots = new QueueCardSnapshotCache<DashboardQueueSnapshot>(750,30_000);
 
   const dashboardReportLoads = new Map<string, Promise<unknown>>();
 
@@ -2175,6 +2335,23 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
     if (selected === "anthropic") {
       return describeAnthropicProvider(adapter, loadRoutingConfig(ctx));
+    }
+    if (selected === "deepseek") {
+      const currentModel = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+      const baseUrl = process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1";
+      const discovered = await discoverModelIds(() => loadOpenAICompatibleModelIds(baseUrl, process.env.DEEPSEEK_API_KEY));
+      const tierModels = loadGenericTierModelPreview({ catalog: discovered.models, provider: "compatible", baseModel: currentModel, tierEnvPrefix: "DEEPSEEK_MODEL" });
+      return {
+        selected, adapter, model: currentModel, modelEnv: "DEEPSEEK_MODEL",
+        baseUrl: safeDisplayUrl(baseUrl), apiKeyConfigured: Boolean(process.env.DEEPSEEK_API_KEY),
+        canSelectModel: Boolean(process.env.DEEPSEEK_API_KEY),
+        availableModels: uniqueSorted([currentModel, ...discovered.models]),
+        availableModelsError: discovered.error, tierModels,
+        catalogHint: discovered.models.length
+          ? "DeepSeek choices are refreshed from its hosted /models endpoint. Keep Flash in comparison routing until holdout gates pass."
+          : "DeepSeek choices will refresh after DEEPSEEK_API_KEY can list models.",
+        routingConfig: loadRoutingConfig(ctx)
+      };
     }
     if (selected === "gemini") {
       const currentModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
@@ -2417,6 +2594,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     }
     if (selected === "anthropic") {
       return describeAnthropicProviderFast(adapter, routingConfig);
+    }
+    if (selected === "deepseek") {
+      const currentModel = process.env.DEEPSEEK_MODEL || "deepseek-flash";
+      return {
+        selected, adapter, model: currentModel, modelEnv: "DEEPSEEK_MODEL",
+        baseUrl: safeDisplayUrl(process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1"),
+        apiKeyConfigured: Boolean(process.env.DEEPSEEK_API_KEY), canSelectModel: Boolean(process.env.DEEPSEEK_API_KEY),
+        availableModels: [currentModel], availableModelsError: "Live DeepSeek model listing was skipped for fast page load.",
+        catalogHint: "Use the Providers page or provider-check to refresh DeepSeek choices from the hosted model catalog.", routingConfig
+      };
     }
     if (selected === "gemini") {
       const currentModel = process.env.GEMINI_MODEL || "gemini-3.8-flash";
@@ -3751,6 +3938,26 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/coordinator-history") {
+      if (!isTrustedLocalDashboardRequest(request)) {
+        response.writeHead(403,{"content-type":"text/plain; charset=utf-8"}); response.end("Coordinator history actions require the trusted local dashboard."); return;
+      }
+      const form=await readFormBody(request),action=form.get("action")==="restore"?"restore":"archive";
+      const sourceRunId=form.get("sourceRunId")??"",replacementRunId=form.get("replacementRunId")??"";
+      const plan=await prepareCoordinatorHistoryAction(sourceRunId,replacementRunId);
+      const owner=`dashboard-coordinator-history:${randomUUID()}`;
+      const intent=await acquireWorkIntent({projectId:plan.projectId,owner,objective:`Human-authorized coordinator history ${action}`,
+        fileScopes:plan.fileScopes,ttlSeconds:300});
+      try {
+        const runIds=(form.get("runIds")??"").split(",").map(value=>value.trim()).filter(Boolean);
+        const changed=await authorizeCoordinatorHistoryAction({...plan,owner,intentFence:intent.fencingToken,runIds,
+          actor:form.get("actor")??"dashboard-user",reason:form.get("reason")??"",confirmation:form.get("confirmation")??""},action);
+        respondDashboardAction(request,response,form,{ok:true,title:action==="archive"?"Archived from active views":"Restored to active views",
+          output:`${changed.length} terminal attempt(s) updated in view projections. Immutable status and evidence were preserved; the accepted replacement remains visible.`},"/runs");
+      } finally { await releaseWorkIntent({projectId:plan.projectId,owner,fencingToken:intent.fencingToken}); }
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/api/studio-reply") {
       const form = await readFormBody(request);
       const result = await processRequesterApprovalReply({
@@ -4138,6 +4345,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
 
+    if (request.method === "POST" && requestUrl.pathname === "/api/project-roadmap-suggestion") {
+      const form = await readFormBody(request);
+      const result = await decideRoadmapSuggestion(form);
+      const project = form.get("project") ?? "";
+      respondDashboardAction(request, response, form, result, `/project?root=${encodeURIComponent(project)}`);
+      return;
+    }
+
     if (request.method === "POST" && requestUrl.pathname === "/api/roadmap-status") {
       const form = await readFormBody(request);
       const result = await updateRoadmapTaskStatus(form);
@@ -4162,7 +4377,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         const inbox = await readTrainingProposalInbox(projectDir);
         const item = inbox.items.find((candidate) => candidate.id === id);
         if (!item) throw new Error(`Unknown training proposal: ${id}`);
-        if (item.status !== "approved") throw new Error("Only approved training proposals can start an evaluation.");
+        if (!["approved", "needs-evidence"].includes(item.status)) throw new Error("Only approved training proposals or proposals needing evidence can start an evaluation.");
         if (item.evaluation?.runId) {
           const existing = await getWorkflowRunDetails(item.evaluation.runId);
           if (existing.run && ["queued", "leased", "running", "completed"].includes(existing.run.status)) {
@@ -4170,6 +4385,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             return;
           }
         }
+        const design = buildTrainingHoldoutDesign({
+          id: item.id,
+          targets: item.proposal.targets,
+          publisher: item.proposal.publisher,
+          claimedBenefit: item.proposal.claimedBenefit,
+          risks: item.proposal.risks,
+          holdoutEvaluation: item.proposal.holdoutEvaluation
+        });
+        const designPath = await persistTrainingHoldoutDesign(projectDir, design);
+        const relativeDesignPath = path.relative(projectDir, designPath);
         const task = [
           `Evaluate approved training proposal ${item.id}.`,
           `Publisher: ${item.proposal.publisher}`,
@@ -4180,6 +4405,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           `Required holdout: ${item.proposal.holdoutEvaluation}`,
           `Expected cost: ${item.proposal.expectedCost}`,
           `Rollback plan: ${item.proposal.rollbackPlan}`,
+          `Authoritative holdout design: ${relativeDesignPath}`,
+          `Execute exactly: npm run agentflow -- training-holdout --project . --proposal ${item.id} --design ${relativeDesignPath} --write`,
           "Use only public-source concepts and local synthetic/project-safe evidence. Do not change shared agent definitions, tools, authority, routing, executable code, or production behavior. Produce a PASS, FAIL, or INCONCLUSIVE verdict with cited artifacts and measured evidence."
         ].join("\n");
         const trainingWorkflow = resolveWorkflow(await loadWorkflows(ctx.rootDir), "training-evaluation");
@@ -4211,7 +4438,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const project = form.get("project")?.trim() ?? "";
       const id = form.get("id")?.trim() ?? "";
       const status = form.get("status")?.trim() ?? "";
-      const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
+      const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "needs-evidence", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
       try {
         if (!project || !id || !allowed.has(status as TrainingProposalDecisionStatus)) throw new Error("Project, proposal, and a valid decision are required.");
         const { selected: projectDir } = await resolveTrainingProjectChoices(await listProjectStorageSummaries(100), project, process.cwd());
@@ -4229,6 +4456,18 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           if (current?.status !== "approved" || !current.evaluation?.runId) throw new Error("A linked approved evaluation run is required.");
           const details = await getWorkflowRunDetails(current.evaluation.runId);
           if (details.run?.status !== "completed") throw new Error(`Evaluation run ${current.evaluation.runId} is ${details.run?.status ?? "missing"}; only completed evidence can be accepted.`);
+          const report = await readTrainingHoldoutReport(projectDir, id);
+          if (!isCompleteTrainingHoldoutReport(report)) {
+            await decideTrainingProposal({
+              projectDir,
+              id,
+              status: "needs-evidence",
+              reviewer: form.get("reviewer")?.trim() || "dashboard-operator",
+              note: `Run ${current.evaluation.runId} completed without a nonzero, complete measured holdout report.`
+            });
+            respondDashboardAction(request, response, form, { ok: true, title: "Training proposal needs evidence", output: `Run ${current.evaluation.runId} was not accepted because measured coverage is missing or incomplete.` }, "/training-proposals");
+            return;
+          }
           const artifacts = await listArtifacts({ runId: current.evaluation.runId, kind: "stage_output" });
           const finalArtifact = artifacts.at(-1);
           const summary = stringValue(finalArtifact?.content?.summary) ?? stringValue(finalArtifact?.content?.output) ?? "Completed evaluation evidence is attached to the linked run.";
@@ -4236,10 +4475,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         }
         if (status === "promoted") {
           if (current?.status !== "evaluated" || !current.evaluation?.runId) throw new Error("Only an evaluated proposal can record a promotion decision.");
-          const artifacts = await listArtifacts({ runId: current.evaluation.runId, kind: "stage_output" });
-          const finalArtifact = artifacts.at(-1);
-          const summary = stringValue(finalArtifact?.content?.summary) ?? stringValue(finalArtifact?.content?.output) ?? "";
-          if (trainingEvaluationVerdict(summary) !== "PASS") throw new Error("Only a PASS evaluation is eligible for promotion. Run another holdout after resolving the recorded evidence gaps.");
+          const report = await readTrainingHoldoutReport(projectDir, id);
+          if (!isCompleteTrainingHoldoutReport(report) || report.verdict !== "PASS") throw new Error("Only a complete measured PASS evaluation is eligible for promotion. Run another holdout after resolving the recorded evidence gaps.");
         }
         await decideTrainingProposal({
           projectDir,
@@ -4263,6 +4500,104 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       }));
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify(runsWithEta, null, 2));
+      return;
+    }
+    if (requestUrl.pathname === "/api/guide-evidence-diagnostics") {
+      const requested = requestUrl.searchParams.get("project") ?? "";
+      const taskClass = requestUrl.searchParams.get("taskClass")?.trim() || null;
+      const status = requestUrl.searchParams.get("status")?.trim() || null;
+      if (!requested) {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "An exact registered project is required." }));
+        return;
+      }
+      if (status && status !== "legacy-compatible" && status !== "quarantined") {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "Status must be legacy-compatible or quarantined." }));
+        return;
+      }
+      const requestedRoot = path.resolve(process.cwd(), requested);
+      const projects = await listProjectStorageSummaries(500);
+      const resolved = await Promise.all(projects.map(async (project) => ({
+        project,
+        localRoot: path.resolve(await resolveLocalProjectRootUri(project.rootUri))
+      })));
+      const selected = resolved.find((candidate) => candidate.localRoot === requestedRoot)?.project;
+      if (!selected) {
+        response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "Guide diagnostics require an exact registered project." }));
+        return;
+      }
+      const cursor = requestUrl.searchParams.get("cursor") ?? undefined;
+      if (requestUrl.searchParams.get("reduce") === "true") {
+        const resumeCheckpointHandle = firstHeader(request.headers["x-agentflow-guide-checkpoint"])?.trim() || undefined;
+        try {
+          const pageSize = Math.min(parsePositiveInteger(requestUrl.searchParams.get("pageSize") ?? "100", 100), 200);
+          const signingKey = await loadOrCreateGuideEvidenceCheckpointKey(ctx.rootDir);
+          const resumeCheckpoint = resumeCheckpointHandle ? await readGuideEvidenceReductionCheckpoint({ rootDir: ctx.rootDir, projectId: selected.id, handle: resumeCheckpointHandle, signingKey }) : undefined;
+          const reduced = await reduceLegacyGuideEvidenceSnapshot(selected.id, pageSize, { checkpoint: resumeCheckpoint, signingKey, maxPages: 1 });
+          if (reduced.complete && resumeCheckpointHandle) await discardGuideEvidenceReductionCheckpoint({ rootDir: ctx.rootDir, projectId: selected.id, handle: resumeCheckpointHandle, signingKey });
+          const output = reduced.complete ? reduced.manifest : { ...reduced, checkpoint: await persistGuideEvidenceReductionCheckpoint({ rootDir: ctx.rootDir, projectId: selected.id, checkpoint: reduced.checkpoint, expiresAt: reduced.expiresAt, signingKey }) };
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify(output, null, 2));
+        } catch (error) {
+          response.writeHead(409, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error), restartRequired: true, checkpointRejected: Boolean(resumeCheckpointHandle), authority: "resume-only", grants: { repair: false, replay: false, approval: false, promotion: false, acceptance: false } }));
+        }
+        return;
+      }
+      if (cursor || requestUrl.searchParams.has("pageSize")) {
+        const pageSize = Math.min(parsePositiveInteger(requestUrl.searchParams.get("pageSize") ?? "100", 100), 200);
+        try {
+          const page = await legacyGuideEvidenceInventoryPage(selected.id, { cursor, pageSize });
+          response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify(page, null, 2));
+        } catch (error) {
+          response.writeHead(409, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+          response.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error), restartRequired: true, authority: "inventory-only" }));
+        }
+        return;
+      }
+      const inventory = await legacyGuideEvidenceInventory(selected.id);
+      const findings = inventory.findings.filter((item) =>
+        (!taskClass || item.taskClass === taskClass) && (!status || item.status === status));
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({
+        ...inventory,
+        findings,
+        filters: { projectId: selected.id, taskClass, status },
+        displaySemantics: {
+          quarantined: "audit-only evidence integrity issue",
+          workflowFailure: false,
+          approvalRequest: false,
+          automaticRepairAuthority: false
+        }
+      }, null, 2));
+      return;
+    }
+    if (requestUrl.pathname === "/api/guide-adoption-hold-metrics") {
+      const requested = requestUrl.searchParams.get("project") ?? "";
+      if (!requested) {
+        response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "An exact registered project is required." }));
+        return;
+      }
+      const requestedRoot = path.resolve(process.cwd(), requested);
+      const projects = await listProjectStorageSummaries(500);
+      const resolved = await Promise.all(projects.map(async (project) => ({ project, localRoot: path.resolve(await resolveLocalProjectRootUri(project.rootUri)) })));
+      const selected = resolved.find((candidate) => candidate.localRoot === requestedRoot)?.project;
+      if (!selected) {
+        response.writeHead(404, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+        response.end(JSON.stringify({ error: "Guide adoption metrics require an exact registered project." }));
+        return;
+      }
+      const requestedThreshold = requestUrl.searchParams.get("staleMinutes") ?? "auto";
+      const explicitThresholdMinutes = requestedThreshold === "auto" ? null : Math.min(parsePositiveInteger(requestedThreshold, 15), 1440);
+      const report = await queuePartnerGuideRegistryHoldMetrics(selected.id, { staleAfterMs: explicitThresholdMinutes === null ? undefined : explicitThresholdMinutes * 60_000 });
+      const staleAfterMinutes = report.calibration.selectedThresholdMs / 60_000;
+      const alertAfterMinutes = report.calibration.alertThresholdMs / 60_000;
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" });
+      response.end(JSON.stringify({ ...report, projectId: selected.id, staleAfterMinutes, alertAfterMinutes, displaySemantics: { adoptionLagAlert: "observational deployment lag", workflowFailure: false, restartAuthority: false, replayAuthority: false, primaryOutcomeAccepted: false } }, null, 2));
       return;
     }
     if (requestUrl.pathname === "/api/training-proposals") {
@@ -4307,16 +4642,85 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
 
+    if (requestUrl.pathname === "/queue-status" || requestUrl.pathname === "/api/queue-status") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      if (!isTrustedLocalDashboardRequest(request)) { response.writeHead(403); response.end(); return; }
+      if (requestUrl.pathname === "/queue-status") { response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); response.end(renderQueueStatusHtml()); return; }
+      let projectId: string | undefined;
+      const scope = requestUrl.searchParams.get("scope") ?? "all";
+      try { projectId = parseQueueStatusProject(requestUrl.searchParams.get("project")); if (!["partner", "all"].includes(scope)) throw Error("Invalid scope"); }
+      catch { response.writeHead(400, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: "Choose a valid registered project and queue scope." })); return; }
+      try {
+        const snapshot = await loadQueueCardSnapshot(undefined);
+        const report = await buildQueueStatusReport(projectId, undefined, scope === "all", {
+          items: snapshot.value.queue, capturedAt: snapshot.capturedAt, ageMs: snapshot.ageMs, refreshing: snapshot.refreshing, limit: 100
+        });
+        response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...queueSnapshotHeaders(snapshot) }); response.end(JSON.stringify(report));
+      } catch { response.writeHead(503, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify({ error: "Queue data is unavailable. No queue state was changed." })); }
+      return;
+    }
+
+    if (requestUrl.pathname === '/api/partner-work-history') {
+      if (request.method !== 'GET') { response.writeHead(405, { allow: 'GET' }); response.end(); return; }
+      if (!isTrustedPartnerCommandRequest(request)) { response.writeHead(403); response.end(); return; }
+      try {
+        const runId = requestUrl.searchParams.get('run') ?? '';
+        if (!/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(runId)) { response.writeHead(400); response.end(); return; }
+        const projectId = await queuePartnerOwner('run', runId), project = projectId ? await loadPartnerProject(projectId) : null;
+        if (!project || await partnerProjectAccess(project)) { response.writeHead(404); response.end(); return; }
+        const report = await buildPartnerWorkHistory({ projectId: project!.id, runId, after: requestUrl.searchParams.get('after') ?? undefined, before: requestUrl.searchParams.get('before') ?? undefined });
+        response.writeHead(report ? 200 : 404, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); response.end(JSON.stringify(report));
+      } catch { response.writeHead(503, { 'content-type': 'application/json', 'cache-control': 'no-store' }); response.end(JSON.stringify({ error: 'Work history is unavailable. The last recorded steps are preserved.' })); }
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/queue-partner-activity") {
+      if (request.method !== "GET") { response.writeHead(405, {allow:"GET"}); response.end(); return; }
+      if (!isTrustedLocalDashboardRequest(request)) { response.writeHead(403); response.end(); return; }
+      if (requestUrl.searchParams.get("scope") === "queue") {
+        try {
+          const snapshot = await loadQueueCardSnapshot(undefined);
+          const report = await buildQueueStatusReport(undefined, undefined, true, {
+            items: snapshot.value.queue, capturedAt: snapshot.capturedAt, ageMs: snapshot.ageMs, refreshing: snapshot.refreshing, limit: 100
+          });
+          response.writeHead(200, {"content-type":"application/json; charset=utf-8","cache-control":"no-store"});
+          response.end(JSON.stringify({version:1,authority:"evidence-only",scope:{kind:"queue"},observedAt:report.observedAt,coordinator:await readPartnerQueueObservation(ctx.rootDir),capacity:{repair:5,verifier:1},
+            entries:report.rows.slice(0,12).map(row=>({id:row.id,familyId:row.id,runId:row.runId,title:`${row.projectName} · ${row.name}`,state:row.status,kind:"observation",
+              what:`${row.status} in ${row.projectName}.`,why:row.issue,how:"Queue-wide storage observation; owning-project policy, claims and receipts still govern each action.",next:row.fix,requiresPermission:row.status==="Awaiting approval",evidence:[{label:"View owning run",url:`/run?id=${row.runId}`}]})),
+            watching:[`Following ${report.rows.length} queue items across ${new Set(report.rows.map(row=>row.projectId)).size} registered projects. Project filters change the view, not Partner's purview.`],truncated:report.truncated||report.rows.length>12}));
+        } catch { response.writeHead(503, {"cache-control":"no-store"}); response.end(); }
+        return;
+      }
+      const root = requestUrl.searchParams.get("project") ?? ctx.rootDir;
+      const runId = requestUrl.searchParams.get("run") ?? undefined;
+      if (root.length > 4096 || (runId && !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/iu.test(runId))) { response.writeHead(400); response.end(); return; }
+      // Display family links never transfer execution-project visibility.
+      const registered = (await listProjectStorageSummaries(100)).find(project => project.rootUri === root);
+      if (!registered) { response.writeHead(404); response.end(); return; }
+      const report = await buildQueuePartnerActivity(registered.id, registered.rootUri, runId);
+      response.writeHead(200, {"content-type":"application/json; charset=utf-8","cache-control":"no-store"});
+      response.end(JSON.stringify(report)); return;
+    }
+
     if (requestUrl.pathname === "/api/queue") {
       const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
-      const queue = await loadCachedDashboardReport(
-        `api:queue:100:${projectRootUri ?? "all"}`,
-        () => listWorkflowQueue(100, { projectRootUri }),
-        2_000
-      );
-      response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
-      const historicalRuns = await listWorkflowRuns(250);
-      response.end(JSON.stringify(queue.map((item) => ({ ...item, eta: estimateQueueItemEta(item, historicalRuns) })), null, 2));
+      const snapshot = await loadQueueCardSnapshot(projectRootUri, requestUrl.searchParams.get("fresh") === "1");
+      response.writeHead(200, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", ...queueSnapshotHeaders(snapshot) });
+      response.end(JSON.stringify(snapshot.value.queue.map((item) => ({ ...item, eta: estimateQueueItemEta(item, snapshot.value.historicalRuns) })), null, 2));
+      return;
+    }
+
+    if (requestUrl.pathname === "/api/queue-history") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      if (!isTrustedLocalDashboardRequest(request)) { response.writeHead(403); response.end(); return; }
+      const projectRootUri = requestUrl.searchParams.get("project")?.trim() || undefined;
+      if (projectRootUri && projectRootUri.length > 4096) { response.writeHead(400); response.end(); return; }
+      try {
+        const snapshot = await loadQueueCardSnapshot(projectRootUri, requestUrl.searchParams.get("fresh") === "1");
+        const points = await recordAndLoadQueueHistory({queue:snapshot.value.queue,projectRootUri,rangeMinutes:queueHistoryRangeMinutes(requestUrl.searchParams.get("range"))});
+        response.writeHead(200, {"content-type":"application/json; charset=utf-8","cache-control":"no-store",...queueSnapshotHeaders(snapshot)});
+        response.end(JSON.stringify({range:requestUrl.searchParams.get("range")||"1h",resolution:"minute",points}));
+      } catch { response.writeHead(503, {"content-type":"application/json; charset=utf-8","cache-control":"no-store"}); response.end(JSON.stringify({error:"Queue history is unavailable. No queue state was changed."})); }
       return;
     }
 
@@ -4620,6 +5024,17 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
 
+    if(request.method==="POST"&&requestUrl.pathname==="/api/worker-heartbeat-ingest"){
+      const auth=validateServerMutationAuth(request);
+      if(!auth.ok){response.writeHead(401,{"content-type":"application/json; charset=utf-8","www-authenticate":"Bearer"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:"rejected",error:"authenticated server access is required"}));return;}
+      try{
+        const limits=serverRequestLimits();const body=await readJsonBody(request,limits.maxBodyBytes);
+        if(!body||typeof body!=="object"||Array.isArray(body))throw new Error("JSON worker heartbeat object is required.");
+        const result=await ingestRemoteWorkerHeartbeat({heartbeat:body as Record<string,unknown>,trustStore:await loadWorkerTrustStore(),heartbeatDir:ctx.defaultWorkerHeartbeatDir,cursorPath:path.join(ctx.defaultWorkerHeartbeatDir,"remote-ingestion-cursors.state")});
+        response.writeHead(result.accepted?202:200,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:result.idempotent?"idempotent":"accepted",...result},null,2));return;
+      }catch(error){response.writeHead(422,{"content-type":"application/json; charset=utf-8","cache-control":"no-store"});response.end(JSON.stringify({kind:"agentflow_worker_heartbeat_ingestion",status:"rejected",error:safeErrorMessage(error)},null,2));return;}
+    }
+
     if (requestUrl.pathname === "/api/server-roadmap") {
       const auth = validateServerMutationAuth(request);
       if (!auth.ok) {
@@ -4862,6 +5277,72 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const report = await processServerQueueRequest(ctx, request, body, limits);
       response.writeHead(report.status === "blocked" ? 400 : report.status === "queued" ? 201 : 200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify(report, null, 2));
+      return;
+    }
+
+    if (request.method === "POST" && requestUrl.pathname === "/api/queue-partner-message") {
+      const send = (code: number, report: unknown) => { response.writeHead(code, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); response.end(JSON.stringify(report)); };
+      if (!isTrustedPartnerCommandRequest(request)) { send(403, { kind: "queue_partner_chat_report", status: "blocked", text: "Queue Partner commands require the trusted same-origin local dashboard.", items: [] }); return; }
+      let parsedMessage:PartnerMessage|undefined;
+      try {
+        const limits = serverRequestLimits(), parsed = parsePartnerMessage(await readJsonBody(request, limits.maxBodyBytes));
+        parsedMessage=parsed;
+        let queueSnapshot:Promise<PartnerItem[]>|undefined;
+        const readQueueItems=()=>queueSnapshot??=queuePartnerItems();
+        if (!checkServerQueueRateLimit({ request, actor: "dashboard-user", limitPerMinute: limits.rateLimitPerMinute }).ok) { send(429, { kind: "queue_partner_chat_report", status: "blocked", text: "Too many messages. Wait briefly before sending another instruction.", items: [] }); return; }
+        const converseQueue = async (message: PartnerMessage): Promise<string> => {
+          // This project selects provider/configuration only, not queue jurisdiction.
+          // Model prose remains conversation-only and never authorizes effects.
+          const selectedOwner = message.runId ? await queuePartnerOwner("run", message.runId) : undefined;
+          const contextId = selectedOwner ?? message.projectId ?? await withClient(async c=>(await c.query('select id::text from projects where root_uri=$1 limit 1',[ctx.rootDir])).rows[0]?.id);
+          if (!contextId) return "Queue-wide lists and exact item commands are available. Conversation provider configuration is unavailable.";
+          const fallback = await resolveServerProjectReference({projectId:contextId,includeRoot:true});
+          if (!fallback.resolved || !fallback.project?.rootUri) return "Queue-wide lists and exact item commands are available. Conversation provider configuration is unavailable.";
+          const config = await loadProjectConfig(fallback.project.rootUri), role = config.team.default_actor_role;
+          const report = await processSynchronousConversation(ctx, {message:message.message,history:buildPartnerConversationHistory(message,await readQueueItems()),
+            idempotencyKey:message.idempotencyKey,projectId:fallback.project.projectId,actor:"dashboard-user",actorRole:role,capabilityMode:"conversation",assistantMode:"queue-partner"},request,{trustedLocalDashboard:true});
+          return report.assistant?.text ?? report.error ?? "Ask for items, blockers and fixes, select an item and say ‘fix it’, or pick up the next blocked item across the queue.";
+        };
+        const adapterForProject = async (projectId: string) => {
+          const project = await loadPartnerProject(projectId);
+          if (!project || await partnerProjectAccess(project)) return null;
+          const root=project.rootUri, config=await loadProjectConfig(root), role=config.team.default_actor_role;
+          return createPartnerChatAdapter(projectId, root, {
+          async stop(item, message) {
+            const gate = evaluateRoleGate(config, role, 'can_execute_approved_actions');
+            if (!gate.allowed || config.team.roles[role]?.read_only) return { status: 'blocked', text: 'The configured dashboard role cannot stop workflow runs.' };
+            const result = await processDashboardQueueAction({ action: 'cancel', runId: item.runId, workerLimit: '1', workerConcurrency: '1', project: root, reason: message, confirmed: true, actor: 'queue-partner-dashboard' });
+            return result.ok ? { status: 'requested', runId: item.runId, text: 'Stop recorded for this exact run. In-flight commands may take time to stop; follow its recorded state. History and evidence are preserved.' } : { status: 'blocked', text: result.error };
+          },
+          async repair(item, message) {
+            const gate = evaluateRoleGate(config, role, "can_request_approvals");
+            if (!gate.allowed || config.team.roles[role]?.read_only) return { status: "blocked", text: "The configured dashboard role cannot request repair work." };
+            const result = await processDashboardQueueAction({ action: "repair-blocked", runId: item.runId, workerLimit: "6", workerConcurrency: "1", project: root, reason: message, confirmed: false, actor: "queue-partner-dashboard" });
+            return result.ok ? { status: "queued", text: `${result.title}\n${result.output}`, runId: result.runId } : { status: "blocked", text: result.error };
+          },
+          async approve(approval) {
+            const result = approval.status === "approved"
+              ? await executeApprovedAction(ctx, { approvalId: approval.id, actor: "queue-partner-dashboard", actorRole: role })
+              : await approveAndExecuteAction(ctx, { approvalId: approval.id, actor: "queue-partner-dashboard", approveActorRole: role, executeActorRole: role, note: "Explicit approval of the exact displayed Queue Partner proposal." });
+            if (!result.ok) return { status: "blocked", text: result.error };
+            const current = await getActionApproval(approval.id);
+            const applied = current?.status === "executed" && await hasPartnerApprovalEffect(projectId,approval.id);
+            return applied ? { status: "completed", text: `Exact action effect verified against its recorded artifact and receipt. This is not product acceptance.\n${result.output}`, runId: result.runId }
+              : { status: "requested", text: `Approval recorded; status is ${current?.status ?? "unconfirmed"}, but an applied effect is not verified. This is not a deployment or product-acceptance claim.\n${result.output}`, runId: result.runId };
+          },
+          converse: converseQueue
+        }, !config.team.roles[role]?.read_only && evaluateRoleGate(config, role, "can_request_approvals").allowed);
+        };
+        const controlProjectId=await withClient(async c=>(await c.query('select id::text from projects where root_uri=$1 limit 1',[ctx.rootDir])).rows[0]?.id);
+        if(!controlProjectId)throw Error('The dashboard control project is not registered.');
+        const adapter = createQueuePartnerAdapter({items:readQueueItems,owner:queuePartnerOwner,adapter:adapterForProject,converse:converseQueue,onceMessage:createQueuePartnerRequestLedger(controlProjectId)});
+        const report = await processPartnerMessage(parsed, adapter);
+        send(report.status === "queued" ? 201 : report.status === "requested" ? 202 : report.status === "blocked" ? 403 : 200, report);
+      } catch(error) {
+        const statusOnly=parsedMessage&&isPartnerStatusMessage(parsedMessage.message);
+        console.error('Queue Partner request failed', {phase:parsedMessage?'handling':'validation',code:serverAuditErrorCode(error instanceof Error?error.message:'request error')});
+        send(statusOnly?503:400, { kind: "queue_partner_chat_report", status: "review", text: statusOnly?"Queue status is temporarily unavailable. No workflow action was requested. Refresh status shortly.":"The instruction could not be confirmed. Check the item's current state before retrying; no automatic retry was performed.", items: [] });
+      }
       return;
     }
 
@@ -5451,7 +5932,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         response.end("Missing project");
         return;
       }
-      const report = await loadDashboardCandidateComparisonReport({ projectDir: project });
+      const bucket = ["minute", "hour", "day", "week", "month"].includes(requestUrl.searchParams.get("bucket") ?? "") ? requestUrl.searchParams.get("bucket") as "minute" | "hour" | "day" | "week" | "month" : "day";
+      const range = ["1h", "6h", "24h", "7d", "30d", "90d", "180d", "365d", "all"].includes(requestUrl.searchParams.get("range") ?? "") ? requestUrl.searchParams.get("range") as "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "180d" | "365d" | "all" : "90d";
+      const report = await loadDashboardCandidateComparisonReport({ projectDir: project, bucket, range, from: requestUrl.searchParams.get("from"), to: requestUrl.searchParams.get("to") });
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify(report, null, 2));
       return;
@@ -5472,6 +5955,41 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const plan = buildTuningApplicationPlan(proposals, parseProposalIds(requestUrl.searchParams.get("ids") ?? "all"));
       response.writeHead(200, { "content-type": "application/json; charset=utf-8" });
       response.end(JSON.stringify({ ...plan, mode: "dry-run" }, null, 2));
+      return;
+    }
+
+    if (requestUrl.pathname === "/studio/influence" || requestUrl.pathname === "/api/context-influence") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      const project = path.resolve(requestUrl.searchParams.get("project") || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+      const run = requestUrl.searchParams.get("run") ?? "";
+      if (!/^[a-f0-9-]{36}$/i.test(run)) { response.writeHead(400); response.end("A workflow run identifier is required."); return; }
+      try {
+        const view = await readContextInfluence(project,run);
+        const json = requestUrl.pathname === "/api/context-influence";
+        response.writeHead(200, { "content-type": json ? "application/json; charset=utf-8" : "text/html; charset=utf-8", "cache-control": "no-store" });
+        response.end(json ? JSON.stringify(view) : renderContextInfluenceHtml(view));
+      } catch { response.writeHead(503, { "content-type": "text/plain; charset=utf-8" }); response.end("Context influence history is unavailable. Check storage health and retry."); }
+      return;
+    }
+
+    if (requestUrl.pathname === "/studio/context" || requestUrl.pathname === "/api/project-evidence") {
+      if (request.method !== "GET") { response.writeHead(405, { allow: "GET" }); response.end(); return; }
+      const project = path.resolve(requestUrl.searchParams.get("project")?.trim() || process.env.AGENTFLOW_DASHBOARD_PROJECT || "templates/project");
+      let graph: ProjectEvidenceGraph;
+      try { graph = await readProjectEvidenceGraph(project); }
+      catch { graph = { schemaVersion: 1, project, generatedAt: new Date().toISOString(), authority: "none", status: "unavailable", truncated: false, nodes: [], relationships: [], warnings: [] }; }
+      const json = requestUrl.pathname === "/api/project-evidence";
+      if (!json && requestUrl.searchParams.get("source") === "1") {
+        const node = graph.nodes.find(node => node.id === requestUrl.searchParams.get("node"));
+        try {
+          if (!node) throw new Error("Evidence not found");
+          const html = await renderEvidenceSource(project, node);
+          response.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" }); response.end(html);
+        } catch { response.writeHead(404, { "content-type": "text/plain; charset=utf-8" }); response.end("Evidence source is unavailable or outside the preview boundary. Return to project context and refresh the index."); }
+        return;
+      }
+      response.writeHead(graph.status === "unavailable" ? 503 : 200, { "content-type": json ? "application/json; charset=utf-8" : "text/html; charset=utf-8", "cache-control": "no-store" });
+      response.end(json ? JSON.stringify(graph) : renderProjectEvidenceHtml(graph, { kind: requestUrl.searchParams.get("kind") ?? undefined, selected: requestUrl.searchParams.get("node") ?? undefined }));
       return;
     }
 
@@ -5498,10 +6016,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         response.end("Run not found");
         return;
       }
-      const [artifacts, approvals, historicalRuns] = await Promise.all([
+      const [artifacts, approvals, historicalRuns,partnerHistory] = await Promise.all([
         listArtifacts({ runId }),
         listActionApprovals({ runId, limit: 100 }),
-        listWorkflowRuns(250)
+        listWorkflowRuns(250),
+        loadQueuePartnerHistoryForRuns([runId])
       ]);
       const summary = await summarizeWorkflowRun(runId);
       const qualityReport = await loadCostQualityReport(runId);
@@ -5532,6 +6051,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderRunDetailHtml({
         run: details.run,
+        partnerProjects: (await listProjectStorageSummaries(100)).filter(project => project.rootUri === details.run!.projectRootUri),
         tasks: details.tasks,
         receipts: details.receipts,
         artifacts,
@@ -5545,18 +6065,22 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         preferenceScorecard,
         tuningProposals,
         approvalCeiling
+        ,partnerHistory:partnerHistory[runId]
       }));
       return;
     }
 
     if (requestUrl.pathname === "/queue") {
       const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
-      const [queue, historicalRuns] = await Promise.all([
-        loadCachedDashboardReport(`dashboard:queue:100:${projectRootUri ?? "all"}`, () => listWorkflowQueue(100, { projectRootUri }), 2_000),
-        listWorkflowRuns(250)
-      ]);
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderQueueHtml(queue, requestUrl.searchParams, historicalRuns));
+      const freshSnapshot = requestUrl.searchParams.get("_queue_snapshot") === "fresh";
+      const snapshot = await loadQueueCardSnapshot(projectRootUri, freshSnapshot);
+      response.writeHead(200, {
+        "content-type": "text/html; charset=utf-8",
+        "cache-control": "no-store",
+        ...queueSnapshotHeaders(snapshot),
+        ...(freshSnapshot ? { "x-agentflow-queue-snapshot": snapshot.ageMs <= 750 ? "fresh" : "bounded-stale" } : {})
+      });
+      response.end(renderQueueHtml(snapshot.value.queue, requestUrl.searchParams, snapshot.value.historicalRuns, snapshot.value.partnerProjects, snapshot.value.partnerHistory));
       return;
     }
 
@@ -5753,8 +6277,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     if (requestUrl.pathname === "/candidate-comparisons") {
       const projects = await listProjectStorageSummaries(100);
       const project = requestUrl.searchParams.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? projects[0]?.rootUri ?? "";
+      const bucket = ["minute", "hour", "day", "week", "month"].includes(requestUrl.searchParams.get("bucket") ?? "") ? requestUrl.searchParams.get("bucket") as "minute" | "hour" | "day" | "week" | "month" : "day";
+      const range = ["1h", "6h", "24h", "7d", "30d", "90d", "180d", "365d", "all"].includes(requestUrl.searchParams.get("range") ?? "") ? requestUrl.searchParams.get("range") as "1h" | "6h" | "24h" | "7d" | "30d" | "90d" | "180d" | "365d" | "all" : "90d";
+      const from = requestUrl.searchParams.get("from");
+      const to = requestUrl.searchParams.get("to");
       const report = project
-        ? await loadCachedDashboardReport(`candidate-comparisons:${project}`, () => loadDashboardCandidateComparisonReport({ projectDir: project }))
+        ? await loadCachedDashboardReport(`candidate-comparisons:${project}:${bucket}:${range}:${from ?? ""}:${to ?? ""}`, () => loadDashboardCandidateComparisonReport({ projectDir: project, bucket, range, from, to }))
         : null;
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderCandidateComparisonsHtml(report, projects, requestUrl.searchParams));
@@ -5830,7 +6358,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         const projectRootUri = requestUrl.searchParams.get("project") ?? undefined;
         const limit = parsePositiveInteger(requestUrl.searchParams.get("limit") ?? "100", 100);
         const migrationDir = requestUrl.searchParams.get("migrationDir") ?? undefined;
-        const [report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, runtimeMonitor, requestAudit, projects] = await Promise.all([
+        const [report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, runtimeMonitor, requestAudit, projects, worker] = await Promise.all([
           loadServerReadinessReport({ projectRootUri, limit }),
           loadServerProjectRegistryReport({
             projectRootUri,
@@ -5845,7 +6373,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           loadOfflineFallbackReport(ctx),
           loadRuntimeMonitorReport(),
           loadServerRequestAuditLog(ctx, parsePositiveInteger(requestUrl.searchParams.get("requestLogLimit") ?? "50", 50)),
-          listProjectStorageSummaries(100)
+          listProjectStorageSummaries(100),
+          loadDashboardWorkerStatus()
         ]);
       const objectProof = await buildObjectArtifactProofReport(ctx, {
         projectRootUri: report.projectRootUri || undefined,
@@ -5861,7 +6390,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         objectProof,
         runtimeMonitor
       });
-        return renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, requestUrl.searchParams);
+        return renderServerReadinessHtml(report, registry, storageVerification, migrationPlans, mergeEvidence, offlineFallback, objectProof, runtimeMonitor, statePlaneProof, buildServerMutationControlReport(), buildServerApprovalActionPlanReport(), buildServerApprovalActionTestAdapterReport(), requestAudit, projects, worker, requestUrl.searchParams);
       });
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(html);
@@ -5875,7 +6404,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return;
     }
     if (requestUrl.pathname === "/runs") {
-      const runs = await listWorkflowRuns(100, { runSetId: requestUrl.searchParams.get("runSet")?.trim() || undefined });
+      const runs = await listWorkflowRuns(requestUrl.searchParams.has("relatedTo") ? 500 : 100, {
+        runSetId: requestUrl.searchParams.get("runSet")?.trim() || undefined,
+        relatedRunId: requestUrl.searchParams.get("relatedTo")?.trim() || undefined
+      });
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderRunsHtml(runs, requestUrl.searchParams));
       return;
@@ -5894,8 +6426,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const projects = await listProjectStorageSummaries(100);
       const identities = await loadDashboardProjectIdentityGroups(projects);
       const aliasMergePlan = buildDashboardProjectAliasMergePlan(projects, identities);
+      const suggestionCounts = new Map<string, number>();
+      await Promise.all(identities.filter((identity) => identity.visibility === "canonical").map(async (identity) => {
+        const localRoot = await resolveLocalProjectRootUri(identity.primaryRootUri);
+        const report = await readDashboardJsonFile<RoadmapSuggestionReport>(path.join(localRoot, ".agent-workflow", "learning", "roadmap-suggestions.json"), (value) => value.kind === "agentflow_roadmap_suggestions" && Array.isArray(value.suggestions));
+        suggestionCounts.set(identity.primaryRootUri, report.value?.suggestions.length ?? 0);
+      }));
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(renderProjectsHtml(projects, identities, aliasMergePlan));
+      response.end(renderProjectsHtml(projects, identities, aliasMergePlan, suggestionCounts));
       return;
     }
 
@@ -5990,7 +6528,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         loadDashboardInfo(dashboardUrlFromRequest(request)),
         1200,
         () => loadDashboardInfoFast(dashboardUrlFromRequest(request))
-      ));
+      ),2_000);
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(renderDashboardInfoHtml(info, requestUrl.searchParams));
       return;
@@ -6004,7 +6542,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       loadDashboardSupervisorStatus(),
       loadCachedDashboardReport("runtime-monitor", () => loadRuntimeMonitorReport()),
       loadCachedDashboardReport("roadmap", () => loadRoadmapDashboardReport()),
-      loadCachedDashboardReport("dashboard-home:queue:100", () => listWorkflowQueue(100), 2_000),
+      loadCachedDashboardReport("dashboard-home:queue:latest-related:100", () => listWorkflowQueue(100, { latestRelated: true }), 2_000),
       loadCachedDashboardReport("projects:100", () => listProjectStorageSummaries(100)),
       loadCachedDashboardReport("services", () => checkServices()),
       listActionApprovals({ status: "pending", limit: 25 }),
@@ -6449,10 +6987,17 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   async function loadAutoProviderStatuses(): Promise<NonNullable<DashboardInfo["provider"]["providerStatuses"]>> {
-    const [openai, codex, anthropic, gemini, local, byo, compatible, muse, bedrock, kiro, mock] = await Promise.all([
+    const [openai, codex, anthropic, deepseek, gemini, local, byo, compatible, muse, bedrock, kiro, mock] = await Promise.all([
       inspectOpenAIStatus(),
       inspectCodexCliStatus(),
       inspectAnthropicStatus(),
+      inspectOpenAICompatibleStatus(ctx, {
+        providerId: "deepseek",
+        label: "DeepSeek",
+        baseUrl: process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1",
+        model: process.env.DEEPSEEK_MODEL || "deepseek-flash",
+        apiKey: process.env.DEEPSEEK_API_KEY
+      }),
       inspectOpenAICompatibleStatus(ctx, {
         providerId: "gemini",
         label: "Google Gemini",
@@ -6505,7 +7050,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         details: ["Always available for deterministic local validation."]
       }
     ]);
-    return [openai, codex, anthropic, gemini, local, byo, compatible, muse, bedrock, kiro, mock];
+    return [openai, codex, anthropic, deepseek, gemini, local, byo, compatible, muse, bedrock, kiro, mock];
   }
 
   async function loadBackupRestoreReport(input: {
@@ -6658,6 +7203,52 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return cached.value as T;
     }
     return loadPromise;
+  }
+
+  async function loadQueueCardSnapshot(projectRootUri: string | undefined, requestRefresh = false): Promise<QueueCardSnapshot<DashboardQueueSnapshot>> {
+    const key = projectRootUri ?? "all";
+    return queueCardSnapshots.get(key, async () => {
+      const [queue, historicalRuns, partnerProjects] = await Promise.all([
+        listWorkflowQueue(100, { projectRootUri, latestRelated: true }),
+        listWorkflowRuns(250),
+        listProjectStorageSummaries(100)
+      ]);
+      const [activityQueue, waitingQueue, activeCapabilities, latestCapabilityProbes, remoteFleetTrust] = await Promise.all([
+        withQueueCardActivity(queue),
+        withQueueWaitReasons(queue, ctx.defaultWorkerHeartbeatPath),
+        loadActiveWorkerCapabilities(ctx.defaultWorkerHeartbeatPath),
+        loadLatestWorkerCapabilityProbes(ctx.defaultWorkerHeartbeatPath),
+        loadWorkerTrustStore().then(trustStore=>loadRemoteWorkerHeartbeatHealth({trustStore,heartbeatDir:ctx.defaultWorkerHeartbeatDir,cursorPath:path.join(ctx.defaultWorkerHeartbeatDir,"remote-ingestion-cursors.state")}))
+      ]);
+      const waitByRun = new Map(waitingQueue.map((item) => [item.runId, item.waitReason]));
+      const checkedAt = new Date().toISOString();
+      const enrichedQueue = activityQueue.map((item) => {
+        const waitReason = waitByRun.get(item.runId);
+        const requiredCapability = item.failureOwnership?.requiredWorkerCapability;
+        const capableWorkers=requiredCapability?activeCapabilities.get(requiredCapability)??[]:[];
+        const workerIds = capableWorkers.filter(worker=>workerEligibleForQueueProject(worker,item)).map(worker=>worker.workerId);
+        const runtimeRemedy = requiredCapability ? {
+          requiredCapability,
+          state: workerIds.length ? "compatible-worker-active" as const : "awaiting-worker-rollout" as const,
+          workerIds,
+          checkedAt,
+          eligibilityReason:workerEligibilityReason(capableWorkers,item,workerIds.length),
+          latestProbe:latestCapabilityProbes.get(requiredCapability)??null,
+          remoteFleetTrust
+        } : null;
+        return { ...item, ...(waitReason ? { waitReason } : {}), runtimeRemedy };
+      });
+      const partnerHistory = await loadQueuePartnerHistoryForRuns(enrichedQueue.map((item) => item.runId));
+      return { queue: enrichedQueue, historicalRuns, partnerProjects, partnerHistory };
+    }, requestRefresh);
+  }
+
+  function queueSnapshotHeaders(snapshot: QueueCardSnapshot<DashboardQueueSnapshot>): Record<string,string> {
+    return {
+      "x-agentflow-queue-captured-at": new Date(snapshot.capturedAt).toISOString(),
+      "x-agentflow-queue-age-ms": String(Math.round(snapshot.ageMs)),
+      "x-agentflow-queue-refreshing": String(snapshot.refreshing)
+    };
   }
 
   async function loadDashboardAgentSummaries(
@@ -7103,6 +7694,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       }),
       loadProviderCatalogExplanation(anthropicCatalogConfig()),
       loadProviderCatalogExplanation({
+        providerId: "deepseek",
+        label: "DeepSeek",
+        configured: Boolean(process.env.DEEPSEEK_API_KEY),
+        catalogProvider: "compatible",
+        catalogSource: "DeepSeek hosted /models",
+        modelEnv: "DEEPSEEK_MODEL",
+        configuredModel: process.env.DEEPSEEK_MODEL || "deepseek-flash",
+        baseUrl: safeDisplayUrl(process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1"),
+        apiKeyStatus: process.env.DEEPSEEK_API_KEY ? "configured" : "missing",
+        loadModels: () => loadOpenAICompatibleModelIds(process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com/v1", process.env.DEEPSEEK_API_KEY),
+        configuredForTier: (tier) => process.env[`DEEPSEEK_MODEL_${tier.toUpperCase()}`] || process.env.DEEPSEEK_MODEL || "deepseek-flash"
+      }),
+      loadProviderCatalogExplanation({
         providerId: "gemini",
         label: "Google Gemini",
         configured: Boolean(process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY),
@@ -7314,11 +7918,17 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return null;
     }
     const projectPath = await resolveDashboardProjectPath(rootUri);
-    const [files, memory, runs, contextFiles] = await Promise.all([
+    const [files, memory, runs, contextFiles, roadmapSuggestions, roadmapSuggestionDecisions, learningDaemon] = await Promise.all([
       listProjectFileSummaries({ projectRootUri: rootUri, limit: 20 }),
       getLatestMemory({ projectRootUri: rootUri, limit: 8 }),
       listWorkflowRunsForProject({ projectRootUri: rootUri, limit: 12 }),
-      loadDashboardProjectContextFiles(projectPath.localRootUri)
+      loadDashboardProjectContextFiles(projectPath.localRootUri),
+      readDashboardJsonFile<RoadmapSuggestionReport>(
+        path.join(projectPath.localRootUri, ".agent-workflow", "learning", "roadmap-suggestions.json"),
+        (value) => value.kind === "agentflow_roadmap_suggestions" && Array.isArray(value.suggestions)
+      ).then((result) => result.value).catch(() => null),
+      readRoadmapSuggestionDecisions(projectPath.localRootUri),
+      loadLearningDaemonStatus(ctx, projectPath.localRootUri).catch(() => null)
     ]);
     const config = project.config as {
       actions?: { allowed_write_paths?: string[] };
@@ -7331,7 +7941,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       runs,
       contextFiles,
       initialized: contextFiles.some((file) => file.relativePath === ".agent-workflow/project.yaml" && file.exists),
-      allowWrites: Boolean(config.policies?.allow_wide_open || (config.actions?.allowed_write_paths?.length ?? 0) > 0)
+      allowWrites: Boolean(config.policies?.allow_wide_open || (config.actions?.allowed_write_paths?.length ?? 0) > 0),
+      roadmapSuggestions,
+      roadmapSuggestionDecisions,
+      learningDaemon
     };
   }
 
@@ -7504,11 +8117,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   async function loadDashboardWorkerStatus(): Promise<DashboardWorkerStatus> {
     const heartbeatPath = path.resolve(process.cwd(), process.env.AGENTFLOW_WORKER_HEARTBEAT ?? ctx.defaultWorkerHeartbeatPath);
-    const lanes = await loadWorkerHeartbeatLanes(heartbeatPath);
+    const [lanes,remoteFleetTrust]=await Promise.all([loadWorkerHeartbeatLanes(heartbeatPath),loadWorkerTrustStore().then(trustStore=>loadRemoteWorkerHeartbeatHealth({trustStore,heartbeatDir:ctx.defaultWorkerHeartbeatDir,cursorPath:path.join(ctx.defaultWorkerHeartbeatDir,"remote-ingestion-cursors.state")}))]);
     const activeLane = lanes.find((lane) => lane.status === "running") ?? lanes[0];
     if (activeLane) {
       return {
         ...activeLane,
+        remoteFleetTrust,
         lanes
       };
     }
@@ -7519,6 +8133,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       heartbeatPath,
       configured: false,
       workerId: null,
+      hostId:null,
+      runtimeBuildDigest:null,
+      heartbeatTrustState:"unsigned",
+      heartbeatTrustReason:"No worker heartbeat is available.",
       status: "missing",
       pid: null,
       startedAt: null,
@@ -7526,6 +8144,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ageMs: null,
       limit: null,
       projectRootUri: null,
+      projectId: null,
+      projectIdentityId: null,
+      projectIdentityGeneration: null,
+      sourceRevision: null,
       concurrency: null,
       perProjectConcurrency: null,
       intervalMs: null,
@@ -7533,6 +8155,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       claimed: 0,
       completed: 0,
       failed: 0,
+      executionCapabilities: [],
+      executionCapabilityProbes: [],
+      remoteFleetTrust,
       processAlive: false,
       command: "npm run worker:daemon",
       lanes: []
@@ -7577,6 +8202,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ? await listWorkflowRuns(historyFetchLimit)
           : await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: historyFetchLimit });
         runs = historyRuns
+          .filter((run) => !run.dismissed)
           .filter((run) => run.workflowId === workflow.id)
           .filter((run) => dashboardRunMatchesStatus(run.status, runStatusFilter))
           .slice(0, safeRunLimit)
@@ -7590,10 +8216,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         if (focusedStageId) {
           focusedStageRuns = await listWorkflowStageRunsForRuns({ runIds: runs.map((run) => run.id), stageId: focusedStageId });
           focusedStageFixRuns = historyRuns
+            .filter((run) => !run.dismissed)
             .filter((run) => isFocusedStageFixRun(run, report.workflow.id, focusedStageId))
             .slice(0, 8)
             .map(dashboardWorkflowGraphRunFromStorage);
           focusedStageVerificationRuns = historyRuns
+            .filter((run) => !run.dismissed)
             .filter((run) => isFocusedStageVerificationRun(run, report.workflow.id, focusedStageId))
             .slice(0, 8)
             .map(dashboardWorkflowGraphRunFromStorage);
@@ -8422,7 +9050,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         ?? stringValue(finalArtifact?.content?.text)
         ?? null;
       const measuredPath = projectDir ? path.join(projectDir, ".agent-workflow", "evaluations", item.id.replace(/[^a-zA-Z0-9._-]+/gu, "-"), "measured-holdout.json") : null;
-      const measured = measuredPath ? await fs.readFile(measuredPath, "utf8").then((value) => JSON.parse(value) as { verdict?: string; measuredObservations?: number; plannedObservations?: number; failures?: string[] }).catch(() => null) : null;
+      const measured = measuredPath ? await fs.readFile(measuredPath, "utf8").then((value) => JSON.parse(value) as Awaited<ReturnType<typeof readTrainingHoldoutReport>>).catch(() => null) : null;
+      const evidenceComplete = isCompleteTrainingHoldoutReport(measured);
       const summary = measured?.verdict ? `${measured.verdict}: measured ${measured.measuredObservations ?? 0}/${measured.plannedObservations ?? 0} blinded observations.${measured.failures?.length ? ` ${measured.failures.join(" ")}` : ""}` : runSummary;
       const recoveryRunId = details.run?.replacementRunId ?? null;
       return [item.id, {
@@ -8431,6 +9060,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         summary: summary?.slice(0, 600) ?? null,
         artifactUri: finalArtifact?.uri ?? null,
         evidenceHref: measured ? `/api/training-holdout-evidence?project=${encodeURIComponent(projectDir ?? "")}&id=${encodeURIComponent(item.id)}` : null,
+        evidenceComplete,
         recoveryRunId,
         recoveryStatus: recoveryRunId ? details.run?.replacementRunStatus ?? "unavailable" : null
       }] as const;
@@ -8570,6 +9200,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   async function loadWorkerHeartbeatLane(heartbeatPath: string): Promise<DashboardWorkerLane | null> {
     try {
       const heartbeat = JSON.parse(await fs.readFile(heartbeatPath, "utf8")) as Partial<WorkerHeartbeat>;
+      const trustDecision=evaluateWorkerHeartbeatTrust(heartbeat,await loadWorkerTrustStore());
       const lastHeartbeatAt = typeof heartbeat.lastHeartbeatAt === "string" ? heartbeat.lastHeartbeatAt : null;
       const ageMs = lastHeartbeatAt ? Date.now() - Date.parse(lastHeartbeatAt) : null;
       const intervalMs = typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : null;
@@ -8578,7 +9209,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const processAlive = pid ? isProcessAlive(pid) : false;
       const heartbeatStatus = heartbeat.status ?? "stopped";
       const compatible = heartbeat.protocolVersions?.runtime === ctx.protocolVersions.runtime && heartbeat.protocolVersions?.storage === ctx.protocolVersions.storage && heartbeat.protocolVersions?.bundle === ctx.protocolVersions.bundle;
-      const running = compatible && processAlive && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping";
+      const running = compatible && trustDecision.trusted && ageMs !== null && ageMs <= staleAfterMs && heartbeatStatus !== "stopped" && heartbeatStatus !== "stopping";
       return {
         runtimeVersion: typeof heartbeat.runtimeVersion === "string" ? heartbeat.runtimeVersion : null,
         bundleVersion: typeof heartbeat.bundleVersion === "string" ? heartbeat.bundleVersion : null,
@@ -8586,6 +9217,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         heartbeatPath,
         configured: true,
         workerId: typeof heartbeat.workerId === "string" ? heartbeat.workerId : null,
+        hostId:typeof heartbeat.hostId==="string"?heartbeat.hostId:null,
+        runtimeBuildDigest:typeof heartbeat.runtimeBuildDigest==="string"?heartbeat.runtimeBuildDigest:trustDecision.runtimeBuildDigest,
+        heartbeatTrustState:trustDecision.state,
+        heartbeatTrustReason:trustDecision.reason,
         status: running ? "running" : heartbeatStatus === "stopped" ? "stopped" : "stale",
         pid,
         startedAt: typeof heartbeat.startedAt === "string" ? heartbeat.startedAt : null,
@@ -8593,6 +9228,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         ageMs,
         limit: typeof heartbeat.limit === "number" ? heartbeat.limit : null,
         projectRootUri: typeof heartbeat.projectRootUri === "string" ? heartbeat.projectRootUri : null,
+        projectId: typeof heartbeat.projectId === "string" ? heartbeat.projectId : null,
+        projectIdentityId: typeof heartbeat.projectIdentityId === "string" ? heartbeat.projectIdentityId : null,
+        projectIdentityGeneration: typeof heartbeat.projectIdentityGeneration === "number" ? heartbeat.projectIdentityGeneration : null,
+        sourceRevision: typeof heartbeat.sourceRevision === "string" ? heartbeat.sourceRevision : null,
         concurrency: typeof heartbeat.concurrency === "number" ? heartbeat.concurrency : null,
         perProjectConcurrency: typeof heartbeat.perProjectConcurrency === "number" ? heartbeat.perProjectConcurrency : null,
         intervalMs,
@@ -8602,6 +9241,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         failed: typeof heartbeat.failed === "number" ? heartbeat.failed : 0,
         providerIds: Array.isArray(heartbeat.providerIds) ? heartbeat.providerIds.filter((item): item is string => typeof item === "string") : [],
         unavailableProviderIds: Array.isArray(heartbeat.unavailableProviderIds) ? heartbeat.unavailableProviderIds.filter((item): item is string => typeof item === "string") : [],
+        executionCapabilities: Array.isArray(heartbeat.executionCapabilities) ? heartbeat.executionCapabilities.filter((item): item is string => typeof item === "string") : [],
+        executionCapabilityProbes: Array.isArray(heartbeat.executionCapabilityProbes) ? heartbeat.executionCapabilityProbes.filter((item): item is ExecutionCapabilityProbe&{runtimeVersion:string} => Boolean(item)&&typeof item.id==="string"&&(item.status==="passed"||item.status==="failed")&&typeof item.digest==="string"&&typeof item.runtimeVersion==="string") : [],
         processAlive,
         command: typeof heartbeat.command === "string" ? heartbeat.command : "npm run worker:daemon"
       };
@@ -8637,6 +9278,72 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       if (right.status === "running" && left.status !== "running") return 1;
       return (right.lastHeartbeatAt ?? "").localeCompare(left.lastHeartbeatAt ?? "");
     });
+  }
+
+  async function loadActiveWorkerCapabilities(primaryHeartbeatPath: string): Promise<Map<string,Array<{workerId:string;projectRootUri:string|null;projectIdentityId:string|null;projectIdentityGeneration:number|null;sourceRevision:string|null}>>> {
+    const candidates = new Set<string>([primaryHeartbeatPath]);
+    try {
+      for (const entry of await fs.readdir(ctx.defaultWorkerHeartbeatDir, { withFileTypes: true })) {
+        if (entry.isFile() && entry.name.endsWith(".json")) candidates.add(path.join(ctx.defaultWorkerHeartbeatDir, entry.name));
+      }
+    } catch { /* Older installs only have the primary heartbeat. */ }
+    const capabilities = new Map<string,Array<{workerId:string;projectRootUri:string|null;projectIdentityId:string|null;projectIdentityGeneration:number|null;sourceRevision:string|null}>>();
+    const trustStore=await loadWorkerTrustStore();
+    for (const candidate of candidates) {
+      try {
+        const heartbeat = JSON.parse(await fs.readFile(candidate,"utf8")) as Partial<WorkerHeartbeat>;
+        const ageMs = typeof heartbeat.lastHeartbeatAt === "string" ? Date.now()-Date.parse(heartbeat.lastHeartbeatAt) : Number.POSITIVE_INFINITY;
+        const staleAfterMs = Math.max((typeof heartbeat.intervalMs === "number" ? heartbeat.intervalMs : 2000)*3,15_000);
+        const compatible = heartbeat.protocolVersions?.runtime===ctx.protocolVersions.runtime && heartbeat.protocolVersions?.storage===ctx.protocolVersions.storage && heartbeat.protocolVersions?.bundle===ctx.protocolVersions.bundle;
+        const trustDecision=evaluateWorkerHeartbeatTrust(heartbeat,trustStore);
+        if (!compatible || !trustDecision.trusted || heartbeat.status!=="running" || ageMs>staleAfterMs) continue;
+        const workerId = typeof heartbeat.workerId === "string" ? heartbeat.workerId : `pid:${heartbeat.pid}`;
+        const projectRootUri=typeof heartbeat.projectRootUri==="string"?path.resolve(heartbeat.projectRootUri):null;
+        const projectIdentityId=typeof heartbeat.projectIdentityId==="string"?heartbeat.projectIdentityId:null;
+        const projectIdentityGeneration=typeof heartbeat.projectIdentityGeneration==="number"?heartbeat.projectIdentityGeneration:null;
+        const sourceRevision=typeof heartbeat.sourceRevision==="string"?heartbeat.sourceRevision:null;
+        for (const capability of Array.isArray(heartbeat.executionCapabilities) ? heartbeat.executionCapabilities : []) {
+          if (typeof capability !== "string") continue;
+          const workers=capabilities.get(capability)??[];
+          if(!workers.some(worker=>worker.workerId===workerId))capabilities.set(capability,[...workers,{workerId,projectRootUri,projectIdentityId,projectIdentityGeneration,sourceRevision}]);
+        }
+      } catch { /* Missing or malformed heartbeats cannot attest capabilities. */ }
+    }
+    return capabilities;
+  }
+
+  async function loadLatestWorkerCapabilityProbes(primaryHeartbeatPath:string):Promise<Map<string,{status:"passed"|"failed";checkedAt:string;digest:string;reason:string|null;runtimeVersion:string;workerId:string;workerState:"active"|"stale"|"incompatible"|"stopped"|"untrusted"}>>{
+    const candidates=new Set<string>([primaryHeartbeatPath]);
+    try{for(const entry of await fs.readdir(ctx.defaultWorkerHeartbeatDir,{withFileTypes:true}))if(entry.isFile()&&entry.name.endsWith(".json"))candidates.add(path.join(ctx.defaultWorkerHeartbeatDir,entry.name));}catch{}
+    const latest=new Map<string,{status:"passed"|"failed";checkedAt:string;digest:string;reason:string|null;runtimeVersion:string;workerId:string;workerState:"active"|"stale"|"incompatible"|"stopped"|"untrusted"}>();
+    const trustStore=await loadWorkerTrustStore();
+    for(const candidate of candidates)try{
+      const heartbeat=JSON.parse(await fs.readFile(candidate,"utf8")) as Partial<WorkerHeartbeat>;
+      const ageMs=typeof heartbeat.lastHeartbeatAt==="string"?Date.now()-Date.parse(heartbeat.lastHeartbeatAt):Number.POSITIVE_INFINITY;
+      const staleAfterMs=Math.max((typeof heartbeat.intervalMs==="number"?heartbeat.intervalMs:2000)*3,15_000);
+      const compatible=heartbeat.protocolVersions?.runtime===ctx.protocolVersions.runtime&&heartbeat.protocolVersions?.storage===ctx.protocolVersions.storage&&heartbeat.protocolVersions?.bundle===ctx.protocolVersions.bundle;
+      const trustDecision=evaluateWorkerHeartbeatTrust(heartbeat,trustStore);
+      const workerState:"active"|"stale"|"incompatible"|"stopped"|"untrusted"=!trustDecision.trusted?"untrusted":!compatible?"incompatible":heartbeat.status==="stopped"||heartbeat.status==="stopping"?"stopped":ageMs>staleAfterMs?"stale":"active";
+      const workerId=typeof heartbeat.workerId==="string"?heartbeat.workerId:`pid:${heartbeat.pid??"unknown"}`;
+      for(const probe of Array.isArray(heartbeat.executionCapabilityProbes)?heartbeat.executionCapabilityProbes:[]){
+        if(!probe||typeof probe.id!=="string"||(probe.status!=="passed"&&probe.status!=="failed")||typeof probe.checkedAt!=="string"||typeof probe.digest!=="string"||typeof probe.runtimeVersion!=="string")continue;
+        const observation={status:probe.status,checkedAt:probe.checkedAt,digest:probe.digest,reason:typeof probe.reason==="string"?probe.reason:null,runtimeVersion:probe.runtimeVersion,workerId,workerState};
+        const prior=latest.get(probe.id);if(!prior||observation.checkedAt>prior.checkedAt)latest.set(probe.id,observation);
+      }
+    }catch{}
+    return latest;
+  }
+
+  function workerEligibleForQueueProject(worker:{projectRootUri:string|null;projectIdentityId:string|null;sourceRevision:string|null},item:{projectIdentityId?:string|null;sourceRevision?:string|null}):boolean{
+    if(worker.projectRootUri===null)return true;
+    return Boolean(item.projectIdentityId&&item.sourceRevision&&worker.projectIdentityId===item.projectIdentityId&&worker.sourceRevision===item.sourceRevision);
+  }
+
+  function workerEligibilityReason(workers:Array<{projectRootUri:string|null;projectIdentityId:string|null;sourceRevision:string|null}>,item:{projectIdentityId?:string|null;sourceRevision?:string|null},eligibleCount:number):string{
+    if(eligibleCount)return `${eligibleCount} active worker${eligibleCount===1?" is":"s are"} eligible for this project identity and source revision.`;
+    if(!workers.length)return "No active worker currently attests the required capability.";
+    if(!item.projectIdentityId||!item.sourceRevision)return "The queued run lacks durable project identity or source-revision evidence required for a scoped worker.";
+    return "Active capable workers are scoped to a different project identity or source revision.";
   }
 
   function localHoldoutComparisonForm(report: DashboardCandidateComparisonReport): string {
@@ -8740,6 +9447,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     if (provider === "anthropic") {
       return "ANTHROPIC_MODEL";
     }
+    if (provider === "deepseek") {
+      return "DEEPSEEK_MODEL";
+    }
     if (provider === "gemini") {
       return "GEMINI_MODEL";
     }
@@ -8803,7 +9513,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return "";
     }
     const normalized = normalizeProviderRef(trimmed);
-    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]);
+    const supported = new Set(["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]);
     return supported.has(normalized) ? normalized : undefined;
   }
 
@@ -9048,7 +9758,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         runId: resumed.replacementRunId ?? result.runId,
         redirectToRun: Boolean(resumed.replacementRunId),
         output: `${result.output}\nResumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? result.runId}.`
-      } : result;
+      } : resumed.holdReason ? { ...result, output: `${result.output}\n${resumed.holdReason}` } : result;
     }
     if (decision === "dismiss") {
       return dismissApprovedAction(ctx, {
@@ -9098,6 +9808,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         `Actor role: ${approval.decidedRole ?? normalizeActorRole(input.actorRole, "approver")}`,
         `Role preview: ${rolePreviewForApproval(approval)}`,
         "Decision receipt was recorded.",
+        resumed.holdReason ?? "",
         resumed.resumedTasks > 0 ? `Resumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? approval.runId}.` : "",
         "Open: /approvals"
       ].filter(Boolean).join("\n")
@@ -9688,6 +10399,36 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       };
     }
 
+    if (action === "retry-runtime-fixed") {
+      const queue = await listWorkflowQueue(500,{latestRelated:true});
+      const item = queue.find(candidate=>candidate.runId===runId || candidate.familyAttempts?.some(attempt=>attempt.id===runId));
+      const ownership = item?.failureOwnership;
+      const capability = ownership?.requiredWorkerCapability;
+      if (!item || ownership?.owner!=="agent-workflow-runtime" || !capability) {
+        return {ok:false,error:"This run does not have an evidence-bound Agent Workflow runtime remedy."};
+      }
+      const activeCapabilities = await loadActiveWorkerCapabilities(ctx.defaultWorkerHeartbeatPath);
+      const capableWorkers=activeCapabilities.get(capability)??[];
+      const workerIds = capableWorkers.filter(worker=>workerEligibleForQueueProject(worker,item)).map(worker=>worker.workerId);
+      if (!workerIds.length) return {ok:false,error:`Replay refused: ${workerEligibilityReason(capableWorkers,item,0)}`};
+      const sourceRunId = ownership.evidenceRunId;
+      const replayed = await replayWorkflowRun({
+        sourceRunId,
+        actor:"dashboard-runtime-remedy",
+        reason:`Operator requested one checkpoint-preserving validation replay after active workers attested runtime capability ${capability}.`,
+        preserveCompletedCheckpoints:true,
+        evaluationMetadataPatch:{runtimeRemedy:{evidenceRunId:sourceRunId,repairRoute:ownership.repairRoute,classificationConfidence:ownership.confidence,requiredCapability:capability,attestedWorkerIds:workerIds,checkedAt:new Date().toISOString()}}
+      });
+      return replayed ? {ok:true,title:"Runtime-fixed validation replay queued",runId:replayed.runId,redirectToRun:true,output:[
+        `Evidence run: ${sourceRunId}`,
+        `Replay run: ${replayed.runId}`,
+        `Required capability: ${capability}`,
+        `Attested workers: ${workerIds.join(", ")}`,
+        `Preserved checkpoints: ${replayed.completedTasks}/${replayed.tasks}`,
+        `Queued validation stages: ${replayed.queuedTasks}`
+      ].join("\n")} : {ok:false,error:`Unknown workflow run: ${sourceRunId}`};
+    }
+
     if (action === "repair-blocked") {
       const repairActor = input.actor?.trim() || "dashboard";
       const details = await getWorkflowRunDetails(runId);
@@ -10198,12 +10939,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ? summaries.find((item) => item.id === requestedProjectId)
       : nameMatches.length === 1 ? nameMatches[0] : undefined;
     const localProjectRoot = summary ? await resolveLocalProjectRootUri(summary.rootUri) : null;
-    const registeredProject = summary ? await loadRegisteredProjectConfig(summary).catch(() => null) : null;
+    // A remote or historical registration may map to a different checkout on
+    // this host. Runs must bind to that exact local registration; persisting
+    // the pre-map root makes later workers treat an unavailable path as the
+    // execution scope even though admission read a different checkout.
+    const executionSummary = localProjectRoot
+      ? summaries.find((item) => path.resolve(item.rootUri) === path.resolve(localProjectRoot))
+      : undefined;
+    const registeredProject = executionSummary ? await loadRegisteredProjectConfig(executionSummary).catch(() => null) : null;
     const roleGate = registeredProject
       ? evaluateRoleGate(registeredProject, actorRole, "can_request_approvals")
       : { allowed: false, message: "Registered project policy is unavailable." };
     const roleAccepted = Boolean(registeredProject && (registeredProject.team.enforcement !== "enforce" || roleGate.allowed));
-    const projectId = summary?.id ?? requestedProjectId;
+    const projectId = executionSummary?.id ?? summary?.id ?? requestedProjectId;
     const operationId = `op_${stableHash([projectId, idempotencyKey]).slice(0, 24)}`;
     const auth = validateServerMutationAuth(request);
     const serverModeEnabled = envFlag("AGENTFLOW_SERVER_MODE");
@@ -10211,6 +10959,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const rateLimit = checkServerQueueRateLimit({ request, actor, limitPerMinute: limits.rateLimitPerMinute });
     const checks: ServerOrchestrationReport["checks"] = [
       { label: "Registered project", status: summary ? "pass" : "fail", detail: summary ? `Resolved registered project ${summary.name}.` : requestedProjectName && nameMatches.length > 1 ? "Project name is ambiguous; send projectId." : "Project id/name did not resolve to one registered project." },
+      { label: "Host project mapping", status: executionSummary ? "pass" : "fail", detail: executionSummary ? summary?.id === executionSummary.id ? `Using registered host root ${executionSummary.rootUri}.` : `Mapped ${summary?.rootUri} to registered host root ${executionSummary.rootUri}.` : summary ? `Registered project root ${summary.rootUri} is unavailable on this host and did not map to a registered local project.` : "No registered project was available to map." },
       { label: "Goal", status: goal ? "pass" : "fail", detail: goal ? "Natural-language goal is present." : "goal is required." },
       { label: "Actor", status: actor && actorRole ? "pass" : "fail", detail: `Actor role is ${actorRole || "missing"}.` },
       { label: "Role capability", status: roleAccepted ? (roleGate.allowed ? "pass" : "warn") : "fail", detail: roleGate.message },
@@ -10223,9 +10972,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     let runId: string | null = null;
     let receiptUri: string | null = null;
     let reused = false;
-    const canQueue = Boolean(summary && goal && idempotencyKey && auth.ok && roleAccepted && executeRequested && serverModeEnabled && orchestrationEnabled && rateLimit.ok);
-    if (canQueue && summary) {
-      const existing = (await listWorkflowRunsForProject({ projectRootUri: summary.rootUri, limit: 500 }))
+    const canQueue = Boolean(executionSummary && goal && idempotencyKey && auth.ok && roleAccepted && executeRequested && serverModeEnabled && orchestrationEnabled && rateLimit.ok);
+    if (canQueue && executionSummary) {
+      const existing = (await listWorkflowRunsForProject({ projectRootUri: executionSummary.rootUri, limit: 500 }))
         .find((run) => stringValue(run.evaluationMetadata?.source) === "server-orchestration" && stringValue(run.evaluationMetadata?.operationId) === operationId);
       if (existing) {
         runId = existing.id;
@@ -10239,10 +10988,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           workflowId: dynamic.id,
           workflowOverride: dynamic,
           projectPath: localProjectRoot as string,
-          registeredProjectRootUri: summary.rootUri,
+          registeredProjectRootUri: executionSummary.rootUri,
           task: goal,
           policyProfile: project.execution.policy_profile,
-          evaluationMetadata: { source: "server-orchestration", operationId, idempotencyKey, actor, actorRole, projectId: summary.id, executionProfile: "adaptive" }
+          evaluationMetadata: { source: "server-orchestration", operationId, idempotencyKey, actor, actorRole, projectId: executionSummary.id, requestedProjectId: summary?.id ?? null, executionProfile: "adaptive" }
         });
         if (queued.ok) {
           runId = queued.run.runId;
@@ -10250,10 +10999,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             runId,
             agentId: "workflow-orchestrator",
             actionType: "server_orchestration_requested",
-            target: summary.id,
-            summary: `Accepted one-goal orchestration request for ${summary.name}.`,
+            target: executionSummary.id,
+            summary: `Accepted one-goal orchestration request for ${executionSummary.name}.`,
             artifactKind: "server_orchestration_request",
-            artifactContent: { operationId, projectId: summary.id, projectName: summary.name, goalHash: stableHash(goal), actor, actorRole, workflowId: dynamic.id, executionProfile: "adaptive", receivedAt: new Date().toISOString() },
+            artifactContent: { operationId, projectId: executionSummary.id, requestedProjectId: summary?.id ?? null, projectName: executionSummary.name, projectRootUri: executionSummary.rootUri, goalHash: stableHash(goal), actor, actorRole, workflowId: dynamic.id, executionProfile: "adaptive", receivedAt: new Date().toISOString() },
             idempotencyKey: `server-orchestration-${stableHash(idempotencyKey).slice(0, 24)}`
           });
         } else {
@@ -10268,7 +11017,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       status: runId ? "queued" : blocked ? "blocked" : "ready",
       operationId,
       projectId,
-      projectName: summary?.name ?? null,
+      projectName: executionSummary?.name ?? summary?.name ?? null,
       goalHash: stableHash(goal),
       workflowId,
       runGroup: { runIds: runId ? [runId] : [], aggregateStatus: runId ? "queued" : blocked ? "blocked" : "queued" },
@@ -10704,6 +11453,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return queueRunActionForm(item.runId, "recover-expired-leases", "Recover expired lease");
     }
     if (item.failedTasks > 0 || item.runStatus === "failed") {
+      if (item.failureOwnership?.owner==="agent-workflow-runtime" && item.failureOwnership.requiredWorkerCapability) {
+        return item.runtimeRemedy?.state==="compatible-worker-active"
+          ? queueRunActionForm(item.failureOwnership.evidenceRunId,"retry-runtime-fixed","Replay validation once")
+          : `<button type="button" disabled title="A current worker must attest ${escapeHtml(item.failureOwnership.requiredWorkerCapability)}">Await worker rollout</button>`;
+      }
       return queueRunActionForm(item.runId, "retry-failed", "Retry failed stages");
     }
     if (item.runStatus === "blocked") {
@@ -11645,6 +12399,83 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   function renderCandidateComparisonReportHtml(report: DashboardCandidateComparisonReport): string {
     const comparison = report.comparisonPlan;
+    const history = report.modelHistory;
+    const chartModels = history.models.slice(0, 12);
+    const formatDatetimeLocal = (iso: string | null): string => {
+      if (!iso) return "";
+      const date = new Date(iso);
+      const pad = (value: number) => String(value).padStart(2, "0");
+      return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    };
+    const historyColors = ["#2563eb", "#16a34a", "#dc2626", "#9333ea", "#ea580c", "#0891b2", "#be123c", "#4f46e5", "#65a30d", "#a16207", "#0f766e", "#7e22ce"];
+    const historyLineChart = (metric: "quality" | "latency") => {
+      const chartKeys = new Set(chartModels.map((model) => model.key));
+      const measured = history.points.filter((point) => chartKeys.has(point.key) && (metric === "quality" ? point.averageQuality !== null : point.averageLatencyMs !== null));
+      if (!measured.length) return `<div class="chart-empty"><strong>No measured ${metric} history in this range</strong><span>Change the range or run scored model routes.</span></div>`;
+      const width = 900, height = 360, left = 58, right = 24, top = 30, bottom = 54;
+      const times = measured.map((point) => Date.parse(point.bucketStart));
+      const measuredMinTime = Math.min(...times), measuredMaxTime = Math.max(...times);
+      const selectedMinTime = history.windowFrom ? Date.parse(history.windowFrom) : measuredMinTime;
+      const selectedMaxTime = history.windowTo ? Date.parse(history.windowTo) : measuredMaxTime;
+      const minTime = Number.isFinite(selectedMinTime) ? selectedMinTime : measuredMinTime;
+      const maxTime = Number.isFinite(selectedMaxTime) && selectedMaxTime > minTime ? selectedMaxTime : measuredMaxTime;
+      const values = measured.map((point) => metric === "quality" ? point.averageQuality! : point.averageLatencyMs!);
+      const minValue = metric === "quality" ? 0 : Math.min(0, ...values);
+      const maxValue = Math.max(metric === "quality" ? 1 : 1, ...values);
+      const x = (time: number) => left + (maxTime === minTime ? 0.5 : (time - minTime) / (maxTime - minTime)) * (width - left - right);
+      const y = (value: number) => top + (1 - (value - minValue) / Math.max(0.001, maxValue - minValue)) * (height - top - bottom);
+      const series = chartModels.map((model, index) => {
+        const points = measured.filter((point) => point.key === model.key).sort((a, b) => a.bucketStart.localeCompare(b.bucketStart));
+        const coordinates = points.map((point) => `${x(Date.parse(point.bucketStart))},${y(metric === "quality" ? point.averageQuality! : point.averageLatencyMs!)}`).join(" ");
+        const dots = points.map((point) => {
+          const value = metric === "quality" ? point.averageQuality! : point.averageLatencyMs!;
+          return `<circle cx="${x(Date.parse(point.bucketStart))}" cy="${y(value)}" r="4" fill="${historyColors[index % historyColors.length]}"><title>${escapeHtml(model.key)} · ${renderDashboardDateTime(point.bucketStart)} · ${metric === "quality" ? value.toFixed(3) : formatDuration(value)} · ${point.samples} route${point.samples === 1 ? "" : "s"}</title></circle>`;
+        }).join("");
+        return `${points.length > 1 ? `<polyline points="${coordinates}" fill="none" stroke="${historyColors[index % historyColors.length]}" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>` : ""}${dots}`;
+      }).join("");
+      const legend = chartModels.map((model, index) => `<span class="model-legend-item"><i style="background:${historyColors[index % historyColors.length]}"></i>${escapeHtml(model.key)}</span>`).join("");
+      const formatTick = (timestamp: number) => new Intl.DateTimeFormat("en-US", history.bucket === "minute" || history.bucket === "hour"
+        ? { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }
+        : history.bucket === "month" ? { month: "short", year: "2-digit" } : { month: "short", day: "numeric" }).format(new Date(timestamp));
+      const ticks = Array.from({ length: 5 }, (_, index) => {
+        const timestamp = minTime + (maxTime - minTime) * index / 4;
+        const tickX = x(timestamp);
+        return `<line x1="${tickX}" y1="${height - bottom}" x2="${tickX}" y2="${height - bottom + 6}" class="chart-axis"/><text x="${tickX}" y="${height - 28}" text-anchor="${index === 0 ? "start" : index === 4 ? "end" : "middle"}" class="chart-label">${escapeHtml(formatTick(timestamp))}</text>`;
+      }).join("");
+      return `<div class="model-history-chart"><svg class="comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="All models ${metric} over time"><line x1="${left}" y1="${top}" x2="${left}" y2="${height - bottom}" class="chart-axis"/><line x1="${left}" y1="${height - bottom}" x2="${width - right}" y2="${height - bottom}" class="chart-axis"/>${ticks}<text x="8" y="${top + 8}" class="chart-label">${metric === "quality" ? maxValue.toFixed(2) : formatDuration(maxValue)}</text><text x="8" y="${height - bottom}" class="chart-label">${metric === "quality" ? minValue.toFixed(2) : "0ms"}</text>${series}</svg><div class="model-legend">${legend}</div></div>`;
+    };
+    const modelRows = history.models.map((model) => `<tr><td><strong>${escapeHtml(model.model)}</strong><br><span class="muted">${escapeHtml(model.provider)} · ${escapeHtml(model.modelTier)}</span></td><td>${formatNumber(model.samples)}</td><td>${formatNumber(model.qualitySamples)}</td><td>${model.averageQuality === null ? "n/a" : model.averageQuality.toFixed(3)}</td><td>${formatNumber(model.latencySamples)}</td><td>${model.averageLatencyMs === null ? "n/a" : formatDuration(model.averageLatencyMs)}</td><td>${Math.round(model.fallbackRate * 100)}%</td><td>${renderDashboardDateTime(model.latestAt)}</td></tr>`).join("");
+    const chartOutcomes = report.outcomes.filter((item) => item.baselineQuality !== null || item.candidateQuality !== null || item.baselineLatencyMs !== null || item.candidateLatencyMs !== null);
+    const pairedBarChart = (metric: "quality" | "latency") => {
+      const rows = chartOutcomes.slice(0, 10);
+      if (!rows.length) return `<div class="chart-empty"><strong>No measured ${metric} data yet</strong><span>Run both variants to populate this chart.</span></div>`;
+      const width = 760;
+      const rowHeight = 48;
+      const height = 54 + rows.length * rowHeight;
+      const plotLeft = 190;
+      const plotWidth = 500;
+      const values = rows.flatMap((item) => metric === "quality" ? [item.baselineQuality, item.candidateQuality] : [item.baselineLatencyMs, item.candidateLatencyMs]).filter((value): value is number => value !== null);
+      const max = metric === "quality" ? Math.max(1, ...values) : Math.max(1, ...values);
+      const bars = rows.map((item, index) => {
+        const baseline = metric === "quality" ? item.baselineQuality : item.baselineLatencyMs;
+        const candidate = metric === "quality" ? item.candidateQuality : item.candidateLatencyMs;
+        const y = 40 + index * rowHeight;
+        const bar = (value: number | null, offset: number, color: string) => value === null ? "" : `<rect x="${plotLeft}" y="${y + offset}" width="${Math.max(2, (value / max) * plotWidth)}" height="12" rx="6" fill="${color}"><title>${metric === "quality" ? value.toFixed(3) : formatDuration(value)}</title></rect><text x="${Math.min(width - 52, plotLeft + (value / max) * plotWidth + 7)}" y="${y + offset + 10}" class="chart-value">${metric === "quality" ? value.toFixed(2) : `${Math.round(value)}ms`}</text>`;
+        return `<text x="8" y="${y + 19}" class="chart-label">${escapeHtml(item.suiteId.length > 24 ? `${item.suiteId.slice(0, 23)}…` : item.suiteId)}</text>${bar(baseline, 2, "#94a3b8")}${bar(candidate, 20, "#2563eb")}`;
+      }).join("");
+      return `<svg class="comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Baseline and candidate ${metric} by suite"><g><text x="${plotLeft}" y="20" class="chart-legend">■ Baseline</text><text x="${plotLeft + 105}" y="20" class="chart-legend chart-candidate">■ Candidate</text>${bars}</g></svg>`;
+    };
+    const tradeoffChart = (() => {
+      const points = chartOutcomes.filter((item) => item.qualityDelta !== null && item.latencyDeltaMs !== null).slice(0, 20);
+      if (!points.length) return `<div class="chart-empty"><strong>No quality/latency tradeoff yet</strong><span>Paired evaluation results will appear here.</span></div>`;
+      const width = 760, height = 330, left = 70, top = 28, plotWidth = 620, plotHeight = 240;
+      const maxQuality = Math.max(0.05, ...points.map((item) => Math.abs(item.qualityDelta ?? 0)));
+      const maxLatency = Math.max(100, ...points.map((item) => Math.abs(item.latencyDeltaMs ?? 0)));
+      const x = (value: number) => left + plotWidth / 2 + (value / maxLatency) * plotWidth / 2;
+      const y = (value: number) => top + plotHeight / 2 - (value / maxQuality) * plotHeight / 2;
+      const dots = points.map((item) => `<circle cx="${x(item.latencyDeltaMs ?? 0)}" cy="${y(item.qualityDelta ?? 0)}" r="8" fill="${(item.qualityDelta ?? 0) >= 0 && (item.latencyDeltaMs ?? 0) <= 0 ? "#16a34a" : (item.qualityDelta ?? 0) < 0 ? "#dc2626" : "#f59e0b"}" opacity="0.9"><title>${escapeHtml(item.suiteId)}: quality ${item.qualityDelta}, latency ${item.latencyDeltaMs}ms</title></circle>`).join("");
+      return `<svg class="comparison-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="Quality gain against latency change"><rect x="${left}" y="${top}" width="${plotWidth / 2}" height="${plotHeight / 2}" fill="#dcfce7" opacity="0.55"/><line x1="${left + plotWidth / 2}" y1="${top}" x2="${left + plotWidth / 2}" y2="${top + plotHeight}" class="chart-axis"/><line x1="${left}" y1="${top + plotHeight / 2}" x2="${left + plotWidth}" y2="${top + plotHeight / 2}" class="chart-axis"/>${dots}<text x="${left}" y="${height - 28}" class="chart-label">← faster</text><text x="${left + plotWidth - 38}" y="${height - 28}" class="chart-label">slower →</text><text x="8" y="${top + 8}" class="chart-label">better</text><text x="8" y="${top + plotHeight}" class="chart-label">worse</text><text x="${left + 12}" y="${top + 22}" class="chart-good-label">Best zone: faster + higher quality</text></svg>`;
+    })();
     const suiteRows = comparison?.suites.map((suite) => {
       const file = report.suiteFiles.find((item) => item.path === suite.suitePath);
       const outcome = report.outcomes.find((item) => item.suiteId === suite.id);
@@ -11697,7 +12528,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const recommendationReadyCount = report.promotionRecommendations.filter((recommendation) => recommendation.decision === "propose_routing_note").length;
     return `
       <section class="panel">
-        <div class="metric-grid">
+        <div class="metric-grid candidate-summary-grid">
           ${metricCard("Model Plan", report.modelPlanExists && !report.modelPlanError ? "ready" : "missing", report.modelPlanError ?? ".agent-workflow/model-improvement")}
           ${metricCard("Comparison Plan", report.comparisonPlanExists && !report.comparisonPlanError ? "ready" : "missing", report.comparisonPlanError ?? "candidate-comparison-plan.json")}
           ${metricCard("Eval Cases", report.modelPlan?.evalCases.length ?? 0, "from approved feedback")}
@@ -11717,6 +12548,22 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ${renderLocalHoldoutRoutingStatusHtml(report.localHoldoutRouting)}
       ${renderLocalRouteDecisionDrilldownHtml(report.routeReceiptTrends, report.localHoldoutRouting)}
       ${renderRouteReceiptTrendsHtml(report.routeReceiptTrends)}
+      <section class="panel comparison-visuals">
+        <div class="section-heading"><div><h2>Fleet model history</h2><span class="muted">All observed model routes in the selected project and retained time range. Quality uses scored stages; speed uses measured stage latency.</span></div><span class="flag ${history.samples ? "good" : "warn"}">${history.samples} route sample${history.samples === 1 ? "" : "s"}</span></div>
+        <form method="get" class="model-history-controls" aria-label="Model history date range">
+          <input type="hidden" name="project" value="${escapeHtml(report.projectDir)}">
+          <label>Resolution<select name="bucket">${["minute", "hour", "day", "week", "month"].map((value) => `<option value="${value}"${history.bucket === value ? " selected" : ""}>${value}</option>`).join("")}</select></label>
+          <label>Quick range<select name="range" onchange="this.form.elements.from.value='';this.form.elements.to.value=''">${[["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["180d", "6 months"], ["365d", "12 months"], ["all", "All retained"]].map(([value, label]) => `<option value="${value}"${history.range === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
+          <label>From<input type="datetime-local" name="from" value="${escapeHtml(formatDatetimeLocal(history.windowFrom))}" min="${escapeHtml(formatDatetimeLocal(history.availableFrom))}" max="${escapeHtml(formatDatetimeLocal(history.windowTo))}"></label>
+          <label>To<input type="datetime-local" name="to" value="${escapeHtml(formatDatetimeLocal(history.windowTo))}" min="${escapeHtml(formatDatetimeLocal(history.availableFrom))}"></label>
+          <button type="submit">Apply range</button>
+          <a class="button secondary" href="/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}&bucket=${encodeURIComponent(history.bucket)}&range=all">Reset</a>
+        </form>
+        <div class="chart-grid model-history-grid"><article class="chart-card"><h3>Quality over time</h3><p class="muted">Higher is better · ${escapeHtml(history.bucket)} buckets.</p>${historyLineChart("quality")}</article><article class="chart-card"><h3>Speed over time</h3><p class="muted">Lower latency is better · ${escapeHtml(history.bucket)} buckets.</p>${historyLineChart("latency")}</article></div>
+        ${history.models.length > chartModels.length ? `<p class="muted">Charts show the ${chartModels.length} most-observed model routes for legibility. The table compares all ${history.models.length} observed model routes.</p>` : ""}
+        <div class="table-wrap"><table><thead><tr><th>Model</th><th>Routes</th><th>Quality samples</th><th>Avg quality</th><th>Latency samples</th><th>Avg latency</th><th>Fallback</th><th>Latest</th></tr></thead><tbody>${modelRows || '<tr><td colspan="8">No model-route evidence exists in this range.</td></tr>'}</tbody></table></div>
+        <p class="muted">Available evidence: ${renderDashboardDateTime(history.availableFrom, "none")} to ${renderDashboardDateTime(history.availableTo, "none")}. Routes without a recorded concrete model are labeled with their provider and model tier.</p>
+      </section>
       <section class="panel">
         <h2>Variants</h2>
         ${comparison ? `
@@ -11725,6 +12572,11 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             <div><strong>Candidate</strong>${escapeHtml(comparison.candidate.provider)} / ${escapeHtml(comparison.candidate.modelTier)}<br><span class="muted">${escapeHtml(comparison.candidate.promptSuffix)}</span></div>
           </div>
         ` : '<p class="muted">No candidate comparison plan found.</p>'}
+      </section>
+      <section class="panel comparison-visuals">
+        <div class="section-heading"><div><h2>Model Comparison</h2><span class="muted">Measured quality, speed, and the tradeoff between them. Hover points and bars for exact values.</span></div><span class="flag ${gateReadyCount ? "good" : "warn"}">${gateReadyCount ? `${gateReadyCount} paired suite${gateReadyCount === 1 ? "" : "s"}` : "needs paired runs"}</span></div>
+        <div class="chart-grid"><article class="chart-card"><h3>Quality by suite</h3><p class="muted">Higher is better.</p>${pairedBarChart("quality")}</article><article class="chart-card"><h3>Latency by suite</h3><p class="muted">Lower is better.</p>${pairedBarChart("latency")}</article></div>
+        <article class="chart-card"><h3>Quality–speed tradeoff</h3><p class="muted">The upper-left zone identifies candidates that improve quality while responding faster.</p>${tradeoffChart}</article>
       </section>
       <section class="panel">
         <h2>Suites</h2>
@@ -11763,8 +12615,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     params: URLSearchParams
   ): string {
     const selectedProject = report?.projectDir ?? params.get("project") ?? process.env.AGENTFLOW_DASHBOARD_PROJECT ?? "";
+    const selectedBucket = report?.modelHistory.bucket ?? params.get("bucket") ?? "day";
+    const selectedRange = report?.modelHistory.range ?? params.get("range") ?? "90d";
     const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}">${escapeHtml(project.name)} - ${escapeHtml(project.rootUri)}</option>`).join("");
-    const jsonHref = report ? `/api/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}` : "";
+    const jsonHref = report ? `/api/candidate-comparisons?project=${encodeURIComponent(report.projectDir)}&bucket=${encodeURIComponent(selectedBucket)}&range=${encodeURIComponent(selectedRange)}` : "";
     const body = report
       ? renderCandidateComparisonReportHtml(report)
       : `<section class="panel"><h2>No Project Selected</h2><p class="muted">Run onboarding or enter a project path to inspect local candidate comparison evidence.</p></section>`;
@@ -11793,6 +12647,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             <input name="project" value="${escapeHtml(selectedProject)}" list="candidate-comparison-projects" placeholder="/path/to/project">
             <datalist id="candidate-comparison-projects">${projectOptions}</datalist>
           </label>
+          <label>Time bucket<select name="bucket">${["minute", "hour", "day", "week", "month"].map((value) => `<option value="${value}"${selectedBucket === value ? " selected" : ""}>${value}</option>`).join("")}</select></label>
+          <label>History range<select name="range">${[["1h", "1 hour"], ["6h", "6 hours"], ["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"], ["90d", "90 days"], ["180d", "6 months"], ["365d", "12 months"], ["all", "All retained"]].map(([value, label]) => `<option value="${value}"${selectedRange === value ? " selected" : ""}>${label}</option>`).join("")}</select></label>
           <div class="form-actions"><button type="submit">Inspect</button></div>
         </form>
       </section>
@@ -13188,6 +14044,122 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     `;
   }
 
+  function renderGuideEvidenceDiagnosticsPanel(project: string): string {
+    const endpoint = `/api/guide-evidence-diagnostics?project=${encodeURIComponent(project)}`;
+    const reductionStorageKey = guideEvidenceCheckpointStorageKey(project);
+    return `<section class="panel" id="guide-evidence-integrity">
+      <div class="section-heading"><div><h2>Guide Evidence Integrity</h2><span class="muted">Read-only inventory of compatible and quarantined historical Guide evidence.</span></div><a class="button secondary" id="guide-evidence-json" href="${escapeHtml(endpoint)}">JSON</a></div>
+      <p class="muted">Quarantine is an audit-only integrity issue. It is not a workflow failure, approval request, automatic repair authorization, or acceptance decision.</p>
+      <div class="workflow-form">
+        <label>Task class<input id="guide-evidence-task-class" placeholder="all task classes"></label>
+        <label>Status<select id="guide-evidence-status"><option value="">all evidence</option><option value="legacy-compatible">legacy-compatible</option><option value="quarantined">quarantined</option></select></label>
+      </div>
+      <div id="guide-evidence-summary" class="meta-grid compact"><div><strong>Status</strong>Loading read-only inventory…</div></div>
+      <div class="table-wrap"><table><thead><tr><th>Integrity</th><th>Task class / kind</th><th>Evidence</th><th>Audit-only next action</th></tr></thead><tbody id="guide-evidence-findings"><tr><td colspan="4">Loading bounded findings…</td></tr></tbody></table></div>
+      <div class="inline-action-form"><button type="button" class="secondary" id="guide-evidence-page">Review receipt pages</button><button type="button" class="secondary" id="guide-evidence-reduce">Reduce full snapshot</button><span class="muted" id="guide-evidence-page-status">Pages preserve a frozen snapshot checkpoint; partial pages draw no integrity conclusion.</span></div>
+      <script>
+        (() => {
+          const base = ${serializeInlineScriptJson(endpoint)};
+          const reductionStorageKey = ${serializeInlineScriptJson(reductionStorageKey)};
+          const taskClass = document.getElementById("guide-evidence-task-class");
+          const status = document.getElementById("guide-evidence-status");
+          const summary = document.getElementById("guide-evidence-summary");
+          const findings = document.getElementById("guide-evidence-findings");
+          const json = document.getElementById("guide-evidence-json");
+          const pageButton = document.getElementById("guide-evidence-page");
+          const reduceButton = document.getElementById("guide-evidence-reduce");
+          const pageStatus = document.getElementById("guide-evidence-page-status");
+          let pageCursor = null;
+          let reductionCheckpoint = null;
+          try { reductionCheckpoint = localStorage.getItem(reductionStorageKey); } catch {}
+          if (reductionCheckpoint) reduceButton.textContent = "Resume full snapshot";
+          const cell = (value) => { const td = document.createElement("td"); td.textContent = String(value ?? ""); return td; };
+          const load = async () => {
+            const url = new URL(base, location.origin);
+            if (taskClass.value.trim()) url.searchParams.set("taskClass", taskClass.value.trim());
+            if (status.value) url.searchParams.set("status", status.value);
+            json.href = url.pathname + url.search;
+            try {
+              const response = await fetch(url, { headers: { accept: "application/json" } });
+              const report = await response.json();
+              if (!response.ok) throw new Error(report.error || "Guide evidence inventory unavailable");
+              summary.replaceChildren();
+              [["Scanned", report.scanned], ["Compatible", report.legacyCompatible], ["Quarantined", report.quarantined], ["Bounded", report.truncated ? "more evidence exists" : "complete window"], ["Authority", report.authority]].forEach(([label, value]) => {
+                const item = document.createElement("div"); const strong = document.createElement("strong"); strong.textContent = String(label); item.append(strong, document.createTextNode(String(value))); summary.append(item);
+              });
+              findings.replaceChildren();
+              report.findings.slice(0, 100).forEach((item) => {
+                const row = document.createElement("tr");
+                row.append(cell(item.status), cell(item.taskClass + " / " + item.kind), cell(item.reason), cell(item.reconciliation));
+                findings.append(row);
+              });
+              if (!report.findings.length) { const row = document.createElement("tr"); const td = cell("No matching Guide evidence."); td.colSpan = 4; row.append(td); findings.append(row); }
+            } catch (error) {
+              summary.textContent = error instanceof Error ? error.message : String(error);
+              findings.replaceChildren();
+            }
+          };
+          const loadPage = async () => {
+            const url = new URL(base, location.origin); url.searchParams.set("pageSize", "100"); if (pageCursor) url.searchParams.set("cursor", pageCursor);
+            pageButton.disabled = true;
+            try { const response = await fetch(url, { headers: { accept: "application/json" } }); const page = await response.json(); if (!response.ok) throw new Error(page.error || "Receipt page unavailable"); pageStatus.textContent = "Page " + page.pageIndex + ": " + page.items.length + " receipt(s), checkpoint " + page.coverage.checkpointHash.slice(0, 12) + " · " + page.integrityConclusion; pageCursor = page.nextCursor; pageButton.textContent = pageCursor ? "Review next receipt page" : "Snapshot fully covered"; pageButton.disabled = !pageCursor; }
+            catch (error) { pageStatus.textContent = error instanceof Error ? error.message : String(error); pageButton.textContent = "Restart receipt-page review"; pageCursor = null; pageButton.disabled = false; }
+          };
+          const reduceSnapshot = async () => {
+            const url = new URL(base, location.origin); url.searchParams.set("reduce", "true"); url.searchParams.set("pageSize", "100");
+            reduceButton.disabled = true; reduceButton.textContent = "Reducing verified pages…";
+            try {
+              for (let attempt = 0; attempt < 1000; attempt += 1) {
+                const headers = { accept: "application/json" }; if (reductionCheckpoint) headers["x-agentflow-guide-checkpoint"] = reductionCheckpoint;
+                const response = await fetch(url, { headers }); const result = await response.json();
+                if (!response.ok) { if (result.checkpointRejected) { reductionCheckpoint = null; try { localStorage.removeItem(reductionStorageKey); } catch {} } throw new Error(result.error || "Snapshot reduction unavailable"); }
+                if (result.complete === false) {
+                  reductionCheckpoint = result.checkpoint; try { localStorage.setItem(reductionStorageKey, reductionCheckpoint); } catch {}
+                  pageStatus.textContent = "Checkpointed " + result.progress.receipts + " receipt(s) across " + result.progress.pages + " verified page(s) · expires " + new Date(result.expiresAt).toLocaleTimeString() + " · resume-only, no repair, replay, approval, promotion, or acceptance authority";
+                  reduceButton.textContent = "Reducing page " + (result.progress.pages + 1) + "…"; await new Promise(resolve => setTimeout(resolve, 0)); continue;
+                }
+                const manifest = result; reductionCheckpoint = null; try { localStorage.removeItem(reductionStorageKey); } catch {}
+                pageStatus.textContent = "Full snapshot: " + manifest.conclusion + " · " + manifest.receipts + " receipts across " + manifest.pages + " page(s) · signature " + manifest.manifestSignature.value.slice(0, 12) + " · no repair, replay, approval, promotion, or acceptance authority"; reduceButton.textContent = "Snapshot reduced"; return;
+              }
+              reduceButton.textContent = "Continue full snapshot"; reduceButton.disabled = false;
+            }
+            catch (error) { pageStatus.textContent = error instanceof Error ? error.message : String(error); reduceButton.textContent = reductionCheckpoint ? "Resume full snapshot" : "Restart full snapshot"; reduceButton.disabled = false; }
+          };
+          pageButton.addEventListener("click", loadPage);
+          reduceButton.addEventListener("click", reduceSnapshot);
+          taskClass.addEventListener("change", load); status.addEventListener("change", load); load();
+        })();
+      </script>
+    </section>`;
+  }
+
+  function renderGuideAdoptionHoldMetricsPanel(project: string): string {
+    const endpoint = `/api/guide-adoption-hold-metrics?project=${encodeURIComponent(project)}&staleMinutes=auto`;
+    return `<section class="panel" id="guide-adoption-holds">
+      <div class="section-heading"><div><h2>Guide Adoption Holds</h2><span class="muted">Observed deployment latency and coalescing by registry fingerprint generation.</span></div><a class="button secondary" href="${escapeHtml(endpoint)}">JSON</a></div>
+      <p class="muted">Lag alerts are observational only. They do not authorize worker restart, replay, repair, or acceptance of a primary outcome.</p>
+      <div id="guide-hold-summary" class="meta-grid compact"><div><strong>Status</strong>Loading bounded hold metrics…</div></div>
+      <div class="table-wrap"><table><thead><tr><th>Generation</th><th>State / latency</th><th>Affected</th><th>Coalescing</th><th>Signal</th></tr></thead><tbody id="guide-hold-metrics"><tr><td colspan="5">Loading…</td></tr></tbody></table></div>
+      <script>
+        (() => {
+          const summary = document.getElementById("guide-hold-summary");
+          const rows = document.getElementById("guide-hold-metrics");
+          const cell = (value) => { const td = document.createElement("td"); td.textContent = String(value ?? ""); return td; };
+          const duration = (ms) => ms == null ? "n/a" : ms < 60_000 ? Math.round(ms / 1000) + "s" : Math.round(ms / 60_000) + "m";
+          fetch(${serializeInlineScriptJson(endpoint)}, { headers: { accept: "application/json" } }).then(async (response) => {
+            const report = await response.json(); if (!response.ok) throw new Error(report.error || "Guide hold metrics unavailable");
+            summary.replaceChildren();
+            const confidence = report.calibration.confidenceBandLowerMs == null ? "insufficient evidence" : duration(report.calibration.confidenceBandLowerMs) + "–" + duration(report.calibration.confidenceBandUpperMs);
+            [["Generations", report.metrics.length], ["Open", report.metrics.filter((item) => item.state === "open").length], ["Lag alerts", report.metrics.filter((item) => item.adoptionLagAlert).length], ["Threshold", duration(report.calibration.selectedThresholdMs) + " · " + report.calibration.source + " · candidate " + duration(report.calibration.candidateThresholdMs)], ["Alert guard", duration(report.calibration.alertThresholdMs) + " · preserves open alerts"], ["Confidence", confidence], ["Stability", report.calibration.stability + " · " + report.calibration.sampleCount + "/" + report.calibration.minimumSamples + " samples · " + report.calibration.stableGenerationsObserved + "/" + report.calibration.stableGenerationRequirement + " stable generations · max " + Math.round(report.calibration.maximumChangeFraction * 100) + "% change"], ["Receipt window", report.truncated ? "truncated" : "complete"], ["Authority", report.authority]].forEach(([label, value]) => { const item = document.createElement("div"); const strong = document.createElement("strong"); strong.textContent = String(label); item.append(strong, document.createTextNode(String(value))); summary.append(item); });
+            rows.replaceChildren();
+            report.metrics.slice(0, 100).forEach((item) => { const row = document.createElement("tr"); row.append(cell(item.expectedFingerprint.slice(0, 12) + " / " + item.generation), cell(item.state + " · " + (item.state === "open" ? duration(item.openAgeMs) + " open" : duration(item.resolutionLatencyMs) + " to resolve")), cell(item.affectedRunCount), cell(item.duplicateSuppressedCount + " duplicate receipt(s) suppressed"), cell(item.adoptionLagAlert ? "adoption lag" : "within observed threshold")); rows.append(row); });
+            if (!report.metrics.length) { const row = document.createElement("tr"); const td = cell("No Guide adoption holds."); td.colSpan = 5; row.append(td); rows.append(row); }
+          }).catch((error) => { summary.textContent = error instanceof Error ? error.message : String(error); rows.replaceChildren(); });
+        })();
+      </script>
+    </section>`;
+  }
+
   function renderLearningDashboardHtml(report: LearningReport | null, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, learningSettings: LearningSettings | null, supervisor: DashboardSupervisorStatus, projects: DashboardProjectSummary[], params: URLSearchParams, projectPath: DashboardProjectPathResolution | null = null, learningLoop: LearningLoopDashboard | null = null, agentImprovementPending: AgentImprovementPendingSummary | null = null): string {
     const learningViews = ["overview", "learning-loop", "recommendations", "approvals", "agent-improvements", "diagnostics", "settings"] as const;
     const requestedView = params.get("view");
@@ -13269,6 +14241,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </form>
       </section>
       ${(shapeJsonHref || agentImprovementJsonHref) ? `<section class="panel compact-panel">${shapeJsonHref ? `<a class="button secondary" href="${escapeHtml(shapeJsonHref)}">Workflow Shape JSON</a>` : ""}${agentImprovementJsonHref ? `<a class="button secondary" href="${escapeHtml(agentImprovementJsonHref)}">Agent Improvement JSON</a>` : ""}</section>` : ""}
+      ${selectedProject && learningView === "diagnostics" ? renderGuideEvidenceDiagnosticsPanel(projectPath?.localRootUri ?? selectedProject) : ""}
+      ${selectedProject && learningView === "diagnostics" ? renderGuideAdoptionHoldMetricsPanel(projectPath?.localRootUri ?? selectedProject) : ""}
       ${selectedProject ? `<section class="panel"><div class="section-heading"><div><h2>Workflow Optimizer</h2><span class="muted">Durable events, budgets, shadow evidence, approvals, and fleet health.</span></div><a class="button secondary" href="/api/optimizer-status?project=${encodeURIComponent(selectedProject)}">JSON</a></div><div id="optimizer-summary" class="meta-grid"><div><strong>Status</strong>Loading…</div></div></section><script>fetch(${serializeInlineScriptJson(`/api/optimizer-status?project=${encodeURIComponent(selectedProject)}`)}).then(r=>r.json()).then(r=>{document.getElementById('optimizer-summary').innerHTML='<div><strong>Status</strong>'+String(r.health?.status??'unknown')+'</div><div><strong>Events</strong>'+String(r.eventCursorCount??0)+'</div><div><strong>Queue</strong>'+String(r.health?.queueDepth??0)+'</div><div><strong>Budget</strong>'+String(r.health?.budgetConsumed??0)+' / '+String(r.health?.budgetLimit??0)+'</div><div><strong>Shadow Results</strong>'+String(r.shadowResults?.length??0)+'</div><div><strong>Approvals</strong>'+String(r.approvals?.length??0)+'</div>'}).catch(()=>{document.getElementById('optimizer-summary').textContent='Optimizer status unavailable.'})</script>` : ""}
       ${body}
       <script>
@@ -13280,7 +14254,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             recommendations: ["Workflow Shape Optimizer", "Evaluation Gaps", "Repeated Failure Patterns", "Cost And Routing Opportunities", "Proposal Preview"],
             approvals: ["Learning Proposal Inbox", "Approved Application Plan"],
             "agent-improvements": ["Agent Definition Improvement"],
-            diagnostics: ["Project Path Mapping", "Route Feedback Signals", "Learning Daemon", "Daemon Failure Triage", "Recent Failed Runs", "Learning Receipt Health", "Proposal-To-Action Receipts", "Privacy Boundaries", "Next Commands"],
+            diagnostics: ["Project Path Mapping", "Guide Evidence Integrity", "Guide Adoption Holds", "Route Feedback Signals", "Learning Daemon", "Daemon Failure Triage", "Recent Failed Runs", "Learning Receipt Health", "Proposal-To-Action Receipts", "Privacy Boundaries", "Next Commands"],
             settings: ["Durable Learning Target", "Daemon Control Plane", "Autonomy Boundary"]
           };
           const utilityHeadings = ["Recent Dashboard Actions", "Project Path Mapping"];
@@ -13319,6 +14293,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   }
 
   function renderLearningReportHtml(report: LearningReport, learningQueue: LearningApprovalQueue | null, learningDaemon: DashboardLearningDaemonStatus | null, learningApplicationPlan: LearningApplicationPlan | null, learningActionReceipts: LearningActionReceiptLog | null, learningActionReceiptHealth: LearningActionReceiptHealth | null, workflowShape: WorkflowShapeOptimizationReport | null, agentImprovement: AgentImprovementReport | null, agentImprovementEval: AgentImprovementEvalPlan | null, agentImprovementPromotion: AgentImprovementPromotionQueue | null, shapeAutoUpdate: boolean, agentImprovementProjectLocalAutoApply: boolean, autonomousApplyMaxRisk: LearningRiskLevel, approvalAutopilotEnabled: boolean, approvalAutopilotMaxRisk: ApprovalAutopilotRisk, daemonTrustLevels: DaemonTrustSettings, supervisor: DashboardSupervisorStatus, projectPath: DashboardProjectPathResolution | null = null): string {
+    const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
     const failureRows = report.repeatedFailurePatterns.map((pattern) => `
       <tr><td>${escapeHtml(pattern.workflowId)}</td><td>${escapeHtml(pattern.stageId)}</td><td>${escapeHtml(pattern.agentId)}</td><td>${pattern.failedTasks}/${pattern.totalTasks}</td><td>${pattern.failureRate}</td></tr>
     `).join("");
@@ -13350,7 +14325,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const applicationRows = (learningApplicationPlan?.actions ?? []).map((action) => `
       <tr><td>${escapeHtml(action.id)}<br><span class="muted">${escapeHtml(action.proposalId)}</span></td><td>${escapeHtml(action.actionType)}</td><td>${escapeHtml(action.dangerGate)}</td><td>${action.writesOwnedLearningStateOnly ? "yes" : "no"}</td><td>${action.command ? `<code>${escapeHtml(action.command)}</code>` : "manual review"}</td></tr>
     `).join("");
-    const localProjectDir = projectPath?.localRootUri ?? report.projectDir;
     const proposalCommand = `npm run agentflow -- learning-proposals --project ${shellQuote(localProjectDir)} --write`;
     const applicationPlanCommand = `npm run agentflow -- learning-application-plan --project ${shellQuote(localProjectDir)} --write`;
     const daemonCommand = `npm run agentflow -- learning-daemon --project ${shellQuote(localProjectDir)} --mode apply-approved`;
@@ -14987,6 +15961,24 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <td>${escapeHtml(item.summary)}</td>
       </tr>
     `).join("");
+    const suggestionDecisionById = new Map(detail.roadmapSuggestionDecisions.decisions.map((item) => [item.suggestionId, item]));
+    const visibleSuggestions = (detail.roadmapSuggestions?.suggestions ?? []).filter((item) => suggestionDecisionById.get(item.id)?.decision !== "dismissed");
+    const suggestionRows = visibleSuggestions.map((item) => {
+      const recorded = suggestionDecisionById.get(item.id);
+      const decisionForm = (decision: RoadmapSuggestionDecision["decision"], label: string, secondary = false) => `<form method="post" action="/api/project-roadmap-suggestion" style="display:inline"><input type="hidden" name="project" value="${escapeHtml(project.rootUri)}"><input type="hidden" name="suggestionId" value="${escapeHtml(item.id)}"><input type="hidden" name="decision" value="${decision}"><button type="submit" class="compact-button${secondary ? " secondary" : ""}">${label}</button></form>`;
+      return `
+      <tr>
+        <td><span class="flag ${item.priority === "high" ? "warn" : item.source === "learning-evidence" ? "queued" : "good"}">${escapeHtml(item.priority ?? "planned")}</span></td>
+        <td><strong>${escapeHtml(item.title)}</strong><br><span class="muted">${escapeHtml(item.source === "learning-evidence" ? "Daemon learning evidence" : `${item.section ?? "Roadmap"}, line ${item.line}`)}</span></td>
+        <td>${escapeHtml(item.rationale ?? item.recommendation ?? "Existing unchecked roadmap item.")}</td>
+        <td>${recorded ? `<span class="status ${recorded.decision === "approved" ? "completed" : "queued"}">${escapeHtml(recorded.decision)}</span><br>` : ""}<div class="actions">${item.source === "learning-evidence" && recorded?.decision !== "approved" ? decisionForm("approved", "Add to roadmap") : ""}${decisionForm("deferred", "Defer", true)}${decisionForm("dismissed", "Dismiss", true)}</div></td>
+      </tr>
+    `;}).join("");
+    const newlyAlertedIds = new Set(detail.roadmapSuggestions?.newHighPrioritySuggestions ?? []);
+    const highPrioritySuggestions = visibleSuggestions.filter((item) => item.priority === "high" && !suggestionDecisionById.has(item.id) && (newlyAlertedIds.size === 0 || newlyAlertedIds.has(item.id)));
+    const decisionCounts = countStrings(detail.roadmapSuggestionDecisions.decisions.map((item) => item.decision));
+    const daemonAgeMs = detail.learningDaemon?.lastHeartbeatAt ? Math.max(0, Date.now() - Date.parse(detail.learningDaemon.lastHeartbeatAt)) : null;
+    const daemonHealthy = detail.learningDaemon?.status === "running" && daemonAgeMs !== null && daemonAgeMs <= Math.max(120_000, (detail.learningDaemon.intervalMs ?? 60_000) * 3);
 
     return `<!doctype html>
   <html>
@@ -15032,6 +16024,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         </div>
       </section>
       <section class="panel">
+        <div class="section-heading"><div><h2>Suggested Next Work</h2><span class="muted">Evidence-backed daemon proposals and open roadmap work for this project.</span></div><a class="button secondary" href="/learning?project=${encodeURIComponent(project.rootUri)}&view=approvals">Open learning inbox</a></div>
+        ${highPrioritySuggestions.length ? `<div class="callout queued"><strong>${highPrioritySuggestions.length} new high-priority suggestion${highPrioritySuggestions.length === 1 ? "" : "s"}</strong><p>Human review is requested; these remain advisory until approved.</p></div>` : ""}
+        <div class="metric-grid compact">${metricCard("Visible", visibleSuggestions.length, "current suggestions")}${metricCard("Approved", decisionCounts.approved ?? 0, "added to roadmap")}${metricCard("Deferred", decisionCounts.deferred ?? 0, "kept for later")}${metricCard("Dismissed", decisionCounts.dismissed ?? 0, "hidden with history retained")}</div>
+        <p class="muted">${detail.roadmapSuggestions ? `Generated ${escapeHtml(detail.roadmapSuggestions.generatedAt)} · ${detail.roadmapSuggestions.openItems} open roadmap item(s)` : "The learning daemon has not published suggestions for this project yet."}</p>
+        <table><thead><tr><th>Priority</th><th>Suggestion</th><th>Why</th><th>Action</th></tr></thead><tbody>${suggestionRows || "<tr><td colspan=\"4\">No current suggestions. The daemon will populate this after its next successful project tick.</td></tr>"}</tbody></table>
+      </section>
+      <section class="panel">
+        <div class="section-heading"><div><h2>Suggestion Pipeline Health</h2><span class="muted">Per-project daemon timing and durable decision outcomes.</span></div><span class="status ${daemonHealthy ? "completed" : "failed"}">${daemonHealthy ? "healthy" : "needs attention"}</span></div>
+        <div class="meta-grid compact"><div><strong>Daemon</strong>${escapeHtml(detail.learningDaemon?.status ?? "unavailable")}</div><div><strong>Last heartbeat</strong>${detail.learningDaemon?.lastHeartbeatAt ? renderDashboardDateTime(detail.learningDaemon.lastHeartbeatAt) : "never"}</div><div><strong>Heartbeat age</strong>${daemonAgeMs === null ? "unknown" : formatDuration(daemonAgeMs)}</div><div><strong>Per-project budget</strong>${formatDuration(parsePositiveInteger(process.env.AGENTFLOW_LEARNING_PROJECT_TIMEOUT_MS ?? "", 120_000))}</div></div>
+        ${detail.learningDaemon?.lastError ? `<div class="callout warn"><strong>Latest daemon error</strong><p>${escapeHtml(detail.learningDaemon.lastError)}</p></div>` : ""}
+        <p class="muted">Approved, deferred, and dismissed outcomes are retained in project-local learning state so future ranking can distinguish accepted work from unwanted repetition.</p>
+      </section>
+      <section class="panel">
         <h2>Context Files</h2>
         ${contextRows}
       </section>
@@ -15052,7 +16057,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderProjectsHtml(projects: DashboardProjectSummary[], identities: DashboardProjectIdentityGroup[], aliasMergePlan: DashboardProjectAliasMergePlan): string {
+  function renderProjectsHtml(projects: DashboardProjectSummary[], identities: DashboardProjectIdentityGroup[], aliasMergePlan: DashboardProjectAliasMergePlan, suggestionCounts: Map<string, number> = new Map()): string {
     const canonicalIdentities = identities.filter((identity) => identity.visibility === "canonical");
     const supportingIdentities = identities.filter((identity) => identity.visibility === "supporting");
     const renderIdentityRow = (identity: DashboardProjectIdentityGroup) => `
@@ -15063,7 +16068,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <td>${formatNumber(identity.totalRuns)}<br><span class="muted">${formatNumber(identity.activeRuns)} active / ${formatNumber(identity.failedRuns)} failed</span></td>
         <td>${formatNumber(identity.totalIndexedFiles)}</td>
         <td>${formatNumber(identity.totalMemoryItems)}</td>
-        <td>${renderDashboardDateTime(identity.lastRunAt, "none")}</td>
+        <td>${renderDashboardDateTime(identity.lastRunAt, "none")}<br><a href="/project?root=${encodeURIComponent(identity.primaryRootUri)}"><span class="flag ${suggestionCounts.get(identity.primaryRootUri) ? "queued" : "good"}">${formatNumber(suggestionCounts.get(identity.primaryRootUri) ?? 0)} suggestions</span></a></td>
       </tr>
     `;
     const identityRows = canonicalIdentities.map(renderIdentityRow).join("");
@@ -15198,9 +16203,9 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       : info.provider.selected === "auto"
         ? `<p class="muted">Auto mode selects provider/model by stage tier. Use routing controls to tune it.</p>`
         : `<p class="muted">This provider has no selectable live model list.</p>`;
-    const providerIds = ["auto", "local", "byo", "bedrock", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const executionProviderIds = ["auto", "local", "byo", "bedrock", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
-    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "gemini", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
+    const providerIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const executionProviderIds = ["auto", "local", "byo", "bedrock", "deepseek", "gemini", "codex-cli", "openai", "anthropic", "muse", "openai-compatible", "kiro", "mock"];
+    const fallbackProviderIds = ["", "codex-cli", "openai", "anthropic", "deepseek", "gemini", "muse", "bedrock", "local", "byo", "openai-compatible", "kiro", "mock"];
     const modelPolicyIds = ["best-coding", "balanced", "lowest-cost", "maximum-reasoning"];
     const optionList = (values: string[], selectedValue: string, blankLabel = "none") => values.map((value) => {
       const selected = value === selectedValue ? " selected" : "";
@@ -15355,7 +16360,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             <select name="provider">${optionList(providerIds, info.provider.routingConfig.provider)}</select>
           </label>
           <label>Auto priority
-            <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,gemini,openai">
+            <input name="autoProviders" value="${escapeHtml(info.provider.routingConfig.autoProviders)}" placeholder="byo,bedrock,deepseek,gemini,openai">
           </label>
           <label>Fast tier
             <select name="fastProvider">${optionList(executionProviderIds, info.provider.routingConfig.fastProvider)}</select>
@@ -15386,21 +16391,37 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </html>`;
   }
 
-  function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, historicalRuns: DashboardRunStatus[]): string {
+  function renderQueueHtml(queue: DashboardQueueItem[], params: URLSearchParams, historicalRuns: DashboardRunStatus[], partnerProjects: Array<{id:string;name:string;rootUri:string}>, partnerHistory:Record<string,QueuePartnerHistorySummary>={}): string {
     const projectFilter = params.get("project")?.trim() || "";
-    const active = queue.filter((item) => item.runStatus === "queued" || item.runStatus === "running");
+    const active = queue.filter((item) => queueLifecyclePresentation(item).active
+      || item.familyAttempts?.some(attempt => ["queued","leased","running"].includes(attempt.status)));
     const recoveryActiveStatuses = new Set(["queued", "leased", "running"]);
     const recovering = queue.filter((item) =>
       (item.runStatus === "failed" || item.runStatus === "blocked")
+      && !item.relatedRunCount
       && Boolean(item.recoveryRunId)
       && recoveryActiveStatuses.has(item.recoveryRunStatus ?? "")
     );
     const recoveringRunIds = new Set(recovering.map((item) => item.runId));
-    const failed = queue.filter((item) => item.runStatus === "failed" && !recoveringRunIds.has(item.runId));
+    const failed = queue.filter((item) => (item.runStatus === "failed" || item.familyAttempts?.some(attempt => attempt.status === "failed"))
+      && !recoveringRunIds.has(item.runId));
     const expiredLeaseRows = queue.filter((item) => hasExpiredLease(item));
     const cards = queue.filter((item) => !recoveringRunIds.has(item.runId)).map((item) => {
-      const presentation = dashboardRunPresentation(item);
+      const lifecycle = queueLifecyclePresentation(item);
+      const historyHref = item.relatedRunCount
+        ? `/runs?relatedTo=${encodeURIComponent(item.runId)}`
+        : `/runs?runSet=${encodeURIComponent(item.runSetId)}`;
+      const earlierReview = (item.relatedOpenRunCount ?? 0) > 0
+        ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Earlier attempts need review</strong><small>${formatNumber(item.relatedOpenRunCount ?? 0)} earlier unfinished attempt(s). Grouping is not acceptance or dismissal; <a href="${historyHref}">review history and approvals</a>.</small></span></div>`
+        : "";
+      const familyApprovalCount = item.familyAttempts?.reduce((count,attempt) => count + attempt.approvals.length,0) ?? 0;
+      const attemptsPanel = item.familyAttempts?.length
+        ? `<details class="queue-family-attempts" style="overflow-wrap:anywhere;min-width:0"><summary>All ${formatNumber(item.familyAttempts.length)} attempts in this version set${familyApprovalCount ? ` · ${formatNumber(familyApprovalCount)} approval record(s) need review` : ""}</summary><p class="muted">Original statuses, blockers and approvals are retained. Grouping does not complete or dismiss work.</p><ol>${item.familyAttempts.map(attempt => `<li><a href="/run?id=${encodeURIComponent(attempt.id)}">${escapeHtml(attempt.id.slice(0,8))}</a> · ${escapeHtml(attempt.status)}${attempt.blocker ? `<p>${escapeHtml(redactApprovalCardText(attempt.blocker,2000))}</p>` : ""}${attempt.approvals.length ? `<p>${attempt.approvals.map(approval => `<a href="/run?id=${encodeURIComponent(attempt.id)}">Approval ${escapeHtml(approval.id.slice(0,8))}: ${escapeHtml(approval.status)}</a>`).join(" · ")}</p>` : ""}</li>`).join("")}</ol></details>`
+        : "";
+      const deliverableTitle = buildQueueCardTitle(item);
+      const versionSetId = item.versionSetId ?? item.runSetId;
       const eta = estimateQueueItemEta(item, historicalRuns);
+      const latency = queueLatencyBudget(item);
       const taskSummary = `${item.completedTasks}/${item.totalTasks} done, ${item.queuedTasks} queued, ${item.runningTasks} worker-leased, ${item.failedTasks} failed`;
       const currentStage = item.runningStageId
         ? `${item.runningStageId} (${item.runningAgentId ?? "unknown"})`
@@ -15441,19 +16462,67 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         ? `<div class="queue-card-callout bad">${dashboardIcon("warning")}<span><strong>Failed</strong><small>${escapeHtml(item.failedReason?.trim() || `${formatNumber(item.failedTasks || 1)} stage${(item.failedTasks || 1) === 1 ? "" : "s"} failed without a recorded reason.`)}</small></span></div>`
         : hasExpiredLease(item)
           ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Worker lease expired</strong><small>Recovery is available without losing completed stages.</small></span></div>`
+          : lifecycle.key === "stale"
+            ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>Lifecycle needs reconciliation</strong><small>${escapeHtml(lifecycle.explanation)} Historical evidence is preserved.</small></span></div>`
           : "";
+      const waiting = lifecycle.key === "waiting" && item.waitReason
+        ? `<div class="queue-card-callout ${item.waitReason.overdue ? "warn" : ""}">${dashboardIcon(item.waitReason.overdue ? "warning" : "activity")}<span><strong>${item.waitReason.overdue ? "Wait budget exceeded" : "Waiting"}</strong><small>${escapeHtml(item.waitReason.reason)} · ${formatDuration(item.waitReason.waitedMs)} elapsed / ${formatDuration(item.waitReason.budgetMs)} budget.</small></span></div>`
+        : "";
+      const latencyAlert = ["running","stale"].includes(lifecycle.key) && latency.status !== "within"
+        ? `<div class="queue-card-callout warn">${dashboardIcon("warning")}<span><strong>${latency.status === "overdue" ? "Time budget exceeded" : "Time budget nearly used"}</strong><small>${escapeHtml(latency.phase)} · ${formatDuration(latency.elapsedMs)} elapsed / ${formatDuration(latency.budgetMs)} ${escapeHtml(latency.workClass)} budget.</small></span></div>`
+        : "";
+      const callback = item.codeFixCallback;
+      const callbackLabel = callback?.state === "acknowledged" ? "Requester acknowledged"
+        : callback?.state === "transport_accepted" ? "Transport accepted"
+        : callback?.state === "delivery_uncertain" ? "Delivery uncertain"
+        : callback?.state === "delivery_failed" ? "Delivery retry pending"
+        : callback ? "Callback queued" : null;
+      const callbackCallout = callback && callbackLabel
+        ? `<div class="queue-card-callout ${callback.state === "delivery_failed" || callback.state === "delivery_uncertain" ? "warn" : ""}">${dashboardIcon(callback.state === "acknowledged" ? "check" : "activity")}<span><strong>Verified fix callback: ${escapeHtml(callbackLabel)}</strong><small>Verification, transport acceptance, and requester acknowledgment are separate evidence. Notification ${escapeHtml(callback.notificationId.slice(0,8))}.</small></span></div>`
+        : "";
+      const ownership = item.failureOwnership;
+      const ownerLabel = ownership?.owner === "agent-workflow-runtime" ? "Agent Workflow runtime"
+        : ownership?.owner === "product-source" ? `${item.projectName} product source`
+        : ownership?.owner === "project-policy" ? "Project policy"
+        : ownership?.owner === "external-native" ? "External/native evidence"
+        : ownership ? "Unclassified" : null;
+      const ownershipCallout = ownership && ownerLabel
+        ? `<div class="queue-card-callout ${ownership.owner === "unknown" ? "warn" : ""}">${dashboardIcon(ownership.codeFix ? "file" : "info")}<span><strong>Failure owner: ${escapeHtml(ownerLabel)}</strong><small>${escapeHtml(ownership.reason)} · route: ${escapeHtml(ownership.repairRoute)} · ${escapeHtml(ownership.confidence)} confidence; evidence run ${escapeHtml(ownership.evidenceRunId.slice(0,8))}. Classification grants no repair or replay authority.</small></span></div>`
+        : "";
+      const runtimeRemedy = item.runtimeRemedy as (typeof item.runtimeRemedy&{remoteFleetTrust?:NonNullable<DashboardWorkerStatus["remoteFleetTrust"]>})|null;
+      const probeDetail = runtimeRemedy?.latestProbe
+        ? ` Latest probe ${runtimeRemedy.latestProbe.status} on runtime ${runtimeRemedy.latestProbe.runtimeVersion} (${runtimeRemedy.latestProbe.workerState}, digest ${runtimeRemedy.latestProbe.digest.slice(0,12)})${runtimeRemedy.latestProbe.reason ? `: ${runtimeRemedy.latestProbe.reason}` : "."}`
+        : " No capability probe has been recorded.";
+      const remoteFleetTrust=runtimeRemedy?.remoteFleetTrust??[];
+      const fleetTransportDelayed=remoteFleetTrust.filter(host=>host.state==="transport-delayed"||host.state==="not-delivered");
+      const fleetWorkerUnhealthy=remoteFleetTrust.filter(host=>host.state==="worker-stale"||host.state==="untrusted"||host.state==="disabled");
+      const fleetDetail=remoteFleetTrust.length
+        ? ` Fleet delivery: ${remoteFleetTrust.map(host=>`${host.hostId} ${host.state} (sequence ${host.sequence??"none"}, delivery ${host.deliveryLagMs===null?"n/a":formatDuration(host.deliveryLagMs)}, worker ${host.workerFreshnessMs===null?"n/a":formatDuration(host.workerFreshnessMs)}, build ${host.runtimeBuildDigest?.slice(0,12)??"none"}, key ${host.keyLifecycle})`).join("; ")}. ${fleetTransportDelayed.length?`Heartbeat transport delayed for ${fleetTransportDelayed.map(host=>host.hostId).join(", ")}; this does not prove the worker itself is unhealthy. `:""}${fleetWorkerUnhealthy.length?`Worker or trust health needs attention for ${fleetWorkerUnhealthy.map(host=>host.hostId).join(", ")}. `:""}`
+        : " No enrolled remote fleet heartbeat has been delivered; local worker evidence remains separate.";
+      const remedyCallout = runtimeRemedy
+        ? `<div class="queue-card-callout ${runtimeRemedy.state === "awaiting-worker-rollout" ? "warn" : ""}">${dashboardIcon(runtimeRemedy.state === "compatible-worker-active" ? "check" : "warning")}<span><strong>${runtimeRemedy.state === "compatible-worker-active" ? "Compatible worker runtime active" : "Runtime fix awaiting worker rollout"}</strong><small>Required capability ${escapeHtml(runtimeRemedy.requiredCapability)}${runtimeRemedy.workerIds.length ? ` attested by ${escapeHtml(runtimeRemedy.workerIds.join(", "))}` : " is not attested by an eligible worker"}. ${escapeHtml(runtimeRemedy.eligibilityReason)}${escapeHtml(probeDetail)}${escapeHtml(fleetDetail)} This readiness check does not authorize replay.</small></span></div>`
+        : "";
       return `
-        <article class="queue-card queue-status-${escapeHtml(item.runStatus)}">
+        <article class="queue-card queue-status-${escapeHtml(lifecycle.key)}" data-queue-card-key="${escapeHtml(`${item.projectRootUri}:${item.versionSetId ?? item.runSetId}`)}">
           <div class="queue-card-header">
             <div class="queue-card-title">
-              <div class="queue-card-eyebrow"><span class="status ${escapeHtml(item.runStatus)}">${escapeHtml(item.runStatus)}</span><span>${escapeHtml(item.projectName)}</span><span>${escapeHtml(item.workflowId)}</span></div>
-              <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(presentation.title)}</a></h2>
-              <p>${escapeHtml(presentation.description)}</p>
-              <p class="muted">Run ${escapeHtml(item.runId.slice(0, 8))} · started ${renderDashboardDateTime(item.startedAt)}</p>
+              <div class="queue-card-eyebrow"><span class="status ${escapeHtml(lifecycle.key)}" title="${escapeHtml(lifecycle.explanation)}">${escapeHtml(lifecycle.label)}</span><span>${escapeHtml(item.projectName)}</span><span>${escapeHtml(item.workflowId)}</span></div>
+              <h2><a href="/run?id=${encodeURIComponent(item.runId)}">${escapeHtml(deliverableTitle)}</a></h2>
+              ${renderQueueCardActivityLine(item.runId,item.liveActivity?.text ?? currentStage)}
+              <p class="muted"><strong>Version set</strong> <a href="${historyHref}" title="Open this version set">${escapeHtml(versionSetId)}</a> · card ${escapeHtml(item.runId.slice(0, 8))}</p>
+              <p class="muted">Started ${renderDashboardDateTime(item.startedAt)}</p>
             </div>
-            <div class="actions"><a class="button secondary" href="/runs?runSet=${encodeURIComponent(item.runSetId)}">${iconLabel("layers", "Open set")}</a><a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a></div>
+            <div class="actions"><a class="button secondary" href="${historyHref}">${iconLabel("layers", "Open history")}</a><a class="button secondary" href="/run?id=${encodeURIComponent(item.runId)}">${iconLabel("activity", "Open run")}</a></div>
           </div>
           ${attention}
+          ${waiting}
+          ${latencyAlert}
+          ${callbackCallout}
+          ${ownershipCallout}
+          ${remedyCallout}
+          ${earlierReview}
+          ${attemptsPanel}
+          ${renderQueuePartnerHistory(partnerHistory[item.runId])}
           <div class="queue-stage-summary">
             <div class="queue-stage-heading"><span><strong>${formatNumber(item.completedTasks)} of ${formatNumber(item.totalTasks)} stages complete</strong><small>${escapeHtml(activeLabel)}${activeAgent ? ` · ${escapeHtml(activeAgent)}` : ""}</small></span><span class="queue-stage-count">${Math.round((item.completedTasks / Math.max(item.totalTasks, 1)) * 100)}%</span></div>
             <div class="queue-stage-rail" role="img" aria-label="${escapeHtml(`${item.completedTasks} of ${item.totalTasks} stages complete; ${activeLabel}`)}">${stageDots}</div>
@@ -15461,10 +16530,14 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           <div class="queue-card-facts">
             <div><strong>Current work</strong><span>${escapeHtml(currentStage)}</span></div>
             <div><strong>ETA</strong><span title="${escapeHtml(eta.reason)}">${escapeHtml(formatRunEta(eta))}</span></div>
+            <div><strong>Time budget</strong><span>${escapeHtml(latency.phase)} · ${formatDuration(latency.elapsedMs)} / ${formatDuration(latency.budgetMs)} · ${escapeHtml(latency.status)}</span></div>
             <div><strong>Queue</strong><span>${formatNumber(item.runningTasks)} running · ${formatNumber(item.queuedTasks)} waiting</span></div>
             <div><strong>Worker</strong><span>${escapeHtml(item.runningWorkerId ?? "Not leased")}</span></div>
+            ${callback && callbackLabel ? `<div><strong>Fix callback</strong><span>${escapeHtml(callbackLabel)} · ${renderDashboardDateTime(callback.acknowledgedAt ?? callback.transportAcceptedAt ?? callback.createdAt)}</span></div>` : ""}
+            ${ownership && ownerLabel ? `<div><strong>Failure owner</strong><span>${escapeHtml(ownerLabel)} · ${escapeHtml(ownership.confidence)} confidence</span></div>` : ""}
+            ${runtimeRemedy ? `<div><strong>Runtime remedy</strong><span>${escapeHtml(runtimeRemedy.state)} · ${escapeHtml(runtimeRemedy.requiredCapability)}</span></div>` : ""}
             <div><strong>Oldest active</strong><span>${renderDashboardDateTime(item.oldestRunningAt ?? item.oldestQueuedAt ?? item.startedAt)}</span></div>
-            <div><strong>History</strong><span><a href="/runs?runSet=${encodeURIComponent(item.runSetId)}">${formatNumber(item.runSetSize)} related run${item.runSetSize === 1 ? "" : "s"}</a></span></div>
+            <div><strong>Version set</strong><span>${escapeHtml((item.versionSetId ?? item.runSetId).slice(0,8))} · <a href="${historyHref}">${formatNumber(item.relatedRunCount ?? item.runSetSize)} related run${(item.relatedRunCount ?? item.runSetSize) === 1 ? "" : "s"}</a> · <a href="${historyHref}" target="_blank" rel="noopener">Open family in new window</a></span></div>
           </div>
           <div class="queue-card-footer">
             <div class="queue-primary-actions">${queueItemPrimaryForms(item)}</div>
@@ -15495,26 +16568,28 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("queue")}
+    ${renderQueuePartnerOverlay(partnerProjects, projectFilter || ctx.rootDir)}
     <main>
       <div class="topbar">
         <div>
           <a href="/">Dashboard</a>
           <h1>Queue</h1>
           <span id="queue-watch-status" class="muted">Queue watcher starting…</span>
+          <button type="button" id="queue-watch-refresh" hidden style="display:none">Queue changed — refresh cards</button>
         </div>
-        <a class="button secondary" href="/api/queue">JSON</a>
+        <div class="actions"><a class="button secondary" href="/queue-status">Live status table</a><a class="button secondary" href="/api/queue">JSON</a></div>
       </div>
       ${renderDashboardFlash(params)}
       ${renderDashboardActionHistory()}
       <section class="panel">
-        <div class="meta-grid">
+        <div class="meta-grid" data-queue-live-region="counts">
           <div><strong>Active Runs</strong>${formatNumber(active.length)}</div>
           <div><strong>Recovering</strong>${formatNumber(recovering.length)}</div>
           <div><strong>Failed Runs</strong>${formatNumber(failed.length)}</div>
           <div><strong>Queued Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.queuedTasks, 0))}</div>
           <div><strong>Running Tasks</strong>${formatNumber(queue.reduce((sum, item) => sum + item.runningTasks, 0))}</div>
         </div>
-        <div class="actions">
+        <div class="actions" data-queue-live-region="controls">
           ${queueProcessForm(projectFilter)}
           ${expiredLeaseRows.length ? queueRecoverExpiredLeasesForm() : ""}
         </div>
@@ -15523,6 +16598,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           <div class="form-actions"><button type="submit">Filter Queue</button></div>
         </form>
       </section>
+      <div data-queue-live-region="attention">
       ${failed.length ? `<section class="panel warn-panel">
         <h2>Clear Failed Queue Items</h2>
         <p class="muted">Dismissal removes failed runs from this queue without deleting their history, artifacts, or receipts.</p>
@@ -15541,20 +16617,32 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           </tr>`).join("")}</tbody>
         </table></div>
       </section>` : ""}
+      </div>
+      ${renderQueueHistoryPanel()}
       <section class="queue-section" aria-labelledby="queue-runs-heading">
         <div class="section-heading"><div><h2 id="queue-runs-heading">Work in the queue</h2><span class="muted">Follow progress, understand blockers, and act without losing run history.</span></div></div>
-        <div class="queue-card-list">${cards || '<div class="panel human-empty"><strong>The queue is clear</strong><span>New and active work will appear here.</span></div>'}</div>
+        <div class="queue-card-list" data-queue-live-region="cards">${cards || '<div class="panel human-empty"><strong>The queue is clear</strong><span>New and active work will appear here.</span></div>'}</div>
       </section>
     </main>
     <script>
       (() => {
         const status = document.getElementById("queue-watch-status");
+        ${queueCardActivityScript()}
+        ${queueCardRefreshScript()}
+        ${queueHistoryScript()}
+        const history = startQueueHistory();
+        const cards = createQueueCardRefresher(() => history.refresh());
         if (!("Worker" in window)) {
-          status.textContent = "Live queue updates unavailable; refresh manually.";
+          status.textContent = "Watching queue cards with background polling.";
+          cards.request();
+          const fallback = window.setInterval(() => cards.request(), 10000);
+          window.addEventListener("pagehide", () => { clearInterval(fallback); cards.stop(); history.stop(); }, { once: true });
           return;
         }
         const watcher = new Worker("/assets/queue-watcher.js");
+        const fallback = window.setInterval(() => cards.request(), 10000);
         watcher.onmessage = (event) => {
+          if (event.data.type === "snapshot") updateQueueCardActivity(event.data.activities);
           if (event.data.type === "error") {
             status.textContent = "Queue watcher reconnecting…";
             return;
@@ -15562,10 +16650,10 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           status.textContent = event.data.active > 0
             ? "Watching " + event.data.active + " active run" + (event.data.active === 1 ? "" : "s") + " · updated " + new Date(event.data.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
             : "Queue watcher idle · checked " + new Date(event.data.checkedAt).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
-          if (event.data.changed) window.location.reload();
+          if (event.data.changed) cards.request();
         };
-        watcher.postMessage({ type: "start", signature: ${serializeInlineScriptJson(queueSnapshotSignature(queue))} });
-        window.addEventListener("pagehide", () => watcher.postMessage({ type: "stop" }), { once: true });
+        watcher.postMessage({ type: "start", project: ${serializeInlineScriptJson(projectFilter || null)}, signature: ${serializeInlineScriptJson(queueSnapshotSignature(queue))} });
+        window.addEventListener("pagehide", () => { clearInterval(fallback); watcher.postMessage({ type: "stop" }); cards.stop(); history.stop(); }, { once: true });
       })();
     </script>
   </body>
@@ -16162,6 +17250,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
 
   function renderRunDetailHtml(input: {
     run: NonNullable<Awaited<ReturnType<typeof getWorkflowRunDetails>>["run"]>;
+    partnerProjects: Array<{id:string;name:string;rootUri:string}>;
     tasks: Awaited<ReturnType<typeof getWorkflowRunDetails>>["tasks"];
     receipts: Awaited<ReturnType<typeof getWorkflowRunDetails>>["receipts"];
     artifacts: Awaited<ReturnType<typeof listArtifacts>>;
@@ -16175,10 +17264,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     preferenceScorecard: PreferenceScorecard | null;
     tuningProposals: TuningProposalSet | null;
     approvalCeiling: string;
+    partnerHistory?:QueuePartnerHistorySummary;
   }): string {
     const completedTasks = input.tasks.filter((task) => task.status === "completed" && !task.skipped).length;
     const failedTasks = input.tasks.filter((task) => task.status === "failed").length;
     const activeTasks = input.tasks.filter((task) => task.status === "running" || task.status === "leased" || task.status === "queued").length;
+    const coordinatorSourceRunId = stringValue(input.run.evaluationMetadata?.sourceRunId) ?? input.run.id;
     const shouldRefresh = input.run.status === "queued" || input.run.status === "leased" || input.run.status === "running";
     const summaryBlock = input.summary
       ? `<pre>${escapeHtml(formatRunSummary(input.summary))}</pre>`
@@ -16208,6 +17299,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
   </head>
   <body>
     ${dashboardNav("runs")}
+    ${renderQueuePartnerOverlay(input.partnerProjects, input.run.projectRootUri, {runId:input.run.id})}
     <main>
       <div class="topbar">
         <div>
@@ -16223,6 +17315,24 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ${renderDashboardFlash(input.params)}
       ${renderDashboardActionHistory()}
       ${(input.run.runSetSize ?? 1) > 1 && input.run.runSetId ? `<section class="panel"><strong>Run history</strong><p class="muted">This run belongs to set ${escapeHtml(input.run.runSetId)} with ${formatNumber(input.run.runSetSize ?? 1)} immutable attempts.</p><a href="/runs?runSet=${encodeURIComponent(input.run.runSetId)}">View related runs →</a></section>` : ""}
+      ${input.run.replacementRunId && ["failed","blocked","cancelled"].includes(input.run.status) ? `<section class="panel" aria-labelledby="coordinator-history-title">
+        <h2 id="coordinator-history-title">Coordinator history</h2>
+        <p>${input.run.dismissed ? "This terminal attempt is archived from actionable views. Its original status, contracts, receipts, checkpoints, approvals, and acceptance history remain intact." : "This unsuccessful terminal attempt can leave actionable views only after its successful replacement has independently satisfied the original requirements."}</p>
+        <p><a href="/run?id=${encodeURIComponent(input.run.replacementRunId)}">Open accepted replacement ${escapeHtml(input.run.replacementRunId.slice(0,8))} →</a></p>
+        <form method="post" action="/api/coordinator-history" class="inline-form">
+          <input type="hidden" name="returnTo" value="/run?id=${encodeURIComponent(input.run.id)}">
+          <input type="hidden" name="action" value="${input.run.dismissed?"restore":"archive"}">
+          <input type="hidden" name="sourceRunId" value="${escapeHtml(coordinatorSourceRunId)}">
+          <input type="hidden" name="replacementRunId" value="${escapeHtml(input.run.replacementRunId)}">
+          <input type="hidden" name="runIds" value="${escapeHtml(input.run.id)}">
+          <input type="hidden" name="actor" value="dashboard-user">
+          <label>Reason<input name="reason" required maxlength="500" placeholder="Why this exact view-only history action is needed"></label>
+          <label class="check-row"><input type="checkbox" required onchange="this.form.confirmation.value=this.checked?'${input.run.dismissed?"Restore to active views.":"Archive from active views."}':''"> I understand this preserves history and changes no execution or acceptance state.</label>
+          <input type="hidden" name="confirmation" value="">
+          <button type="submit">${input.run.dismissed?"Restore to active views":"Archive from active views"}</button>
+        </form>
+      </section>`:""}
+      ${input.partnerHistory?.attempts?`<section class="panel"><h2>Partner learned history</h2>${renderQueuePartnerHistory(input.partnerHistory)}</section>`:''}
       <div id="run-continuation">${renderRunContinuationBanner(input.run)}</div>
       <section id="run-stage-timeline" class="panel run-stage-timeline-panel">
         ${renderRunStageTimeline(input.tasks)}
@@ -16575,7 +17685,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             ? 'Run ' + payload.run.status + ' · final activity loaded ' + formatTime(payload.generatedAt)
             : 'Live · updated ' + formatTime(payload.generatedAt) + ' · next update in 2s';
           toggle.hidden = stopped;
-          if (stopped && ${initiallyActive ? "true" : "false"}) window.setTimeout(() => window.location.reload(), 1200);
+          if (stopped && ${initiallyActive ? "true" : "false"}) window.setTimeout(() => { if (document.documentElement.dataset.queuePartnerOpen !== "true") window.location.reload(); }, 1200);
         } catch (error) {
           failures += 1;
           connection.textContent = 'Live update unavailable (' + (error instanceof Error ? error.message : 'request failed') + ') · retrying';
@@ -16991,7 +18101,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     </section>`;
   }
 
-  function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, approvalActionPlan: ServerApprovalActionPlanReport, approvalActionTestAdapter: ServerApprovalActionTestAdapterReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], params: URLSearchParams): string {
+  function renderServerReadinessHtml(report: ServerReadinessReport, registry: ServerProjectRegistryReport, storageVerification: StorageVerificationReport, migrationPlans: StorageMigrationPlanListing, mergeEvidence: StorageMergeEvidenceListing, offlineFallback: OfflineFallbackReport, objectProof: ObjectArtifactProofReport, runtimeMonitor: RuntimeMonitorReport, statePlaneProof: SharedStatePlaneProof, mutationControls: ServerMutationControlReport, approvalActionPlan: ServerApprovalActionPlanReport, approvalActionTestAdapter: ServerApprovalActionTestAdapterReport, requestAudit: ServerRequestAuditReport, projects: DashboardProjectSummary[], worker: DashboardWorkerStatus, params: URLSearchParams): string {
     const projectOptions = projects.map((project) => `<option value="${escapeHtml(project.rootUri)}"${report.projectRootUri === project.rootUri ? " selected" : ""}>${escapeHtml(project.name)}</option>`).join("");
     const statusClass = report.status === "ready" || report.status === "local-only" ? "completed" : report.status === "blocked" ? "failed" : "queued";
     const checkRows = report.checks.map((check) => `
@@ -17056,6 +18166,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       <section class="panel"><h2>Registered Projects</h2><div class="table-wrap"><table><thead><tr><th>Project</th><th>Root</th><th>Config</th><th>Roles</th><th>Role IDs</th></tr></thead><tbody>${projectRows || '<tr><td colspan="5">No registered projects found.</td></tr>'}</tbody></table></div></section>`;
     const runtimeDetails = `
       <section class="panel"><h2>Services</h2><div class="table-wrap"><table><thead><tr><th>Service</th><th>Status</th><th>Detail</th></tr></thead><tbody>${serviceRows || '<tr><td colspan="3">No service checks were recorded.</td></tr>'}</tbody></table></div></section>
+      <section class="panel"><div class="section-heading"><div><h2>Worker and Fleet Delivery</h2><span class="muted">Local process health, authenticated remote delivery, and worker execution freshness are independent signals.</span></div></div>${renderWorkerStatusHtml(worker)}</section>
       ${renderRuntimeMonitorPanel(runtimeMonitor, params)}`;
     const storageDetails = `
       <section class="panel"><div class="section-heading"><div><h2>Shared Storage Verification</h2><span class="muted">Read-only migration proof. This does not copy, restore, delete, or mutate storage.</span></div><a class="button secondary" href="/api/storage-verify?${escapeHtml(storageParams.toString())}">JSON</a></div>
@@ -17211,13 +18322,19 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       if (!evaluation) {
         return `<p><strong>Evaluation approved</strong><br><span class="muted">Agent Workflow will run the stated holdout and collect evidence.</span></p>${evaluationForm("Run evaluation")}`;
       }
-      if (evaluation.status === "completed") {
+      if (evaluation.status === "completed" && evaluation.evidenceComplete) {
         return `<p><strong>Evaluation evidence ready</strong><br><span class="muted">Review the linked run, then accept its generated evidence.</span></p>${evidence}<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<button name="status" value="evaluated" type="submit">Accept evaluation result</button></form>`;
+      }
+      if (evaluation.status === "completed") {
+        return `<p><strong>Evaluation needs evidence</strong><br><span class="muted">The workflow completed, but no complete nonzero measured holdout report exists. It cannot be accepted.</span></p>${evidence}<form class="training-proposal-actions" method="post" action="/api/training-proposal-decision">${hidden}<button name="status" value="evaluated" type="submit">Record missing evidence</button></form>`;
       }
       if (["failed", "blocked", "cancelled", "missing"].includes(evaluation.status)) {
         return `<p><strong>Evaluation needs attention</strong><br><span class="muted">The evaluation did not produce an accepted PASS, FAIL, or INCONCLUSIVE verdict. A successful recovery follow-up only proves the recovery workflow completed.</span></p>${evidence}${evaluationForm("Retry evaluation")}`;
       }
       return `<p><strong>Evaluation in progress</strong><br><span class="muted">Evidence will appear here when the linked run reaches a truthful terminal state.</span></p>${evidence}`;
+    }
+    if (item.status === "needs-evidence") {
+      return `<p><strong>Needs evidence</strong><br><span class="muted">The previous run did not produce complete measured coverage. Retry with the persisted bounded design.</span></p>${evidence}${evaluationForm("Retry measured evaluation")}`;
     }
     if (item.status === "evaluated") {
       if (verdict !== "PASS") {
@@ -17351,10 +18468,15 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       ...worker.lanes.filter((lane) => lane.status !== "running")
     ].slice(0, 3);
     const hiddenLanes = Math.max(0, worker.lanes.length - displayedLanes.length);
+    const probeSummary=(worker.executionCapabilityProbes??[]).map(probe=>`${probe.id}: ${probe.status} · runtime ${probe.runtimeVersion} · ${probe.digest.slice(0,12)}${probe.reason?` · ${probe.reason}`:""}`).join(" | ")||"none recorded";
+    const remoteFleetRows=(worker.remoteFleetTrust??[]).map(host=>`<tr><td>${escapeHtml(host.hostId)}</td><td><span class="status ${host.state==="trusted"?"completed":host.state==="not-delivered"?"queued":"failed"}">${escapeHtml(host.state)}</span><br><span class="muted">${escapeHtml(host.trustState)}</span></td><td>${host.deliveryLagMs===null?"n/a":escapeHtml(formatDuration(host.deliveryLagMs))}</td><td>${host.workerFreshnessMs===null?"n/a":escapeHtml(formatDuration(host.workerFreshnessMs))}</td><td>${escapeHtml(host.runtimeBuildDigest?.slice(0,16)??"none")}</td><td>${escapeHtml(host.keyLifecycle)}${host.nextKeyExpiryAt?`<br><span class="muted">${renderDashboardDateTime(host.nextKeyExpiryAt)}</span>`:""}</td><td>${escapeHtml(host.trustReason)}</td></tr>`).join("");
     const detail = `
       <div class="meta-grid">
         <div><strong>Status</strong><span class="status ${worker.status === "running" ? "completed" : worker.status === "missing" ? "queued" : "failed"}">${escapeHtml(worker.status)}</span></div>
         <div><strong>Worker ID</strong>${escapeHtml(worker.workerId ?? "none")}</div>
+        <div><strong>Host Identity</strong>${escapeHtml(worker.hostId ?? "legacy local")}</div>
+        <div><strong>Heartbeat Trust</strong>${escapeHtml(worker.heartbeatTrustState ?? "unknown")} · ${escapeHtml(worker.heartbeatTrustReason ?? "no trust decision")}</div>
+        <div><strong>Runtime Build</strong>${escapeHtml(worker.runtimeBuildDigest?.slice(0,16) ?? "not attested")}</div>
         <div><strong>PID</strong>${worker.pid ?? "none"}</div>
         <div><strong>Process</strong>${worker.processAlive ? "alive" : "not running"}</div>
         <div><strong>Last Heartbeat</strong>${renderDashboardDateTime(worker.lastHeartbeatAt, "none")}</div>
@@ -17362,18 +18484,24 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         <div><strong>Tick Count</strong>${formatNumber(worker.ticks)}</div>
         <div><strong>Worker Limit</strong>${worker.limit ?? "n/a"}</div>
         <div><strong>Project Scope</strong>${escapeHtml(worker.projectRootUri ?? "all projects")}</div>
+        <div><strong>Project Identity</strong>${escapeHtml(worker.projectIdentityId ?? (worker.projectRootUri ? "unavailable" : "all projects"))}</div>
+        <div><strong>Identity Generation</strong>${worker.projectIdentityGeneration ?? "n/a"}</div>
+        <div><strong>Source Revision</strong>${escapeHtml(worker.sourceRevision?.slice(0,12) ?? (worker.projectRootUri ? "unavailable" : "not scoped"))}</div>
         <div><strong>Concurrency</strong>${worker.concurrency ?? "n/a"}</div>
         <div><strong>Per-project cap</strong>${worker.perProjectConcurrency ?? "n/a"}</div>
         <div><strong>Interval</strong>${worker.intervalMs ? formatDuration(worker.intervalMs) : "n/a"}</div>
         <div><strong>Ready Providers</strong>${escapeHtml(worker.providerIds?.join(", ") || "legacy/unknown")}</div>
         <div><strong>Unavailable Providers</strong>${escapeHtml(worker.unavailableProviderIds?.join(", ") || "none")}</div>
+        <div><strong>Execution Capabilities</strong>${escapeHtml(worker.executionCapabilities?.join(", ") || "none")}</div>
+        <div><strong>Capability Probes</strong>${escapeHtml(probeSummary)}</div>
       </div>
       <div class="meta-grid compact">
         <div><strong>Last Tick</strong>${worker.claimed} claimed / ${worker.completed} completed / ${worker.failed} failed</div>
         <div><strong>Heartbeat File</strong>${escapeHtml(worker.heartbeatPath)}</div>
         <div><strong>Start Command</strong><code>${escapeHtml(worker.command || "npm run worker:daemon")}</code></div>
       </div>
-      ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status</th><th>Providers</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}</td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span></td><td>${escapeHtml(lane.providerIds?.join(", ") || "legacy/unknown")}</td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      ${worker.lanes.length > 1 ? `<h3>Worker Lanes</h3><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Status / trust</th><th>Providers</th><th>Project</th><th>Concurrency</th><th>Last heartbeat</th><th>Last tick</th></tr></thead><tbody>${displayedLanes.map((lane) => `<tr><td>${escapeHtml(lane.workerId ?? "unknown")}<br><span class="muted">${escapeHtml(lane.hostId ?? "legacy local")}</span></td><td><span class="status ${lane.status === "running" ? "completed" : lane.status === "stopped" ? "queued" : "failed"}">${escapeHtml(lane.status)}</span><br><span class="muted">${escapeHtml(lane.heartbeatTrustState ?? "unknown")}</span></td><td>${escapeHtml(lane.providerIds?.join(", ") || "legacy/unknown")}</td><td>${escapeHtml(lane.projectRootUri ?? "all projects")}</td><td>${lane.concurrency ?? "n/a"}</td><td>${renderDashboardDateTime(lane.lastHeartbeatAt, "none")}</td><td>${lane.claimed} / ${lane.completed} / ${lane.failed}</td></tr>`).join("")}</tbody></table></div>` : ""}
+      <h3>Remote Fleet Attestation</h3>${remoteFleetRows?`<div class="table-wrap"><table><thead><tr><th>Host</th><th>State / trust</th><th>Delivery lag</th><th>Worker freshness</th><th>Runtime build</th><th>Key lifecycle</th><th>Evidence</th></tr></thead><tbody>${remoteFleetRows}</tbody></table></div>`:`<p class="muted">No remote fleet hosts are enrolled. Local live-process trust remains separate.</p>`}
       ${extraLanes.length ? `<p class="muted">Showing ${formatNumber(displayedLanes.length)} of ${formatNumber(worker.lanes.length)} discovered worker lane${worker.lanes.length === 1 ? "" : "s"} from the local heartbeat registry${hiddenLanes ? `; ${formatNumber(hiddenLanes)} older inactive lane${hiddenLanes === 1 ? "" : "s"} hidden.` : "."}</p>` : ""}
     `;
     if (!options.compact) return detail;
@@ -19184,7 +20312,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     const updates: Record<string, string> = {
       DEFAULT_MODEL_PROVIDER: provider,
       AGENTFLOW_ROUTING_MODE: provider === "auto" ? "adaptive" : process.env.AGENTFLOW_ROUTING_MODE || "adaptive",
-      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,gemini,openai,anthropic,openai-compatible,kiro",
+      AGENTFLOW_AUTO_PROVIDERS: autoProviders.length ? autoProviders.join(",") : "local,byo,bedrock,deepseek,gemini,openai,anthropic,openai-compatible,kiro",
       AGENTFLOW_PROVIDER_FAST: fastProvider,
       AGENTFLOW_PROVIDER_STANDARD: standardProvider,
       AGENTFLOW_PROVIDER_REASONING: reasoningProvider,
@@ -19335,12 +20463,6 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       return "Worker stopped cleanly. Start one with npm run worker:daemon.";
     }
     return "Worker heartbeat is stale. Restart with npm run worker:daemon, or requeue interrupted stages from Queue.";
-  }
-
-  function workflowDisplayName(workflowId: string): string {
-    if (workflowId === "debug-failure") return "Diagnose & Fix";
-    if (workflowId === "investigate-issue") return "Investigate Issue";
-    return workflowId.split("-").map((word) => word ? `${word[0].toUpperCase()}${word.slice(1)}` : word).join(" ");
   }
 
   function workflowGraphApiHref(
@@ -19757,8 +20879,8 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
         try {
           await handleDashboardRequest(request, response);
         } catch (error) {
-          response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-          response.end(publicHttpError("Dashboard request failed."));
+          console.error("Dashboard request failed:", redactApprovalCardText(error instanceof Error ? (error.stack ?? `${error.name}: ${error.message}`) : "Unknown error", 1500));
+          finishDashboardError(response, publicHttpError("Dashboard request failed."));
         } finally {
           releaseRequestSlot();
         }
@@ -19822,6 +20944,35 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
     });
 
   program
+    .command("worker-host-trust")
+    .description("Preview or apply governed fleet worker host enrollment, rotation, or revocation")
+    .requiredOption("--action <action>","enroll, rotate, or disable")
+    .requiredOption("--host-id <id>","stable registered fleet host identity")
+    .option("--public-key <path>","operator-supplied Ed25519 public key for enroll or rotate")
+    .option("--builds <digests>","comma-separated allowed runtime build digests")
+    .option("--expires-at <timestamp>","optional host key expiry")
+    .option("--overlap-until <timestamp>","required old-key overlap limit for rotation")
+    .option("--actor <name>","operator identity recorded on apply")
+    .option("--write","apply the previewed change and append an immutable receipt")
+    .option("--json","print machine-readable output")
+    .action(async(options:{action:string;hostId:string;publicKey?:string;builds?:string;expiresAt?:string;overlapUntil?:string;actor?:string;write?:boolean;json?:boolean})=>{
+      if(!["enroll","rotate","disable"].includes(options.action))throw new Error("--action must be enroll, rotate, or disable");
+      const registryPath=workerTrustStorePath;
+      const receiptPath=path.join(path.dirname(registryPath),"worker-host-trust-receipts.jsonl");
+      const store=await loadWorkerTrustStore();
+      const publicKey=options.publicKey?await fs.readFile(path.resolve(options.publicKey),"utf8"):undefined;
+      const plan=buildWorkerHostRegistryPlan({store,action:options.action as WorkerHostRegistryAction,hostId:options.hostId,publicKey,allowedRuntimeBuildDigests:options.builds?.split(","),expiresAt:options.expiresAt,overlapUntil:options.overlapUntil});
+      if(!options.write){
+        const preview={mode:"preview",registryPath,receiptPath,plan};
+        console.log(options.json?JSON.stringify(preview,null,2):[`Fleet host ${plan.action} preview ${plan.id}`,`Host: ${plan.hostId}`,`Key: ${plan.keyFingerprint??"all registered keys"}`,`Before: ${plan.beforeDigest}`,`After: ${plan.afterDigest}`,...plan.warnings.map(warning=>`Warning: ${warning}`),"No files changed. Re-run with --write --actor <name> after review."].join("\n"));
+        return;
+      }
+      if(!options.actor?.trim())throw new Error("--write requires --actor so the trust change has accountable provenance.");
+      const receipt=await applyWorkerHostRegistryPlan({plan,registryPath,receiptPath,actor:options.actor.trim()});
+      console.log(options.json?JSON.stringify({mode:"applied",receipt},null,2):`Applied ${receipt.action} for ${receipt.hostId}; receipt ${receipt.id}.`);
+    });
+
+  program
     .command("worker")
     .description("Execute queued workflow stage tasks")
     .option("-l, --limit <number>", "maximum tasks to execute", "1")
@@ -19866,6 +21017,12 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       const perProjectConcurrency = parseBoundedPositiveInteger(cliOptionValue(options.perProjectConcurrency, ["--per-project-concurrency"], String(workerDefaults.perProjectConcurrency ?? 2)), 1, 16);
       const projectScoped = workerDefaults.projectScoped !== false && !options.allProjects;
       const projectRootUri = configuredProjectRootUri && projectScoped ? configuredProjectRootUri : undefined;
+      const workerProjectIdentity=projectRootUri?await withClient(async client=>{
+        const available=Boolean((await client.query("select to_regclass('project_identity_locations') as name")).rows[0]?.name);
+        if(!available)return null;
+        return (await client.query<{projectId:string;projectIdentityId:string;projectIdentityGeneration:number}>(`select p.id::text as "projectId",l.identity_id::text as "projectIdentityId",l.generation as "projectIdentityGeneration" from projects p join project_identity_locations l on l.project_id=p.id where p.root_uri=$1 limit 1`,[projectRootUri])).rows[0]??null;
+      }).catch(()=>null):null;
+      const workerSourceRevision=projectRootUri?(await execFileText(ctx,"git",["-C",projectRootUri,"rev-parse","HEAD"],{allowFailure:true})).stdout.trim()||null:null;
 
       if (!options.watch) {
         const capabilities = await probeWorkerProviderCapabilities();
@@ -19894,6 +21051,26 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       let latestTick: Awaited<ReturnType<typeof runWorkerOnce>> | undefined;
       const startedAt = new Date().toISOString();
       let capabilities: Awaited<ReturnType<typeof probeWorkerProviderCapabilities>> = { ready: [], unavailable: [] };
+      let executionCapabilityProbes: Array<ExecutionCapabilityProbe&{runtimeVersion:string}> = [];
+      const workerHostId=process.env.AGENTFLOW_WORKER_HOST_ID?.trim()||os.hostname();
+      const attestationKeyFile=process.env.AGENTFLOW_WORKER_ATTESTATION_PRIVATE_KEY_FILE?.trim();
+      const attestationPrivateKey=attestationKeyFile?await fs.readFile(path.resolve(attestationKeyFile),"utf8").catch(()=>null):null;
+      let heartbeatSequence=BigInt(Date.now())*1_000n;
+      const configuredProbeInterval=Number.parseInt(process.env.AGENTFLOW_EXECUTION_CAPABILITY_PROBE_INTERVAL_MS??"60000",10);
+      const executionCapabilityProbeIntervalMs=Math.min(3_600_000,Math.max(15_000,Number.isFinite(configuredProbeInterval)?configuredProbeInterval:60_000));
+      let lastExecutionCapabilityProbeAt=0;
+      let executionCapabilityProbeRefresh:Promise<void>|null=null;
+      const refreshExecutionCapabilityProbes=async(force=false):Promise<void>=>{
+        if(!force&&Date.now()-lastExecutionCapabilityProbeAt<executionCapabilityProbeIntervalMs)return;
+        if(executionCapabilityProbeRefresh)return executionCapabilityProbeRefresh;
+        executionCapabilityProbeRefresh=(async()=>{
+          const runtimeMetadata=await ctx.runtimeVersionMetadata;
+          const next=(await probeCommandExecutionCapabilities()).map(probe=>({...probe,runtimeVersion:runtimeMetadata.runtimeVersion}));
+          executionCapabilityProbes=next;
+          lastExecutionCapabilityProbeAt=Date.now();
+        })().finally(()=>{executionCapabilityProbeRefresh=null;});
+        return executionCapabilityProbeRefresh;
+      };
       const heartbeatFile = path.resolve(process.cwd(), options.heartbeatFile);
       const registryHeartbeatFile = path.join(ctx.defaultWorkerHeartbeatDir, `${safeWorkerHeartbeatFileSegment(workerId)}-${process.pid}.json`);
       const writeHeartbeat = async (status: WorkerHeartbeat["status"], tick?: Awaited<ReturnType<typeof runWorkerOnce>>, countTick = true): Promise<void> => {
@@ -19901,12 +21078,20 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           ticks += 1;
           latestTick = tick;
         }
+        const runtimeMetadata=await ctx.runtimeVersionMetadata;
+        const runtimeBuildDigest=workerRuntimeBuildDigest({runtimeVersion:runtimeMetadata.runtimeVersion,bundleVersion:runtimeMetadata.bundleVersion,protocolVersions:runtimeMetadata.protocolVersions,executionCapabilityProbes});
         const heartbeat: WorkerHeartbeat = {
-          ...await ctx.runtimeVersionMetadata,
+          ...runtimeMetadata,
           pid: process.pid,
           workerId,
           workerLabel,
+          hostId:workerHostId,
+          runtimeBuildDigest,
           projectRootUri: projectRootUri ?? null,
+          projectId:workerProjectIdentity?.projectId??null,
+          projectIdentityId:workerProjectIdentity?.projectIdentityId??null,
+          projectIdentityGeneration:workerProjectIdentity?.projectIdentityGeneration??null,
+          sourceRevision:workerSourceRevision,
           concurrency,
           perProjectConcurrency,
           startedAt,
@@ -19922,9 +21107,16 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
             ...capabilities.unavailable.map((item) => item.providerId),
             ...(tick?.quarantinedProviderIds ?? [])
           ])],
+          executionCapabilities: executionCapabilityProbes.filter(probe=>probe.status==="passed").map(probe=>probe.id),
+          executionCapabilityProbes,
+          executionCapabilityProbeIntervalMs,
           status,
           command: `agentflow worker --watch --limit ${limit} --interval-ms ${intervalMs} --worker-id ${workerLabel} --lease-seconds ${leaseSeconds}${projectRootUri ? ` --project ${shellQuote(projectRootUri)}` : ""} --concurrency ${concurrency} --per-project-concurrency ${perProjectConcurrency}`
         };
+        if(attestationPrivateKey){
+          heartbeatSequence+=1n;
+          heartbeat.attestation=signWorkerHeartbeat({heartbeat:heartbeat as unknown as Record<string,unknown>,hostId:workerHostId,privateKey:attestationPrivateKey,runtimeBuildDigest,sequence:heartbeatSequence.toString(),ttlMs:Math.max(15_000,Math.min(60_000,intervalMs*10))});
+        }
         await fs.mkdir(path.dirname(heartbeatFile), { recursive: true });
         await fs.writeFile(heartbeatFile, `${JSON.stringify(heartbeat, null, 2)}\n`, "utf8");
         await fs.mkdir(path.dirname(registryHeartbeatFile), { recursive: true });
@@ -19940,6 +21132,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
       process.once("SIGTERM", stopWorker);
 
       await writeHeartbeat("starting");
+      await refreshExecutionCapabilityProbes(true);
       capabilities = await probeWorkerProviderCapabilities();
       await writeHeartbeat("running");
       console.log(`Worker watching. id=${workerId} limit=${limit} concurrency=${concurrency} perProjectConcurrency=${perProjectConcurrency} project=${projectRootUri ?? "all"} intervalMs=${intervalMs} leaseSeconds=${leaseSeconds} heartbeat=${heartbeatFile}`);
@@ -19965,6 +21158,7 @@ export function registerDaemonCommands(program: Command, ctx: CliContext): void 
           recoverProvider: async (providerId) => (await probeWorkerProviderExecution(providerId)).ready,
           shouldStop: () => stop,
           onTick: async (result) => {
+            await refreshExecutionCapabilityProbes(result.failed>0);
             await writeHeartbeat(stop ? "stopping" : "running", result);
             if (result.claimed > 0 || result.failed > 0) {
               console.log(`Worker claimed ${result.claimed}, completed ${result.completed}, failed ${result.failed}.`);

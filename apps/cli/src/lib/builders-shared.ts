@@ -2,6 +2,7 @@ import type { Dirent } from "node:fs";
 import { sourceSubjectHash } from "../../../../packages/workflow-engine/src/source-subject.js";
 import type { StructuredAcceptanceContract } from "../../../../packages/model-providers/src/types.js";
 import type { CliContext } from "./context.js";
+import { influenceHash, type ContextInfluence } from "../../../../packages/project-evidence/src/influence.js";
 import type { ArtifactLifecycleAction, DashboardWorkflowGraphReport, ArtifactLifecyclePolicy, DashboardActionApproval, DashboardFollowUpResult, DashboardProjectPathResolution, RunInputSnapshot, SourceSummaryWithHash, TeamRoleCapability, DashboardWorkflowStageRun, FocusedStageDeltaSummary, FocusedStageOutcomeSummary} from "./cli-types.js";
 import { byId, loadAgents, loadProjectConfig, loadWorkflows, loadYamlFile } from "../../../../packages/agent-registry/src/loaders.js";
 import { buildBundleManifest } from "../../../../packages/agent-registry/src/manifest.js";
@@ -12,7 +13,8 @@ import { selectRelevantSourceSummaries } from "../../../../packages/context-sele
 import { optimizeStaticWorkflowForLatency } from "../../../../packages/dynamic-workflow/src/index.js";
 import { type ExecutorResult, type ExecutorSnapshot, assertExecutorRegistration, assertSnapshot, executeExecutorSnapshot } from "../../../../packages/executor-adapters/src/index.js";
 import { assertCommandAllowed, executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
-import { executeAllowedFileWrite } from "../../../../packages/local-tools/src/file-writer.js";
+import { executeAllowedFileMutation, summarizeFileMutation } from "../../../../packages/local-tools/src/file-patcher.js";
+import { selectApprovedFileMutation } from "../../../../packages/local-tools/src/approved-file-mutation.js";
 import { providerFromEnv } from "../../../../packages/model-providers/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { indexProjectFiles } from "../../../../packages/project-indexer/src/index.js";
@@ -22,8 +24,15 @@ import { type RoadmapSnapshot, readRoadmapSnapshotFromProject } from "../../../.
 import { type CostQualityReport, buildCostQualityReport } from "../../../../packages/run-reporter/src/index.js";
 import { resolveLocalProjectPath } from "../../../../packages/runtime-root/src/index.js";
 import { claimActionApprovalExecution, createWorkflowRun, decideActionApproval, deleteProjectFiles, findRunActionByIdempotencyKey, getActionApproval, getArtifactById, getArtifactByUri, getLatestMemory, getProjectIndexState, getWorkflowRunDetails, listActionApprovals, listArtifacts, listProjectFileSummaries, listProjectStorageSummaries, listWorkflowReuseEvidence, markActionApprovalExecution, recordRunAction, resumeWorkflowRunFromCheckpoint, seedRegistry, upsertProject, upsertProjectFiles, upsertProjectIndexState } from "../../../../packages/storage/src/postgres.js";
+import { automaticRepeatForbidden, noAutomaticRepeatReason } from "../../../../packages/storage/src/no-automatic-repeat.js";
+import { PartnerManagedRunRecoveryError } from "../../../../packages/storage/src/managed-run-recovery.js";
+import { withClient } from "../../../../packages/storage/src/client.js";
+import { withProjectExecutionLock } from "../../../../packages/storage/src/reliability.js";
+import { assertApprovedCommandCoordinatorAuthority, executeSourceBoundApprovedCommand, type ApprovedCommandRunBinding } from "./approved-command-evidence.js";
 import { executorApprovalTarget, runExecutorApprovalGate } from "../../../../packages/workflow-engine/src/executor.js";
 import { attachCodexOrigin } from "../codex-callback.js";
+import { executeContextCorrection } from "../../../../packages/storage/src/context-corrections.js";
+import { executePartnerAdmission } from "../../../../packages/storage/src/partner-recovery-admission.js";
 import { parsePositiveInteger } from "../numeric-options.js";
 import { resolveWorkflow } from "../reference-resolution.js";
 import { execFile } from "node:child_process";
@@ -89,6 +98,7 @@ export async function approveAndExecuteAction(ctx: CliContext, input: {
       `Project: ${approval.projectRootUri}`,
       `Approval role gate: ${approvalGate.message}`,
       execution.output,
+      resumed.holdReason ?? "",
       resumed.resumedTasks > 0 ? `Resumed ${resumed.resumedTasks} blocked or unfinished stage${resumed.resumedTasks === 1 ? "" : "s"} in replacement run ${resumed.replacementRunId ?? approval.runId}.` : ""
     ].filter(Boolean).join("\n")
   };
@@ -353,7 +363,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
       ].join("\n")
     };
   }
-  if (!["artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter", "project_policy_change"].includes(approval.actionType)) {
+  if (!["context_correction", "artifact_prune", "artifact_archive", "artifact_restore", "object_mirror", "local_command", "file_write", "executor_adapter", "project_policy_change", "partner_recovery_admission"].includes(approval.actionType)) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
 
@@ -391,7 +401,7 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     });
   }
 
-  const artifactKind = approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : approval.actionType === "project_policy_change" ? "project_policy_change" : "";
+  const artifactKind = approval.actionType === "partner_recovery_admission" ? "partner_recovery_admission" : approval.actionType === "context_correction" ? "context_correction" : approval.actionType === "local_command" ? "command_output" : approval.actionType === "file_write" ? "file_write" : approval.actionType === "executor_adapter" ? "executor_output" : approval.actionType === "project_policy_change" ? "project_policy_change" : "";
   if (!artifactKind) {
     return { ok: false, error: `Unsupported approval action type: ${approval.actionType}` };
   }
@@ -425,6 +435,16 @@ export async function executeApprovedAction(ctx: CliContext, input: {
   }
 
   try {
+    if (approval.actionType === "partner_recovery_admission") {
+      const applied=await executePartnerAdmission({approvalId:approval.id,executionClaimToken,actor:input.actor});
+      await markActionApprovalExecution({approvalId:approval.id,status:"executed",actor:input.actor,actorRole:input.actorRole,summary:"Exact recovery recipe and baseline admission applied; original acceptance remains unverified.",artifactUri:applied.artifactUri,executionClaimToken});
+      return {ok:true,title:"Recovery admission recorded",runId:approval.runId,output:`Approval: ${approval.id}\nArtifact: ${applied.artifactUri}\nSource repair, independent verification and native acceptance remain separately governed.`};
+    }
+    if (approval.actionType === "context_correction") {
+      const artifactUri = await executeContextCorrection({approvalId:approval.id, claimToken:executionClaimToken, actor:input.actor});
+      await markActionApprovalExecution({approvalId:approval.id,status:"executed",actor:input.actor,actorRole:input.actorRole,summary:"Attributed context correction recorded.",artifactUri,executionClaimToken});
+      return {ok:true,title:"Context correction recorded",runId:approval.runId,output:`Approval: ${approval.id}\nArtifact: ${artifactUri}`};
+    }
     if (approval.actionType === "project_policy_change") {
       return executeProjectPolicyChangeApproval({ approval, actor: input.actor, actorRole: input.actorRole, executionClaimToken });
     }
@@ -462,14 +482,24 @@ export async function executeApprovedAction(ctx: CliContext, input: {
     if (approval.actionType === "local_command") {
       const commandLine = stringFromRecord(approval.payload, "commandLine") ?? approval.target;
       const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
-      const result = await executeAllowedCommand({
+      const runBinding = await withClient(async c => (await c.query<ApprovedCommandRunBinding>(`select r.id::text as "runId",
+        r.project_id::text as "projectId",p.root_uri as "projectRootUri",r.task,r.evaluation_metadata->'acceptanceContract' as contract,
+        r.evaluation_metadata->>'queueCoordinatorClaimId' as "coordinatorClaimId",r.evaluation_metadata->>'queueCoordinatorFence' as "coordinatorFence"
+        from workflow_runs r join projects p on p.id=r.project_id where r.id=$1`, [approval.runId])).rows[0]);
+      if (!runBinding) throw new Error("Approved command run identity unavailable.");
+      const bound = await executeSourceBoundApprovedCommand({ run: runBinding, approvalRunId: approval.runId,
+        approvalProjectRootUri: approval.projectRootUri, localProjectRootUri,
+        assertCoordinatorAuthority: () => withClient(c => assertApprovedCommandCoordinatorAuthority(c, runBinding)),
+        execute: () => executeAllowedCommand({
         commandLine,
         cwd: localProjectRootUri,
         project
-      });
+      }) });
+      const result = bound.result;
       const summary = [
         `Command \`${result.commandLine}\` exited with ${result.exitCode}`,
-        result.timedOut ? "after timing out" : `in ${result.durationMs}ms`
+        result.timedOut ? "after timing out" : `in ${result.durationMs}ms`,
+        ...(result.verificationRecipe?.status==='failed'?[`verification unproven: ${result.verificationRecipe.reason}`]:[])
       ].join(" ");
       const artifactUri = await recordRunAction({
         runId: approval.runId,
@@ -481,23 +511,24 @@ export async function executeApprovedAction(ctx: CliContext, input: {
         artifactKind: "command_output",
         artifactContent: {
           ...result,
+          ...bound.evidence,
           executedFromApprovalId: approval.id,
           requestedByTaskId: approval.taskId,
           requestedByStageId: approval.stageId
         },
         idempotencyKey: approval.idempotencyKey
       });
-      if (result.exitCode !== 0 || result.timedOut) {
+      if (result.exitCode !== 0 || result.timedOut || result.verificationRecipe?.status==='failed' || !bound.sourceUnchanged) {
         await markActionApprovalExecution({
           approvalId: approval.id,
           status: "failed",
           actor: input.actor,
           actorRole: input.actorRole,
-          summary: `Approved command failed: ${summary}`,
+          summary: `Approved command failed: ${summary}${!bound.sourceUnchanged ? "; acceptance source or coordinator authority changed during execution" : ""}`,
           artifactUri,
           executionClaimToken
         });
-        return { ok: false, error: `Approved command failed. ${summary}` };
+        return { ok: false, error: `Approved command failed. ${summary}${!bound.sourceUnchanged ? "; acceptance source or coordinator authority changed during execution" : ""}` };
       }
       await markActionApprovalExecution({
         approvalId: approval.id,
@@ -522,16 +553,21 @@ export async function executeApprovedAction(ctx: CliContext, input: {
 
     const fileWrite = await loadApprovedFileWrite(approval);
     const localProjectRootUri = await resolveLocalProjectRootUri(approval.projectRootUri);
-    const result = await executeAllowedFileWrite({
-      relativePath: fileWrite.path,
-      content: fileWrite.content,
-      cwd: localProjectRootUri,
+    const canonicalProjectRoot = await fs.realpath(localProjectRootUri);
+    const approvedProjectRoot = stringFromRecord(approval.payload, "canonicalProjectRoot");
+    const approvedProjectRootHash = stringFromRecord(approval.payload, "projectRootHash");
+    if (approvedProjectRoot && approvedProjectRoot !== canonicalProjectRoot) {
+      throw new Error(`Approved file mutation project root changed: expected ${approvedProjectRoot}, resolved ${canonicalProjectRoot}.`);
+    }
+    if (approvedProjectRootHash && approvedProjectRootHash !== textHash(canonicalProjectRoot)) {
+      throw new Error("Approved file mutation project-root hash no longer matches the resolved checkout.");
+    }
+    const result = await withProjectExecutionLock({projectRootUri:canonicalProjectRoot,resource:`file:${fileWrite.request.path.replace(/\\/gu,"/")}`},()=>executeAllowedFileMutation({
+      ...fileWrite,
+      cwd: canonicalProjectRoot,
       project
-    });
-    const summary = [
-      `Wrote ${result.bytesWritten} bytes to \`${result.relativePath}\`.`,
-      result.existed ? "Updated existing file." : "Created new file."
-    ].join(" ");
+    }));
+    const summary = summarizeFileMutation(result, fileWrite.isPatch);
     const artifactUri = await recordRunAction({
       runId: approval.runId,
       taskId: approval.taskId,
@@ -544,7 +580,16 @@ export async function executeApprovedAction(ctx: CliContext, input: {
         ...result,
         executedFromApprovalId: approval.id,
         requestedByTaskId: approval.taskId,
-        requestedByStageId: approval.stageId
+        requestedByStageId: approval.stageId,
+        approvalBinding: {
+          projectRootUri: approval.projectRootUri,
+          canonicalProjectRoot,
+          projectRootHash: textHash(canonicalProjectRoot),
+          mode: fileWrite.isPatch ? "patch" : "replace",
+          expectedHash: fileWrite.expectedHash ?? null,
+          payloadHash: stringFromRecord(approval.payload, "payloadHash") ?? null,
+          outcome: "outcome" in result ? result.outcome : "applied"
+        }
       },
       idempotencyKey: approval.idempotencyKey
     });
@@ -590,11 +635,11 @@ export async function executeLifecycleApproval(input: {
   executionRoleGate: string;
   separationGate: string;
   executionClaimToken: string;
-}): Promise<DashboardFollowUpResult> {
+}, effects = { loadArtifact: loadLifecycleExecutionArtifact, record: recordRunAction, finish: markActionApprovalExecution }): Promise<DashboardFollowUpResult> {
   const lifecycleAction = input.approval.actionType.replace(/^artifact_/, "") as ArtifactLifecycleAction;
   const currentPolicy = lifecyclePolicyFromProject(input.project, "project");
   const capabilityEnabled = lifecycleExecutionCapabilityEnabled(currentPolicy, lifecycleAction);
-  const targetArtifact = await loadLifecycleExecutionArtifact(input.approval, lifecycleAction);
+  const targetArtifact = await effects.loadArtifact(input.approval, lifecycleAction);
   const restoreReady = lifecycleAction === "restore" && isRestorableArchivedArtifact(targetArtifact);
   const lifecycleExecutionAvailable = lifecycleAction === "archive" || lifecycleAction === "restore";
   const destructiveLifecycleAction = lifecycleAction === "prune";
@@ -635,7 +680,7 @@ export async function executeLifecycleApproval(input: {
       : restored
         ? `Lifecycle restore recorded for ${input.approval.target}; restored copy created from archived snapshot.`
     : `Lifecycle ${lifecycleAction} policy recheck passed; recorded no-op receipt because execution is not implemented.`;
-  const artifactUri = await recordRunAction({
+  const artifactUri = await effects.record({
     runId: input.approval.runId,
     taskId: input.approval.taskId,
     agentId: input.approval.agentId,
@@ -670,15 +715,16 @@ export async function executeLifecycleApproval(input: {
     },
     idempotencyKey: input.approval.idempotencyKey
   });
-  await markActionApprovalExecution({
+  await effects.finish({
     approvalId: input.approval.id,
-    status: "executed",
+    status: archived || restored ? "executed" : "failed",
     actor: input.actor,
     actorRole: input.actorRole,
     summary,
     artifactUri,
     executionClaimToken: input.executionClaimToken
   });
+  if (!archived && !restored) return { ok: false, error: `${summary} No lifecycle effect was applied. Audit artifact: ${artifactUri}` };
   return {
     ok: true,
     title: skipped ? "Lifecycle skip receipt recorded" : archived ? "Lifecycle archive snapshot recorded" : restored ? "Lifecycle restore snapshot recorded" : "Lifecycle no-op receipt recorded",
@@ -880,6 +926,11 @@ export async function executeProjectPolicyChangeApproval(input: {
   actorRole?: string;
   executionClaimToken: string;
 }): Promise<DashboardFollowUpResult> {
+  const canonicalRoot=await fs.realpath(await resolveLocalProjectRootUri(input.approval.projectRootUri));
+  return withProjectExecutionLock({projectRootUri:canonicalRoot,resource:'file:.agent-workflow/project.yaml'},()=>executeProjectPolicyChangeApprovalLocked(input));
+}
+
+async function executeProjectPolicyChangeApprovalLocked(input:Parameters<typeof executeProjectPolicyChangeApproval>[0]):Promise<DashboardFollowUpResult>{
   const changeKind = stringFromRecord(input.approval.payload, "changeKind");
   const proposedRule = stringFromRecord(input.approval.payload, "proposedRule")?.trim();
   const field = changeKind === "allowed_command" ? "allowed_commands" : changeKind === "allowed_write_path" ? "allowed_write_paths" : null;
@@ -1113,7 +1164,7 @@ export function isDismissedApproval(approval: Pick<DashboardActionApproval, "dec
 }
 
 export function isExecutableApprovalAction(actionType: string): boolean {
-  return actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "project_policy_change" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
+  return actionType === "partner_recovery_admission" || actionType === "context_correction" || actionType === "local_command" || actionType === "file_write" || actionType === "executor_adapter" || actionType === "project_policy_change" || actionType === "artifact_prune" || actionType === "artifact_archive" || actionType === "artifact_restore" || actionType === "object_mirror";
 }
 
 export function isOpenApproval(approval: DashboardActionApproval): boolean {
@@ -1207,25 +1258,14 @@ export async function loadApprovalProjectConfig(ctx: CliContext, approval: Dashb
   }
 }
 
-export async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>): Promise<{ path: string; content: string }> {
+export async function loadApprovedFileWrite(approval: NonNullable<Awaited<ReturnType<typeof getActionApproval>>>): Promise<ReturnType<typeof selectApprovedFileMutation>> {
   if (!approval.taskId) {
     throw new Error("Approved file write is missing the source task id.");
   }
-  const expectedHash = stringFromRecord(approval.payload, "payloadHash");
   const artifacts = await listArtifacts({ runId: approval.runId, kind: "stage_output" });
   const source = artifacts.find((artifact) => artifact.taskId === approval.taskId);
   const writes = Array.isArray(source?.content.requestedFileWrites) ? source.content.requestedFileWrites : [];
-  for (const item of writes) {
-    if (!item || typeof item !== "object") continue;
-    const record = item as Record<string, unknown>;
-    const filePath = stringFromRecord(record, "path");
-    const content = stringFromRecord(record, "content");
-    if (!filePath || content === undefined) continue;
-    if (filePath === approval.target && (!expectedHash || textHash(content) === expectedHash)) {
-      return { path: filePath, content };
-    }
-  }
-  throw new Error("Approved file write content was not found in the source stage artifact.");
+  return selectApprovedFileMutation(approval.target, approval.payload, writes);
 }
 
 export async function loadContextRoutingPolicy(ctx: CliContext, projectDir?: string): Promise<ContextRoutingPolicy> {
@@ -1574,7 +1614,12 @@ export async function queueWorkflow(ctx: CliContext, input: {
   const reuseAdvisory = governedReusePlan.candidates[0]
     ? [`Governed reuse advisory only: ${governedReusePlan.recommendation} from run ${governedReusePlan.candidates[0].runId}; operator approval is required before any stage or result is reused.`]
     : [];
+  let compiledInfluence: ContextInfluence | undefined;
   const brief = await compileContext({
+    onInfluence: value => {
+      if (reuseAdvisory.length && governedReusePlan.candidates[0]) value.references.push({ kind: "prior_run", key: governedReusePlan.candidates[0].runId, includedHash: influenceHash(reuseAdvisory.join("\n")), observedAt: null, freshness: "historical", confidence: "recorded", target: { type: "run", value: governedReusePlan.candidates[0].runId } });
+      compiledInfluence = value;
+    },
     task: input.task,
     projectDir,
     project,
@@ -1622,6 +1667,7 @@ export async function queueWorkflow(ctx: CliContext, input: {
     requesterChannel: input.requesterChannel ?? resolveDefaultRequesterChannel(),
     compiledBrief: brief,
     compiledBriefMetadata: {
+      contextInfluence: compiledInfluence,
       runInputSnapshot,
       governedReusePlan,
       latencyOptimization: latencyOptimization.optimization
@@ -1679,18 +1725,30 @@ export async function resolveLocalProjectRootUri(projectRootUri: string): Promis
   return (await resolveLocalProjectPath(projectRootUri)).localRootUri;
 }
 
-export async function resumeBlockedRunAfterResolvedApprovals(runId: string): Promise<{ resumedTasks: number; replacementRunId?: string }> {
+export async function resumeBlockedRunAfterResolvedApprovals(runId: string): Promise<{ resumedTasks: number; replacementRunId?: string; holdReason?: string }> {
   const details = await getWorkflowRunDetails(runId);
   if (details.run?.status !== "blocked") return { resumedTasks: 0 };
+  if (automaticRepeatForbidden(details.run)) return { resumedTasks: 0, holdReason: noAutomaticRepeatReason };
   const unresolved = (await listActionApprovals({ runId, limit: 100 })).filter(isOpenApproval);
   if (unresolved.length) return { resumedTasks: 0 };
-  const resumed = await resumeWorkflowRunFromCheckpoint({
-    runId,
-    actor: "dashboard",
-    reason: "Final required approval resolved; resume from completed checkpoints.",
-    includeFailed: true
-  });
-  return { resumedTasks: resumed.requeuedTasks, replacementRunId: resumed.replacementRunId };
+  try {
+    const resumed = await resumeWorkflowRunFromCheckpoint({
+      runId,
+      actor: "dashboard",
+      reason: "Final required approval resolved; resume from completed checkpoints.",
+      includeFailed: true
+    });
+    return { resumedTasks: resumed.requeuedTasks, replacementRunId: resumed.replacementRunId };
+  } catch (error) {
+    // Approval/execution already succeeded. The storage guard deliberately
+    // leaves managed history untouched; continuation stays with its owner.
+    // Propagate every unrelated storage failure instead of hiding it.
+    if (error instanceof PartnerManagedRunRecoveryError) return {
+      resumedTasks: 0,
+      holdReason: "Decision preserved. Partner controls continuation through its existing coordinator; no generic replay or retry was performed."
+    };
+    throw error;
+  }
 }
 
 export function selectWorkflowAgents<T extends { id: string }>(agents: T[], workflow: { lead: string; stages: Array<{ agent: string; subagents: string[] }> }): Map<string, T> {

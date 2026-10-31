@@ -28,6 +28,35 @@ export type LearningExperiment = {
   createdAt: string;
 };
 
+export type PromptPersonalizationCandidate = {
+  id: string;
+  taskClass: string;
+  localModelId: string;
+  brief: string;
+  briefHash: string;
+  originalRequirementsHash: string;
+  status: "shadow" | "promoted" | "rolled-back";
+  sampleCount: number;
+  promotedAt?: string;
+  rollbackReason?: string;
+  createdAt: string;
+};
+
+export type PromptPersonalizationObservation = {
+  id: string;
+  candidateId: string;
+  baselineQuality: number;
+  candidateQuality: number;
+  baselineLatencyMs: number;
+  candidateLatencyMs: number;
+  baselineTokens: number;
+  candidateTokens: number;
+  baselineVerified: boolean;
+  candidateVerified: boolean;
+  safetyRegression: boolean;
+  createdAt: string;
+};
+
 export type LearningLoopSchedulerReceipt = {
   id: string;
   questionId: string | null;
@@ -66,6 +95,8 @@ export type LearningLoopState = {
   receipts: Array<ReturnType<typeof createPeerExchangeReceipt>>;
   schedulerReceipts: LearningLoopSchedulerReceipt[];
   evidenceDecisions: LearningEvidenceDecision[];
+  promptPersonalizationCandidates: PromptPersonalizationCandidate[];
+  promptPersonalizationObservations: PromptPersonalizationObservation[];
   updatedAt: string;
 };
 
@@ -79,7 +110,105 @@ export type LearningLoopBudget = {
   quietHours?: { start: number; end: number };
 };
 
-const emptyState = (): LearningLoopState => ({ version: 1, questions: [], responses: [], assessments: [], calibrations: [], aggregates: [], experiments: [], receipts: [], schedulerReceipts: [], evidenceDecisions: [], updatedAt: new Date(0).toISOString() });
+const emptyState = (): LearningLoopState => ({ version: 1, questions: [], responses: [], assessments: [], calibrations: [], aggregates: [], experiments: [], receipts: [], schedulerReceipts: [], evidenceDecisions: [], promptPersonalizationCandidates: [], promptPersonalizationObservations: [], updatedAt: new Date(0).toISOString() });
+
+export function promptPersonalizationRequirementsHash(requirements: string): string {
+  return createHash("sha256").update(requirements.trim()).digest("hex");
+}
+
+export async function registerPromptPersonalizationCandidate(input: {
+  projectDir: string;
+  taskClass: string;
+  localModelId: string;
+  brief: string;
+  originalRequirementsHash: string;
+  authority: "advisory";
+}): Promise<PromptPersonalizationCandidate> {
+  const brief = input.brief.trim();
+  if (!input.taskClass.trim() || !input.localModelId.trim()) throw new Error("Task class and local model id are required.");
+  if (!/^[a-f0-9]{64}$/u.test(input.originalRequirementsHash)) throw new Error("An immutable original-requirements hash is required.");
+  if (!brief || brief.length > 2_000) throw new Error("Personalization briefs must contain 1 to 2,000 characters.");
+  if (/(?:ignore|override|bypass|disable)\s+(?:the\s+)?(?:system|policy|authority|approval|requirements?|safety)|grant\s+(?:write|execution|approval)\s+authority/iu.test(brief)) {
+    throw new Error("Personalization briefs cannot change requirements, policy, approvals, or authority.");
+  }
+  const state = await readLearningLoopState(input.projectDir);
+  const candidate: PromptPersonalizationCandidate = {
+    id: `prompt-personalization-${randomUUID()}`,
+    taskClass: input.taskClass.trim(),
+    localModelId: input.localModelId.trim(),
+    brief,
+    briefHash: stableHash(brief),
+    originalRequirementsHash: input.originalRequirementsHash,
+    status: "shadow",
+    sampleCount: 0,
+    createdAt: new Date().toISOString()
+  };
+  await writeLearningLoopState(input.projectDir, {
+    ...state,
+    promptPersonalizationCandidates: [...state.promptPersonalizationCandidates, candidate],
+    updatedAt: new Date().toISOString()
+  });
+  return candidate;
+}
+
+export async function recordPromptPersonalizationObservation(input: {
+  projectDir: string;
+  candidateId: string;
+  observation: Omit<PromptPersonalizationObservation, "id" | "candidateId" | "createdAt">;
+  minimumPairedSamples?: number;
+  minimumQualityGain?: number;
+  maximumLatencyRegression?: number;
+  maximumTokenRegression?: number;
+}): Promise<PromptPersonalizationCandidate> {
+  const state = await readLearningLoopState(input.projectDir);
+  const candidate = state.promptPersonalizationCandidates.find((item) => item.id === input.candidateId);
+  if (!candidate) throw new Error(`Unknown prompt-personalization candidate: ${input.candidateId}`);
+  for (const value of [input.observation.baselineQuality, input.observation.candidateQuality]) {
+    if (!Number.isFinite(value) || value < 0 || value > 1) throw new Error("Quality scores must be between 0 and 1.");
+  }
+  for (const value of [input.observation.baselineLatencyMs, input.observation.candidateLatencyMs, input.observation.baselineTokens, input.observation.candidateTokens]) {
+    if (!Number.isFinite(value) || value < 0) throw new Error("Latency and token measurements must be non-negative.");
+  }
+  const observation: PromptPersonalizationObservation = { id: `prompt-observation-${randomUUID()}`, candidateId: candidate.id, ...input.observation, createdAt: new Date().toISOString() };
+  const observations = [...state.promptPersonalizationObservations, observation];
+  const paired = observations.filter((item) => item.candidateId === candidate.id);
+  const minSamples = Math.max(5, input.minimumPairedSamples ?? 20);
+  const mean = (values: number[]) => values.reduce((sum, value) => sum + value, 0) / Math.max(1, values.length);
+  const qualityGain = mean(paired.map((item) => item.candidateQuality - item.baselineQuality));
+  const latencyRegression = mean(paired.map((item) => (item.candidateLatencyMs - item.baselineLatencyMs) / Math.max(1, item.baselineLatencyMs)));
+  const tokenRegression = mean(paired.map((item) => (item.candidateTokens - item.baselineTokens) / Math.max(1, item.baselineTokens)));
+  const unsafe = paired.some((item) => item.safetyRegression);
+  const verificationRegression = paired.some((item) => item.baselineVerified && !item.candidateVerified);
+  let status = candidate.status;
+  let rollbackReason = candidate.rollbackReason;
+  let promotedAt = candidate.promotedAt;
+  if (candidate.status === "promoted" && (input.observation.safetyRegression || (input.observation.baselineVerified && !input.observation.candidateVerified) || (paired.length >= 5 && qualityGain < -0.03))) {
+    status = "rolled-back";
+    rollbackReason = input.observation.safetyRegression ? "safety regression" : (input.observation.baselineVerified && !input.observation.candidateVerified) ? "verification regression" : "sustained quality regression";
+  } else if (candidate.status === "shadow" && paired.length >= minSamples && !unsafe && !verificationRegression
+    && qualityGain >= (input.minimumQualityGain ?? 0.03)
+    && latencyRegression <= (input.maximumLatencyRegression ?? 0.15)
+    && tokenRegression <= (input.maximumTokenRegression ?? 0.10)) {
+    status = "promoted";
+    promotedAt = new Date().toISOString();
+  }
+  const updated: PromptPersonalizationCandidate = { ...candidate, status, sampleCount: paired.length, promotedAt, rollbackReason };
+  await writeLearningLoopState(input.projectDir, {
+    ...state,
+    promptPersonalizationCandidates: state.promptPersonalizationCandidates.map((item) => item.id === updated.id ? updated : item),
+    promptPersonalizationObservations: observations,
+    updatedAt: new Date().toISOString()
+  });
+  return updated;
+}
+
+export async function selectPromptPersonalization(input: { projectDir: string; taskClass: string; originalRequirementsHash: string }): Promise<Pick<PromptPersonalizationCandidate, "id" | "brief" | "briefHash" | "localModelId"> | null> {
+  const state = await readLearningLoopState(input.projectDir);
+  const candidate = state.promptPersonalizationCandidates
+    .filter((item) => item.taskClass === input.taskClass && item.originalRequirementsHash === input.originalRequirementsHash && item.status === "promoted")
+    .sort((a, b) => Date.parse(b.promotedAt ?? b.createdAt) - Date.parse(a.promotedAt ?? a.createdAt))[0];
+  return candidate ? { id: candidate.id, brief: candidate.brief, briefHash: candidate.briefHash, localModelId: candidate.localModelId } : null;
+}
 
 function statePath(projectDir: string): string {
   return path.join(projectDir, ".agent-workflow", "learning", "learning-loop.json");
@@ -105,6 +234,9 @@ export async function advanceLearningCanary(input: { projectDir: string; experim
   const state = await readLearningLoopState(input.projectDir);
   const experiment = state.experiments.find((item) => item.id === input.experimentId);
   if (!experiment) throw new Error(`Unknown learning experiment: ${input.experimentId}`);
+  if (experiment.status !== "approval-required" && experiment.status !== "canary") {
+    throw new Error("Learning canary advancement requires an eligible experiment.");
+  }
   if (experiment.status === "approval-required" && !input.humanApproved) throw new Error("Starting a learning canary requires human approval.");
   const stage = advanceCanaryStage({ currentPercent: experiment.canaryPercent ?? 0, successfulRuns: input.successfulRuns, hoursElapsed: input.hoursElapsed, humanApprovedFullPromotion: input.humanApproved });
   const updated: LearningExperiment = { ...experiment, status: stage.nextPercent === 100 ? "promoted" : "canary", canaryPercent: stage.nextPercent, sampleCount: experiment.sampleCount + input.successfulRuns };

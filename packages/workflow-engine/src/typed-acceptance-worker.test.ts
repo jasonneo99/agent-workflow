@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { ENVIRONMENT_COMMAND } from "../../run-environments/src/schema.js";
 import { acceptanceDigest, enrollAcceptanceContract, storedAcceptanceDecision } from "../../storage/src/acceptance.js";
 import { commandAcceptanceReference } from "../../storage/src/command-evidence.js";
 import { sourceSubjectHash } from "./source-subject.js";
@@ -9,7 +13,7 @@ import type { StageExecutionInput, StructuredAcceptanceContract } from "../../mo
 
 test("enrolled no-edit acceptance completes through the real worker", async (t) => {
   if (!process.env.AGENTFLOW_TYPED_WORKER_CHILD) {
-    for (const scenario of ["valid", "missing", "stale", "changed-contract"]) {
+    for (const scenario of ["valid", "valid-environment", "missing", "stale", "changed-contract"]) {
       const env: NodeJS.ProcessEnv = { ...process.env, AGENTFLOW_TYPED_WORKER_CHILD: "1", AGENTFLOW_TYPED_WORKER_CASE: scenario };
       delete env.NODE_TEST_CONTEXT;
       const child = spawnSync(process.execPath, ["--experimental-test-module-mocks", "--import", "tsx", "--test", fileURLToPath(import.meta.url)], { env, encoding: "utf8", timeout: 60_000 });
@@ -19,6 +23,12 @@ test("enrolled no-edit acceptance completes through the real worker", async (t) 
   }
   // Only external boundaries are replaced. Worker gates and structured receipt
   // validation remain real; the allowlisted no-edit command executes locally.
+  const useEnvironment = process.env.AGENTFLOW_TYPED_WORKER_CASE === "valid-environment";
+  const root = useEnvironment ? await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-worker-environment-"))) : process.cwd();
+  if (useEnvironment) {
+    t.after(() => fs.rm(root, { recursive: true, force: true }));
+    await fs.writeFile(path.join(root, "package.json"), '{"name":"synthetic-worker-environment"}\n');
+  }
   const replace = async (relative: string, overrides: Record<string, unknown>) => {
     const url = new URL(relative, import.meta.url).href;
     const original = await import(url);
@@ -31,7 +41,7 @@ test("enrolled no-edit acceptance completes through the real worker", async (t) 
   const frozen: StructuredAcceptanceContract = {
     version: 1, contractId: "synthetic-contract", projectId: "synthetic-project", originRunId: "synthetic-run",
     taskHash: acceptanceDigest(workflowTask), sourcePaths: ["package.json"],
-    subjectHash: await sourceSubjectHash(process.cwd(), ["package.json"]),
+    subjectHash: await sourceSubjectHash(root, ["package.json"]),
     deliverables: [{ id: "runtime", description: "Confirm the available runtime without source edits",
       requiredGates: ["implementation", "verification", "packaging", "supervision"], status: "pending", receipts: {}, gaps: [] }]
   };
@@ -61,10 +71,14 @@ test("enrolled no-edit acceptance completes through the real worker", async (t) 
     runId: frozen.originRunId, taskId: "synthetic-task", stageId: "implement", agentId: "implementation-agent",
     agentName: "Synthetic", agentPrompt: "Evaluate the frozen contract using governed evidence", workflowId: "debug-failure",
     workflowTask, stageGoal: "Confirm synthetic runtime", compiledBrief: "Synthetic acceptance fixture",
-    projectRootUri: process.cwd(), workerId: "synthetic-worker", fencingToken: "1", priorReceipts: [],
+    projectRootUri: root, workerId: "synthetic-worker", fencingToken: "1", priorReceipts: [],
     acceptanceContract: structuredClone(frozen),
     projectConfig: { project: { name: "Synthetic acceptance" }, policies: { require_approval_for_external_actions: false },
-      actions: { allowed_commands: ["node --version"], allowed_write_paths: [] } },
+      actions: { allowed_commands: ["node --version", ...(useEnvironment ? [ENVIRONMENT_COMMAND] : [])], allowed_write_paths: [] },
+      ...(useEnvironment ? { execution: { environments: { default_profile: "runtime", profiles: { runtime: {
+        kind: "native", platform: `${process.platform}/${process.arch === "x64" ? "amd64" : process.arch}`,
+        source_paths: ["package.json"], readiness: [{ argv: ["node", "--version"] }]
+      } } } } } : {}) },
     stagePattern: { type: "react", maxIterations: 3, requiresVerifier: false, promotionGate: "none", stopConditions: [] }
   };
   let completed: any;
@@ -73,6 +87,16 @@ test("enrolled no-edit acceptance completes through the real worker", async (t) 
   let proposed: StructuredAcceptanceContract | undefined;
   let leaseChecks = 0;
   let providerCalls = 0;
+  await replace("../../storage/src/client.js", {
+    withClient: async (operation: (client: any) => unknown) => operation({
+      query: async (sql: string, args: unknown[]) => {
+        assert.match(sql, /from artifacts a/u);
+        assert.match(sql, /join workflow_tasks wt/u);
+        assert.deepEqual(args, [task.runId]);
+        return { rows: [] }; // This fixture has no stored source writes.
+      }
+    })
+  });
   await replace("../../storage/src/postgres.js", {
     getWorkflowAcceptanceDecision: async (_runId: string, artifact: Record<string, unknown>, gate: any) => storedAcceptanceDecision(client, task.runId, gate, artifact),
     claimNextWorkflowTask: async () => task, startWorkflowTask: async () => {},
@@ -131,16 +155,36 @@ test("enrolled no-edit acceptance completes through the real worker", async (t) 
         attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
     }
   });
+  let recoveryReads = 0;
+  await replace("./recovery-evidence.js", {
+    recoveryEvidence: async (runId: string, projectRootUri: string) => {
+      assert.equal(runId, task.runId);
+      assert.equal(projectRootUri, task.projectRootUri);
+      recoveryReads++;
+      return ""; // This synthetic run has no persisted recovery ancestors.
+    }
+  });
   const { runWorkerOnce } = await import("./executor.js");
   const result = await runWorkerOnce(1, { recoverExpiredLeases: false });
   assert.equal(failed, undefined, JSON.stringify(failed));
   assert.ok(providerCalls >= 2, "Provider consumes executed evidence");
+  assert.ok(recoveryReads > 0, "Worker requests scoped recovery context through the isolated boundary");
   assert.ok(leaseChecks > 0, "Worker retains lease checks");
   assert.equal([...artifacts.values()].filter((row) => row.kind === "command_output").length, 1);
-  assert.equal(await sourceSubjectHash(process.cwd(), frozen.sourcePaths!), frozen.subjectHash);
+  assert.equal(await sourceSubjectHash(root, frozen.sourcePaths!), frozen.subjectHash);
+  if (useEnvironment) {
+    const command = [...artifacts.values()].find((row) => row.kind === "command_output")!.content;
+    assert.equal(command.environment.status, "ready");
+    assert.equal(command.environment.runId, task.runId);
+    assert.equal(command.environment.taskId, task.taskId);
+    assert.match(command.environment.runtimeHash, /^[a-f0-9]{64}$/u);
+    assert.ok(command.environment.receiptPath);
+    // Runtime availability alone is not a behavioral test collection.
+    assert.equal(command.verificationRecipe, undefined);
+  }
   const decision = await storedAcceptanceDecision(client, task.runId, "implementation", { acceptanceContract: proposed });
   assert.equal(decision.mode, "structured");
-  if (process.env.AGENTFLOW_TYPED_WORKER_CASE !== "valid") {
+  if (!["valid", "valid-environment"].includes(process.env.AGENTFLOW_TYPED_WORKER_CASE!)) {
     assert.ok(decision.reason);
     assert.equal(result.completed, 0);
     assert.equal(completed, undefined);

@@ -42,6 +42,19 @@ one attempt against that project and identity. Missing, delivered, backoff-held
 or already claimed rows produce no send; the command never falls back to a
 project-wide queue drain. Transport success is not client acknowledgment.
 
+Before claiming, the Codex dispatcher coalesces obsolete dismissal notices using
+the stable `receipt:<hash>` identity joined to canonical version-2 receipts.
+Only `failed_run_dismissed` and `action_approval_dismissed` progress notices enter
+this dismissal group. Each project, channel, nonempty originating task and action
+retains its latest notice, including across runs. Rendered body text does not
+establish dismissal identity. Other receipt-backed lifecycle actions are retained.
+Coalescing preserves original rows, bodies and receipts and never fabricates ACK.
+Active claims, uncertain deliveries and rows with transport-started or accepted
+timestamps are excluded; claim fencing also checks those transport timestamps
+even when a legacy status is inconsistent. Already host-queued notices may still
+drain: accepted messages cannot safely be recalled without a host cancellation API.
+Source checks do not establish deployment or that a daemon loaded this change.
+
 ## Host-mediated adapter
 
 `dispatchHostNotification` provides a dependency-injected host adapter over the

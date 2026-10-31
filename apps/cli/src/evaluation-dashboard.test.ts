@@ -84,3 +84,19 @@ test("evaluation dashboard bounds per-run report loading", () => {
     /async function loadDashboardEvaluations[\s\S]+mapWithConcurrency\(runs, 8,[\s\S]+loadCostQualityReport/u
   );
 });
+
+test("evaluation readiness belongs to providers while suite history uses evaluator identities", () => {
+  const daemon = readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+  const start = daemon.indexOf("function renderEvaluationsHtml(");
+  const end = daemon.indexOf("\n  }", start);
+  const renderer = daemon.slice(start, end);
+  assert.match(renderer, /provider\.status === "ready"/u);
+  assert.match(renderer, /Provider coverage/u);
+  assert.doesNotMatch(renderer, /suite\.status/u);
+  const learning = readFileSync(new URL("./lib/builders-learning.ts", import.meta.url), "utf8");
+  const loader = learning.slice(learning.indexOf("export async function loadDashboardEvaluations("));
+  assert.match(loader, /evaluationMetadata\?\.suiteId/u);
+  assert.match(loader, /suites\.set\(run\.suiteId, selected\)/u);
+  const runs = readFileSync(new URL("./commands/runs.ts", import.meta.url), "utf8");
+  assert.match(runs, /evaluationMetadata: \{\s*suiteId: suite\.id,/u);
+});

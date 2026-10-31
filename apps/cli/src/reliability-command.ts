@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import "dotenv/config";
 import fs from "node:fs/promises";
+import { resolveWorkIntentProject } from './lib/work-intent-project.js';
 import { acquireWorkIntent, listWorkIntents, releaseWorkIntent, renewWorkIntent, withClient } from "../../../packages/storage/src/postgres.js";
 import { evaluateReliabilityFailureScenarios, evaluateReliabilitySlos, normalizeReliabilityEvidence, type ReliabilityEvidence, type ReliabilitySample } from "../../../packages/reliability-control/src/index.js";
 
@@ -28,12 +29,30 @@ async function loadEvidence(): Promise<ReliabilityEvidence> {
 }
 
 async function main(): Promise<void> {
+  // Help must return before required arguments, file reads, or storage actions.
+  if (process.argv.slice(2).some((value) => value === "--help" || value === "-h")) {
+    console.log(`Usage: agentflow-reliability <command> [options]
+
+Commands:
+  report [--evidence <file>]    Report reliability SLOs (uses storage)
+  chaos [--evidence <file>]     Evaluate failure-scenario evidence
+  intent list [--project <id>]
+  intent acquire --project <id> --owner <name> --objective <text>
+                 [--files <comma-separated-paths>] [--ttl <seconds>]
+  intent renew --project <id> --owner <name> --token <token> [--ttl <seconds>]
+  intent release --project <id> --owner <name> --token <token>
+
+Intent TTL defaults to 900 seconds. Help performs no storage operations.`);
+    return;
+  }
   const [command = "report", action] = process.argv.slice(2);
   if (command === "intent") {
-    if (action === "acquire") console.log(JSON.stringify(await acquireWorkIntent({ projectId: required("project"), owner: required("owner"), objective: required("objective"), fileScopes: (arg("files") ?? "").split(",").filter(Boolean), ttlSeconds: Number(arg("ttl") ?? 900) }), null, 2));
-    else if (action === "renew") console.log(JSON.stringify({ renewed: await renewWorkIntent({ projectId: required("project"), owner: required("owner"), fencingToken: required("token"), ttlSeconds: Number(arg("ttl") ?? 900) }) }, null, 2));
-    else if (action === "release") console.log(JSON.stringify({ released: await releaseWorkIntent({ projectId: required("project"), owner: required("owner"), fencingToken: required("token") }) }, null, 2));
-    else console.log(JSON.stringify(await listWorkIntents(arg("project")), null, 2));
+    const project = ['acquire','renew','release'].includes(action ?? '') ? required('project') : arg('project');
+    const projectId = project ? await resolveWorkIntentProject(project) : undefined;
+    if (action === "acquire") console.log(JSON.stringify(await acquireWorkIntent({ projectId: projectId!, owner: required("owner"), objective: required("objective"), fileScopes: (arg("files") ?? "").split(",").filter(Boolean), ttlSeconds: Number(arg("ttl") ?? 900) }), null, 2));
+    else if (action === "renew") console.log(JSON.stringify({ renewed: await renewWorkIntent({ projectId: projectId!, owner: required("owner"), fencingToken: required("token"), ttlSeconds: Number(arg("ttl") ?? 900) }) }, null, 2));
+    else if (action === "release") console.log(JSON.stringify({ released: await releaseWorkIntent({ projectId: projectId!, owner: required("owner"), fencingToken: required("token") }) }, null, 2));
+    else console.log(JSON.stringify(await listWorkIntents(projectId), null, 2));
     return;
   }
   if (command === "chaos") {

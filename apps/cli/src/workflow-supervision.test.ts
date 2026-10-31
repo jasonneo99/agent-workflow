@@ -295,3 +295,66 @@ test("automatic repair diagnoses bounded internal failures while retaining provi
   assert.match(cliSource, /const repairableFailure = run\.status === "failed"/u);
   assert.match(cliSource, /The failed stage recorded this cause/u);
 });
+
+test("automatic repair requires the exact explicit activation value", async () => {
+  const { workflowAutomaticRepairEnabled } = await import("./workflow-supervision.js");
+  for (const value of [undefined, "", "0", "false", "off", "true", "yes", "on", " 1", "1 "]) {
+    assert.equal(workflowAutomaticRepairEnabled(value), false, `unexpected activation: ${value}`);
+  }
+  assert.equal(workflowAutomaticRepairEnabled("1"), true);
+});
+
+test("automatic recovery and dispatch retain disabled guards before storage work", () => {
+  const source = readFileSync(new URL("./commands/learning.ts", import.meta.url), "utf8");
+  assert.match(source, /async function allowAutomaticRepairDispatch[^\n]+\{\s+if \(!workflowAutomaticRepairEnabled\(process\.env\.AGENTFLOW_WORKFLOW_AUTO_REPAIR\)\) return false;\s+if \(!await authorizedRepairRun\(run.id\)\) return false;\s+const approvals/u);
+  assert.match(source, /async function autoRepairOneWorkflowRun[^\n]+\{\s+if \(!automaticRepairProjectAllowed\(projectDir\)\) return 0;\s+if \(mode !== "apply-approved"\) return 0;\s+if \(!workflowAutomaticRepairEnabled\(process\.env\.AGENTFLOW_WORKFLOW_AUTO_REPAIR\)\) return 0;\s+const runs/u);
+});
+
+test("active recovery retains its source without reporting completed recovery", async () => {
+  const ts = await import("typescript");
+  const vm = await import("node:vm");
+  const source = readFileSync(new URL("./commands/learning.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  async function autoRepairOneWorkflowRun(");
+  const end = source.indexOf("  async function dismissDuplicateBlockedWorkflowRuns(", start);
+  assert.ok(start >= 0 && end > start);
+  const js = ts.transpileModule(source.slice(start, end), {
+    compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None }
+  }).outputText;
+  for (const status of ["queued", "leased", "running"]) {
+    const context = vm.createContext({
+      process: { env: { AGENTFLOW_WORKFLOW_AUTO_REPAIR: "1" } },
+      workflowAutomaticRepairEnabled: (value: string) => value === "1",
+      automaticRepairProjectAllowed: () => true,
+      listWorkflowRunsForProject: async () => [{ id: "replacement", status, evaluationMetadata: { source: "workflow-root-repair", sourceRunId: "source" } }], stringValue: (value: unknown) => typeof value === "string" ? value : undefined,
+      loadProjectDeliveryReceipts: () => { throw new Error("Active recovery must not inspect narrative receipts."); }, supersedeWorkflowRun: () => { throw new Error("Active recovery must not dismiss its source."); }
+    });
+    vm.runInContext(js, context);
+    assert.equal(await context.autoRepairOneWorkflowRun("/synthetic", "apply-approved"), 0);
+  }
+});
+
+test("shipping dispatch checks separate authorization before effects and never approves requests", async () => {
+  const ts = await import("typescript");
+  const vm = await import("node:vm");
+  const source = readFileSync(new URL("./commands/learning.ts", import.meta.url), "utf8");
+  const start = source.indexOf("  async function allowAutomaticRepairDispatch(");
+  const end = source.indexOf("  async function autoRepairOneWorkflowRun(", start);
+  const js = ts.transpileModule(source.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText;
+  for (const scenario of [{ grant: false, approval: false, accepted: false, expected: false },
+    { grant: true, approval: true, accepted: false, expected: false },
+    { grant: true, approval: false, accepted: true, expected: false },
+    { grant: true, approval: false, accepted: false, expected: true }]) {
+    let reservations = 0, effectsBeforeGrant = 0, checked = false;
+    const context = vm.createContext({ process: { env: { AGENTFLOW_WORKFLOW_AUTO_REPAIR: "1" } },
+      workflowAutomaticRepairEnabled: (x: string) => x === "1",
+      authorizedRepairRun: async () => { checked = true; return scenario.grant; },
+      listActionApprovals: async () => { if (!checked || !scenario.grant) effectsBeforeGrant++; return scenario.approval ? [{ status: "pending" }] : []; },
+      isOpenApproval: (x: { status: string }) => x.status === "pending", listArtifacts: async () => [],
+      preflightWorkflowAcceptance: async () => ({ accepted: scenario.accepted, decisions: [] }), recordRunAction: async () => {},
+      reserveSupervisedRepair: async () => { reservations++; return true; } });
+    vm.runInContext(js, context);
+    assert.equal(await context.allowAutomaticRepairDispatch({ id: "synthetic", task: "Authorized work" }, "synthetic failure"), scenario.expected);
+    assert.equal(effectsBeforeGrant, 0);
+    assert.equal(reservations, scenario.expected ? 1 : 0);
+  }
+});

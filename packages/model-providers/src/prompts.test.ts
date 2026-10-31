@@ -1,7 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
-import { advisoryPolicyAnalysisIsFinding, buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding } from "./prompts.js";
+import { advisoryPolicyAnalysisIsFinding, buildStageExecutionOutput, buildStagePrompt, normalizeStageArtifact, reviewEvidenceGapIsFinding, selectCompiledBriefForPrompt } from "./prompts.js";
+
+test("runtime-appended history does not collapse an unsectioned current packet to a tiny preamble", () => {
+  const ids=['synthetic-child-one','synthetic-child-two','synthetic-child-three','synthetic-child-four'];
+  const current='Current read-only diagnostic evidence.\n'+ids.map(id=>JSON.stringify({id,status:'blocked',assignment:'synthetic-assignment',liveLease:false,detail:'Bounded current evidence. '.repeat(10)})).join('\n');
+  const combined=current+'\n\nRecovery source evidence (read-only; no permissions or acceptance implied):\n'+'Historical diagnosis. '.repeat(200);
+  assert.ok(current.length<2500 && combined.length>2800);
+  const selected=selectCompiledBriefForPrompt(combined,2800,'supervision');
+  for(const id of ids)assert.ok(selected.includes(id),`Current case ${id} survives the real combined runtime input`);
+  assert.ok(selected.length<=2800);
+  assert.match(selected,/completeness=truncated/u);
+  assert.match(selected,/omittedChars=/u,'The remaining omitted history is explicitly disclosed');
+  assert.equal(selected.includes('Historical diagnosis. '.repeat(150)),false,'Do not expand the prompt budget to include all history');
+});
 
 test("all recent command packets retain exact acceptance references across a command batch", () => {
   const packets = Array.from({ length: 7 }, (_, index) => ({ agentId: "test", actionType: "command_evidence_packet", summary: JSON.stringify([{ artifactUri: `db://command/${index}`, acceptanceReference: { observedAt: `2026-01-01T00:00:0${index}.123Z`, contentHash: `hash-${index}` } }]) }));
@@ -11,6 +24,42 @@ test("all recent command packets retain exact acceptance references across a com
 });
 
 const project = projectConfigSchema.parse({ project: { name: "portable-project" } });
+
+test('bounded structured recovery suggestions survive portable normalization without becoming actions or authority',()=>{
+ const paths=['src/main.ts','tests/main.test.ts'],influence={used:[{childRunId:'synthetic-child',effect:'confirmed-plan' as const,reason:'Current source confirms the observed repair boundary.'}],noInfluenceReason:''};
+ const input={runId:'run',taskId:'task',projectConfig:project,workflowId:'agent-task-queue-partner',workflowTask:'Discover scope',stageId:'specialist-task',agentId:'queue-partner',agentName:'Partner',agentPrompt:'Read only',stageGoal:'Discover',compiledBrief:'',priorReceipts:[]};
+ const before=JSON.stringify(project),parsed=normalizeStageArtifact({outcome:'blocked',blockedReason:'Missing exact current permission',proposedSourcePaths:paths,memoryInfluence:influence});
+ const output=buildStageExecutionOutput(input,parsed,{});
+ assert.deepEqual(output.artifact.proposedSourcePaths,paths);assert.deepEqual(output.artifact.memoryInfluence,influence);
+ assert.equal(output.outcome,'blocked');assert.deepEqual(output.requestedCommands,[]);assert.deepEqual(output.requestedFileWrites,[]);
+ assert.equal(JSON.stringify(project),before);assert.equal(output.artifact.acceptanceContract,undefined);
+ assert.match(buildStagePrompt(input),/top-level field: the runtime stores it in the artifact/);
+ assert.match(buildStagePrompt(input),/suggestion, not permission/);
+ assert.deepEqual(normalizeStageArtifact({proposedSourcePaths:['src/main.ts','src/main.ts']}).proposedSourcePaths,['src/main.ts']);
+});
+
+test('malformed or narrative-only scope/influence is never upgraded into structured recovery evidence',()=>{
+ for(const paths of ['src/main.ts',[null],[''],['/outside.ts'],['C:/outside.ts'],['..\\outside.ts'],['src/../outside.ts'],['src/*.ts'],['src//a.ts'],[' src/a.ts'],['src/a\n.ts'],['x'.repeat(501)],Array(41).fill('src/a.ts')])
+  assert.equal(normalizeStageArtifact({proposedSourcePaths:paths} as any).proposedSourcePaths,undefined);
+ const narrative=normalizeStageArtifact({findings:['artifact.proposedSourcePaths: ["src/main.ts"]','artifact.memoryInfluence: {"used":[]}']});
+ assert.equal(narrative.proposedSourcePaths,undefined);assert.equal(narrative.memoryInfluence,undefined);
+ for(const memoryInfluence of [null,{}, {used:[],noInfluenceReason:''},{used:Array(13).fill({childRunId:'x',effect:'rejected',reason:'x'}),noInfluenceReason:''},
+  {used:[{childRunId:'x',effect:'grant-permission',reason:'x'}],noInfluenceReason:''},{used:[{childRunId:'x',effect:'rejected',reason:''}],noInfluenceReason:''}])
+  assert.equal(normalizeStageArtifact({memoryInfluence} as any).memoryInfluence,undefined);
+ assert.deepEqual(normalizeStageArtifact({memoryInfluence:{used:[],noInfluenceReason:'No comparison informed this plan.'}}).memoryInfluence,{used:[],noInfluenceReason:'No comparison informed this plan.'});
+});
+
+test("bounded conversation retains the latest question and queue evidence and returns a complete answer", () => {
+  const brief = JSON.stringify({ history: "h".repeat(24000), message: "m".repeat(3900) + "LAST_QUESTION" }) + "\n" + JSON.stringify({ evidence: "e".repeat(17500), lastFamily: "LAST_FAMILY" });
+  const input = { runId: "run", taskId: "task", projectConfig: project, workflowId: "server-conversation", workflowTask: "Answer", stageId: "respond", agentId: "queue-partner", agentName: "Queue Partner", agentPrompt: "Read only", stageGoal: "Answer", compiledBrief: brief, priorReceipts: [] };
+  const prompt = buildStagePrompt(input);
+  assert.ok(prompt.includes(brief));
+  assert.match(prompt, /complete user-facing plain-text answer/u);
+  assert.match(prompt, /not execution or acceptance/u);
+  const ordinary = buildStagePrompt({ ...input, workflowId: "build-feature" });
+  assert.match(ordinary, /one or two sentences describing the stage result/u);
+  assert.ok(!ordinary.includes("LAST_FAMILY"));
+});
 
 test("patch generation receives absolute line coordinates and strict hunk rules", () => {
   const prompt = buildStagePrompt({ runId: "run", taskId: "task", projectConfig: project, workflowId: "build-feature", workflowTask: "Edit source", stageId: "implement", agentId: "test", agentName: "Test", agentPrompt: "Edit", stageGoal: "Implement", compiledBrief: "", priorReceipts: [], fileReads: [{ path: "src/example.ts#L40-L41", content: "first\nsecond", truncated: false, sha256: "a".repeat(64) }] });
@@ -38,13 +87,39 @@ test("nonterminal verification explains verified status without granting termina
   assert.doesNotMatch(buildStagePrompt({ ...input, acceptanceContract: undefined }), /Deliverable status is assessed at the current gate/u);
 });
 
-test("workflow evidence inspection uses configured CLI rather than inline storage imports", () => {
+test("project workers consume supplied workflow evidence instead of invoking control-plane CLI", () => {
   const prompt = buildStagePrompt({ runId: "run", taskId: "task", projectConfig: project, workflowId: "build-feature", workflowTask: "Package", stageId: "package", agentId: "test", agentName: "Test", agentPrompt: "Package", stageGoal: "Package", compiledBrief: "", priorReceipts: [] });
-  assert.match(prompt, /npm run agentflow -- artifacts --uri <exact-db-uri> --json/u);
-  assert.match(prompt, /npm run agentflow -- status --run <current-run-id> --json/u);
-  assert.match(prompt, /Do not use node -e, inline scripts, raw SQL, or direct storage-module imports/u);
-  assert.match(prompt, /Never migrate or modify a database to repair such a diagnostic read/u);
-  assert.match(prompt, /a diagnostic CLI read is not new execution of the tests it displays/u);
+  assert.match(prompt, /must not request Agent Workflow control-plane commands/u);
+  assert.match(prompt, /cannot run from a target project's cwd/u);
+  assert.match(prompt, /report the exact missing artifact or run-state evidence as blocked/u);
+  assert.doesNotMatch(prompt, /For an exact stored artifact use npm run agentflow/u);
+  assert.match(prompt, /do not use node -e, inline scripts, raw SQL, direct storage-module imports/u);
+  assert.match(prompt, /database migration/u);
+  assert.match(prompt, /Stored diagnostic evidence is not new execution/u);
+});
+
+test("successful action receipts tell a project worker to close instead of looping", () => {
+  const prompt = buildStagePrompt({
+    runId: "run",
+    taskId: "task",
+    projectConfig: project,
+    workflowId: "build-feature",
+    workflowTask: "Implement and verify",
+    stageId: "implement",
+    agentId: "test",
+    agentName: "Test",
+    agentPrompt: "Implement",
+    stageGoal: "Finish",
+    compiledBrief: "",
+    priorReceipts: [
+      { agentId: "test", actionType: "file_write", summary: "Patched the requested source." },
+      { agentId: "test", actionType: "local_command", summary: "Tests exited with 0." }
+    ]
+  });
+  assert.match(prompt, /already-consumed action evidence/u);
+  assert.match(prompt, /return outcome completed with empty requested action arrays/u);
+  assert.match(prompt, /Do not repeat the same write or command/u);
+  assert.match(prompt, /invent another adjacent enhancement/u);
 });
 
 test("runtime acceptance requirements and proposals survive prompt and output transport", () => {

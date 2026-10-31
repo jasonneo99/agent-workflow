@@ -71,6 +71,10 @@ export interface StageExecutionInput {
   modelTier?: ModelTier;
   providerOverride?: string | null;
   modelOverride?: string;
+  /** Cooperative provider cancellation; runtime policy, never model authority. */
+  abortSignal?: AbortSignal;
+  /** Provider-side output ceiling for bounded advisory calls. */
+  maxOutputTokens?: number;
   priorReceipts: Array<{
     agentId: string;
     actionType: string;

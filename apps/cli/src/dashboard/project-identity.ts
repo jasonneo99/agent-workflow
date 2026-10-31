@@ -1,5 +1,5 @@
 export interface ProjectIdentityInput {
-  project: { name: string; rootUri: string };
+  project: { name: string; rootUri: string; identityId?:string; identityRootUri?:string };
   resolution: { storageRootUri: string; localRootUri: string; localPathExists: boolean };
 }
 
@@ -19,16 +19,14 @@ export function projectIdentityVisibility(rootUri: string, localPathExists: bool
 }
 
 export function logicalProjectIdentityKeys(items: ProjectIdentityInput[]): Map<ProjectIdentityInput, string> {
-  const mutableRootsByName = new Map<string, Set<string>>();
-  for (const item of items) {
-    if (projectIdentityVisibility(item.resolution.localRootUri, item.resolution.localPathExists) !== "canonical") continue;
-    const roots = mutableRootsByName.get(item.project.name) ?? new Set<string>();
-    roots.add(item.resolution.localRootUri);
-    mutableRootsByName.set(item.project.name, roots);
-  }
   return new Map(items.map((item) => {
-    const mutableRoots = mutableRootsByName.get(item.project.name);
-    const supportingAlias = projectIdentityVisibility(item.resolution.storageRootUri, item.resolution.localPathExists) === "supporting" && mutableRoots?.size === 1;
-    return [item, supportingAlias ? [...mutableRoots][0] : item.resolution.localPathExists ? item.resolution.localRootUri : item.resolution.storageRootUri];
+    if (item.project.identityId && item.project.identityRootUri) return [item,item.project.identityRootUri];
+    // Missing identity metadata is uncertainty, never permission to infer a merge.
+    return [item,item.resolution.storageRootUri];
   }));
+}
+
+/** Stable registry presentation; never rewrite a checkout's execution scope. */
+export function canonicalProjectRegistrations<T extends {id:string;identityId?:string;locationKind?:string}>(projects:T[]):T[] {
+  return projects.filter(p=>(!p.identityId || p.identityId===p.id) && p.locationKind!=="vendor");
 }

@@ -1,0 +1,374 @@
+import type {Client} from 'pg';
+import {inspectVerifierReassessment} from './verifier-reassessment.js';
+import {inspectExecutionRecipeAdoption} from './execution-recipe-adoption.js';
+import fs from 'node:fs/promises';
+import {randomUUID,createHash} from 'node:crypto';
+import {withClient} from './client.js';
+import {acceptanceDigest} from './acceptance.js';
+import {sourceSubjectHash} from '../../workflow-engine/src/source-subject.js';
+import {appendActionReceipt} from './receipt-writer.js';
+import {enqueueRunNotification} from './run-notifications.js';
+import type {StructuredAcceptanceContract} from '../../model-providers/src/types.js';
+import {observeHistoricalSourceEffects,type HistoricalSourceReview} from './historical-source-observation.js';
+
+/** Operator-only input. Never expose this operation as a worker/model tool.
+ * The caller must possess direct human authority for these exact existing IDs.
+ * Preview is a compare-and-swap commitment, not authority by itself.
+ */
+export interface ExistingAssignmentRequest {
+ assignmentId:string; runId:string; expectedFence:string; owner:string; intentFence:string;
+ sourcePaths:string[]; commands:string[]; authorizationReference:string; actor:string; reason:string;
+ /** Separate direct-human repaired-resume authority; never callback authority. */
+ repairProofUri?:string;
+ /** Explicit one-time prospective recipe adoption after a task-bound PTY denial. */
+ executionRecipe?:{failedCommandUri:string;commands:string[]};
+ /** Separate one-time direct-human verifier authority; never a repair role. */
+ verifierReassessment?:{authorizationUri:string};
+ /** Explicit operator review of a retained, cancelled sibling branch. Never
+  * selected automatically from callback text or a stale worker's metadata. */
+ cancelledBranch?:{predecessorRunId:string;predecessorFence:string};
+ /** Explicit vacant repair lane; never take over an occupied historical lane. */
+ lane?:number;
+}
+const exactPaths=(paths:string[])=>paths.length>0&&paths.length<=1000&&new Set(paths).size===paths.length
+ &&paths.every(p=>typeof p==='string'&&p.length>0&&!p.startsWith('/')&&!/[\\*?\[\]{}]/u.test(p)&&!p.split('/').some(s=>!s||s==='.'||s==='..'));
+
+/** A new direct human source phase is not a refund of an old repair budget.
+ * One such phase per run; exact immutable grant, changed source and state CAS.
+ * This operator-only API is never exposed to workers or callback handlers. */
+async function explicitHumanSourcePhase(c:Client,input:any,row:any,sourceHash:string) {
+ const uri=input.explicitHumanPhase;
+ if(!uri)return undefined;
+ if(row.status!=='failed'||row.state!=='held'||row.role!=='repair')throw Error('Explicit source phase requires the exact failed held repair');
+ const rows=(await c.query(`select a.content,a.created_at from artifacts a join action_receipts r
+  on r.run_id=a.run_id and r.target=a.uri and r.metadata=a.content and r.receipt_hash is not null
+  and r.action_type='operator_source_phase_authorized' and r.agent_id='workflow-orchestrator'
+  where a.run_id=$1 and a.uri=$2 and a.kind='explicit_source_phase_authorization'`,[input.runId,uri])).rows;
+ const grant=rows.length===1?rows[0].content:null;
+ const expiry=Date.parse(grant?.expiresAt),now=Date.now();
+ if(!grant||grant.version!==1||grant.authority!=='direct-human'||grant.approvalDecision!=='approved'
+  ||grant.operation!=='resume-same-failed-run-after-new-source'||grant.maxAttempts!==1
+  ||grant.runId!==input.runId||grant.assignmentId!==input.assignmentId||grant.assignmentFence!==input.expectedFence
+  ||grant.projectId!==row.project_key||grant.priorStateVersion!==String(row.state_version)
+  ||grant.taskHash!==acceptanceDigest(row.task)
+  ||grant.owner!==input.owner||grant.intentFence!==input.intentFence||grant.actor!==input.actor
+  ||grant.authorizationReference!==input.authorizationReference||!Number.isFinite(expiry)||expiry<=now
+  ||expiry>new Date(rows[0].created_at).getTime()+3600000
+  ||!/^human-message:[^\s]+$/u.test(grant.instructionReference??'')||!/^[a-f0-9]{64}$/u.test(grant.instructionSha256??'')
+  ||typeof grant.instructionText!=='string'||!grant.instructionText.length||grant.instructionText.length>8192
+  ||createHash('sha256').update(grant.instructionText).digest('hex')!==grant.instructionSha256
+  ||acceptanceDigest(grant.sourcePaths)!==acceptanceDigest(input.files)||grant.sourceHash!==sourceHash
+  ||!Array.isArray(grant.authorizedCommands)||!grant.authorizedCommands.length
+  ||new Set(grant.authorizedCommands).size!==grant.authorizedCommands.length
+  ||grant.authorizedCommands.some((command:unknown)=>typeof command!=='string'||!row.policy_snapshot?.actions?.allowed_commands?.includes(command))
+  ||grant.priorSourceHash!==row.evaluation_metadata?.coordinatorReconciliationContract?.subjectHash
+  ||grant.sourceHash===grant.priorSourceHash)throw Error('Fresh exact direct-human source-phase authorization required');
+ if((await c.query("select 1 from action_receipts where run_id=$1 and action_type='existing_assignment_explicit_source_phase_resumed' limit 1",[input.runId])).rowCount)throw Error('One-time explicit source phase already consumed');
+ const failure=(await c.query("select created_at from action_receipts where run_id=$1 and action_type='stage_failed' order by created_at desc limit 1",[input.runId])).rows[0];
+ if(!failure||new Date(rows[0].created_at).getTime()<=new Date(failure.created_at).getTime())throw Error('Source-phase grant must follow the retained terminal failure');
+ return grant;
+}
+
+/** Record an operator's reviewed source postimage and actual governed checks.
+ * This attests a repair, never independent product acceptance or live effects.
+ */
+export async function recordVerifiedSourceRepairOnClient(c:Client,input:{runId:string;assignmentId:string;expectedFence:string;owner:string;intentFence:string;files:string[];commandUris:string[];authorizationReference:string;actor:string;historicalSourceReview?:HistoricalSourceReview;explicitHumanPhase?:string}) {
+ if(!exactPaths(input.files)||!input.commandUris.length||new Set(input.commandUris).size!==input.commandUris.length||!input.authorizationReference||!input.actor)throw Error('Exact reviewed repair evidence required');
+ await c.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
+ const row=(await c.query(`select r.status,r.task,r.state_version,r.evaluation_metadata,r.policy_snapshot,r.project_id::text project_key,p.root_uri,q.fence::text,q.state,q.role
+  from workflow_runs r join projects p on p.id=r.project_id join queue_coordinator_assignments q on q.child_run_id=r.id
+  where r.id=$1 and q.id=$2 and q.fence=$3::bigint and q.project_id=r.project_id for update of r,q`,[input.runId,input.assignmentId,input.expectedFence])).rows[0];
+ if(!row||row.status!==(input.explicitHumanPhase?'failed':'blocked')||row.state!=='held')throw Error('Exact terminal assigned run required');
+ const intent=(await c.query('select file_scopes from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3 and expires_at>clock_timestamp() for update',[row.project_key,input.owner,input.intentFence])).rows[0];
+ if(!intent||input.files.some(file=>!intent.file_scopes.includes(file)))throw Error('Repair source must remain under the operator intent');
+ const terminalAction=input.explicitHumanPhase?'stage_failed':'stage_blocked';
+ const blocked=(await c.query("select receipt_hash,created_at from action_receipts where run_id=$1 and action_type=$2 order by created_at desc limit 1",[input.runId,terminalAction])).rows[0];
+ if(!blocked?.receipt_hash)throw Error('Original blocked attempt must be chained');
+ const checks=(await c.query(`select a.uri,a.content from artifacts a where a.run_id=$1 and a.uri=any($2::text[]) and a.kind='command_output'
+  and a.created_at>$3 and exists(select 1 from action_receipts r where r.run_id=a.run_id and r.action_type='local_command'
+   and r.target=a.content->>'commandLine' and r.metadata=a.content and r.receipt_hash is not null)`,[input.runId,input.commandUris,blocked.created_at])).rows;
+ if(checks.length!==input.commandUris.length||checks.some(a=>a.content.exitCode!==0||a.content.timedOut!==false)
+  ||!checks.some(a=>/\b(?:unittest|pytest)\b|^npm (?:test|run (?:test|check))\b|^node .*--test\b/u.test(a.content.commandLine)))throw Error('Fresh successful governed test evidence required');
+ const sourceHash=await sourceSubjectHash(row.root_uri,input.files);
+ const phase=await explicitHumanSourcePhase(c,input,row,sourceHash);
+ if(phase&&checks.some(a=>a.content.sourceBefore!==sourceHash||a.content.sourceAfter!==sourceHash||a.content.subjectHash!==sourceHash
+  ||acceptanceDigest(a.content.sourcePaths)!==acceptanceDigest(input.files)||!phase.authorizedCommands.includes(a.content.commandLine)))throw Error('Explicit source phase requires exact source-bound fresh commands');
+ if((await c.query("select 1 from artifacts where run_id=$1 and kind='verified_source_repair' and (content->>'sourceHash'=$2 or content->>'authorizationReference'=$3) limit 1",[input.runId,sourceHash,input.authorizationReference])).rowCount)throw Error('Repair postimage or authorization already recorded');
+ const {verifyRunReceiptChainOnClient}=await import('./postgres.js');
+ if(!(await verifyRunReceiptChainOnClient(c,input.runId)).valid)throw Error('Repair receipt chain is invalid');
+ const historicalSourceObservation=input.historicalSourceReview?await currentHistoricalSourceObservation(c,input.runId,input.files,input.historicalSourceReview):undefined;
+ const record={version:1,...input,sourceHash,blockedReceiptHash:blocked.receipt_hash,...(phase?{priorStatus:'failed',sourcePhaseGrantHash:acceptanceDigest(phase)}:{}),checks:checks.map(a=>({uri:a.uri,commandLine:a.content.commandLine,contentHash:acceptanceDigest(a.content)})),...(historicalSourceObservation?{historicalSourceObservation}:{})};
+ const uri=`db://workflow_runs/${input.runId}/verified_source_repair/${randomUUID()}`;
+ await c.query("insert into artifacts(run_id,kind,uri,content) values($1,'verified_source_repair',$2,$3::jsonb)",[input.runId,uri,JSON.stringify(record)]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'verified_source_repair',target:uri,summary:'Operator attested the repaired source postimage and fresh successful governed checks; no product acceptance granted.',metadata:JSON.stringify(record)});
+ return uri;
+}
+
+async function currentHistoricalSourceObservation(c:Client,runId:string,files:string[],review:HistoricalSourceReview) {
+ // No unfinished effect or live approval can be acknowledged as source history.
+ if((await c.query(`select 1 from action_approvals where run_id=$1 and status in ('pending','executing')
+  union all select 1 from side_effect_receipts where project_id=$1::text
+   or (project_id=(select project_id::text from workflow_runs where id=$1::uuid) and status is distinct from 'completed') limit 1`,[runId])).rowCount)throw Error('Historical source observation cannot reconcile pending or separately reserved effects');
+ const receipts=(await c.query("select action_type,target,receipt_hash,metadata from action_receipts where run_id=$1 and action_type in ('file_write','file_delete','file_patch','external_action') order by created_at,receipt_hash limit 1001",[runId])).rows;
+ const artifacts=(await c.query("select uri,kind,content from artifacts where run_id=$1 and kind in ('file_write','file_patch','executor_output') order by uri limit 1001",[runId])).rows;
+ return observeHistoricalSourceEffects({files,review,receipts,artifacts});
+}
+
+async function repairedResumeProof(c:Client,input:ExistingAssignmentRequest,q:any,run:any) {
+ const rows=(await c.query(`select a.content from artifacts a join action_receipts r on r.run_id=a.run_id and r.target=a.uri and r.metadata=a.content
+  and r.action_type='verified_source_repair' and r.agent_id='workflow-orchestrator' and r.receipt_hash is not null
+  where a.run_id=$1 and a.uri=$2 and a.kind='verified_source_repair'`,[input.runId,input.repairProofUri])).rows;
+ const proof=rows[0]?.content;
+ if(rows.length!==1||proof.runId!==input.runId||proof.assignmentId!==input.assignmentId||proof.expectedFence!==input.expectedFence
+  ||proof.owner!==input.owner||proof.intentFence!==input.intentFence||proof.actor!==input.actor||proof.authorizationReference!==input.authorizationReference
+  ||!exactPaths(proof.files)||proof.files.some((p:string)=>!input.sourcePaths.includes(p))
+  ||await sourceSubjectHash(q.root_uri,proof.files)!==proof.sourceHash)throw Error('Fresh exact repaired-resume proof required');
+ const phase=await explicitHumanSourcePhase(c,proof,{...run,project_key:q.project_key,state:q.state,role:q.role},proof.sourceHash);
+ if(phase&&acceptanceDigest(phase)!==proof.sourcePhaseGrantHash)throw Error('Source-phase grant changed after attestation');
+ if(phase&&(acceptanceDigest(proof.files)!==acceptanceDigest(input.sourcePaths)
+  ||acceptanceDigest(phase.authorizedCommands)!==acceptanceDigest(input.commands)))throw Error('Exact source-phase source and command scope required');
+ const latest=(await c.query("select receipt_hash from action_receipts where run_id=$1 and action_type=$2 order by created_at desc limit 1",[input.runId,phase?'stage_failed':'stage_blocked'])).rows[0];
+ if(latest?.receipt_hash!==proof.blockedReceiptHash||q.prior_child!==input.runId||q.state!=='held'||run.status!==(phase?'failed':'blocked')
+  ||!run.evaluation_metadata?.existingAssignmentReconciliationUri)throw Error('Repair must bind the same latest blocked continuation');
+ if(!phase&&(await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='existing_assignment_repaired_resumed'",[input.runId])).rows[0].n>=3
+  ||(await c.query("select 1 from action_receipts where run_id=$1 and action_type='existing_assignment_repaired_resumed' and target=$2 limit 1",[input.runId,input.repairProofUri])).rowCount)throw Error('Repaired-resume proof consumed or finite budget exhausted');
+ const checks=(await c.query('select uri,content from artifacts where run_id=$1 and uri=any($2::text[])',[input.runId,proof.checks.map((a:any)=>a.uri)])).rows;
+ if(checks.length!==proof.checks.length||checks.some(a=>acceptanceDigest(a.content)!==proof.checks.find((p:any)=>p.uri===a.uri)?.contentHash))throw Error('Verified repair command evidence changed');
+ return proof;
+}
+
+export async function previewExistingAssignmentOnClient(c:Client,input:ExistingAssignmentRequest) {
+ if(!input.assignmentId||!input.runId||!input.expectedFence||!input.owner||!input.intentFence
+  ||!input.actor||!input.reason||!input.authorizationReference||!exactPaths(input.sourcePaths)
+  ||!input.commands.length||new Set(input.commands).size!==input.commands.length)throw Error('Exact operator scope and authorization reference required');
+ const q=(await c.query(`select q.*,q.id::text claim_id,q.fence::text claim_fence,q.project_id::text project_key,
+  q.source_run_id::text source_id,q.child_run_id::text prior_child,p.root_uri,
+  exists(select 1 from project_identity_locations l where l.project_id=p.id and l.identity_id=p.id and l.kind='canonical') canonical
+  from queue_coordinator_assignments q join projects p on p.id=q.project_id where q.id=$1 for update of q,p`,[input.assignmentId])).rows[0];
+ if(!q||q.claim_fence!==input.expectedFence||!['held','uncertain','running'].includes(q.state)||!q.canonical
+  ||/(^|\/)(vendor|node_modules)(\/|$)/iu.test(q.root_uri)||await fs.realpath(q.root_uri)!==q.root_uri)throw Error('Exact canonical held assignment required');
+ const rows=(await c.query('select *,id::text run_key,project_id::text project_key from workflow_runs where id=any($1::uuid[]) for update',[[q.source_id,input.runId,q.prior_child].filter(Boolean)])).rows;
+ const source=rows.find(r=>r.run_key===q.source_id),run=rows.find(r=>r.run_key===input.runId),prior=rows.find(r=>r.run_key===q.prior_child),m=run?.evaluation_metadata??{};
+ const branch=input.cancelledBranch;
+ if([branch,input.repairProofUri,input.executionRecipe,input.verifierReassessment].filter(Boolean).length>1)throw Error('Reconciliation modes are separate operations');
+ if(!source||!run||run.project_key!==q.project_key||!((input.executionRecipe||input.verifierReassessment)?run.status==='failed':input.repairProofUri?['blocked','failed'].includes(run.status):['queued','running'].includes(run.status))||run.lease_owner
+  ||(run.lease_expires_at&&new Date(run.lease_expires_at).getTime()>Date.now())
+  ||m.queueCoordinatorClaimId!==input.assignmentId||String(m.queueCoordinatorFence)!==(branch?.predecessorFence??input.expectedFence)
+  ||m.sourceRunId!==q.source_id||q.family_id!==`${q.project_key}:${source.run_set_id}`)throw Error('Run does not belong to the exact existing assignment');
+ let branchPredecessor:any;
+ let branchTasks:any[]=[];
+ if(branch){
+  if(q.state!=='held'||!/^[1-9][0-9]*$/u.test(branch.predecessorFence)||BigInt(branch.predecessorFence)>=BigInt(input.expectedFence)
+   ||branch.predecessorRunId===q.prior_child||m.replayOfRunId!==branch.predecessorRunId||run.status!=='queued')throw Error('Exact older cancelled predecessor branch required');
+  branchPredecessor=(await c.query('select *,id::text run_key,project_id::text project_key from workflow_runs where id=$1 for update',[branch.predecessorRunId])).rows[0];
+  for(const [candidate,fence]of [[branchPredecessor,branch.predecessorFence],[prior,input.expectedFence]] as const){
+   if(!candidate||candidate.status!=='cancelled'||candidate.project_key!==q.project_key||candidate.run_set_id!==source.run_set_id
+    ||candidate.evaluation_metadata?.queueCoordinatorClaimId!==input.assignmentId
+    ||String(candidate.evaluation_metadata?.queueCoordinatorFence)!==fence
+    ||candidate.evaluation_metadata?.sourceRunId!==q.source_id||candidate.lease_owner
+    ||candidate.lease_expires_at&&new Date(candidate.lease_expires_at).getTime()>Date.now())throw Error('Retained cancelled branch identity or lifetime is unavailable');
+  }
+  const branchIds=[branch.predecessorRunId,q.prior_child];
+  branchTasks=(await c.query('select * from workflow_tasks where run_id=any($1::uuid[]) order by id limit 1001 for update',[branchIds])).rows;
+  if(branchTasks.length>1000||branchTasks.some(t=>['queued','leased','running'].includes(t.status)||t.lease_expires_at&&new Date(t.lease_expires_at).getTime()>Date.now()))throw Error('Cancelled branch retains active task authority or exceeds review bounds');
+  if((await c.query(`select 1 from action_approvals where run_id=any($1::uuid[]) and status in ('pending','executing')
+   union all select 1 from action_receipts where run_id=any($1::uuid[]) and action_type in ('file_write','file_delete','file_patch','external_action')
+   union all select 1 from artifacts where run_id=any($1::uuid[]) and kind in ('file_write','file_patch','executor_output') limit 1`,[branchIds])).rowCount)throw Error('Cancelled branch effects require separate reconciliation');
+  const commands=(await c.query("select target,metadata from action_receipts where run_id=any($1::uuid[]) and action_type='local_command' limit 1001",[branchIds])).rows;
+  if(commands.length>1000||commands.some(a=>!input.commands.includes(a.target)||a.metadata?.exitCode!==0||a.metadata?.timedOut!==false))throw Error('Unresolved cancelled branch command evidence');
+ }else if(q.prior_child!==input.runId&&(!prior||!['completed','blocked','failed','cancelled'].includes(prior.status)
+  ||m.replayOfRunId!==q.prior_child))throw Error('Only the exact retained terminal predecessor can be rebound');
+ const repairProof=input.repairProofUri?await repairedResumeProof(c,input,q,run):undefined;
+ const recipeProof=await inspectExecutionRecipeAdoption(c,input,q,run);
+ const verifierProof=await inspectVerifierReassessment(c,input,q,run);
+ const resumedStatus=recipeProof||verifierProof||repairProof?.explicitHumanPhase?'failed':'blocked';
+ const resuming=!!(repairProof||recipeProof||verifierProof);
+ const tasks=(await c.query('select * from workflow_tasks where run_id=$1 order by id for update',[input.runId])).rows;
+ if(!tasks.length||tasks.some(t=>!(verifierProof?['failed','cancelled'].includes(t.status):resuming?[resumedStatus,'queued'].includes(t.status):t.status==='queued')
+  ||t.worker_id&&!(resuming&&t.status===resumedStatus)||t.lease_expires_at&&new Date(t.lease_expires_at).getTime()>Date.now())
+  ||resuming&&!tasks.some(t=>t.status===resumedStatus))throw Error('All remaining stages must be safely unleased and match the explicit resume mode');
+ // Never reclaim a live owner, even when the recorded task lease is absent.
+ if((await c.query('select 1 from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3 and expires_at>clock_timestamp()',
+  [q.project_key,q.owner,q.intent_fence])).rowCount)throw Error('Prior assignment intent is still live');
+ const intent=(await c.query('select file_scopes from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3 and expires_at>clock_timestamp() for update',
+  [q.project_key,input.owner,input.intentFence])).rows[0];
+ if(!intent||acceptanceDigest([...intent.file_scopes].sort())!==acceptanceDigest([...input.sourcePaths].sort()))throw Error('Fresh exact work intent required');
+ const actions=run.policy_snapshot?.actions;
+ if(!actions||input.commands.some(command=>!actions.allowed_commands?.includes(command)))throw Error('Reconciliation cannot widen the frozen command policy');
+ // Existing execution is preserved, never reset. A live/uncertain action or any
+ // prior file mutation needs effect-specific reconciliation, not this API.
+ const hasPriorEffects=(await c.query(`select 1 from action_approvals where run_id=$1 and status in ('pending','executing')
+  union all select 1 from action_receipts where run_id=$1 and action_type in ('file_write','file_delete','file_patch','external_action')
+  union all select 1 from artifacts where run_id=$1 and kind in ('file_write','file_patch','executor_output') limit 1`,[input.runId])).rowCount;
+ if(hasPriorEffects&&!verifierProof){
+  if(!repairProof?.historicalSourceReview||!repairProof.historicalSourceObservation)throw Error('Pending authority or prior effects require separate reconciliation');
+  const observed=await currentHistoricalSourceObservation(c,input.runId,repairProof.files,repairProof.historicalSourceReview);
+  if(acceptanceDigest(observed)!==acceptanceDigest(repairProof.historicalSourceObservation))throw Error('Historical source evidence changed after operator observation');
+ }
+ const others=(await c.query("select id::text,project_id::text project_key,role,lane,file_scopes from queue_coordinator_assignments where id<>$1 and state in ('reserved','running','uncertain') for update",[input.assignmentId])).rows;
+ const lane=input.lane??q.lane;
+ if(recipeProof){const {queueWorkingOccupancyOnClient}=await import('./queue-coordinator.js');if((await queueWorkingOccupancyOnClient(c)).count>=5)throw Error('Working capacity is full');}
+ if(input.lane!==undefined){
+  if(q.state!=='held'||q.role!=='repair'||!Number.isInteger(lane)||lane<1||lane>5)throw Error('Explicit vacant repair lane requires a held repair assignment');
+  const {queueWorkingOccupancyOnClient}=await import('./queue-coordinator.js');
+  if((await queueWorkingOccupancyOnClient(c)).count>=5)throw Error('Working capacity is full; preserve existing assignments');
+ }
+ if(others.some(other=>other.role===q.role&&other.lane===lane))throw Error('Exact coordinator lane is occupied; preserve its existing owner');
+ if(others.some(other=>other.project_key===q.project_key&&(!Array.isArray(other.file_scopes)||!other.file_scopes.length
+  ||other.file_scopes.some((a:unknown)=>typeof a!=='string'||input.sourcePaths.some(b=>a===b||a.startsWith(`${b}/`)||b.startsWith(`${a}/`))))))throw Error('Another unresolved assignment retains overlapping ownership');
+ if((await c.query(`select 1 from queue_coordinator_assignments where id<>$1 and family_id=$2 and state in ('reserved','running','uncertain')
+  union all select 1 from workflow_runs where id<>$3 and id<>$4 and evaluation_metadata->>'queueCoordinatorClaimId'=$1::text
+   and status in ('queued','leased','running') limit 1`,[input.assignmentId,q.family_id,input.runId,q.prior_child])).rowCount)throw Error('Another family continuation is active');
+ const original=source.evaluation_metadata?.acceptanceContract;
+ const oldContract=resuming?await reconciledExecutionContract(c,input.runId,m):m.acceptanceContract;
+ const retains=(paths:string[])=>resuming?paths.every(p=>input.sourcePaths.includes(p)):acceptanceDigest([...paths].sort())===acceptanceDigest([...input.sourcePaths].sort());
+ if(original?.sourcePaths&&!retains(original.sourcePaths))throw Error('Original requirement scope must be retained');
+ if(oldContract?.sourcePaths&&!retains(oldContract.sourcePaths))throw Error('Existing requirement scope must be retained');
+ const deliverables=(oldContract??original)?.deliverables??[{id:'original-requirements',description:source.task,requiredGates:['implementation','verification','packaging','supervision']}];
+ const contract:StructuredAcceptanceContract={version:1,contractId:`${resuming?'existing-assignment-repaired':'existing-assignment'}:${input.runId}:${input.expectedFence}`,projectId:q.project_key,originRunId:input.runId,
+  taskHash:acceptanceDigest(run.task),sourcePaths:input.sourcePaths,subjectHash:await sourceSubjectHash(q.root_uri,input.sourcePaths),
+  deliverables:deliverables.map((d:any)=>({...d,status:'pending',receipts:{},gaps:[]}))};
+ if(verifierProof&&contract.subjectHash!==verifierProof.sourceHash)throw Error('Verifier source changed during reconciliation');
+ const priorContinuations=resuming?(await c.query("select uri,content,task_id::text from artifacts where run_id=$1 and kind='stage_continuation' order by uri limit 1001",[input.runId])).rows:[];
+ if(priorContinuations.length>1000||Buffer.byteLength(JSON.stringify(priorContinuations),'utf8')>16_000_000)throw Error('Blocked continuation history exceeds preservation bound');
+ const snapshot={input,q,run,source,prior,tasks,contract,lane,priorContinuations,...(branch?{branchPredecessor,branchTasks}:{}),...(repairProof?{repairProof}: {}),...(recipeProof?{recipeProof}: {})};
+ return {snapshot:{...snapshot,...(verifierProof?{verifierProof}:{})},digest:acceptanceDigest({...snapshot,...(verifierProof?{verifierProof}:{})})};
+}
+
+/** Fresh operator contract is supplemental. Never replace historical contracts,
+ * task text, attempts, completed stages, statuses or predecessor records.
+ * Current execution is narrowed to read-only project actions.
+ */
+export async function reconcileExistingAssignmentOnClient(c:Client,input:ExistingAssignmentRequest,expectedDigest:string) {
+ await c.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
+ const preview=await previewExistingAssignmentOnClient(c,input);
+ if(preview.digest!==expectedDigest)throw Error('Assignment changed after reviewed preview');
+ const {q,run,contract}=preview.snapshot;
+ const {verifyRunReceiptChainOnClient}=await import('./postgres.js');
+ for(const id of new Set([q.source_id,input.runId,q.prior_child,input.cancelledBranch?.predecessorRunId].filter(Boolean)))if(!(await verifyRunReceiptChainOnClient(c,id!)).valid)throw Error('Original and continuation receipt chains must verify');
+ if(!input.repairProofUri&&!input.executionRecipe&&!input.verifierReassessment&&(await c.query("select 1 from action_receipts where run_id=$1 and action_type='existing_assignment_reconciled' limit 1",[input.runId])).rowCount)throw Error('Existing continuation was already reconciled');
+ const fresh=(await c.query(`update queue_coordinator_assignments set owner=$2,intent_fence=$3,file_scopes=$4::jsonb,
+  child_run_id=$5,lane=$7,fence=nextval(pg_get_serial_sequence('queue_coordinator_assignments','fence')),state='running',
+  reason='Explicit existing-run reconciliation; history and requirements preserved',updated_at=clock_timestamp()
+  where id=$1 and fence=$6::bigint returning fence::text`,[input.assignmentId,input.owner,input.intentFence,JSON.stringify(input.sourcePaths),input.runId,input.expectedFence,preview.snapshot.lane])).rows[0];
+ if(!fresh)throw Error('Assignment fence changed');
+ const id=randomUUID(),uri=`db://workflow_runs/${input.runId}/existing_assignment_reconciled/${id}`;
+ const record={version:1,id,authorizationReference:input.authorizationReference,actor:input.actor,reason:input.reason,
+  priorAssignment:q,priorMetadata:run.evaluation_metadata,priorPolicy:run.policy_snapshot,priorRun:run,priorTasks:preview.snapshot.tasks,priorContinuations:preview.snapshot.priorContinuations,
+  ...(input.cancelledBranch?{cancelledBranch:input.cancelledBranch,branchPredecessor:preview.snapshot.branchPredecessor,branchTasks:preview.snapshot.branchTasks}:{}),repairProofUri:input.repairProofUri??null,executionRecipe:preview.snapshot.recipeProof??null,contract,
+  verifierReassessment:preview.snapshot.verifierProof??null,
+  assignmentId:input.assignmentId,runId:input.runId,owner:input.owner,intentFence:input.intentFence,fence:fresh.fence,lane:preview.snapshot.lane,previewDigest:preview.digest};
+ await c.query("insert into artifacts(run_id,kind,uri,content) values($1,'existing_assignment_reconciled',$2,$3::jsonb)",[input.runId,uri,JSON.stringify(record)]);
+ const metadata={...run.evaluation_metadata,queueCoordinatorFence:fresh.fence,workIntent:{owner:input.owner,fencingToken:input.intentFence},
+  existingAssignmentReconciliationUri:uri,coordinatorReconciliationContract:contract,...((input.repairProofUri||input.executionRecipe||input.verifierReassessment)?{noAutomaticRepeat:true}:{})};
+ const policy={...run.policy_snapshot,actions:{...run.policy_snapshot.actions,allowed_commands:input.commands,allowed_write_paths:[],isolate_command_writes:true,...(input.executionRecipe?{scoped_native_pty_commands:input.executionRecipe.commands}:preview.snapshot.verifierProof?{scoped_native_pty_commands:preview.snapshot.verifierProof.ptyCommands}:{})}};
+ await c.query('update workflow_runs set evaluation_metadata=$2::jsonb,policy_snapshot=$3::jsonb where id=$1',[input.runId,JSON.stringify(metadata),JSON.stringify(policy)]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'existing_assignment_reconciled',target:uri,
+  summary:'Rebound existing continuation with fresh contract and fences; all historical records retained; read-only actions only.',metadata:JSON.stringify(record)});
+ if(input.repairProofUri||input.executionRecipe||input.verifierReassessment){
+  const explicitPhase=Boolean(preview.snapshot.repairProof?.explicitHumanPhase);
+  const fromStatus=input.executionRecipe||explicitPhase||input.verifierReassessment?'failed':'blocked';
+  const actionType=input.verifierReassessment?'existing_assignment_verifier_reassessed':input.executionRecipe?'existing_assignment_recipe_resumed':explicitPhase?'existing_assignment_explicit_source_phase_resumed':'existing_assignment_repaired_resumed';
+  const proofTarget=input.verifierReassessment?.authorizationUri??input.repairProofUri??input.executionRecipe!.failedCommandUri;
+  // A separate explicit operator action, never a generic terminal transition.
+  // The full prior terminal attempt is sealed before current execution is rearmed.
+  const updated=(await c.query(`update workflow_runs set status='queued',state_version=state_version+1,finished_at=null
+   where id=$1 and status=$3 and state_version=$2::bigint returning state_version::text,lease_epoch::text`,[input.runId,run.state_version,fromStatus])).rows[0];
+  if(!updated)throw Error('Terminal attempt changed before explicit resume');
+  await c.query("update workflow_tasks set status='queued',started_at=null,finished_at=null,worker_id=null,lease_expires_at=null,available_at=clock_timestamp() where run_id=$1 and status=any($2::text[])",[input.runId,input.verifierReassessment?['failed','cancelled']:[fromStatus]]);
+  await c.query(`insert into workflow_run_transitions(run_id,from_status,to_status,state_version,lease_epoch,actor,reason,idempotency_key,metadata)
+   values($1,$8,'queued',$2::bigint,$3::bigint,$4,$5,$6,$7::jsonb)`,[input.runId,updated.state_version,updated.lease_epoch,input.actor,input.reason,`operator-repaired-resume:${acceptanceDigest(proofTarget)}`,JSON.stringify({repairProofUri:input.repairProofUri,priorBlockedAttemptUri:uri,assignmentFence:fresh.fence}),fromStatus]);
+  await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType,target:proofTarget,
+   summary:input.verifierReassessment?'Explicit one-time current-revision verifier reassessment; failed attempt, task attempts, candidate and all four gates retained; no acceptance granted.':input.executionRecipe?'Explicit one-time same-run recipe adoption; failed attempt retained, no acceptance granted.':'Explicitly resumed the same blocked run after verified source repair; blocked attempt and all original requirements retained.',metadata:JSON.stringify({authorizationReference:input.authorizationReference,priorBlockedAttemptUri:uri,stateVersion:updated.state_version,assignmentFence:fresh.fence})});
+  await enqueueRunNotification(c,{runId:input.runId,kind:'progress',eventKey:`transition:${updated.state_version}`,title:input.verifierReassessment?'Verifier reassessment authorized':input.executionRecipe?'Run resumed after prospective recipe adoption':'Run resumed after verified source repair',
+   body:JSON.stringify({version:1,type:'run.state_changed',id:`${input.runId}:transition:${updated.state_version}`,runId:input.runId,sequence:updated.state_version,
+    occurredAt:new Date().toISOString(),previousState:fromStatus,state:'queued',summary:input.verifierReassessment?'Explicit one-time verifier reassessment; candidate, failed attempt and four gates retained.':input.executionRecipe?'Explicit one-time recipe adoption; failed attempt and original requirements retained.':'Explicit repaired resume of the same run; blocked attempt and original requirements retained.',result:null})});
+ }
+ await prepareReconciledAssignmentContextOnClient(c,input.runId,fresh.fence);
+ return {runId:input.runId,assignmentId:input.assignmentId,owner:input.owner,fence:fresh.fence,intentFence:input.intentFence,artifactUri:uri};
+}
+
+export async function reconcileExistingAssignment(input:ExistingAssignmentRequest,expectedDigest:string) {
+ return withClient(async c=>{await c.query('begin');try{const result=await reconcileExistingAssignmentOnClient(c,input,expectedDigest);await c.query('commit');return result;}catch(error){await c.query('rollback');throw error;}});
+}
+
+/** Correct only the proven pre-start historical lease-key collision. Never
+ * recover a provider/effect-bearing task or another owner's work. Fresh epoch
+ * invalidates the exited worker; attempt count and prior claim are retained.
+ */
+export async function requeueOwnedPrestartLeaseOnClient(c:Client,input:{runId:string;taskId:string;assignmentId:string;assignmentFence:string;owner:string;intentFence:string;leaseEpoch:string;authorizationReference:string}) {
+ await c.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
+ const worker=`${input.owner}:${input.assignmentFence}`;
+ const row=(await c.query(`select r.*,t.id::text task_id,t.status task_status,t.attempts,t.started_at task_started,t.lease_generation::text task_epoch,t.worker_id,t.lease_expires_at task_expiry
+  from workflow_runs r join workflow_tasks t on t.run_id=r.id join queue_coordinator_assignments q on q.child_run_id=r.id
+  join work_intents i on i.project_id=q.project_id::text and i.owner=q.owner and i.fencing_token::text=q.intent_fence and i.expires_at>clock_timestamp()
+  where r.id=$1 and t.id=$2 and q.id=$3 and q.fence=$4::bigint and q.owner=$5 and q.intent_fence=$6 and q.state='running'
+   and q.project_id=r.project_id and r.lease_owner=$7 and r.lease_epoch=$8::bigint for update of r,t,q`,
+  [input.runId,input.taskId,input.assignmentId,input.assignmentFence,input.owner,input.intentFence,worker,input.leaseEpoch])).rows[0];
+ const ownedLeased=row?.task_status==='leased'&&row.worker_id===worker;
+ const recoveredQueued=row?.task_status==='queued'&&row.worker_id===null&&row.task_expiry===null;
+ if(!input.authorizationReference||!row||row.status!=='queued'||(!ownedLeased&&!recoveredQueued)||row.task_started!==null||row.task_epoch!==input.leaseEpoch
+  ||row.evaluation_metadata?.queueCoordinatorClaimId!==input.assignmentId||row.evaluation_metadata?.queueCoordinatorFence!==input.assignmentFence
+  ||!row.evaluation_metadata?.coordinatorReconciliationContract?.contractId?.startsWith('existing-assignment-repaired:'))throw Error('Exact owned repaired pre-start claim required');
+ if(!(await c.query("select 1 from workflow_run_transitions where run_id=$1 and idempotency_key=$2 and to_status='leased' and state_version<$3::bigint",[input.runId,`run-leased:${input.taskId}`,row.state_version])).rowCount)throw Error('Historical pre-start lease-key collision not proven');
+ const claim=(await c.query("select created_at from action_receipts where run_id=$1 and action_type='stage_leased' and target=$2 and metadata->>'leaseEpoch'=$3 order by created_at desc limit 1",[input.runId,input.taskId,input.leaseEpoch])).rows[0];
+ if(recoveredQueued&&(!claim||!(await c.query("select 1 from action_receipts where run_id=$1 and target=$2 and action_type='stage_requeued' and metadata->>'cause'='expired_worker_lease' and created_at>$3 limit 1",[input.runId,input.taskId,claim.created_at])).rowCount))throw Error('Exact pre-start expiry recovery receipt required');
+ if(!claim||(await c.query(`select 1 from action_receipts where run_id=$1 and created_at>$2 and action_type in
+  ('stage_started','model_route','model_route_failed','execution_progress','local_command','file_write','external_action')
+  union all select 1 from artifacts where run_id=$1 and created_at>$2 and kind in ('model_route','command_output','executor_output','file_write')
+  union all select 1 from action_approvals where run_id=$1 and status in ('pending','executing') limit 1`,[input.runId,claim.created_at])).rowCount)throw Error('Pre-start no-effect boundary is unproven');
+ if((await c.query("select 1 from action_receipts where run_id=$1 and action_type='existing_assignment_prestart_requeued' and metadata->>'priorLeaseEpoch'=$2 limit 1",[input.runId,input.leaseEpoch])).rowCount)throw Error('Pre-start correction already consumed');
+ const {verifyRunReceiptChainOnClient}=await import('./postgres.js');
+ if(!(await verifyRunReceiptChainOnClient(c,input.runId)).valid)throw Error('Pre-start claim receipt chain invalid');
+ const next=(await c.query("update workflow_runs set lease_epoch=lease_epoch+1,lease_owner=null,lease_expires_at=null where id=$1 and lease_epoch=$2::bigint returning lease_epoch::text",[input.runId,input.leaseEpoch])).rows[0];
+ await c.query("update workflow_tasks set status='queued',worker_id=null,lease_expires_at=null,lease_generation=$2::bigint,available_at=clock_timestamp() where id=$1 and status in ('leased','queued')",[input.taskId,next.lease_epoch]);
+ const uri=`db://workflow_runs/${input.runId}/prestart_lease_requeued/${randomUUID()}`;
+ const record={version:1,...input,priorClaim:row,priorLeaseEpoch:input.leaseEpoch,nextLeaseEpoch:next.lease_epoch,noEffectsProven:true};
+ await c.query("insert into artifacts(run_id,kind,uri,content) values($1,'existing_assignment_prestart_requeued',$2,$3::jsonb)",[input.runId,uri,JSON.stringify(record)]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'existing_assignment_prestart_requeued',target:uri,
+  summary:'Corrected proven pre-start lease-key collision with fresh epoch; same task and historical attempts retained.',metadata:JSON.stringify(record)});
+ return {runId:input.runId,taskId:input.taskId,leaseEpoch:next.lease_epoch,artifactUri:uri};
+}
+
+/** Resolve only the exact append-only operator attestation, never a model field. */
+export async function reconciledExecutionContract(c:Pick<Client,'query'>,runId:string,metadata:Record<string,any>):Promise<StructuredAcceptanceContract|undefined> {
+ if(!metadata.existingAssignmentReconciliationUri&&!metadata.coordinatorReconciliationContract)return undefined;
+ const rows=(await c.query(`select a.content from artifacts a join action_receipts r on r.run_id=a.run_id and r.target=a.uri
+  and r.action_type='existing_assignment_reconciled' and r.agent_id='workflow-orchestrator' and r.metadata=a.content
+  and r.receipt_hash is not null where a.run_id=$1 and a.uri=$2 and a.kind='existing_assignment_reconciled'`,[runId,metadata.existingAssignmentReconciliationUri])).rows;
+ const record=rows[0]?.content;
+ if(rows.length!==1||record.runId!==runId||record.assignmentId!==metadata.queueCoordinatorClaimId||record.fence!==metadata.queueCoordinatorFence
+  ||acceptanceDigest(record.contract)!==acceptanceDigest(metadata.coordinatorReconciliationContract))throw Error('Reconciled execution contract attestation is unavailable');
+ return record.contract;
+}
+
+/** Refresh the brief without replacing task text or any historical artifact. */
+export async function prepareReconciledAssignmentContextOnClient(c:Client,runId:string,fence:string) {
+ const row=(await c.query(`select r.evaluation_metadata metadata,q.file_scopes,q.owner,q.intent_fence,r.policy_snapshot
+  from workflow_runs r join queue_coordinator_assignments q on q.child_run_id=r.id
+  join work_intents i on i.project_id=q.project_id::text and i.owner=q.owner and i.fencing_token::text=q.intent_fence and i.expires_at>clock_timestamp()
+  where r.id=$1 and q.fence=$2::bigint and q.state='running' and r.lease_owner is null for update of r,q`,[runId,fence])).rows[0];
+ if(!row)throw Error('Exact fresh assignment required for context refresh');
+ const contract=await reconciledExecutionContract(c,runId,row.metadata);
+ if(!contract)throw Error('Attested current execution contract required');
+ const repair=row.metadata.existingAssignmentReconciliationUri?(await c.query("select content->>'repairProofUri' repair from artifacts where run_id=$1 and uri=$2",[runId,row.metadata.existingAssignmentReconciliationUri])).rows[0]?.repair:null;
+ const repairEvidence=repair?(await c.query("select content from artifacts where run_id=$1 and uri=$2 and kind='verified_source_repair'",[runId,repair])).rows[0]?.content:null;
+ const text=`Current operator reconciliation (original task and all history retained):\nThis is the same existing run, not a new repair workflow. Use the fresh attested acceptance contract and current source. Old source excerpts, command policies and work-intent owners in the task or prior continuations are historical evidence only. Read current .agent-workflow/context.md and its latest receipt before diagnosing an already-repaired gap. Do not infer implementation absence from historical excerpts.\n${repair?`Verified source repair evidence: ${repair}. Read its current source paths and governed checks before restating a prior source gap; repaired refusal is not native product acceptance.\n`:''}Current owner: ${row.owner}; work-intent fence: ${row.intent_fence}; assignment fence: ${fence}. Root renews/releases; do not acquire a second intent.\nProject file writes, deployment, restart, terminal work, commits and new workflows are excluded. Report remaining original acceptance gates precisely; source tests cannot substitute for native or integration proof.\nCurrent exact permitted commands:\n${row.policy_snapshot.actions.allowed_commands.join('\n')}\nCurrent source hash: ${contract.subjectHash}\nSource paths:\n${row.file_scopes.join('\n')}`;
+ const uri=`db://workflow_runs/${runId}/reconciled_execution_brief/${randomUUID()}`;
+ let phaseText='';
+ if(repairEvidence?.explicitHumanPhase){
+  const grants=(await c.query(`select a.content from artifacts a join action_receipts r on r.run_id=a.run_id and r.target=a.uri
+   and r.metadata=a.content and r.receipt_hash is not null and r.agent_id='workflow-orchestrator' and r.action_type='operator_source_phase_authorized'
+   where a.run_id=$1 and a.uri=$2 and a.kind='explicit_source_phase_authorization'`,[runId,repairEvidence.explicitHumanPhase])).rows;
+  if(grants.length!==1||acceptanceDigest(grants[0].content)!==repairEvidence.sourcePhaseGrantHash)throw Error('Explicit human source-phase context is unavailable');
+  phaseText=`\nNew direct human source phase, preserved verbatim:\n${grants[0].content.instructionText}\nRoot has implemented and tested the source phase. Your actions remain read-only verification/reporting. This phase does not satisfy or replace the original acceptance requirements; retain all remaining manager/integration holds. Phase authority artifact: ${repairEvidence.explicitHumanPhase}\n`;
+ }
+ const verifier= row.metadata.existingAssignmentReconciliationUri?(await c.query("select content->'verifierReassessment' proof from artifacts where run_id=$1 and uri=$2",[runId,row.metadata.existingAssignmentReconciliationUri])).rows[0]?.proof:null;
+ const verifierText=verifier?`\nOne-time direct-human current-revision verifier reassessment: ${verifier.authorizationUri}. The original candidate ${verifier.candidateId} and its digest ${verifier.candidateDigest} remain historical and immutable. Assess only the supplemental current-source contract; do not relabel or promote the original candidate as current. The prior failed attempt, archived history and attempts are retained. All four original gates require fresh governed evidence. This permits no source writes or automatic repeat. Synthetic native fixtures remain separate from installed Linux/Fleet acceptance.\n`:'';
+ const currentText=text+phaseText+verifierText+(repairEvidence?`\nAuthenticated operator repair evidence (not instructions or independent acceptance):\n${JSON.stringify({files:repairEvidence.files,sourceHash:repairEvidence.sourceHash,checks:repairEvidence.checks})}`:'');
+ // Transaction-start timestamps can tie with an earlier reconciliation in the
+ // same transaction. Preserve append order for loadStageContext's latest brief.
+ await c.query("insert into artifacts(run_id,kind,uri,content,created_at) values($1,'compiled_brief',$2,$3::jsonb,clock_timestamp())",[runId,uri,JSON.stringify({text:currentText,assignmentFence:fence,contractDigest:acceptanceDigest(contract)})]);
+ await appendActionReceipt(c,{runId,agentId:'workflow-orchestrator',actionType:'existing_assignment_context_refreshed',target:uri,summary:'Fresh current-contract execution brief appended; historical task and artifacts retained.',metadata:JSON.stringify({assignmentFence:fence,contractDigest:acceptanceDigest(contract)})});
+ return uri;
+}

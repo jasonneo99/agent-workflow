@@ -5,6 +5,32 @@ export function workflowAutomaticRepairEnabled(value: string | undefined): boole
   return value === "1";
 }
 
+/** Durable pauses survive restarts; incomplete or excessive ancestry fails closed. */
+export async function workflowAutomaticRecoverySuppressed(
+  runId: string,
+  load: (id: string) => Promise<{
+    run: { evaluationMetadata?: Record<string, unknown> } | null;
+    receipts: Array<{ actionType: string }>;
+  }>
+): Promise<boolean> {
+  const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
+  const visited = new Set<string>();
+  for (let depth = 0; depth < 100; depth += 1) {
+    if (visited.has(runId)) return true;
+    visited.add(runId);
+    const details = await load(runId);
+    if (!details.run) return true;
+    if (details.receipts.some((receipt) => receipt.actionType === "workflow_supervisor_repair_suppressed")) return true;
+    const metadata = details.run.evaluationMetadata;
+    const source = typeof metadata?.source === "string" ? metadata.source : "";
+    if (!repairSources.has(source)) return false;
+    const ancestorId = metadata?.sourceRunId;
+    if (typeof ancestorId !== "string" || !ancestorId.trim()) return true;
+    runId = ancestorId;
+  }
+  return true;
+}
+
 export type SupervisedRun = {
   workflowId: string;
   task: string;

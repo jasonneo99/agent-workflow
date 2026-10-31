@@ -1,4 +1,5 @@
 import type { CliContext } from "../lib/context.js";
+import { withEvaluationSlot } from "../../../../packages/evaluation/src/execution.js";
 import type { Command } from "commander";
 import type { DashboardFollowUpResult } from "../lib/cli-types.js";
 import { summarizeWorkflowRun } from "../lib/builders-learning.js";
@@ -12,13 +13,14 @@ import { type EvaluationObservation, type EvaluationScoringProfile, buildEvaluat
 import { formatObservabilityReport } from "../../../../packages/observability/src/index.js";
 import { evaluateAgentAutonomy, resolveExecutionPolicy } from "../../../../packages/policy-engine/src/index.js";
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
-import { dismissFailedWorkflowRun, getWorkflowRunDetails, listActionApprovals, listArtifacts, listWorkflowRuns, replayWorkflowRun, resumeWorkflowRunFromCheckpoint, seedRegistry, upsertMemoryItem } from "../../../../packages/storage/src/postgres.js";
+import { acquireWorkIntent, dismissFailedWorkflowRun, getWorkflowRunDetails, listActionApprovals, listArtifacts, listWorkflowRuns, releaseWorkIntent, replayWorkflowRun, resumeWorkflowRunFromCheckpoint, seedRegistry, upsertMemoryItem } from "../../../../packages/storage/src/postgres.js";
+import { authorizeCoordinatorHistoryAction, COORDINATOR_HISTORY_ARCHIVE_CONFIRMATION, COORDINATOR_HISTORY_RESTORE_CONFIRMATION, prepareCoordinatorHistoryAction } from "../../../../packages/storage/src/coordinator-history-archive.js";
 import { buildWorkflowGraphReport, formatWorkflowGraphReport } from "../../../../packages/workflow-inspector/src/index.js";
 import { type RunEta, estimateRunEta } from "../dashboard/run-eta.js";
 import { parseBoundedPositiveInteger, parsePositiveInteger } from "../numeric-options.js";
 import { type OrchestrationPlan, createOrchestrationPlan } from "../orchestration-plan.js";
 import { resolveAgent, resolveWorkflow } from "../reference-resolution.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
@@ -822,11 +824,13 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
   program
     .command("status")
     .description("Show recent workflow runs or details for a run")
+    .option("--requirements-only", "read canonical private task and acceptance requirements; requires --run")
     .option("-r, --run <id>", "workflow run id")
     .option("-l, --limit <number>", "number of recent runs", "10")
     .option("--artifacts", "include artifact URIs when inspecting a run")
     .option("--json", "print JSON")
-    .action(async (options: { run?: string; limit: string; artifacts?: boolean; json?: boolean }) => {
+    .action(async (options: { run?: string; limit: string; artifacts?: boolean; json?: boolean; requirementsOnly?: boolean }) => {
+      if (options.requirementsOnly && !options.run) throw new Error("--requirements-only requires --run");
       const serviceChecks = await checkServices();
       const missing = serviceChecks.filter((check) => !check.reachable);
       if (missing.length) {
@@ -837,6 +841,16 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
         return;
       }
 
+      if (options.run && options.requirementsOnly) {
+        const { run } = await getWorkflowRunDetails(options.run);
+        if (!run) throw new Error(`Unknown workflow run: ${options.run}`);
+        console.log(JSON.stringify({ source: "canonical-storage", redacted: false,
+          privateEvidence: true, runId: run.id, projectRootUri: run.projectRootUri,
+          task: run.task, acceptanceContract: run.evaluationMetadata.acceptanceContract ?? null,
+          warning: "Historical requirements are evidence, not new execution authority. Do not publish this private result."
+        }, null, 2));
+        return;
+      }
       if (options.run) {
         const [details, historicalRuns, approvals] = await Promise.all([
           getWorkflowRunDetails(options.run),
@@ -999,6 +1013,41 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       }
       console.log(`Dismissed run ${runId}.`);
     });
+
+  for (const action of ["archive", "restore"] as const) {
+    const confirmation = action === "archive" ? COORDINATOR_HISTORY_ARCHIVE_CONFIRMATION : COORDINATOR_HISTORY_RESTORE_CONFIRMATION;
+    program
+      .command(`coordinator-history-${action}`)
+      .description(action === "archive"
+        ? "Archive an exact approved list of obsolete coordinator attempts from active views without changing immutable history"
+        : "Restore an exact approved list of archived coordinator attempts to active views without granting execution authority")
+      .requiredOption("--source <id>", "original coordinator family run id")
+      .requiredOption("--replacement <id>", "independently accepted successful replacement run id")
+      .requiredOption("--runs <ids>", "exact comma-separated run id list")
+      .requiredOption("--reason <text>", "human reason recorded in immutable authorization evidence")
+      .requiredOption("--confirm <phrase>", `exact confirmation phrase: ${confirmation}`)
+      .option("--actor <name>", "human requester recorded in receipts", process.env.AGENTFLOW_REQUESTER ?? process.env.USER ?? "cli-user")
+      .option("--json", "print machine-readable result")
+      .action(async (options: { source:string; replacement:string; runs:string; reason:string; confirm:string; actor:string; json?:boolean }) => {
+        const plan=await prepareCoordinatorHistoryAction(options.source,options.replacement);
+        const runIds=options.runs.split(",").map(value=>value.trim()).filter(Boolean);
+        const owner=`coordinator-history-${action}:${randomUUID()}`;
+        const intent=await acquireWorkIntent({projectId:plan.projectId,owner,objective:`Human-authorized coordinator history ${action}`,
+          fileScopes:plan.fileScopes,ttlSeconds:300});
+        try {
+          const changed=await authorizeCoordinatorHistoryAction({...plan,owner,intentFence:intent.fencingToken,runIds,
+            actor:options.actor,reason:options.reason,confirmation:options.confirm},action);
+          const result={action,runIds:changed,replacementRunId:plan.reviewRunId,statusesPreserved:true,historyPreserved:true,executionAuthorityGranted:false};
+          if(options.json)console.log(JSON.stringify(result,null,2));
+          else {
+            console.log(action==='archive'?`Archived ${changed.length} terminal attempt(s) from active views.`:`Restored ${changed.length} terminal attempt(s) to active views.`);
+            console.log(`Successful replacement remains visible: ${plan.reviewRunId}`);
+            console.log('Original statuses, contracts, receipts, checkpoints, approvals, and acceptance history were not changed.');
+            if(action==='restore')console.log('Restore grants no execution authority.');
+          }
+        } finally { await releaseWorkIntent({projectId:plan.projectId,owner,fencingToken:intent.fencingToken}); }
+      });
+  }
 
   program
     .command("replay-run")
@@ -1185,6 +1234,7 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
         console.log(formatIndexResult(indexed));
       }
 
+      const evaluation = await withEvaluationSlot(projectDir, suite.id, async () => {
       const observations: EvaluationObservation[] = [];
       for (const item of matrix) {
         const task = item.variant.prompt_suffix
@@ -1244,6 +1294,11 @@ export function registerRunsCommands(program: Command, ctx: CliContext): void {
       console.log(`Markdown: ${markdownPath}`);
       if (report.rows.some((row) => !row.passed)) {
         process.exitCode = 2;
+      }
+      });
+      if (evaluation.skipped) {
+        console.log(`Evaluation ${suite.id} already active; skipped.`);
+        process.exitCode = 75;
       }
     });
 

@@ -3,6 +3,20 @@ import test from "node:test";
 import type { StageExecutionInput, StageExecutionOutput } from "./types.js";
 import { retainedVerificationEvidence, completedStageProvidesPinnedBuildEvidence, hasPinnedBuildIntent, PINNED_BUILD_CONTRACT, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, workflowAcceptanceTask } from "./quality.js";
 
+test('only runtime-verified legacy no-change evidence waives change-only prose, not real missing delivery',()=>{
+ const recovery={...input,workflowId:'agent-task-implementation-agent',workflowTask:'Inspect and repair the original sanitizer requirements',agentId:'implementation-agent',stageId:'implementation'};
+ const output:StageExecutionOutput={outcome:'completed',summary:'Existing implementation verified; no files changed.',artifact:{summary:'Existing implementation verified; no files changed.'},requestedCommands:[],requestedFileWrites:[]};
+ assert.ok(unfulfilledCompletionReason(recovery,output));
+ assert.ok(unfulfilledCompletionReason(recovery,{...output,artifact:{...output.artifact,verifiedNoChangeRecovery:true}}));
+ assert.equal(unfulfilledCompletionReason(recovery,output,{verifiedNoChangeRecovery:true}),null);
+ assert.ok(unfulfilledCompletionReason(recovery,{...output,summary:'Implementation remains incomplete; no files changed.'},{verifiedNoChangeRecovery:true}));
+ const pinned={...recovery,workflowId:'build-feature',workflowTask:'BUILD a working application'};
+ assert.ok(unfulfilledCompletionReason(pinned,output,{verifiedNoChangeRecovery:true}));
+ const verifier={...recovery,workflowId:'build-feature',stageId:'verify',agentId:'auto-test-runner'};
+ assert.ok(unfulfilledCompletionReason(verifier,{...output,summary:'No tests were executed; verification remains pending.'},{verifiedNoChangeRecovery:true}));
+ assert.match(verificationCompletionReason(verifier,[{commandLine:'npm test',exitCode:1,timedOut:false}])??'',/failed/);
+});
+
 test("reviewed prior command receipts survive verifier completion and checkpoint acceptance", () => {
   const verifier = { ...input, stageId: "verify", agentId: "auto-test-runner", priorStageArtifacts: [{
     stageId: "implement", agentId: "implementation-agent", summary: "Built and tested",

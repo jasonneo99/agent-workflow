@@ -309,12 +309,16 @@ export function verificationCompletionReason(input: StageExecutionInput, actionR
     : "Delivery verification stage cannot complete without a successful governed verification command receipt.";
 }
 
-export function unfulfilledCompletionReason(input: StageExecutionInput, output: StageExecutionOutput): string | null {
+/** Supplied only by the governed runtime after canonical receipt/source checks.
+ * Never read this flag from provider output, prose, task metadata or prompts. */
+export interface RuntimeCompletionEvidence {verifiedNoChangeRecovery?:true}
+export function unfulfilledCompletionReason(input: StageExecutionInput, output: StageExecutionOutput, runtimeEvidence:RuntimeCompletionEvidence={}): string | null {
   if (output.outcome !== "completed") return null;
   const deliveryWorkflow = !input.workflowId
     || ["build-feature", "debug-failure", "dependency-upgrade", "data-migration", "wide-open-automation"].includes(input.workflowId);
   const acceptanceTask = workflowAcceptanceTask(input.workflowTask);
   const pinnedBuild = deliveryWorkflow && hasPinnedBuildIntent(acceptanceTask);
+  const verifiedNoChange=runtimeEvidence.verifiedNoChangeRecovery===true&&!pinnedBuild;
   const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix|finish|repair|complete)\b/iu.test(acceptanceTask);
   const implementationStage = ["implementation-agent", "backend-engineer", "frontend-engineer", "database-engineer"].includes(input.agentId)
     || /(?:^|[-_])(?:implement(?:ation)?|backend|frontend|database)(?:$|[-_])/iu.test(input.stageId);
@@ -362,7 +366,7 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   // This is only a pre-execution deferral: the executor clears pending requests
   // and rechecks the contract against actual receipts before completion.
   if (implementationStage && (output.requestedCommands?.length ?? 0) > 0) return null;
-  if (deliveryWorkflow && deliveryIntent && implementationStage) {
+  if (deliveryWorkflow && deliveryIntent && implementationStage && !verifiedNoChange) {
     return "Delivery implementation stage cannot complete without at least one governed product file write or successful delivery command receipt; planning or inspection alone does not satisfy the user acceptance contract.";
   }
   // Verification providers describe commands before the governed executor has
@@ -380,17 +384,18 @@ export function unfulfilledCompletionReason(input: StageExecutionInput, output: 
   if (deliveryVerifier && verificationClaims.some((claim) => missingVerification.test(claim))) {
     return "Delivery verification stage claimed completion while explicitly reporting that required verification was not performed.";
   }
-  const explicitlyIncomplete = verificationClaims.some((claim) => /implementation\b[^.!?;\n]{0,160}\b(?:is|remains?) (?:incomplete|blocked|absent)|implementation\b[^.!?;\n]{0,160}\bnot (?:performed|implemented)|no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)|not implemented|feature delivery\b[^.!?;\n]{0,160}\bunsupported|product code remains\b[^.!?;\n]{0,160}\bpending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(claim));
+  const explicitlyIncomplete = verificationClaims.some((claim) => /implementation\b[^.!?;\n]{0,160}\b(?:is|remains?) (?:incomplete|blocked|absent)|implementation\b[^.!?;\n]{0,160}\bnot (?:performed|implemented)|not implemented|feature delivery\b[^.!?;\n]{0,160}\bunsupported|product code remains\b[^.!?;\n]{0,160}\bpending|proposal rather than (?:a )?(?:finished|releasable|implemented)/iu.test(claim)
+    ||(!verifiedNoChange&&/no (?:source |code |project |product )?files? (?:were )?(?:changed|modified|written)|no (?:code|source|product) changes|read-only (?:inspection|discovery)/iu.test(claim)));
   return explicitlyIncomplete ? "Delivery stage claimed completion while explicitly reporting that the requested implementation or finished product was not delivered." : null;
 }
 
-export function scoreStageOutput(input: StageExecutionInput, output: StageExecutionOutput): StageQualityScore {
+export function scoreStageOutput(input: StageExecutionInput, output: StageExecutionOutput,runtimeEvidence:RuntimeCompletionEvidence={}): StageQualityScore {
   const threshold = Number(process.env.AGENTFLOW_QUALITY_THRESHOLD ?? 0.62);
   const reasons: string[] = [];
   let score = 0;
   // Structured acceptance is resolved by the runtime, independently of prose.
   const completionViolation = input.acceptanceContract ? null
-    : unfulfilledCompletionReason(input, output);
+    : unfulfilledCompletionReason(input, output,runtimeEvidence);
   if (completionViolation) reasons.push(completionViolation);
   const blockedOutcome = output.outcome === "blocked";
   if (blockedOutcome) reasons.push("stage outcome is blocked and does not satisfy the expected result");

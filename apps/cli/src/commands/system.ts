@@ -157,12 +157,12 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
     .command("provider-use")
     .alias("model-use")
     .description("Switch DEFAULT_MODEL_PROVIDER in .env")
-    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, gemini, muse, openai-compatible, bedrock, or kiro")
+    .argument("<provider>", "auto, mock, local, byo, openai, codex-cli, anthropic, deepseek, gemini, muse, openai-compatible, bedrock, or kiro")
     .option("--login", "authenticate interactively before selecting a CLI provider")
     .option("--device-auth", "use Codex device-code login for a headless machine")
     .option("--check", "run provider-check after switching")
     .action(async (provider: string, options: { check?: boolean; login?: boolean; deviceAuth?: boolean }) => {
-      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"];
+      const supported = ["auto", "mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "muse", "openai-compatible", "bedrock", "kiro"];
       const providerId = normalizeProviderRef(provider);
       if (!supported.includes(providerId)) {
         console.error(`Unsupported provider: ${provider}`);
@@ -203,6 +203,8 @@ export function registerSystemCommands(program: Command, ctx: CliContext): void 
         console.log("Using the authenticated Codex CLI. Defaults to ChatGPT subscription auth and never reads the Codex credential cache directly.");
       } else if (providerId === "anthropic") {
         console.log("Using Anthropic Messages API. Requires ANTHROPIC_API_KEY. Set ANTHROPIC_MODEL=auto to select tier models from the live Anthropic catalog.");
+      } else if (providerId === "deepseek") {
+        console.log("Using DeepSeek's hosted OpenAI-compatible API. Requires DEEPSEEK_API_KEY; DEEPSEEK_MODEL defaults to deepseek-flash.");
       } else if (providerId === "gemini") {
         console.log("Using Gemini through Google's official OpenAI-compatible endpoint. Requires GEMINI_API_KEY or GOOGLE_API_KEY; GEMINI_MODEL defaults to gemini-3.8-flash.");
       } else if (providerId === "muse") {

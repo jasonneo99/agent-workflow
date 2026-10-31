@@ -22,6 +22,7 @@ Portable, model-agnostic agent workflows for any codebase. Define reusable AI ag
 - **Proactive workflow optimization** — wake on evidence events, enforce project budgets and quiet hours, rank recommendations, simulate changes before enforcing them, and record promotion or rollback receipts
 - **Governed assistant integration** — exchange non-executable intent envelopes and bounded status summaries while separately signing and allowlisting fleet host actions
 - **Repository-wide public/private boundary** — validate that code, prompts, tests, fixtures, docs, and release metadata remain portable and scrubbed
+- **Governed history archival** — archive obsolete coordinator attempts from active views without deleting or rewriting their immutable evidence; the CLI, MCP, dashboard, and Studio require the same exact-list authorization and independently accepted replacement
 
 ## Quick Start
 
@@ -85,6 +86,7 @@ For a no-services setup, initialize a project with `--profile simple` and use `n
 | `openai` | Models available to the configured OpenAI project | `OPENAI_API_KEY` |
 | `codex-cli` | Codex CLI using ChatGPT subscription authentication | `codex login` |
 | `anthropic` | Claude through the Anthropic Messages API | `ANTHROPIC_API_KEY` |
+| `deepseek` | DeepSeek Flash through the hosted OpenAI-compatible API | `DEEPSEEK_API_KEY` |
 | `gemini` | Gemini through Google's official OpenAI-compatible API | `GEMINI_API_KEY` or `GOOGLE_API_KEY` |
 | `bedrock` | Nova Pro/Lite, Claude, Llama, Mistral | AWS credentials |
 | `openai-compatible` | Legacy BYO-compatible alias | `OPENAI_COMPATIBLE_BASE_URL` + model name |
@@ -128,6 +130,11 @@ npm run agentflow -- provider-use codex-cli --login --check
 ANTHROPIC_API_KEY=...
 ANTHROPIC_MODEL=auto
 npm run agentflow -- provider-use anthropic --check
+
+# DeepSeek Flash (start in comparison/shadow routing before promotion)
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-flash
+npm run agentflow -- provider-use deepseek --check
 
 # Google Gemini
 GEMINI_API_KEY=...
@@ -386,6 +393,11 @@ autonomy, commands, and write access without creating separate workflow
 storage. Every queued run records the resolved policy snapshot used by its
 worker. Narrow approval rules can auto-execute recurring low-risk actions after
 the normal allowlist/blocklist checks pass. See [Autonomy Policy](docs/autonomy.md).
+
+Optional [per-run environments](docs/run-environments.md) prepare pinned toolchains,
+locked dependencies and isolated test services before governed commands execute.
+[Repair commit checkpoints](docs/repair-commit-process.md) bind tested candidates
+to exact Git revisions and require fresh independent source verification.
 
 ## IDE Clients
 

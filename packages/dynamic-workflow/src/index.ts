@@ -190,9 +190,14 @@ export function optimizeStaticWorkflowForLatency(
   };
 }
 
+function requestedMutationVerb(goal: string): string | undefined {
+  return /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(make|implement|add|create|change|update|build|fix|repair|finish|complete|deliver|ship|remove|delete|write)\b/iu.exec(goal)?.[1]?.toLowerCase();
+}
+
 export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
   const normalized = goal.toLowerCase();
-  const mutationIntent = /^\s*(?:(?:please|kindly)\s+|(?:can|could|would|will)\s+you\s+|i\s+(?:need|want)\s+you\s+to\s+|we\s+need\s+to\s+|let(?:'s| us)\s+)?(?:make|implement|add|create|change|update|build|fix|finish|complete|deliver|ship|remove|delete|write)\b/iu.test(goal);
+  const mutationVerb = requestedMutationVerb(goal);
+  const mutationIntent = mutationVerb !== undefined;
   const selected = workflowArchetypes
     .map((candidate, index) => ({
       candidate,
@@ -204,6 +209,7 @@ export function selectWorkflowArchetype(goal: string): WorkflowArchetype {
       score: mutationIntent && candidate.id === "code-review"
         ? Number.NEGATIVE_INFINITY
         : candidate.keywords.reduce((score, keyword) => score + (normalized.includes(keyword) ? keyword.split(/\s+/).length : 0), 0)
+          + (mutationVerb === "repair" && candidate.id === "debug-failure" ? 1 : 0)
     }))
     .sort((left, right) => right.score - left.score || left.index - right.index)[0].candidate;
   // Mutation language is an execution contract. Even if a goal contains many
@@ -363,6 +369,9 @@ export function validateDynamicWorkflow(value: unknown, project: ProjectConfig):
     if ((item.depends_on ?? []).some((dependency) => !ids.has(dependency) || dependency === item.id)) throw new Error(`Stage '${item.id}' has an invalid dependency.`);
   }
   assertAcyclic(workflow);
+  if (requestedMutationVerb(workflow.dynamic.goal) && !workflow.stages.some((item) => item.pattern.type === "executor")) {
+    throw new Error("Change requests require an executor stage.");
+  }
   if (!workflow.stages.some((item) => item.pattern.type === "verifier")) throw new Error("Dynamic workflows require a verification stage.");
   return workflow;
 }

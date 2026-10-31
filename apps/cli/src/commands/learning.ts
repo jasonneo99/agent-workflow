@@ -1,4 +1,5 @@
 import type { CliContext } from "../lib/context.js";
+import { automaticRepairProjectAllowed } from "../repair-project-boundary.js";
 import { decidePromotions as decideUnifiedPromotions, parsePromotionIds as parseUnifiedPromotionIds, type PromotionKind } from "../../../../packages/promotions/src/index.js";
 import { registerLearningLoopCommand } from "../learning/learning-loop-command.js";
 import { normalizePolicy, verifyBundle } from "../../../../packages/bundle-trust/src/index.js";
@@ -13,7 +14,7 @@ import { buildClientCapabilityContract } from "../../../../packages/client-capab
 import { daemonLanes } from "../../../../packages/daemon-control/src/index.js";
 import { lowerTrustLevel } from "../../../../packages/daemon-control/src/settings.js";
 import { classifyFailureForTriage, failureTriageRiskAllowed } from "../../../../packages/failure-triage/src/index.js";
-import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningProposalSet, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
+import { type LearningApplicationPlan, type LearningApprovalQueue, type LearningProposal, type LearningProposalSet, type LearningRiskLevel, buildLearningApplicationPlan as buildGovernedLearningApplicationPlan, buildLearningApprovalQueue, decideLearningApprovals } from "../../../../packages/learning-governance/src/index.js";
 import { type LearningLoopSchedulerReceipt } from "../../../../packages/learning-loop/src/index.js";
 import { buildLearningProposalSet, formatLearningProposalSet, writeLearningProposalFiles } from "../../../../packages/learning-proposals/src/index.js";
 import { executeAllowedCommand } from "../../../../packages/local-tools/src/command-executor.js";
@@ -24,17 +25,21 @@ import { type CandidateVariantPlan, type TuningApplicationPlan, type TuningAppro
 import { checkServices } from "../../../../packages/storage/src/doctor.js";
 import { getWorkflowAcceptanceDecision, preflightWorkflowAcceptance } from "../../../../packages/storage/src/postgres.js";
 import { reserveSupervisedRepair } from "../../../../packages/storage/src/repair-dispatch.js";
+import {legacyGuideEvidenceInventory,legacyGuideEvidenceInventoryPage,reduceLegacyGuideEvidenceSnapshot} from '../../../../packages/storage/src/queue-partner-guide-legacy-inventory.js';
+import {queuePartnerGuideRegistryHoldMetrics} from '../../../../packages/storage/src/queue-partner-guide-holds.js';
+import { authorizedRepairRun } from "../../../../packages/storage/src/callback-continuation.js";
 import { type WorkflowRunStatus, cancelWorkflowRun, decideActionApproval, getWorkflowRunDetails, listActionApprovals, listArtifacts, listProjectStorageSummaries, listWorkflowRunsForProject, markActionApprovalExecution, reconcileStaleTerminalWorkflowRuns, recordRunAction, recoverInterruptedActionApprovalExecutions, replayWorkflowRun, requeueExpiredWorkflowTaskLeases, retryFailedWorkflowRun, supersedeWorkflowRun, upsertMemoryItem } from "../../../../packages/storage/src/postgres.js";
 import { type TrainingDiscoveryReport, type TrainingProposalDecisionStatus, decideTrainingProposal, formatTrainingDiscoveryReport, readLatestTrainingDiscoveryReport, readTrainingProposalInbox, runTrainingDiscovery } from "../../../../packages/training-discovery/src/index.js";
 import { fairProjectOrder, runOptimizerCycle } from "../../../../packages/workflow-optimizer/src/index.js";
 import { findLaterCompletedEquivalentRun } from "../blocked-run-supersession.js";
-import { CODEX_CALLBACK_RECEIPT, approvalCallbackPrompt, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "../codex-callback.js";
+import { CODEX_CALLBACK_RECEIPT, approvalCallbackPrompt, authenticatedCodexHostTask, codexThreadId, failureCallbackPrompt, inheritedCodexOrigin } from "../codex-callback.js";
 import { runDaemonLearningLoopSchedule } from "../learning/learning-loop-daemon.js";
 import { type ModelComparisonSchedule, type ModelRoutingOptimizerReport, isFleetModelComparisonOwner, prepareRecurringModelComparison, runModelRoutingOptimizer } from "../learning/model-routing-optimizer.js";
 import { parseBoundedPositiveInteger, parsePositiveInteger } from "../numeric-options.js";
 import { normalizeProviderRef } from "../reference-resolution.js";
-import { type TrainingHoldoutDesign, runTrainingHoldout } from "../training-holdout-runner.js";
-import { type SupervisedDeliveryReceipt, findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowAutomaticRepairEnabled, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "../workflow-supervision.js";
+import { loadOrCreateGuideEvidenceCheckpointKey } from "../lib/guide-evidence-checkpoint-store.js";
+import { buildTrainingHoldoutDesign, persistTrainingHoldoutDesign, type TrainingHoldoutDesign, runTrainingHoldout } from "../training-holdout-runner.js";
+import { type SupervisedDeliveryReceipt, findSupersedingDeliveryReceipt, isInternalDiscoveryBlocker, isWithinAutomaticWorkflowRepairWindow, supervisedRepairWorkflowId, workflowAutomaticRepairEnabled, workflowAutomaticRecoverySuppressed, workflowDeliveryRepairReason, workflowRepairLesson, workflowRootRepairAction } from "../workflow-supervision.js";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fsSync from "node:fs";
@@ -347,6 +352,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
 
   async function allowAutomaticRepairDispatch(run: { id: string; task: string }, failure: string): Promise<boolean> {
     if (!workflowAutomaticRepairEnabled(process.env.AGENTFLOW_WORKFLOW_AUTO_REPAIR)) return false;
+    if (!await authorizedRepairRun(run.id)) return false;
     const approvals = await listActionApprovals({ runId: run.id, status: "all", limit: 500 });
     if (approvals.length >= 500 || approvals.some(isOpenApproval)) return false;
     const outputs = await listArtifacts({ runId: run.id, kind: "stage_output" });
@@ -363,38 +369,22 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
   }
 
   async function autoRepairOneWorkflowRun(projectDir: string, mode: LearningDaemonMode): Promise<number> {
+    if (!automaticRepairProjectAllowed(projectDir)) return 0;
     if (mode !== "apply-approved") return 0;
     if (!workflowAutomaticRepairEnabled(process.env.AGENTFLOW_WORKFLOW_AUTO_REPAIR)) return 0;
     const runs = await listWorkflowRunsForProject({ projectRootUri: projectDir, limit: 500 });
     const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
     // Durable pause receipts gate automatic cleanup and recovery across ancestry.
     async function automaticRecoverySuppressed(candidate: WorkflowRunStatus): Promise<boolean> {
-      const visited = new Set<string>();
-      let runId = candidate.id;
-      while (true) {
-        if (visited.has(runId)) return true;
-        visited.add(runId);
-        const details = await getWorkflowRunDetails(runId);
-        if (!details.run) return true;
-        if (details.receipts.some((receipt) => receipt.actionType === "workflow_supervisor_repair_suppressed")) return true;
-        if (!repairSources.has(stringValue(details.run.evaluationMetadata?.source) ?? "")) return false;
-        const ancestorId = stringValue(details.run.evaluationMetadata?.sourceRunId);
-        if (!ancestorId) return true;
-        runId = ancestorId;
-      }
+      return workflowAutomaticRecoverySuppressed(candidate.id, getWorkflowRunDetails);
     }
-    const deliveryReceipts = await loadProjectDeliveryReceipts(projectDir);
     const activeRepair = runs.find((run) => (run.status === "queued" || run.status === "leased" || run.status === "running") && repairSources.has(stringValue(run.evaluationMetadata?.source) ?? ""));
-    if (activeRepair) {
-      if (await automaticRecoverySuppressed(activeRepair)) return 0;
-      const sourceRunId = stringValue(activeRepair.evaluationMetadata?.sourceRunId);
-      const sourceRun = runs.find((candidate) => candidate.id === sourceRunId);
-      const receipt = sourceRun ? findSupersedingDeliveryReceipt(sourceRun.task, deliveryReceipts) : null;
-      if (!sourceRun || !receipt) return 0;
-      await dismissRunSupersededByReceipt({ run: sourceRun, receipt, repairRun: activeRepair });
-      return 1;
-    }
+    if (activeRepair) return 0;
+    const deliveryReceipts = await loadProjectDeliveryReceipts(projectDir);
     for (const run of runs.filter((item) => !item.dismissed && (item.status === "blocked" || item.status === "failed" || item.status === "completed"))) {
+      // A local alias is navigation, not permission to inherit another project's authority.
+      if (!automaticRepairProjectAllowed(run.projectRootUri)) continue;
+      if (!await authorizedRepairRun(run.id)) continue;
       if (await automaticRecoverySuppressed(run)) continue;
       const sourceRunId = stringValue(run.evaluationMetadata?.sourceRunId);
       const repairSource = repairSources.has(stringValue(run.evaluationMetadata?.source) ?? "")
@@ -403,12 +393,12 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       const priorProviderRecoveryKind = stringValue(repairSource?.evaluationMetadata?.rootRepairKind);
       const supersededBy = run.status === "completed" ? undefined : findLaterCompletedEquivalentRun(runs, repairSource ?? run);
       if (supersededBy) {
-        const reason = `Superseded by completed equivalent run ${supersededBy.id}; immutable history preserved.`;
-        await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon", reason, supersededBy: supersededBy.id });
+        const reason = `Equivalent completion candidate ${supersededBy.id}; canonical independent acceptance is required before supersession.`;
+        const dismissed = await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon", reason, supersededBy: supersededBy.id });
         if (repairSource?.status === "blocked") {
           await supersedeWorkflowRun({ runId: repairSource.id, actor: "learning-daemon", reason, supersededBy: supersededBy.id });
         }
-        return 1;
+        if (dismissed) return 1;
       }
       const providerRecoveryNeedsRealProbe = Boolean(repairSource)
         && stringValue(run.evaluationMetadata?.source) === "workflow-root-repair"
@@ -447,18 +437,13 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, rootRepairKind: "planning-discovery" },
             idempotencyKey: `workflow-internal-discovery-${run.id}`
           });
-          await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon", reason: `Superseded by automatic discovery replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
+          // Queued recovery preserves lineage; it does not establish verified completion.
           return 1;
         }
       }
       if (repairSource && !providerRecoveryNeedsRealProbe) continue;
       const repairReferenceTime = run.finishedAt ?? run.startedAt;
       if (!isWithinAutomaticWorkflowRepairWindow(repairReferenceTime)) continue;
-      const deliveryReceipt = run.status === "completed" ? null : findSupersedingDeliveryReceipt(run.task, deliveryReceipts);
-      if (deliveryReceipt) {
-        await dismissRunSupersededByReceipt({ run, receipt: deliveryReceipt });
-        return 1;
-      }
       const details = await getWorkflowRunDetails(run.id);
       if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued"
         || receipt.actionType === "workflow_supervisor_repair_queued"
@@ -541,8 +526,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, providerId: provider.id },
           idempotencyKey: `workflow-provider-recovery-${run.id}-${replay.runId}`
         });
-        await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon",
-          reason: `Superseded by provider-recovery replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
+        // Keep the source visible until equivalent recovery is independently accepted.
         return 1;
       }
       if (rootRepairAction === "wait-approval" || rootRepairAction === "none") continue;
@@ -575,8 +559,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           artifactContent: { sourceRunId: run.id, repairRunId: replay.runId, action: rootRepairAction },
           idempotencyKey: `workflow-root-repair-${run.id}-${replay.runId}`
         });
-        await supersedeWorkflowRun({ runId: run.id, actor: "learning-daemon",
-          reason: `Superseded by root-repair replay ${replay.runId}; immutable history preserved.`, supersededBy: replay.runId });
+        // Keep the source visible until equivalent recovery is independently accepted.
         return 1;
       }
       if (details.receipts.some((receipt) => receipt.actionType === "blocked_run_repair_queued" || receipt.actionType === "workflow_supervisor_repair_queued")) continue;
@@ -599,37 +582,13 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     const terminal = runs
       .filter((run) => !run.dismissed && (run.status === "blocked" || run.status === "failed"))
       .sort((a, b) => Date.parse(b.startedAt) - Date.parse(a.startedAt));
-    const newestByContract = new Map<string, WorkflowRunStatus>();
     let dismissed = 0;
     for (const run of terminal) {
-      const contract = `${run.workflowId}\u0000${run.task.trim()}`;
-      const newest = newestByContract.get(contract);
-      if (!newest) {
-        newestByContract.set(contract, run);
-        continue;
-      }
-      const reason = `Superseded by newer equivalent run ${newest.id}; duplicate self-healing work was not executed.`;
-      const approvals = await listActionApprovals({ runId: run.id, status: "all", limit: 500 });
-      for (const approval of approvals) {
-        if (approval.status === "pending") {
-          await decideActionApproval({
-            approvalId: approval.id,
-            decision: "rejected",
-            actor,
-            actorRole: "approver",
-            note: reason
-          });
-        } else if (approval.status === "approved" && !approval.executedAt) {
-          await markActionApprovalExecution({
-            approvalId: approval.id,
-            status: "dismissed",
-            actor,
-            actorRole: "operator",
-            summary: reason
-          });
-        }
-      }
-      if (await supersedeWorkflowRun({ runId: run.id, actor, reason, supersededBy: newest.id })) dismissed += 1;
+      if (!await authorizedRepairRun(run.id)) continue;
+      const replacement = findLaterCompletedEquivalentRun(runs, run);
+      if (!replacement) continue;
+      const reason = `Equivalent completion candidate ${replacement.id}; canonical independent acceptance is required before supersession.`;
+      if (await supersedeWorkflowRun({ runId: run.id, actor, reason, supersededBy: replacement.id })) dismissed += 1;
     }
     return dismissed;
   }
@@ -639,20 +598,9 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     receipt: SupervisedDeliveryReceipt;
     repairRun?: WorkflowRunStatus;
   }): Promise<void> {
-    // Narrative project receipts cannot resolve an enrolled acceptance contract.
-    if (Object.prototype.hasOwnProperty.call(input.run.evaluationMetadata ?? {}, "acceptanceContract")
-      || Object.prototype.hasOwnProperty.call(input.repairRun?.evaluationMetadata ?? {}, "acceptanceContract")) return;
-
-    const reason = `Superseded by verified project delivery evidence ${input.receipt.path}; immutable history preserved.`;
-    if (input.repairRun && ["queued", "leased", "running"].includes(input.repairRun.status)) {
-      await cancelWorkflowRun(input.repairRun.id);
-    }
-    if (input.run.status === "blocked" || input.run.status === "failed") {
-      await supersedeWorkflowRun({
-        runId: input.run.id, actor: "learning-daemon", reason,
-        supersededBy: input.repairRun?.id ?? input.receipt.path
-      });
-    }
+    // Narrative files cannot establish exact equivalent independent acceptance.
+    // Preserve active recovery and approvals; only canonical verified runs may supersede.
+    return;
   }
 
   function emptyAgentImprovementApplyReceipts(projectDir: string): AgentImprovementApplyReceiptLog {
@@ -694,6 +642,20 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     if (!value) return false;
     return ["1", "true", "on", "yes"].includes(value.trim().toLowerCase());
   }
+
+  program.command("callback-continuation")
+    .description("Claim a canonical callback using host-authenticated origin and operator-pinned authorization; never approves an action")
+    .requiredOption("--run <id>", "canonical run identity")
+    .requiredOption("--notification <id>", "canonical notification identity")
+    .action(async (options: { run: string; notification: string }) => {
+      const authenticatedTaskId = authenticatedCodexHostTask();
+      if (!authenticatedTaskId) throw new Error("An independently authenticated host task is required.");
+      const { claimAuthorizedCallback } = await import("../../../../packages/storage/src/callback-continuation.js");
+      const authorized = await claimAuthorizedCallback({ runId: options.run, notificationId: options.notification, authenticatedTaskId });
+      console.log(JSON.stringify({ authorized, approvalGranted: false, dispatched: false,
+        next: authorized ? "Existing scoped daemon may continue through its normal policy, approval and reservation gates." : "No continuation authority; inspect canonical state or ask the user." }));
+      if (!authorized) process.exitCode = 2;
+    });
 
   program.hook("preAction", async (_command, actionCommand) => {
     if (["validate", "schemas", "contract-test", "bundle-manifest", "bundle-compat", "bundle-registry", "bundle-pin", "bundle-lifecycle-plan", "bundle-upgrade-preview", "definition-migrations", "bundle-verify", "bundle-sign", "bundle-trust", "object-artifact-proof", "offline-fallback", "offline-sync", "project-alias-merge-plan", "roadmap-audit", "runtime-monitor", "server-readiness", "server-mutation-controls", "server-projects", "server-resolve-project", "server-request-log", "server-request-preview", "server-route-preview", "server-approval-preview", "server-approval-action", "server-approval-action-plan", "server-approval-action-test-adapter", "storage-migrate", "storage-merge-evidence", "storage-merge-manifest", "storage-merge-import", "storage-project-conflicts", "storage-project-decision", "storage-verify"].includes(actionCommand.name())) return;
@@ -1451,7 +1413,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     return settings?.workflowShapeAutoUpdate ?? true;
   }
 
-  async function loadAndWriteRoadmapSuggestions(projectDir: string): Promise<RoadmapSuggestionReport> {
+  async function loadAndWriteRoadmapSuggestions(projectDir: string, evidenceProposals: LearningProposal[] = []): Promise<RoadmapSuggestionReport> {
     let roadmapPath: string;
     try {
       const config = await loadProjectConfig(projectDir);
@@ -1466,9 +1428,18 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    const report = buildRoadmapSuggestionReport({ projectRootUri: projectDir, roadmapPath, markdown });
     const learningDir = path.join(projectDir, ".agent-workflow", "learning");
     await ensureProjectSubdir(projectDir, learningDir, ".agent-workflow/learning");
+    const decisions = await fs.readFile(path.join(learningDir, "roadmap-suggestion-decisions.json"), "utf8")
+      .then((raw) => JSON.parse(raw) as { decisions?: Array<{ suggestionId: string; decision: "approved" | "deferred" | "dismissed" }> })
+      .then((value) => value.decisions ?? [])
+      .catch(() => []);
+    const previousSuggestionIds = await fs.readFile(path.join(learningDir, "roadmap-suggestions.json"), "utf8")
+      .then((raw) => JSON.parse(raw) as RoadmapSuggestionReport)
+      .then((value) => new Set(value.suggestions.map((item) => item.id)))
+      .catch(() => new Set<string>());
+    const report = buildRoadmapSuggestionReport({ projectRootUri: projectDir, roadmapPath, markdown, evidenceProposals, decisions });
+    report.newHighPrioritySuggestions = report.suggestions.filter((item) => item.priority === "high" && !previousSuggestionIds.has(item.id)).map((item) => item.id);
     await fs.writeFile(path.join(learningDir, "roadmap-suggestions.json"), `${JSON.stringify(report, null, 2)}\n`, "utf8");
     await fs.writeFile(path.join(learningDir, "roadmap-suggestions.md"), `${formatRoadmapSuggestionReport(report)}\n`, "utf8");
     return report;
@@ -1483,6 +1454,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     ].map((item) => path.resolve(process.cwd(), item)));
     const available: LearningDaemonProjectTarget[] = [];
     for (const candidate of candidates) {
+      if (!automaticRepairProjectAllowed(candidate)) continue;
       if (await pathExists(candidate)) {
         const settings = await readLearningSettings(candidate).catch(() => null);
         available.push({
@@ -1617,22 +1589,50 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     reason: string;
     actor: string;
   }): Promise<boolean> {
-    // Repair-of-repair cap: a repair run that itself fails is terminal.
-    // Spawning a repair of a repair creates unbounded chains (observed:
-    // N blocked debug-failure runs all repairing the same parent).
+    if (!automaticRepairProjectAllowed(input.projectDir)
+      || !automaticRepairProjectAllowed(input.run.projectRootUri)) return false;
+    // Generic recovery must never become another task to recover.
+    const repairSources = new Set(["blocked-run-repair", "workflow-supervisor-repair", "workflow-root-repair"]);
     const runMeta = (input.run.evaluationMetadata ?? {}) as Record<string, unknown>;
-    if (runMeta.source === "workflow-supervisor-repair") {
+    const wrapper = /^\s*Repair supervised Agent Workflow run\s+/iu;
+    const broad = /^\s*(?:resolve|repair|fix|retry|recover|complete|process)\s+(?:every|all)\b[^\n.!?]*(?:failed|blocked|queue|projects?|runs?|items?)\b/iu;
+    if (repairSources.has(String(runMeta.source ?? "")) || runMeta.sourceRunId || runMeta.replayOfRunId
+      || wrapper.test(input.run.task) || broad.test(input.run.task)) {
+      let original = input.run;
+      const lineage = [original.id];
+      let lineageStatus = "depth-limit";
+      for (let depth = 0; depth < 32; depth += 1) {
+        const metadata = original.evaluationMetadata ?? {};
+        const legacyParent = wrapper.test(original.task)
+          ? original.task.match(/run\s+([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\b/iu)?.[1] : undefined;
+        const parent = stringValue(metadata.sourceRunId) ?? stringValue(metadata.replayOfRunId) ?? legacyParent;
+        if (!parent) {
+          lineageStatus = repairSources.has(String(metadata.source ?? "")) || wrapper.test(original.task) ? "missing-source" : "resolved";
+          break;
+        }
+        if (lineage.includes(parent)) { lineageStatus = "cycle"; break; }
+        const details = await getWorkflowRunDetails(parent).catch(() => null);
+        if (!details?.run || details.run.projectRootUri !== input.run.projectRootUri) {
+          lineageStatus = "unavailable-source";
+          break;
+        }
+        original = details.run;
+        lineage.push(original.id);
+      }
       await recordRunAction({
         runId: input.run.id,
         agentId: "workflow-orchestrator",
         actionType: "workflow_supervisor_repair_refused",
-        target: String(runMeta.sourceRunId ?? "unknown"),
-        summary: "Repair run failed; refusing to spawn a repair-of-repair. Escalating to operator instead of chaining.",
+        target: original.id,
+        summary: "Refused generic or derived recovery; retained the original source outcome for scoped review.",
         artifactKind: "workflow_supervisor_repair",
         artifactContent: {
           sourceRunId: input.run.id,
-          refusedBecause: "repair-of-repair",
-          originalSourceRunId: runMeta.sourceRunId ?? null,
+          refusedBecause: broad.test(input.run.task) ? "broad-recovery-wrapper" : "repair-of-repair",
+          originalSourceRunId: lineageStatus === "resolved" ? original.id : null,
+          originalTask: original.task,
+          lineage,
+          lineageStatus,
           finding: input.reason.slice(0, 2000)
         },
         idempotencyKey: `workflow-supervisor-repair-refused-${input.run.id}`
@@ -1802,7 +1802,8 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       child.unref();
       fsSync.closeSync(logFd);
     }
-    const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir);
+    const proposalSet = buildLearningProposalSet(report);
+    const roadmap = await loadAndWriteRoadmapSuggestions(input.projectDir, proposalSet.proposals);
     const roadmapPublication = await publishRoadmapSnapshotIfChanged(input.projectDir, input.daemonId ?? "learning-daemon").catch((error) => ({
       status: "unavailable" as const,
       projectId: "",
@@ -1812,7 +1813,6 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
       publishedAt: new Date().toISOString(),
       reason: `Roadmap snapshot publication is unavailable: ${error instanceof Error ? error.message : String(error)}`
     }));
-    const proposalSet = buildLearningProposalSet(report);
     const existingQueue = await readLearningApprovalQueue(input.projectDir).catch(() => undefined);
     const autonomousApplyMaxRisk = await learningAutonomousApplyMaxRisk(input.projectDir);
     const approvalQueue = buildLearningApprovalQueue(proposalSet, "all", existingQueue, autonomousApplyMaxRisk);
@@ -2330,6 +2330,58 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     });
 
   program
+    .command('guide-evidence-diagnostics')
+    .description('Read-only integrity inventory for historical Guide policy and experiment evidence')
+    .requiredOption('-p, --project <dir>','registered project directory')
+    .option('--task-class <name>','filter bounded findings by task class')
+    .option('--status <status>','legacy-compatible or quarantined')
+    .option('--cursor <cursor>','continue an immutable receipt-page checkpoint')
+    .option('--page-size <count>','page 1-200 source receipts without drawing partial integrity conclusions')
+    .option('--reduce','cover the full frozen snapshot and emit one checkpoint-bound integrity manifest')
+    .option('--resume-checkpoint <token>','resume an authenticated unexpired partial reduction checkpoint')
+    .option('--pages-per-attempt <count>','verified pages to reduce before returning a resumable checkpoint','25')
+    .option('--json','print the bounded inventory as JSON')
+    .action(async(options:{project:string;taskClass?:string;status?:string;cursor?:string;pageSize?:string;reduce?:boolean;resumeCheckpoint?:string;pagesPerAttempt?:string;json?:boolean})=>{
+      if(options.status&&!['legacy-compatible','quarantined'].includes(options.status))throw Error('Status must be legacy-compatible or quarantined');
+      const requested=path.resolve(process.cwd(),options.project),projects=await listProjectStorageSummaries(500);
+      const resolved=await Promise.all(projects.map(async project=>({project,local:path.resolve(await resolveLocalProjectRootUri(project.rootUri))})));
+      const selected=resolved.find(item=>item.local===requested)?.project;if(!selected)throw Error('Guide diagnostics require an exact registered project');
+      if(options.reduce){
+        const signingKey=await loadOrCreateGuideEvidenceCheckpointKey(ctx.rootDir),reduced=await reduceLegacyGuideEvidenceSnapshot(selected.id,parseBoundedPositiveInteger(options.pageSize??'100',100,200),{checkpoint:options.resumeCheckpoint,signingKey,maxPages:parseBoundedPositiveInteger(options.pagesPerAttempt??'25',25,10_000)});
+        if(options.json){console.log(JSON.stringify(reduced.complete?reduced.manifest:reduced,null,2));return;}
+        if(!reduced.complete){console.log(`# Guide Evidence Reduction Checkpoint\n\nPages: ${reduced.progress.pages}\nReceipts: ${reduced.progress.receipts}\nCompatible: ${reduced.progress.compatible}\nQuarantined: ${reduced.progress.quarantined}\nCheckpoint hash: ${reduced.progress.checkpointHash}\nExpires: ${reduced.expiresAt}\nAuthority: resume-only\nExecution acceptance: unverified\n\nResume with:\n  npm run agentflow -- guide-evidence-diagnostics --project ${shellQuote(options.project)} --reduce --resume-checkpoint ${shellQuote(reduced.checkpoint)}\n\nThis partial checkpoint grants no repair, replay, approval, promotion, or acceptance authority.`);return;}
+        const manifest=reduced.manifest;console.log(`# Guide Evidence Coverage Manifest\n\nConclusion: ${manifest.conclusion}\nReceipts: ${manifest.receipts}\nPages: ${manifest.pages}\nCompatible: ${manifest.compatible}\nQuarantined: ${manifest.quarantined}\nCheckpoint: ${manifest.checkpointHash}\nSignature: ${manifest.manifestSignature.scheme}:${manifest.manifestSignature.value}\nAuthority: integrity-conclusion-only\nExecution acceptance: unverified\n\nThe manifest grants no repair, replay, approval, or acceptance authority.`);return;
+      }
+      if(options.cursor||options.pageSize){
+        const page=await legacyGuideEvidenceInventoryPage(selected.id,{cursor:options.cursor,pageSize:parseBoundedPositiveInteger(options.pageSize??'100',100,200)});
+        if(options.json){console.log(JSON.stringify(page,null,2));return;}
+        console.log(`# Guide Evidence Receipt Page ${page.pageIndex}\n\nReceipts: ${page.items.length}\nComplete: ${page.complete}\nCheckpoint: ${page.coverage.checkpointHash}\nIntegrity conclusion: ${page.integrityConclusion}\nAuthority: inventory-only\n\n${page.items.map(item=>`- ${item.createdAt} ${item.actionType} ${item.runId} receipt=${item.receiptId}`).join('\n')||'No receipts in this page.'}\n\n${page.nextCursor?`Next cursor: ${page.nextCursor}`:'All snapshot pages were covered.'}\n\nA partial page never establishes integrity, repair authority, or execution acceptance.`);
+        return;
+      }
+      const inventory=await legacyGuideEvidenceInventory(selected.id),findings=inventory.findings.filter(item=>(!options.taskClass||item.taskClass===options.taskClass)&&(!options.status||item.status===options.status));
+      const report={...inventory,findings,filters:{projectId:selected.id,taskClass:options.taskClass??null,status:options.status??null},displaySemantics:{quarantined:'audit-only evidence integrity issue',workflowFailure:false,approvalRequest:false,automaticRepairAuthority:false}};
+      if(options.json){console.log(JSON.stringify(report,null,2));return;}
+      console.log(`# Guide Evidence Integrity\n\nScanned: ${report.scanned}${report.truncated?' (bounded; more evidence exists)':''}\nCompatible: ${report.legacyCompatible}\nQuarantined: ${report.quarantined}\nAuthority: inventory-only\n\n${findings.map(item=>`- ${item.status}: ${item.taskClass} / ${item.kind} — ${item.reason}\n  Next: ${item.reconciliation}`).join('\n')||'No matching Guide evidence.'}\n\nQuarantine is not a workflow failure, approval request, or repair authorization.`);
+    });
+
+  program
+    .command('guide-adoption-hold-metrics')
+    .description('Read-only latency and coalescing metrics for Guide registry adoption holds')
+    .requiredOption('-p, --project <dir>','registered project directory')
+    .option('--stale-minutes <minutes|auto>','explicit bounded threshold or evidence-calibrated threshold','auto')
+    .option('--json','print bounded metrics as JSON')
+    .action(async(options:{project:string;staleMinutes:string;json?:boolean})=>{
+      const staleMinutes=options.staleMinutes==='auto'?null:parseBoundedPositiveInteger(options.staleMinutes,15,1440);
+      const requested=path.resolve(process.cwd(),options.project),projects=await listProjectStorageSummaries(500);
+      const resolved=await Promise.all(projects.map(async project=>({project,local:path.resolve(await resolveLocalProjectRootUri(project.rootUri))})));
+      const selected=resolved.find(item=>item.local===requested)?.project;if(!selected)throw Error('Guide adoption metrics require an exact registered project');
+      const report=await queuePartnerGuideRegistryHoldMetrics(selected.id,{staleAfterMs:staleMinutes===null?undefined:staleMinutes*60_000});
+      const output={...report,projectId:selected.id,staleAfterMinutes:report.calibration.selectedThresholdMs/60_000,alertAfterMinutes:report.calibration.alertThresholdMs/60_000,displaySemantics:{adoptionLagAlert:'observational deployment lag',workflowFailure:false,restartAuthority:false,replayAuthority:false,primaryOutcomeAccepted:false}};
+      if(options.json){console.log(JSON.stringify(output,null,2));return;}
+      console.log(`# Guide Adoption Holds\n\nGenerations: ${output.metrics.length}${output.truncated?' (bounded; more receipts exist)':''}\nLag alerts: ${output.metrics.filter(item=>item.adoptionLagAlert).length}\nThreshold: ${formatDuration(output.calibration.selectedThresholdMs)} (${output.calibration.source}; candidate ${formatDuration(output.calibration.candidateThresholdMs)})\nAlert guard: ${formatDuration(output.calibration.alertThresholdMs)} (${output.calibration.alertProtection}; existing alerts remain visible)\nConfidence: ${output.calibration.confidenceBandLowerMs===null?'insufficient evidence':`${formatDuration(output.calibration.confidenceBandLowerMs)}–${formatDuration(output.calibration.confidenceBandUpperMs??output.calibration.confidenceBandLowerMs)}`} · ${output.calibration.stability} · ${output.calibration.stableGenerationsObserved}/${output.calibration.stableGenerationRequirement} stable generations · max change ${Math.round(output.calibration.maximumChangeFraction*100)}%\nSamples: ${output.calibration.sampleCount} resolved samples · ${output.calibration.minimumSamples} minimum\nAuthority: observation-only\n\n${output.metrics.map(item=>`- ${item.state} generation ${item.generation} ${item.expectedFingerprint.slice(0,12)}: ${item.affectedRunCount} affected, ${item.duplicateSuppressedCount} duplicate receipt(s) suppressed, ${item.resolutionLatencyMs===null?`open ${formatDuration(item.openAgeMs??0)}`:`resolved in ${formatDuration(item.resolutionLatencyMs)}`}${item.adoptionLagAlert?' [ADOPTION LAG]':''}`).join('\n')||'No Guide adoption holds.'}\n\nMetrics do not authorize worker restart, replay, repair, or primary-outcome acceptance.`);
+    });
+
+  program
     .command("learning-proposals")
     .description("Generate local learning proposals from the read-only learning report")
     .requiredOption("-p, --project <dir>", "project directory")
@@ -2449,13 +2501,13 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     .description("List or decide governed training-discovery proposals")
     .requiredOption("-p, --project <dir>", "project directory")
     .option("--id <id>", "proposal id to decide")
-    .option("--status <status>", "decision: approved, rejected, stale, unsafe, evaluated, or promoted")
+    .option("--status <status>", "decision: approved, needs-evidence, rejected, stale, unsafe, evaluated, or promoted")
     .option("--reviewer <reviewer>", "reviewer identity", "operator")
     .option("--note <note>", "bounded decision note")
     .option("--json", "print proposal inbox JSON")
     .action(async (options: { project: string; id?: string; status?: string; reviewer: string; note?: string; json?: boolean }) => {
       const projectDir = path.resolve(process.cwd(), options.project);
-      const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
+      const allowed = new Set<TrainingProposalDecisionStatus>(["approved", "needs-evidence", "rejected", "stale", "unsafe", "evaluated", "promoted"]);
       let inbox = await readTrainingProposalInbox(projectDir);
       if (options.id || options.status) {
         if (!options.id || !options.status || !allowed.has(options.status as TrainingProposalDecisionStatus)) {
@@ -2484,20 +2536,29 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
     .description("Run a blinded baseline/candidate holdout for one approved training proposal")
     .requiredOption("-p, --project <dir>", "project directory")
     .requiredOption("--proposal <id>", "approved training proposal id")
-    .requiredOption("--design <file>", "project-local holdout design JSON")
+    .option("--design <file>", "project-local holdout design JSON; generated deterministically when omitted")
     .option("--provider <id>", "provider adapter; defaults to the configured provider")
     .option("--target <id>", "run only one declared target (useful for resuming missing coverage)")
     .option("--concurrency <number>", "parallel target/arm batches", "2")
     .option("--write", "write the private project-local evidence report")
     .option("--json", "print report JSON")
-    .action(async (options: { project: string; proposal: string; design: string; provider?: string; target?: string; concurrency: string; write?: boolean; json?: boolean }) => {
+    .action(async (options: { project: string; proposal: string; design?: string; provider?: string; target?: string; concurrency: string; write?: boolean; json?: boolean }) => {
       const projectDir = path.resolve(process.cwd(), options.project);
-      const designPath = path.resolve(projectDir, options.design);
-      const design = JSON.parse(await fs.readFile(designPath, "utf8")) as TrainingHoldoutDesign;
-      if (design.proposal !== options.proposal) throw new Error(`Holdout design ${design.proposal} does not match ${options.proposal}.`);
       const inbox = await readTrainingProposalInbox(projectDir);
       const proposal = inbox.items.find((item) => item.id === options.proposal);
       if (!proposal || !["approved", "evaluated"].includes(proposal.status)) throw new Error("Training holdouts require an approved or previously evaluated proposal.");
+      const design = options.design
+        ? JSON.parse(await fs.readFile(path.resolve(projectDir, options.design), "utf8")) as TrainingHoldoutDesign
+        : buildTrainingHoldoutDesign({
+          id: proposal.id,
+          targets: proposal.proposal.targets,
+          publisher: proposal.proposal.publisher,
+          claimedBenefit: proposal.proposal.claimedBenefit,
+          risks: proposal.proposal.risks,
+          holdoutEvaluation: proposal.proposal.holdoutEvaluation
+        });
+      if (design.proposal !== options.proposal) throw new Error(`Holdout design ${design.proposal} does not match ${options.proposal}.`);
+      const designPath = await persistTrainingHoldoutDesign(projectDir, design);
       const agents = await loadAgentsForProject(ctx, projectDir);
       const knownAgentIds = new Set(agents.map((agent) => agent.id));
       const daemonAgents: AgentCard[] = daemonLanes.filter((lane) => design.targets.includes(lane.id) && !knownAgentIds.has(lane.id)).map((lane) => ({
@@ -2522,7 +2583,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
         const reportName = options.target ? `measured-holdout-${options.target}.json` : "measured-holdout.json";
         await fs.writeFile(path.join(outDir, reportName), `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
       }
-      console.log(options.json ? JSON.stringify(report, null, 2) : [`Training holdout: ${report.verdict}`, `Coverage: ${report.measuredObservations}/${report.plannedObservations}`, `Candidate passed: ${report.metrics.candidatePassed}`, ...report.failures.map((failure) => `- ${failure}`)].join("\n"));
+      console.log(options.json ? JSON.stringify(report, null, 2) : [`Training holdout: ${report.verdict}`, `Design: ${path.relative(projectDir, designPath)}`, `Coverage: ${report.measuredObservations}/${report.plannedObservations}`, `Calls: ${report.usage.calls}`, `Tokens: ${report.usage.totalTokens}`, `Candidate passed: ${report.metrics.candidatePassed}`, ...report.failures.map((failure) => `- ${failure}`)].join("\n"));
       if (report.verdict === "FAIL") process.exitCode = 2;
     });
 
@@ -2675,7 +2736,9 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           trainingDiscoveryProposals: latestTrainingDiscovery?.proposals.length ?? lastStatus?.trainingDiscoveryProposals ?? 0,
           trainingDiscoveryErrors: latestTrainingDiscovery?.errors.length ?? lastStatus?.trainingDiscoveryErrors ?? 0,
           offlineSyncStatus: lastStatus?.offlineSyncStatus ?? null,
-          lastError,
+          // A one-shot daemon must retain a failed tick's diagnostic when it
+          // writes its final stopped heartbeat. A successful tick clears it.
+          lastError: lastError ?? ((status === "stopped" || status === "stopping") ? lastStatus?.lastError : undefined),
           command: allProjects
             ? `agentflow learning-daemon --all-projects --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
             : `agentflow learning-daemon --project ${shellQuote(projectDir)} --mode ${mode} --limit ${limit} --interval-ms ${intervalMs} --daemon-id ${shellQuote(daemonId)}`
@@ -2713,6 +2776,33 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
           return await queueRecoveryInFlight;
         } finally {
           queueRecoveryInFlight = null;
+        }
+      };
+
+      type ProjectLearningUpdate = Awaited<ReturnType<typeof runLearningDaemonTick>>;
+      const projectTicksInFlight = new Map<string, Promise<ProjectLearningUpdate>>();
+      const projectTickTimeoutMs = parsePositiveInteger(process.env.AGENTFLOW_LEARNING_PROJECT_TIMEOUT_MS ?? "", 120_000);
+      const runIsolatedProjectTick = async (targetProjectDir: string, task: () => Promise<ProjectLearningUpdate>): Promise<ProjectLearningUpdate> => {
+        const existing = projectTicksInFlight.get(targetProjectDir);
+        if (existing) {
+          throw new Error(`Previous learning tick is still running after its ${projectTickTimeoutMs}ms budget; skipped overlapping work while the remaining fleet continues.`);
+        }
+        const taskPromise = task();
+        projectTicksInFlight.set(targetProjectDir, taskPromise);
+        void taskPromise.finally(() => {
+          if (projectTicksInFlight.get(targetProjectDir) === taskPromise) projectTicksInFlight.delete(targetProjectDir);
+        }).catch(() => undefined);
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          return await Promise.race([
+            taskPromise,
+            new Promise<never>((_resolve, reject) => {
+              timer = setTimeout(() => reject(new Error(`Learning tick exceeded its ${projectTickTimeoutMs}ms per-project budget; the operation remains isolated until it settles and the fleet continued.`)), projectTickTimeoutMs);
+              timer.unref();
+            })
+          ]);
+        } finally {
+          if (timer) clearTimeout(timer);
         }
       };
 
@@ -2814,7 +2904,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
             await runFastRecoverySweep();
             const targetProjectDir = target.projectDir;
             try {
-              const update = await runLearningDaemonTick({
+              const update = await runIsolatedProjectTick(targetProjectDir, () => runLearningDaemonTick({
                 projectDir: targetProjectDir,
                 mode: target.mode,
                 limit: target.limit,
@@ -2824,7 +2914,7 @@ export function registerLearningCommands(program: Command, ctx: CliContext): voi
                 // from the daemon's control project, not once per registered project.
                 modelComparisonEnabled: isFleetModelComparisonOwner(targetProjectDir, projectDir),
                 trainingDiscoveryEnabled: false
-              });
+              }));
               await writeStatus(stop ? "stopping" : "running", update, undefined, targetProjectDir);
               lastUpdate = update;
               analyzedRuns += update.report.runsAnalyzed;

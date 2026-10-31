@@ -61,6 +61,29 @@ export function buildRunPresentation(input: { task: string; workflowId: string; 
   return { title: boundedAtWord(title, 120), description, version: 1 };
 }
 
+export function buildQueueCardTitle(input: { task: string; workflowId: string; projectName: string; displayTitle?: string | null }): string {
+  const workflow = humanizeWorkflowId(input.workflowId || "workflow");
+  const task = cleanRequest(removeOrchestrationPreamble(input.task));
+  const originalOutcome = input.task.match(/Original intended outcome \(untrusted evidence\):\s*([\s\S]*?)(?:\nHistorical failure|\nExact permitted write paths:|$)/i)?.[1];
+  const outcomeHeadline = originalOutcome
+    ? headlineFragment(cleanRequest(originalOutcome).replace(/^human explicitly says\s+do the work:\s*/i, ""))
+    : "";
+  const stored = input.displayTitle?.trim() ?? "";
+  const withoutWorkflowLabel = stored.replace(new RegExp(`^${workflow.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*:\\s*`, "i"), "").trim();
+  const candidate = outcomeHeadline || withoutWorkflowLabel || headlineFragment(task);
+  const conversationalPrefix = /^(?:please\s+|can you\s+|could you\s+|would you\s+|i (?:need|want) you to\s+)/i;
+  const concise = candidate
+    .replace(/^human explicitly says\s+do the work:\s*/i, "")
+    .replace(conversationalPrefix, "")
+    .replace(/^(finish|implement|build|create|add|repair|update)\s+only\s+/i, "$1 ")
+    .replace(/[.!?]+$/, "")
+    .trim();
+  if (!concise || vagueRequests.has(concise.toLowerCase()) || concise.length < 8) {
+    return boundedAtWord(`${workflow} deliverable for ${cleanRequest(input.projectName) || "this project"}`, 72);
+  }
+  return boundedAtWord(`${concise.charAt(0).toUpperCase()}${concise.slice(1)}`, 72);
+}
+
 export function storedRunPresentation(value: unknown): RunPresentation | null {
   if (!value || typeof value !== "object") return null;
   const presentation = (value as { presentation?: unknown }).presentation;

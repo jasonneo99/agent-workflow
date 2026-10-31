@@ -82,7 +82,11 @@ test("server orchestration accepts one goal and queues one dynamic lifecycle", (
   assert.match(source, /request\.method === "POST" && requestUrl\.pathname === "\/api\/server-orchestrations"/u);
   assert.match(source, /constructDynamicWorkflow\(\{ goal, project/u);
   assert.match(source, /seedRegistry\(\[\], \[\{ path: `runtime\/\$\{workflow\.id\}\.yaml`, value: workflow \}\]\)/u);
-  assert.match(source, /registeredProjectRootUri: summary\.rootUri/u);
+  assert.match(source, /const executionSummary = localProjectRoot/u);
+  assert.match(source, /path\.resolve\(item\.rootUri\) === path\.resolve\(localProjectRoot\)/u);
+  assert.match(source, /label: "Host project mapping"/u);
+  assert.match(source, /registeredProjectRootUri: executionSummary\.rootUri/u);
+  assert.match(source, /requestedProjectId: summary\?\.id \?\? null/u);
   assert.match(source, /projectRootUri: input\.registeredProjectRootUri \?\? projectDir/u);
   assert.match(source, /actionType: "server_orchestration_requested"/u);
   assert.match(source, /source: "server-orchestration"/u);

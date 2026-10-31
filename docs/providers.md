@@ -36,6 +36,7 @@ For copyable examples covering Ollama, LM Studio, vLLM, LiteLLM, OpenAI, Bedrock
 | `openai` | OpenAI Responses API execution | `OPENAI_API_KEY`, optional `OPENAI_MODEL` |
 | `codex-cli` | Trusted local workflows billed through an authenticated Codex/ChatGPT entitlement | Codex CLI login, optional `CODEX_CLI_MODEL` |
 | `anthropic` | Anthropic Messages API execution with Claude | `ANTHROPIC_API_KEY`, optional `ANTHROPIC_MODEL` |
+| `deepseek` | DeepSeek Flash through the hosted OpenAI-compatible API | `DEEPSEEK_API_KEY`, optional `DEEPSEEK_MODEL` |
 | `gemini` | Google Gemini through the official OpenAI-compatible endpoint | `GEMINI_API_KEY` or `GOOGLE_API_KEY`, optional `GEMINI_MODEL` |
 | `muse` | Meta Muse (Muse Spark) via the Meta Model API | `MUSE_API_KEY`, optional `MUSE_MODEL` |
 | `openai-compatible` | Legacy BYO-compatible env names | `OPENAI_COMPATIBLE_BASE_URL`, optional `OPENAI_COMPATIBLE_MODEL`, optional `OPENAI_COMPATIBLE_API_KEY` |
@@ -130,6 +131,34 @@ Then verify readiness with:
 npm run agentflow -- provider-check
 ```
 
+### DeepSeek provider
+
+Use `deepseek` for bounded hosted DeepSeek Flash stages. The dedicated adapter
+keeps its credentials, usage, quality evidence, and circuit state separate from
+generic BYO gateways:
+
+```env
+DEEPSEEK_API_KEY=your-deepseek-api-key
+# Optional; these are the defaults.
+# DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+DEEPSEEK_MODEL=deepseek-flash
+DEEPSEEK_MODEL_FAST=deepseek-flash
+DEEPSEEK_MODEL_STANDARD=deepseek-flash
+DEEPSEEK_MODEL_REASONING=deepseek-flash
+```
+
+```bash
+npm run agentflow -- provider-use deepseek --check
+npm run agentflow -- contract-test --provider deepseek --live-provider
+```
+
+Install the secret only on governed worker hosts that actually make provider
+calls. Do not copy it into Studio clients or presentation surfaces. Start with
+comparison or explicitly scoped low-risk work; promote it into normal adaptive
+routing only after representative holdouts establish its quality, latency,
+cost, structured-output, and fallback behavior. Hosted requests remain subject
+to each project's external-provider and data-egress policy.
+
 ### Google Gemini provider
 
 Create a Gemini authorization key in Google AI Studio and keep it only in the
@@ -205,7 +234,7 @@ Set `DEFAULT_MODEL_PROVIDER=auto` when you want Agent Workflow to choose the pro
 
 ```env
 DEFAULT_MODEL_PROVIDER=auto
-AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
+AGENTFLOW_AUTO_PROVIDERS=local,byo,bedrock,deepseek,gemini,codex-cli,openai,anthropic,muse,openai-compatible,kiro
 AGENTFLOW_FALLBACK_PROVIDER=openai
 AGENTFLOW_QUALITY_THRESHOLD=0.62
 AGENTFLOW_MODEL_POLICY=best-coding

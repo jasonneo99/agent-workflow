@@ -23,7 +23,10 @@ import { registerServerCommands } from "./commands/server.js";
 import { registerContextExtraCommands } from "./commands/context-extra.js";
 import { registerDaemonCommands } from "./commands/daemon.js";
 import { registerEvaluationDaemonCommands } from "./commands/evaluation-daemon.js";
+import { registerQueueCoordinatorCommands } from "./commands/queue-coordinator.js";
 import { registerContainerCommands } from "./commands/containers.js";
+import { registerEnvironmentCommands } from "./commands/environments.js";
+import { registerRepairCheckpointCommand } from "./commands/repair-checkpoint.js";
 
 const program = new Command();
 const ctx = createCliContext(import.meta.url);
@@ -60,7 +63,10 @@ registerServerCommands(program, ctx);
 registerContextExtraCommands(program, ctx);
 registerDaemonCommands(program, ctx);
 registerEvaluationDaemonCommands(program, ctx);
+registerQueueCoordinatorCommands(program, ctx);
 registerContainerCommands(program);
+registerEnvironmentCommands(program);
+registerRepairCheckpointCommand(program);
 
 // Import guard: unit tests import pure helpers from this module, which must
 // not launch the CLI as a side effect. Only parse argv when this file is the

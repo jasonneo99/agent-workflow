@@ -16,6 +16,10 @@ export const VERIFY_COMMAND_RETRY_BUDGET_MAX = 5;
 export const FILE_MUTATION_RETRY_BUDGET_DEFAULT = 4;
 export const FILE_MUTATION_RETRY_BUDGET_MAX = 6;
 
+export function commandOutputEvidence(stdout: string, stderr: string): string {
+  return [stdout.trim(), stderr.trim()].filter(Boolean).join("\n");
+}
+
 export function truncateCommandOutputForError(
   output: string,
   maxLines: number = COMMAND_FAILURE_ERROR_OUTPUT_MAX_LINES,
@@ -44,9 +48,7 @@ export function formatCommandFailureEvidence(input: {
   stdout: string;
   stderr: string;
 }): string {
-  const combined = [input.stdout?.trim(), input.stderr?.trim()]
-    .filter((part): part is string => Boolean(part))
-    .join("\n");
+  const combined = commandOutputEvidence(input.stdout ?? "", input.stderr ?? "");
   const outcome = input.timedOut ? "timed out" : `exited with code ${input.exitCode}`;
   if (!combined) return `Command \`${input.commandLine}\` ${outcome}; it produced no output.`;
   return `Command \`${input.commandLine}\` ${outcome}.\nCommand output (truncated):\n${truncateCommandOutputForError(combined)}`;
@@ -60,6 +62,10 @@ export function commandFailureEligibleForVerifyRetry(stagePattern: Pick<StagePat
   // first failed probe terminates the stage before the model can react to its
   // receipt, creating a permanent blocked-repair loop.
   if (type === "test" || type === "verify" || type === "verifier" || type === "executor") return true;
+  // Match the existing npm test feedback path for literal focused unittest
+  // recipes. Execution still requires command policy, live lease/intent, and
+  // the unchanged bounded retry budget; failed checks never become acceptance.
+  if (/^python3? -m unittest (?:tests\.[A-Za-z0-9_]+|discover -s tests -p test_[A-Za-z0-9_]+\.py)(?: -v)?$/u.test(commandLine?.trim() ?? "")) return true;
   return /^(?:npm\s+(?:test|run\s+(?:check|typecheck|validate)(?:\s|$))|pnpm\s+(?:test|check|typecheck)(?:\s|$)|yarn\s+(?:test|check|typecheck)(?:\s|$))/u.test(commandLine?.trim() ?? "");
 }
 

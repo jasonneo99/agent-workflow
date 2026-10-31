@@ -1,0 +1,40 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import test from 'node:test';
+test('Guide evidence diagnostics reuse the bounded inventory and preserve audit-only semantics',()=>{
+ const source=readFileSync(new URL('./commands/learning.ts',import.meta.url),'utf8');
+ assert.match(source,/command\('guide-evidence-diagnostics'\)/);assert.match(source,/legacyGuideEvidenceInventory\(selected\.id\)/);
+ assert.match(source,/option\('--reduce'/);assert.match(source,/option\('--resume-checkpoint/);assert.match(source,/option\('--pages-per-attempt/);assert.match(source,/loadOrCreateGuideEvidenceCheckpointKey\(ctx\.rootDir\)/);assert.match(source,/reduceLegacyGuideEvidenceSnapshot\(selected\.id/);assert.match(source,/integrity-conclusion-only/);assert.match(source,/grants no repair, replay, approval, promotion, or acceptance authority/);
+ assert.match(source,/legacy-compatible.*quarantined/);assert.match(source,/workflowFailure:false/);assert.match(source,/approvalRequest:false/);assert.match(source,/automaticRepairAuthority:false/);
+ assert.doesNotMatch(source.slice(source.indexOf("command('guide-evidence-diagnostics')"),source.indexOf('program\n    .command("learning-proposals")')),/recordRunAction|queueWorkflow|retryFailedWorkflowRun/);
+});
+
+test("dashboard exposes the same bounded read-only Guide inventory", () => {
+  const source = readFileSync(new URL("./commands/daemon.ts", import.meta.url), "utf8");
+  assert.match(source, /\/api\/guide-evidence-diagnostics/);
+  assert.match(source, /legacyGuideEvidenceInventory\(selected\.id\)/);
+  assert.match(source, /Guide Evidence Integrity/);
+  assert.match(source, /audit-only integrity issue/);
+  assert.match(source, /workflowFailure: false/);
+  assert.match(source, /approvalRequest: false/);
+  assert.match(source, /automaticRepairAuthority: false/);
+  assert.match(source, /report\.findings\.slice\(0, 100\)/);
+  assert.match(source, /taskClass\.value\.trim\(\)/);
+  assert.match(source, /legacyGuideEvidenceInventoryPage\(selected\.id/);
+  assert.match(source, /reduceLegacyGuideEvidenceSnapshot\(selected\.id/);
+  assert.match(source, /maxPages: 1/);
+  assert.match(source, /x-agentflow-guide-checkpoint/);
+  assert.match(source, /loadOrCreateGuideEvidenceCheckpointKey\(ctx\.rootDir\)/);
+  assert.match(source, /readGuideEvidenceReductionCheckpoint/);
+  assert.match(source, /persistGuideEvidenceReductionCheckpoint/);
+  assert.match(source, /discardGuideEvidenceReductionCheckpoint/);
+  assert.match(source, /localStorage\.setItem\(reductionStorageKey/);
+  assert.match(source, /localStorage\.removeItem\(reductionStorageKey/);
+  assert.match(source, /Resume full snapshot/);
+  assert.match(source, /guide-evidence-reduce/);
+  assert.match(source, /Reduce full snapshot/);
+  assert.match(source, /no repair, replay, approval, promotion, or acceptance authority/);
+  assert.match(source, /Guide evidence changed after the previous page|restartRequired: true/);
+  assert.match(source, /Review receipt pages/);
+  assert.match(source, /partial pages draw no integrity conclusion/);
+});

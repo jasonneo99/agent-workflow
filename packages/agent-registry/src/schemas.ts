@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { runEnvironmentsSchema, repairCommitPolicySchema } from "../../run-environments/src/schema.js";
 
 export const autonomyLevelSchema = z.union([
   z.literal(0),
@@ -281,6 +282,8 @@ export const projectConfigSchema = z.object({
     policy_profile: z.string().min(1).default("local"),
     policy_profiles: z.record(z.string(), executionPolicyProfileSchema).default({}),
     executor_adapters: z.record(z.string(), executorAdapterRegistrationSchema).optional(),
+    environments: runEnvironmentsSchema.optional(),
+    repair_commits: repairCommitPolicySchema.optional(),
     worker_pool: workerPoolSchema.optional()
   }).default({ policy_profile: "local", policy_profiles: {}, executor_adapters: {} }),
   policies: z.object({
@@ -320,6 +323,19 @@ export const projectConfigSchema = z.object({
     ]),
     command_timeout_ms: z.number().int().positive().default(120000),
     max_output_chars: z.number().int().positive().default(20000),
+    // Opt-in containment for autonomous scoped recovery commands. Unsupported
+    // hosts fail closed; omission preserves the existing project command path.
+    isolate_command_writes: z.boolean().optional(),
+    // Exact recipes only; opt-in does not authorize commands or unrelated PTYs.
+    scoped_native_pty_commands: z.array(z.string().min(1)).optional(),
+    // Declarations only. Admission still checks command policy and explicit
+    // approval rules; a recipe never grants writes or native execution.
+    verification_recipes: z.array(z.object({
+      source_paths: z.array(z.string().min(1)).min(1).max(40),
+      test_paths: z.array(z.string().min(1)).min(1).max(40),
+      commands: z.array(z.string().min(1)).min(1).max(8),
+      output_paths: z.array(z.string()).max(0).default([])
+    })).optional(),
     allowed_write_paths: z.array(z.string()).default([
       ".agent-workflow/**",
       "docs/**"

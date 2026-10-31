@@ -26,6 +26,44 @@ test("distinguishes blank and missing roadmaps", () => {
   assert.equal(buildRoadmapSuggestionReport({ projectRootUri: "/tmp/example", roadmapPath: "ROADMAP.md" }).status, "missing");
 });
 
+test("prioritizes evidence-backed daemon proposals and avoids duplicating roadmap work", () => {
+  const report = buildRoadmapSuggestionReport({
+    projectRootUri: "/tmp/example",
+    roadmapPath: "ROADMAP.md",
+    markdown: "# Roadmap\n- [ ] Add retries\n",
+    evidenceProposals: [
+      { id: "duplicate", title: "Add retries", priority: "high", rationale: "seen failures", evidence: ["failures=3"], recommendation: "add bounded retry coverage" },
+      { id: "latency", title: "Reduce route latency", priority: "high", rationale: "p95 is slow", evidence: ["p95=8000"], recommendation: "run a canary" }
+    ]
+  });
+  assert.deepEqual(report.suggestions.map((item) => [item.source, item.title]), [
+    ["learning-evidence", "Reduce route latency"],
+    ["unchecked-task", "Add retries"]
+  ]);
+  assert.match(formatRoadmapSuggestionReport(report), /learning evidence latency/u);
+});
+
+test("accepted and dismissed suggestions stay out of reranking while deferred work moves back", () => {
+  const proposals = [
+    { id: "accepted", title: "Accepted", priority: "high" as const, rationale: "a", evidence: [], recommendation: "a" },
+    { id: "deferred", title: "Deferred", priority: "high" as const, rationale: "d", evidence: [], recommendation: "d" },
+    { id: "fresh", title: "Fresh", priority: "medium" as const, rationale: "f", evidence: [], recommendation: "f" }
+  ];
+  const report = buildRoadmapSuggestionReport({
+    projectRootUri: "/tmp/example",
+    roadmapPath: "ROADMAP.md",
+    markdown: "# Roadmap\n",
+    evidenceProposals: proposals,
+    decisions: [
+      { suggestionId: "roadmap-evidence-accepted", decision: "approved" },
+      { suggestionId: "roadmap-evidence-deferred", decision: "deferred" },
+      { suggestionId: "roadmap-evidence-gone", decision: "dismissed" }
+    ]
+  });
+  assert.deepEqual(report.suggestions.map((item) => item.title), ["Fresh", "Deferred"]);
+  assert.deepEqual(report.outcomes, { approved: 1, deferred: 1, dismissed: 1 });
+});
+
 test("rejects roadmap symlinks that leave the project", async () => {
   const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-roadmap-project-"));
   const externalDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-roadmap-external-"));

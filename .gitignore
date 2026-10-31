@@ -23,6 +23,8 @@ __pycache__/
 .agent-workflow/migrations/
 .agent-workflow/offline/
 .agent-workflow/reports/
+.agent-workflow/receipts/
+.agent-workflow/test-evidence/
 .agent-workflow/runs/
 .agent-workflow/tuning/
 .agent-workflow/context-handoffs/

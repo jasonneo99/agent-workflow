@@ -385,7 +385,7 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
     `# Workflow Run ${redaction.run.id}`,
     "",
     "## Summary",
-    input.scrub ? "- Redaction: scrubbed for sharing" : "",
+    input.scrub ? "- Redaction: scrubbed for sharing; INCOMPLETE requirements evidence. Use authorized canonical storage, not repeated export reads, for original requirements." : "",
     `- Status: ${redaction.run.status}`,
     `- Workflow: ${redaction.run.workflowId}`,
     `- Task: ${redaction.run.task}`,
@@ -444,9 +444,11 @@ export function buildRunExport(input: RunExportInput): RunExportDocument {
     json: {
       exportedAt: new Date().toISOString(),
       redacted: Boolean(input.scrub),
+      requirementsEvidence: input.scrub ? "incomplete-redacted" : "export-snapshot",
       redactionNotes: input.scrub ? [
         "Absolute paths, emails, common secret patterns, and high-risk freeform artifact fields were scrubbed.",
-        "Use unscreened local exports only for trusted internal debugging."
+        "Original task and acceptance text may be removed. Re-reading this export cannot recover it.",
+        "For authorized internal reconciliation use: agentflow status --run <run-id> --requirements-only. Keep that result private; historical requirements do not grant execution authority."
       ] : [],
       run: redaction.run,
       tasks: redaction.tasks,

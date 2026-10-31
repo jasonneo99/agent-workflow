@@ -210,3 +210,139 @@ requester read it. Delivery receipts are transport evidence, not read receipts.
 `AGENTFLOW_PUSH_RELAY_BASE_URL` (and `AGENTFLOW_SERVER_TOKEN`) in your deployment
 environment. The bridge log records notification metadata (id, kind, truncated
 title, delivery outcome) — never message bodies.
+
+
+## Partner conversation interface
+
+Partner is one conversation and composer. Useful work updates, blockers, next
+steps and exact decisions appear inside the chat, with no separate activity,
+queue-item or suggestion panels. Selecting work adds its chronological history
+at that point in the conversation without granting action authority.
+
+The work trail grows from recorded agent starts, file reads and writes, command
+starts and results, stage outcomes and approval events. Each step can expand to
+show its agent, stage, timestamp and bounded summary. A current, unexpired worker
+lease drives the working indicator; historical starts never keep it spinning.
+Completion retains the trail and is separate from acceptance. An unavailable
+feed keeps existing steps and shows a reconnecting state.
+
+The authenticated read-only history endpoint uses the owning project's existing
+receipts. Stable event identities and timestamp/ID cursors prevent duplicates
+across polling, pagination and reconnects. Pages hold 80 events, the browser keeps
+the latest 400, and the run link exposes the preserved full history. Command
+output bodies, source contents and approval payloads are not loaded by this
+projection. Live observations never become user instructions or approval grants.
+
+Recent chats and unfinished drafts are saved in the current browser. Storage is
+bounded to eight conversations, 48 turns and 96,000 text characters per thread.
+It is local history, not cross-device synchronization. If browser storage is
+unavailable, the interface says so and retains the current tab's state. Starting
+a new chat creates a new conversation identity and clears the previous selection
+and decision. Reloading never resends an interrupted request.
+Restored approval payloads are review-only: a fresh server proposal is required
+before inline consent. If history trimming removes the full displayed action,
+its inline approval control is also disabled.
+
+The composer remains editable during a reply. Follow-ups are sent in order with
+the settled conversation history, within the existing server context budget.
+An unconfirmed result stops the unsent queue. An explicit retry retains the same
+request body and idempotency key; it does not refund an uncertain execution claim.
+Replies support text, lists, code and safe links through DOM text nodes. A saved
+transcript is display/context data, never approval authority.
+
+Two controls have different effects:
+
+- **Stop waiting** aborts the browser's wait and ignores late replies. An action
+  already sent may still finish; its recorded run is the source of truth.
+- **Stop this run** requests cancellation of one explicitly selected active
+  run through the existing owning-project controller and role checks. It leaves
+  other queue items and history intact; in-flight commands may take time to stop.
+
+An inline approval appears only with a complete displayed action, an unexpired
+proposal, and matching conversation and selected run. Execution still rechecks
+the live owning project, role, payload, receipt and one-use claim. An executed
+instruction remains separate from acceptance of the requested product outcome.
+
+Conversation replies continue through the registered Queue Partner agent and its
+configured provider. The interface does not substitute a separate browser agent
+or bypass Agent Workflow to perform work. Progress comes from recorded agent
+activity; this version does not claim incremental model-token streaming.
+
+## Repair admission and verification
+
+Partner checks source ownership and executable behavioral test recipes before
+reserving a repair worker. Discovering paths, allowing a whole project suite, or
+passing a whitespace check does not grant a newly generated focused command.
+`actions.verification_recipes` declares exact source paths, test paths, literal
+commands and outputs. A declaration grants no permission: current command policy,
+blocked patterns, interpreter approval and source mutation gates still apply.
+The initial recipe format permits no project output paths; scoped commands use
+disposable scratch and redirected Python caches. This is write containment, not
+network, credential or read isolation. Recipe source and fixtures still need
+substantive review. Native/device acceptance uses its separate governed paths.
+
+A missing recipe or current baseline produces one `partner_recovery_admission`
+approval tied to the original project, family, task digest, per-file manifest,
+source hash, raw configuration hash and resolved policy hash. Concurrent unchanged
+checks reuse it without another worker, receipt or notification. Its full payload
+discloses persistent literal command additions and exact interpreter approval
+rules. Applying it requires the usual attributed human decision, role/separation
+checks, live execution claim, exact intent, idle family and intact receipt chain.
+It does not change blocked patterns, source write paths, risk thresholds, retry
+budgets, original acceptance, native authority or deployment permission.
+
+An explicitly disclosed decision can tolerate another executed human-approved
+recipe addition in the same project only through the exact configuration/policy
+hash transition, applied artifact and verified receipt chain. Unrecorded edits,
+foreign grants and source drift still require fresh review. If admission audit
+recording fails, the executor restores its exact policy preimage when possible;
+otherwise it preserves the uncertain outcome for explicit reconciliation.
+
+Current-baseline ownership uses the existing immutable legacy enrollment and
+checks the reviewed source hash again at capture. Historical continuity remains
+unverified. Existing original contracts cannot be replaced through admission.
+The coordinator records governed repair candidates, then uses a separate verifier
+with the unchanged original requirements. An enrolled source does not start
+another discovery actor. Source tests, native behavior, installed usability and
+human acceptance remain distinct gates.
+
+Declared unittest and Node recipes require complete collection evidence, at
+least one passing executed case and zero skipped, cancelled or todo cases.
+Unknown or truncated output is unverified even when the process exits zero.
+Structured verification must reference every scoped recipe; a whitespace receipt
+cannot substitute for the tests. Process exit and verification status are stored
+separately in the executed command evidence.
+
+When a response mixes reads with command or mutation requests, the next model
+turn receives an explicit record of the requests that the read step did not
+execute or queue. The model can restate or withdraw them after reviewing source;
+the executor never silently carries stale effects forward. Existing executed
+receipts, idempotency and retry limits still govern a restated request.
+
+Resolving an approval preserves its decision and execution result even when a
+managed run cannot use generic checkpoint recovery. That specific storage refusal
+hands continuation back to the existing coordinator without replaying terminal
+work. Unrelated storage errors still propagate.
+
+An explicitly approved read-only assessment can further restrict its literal
+command set and per-command timeout, including for a blocked predecessor. Those
+bounds enter the fresh frozen child policy; the persistent project policy stays
+unchanged. Invalid bounds, foreign tests and broader recipes fail closed.
+
+For controlled rollout, local plan control may set `sourceRunIds` in normal mode.
+It restricts new admissions to already-enrolled original sources and narrows
+history reads. It grants no authority or cancellation, retains global ownership
+and capacity checks, and excludes new dependency/interrupted-child recovery in
+that restricted pass. Queue expansion follows inspection of the canary evidence.
+
+Queue Partner answers short status questions directly from the current scoped
+queue observation, without invoking a conversation provider or requesting a
+workflow action. It reports recorded states and blockers while keeping product
+acceptance separate. Each chat request shares one queue observation across its
+read paths; action paths retain their owning-project and current-state checks.
+
+Other questions receive complete structured queue evidence within the
+conversation contract's per-turn limit. The selected item comes first, omitted
+items are marked explicitly, and the bounded evidence turn retains up to four
+prior conversation turns. A large queue cannot create an oversized history
+message or cut a JSON record in half.

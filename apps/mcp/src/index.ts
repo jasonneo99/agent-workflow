@@ -12,6 +12,7 @@ import { registerContextThresholdTool } from "./tools/context.js";
 import { registerAcceptedOutcomeTool } from "./tools/reporting.js";
 import { buildClientCapabilityContract } from "../../../packages/client-capabilities/src/index.js";
 import { CONTEXT_INTENTS } from "../../../packages/context-gateway/src/index.js";
+import { bindCodexToolOrigins, codexRequestEnvironment } from "./codex-origin.js";
 const rootDir = findAgentWorkflowRoot(import.meta.url);
 const packageVersion = readPackageVersion(rootDir);
 const compiledCliPath = path.join(rootDir, "dist", "apps", "cli", "src", "index.js");
@@ -76,6 +77,7 @@ const server = new McpServer(
   }
 );
 
+bindCodexToolOrigins(server);
 const executeTool = async (args: string[], timeoutMs: number) => toolResult(await runAgentflow(args, { timeoutMs }));
 registerContextThresholdTool(server, executeTool);
 registerAcceptedOutcomeTool(server, executeTool);
@@ -132,6 +134,42 @@ server.registerTool(
     ...(execute ? ["--execute"] : []),
     ...(actor ? ["--actor", actor] : []),
     ...(json ? ["--json"] : [])
+  ], { timeoutMs: 120_000 }))
+);
+
+server.registerTool(
+  "agentflow_environments",
+  {
+    title: "AgentFlow per-run environments",
+    description: "Preview or execute a project-declared per-run container/native environment with frozen dependencies, readiness and complete test evidence. Does not authorize commands or replay other runs.",
+    inputSchema: {
+      project: z.string(), run: z.string(), profile: z.string().optional(), workflow: z.string().optional(), stage: z.string().optional(),
+      command: z.string().optional(), reuseRun: z.string().optional(), verify: z.boolean().optional(), execute: z.boolean().optional(), json: z.boolean().optional()
+    }
+  },
+  async ({ project, run, profile, workflow, stage, command, reuseRun, verify, execute, json }) => toolResult(await runAgentflow([
+    "environments", "--project", project, "--run", run,
+    ...(profile ? ["--profile", profile] : []), ...(workflow ? ["--workflow", workflow] : []), ...(stage ? ["--stage", stage] : []),
+    ...(command ? ["--command", command] : []), ...(reuseRun ? ["--reuse-run", reuseRun] : []),
+    ...(verify ? ["--verify"] : []), ...(execute ? ["--execute"] : []), ...(json ? ["--json"] : [])
+  ], { timeoutMs: 3_600_000 }))
+);
+
+server.registerTool(
+  "agentflow_repair_checkpoint",
+  {
+    title: "AgentFlow repair commit checkpoint",
+    description: "Preview or create an exact run-owned candidate commit from passing environment evidence, or check fresh independent source verification. Never pushes, merges, accepts products, or rewrites history.",
+    inputSchema: {
+      project: z.string(), evidence: z.string(), run: z.string().optional(), parent: z.string().optional(), files: z.string().optional(),
+      message: z.string().optional(), verify: z.string().optional(), execute: z.boolean().optional(), json: z.boolean().optional()
+    }
+  },
+  async ({ project, evidence, run, parent, files, message, verify, execute, json }) => toolResult(await runAgentflow([
+    "repair-checkpoint", "--project", project, "--evidence", evidence,
+    ...(run ? ["--run", run] : []), ...(parent ? ["--parent", parent] : []), ...(files ? ["--files", files] : []),
+    ...(message ? ["--message", message] : []), ...(verify ? ["--verify", verify] : []),
+    ...(execute ? ["--execute"] : []), ...(json ? ["--json"] : [])
   ], { timeoutMs: 120_000 }))
 );
 
@@ -1849,6 +1887,31 @@ server.registerTool(
 );
 
 server.registerTool(
+  "agentflow_coordinator_history",
+  {
+    title: "AgentFlow coordinator history",
+    description: "Archive obsolete terminal coordinator attempts from active views, or restore them to view. Requires an exact human-approved run list and confirmation; neither action deletes history, changes acceptance, or grants execution authority.",
+    inputSchema: {
+      action: z.enum(["archive", "restore"]),
+      sourceRunId: z.string().uuid().describe("Original coordinator family run id."),
+      replacementRunId: z.string().uuid().describe("Independently accepted successful replacement run id."),
+      runIds: z.array(z.string().uuid()).min(1).max(30).describe("Exact human-approved obsolete run list."),
+      reason: z.string().min(1).describe("Fresh scoped human reason stored with the authorization receipt."),
+      confirmation: z.string().describe("Use exactly 'Archive from active views.' or 'Restore to active views.' for the selected action."),
+      actor: z.string().min(1).optional().describe("Human requester name recorded in the receipt."),
+      json: z.boolean().optional()
+    }
+  },
+  async ({ action, sourceRunId, replacementRunId, runIds, reason, confirmation, actor, json }) => {
+    const args=[`coordinator-history-${action}`,"--source",sourceRunId,"--replacement",replacementRunId,"--runs",runIds.join(","),
+      "--reason",reason,"--confirm",confirmation];
+    if(actor)args.push("--actor",actor);
+    if(json)args.push("--json");
+    return toolResult(await runAgentflow(args,{timeoutMs:60_000}));
+  }
+);
+
+server.registerTool(
   "agentflow_summarize_run",
   {
     title: "AgentFlow summarize run",
@@ -1901,7 +1964,7 @@ server.registerTool(
     title: "AgentFlow provider use",
     description: "Switch or update the Agent Workflow model provider in .env, for requests like 'use BYO model', 'update my model to openai', or 'use Kiro'.",
     inputSchema: {
-      provider: z.enum(["mock", "local", "byo", "openai", "codex-cli", "anthropic", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
+      provider: z.enum(["mock", "local", "byo", "openai", "codex-cli", "anthropic", "deepseek", "gemini", "muse", "openai-compatible", "bedrock", "kiro"]).describe("Provider to store in .env."),
       check: z.boolean().optional().describe("Run provider-check after switching.")
     }
   },
@@ -1972,7 +2035,7 @@ async function runCommand(command: string, args: string[], timeoutMs: number): P
     void appendMcpLog("command-start", diagnostic);
     const child = spawn(command, args, {
       cwd: rootDir,
-      env: process.env,
+      env: codexRequestEnvironment(),
       stdio: ["ignore", "pipe", "pipe"]
     });
     let stdout = "";

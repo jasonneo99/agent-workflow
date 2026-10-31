@@ -5,12 +5,13 @@ import { promises as fs } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { loadConfig } from "../../../../scripts/evaluation-daemon.js";
 
-const execFileAsync = promisify(execFile);
+const execFileAsyncDefault = promisify(execFile);
 
 const LABEL = "com.agent-workflow.evaluation-daemon";
 
-function plistPath(): string {
+function defaultPlistPath(): string {
   return path.join(os.homedir(), "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
@@ -23,6 +24,7 @@ function plistXml(opts: {
   repoRoot: string;
   hour: number;
   minute: number;
+  intervalHours: number;
   logPath: string;
 }): string {
   const esc = (s: string) =>
@@ -35,18 +37,17 @@ function plistXml(opts: {
   <key>ProgramArguments</key>
   <array>
     <string>${esc(opts.nodePath)}</string>
-    <string>${esc(path.join(opts.repoRoot, "node_modules", "tsx", "dist", "cli.mjs"))}</string>
-    <string>${esc(path.join(opts.repoRoot, "scripts", "evaluation-daemon.ts"))}</string>
+    <string>${esc(path.join(opts.repoRoot, "dist", "scripts", "evaluation-daemon.js"))}</string>
     <string>--tick</string>
     <string>--repo</string>
     <string>${esc(opts.repoRoot)}</string>
   </array>
   <key>WorkingDirectory</key><string>${esc(opts.repoRoot)}</string>
-  <key>StartCalendarInterval</key>
+  ${opts.intervalHours === 24 ? `<key>StartCalendarInterval</key>
   <dict>
     <key>Hour</key><integer>${opts.hour}</integer>
     <key>Minute</key><integer>${opts.minute}</integer>
-  </dict>
+  </dict>` : `<key>StartInterval</key><integer>${Math.max(1, Math.ceil(opts.intervalHours * 3600))}</integer>`}
   <key>StandardOutPath</key><string>${esc(opts.logPath)}</string>
   <key>StandardErrorPath</key><string>${esc(opts.logPath)}</string>
 </dict>
@@ -57,16 +58,16 @@ function plistXml(opts: {
 async function readConfigValue(rootDir: string, key: string, fallback: number): Promise<number> {
   try {
     const raw = await fs.readFile(path.join(agentflowDir(rootDir), "evaluation-daemon.yaml"), "utf8");
-    const match = raw.match(new RegExp(`^${key}:\\s*(\\d+)`, "m"));
-    return match ? parseInt(match[1], 10) : fallback;
+    const match = raw.match(new RegExp(`^${key}:\\s*(\\d+(?:\\.\\d+)?)\\s*$`, "m"));
+    return match ? Number(match[1]) : fallback;
   } catch {
     return fallback;
   }
 }
 
-async function launchctlList(label: string): Promise<boolean> {
+async function launchctlList(label: string, execute: (file: string, args: string[]) => Promise<unknown>): Promise<boolean> {
   try {
-    await execFileAsync("launchctl", ["list", label]);
+    await execute("launchctl", ["list", label]);
     return true;
   } catch {
     return false;
@@ -80,7 +81,16 @@ function nextRunDescription(hour: number, minute: number, now: Date): string {
   return next.toLocaleString();
 }
 
-export function registerEvaluationDaemonCommands(program: Command, ctx: CliContext): void {
+export interface EvaluationDaemonAdapters {
+  homeDir?: string;
+  execute?: (file: string, args: string[]) => Promise<unknown>;
+}
+
+export function registerEvaluationDaemonCommands(program: Command, ctx: CliContext, adapters: EvaluationDaemonAdapters = {}): void {
+  const execFileAsync = adapters.execute ?? ((file: string, args: string[]) => execFileAsyncDefault(file, args));
+  const plistPath = () => adapters.homeDir === undefined
+    ? defaultPlistPath()
+    : path.join(adapters.homeDir, "Library", "LaunchAgents", `${LABEL}.plist`);
   const cmd = program
     .command("evaluation-daemon")
     .description("Manage the automatic evaluation runner daemon");
@@ -90,14 +100,15 @@ export function registerEvaluationDaemonCommands(program: Command, ctx: CliConte
     .description("Install and load the launchd plist for the evaluation daemon")
     .action(async () => {
       const rootDir = ctx.rootDir;
-      const hour = await readConfigValue(rootDir, "hour", 2);
-      const minute = await readConfigValue(rootDir, "minute", 0);
+      const config = await loadConfig(path.join(agentflowDir(rootDir), "evaluation-daemon.yaml"));
+      const { hour, minute, interval_hours: intervalHours } = config;
       const logPath = path.join(agentflowDir(rootDir), "evaluation-daemon.log");
       const xml = plistXml({
         nodePath: process.execPath,
         repoRoot: rootDir,
         hour,
         minute,
+        intervalHours,
         logPath,
       });
       const dest = plistPath();
@@ -111,7 +122,7 @@ export function registerEvaluationDaemonCommands(program: Command, ctx: CliConte
       await fs.writeFile(dest, xml, "utf8");
       await execFileAsync("launchctl", ["load", dest]);
       console.log(`Installed ${dest}`);
-      console.log(`Schedule: daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} local`);
+      console.log(intervalHours === 24 ? `Schedule: daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} local` : `Schedule: every ${intervalHours} hours`);
       console.log(`Logs: ${logPath}`);
     });
 
@@ -149,7 +160,7 @@ export function registerEvaluationDaemonCommands(program: Command, ctx: CliConte
         .stat(plistPath())
         .then(() => true)
         .catch(() => false);
-      const loaded = await launchctlList(LABEL);
+      const loaded = await launchctlList(LABEL, execFileAsync);
       let state: Record<string, unknown> | null = null;
       try {
         state = JSON.parse(await fs.readFile(path.join(dir, "evaluation-daemon-state.json"), "utf8"));
@@ -166,8 +177,8 @@ export function registerEvaluationDaemonCommands(program: Command, ctx: CliConte
         label: LABEL,
         plistInstalled,
         loaded,
-        schedule: `daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} local`,
-        nextRun: nextRunDescription(hour, minute, new Date()),
+        schedule: intervalHours === 24 ? `daily at ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")} local` : `every ${intervalHours} hours`,
+        nextRun: intervalHours === 24 ? nextRunDescription(hour, minute, new Date()) : null,
         intervalHours,
         maxConcurrent,
         runningNow: lock !== null,

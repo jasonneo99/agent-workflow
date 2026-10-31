@@ -3,7 +3,8 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import ts from "typescript";
-import { isInternalDiscoveryBlocker, workflowAutomaticRepairEnabled } from "./workflow-supervision.js";
+import { automaticRepairProjectAllowed } from "./repair-project-boundary.js";
+import { isInternalDiscoveryBlocker, workflowAutomaticRepairEnabled, workflowAutomaticRecoverySuppressed } from "./workflow-supervision.js";
 
 // Execute the production bodies without importing live storage or starting a daemon.
 const text = readFileSync(new URL("./commands/learning.ts", import.meta.url), "utf8");
@@ -24,10 +25,10 @@ const executable = ts.transpileModule(bodies, {
 
 async function exercise(suppressed: "repair" | "source" | null, mode = "apply-approved",
   scenario: "discovery" | "active" | "provider" | "ordinary" | "superseded" | "missing" | "cycle" = "discovery",
-  automaticRepair = "1") {
+  automaticRepair = "1", projectDir = "/workspace/synthetic-project", registeredRoot = projectDir) {
   const effects: string[] = [];
   const repair = Object.freeze({
-    id: "synthetic-repair", workflowId: "debug-failure", task: "Diagnose synthetic failure",
+    id: "synthetic-repair", projectRootUri: registeredRoot, workflowId: "debug-failure", task: "Diagnose synthetic failure",
     status: scenario === "active" ? "running" : "blocked", dismissed: false,
     blockedReason: "The exact implementation and test paths could not be located because repository discovery was unavailable.",
     evaluationMetadata: Object.freeze({ source: scenario === "ordinary" ? "manual" : scenario === "provider" ? "workflow-root-repair" : "workflow-supervisor-repair", sourceRunId: "synthetic-source" })
@@ -45,6 +46,9 @@ async function exercise(suppressed: "repair" | "source" | null, mode = "apply-ap
     ctx: Object.freeze({}),
     process: Object.freeze({ env: Object.freeze({ AGENTFLOW_WORKFLOW_AUTO_REPAIR: automaticRepair }) }),
     workflowAutomaticRepairEnabled,
+    automaticRepairProjectAllowed,
+    authorizedRepairRun: async () => true,
+    workflowAutomaticRecoverySuppressed,
     listWorkflowRunsForProject: async () => runs,
     loadProjectDeliveryReceipts: async () => [],
     stringValue: (value: unknown) => typeof value === "string" ? value : undefined,
@@ -69,14 +73,26 @@ async function exercise(suppressed: "repair" | "source" | null, mode = "apply-ap
       effects.push("replay"); return { runId: "synthetic-continuation" };
     },
     recordRunAction: async () => { effects.push("receipt"); },
-    supersedeWorkflowRun: async () => { effects.push("supersede"); },
+    supersedeWorkflowRun: async () => { effects.push("supersede"); return true; },
     cancelWorkflowRun: async () => { effects.push("cancel"); },
     queueSupervisedWorkflowRepair: async () => { effects.push("dispatch"); return true; }
   }) as (project: string, mode: string) => Promise<number>;
-  const result = await entry("synthetic-project", mode);
+  const result = await entry(projectDir, mode);
   assert.equal(JSON.stringify({ runs, receipts }), before, "Synthetic inputs and immutable receipts must remain unchanged");
   return { result, effects };
 }
+
+test("vendor project exits before approvals, indexing, replay or dispatch", async () => {
+  const observed = await exercise(null, "apply-approved", "discovery", "1", "/workspace/fleet/vendor/assistant");
+  assert.equal(observed.result, 0);
+  assert.deepEqual(observed.effects, []);
+});
+
+test("a mapped owning checkout cannot inherit vendor run authority", async () => {
+  const observed = await exercise(null, "apply-approved", "discovery", "1", "/workspace/assistant", "/remote/fleet/vendor/assistant");
+  assert.equal(observed.result, 0);
+  assert.deepEqual(observed.effects, []);
+});
 
 for (const suppressed of ["repair", "source"] as const) {
   test(`R4 discovery honors suppressed ${suppressed}`, async () => {
@@ -88,7 +104,7 @@ for (const suppressed of ["repair", "source"] as const) {
 
 test("R4 unsuppressed discovery positive control executes recovery", async () => {
   const observed = await exercise(null);
-  assert.deepEqual(observed.effects, ["index", "receipt", "reserve", "replay", "receipt", "supersede"]);
+  assert.deepEqual(observed.effects, ["index", "receipt", "reserve", "replay", "receipt"]);
   assert.equal(observed.result, 1);
 });
 
@@ -111,8 +127,8 @@ for (const scenario of ["missing", "cycle"] as const) {
     assert.deepEqual(await exercise(null, "apply-approved", scenario), { result: 0, effects: [] });
   });
 }
-test("R4 unsuppressed active cleanup positive control remains available", async () => {
-  assert.deepEqual(await exercise(null, "apply-approved", "active"), { result: 1, effects: ["dismiss"] });
+test("R4 active recovery cannot be dismissed by narrative receipts", async () => {
+  assert.deepEqual(await exercise(null, "apply-approved", "active"), { result: 0, effects: [] });
 });
 test("R4 unsuppressed supersession positive control remains available", async () => {
   assert.deepEqual(await exercise(null, "apply-approved", "superseded"), { result: 1, effects: ["supersede"] });
@@ -120,7 +136,11 @@ test("R4 unsuppressed supersession positive control remains available", async ()
 
 test("R4 disabled automatic repair has no effects in the isolated environment", async () => {
   for (const flag of ["", "0", "true"]) {
-    assert.deepEqual(await exercise(null, "apply-approved", "discovery", flag), { result: 0, effects: [] });
+    for (const scenario of ["discovery", "active", "provider", "ordinary", "superseded", "missing", "cycle"] as const) {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        assert.deepEqual(await exercise(null, "apply-approved", scenario, flag), { result: 0, effects: [] }, `${scenario}: disabled flag ${flag}, attempt ${attempt}`);
+      }
+    }
   }
 });
 
@@ -130,6 +150,7 @@ test("repair reservation follows an audited storage preflight across every downs
   const client = { query: async () => ({ rows: [{ projectId: "synthetic-project", task: "Synthetic failure", metadata: {} }] }) } as unknown as Parameters<typeof acceptancePreflight>[0];
   const entry = runInNewContext(`${executable}\nallowAutomaticRepairDispatch`, {
     process: { env: { AGENTFLOW_WORKFLOW_AUTO_REPAIR: "1" } }, workflowAutomaticRepairEnabled,
+    authorizedRepairRun: async () => true,
     listActionApprovals: async () => [], isOpenApproval: () => false, listArtifacts: async () => [],
     preflightWorkflowAcceptance: async () => acceptancePreflight(client, "synthetic-run", {}),
     recordRunAction: async (action: any) => {

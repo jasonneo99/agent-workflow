@@ -52,12 +52,15 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
       <div class="studio-crumbs"><select id="project-switcher" aria-label="Switch project"><option value="${escapeHtml(input.defaultProject)}">Projects</option></select><span>/</span><span>Tasks</span><span>/</span><b id="run-crumb">Current</b></div>
       <label class="studio-search" for="task-search">${icon("search")}<input id="task-search" type="search" placeholder="Search tasks" autocomplete="off"><kbd>⌘ K</kbd></label>
       <a class="topbar-link" href="/">Dashboard</a>
+      <a class="topbar-link" href="/#dashboard-question-heading">Queue Partner</a>
     </header>
 
     <aside class="studio-rail">
       <nav aria-label="Studio navigation">
         <a class="rail-link active" href="/studio">${icon("activity")}<span>Active task</span></a>
         <a class="rail-link" href="/projects">${icon("folder")}<span>Projects</span></a>
+        <a class="rail-link" href="/studio/context?project=${encodeURIComponent(input.defaultProject)}">${icon("file")}<span>Project context</span></a>
+        <a class="rail-link" id="guide-evidence-link" href="/learning?view=diagnostics&amp;project=${encodeURIComponent(input.defaultProject)}#guide-evidence-integrity">${icon("shield")}<span>Guide evidence</span></a>
         <a class="rail-link" href="/runs">${icon("file")}<span>Run history</span></a>
         <a class="rail-link" href="/approvals?status=open">${icon("shield")}<span>Approvals</span><i id="approval-count" hidden>0</i></a>
       </nav>
@@ -79,9 +82,10 @@ export function renderStudioHtml(input: { workflows: StudioWorkflow[]; defaultPr
           <section id="approval-banner" class="approval-banner" hidden>${icon("shield")}<span><strong>Approval required</strong><small id="approval-summary">Review the requested action before this workflow can continue.</small></span><div id="inline-approval-actions"></div></section>
           <h1 id="task-title">Loading your workflow…</h1>
           <p id="task-summary">Connecting to Agent Workflow and finding the most recent task.</p>
+          <a id="context-influence-link" hidden>Why these inputs?</a>
           <section id="outcome-card" class="outcome-card" hidden><span id="outcome-mark" class="outcome-mark"></span><div><strong id="outcome-title"></strong><p id="outcome-detail"></p></div></section>
           <div id="stage-strip" class="stage-strip" aria-label="Workflow progress"></div>
-          <div class="run-toolbar" id="run-toolbar"><button type="button" data-run-action="pause">Pause</button><button type="button" data-run-action="resume-checkpoint">Resume</button><button type="button" data-run-action="retry-failed">Retry</button><button type="button" data-run-action="replay-run">Replay</button><button type="button" data-run-action="cancel">Cancel</button></div>
+          <div class="run-toolbar" id="run-toolbar"><button type="button" data-run-action="pause">Pause</button><button type="button" data-run-action="resume-checkpoint">Resume</button><button type="button" data-run-action="retry-failed">Retry</button><button type="button" data-run-action="replay-run">Replay</button><button type="button" data-run-action="cancel">Cancel</button><a id="history-view-action" hidden>Archive from active views</a></div>
           <div class="activity-header"><h2>Task thread</h2><a id="open-run" href="/runs">Open full run ${icon("chevron")}</a></div>
           <div id="activity-feed" class="activity-feed"><div class="empty-state">Waiting for run details…</div></div>
         </div>
@@ -178,6 +182,10 @@ function studioScript(): string {
         $("live-dot").className = "health-dot " + mode;
       }
 
+      function updateGuideEvidenceLink(project) {
+        $("guide-evidence-link").href = "/learning?view=diagnostics&project=" + encodeURIComponent(project || "") + "#guide-evidence-integrity";
+      }
+
       async function fetchJson(url) {
         const response = await fetch(url, { headers: { accept: "application/json" } });
         if (!response.ok) throw new Error(await response.text());
@@ -206,6 +214,7 @@ function studioScript(): string {
         const run = details.run;
         const tasks = details.tasks || [];
         $("project-switcher").value = run.projectRootUri || $("project-switcher").value;
+        updateGuideEvidenceLink(run.projectRootUri || $("project-switcher").value);
         $("run-crumb").textContent = run.id.slice(0, 8).toUpperCase();
         $("run-short").textContent = run.id.slice(0, 8).toUpperCase();
         $("task-status").textContent = label(run.status);
@@ -213,11 +222,17 @@ function studioScript(): string {
         $("task-title").textContent = taskTitle(run.task);
         $("task-summary").textContent = label(run.workflowId) + " · " + (run.projectRootUri || run.projectName) + (run.requester ? " · Requested by " + run.requester + " via " + label(run.requesterChannel || "dashboard") : "");
         $("open-run").href = "/run?id=" + encodeURIComponent(run.id);
+        const historyAction=$("history-view-action");
+        historyAction.hidden=!run.replacementRunId||!["failed","blocked","cancelled"].includes(run.status);
+        historyAction.textContent=run.dismissed?"Restore to active views":"Archive from active views";
+        historyAction.href="/run?id="+encodeURIComponent(run.id)+"#coordinator-history-title";
         $("evidence-json").href = "/api/run?id=" + encodeURIComponent(run.id);
         $("command-project").value = run.projectRootUri || "";
         $("command-workflow").value = run.workflowId || "build-feature";
         $("accept-run").value = run.id;
         $("command-return").value = "/studio?run=" + encodeURIComponent(run.id);
+        $("context-influence-link").hidden = false;
+        $("context-influence-link").href = "/studio/influence?project=" + encodeURIComponent(run.projectRootUri || "") + "&run=" + encodeURIComponent(run.id);
         $("accept-return").value = "/studio?run=" + encodeURIComponent(run.id);
         const continuation = $("continuation-banner");
         continuation.hidden = !run.replacementRunId;
@@ -406,7 +421,7 @@ function studioScript(): string {
           state.approvals = approvals;
           state.projects = projects;
           const options = projectOptions(projects);
-          if (options) { $("project-switcher").innerHTML = options; $("dialog-project").innerHTML = options; }
+          if (options) { $("project-switcher").innerHTML = options; $("dialog-project").innerHTML = options; updateGuideEvidenceLink($("project-switcher").value); }
           if (approvals.length) { $("approval-count").hidden = false; $("approval-count").textContent = approvals.length; }
           const params = new URLSearchParams(location.search);
           const requested = params.get("run") || params.get("actionRun");
@@ -464,7 +479,7 @@ function studioScript(): string {
       $("dialog-task").addEventListener("input", () => { clearTimeout(routeTimer); routeTimer = setTimeout(previewRoute, 280); });
       $("dialog-routing").addEventListener("change", previewRoute);
       $("dialog-project").addEventListener("change", previewRoute);
-      $("project-switcher").addEventListener("change", (event) => { const run = state.runs.find((item) => item.projectRootUri === event.target.value); if (run) selectRun(run.id); else { $("dialog-project").value = event.target.value; openDialog(); } });
+      $("project-switcher").addEventListener("change", (event) => { updateGuideEvidenceLink(event.target.value); const run = state.runs.find((item) => item.projectRootUri === event.target.value); if (run) selectRun(run.id); else { $("dialog-project").value = event.target.value; openDialog(); } });
       document.querySelectorAll("[data-run-action]").forEach((button) => button.addEventListener("click", async () => { try { await runAction(button.dataset.runAction); } catch (error) { $("studio-notice").hidden = false; $("studio-notice").classList.add("error"); $("studio-notice").textContent = error.message; } }));
       $("request-changes").addEventListener("click", () => { $("command-task").focus(); $("command-task").value = "Revise this work: "; });
       $("needs-input-answer").addEventListener("click", () => { $("command-task").focus(); $("command-task").value = (state.details?.outcome?.inputPrompt || "Provide the missing information:") + " "; });

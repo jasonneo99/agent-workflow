@@ -47,11 +47,13 @@ test("learning daemon heals approvals before expensive analysis", () => {
   );
 });
 
-test("learning daemon dismisses older equivalent blockers and their approvals", () => {
+test("learning daemon preserves approvals and requires canonical verified supersession", () => {
+  const helper = source.slice(source.indexOf("  async function dismissDuplicateBlockedWorkflowRuns("), source.indexOf("  function emptyAgentImprovementApplyReceipts("));
   assert.match(
-    source,
-    /async function dismissDuplicateBlockedWorkflowRuns[\s\S]+newestByContract[\s\S]+decision: "rejected"[\s\S]+status: "dismissed"[\s\S]+supersedeWorkflowRun/u
+    helper,
+    /authorizedRepairRun[\s\S]+findLaterCompletedEquivalentRun[\s\S]+supersedeWorkflowRun/u
   );
+  assert.doesNotMatch(helper, /decideActionApproval|markActionApprovalExecution|cancelWorkflowRun/u);
 });
 
 test("all-project daemon sweeps every queue between expensive project analyses", () => {
@@ -74,9 +76,14 @@ test("daemon heartbeats reread persisted trust settings instead of retaining sta
 
 test("queue health and root repair run before slow project learning", () => {
   const fastSweep = source.indexOf("await runFastRecoverySweep();", source.indexOf("for (const target of targets)"));
-  const learningTick = source.indexOf("await runLearningDaemonTick({", fastSweep);
+  const learningTick = source.indexOf("await runIsolatedProjectTick(targetProjectDir", fastSweep);
   assert.ok(fastSweep >= 0);
   assert.ok(learningTick > fastSweep);
   assert.match(source.slice(source.indexOf("const runFastRecoverySweep"), fastSweep), /runQueueRecoveryLane/u);
   assert.match(source, /await runQueueRecoveryLane\(\);[\s\S]+setInterval\([\s\S]+runQueueRecoveryLane\(\)[\s\S]+Math\.min\(intervalMs, 10_000\)/u);
+});
+
+test("slow project learning is bounded without overlapping a previous tick", () => {
+  assert.match(source, /AGENTFLOW_LEARNING_PROJECT_TIMEOUT_MS[\s\S]+projectTicksInFlight\.get\(targetProjectDir\)[\s\S]+skipped overlapping work[\s\S]+Promise\.race/u);
+  assert.match(source, /Learning tick exceeded its \$\{projectTickTimeoutMs\}ms per-project budget[\s\S]+the fleet continued/u);
 });

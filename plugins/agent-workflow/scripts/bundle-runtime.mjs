@@ -17,7 +17,11 @@ function run(command, args, options = {}) {
 
 try {
   const runtimePin = JSON.parse(fs.readFileSync(path.join(pluginRoot, "runtime-version.json"), "utf8"));
-  const packageSpec = `${runtimePin.package}@${runtimePin.version}`;
+  // Local verification can package a reviewed, already-built engine without
+  // publishing it or accidentally bundling unrelated checkout changes.
+  const packageSpec = process.env.AGENTFLOW_PLUGIN_RUNTIME_TARBALL
+    ? path.resolve(process.env.AGENTFLOW_PLUGIN_RUNTIME_TARBALL)
+    : `${runtimePin.package}@${runtimePin.version}`;
   const packResult = JSON.parse(execFileSync("npm", [
     "pack", packageSpec,
     "--ignore-scripts",
@@ -38,6 +42,14 @@ try {
     "--no-fund",
     path.join(temporaryRoot, archive)
   ]);
+  const engineRoot = path.join(runtimeRoot, "node_modules", ...runtimePin.package.split("/"));
+  const installed = JSON.parse(fs.readFileSync(path.join(engineRoot, "package.json"), "utf8"));
+  if (installed.name !== runtimePin.package || installed.version !== runtimePin.version) {
+    throw new Error("Bundled engine does not match the plugin runtime pin.");
+  }
+  if (!fs.existsSync(path.join(engineRoot, "dist/apps/mcp/src/codex-origin.js"))) {
+    throw new Error("Runtime lacks request-scoped Codex origin binding; use a reviewed patched runtime tarball.");
+  }
   fs.rmSync(path.join(runtimeRoot, "node_modules", ".bin"), { recursive: true, force: true });
   fs.writeFileSync(path.join(runtimeRoot, "runtime-manifest.json"), `${JSON.stringify({
     package: runtimePin.package,

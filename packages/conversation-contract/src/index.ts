@@ -12,6 +12,7 @@ export type ConversationRequest = {
   actorRole: string;
   projectId: string;
   capabilityMode: ConversationCapabilityMode;
+  assistantMode?: "queue-partner";
 };
 
 export type ConversationIntent = {
@@ -40,6 +41,7 @@ export function parseConversationRequest(value: unknown): ConversationRequest {
   if (!conversationCapabilityModes.includes(capabilityMode as ConversationCapabilityMode)) {
     throw new Error(`capabilityMode must be one of: ${conversationCapabilityModes.join(", ")}.`);
   }
+  if(body.assistantMode!==undefined&&body.assistantMode!=="queue-partner")throw new Error("assistantMode must be queue-partner when supplied.");
   if (body.history !== undefined && !Array.isArray(body.history)) throw new Error("history must be an array.");
   const rawHistory = (body.history ?? []) as unknown[];
   if (rawHistory.length > MAX_HISTORY_TURNS) throw new Error(`history may contain at most ${MAX_HISTORY_TURNS} turns.`);
@@ -53,7 +55,7 @@ export function parseConversationRequest(value: unknown): ConversationRequest {
     return { role, content };
   });
   if (historyChars > MAX_HISTORY_CHARS) throw new Error(`history may contain at most ${MAX_HISTORY_CHARS} characters.`);
-  return { message, history, idempotencyKey, actor, actorRole, projectId, capabilityMode: capabilityMode as ConversationCapabilityMode };
+  return { message, history, idempotencyKey, actor, actorRole, projectId, capabilityMode: capabilityMode as ConversationCapabilityMode, ...(body.assistantMode==="queue-partner"?{assistantMode:"queue-partner" as const}:{}) };
 }
 
 export function classifyConversationIntent(request: ConversationRequest): ConversationIntent {

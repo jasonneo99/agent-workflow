@@ -21,7 +21,16 @@ export const runNotificationOutboxSchemaSql = `
     ADD COLUMN IF NOT EXISTS claim_owner text,
     ADD COLUMN IF NOT EXISTS claim_token uuid,
     ADD COLUMN IF NOT EXISTS claim_expires_at timestamptz,
-    ADD COLUMN IF NOT EXISTS acknowledged_at timestamptz;
+    ADD COLUMN IF NOT EXISTS acknowledged_at timestamptz,
+    ADD COLUMN IF NOT EXISTS coalesced_at timestamptz,
+    ADD COLUMN IF NOT EXISTS coalesced_into uuid,
+    ADD COLUMN IF NOT EXISTS coalesced_reason text,
+    ADD COLUMN IF NOT EXISTS transport_started_at timestamptz,
+    ADD COLUMN IF NOT EXISTS transport_message_id text,
+    ADD COLUMN IF NOT EXISTS transport_accepted_at timestamptz;
+  ALTER TABLE run_notifications DROP CONSTRAINT IF EXISTS run_notifications_status_check;
+  ALTER TABLE run_notifications ADD CONSTRAINT run_notifications_status_check
+    CHECK (status IN ('pending','delivered','failed','coalesced','delivery_uncertain'));
   ALTER TABLE run_notifications DROP CONSTRAINT IF EXISTS run_notifications_kind_check;
   ALTER TABLE run_notifications ADD CONSTRAINT run_notifications_kind_check
     CHECK (kind IN ('started','progress','approval_needed','action_needed','blocked','failed','recovered','completed','message'));
@@ -43,11 +52,17 @@ export interface NotificationIntent {
 /** Caller supplies a stable domain event identity, never a rendered title. */
 export async function enqueueRunNotification(client: pg.Client, input: NotificationIntent): Promise<string> {
   if (!input.eventKey.trim()) throw new Error("Notification event identity is required.");
+  // Serialize same-run event timestamps, including multiple events in one
+  // transaction. now() is transaction-scoped and previously produced ties
+  // resolved by random UUID order. Preserve existing rows on duplicate replay.
+  await client.query("SELECT id FROM workflow_runs WHERE id=$1::uuid FOR UPDATE", [input.runId]);
   const result = await client.query<{ id: string }>(`
-    INSERT INTO run_notifications(run_id, channel, kind, title, body, event_key, origin_task_id)
+    INSERT INTO run_notifications(run_id, channel, kind, title, body, event_key, origin_task_id, created_at)
     SELECT wr.id, coalesce($6::text, CASE WHEN wr.evaluation_metadata ? 'codexThreadId'
       THEN 'codex' ELSE coalesce(wr.evaluation_metadata->>'originClient', wr.requester_channel) END, 'dashboard'), $2, $3, $4, $5,
-      coalesce(wr.evaluation_metadata->>'codexThreadId', wr.evaluation_metadata->>'originTaskId')
+      coalesce(wr.evaluation_metadata->>'codexThreadId', wr.evaluation_metadata->>'originTaskId'),
+      greatest(date_trunc('milliseconds',clock_timestamp()),
+        coalesce((SELECT max(created_at) + interval '1 millisecond' FROM run_notifications WHERE run_id=wr.id), '-infinity'::timestamptz))
     FROM workflow_runs wr WHERE wr.id=$1::uuid
     ON CONFLICT (run_id, channel, event_key) WHERE event_key IS NOT NULL
     DO UPDATE SET event_key=excluded.event_key
@@ -64,6 +79,100 @@ export interface ClaimedRunNotification {
   id: string; runId: string; channel: string; kind: string;
   title: string; body: string; originTaskId: string | null;
   claimToken: string; createdAt: string; attemptCount: number;
+}
+
+/** Preserve the original event while removing obsolete progress from outbound delivery.
+ * Actionable notices and in-flight claims are never coalesced. No ACK is fabricated.
+ */
+export async function coalesceRunNotificationProgress(input: { projectRootUri: string; dryRun?: boolean }): Promise<Array<{ id: string; into: string }>> {
+  if (!input.projectRootUri.trim()) throw new Error("Project is required.");
+  return withClient(async client => {
+    // Receipt identity supplies the action without parsing legacy text bodies.
+    // Keep the latest dismissal of each action for each nonempty destination.
+    const candidates = `WITH dismissals AS (
+      SELECT n.id,n.run_id,n.channel,n.origin_task_id,n.created_at,wr.project_id,a.action_type
+      FROM run_notifications n
+      JOIN workflow_runs wr ON wr.id=n.run_id JOIN projects p ON p.id=wr.project_id
+      JOIN action_receipts a ON a.run_id=n.run_id AND n.event_key='receipt:' || a.receipt_hash
+      WHERE p.root_uri=$1 AND n.channel='codex' AND n.kind='progress'
+        AND a.metadata_serialization_version=2
+        AND a.receipt_hash ~ '^[a-f0-9]{64}$'
+        AND a.action_type IN ('failed_run_dismissed','action_approval_dismissed')
+        AND nullif(btrim(n.origin_task_id),'') IS NOT NULL
+        AND n.status<>'coalesced'
+    ), replacements AS (
+      SELECT n.id,replacement.id AS into FROM dismissals n
+      CROSS JOIN LATERAL (
+        SELECT newer.id FROM dismissals newer
+        WHERE newer.project_id=n.project_id AND newer.channel=n.channel
+          AND lower(newer.origin_task_id)=lower(n.origin_task_id)
+          AND newer.action_type=n.action_type
+          AND (newer.created_at,newer.id)>(n.created_at,n.id)
+        ORDER BY newer.created_at DESC,newer.id DESC LIMIT 1
+      ) replacement
+      UNION ALL
+      SELECT n.id, replacement.id AS into FROM run_notifications n
+      JOIN workflow_runs wr ON wr.id=n.run_id JOIN projects p ON p.id=wr.project_id
+      CROSS JOIN LATERAL (
+        SELECT newer.id FROM run_notifications newer
+        WHERE newer.run_id=n.run_id AND newer.channel=n.channel
+          AND newer.origin_task_id IS NOT DISTINCT FROM n.origin_task_id
+          AND (newer.created_at,newer.id)>(n.created_at,n.id)
+          AND newer.status<>'coalesced'
+        ORDER BY newer.created_at DESC,newer.id DESC LIMIT 1
+      ) replacement
+      WHERE p.root_uri=$1 AND n.channel='codex'
+        AND n.kind IN ('started','progress')
+        AND (coalesce(n.event_key,'') NOT LIKE 'receipt:%' OR EXISTS (
+          SELECT 1 FROM action_receipts a
+          WHERE a.run_id=n.run_id AND n.event_key='receipt:' || a.receipt_hash
+            AND a.metadata_serialization_version=2
+            AND a.receipt_hash ~ '^[a-f0-9]{64}$'
+            AND a.action_type IN ('workflow_created','stage_leased','stage_started',
+              'stage_continuation_scheduled')
+        ))
+        AND lower(n.title) !~ '(approval|action.*required|blocked|failed)'
+    )
+      SELECT n.id,r.into FROM replacements r JOIN run_notifications n ON n.id=r.id
+      WHERE n.status IN ('pending','failed')
+        AND (n.claim_expires_at IS NULL OR n.claim_expires_at<=now())
+        AND n.transport_started_at IS NULL AND n.transport_accepted_at IS NULL`;
+    if (input.dryRun) return (await client.query<{ id: string; into: string }>(candidates, [input.projectRootUri])).rows;
+    return (await client.query<{ id: string; into: string }>(`WITH candidates AS (${candidates})
+      UPDATE run_notifications n SET status='coalesced',coalesced_at=now(),
+        coalesced_into=c.into,coalesced_reason='superseded-progress',claim_owner=NULL,claim_token=NULL,claim_expires_at=NULL
+      FROM candidates c WHERE n.id=c.id AND n.status IN ('pending','failed')
+        AND (n.claim_expires_at IS NULL OR n.claim_expires_at<=now())
+        AND n.transport_started_at IS NULL AND n.transport_accepted_at IS NULL
+      RETURNING n.id::text,c.into::text`, [input.projectRootUri])).rows;
+  });
+}
+
+/** Quarantine before calling the non-idempotent queue transport. A crash or
+ * ambiguous outcome requires reconciliation, not an automatic duplicate send.
+ */
+export async function beginRunNotificationQueue(input: { projectRootUri: string; owner: string; notificationId: string; claimToken: string }): Promise<boolean> {
+  return withClient(async client => (await client.query(`UPDATE run_notifications n
+    SET status='delivery_uncertain',transport_started_at=now()
+    FROM workflow_runs wr,projects p WHERE n.id=$3::uuid AND wr.id=n.run_id
+      AND p.id=wr.project_id AND p.root_uri=$1 AND n.channel='codex'
+      AND n.claim_owner=$2 AND n.claim_token=$4::uuid AND n.claim_expires_at>now()
+      AND n.status IN ('pending','failed') AND n.transport_started_at IS NULL
+      AND n.transport_accepted_at IS NULL`, [input.projectRootUri,input.owner,input.notificationId,input.claimToken])).rowCount===1);
+}
+
+/** Persist exact correlated queue acceptance immediately, independently of the
+ * later dispatcher settlement. Delivered means transport only, never arrival.
+ */
+export async function recordRunNotificationQueued(input: { projectRootUri: string; owner: string; notificationId: string; claimToken: string; messageId: string; taskId: string }): Promise<boolean> {
+  if (!/^[a-f0-9]{8}-[a-f0-9]{4}-[1-8][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/iu.test(input.messageId)) return false;
+  return withClient(async client => (await client.query(`UPDATE run_notifications n
+    SET status='delivered',transport_message_id=$5,transport_accepted_at=now(),delivered_at=coalesce(delivered_at,now())
+    FROM workflow_runs wr,projects p WHERE n.id=$3::uuid AND wr.id=n.run_id
+      AND p.id=wr.project_id AND p.root_uri=$1 AND n.channel='codex' AND lower(n.origin_task_id)=lower($6)
+      AND n.claim_owner=$2 AND n.claim_token=$4::uuid AND n.claim_expires_at>now()
+      AND n.status='delivery_uncertain' AND n.transport_accepted_at IS NULL`,
+    [input.projectRootUri,input.owner,input.notificationId,input.claimToken,input.messageId,input.taskId])).rowCount===1);
 }
 
 /** One short atomic statement; transport runs only after the claim commits. */
@@ -91,6 +200,7 @@ export async function claimRunNotifications(input: {
         AND ($5::uuid IS NULL OR n.id=$5::uuid)
         AND n.available_at<=now()
         AND (n.claim_expires_at IS NULL OR n.claim_expires_at<=now())
+        AND n.transport_started_at IS NULL AND n.transport_accepted_at IS NULL
       ORDER BY n.available_at,n.created_at,n.id LIMIT $3
       FOR UPDATE OF n SKIP LOCKED
     )
@@ -106,18 +216,22 @@ export async function claimRunNotifications(input: {
 export async function settleRunNotification(input: {
   projectRootUri: string; owner: string; notificationId: string; claimToken: string;
   transportDelivered: boolean;
+  transportUncertain?: boolean;
 }): Promise<boolean> {
   return withClient(async (client) => (await client.query(`
-    UPDATE run_notifications n SET status=CASE WHEN $5 THEN 'delivered' ELSE 'failed' END,
+    UPDATE run_notifications n SET status=CASE WHEN $5 THEN 'delivered' WHEN $6 THEN 'delivery_uncertain' ELSE 'failed' END,
       delivered_at=CASE WHEN $5 THEN coalesce(n.delivered_at,now()) ELSE n.delivered_at END,
       available_at=CASE WHEN $5 THEN n.available_at ELSE now()+
         (least(3600,5*power(2,least(n.attempt_count-1,10))) * interval '1 second') END,
+      transport_started_at=CASE WHEN NOT $5 AND NOT $6 THEN NULL ELSE n.transport_started_at END,
       claim_owner=NULL,claim_token=NULL,claim_expires_at=NULL
     FROM workflow_runs wr,projects p
     WHERE n.id=$3::uuid AND wr.id=n.run_id AND p.id=wr.project_id AND p.root_uri=$1
       AND n.claim_owner=$2 AND n.claim_token=$4::uuid AND n.claim_expires_at>now()
-      AND n.status IN ('pending','failed')`,
-    [input.projectRootUri,input.owner,input.notificationId,input.claimToken,input.transportDelivered])).rowCount === 1);
+      AND (n.status IN ('pending','failed','delivery_uncertain')
+        OR ($5 AND n.status='delivered' AND n.transport_accepted_at IS NOT NULL))
+      AND ($5 OR n.transport_accepted_at IS NULL)`,
+    [input.projectRootUri,input.owner,input.notificationId,input.claimToken,input.transportDelivered,input.transportUncertain??false])).rowCount === 1);
 }
 
 /** The caller must authenticate the task identity independently of message data.

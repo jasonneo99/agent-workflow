@@ -30,6 +30,23 @@ const stageInput = {
   priorReceipts: []
 } as unknown as StageExecutionInput;
 
+test('strict Codex schema can express a bounded source proposal and evidence influence as structured artifact fields',async()=>{
+ const paths=['src/synthetic.ts','tests/synthetic.test.ts'],memoryInfluence={used:[],noInfluenceReason:'No earlier comparison was needed.'};
+ let schema:any;
+ const provider=new CodexCliProvider({authStatus:async()=> 'Logged in using ChatGPT',execute:async input=>{
+  schema=input.schema;
+  return {model:'synthetic-model',output:JSON.stringify({outcome:'completed',summary:'Read-only discovery',proposedSourcePaths:paths,memoryInfluence})};
+ }});
+ const result=await provider.executeStage({...stageInput,agentId:'queue-partner'});
+ assert.equal(schema.additionalProperties,false);assert.ok(schema.required.includes('proposedSourcePaths'));assert.ok(schema.required.includes('memoryInfluence'));
+ assert.equal(schema.properties.proposedSourcePaths.maxItems,40);assert.equal(schema.properties.proposedSourcePaths.items.maxLength,500);
+ assert.deepEqual(schema.properties.memoryInfluence.type,['object','null']);assert.equal(schema.properties.memoryInfluence.additionalProperties,false);
+ assert.equal(schema.properties.memoryInfluence.properties.used.maxItems,12);
+ assert.deepEqual(schema.properties.memoryInfluence.properties.used.items.properties.effect.enum,['changed-plan','confirmed-plan','rejected']);
+ assert.deepEqual(result.artifact.proposedSourcePaths,paths);assert.deepEqual(result.artifact.memoryInfluence,memoryInfluence);
+ assert.deepEqual(result.requestedCommands,[]);assert.deepEqual(result.requestedFileWrites,[]);
+});
+
 test("Codex CLI provider requires ChatGPT auth by default and normalizes structured stage output", async () => {
   const calls: Array<{ prompt: string; model?: string; reasoningEffort?: string; workingDirectory?: string; sessionKey?: string; schema: Record<string, unknown> }> = [];
   const runner: CodexCliRunner = {
@@ -215,6 +232,9 @@ test("Codex CLI resolves a PATH entry before spawning and exposes only the safe 
 // ---------------------------------------------------------------------------
 
 async function withTempEnv(vars: Record<string, string | undefined>, fn: () => Promise<void>): Promise<void> {
+  // Fake CLI commands must not share production execution slots or sessions.
+  // Each caller already owns and cleans this disposable fixture directory.
+  vars = { TMPDIR: vars.AGENTFLOW_EGRESS_LOG_DIR, TMP: vars.AGENTFLOW_EGRESS_LOG_DIR, TEMP: vars.AGENTFLOW_EGRESS_LOG_DIR, ...vars };
   const previous: Record<string, string | undefined> = {};
   for (const [key, value] of Object.entries(vars)) {
     previous[key] = process.env[key];

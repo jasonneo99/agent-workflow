@@ -6,8 +6,22 @@ export type RoadmapSuggestion = {
   id: string;
   title: string;
   section: string | null;
-  line: number;
-  source: "unchecked-task";
+  line: number | null;
+  source: "unchecked-task" | "learning-evidence";
+  priority?: "high" | "medium" | "low";
+  rationale?: string;
+  evidence?: string[];
+  recommendation?: string;
+  proposalId?: string;
+};
+
+export type RoadmapLearningProposal = {
+  id: string;
+  title: string;
+  priority: "high" | "medium" | "low";
+  rationale: string;
+  evidence: string[];
+  recommendation: string;
 };
 
 export type RoadmapSuggestionReport = {
@@ -18,6 +32,8 @@ export type RoadmapSuggestionReport = {
   status: "ready" | "empty" | "missing";
   openItems: number;
   suggestions: RoadmapSuggestion[];
+  outcomes: { approved: number; deferred: number; dismissed: number };
+  newHighPrioritySuggestions: string[];
   recommendation: string;
 };
 
@@ -66,8 +82,11 @@ export function buildRoadmapSuggestionReport(input: {
   markdown?: string;
   generatedAt?: string;
   limit?: number;
+  evidenceProposals?: RoadmapLearningProposal[];
+  decisions?: Array<{ suggestionId: string; decision: "approved" | "deferred" | "dismissed" }>;
 }): RoadmapSuggestionReport {
   const generatedAt = input.generatedAt ?? new Date().toISOString();
+  const outcomeCounts = (input.decisions ?? []).reduce((counts, item) => ({ ...counts, [item.decision]: counts[item.decision] + 1 }), { approved: 0, deferred: 0, dismissed: 0 });
   if (input.markdown === undefined) {
     return {
       kind: "agentflow_roadmap_suggestions",
@@ -77,6 +96,8 @@ export function buildRoadmapSuggestionReport(input: {
       status: "missing",
       openItems: 0,
       suggestions: [],
+      outcomes: outcomeCounts,
+      newHighPrioritySuggestions: [],
       recommendation: `Create or restore ${input.roadmapPath}, then add unchecked Markdown tasks for the daemon to examine.`
     };
   }
@@ -100,7 +121,27 @@ export function buildRoadmapSuggestionReport(input: {
     });
   }
 
-  const selected = suggestions.slice(0, limit);
+  const normalize = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/gu, " ").trim();
+  const existingTitles = new Set(suggestions.map((item) => normalize(item.title)));
+  const priorityRank = { high: 0, medium: 1, low: 2 } as const;
+  const decisionById = new Map((input.decisions ?? []).map((item) => [item.suggestionId, item.decision]));
+  const evidenceSuggestions = [...(input.evidenceProposals ?? [])]
+    .filter((proposal) => !existingTitles.has(normalize(proposal.title)))
+    .filter((proposal) => !["approved", "dismissed"].includes(decisionById.get(`roadmap-evidence-${proposal.id}`) ?? ""))
+    .sort((a, b) => Number(decisionById.get(`roadmap-evidence-${a.id}`) === "deferred") - Number(decisionById.get(`roadmap-evidence-${b.id}`) === "deferred") || priorityRank[a.priority] - priorityRank[b.priority] || a.title.localeCompare(b.title))
+    .map((proposal): RoadmapSuggestion => ({
+      id: `roadmap-evidence-${proposal.id}`,
+      proposalId: proposal.id,
+      title: proposal.title,
+      section: "Evidence-backed daemon proposals",
+      line: null,
+      source: "learning-evidence",
+      priority: proposal.priority,
+      rationale: proposal.rationale,
+      evidence: proposal.evidence,
+      recommendation: proposal.recommendation
+    }));
+  const selected = [...evidenceSuggestions, ...suggestions].slice(0, limit);
   return {
     kind: "agentflow_roadmap_suggestions",
     projectRootUri: input.projectRootUri,
@@ -109,8 +150,10 @@ export function buildRoadmapSuggestionReport(input: {
     status: selected.length ? "ready" : "empty",
     openItems: suggestions.length,
     suggestions: selected,
+    outcomes: outcomeCounts,
+    newHighPrioritySuggestions: [],
     recommendation: selected.length
-      ? `Review the ${selected.length} suggested roadmap item(s) and explicitly choose one before starting work.`
+      ? `Review the ${selected.length} suggested roadmap item(s), including ${Math.min(evidenceSuggestions.length, limit)} evidence-backed daemon proposal(s), and explicitly choose one before starting work.`
       : "Add unchecked Markdown tasks (`- [ ] ...`) to the roadmap when new project work is identified."
   };
 }
@@ -128,7 +171,7 @@ export function formatRoadmapSuggestionReport(report: RoadmapSuggestionReport): 
     "## Suggested Next Work",
     "",
     ...(report.suggestions.length
-      ? report.suggestions.map((item) => `- [ ] ${item.title} (${item.section ?? "unsectioned"}, line ${item.line})`)
+      ? report.suggestions.map((item) => `- [ ] ${item.title} (${item.source === "learning-evidence" ? `${item.priority ?? "unranked"} priority, learning evidence ${item.proposalId ?? item.id}` : `${item.section ?? "unsectioned"}, line ${item.line}`})`)
       : ["- No work suggested."]),
     "",
     "## Recommendation",

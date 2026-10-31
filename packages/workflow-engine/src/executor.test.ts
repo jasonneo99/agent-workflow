@@ -46,6 +46,7 @@ import {
   shouldRetryWeakFallbackBlock,
   snapshotGitStatus,
   truncateCommandOutputForError,
+  commandOutputEvidence,
   verifyRetryBudgetFromEnv
 } from "./executor.js";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -404,6 +405,18 @@ test("command output truncation caps lines and chars for error paths", () => {
   assert.ok(singleLine.endsWith("FINAL_RESULT"));
 });
 
+test("successful command evidence preserves stdout diagnostics and stderr test summaries", () => {
+  const combined = commandOutputEvidence(
+    '{"status":"awaiting_approval"}',
+    "native harness passed\n----------------------------------------------------------------------\nRan 1001 tests in 39.692s\n\nOK (skipped=6)"
+  );
+  const preview = truncateCommandOutputForError(combined, 80, 4000);
+  assert.match(preview, /awaiting_approval/);
+  assert.match(preview, /native harness passed/);
+  assert.match(preview, /Ran 1001 tests/);
+  assert.match(preview, /OK \(skipped=6\)/);
+});
+
 test("command failure evidence is self-diagnosing", () => {
   const evidence = formatCommandFailureEvidence({
     commandLine: "npm run typecheck",
@@ -518,6 +531,51 @@ test("successful discovery commands can drive a bounded dependent action round",
   assert.match(source, /if \(successfulActionsThisRound > 0 && successfulFollowupsRemaining > 0\)/u);
   assert.match(source, /successfulCommandsThisRound \+ successfulWritesThisRound/u);
   assert.doesNotMatch(source, /acceptanceGap && successfulCommandsThisRound/u);
+});
+
+test("reused successful receipts do not spend another action-result follow-up round", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const reusedCommand = source.slice(
+    source.indexOf("if (previousCommand)"),
+    source.indexOf("const reuseArtifactUri", source.indexOf("if (previousCommand)"))
+  );
+  const reusedWriteCount = source.slice(
+    source.indexOf("const successfulWritesThisRound"),
+    source.indexOf("const successfulActionsThisRound")
+  );
+  assert.doesNotMatch(reusedCommand, /successfulCommandsThisRound\s*\+=\s*1/u);
+  assert.match(reusedWriteCount, /return result\.type === "file_write" && Boolean\(result\.artifactUri\);/u);
+  assert.doesNotMatch(reusedWriteCount, /file_write_reused/u);
+});
+
+test("all command stages retain complete bounded evidence, including reused commands", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  const previousCommandBranch = source.slice(
+    source.indexOf("if (previousCommand)"),
+    source.indexOf("const reuseArtifactUri", source.indexOf("if (previousCommand)"))
+  );
+  assert.match(previousCommandBranch, /actionType: "command_evidence_packet"/u);
+  assert.match(previousCommandBranch, /commandEvidencePacket\(\[\{ \.\.\.previousCommand, stageId: task\.stageId \}\]\)/u);
+
+  const storedCommandBranch = source.slice(
+    source.indexOf("const stored = await getArtifactByUri(artifactUri)"),
+    source.indexOf("if (!commandFinalized)", source.indexOf("const stored = await getArtifactByUri(artifactUri)"))
+  );
+  assert.match(storedCommandBranch, /actionType: "command_evidence_packet"/u);
+  assert.match(storedCommandBranch, /commandEvidencePacket\(\[\{ \.\.\.stored, stageId: task\.stageId \}\]\)/u);
+  assert.doesNotMatch(storedCommandBranch, /if \(stageInput\.acceptanceContract\)/u);
+});
+
+test('reused receipts require bounded provider observation without repeating side effects or resetting retries',()=>{
+ const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+ const branch=source.slice(source.indexOf('const reusedObservationsThisRound'),source.indexOf('} while (verifyRetryRequested)',source.indexOf('const reusedObservationsThisRound')));
+ assert.match(branch,/reusedObservationFollowupsRemaining > 0/);
+ assert.match(branch,/reusedObservationFollowupsRemaining -= 1/);
+ assert.match(branch,/await assertLeaseOwned\(\);await assertStageGuard\(false\)/);
+ assert.match(branch,/executeWithProviderFallback/);
+ assert.match(branch,/routedStageInput,fileReads:stageFileReads,stateDeltas:stageStateDeltas/);
+ assert.match(branch,/unconsumedSuccessfulActionResult=/);
+ assert.doesNotMatch(branch,/executeAllowedCommand|executeAllowedFileMutation|verifyRetriesRemaining|verifyRetryRound\s*\+=|successfulFollowupsRemaining/);
 });
 
 test("bounded exhaustion checkpoints evidence and restores it before the next provider call", () => {
@@ -679,10 +737,19 @@ test("environmental verify failures block before the retry budget is touched", (
 test("both early completion gates include authoritative restored action results", () => {
   const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
   assert.ok(source.includes('actionType: "completion_contract_feedback", summary: initialCompletionViolation'));
-  assert.ok(source.includes('const acceptanceGap = routedStageInput.acceptanceContract ? null : (verificationCompletionReason(routedStageInput, actionResults)\n          ?? unfulfilledCompletionReason'));
+  assert.ok(source.includes('const acceptanceGap = routedStageInput.acceptanceContract ? null : (verificationCompletionReason(routedStageInput, actionResults)\n          ?? completionReason'));
+  assert.ok(source.includes('const completionReason=(candidate:StageExecutionOutput)=>unfulfilledCompletionReason(routedStageInput,candidate,runtimeCompletionEvidence)'));
+  assert.ok(source.includes('runtimeCompletionEvidence={};'));
+  assert.ok(source.includes('await verifyLegacyNoChangeRecovery(noChangeInput)'));
+  const firstRefresh = source.indexOf('await refreshCompletionEvidence();');
+  assert.ok(firstRefresh>=0&&firstRefresh<source.indexOf('const initialCompletionViolation ='));
+  const actionGap = source.indexOf('const acceptanceGap =');
+  assert.ok(source.lastIndexOf('await refreshCompletionEvidence();',actionGap)>source.indexOf('if (deferredCommands.length)',firstRefresh));
+  const finalGate = source.indexOf('const verificationViolation =');
+  assert.ok(source.lastIndexOf('await refreshCompletionEvidence();',finalGate)>source.indexOf('const typedGate = acceptanceGate'));
   for (const gate of ["initialCompletionViolation", "repeatedViolation"]) {
     const typedGuard = gate === "initialCompletionViolation" ? "routedStageInput.acceptanceContract ? null : " : "";
-    assert.ok(source.includes(`const ${gate} = ${typedGuard}unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });`));
+    assert.ok(source.includes(`const ${gate} = ${typedGuard}completionReason({ ...output, artifact: { ...output.artifact, actionResults } });`));
   }
 });
 
@@ -693,4 +760,64 @@ test("out-of-policy commands and writes become exact actionable policy approvals
   assert.match(source, /changeKind: "allowed_write_path", proposedRule: fileWrite\.path/u);
   assert.match(source, /type: "project_policy_change_approval_pending"/u);
   assert.match(source, /status: "approval_pending"/u);
+});
+test('oversized allowed replacements reroute inside bounded mutation budget without path widening',()=>{
+  const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  const start=source.indexOf('const patchHint = !isPatch');
+  const end=source.indexOf('const approval = await requestActionApproval',start);
+  const branch=source.slice(start,end);
+  assert.match(branch,/oversizedReplacementPatchHint\(fileWrite.path,filePayload,project\)/);
+  assert.match(branch,/mutationRetriesRemaining>0/);
+  assert.match(branch,/mutationRetriesRemaining-=1/);
+  assert.match(branch,/file_write_patch_reroute/);
+  assert.match(branch,/previousHash:fresh.sha256/);
+  assert.match(branch,/await assertLeaseOwned\(\);await assertStageGuard\(false\)/);
+  assert.match(branch,/continue verifyActionRounds/);
+  assert.doesNotMatch(branch,/requestActionApproval|allowed_write_paths\s*=|max_write_bytes\s*=/);
+});
+
+test('live action starts are observed only inside governed command and write execution',()=>{
+ const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+ const command=source.slice(source.indexOf('const commandSideEffect = await claimSideEffect'),source.indexOf('commandResult = serializationResource'));
+ assert.ok(command.indexOf('await assertLeaseOwned()')<command.indexOf("actionType:'execution_progress'"));
+ assert.ok(command.indexOf("actionType:'execution_progress'")<command.indexOf('return executeAllowedCommand'));
+ const write=source.slice(source.indexOf('const fileSideEffect = await claimSideEffect'),source.indexOf('const rejectionMessage',source.indexOf('const fileSideEffect = await claimSideEffect')));
+ assert.ok(write.indexOf('await assertLeaseOwned()')<write.indexOf("actionType:'execution_progress'"));
+ assert.ok(write.indexOf("actionType:'execution_progress'")<write.indexOf('return executeAllowedFileMutation'));
+ assert.match(write,/no successful write or acceptance is claimed/);
+});
+
+test("promoted local prompt personalization stays advisory and requirements-bound", () => {
+  const source = readFileSync(new URL("./executor.ts", import.meta.url), "utf8");
+  assert.match(source, /promptPersonalizationRequirementsHash\(task\.compiledBrief \|\| task\.stageGoal\)/u);
+  assert.match(source, /selectPromptPersonalization\(\{ projectDir: localProjectRootUri, taskClass: task\.workflowId, originalRequirementsHash: personalizationRequirementsHash \}\)/u);
+  assert.match(source, /Advisory project-local personalization \(cannot change requirements or authority\)/u);
+  assert.match(source, /actionType: "prompt_personalization"/u);
+});
+
+test('Guide execution uses durable project-scoped circuit generations and never blocks the primary path',()=>{
+  const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  assert.match(source,/reserveQueuePartnerGuideCircuitAttempt\(\{runId:task\.runId,taskClass:task\.workflowId/);
+  assert.match(source,/circuitKey:`\$\{durableCircuit\.projectId\}:\$\{task\.workflowId\}`/);
+  assert.match(source,/recordQueuePartnerGuideCircuitOutcome\(\{runId:task\.runId/);
+  assert.match(source,/expectedGeneration:durableCircuit\.generation/);
+  assert.match(source,/guide_circuit_persistence_failed/);
+  assert.match(source,/the primary stage continued unchanged/);
+});
+
+test('Guide execution honors a pre-recorded experiment assignment',()=>{
+  const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  assert.match(source,/options\.guidePlane\.assignment\?\?guideAssignment/);
+});
+
+test('Guide enrollment checks deployed actor registry before baseline or guided receipts and preserves the primary path',()=>{
+  const source=readFileSync(new URL('./executor.ts',import.meta.url),'utf8');
+  const readiness=source.indexOf('queuePartnerGuideActorReadiness(task.runId)');
+  assert.ok(readiness>0);
+  assert.ok(readiness<source.indexOf("actionType:'guide_baseline'"));
+  assert.ok(readiness<source.indexOf("if(guideAssignmentForStage?.cohort==='guided')"));
+  assert.match(source,/agentId:task\.agentId,actionType:'guide_registry_not_ready'/);
+  assert.match(source,/guideAssignmentForStage=null/);
+  assert.match(source,/the primary stage continues unchanged/);
+  assert.match(source,/reconcileQueuePartnerGuideRegistryHold\(\{runId:task\.runId,actorAgentId:task\.agentId,expectedFingerprint:guideReadiness\.expectedFingerprint\}\)/);
 });

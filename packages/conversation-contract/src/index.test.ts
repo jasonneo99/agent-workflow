@@ -46,3 +46,12 @@ test("redacts token-shaped values and host paths from assistant text", () => {
   assert.doesNotMatch(output, /private-value|\/Users\/example|\/etc\/passwd|C:\\Users|sk-abcdefghijklmnop/u);
   assert.match(output, /REDACTED/u);
 });
+
+test("queue partner mode is optional, strict and bound into idempotency without changing action authority",()=>{
+ const normal=parseConversationRequest(base),partner=parseConversationRequest({...base,assistantMode:"queue-partner"});
+ assert.equal(Object.hasOwn(normal,"assistantMode"),false);
+ assert.equal(partner.assistantMode,"queue-partner");
+ assert.notEqual(conversationRequestHash(normal),conversationRequestHash(partner));
+ assert.throws(()=>parseConversationRequest({...base,assistantMode:"autonomous"}),/assistantMode/);
+ assert.equal(classifyConversationIntent(parseConversationRequest({...base,assistantMode:"queue-partner",message:"Fix all failures"})).kind,"governed-operation");
+});

@@ -8,6 +8,7 @@ import {
   isResultFile,
   isSuiteFile,
   listSuites,
+  resolveSuiteIdentities,
   findDueSuites,
   lockIsStale,
   runWithConcurrency,
@@ -17,6 +18,21 @@ import {
 } from "./evaluation-daemon.js";
 
 const HOUR = 3600 * 1000;
+const suiteYaml = (id: string) => JSON.stringify({id, name:id, workflow:"build-feature", cases:[{id:"case",task:"Synthetic test"}], variants:[{id:"mock",provider:"mock",model_tier:"fast"}]});
+
+it("uses declared suite identity for due reports and rejects ambiguous identities", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "evaluation-identity-"));
+  try {
+    await fs.writeFile(path.join(root, "nightly.yaml"), suiteYaml("smoke"));
+    const suites = await resolveSuiteIdentities(listSuites(root, "*.yaml", ["nightly.yaml"]));
+    assert.equal(suites[0].name, "smoke");
+    assert.deepEqual(findDueSuites(suites, [{ name: "smoke-2026-01-02T00-00-00Z.json", mtimeMs: 100 }], 1000, 200), []);
+    await fs.writeFile(path.join(root, "other.yaml"), suiteYaml("smoke"));
+    await assert.rejects(resolveSuiteIdentities(listSuites(root, "*.yaml", ["nightly.yaml", "other.yaml"])), /Duplicate/);
+    await fs.writeFile(path.join(root, "nightly.yaml"), suiteYaml("../unsafe"));
+    await assert.rejects(resolveSuiteIdentities(listSuites(root, "*.yaml", ["nightly.yaml"])), /Invalid/);
+  } finally { await fs.rm(root, { recursive: true, force: true }); }
+});
 
 describe("suite/result file classification", () => {
   it("recognizes timestamped result files", () => {
@@ -189,7 +205,7 @@ describe("tick guardrails", () => {
   });
 
   it("detects a due suite end-to-end from the evaluations dir", async () => {
-    await fs.writeFile(path.join(deps.evalsDir, "smoke.yaml"), "id: smoke\n", "utf8");
+    await fs.writeFile(path.join(deps.evalsDir, "smoke.yaml"), suiteYaml("smoke"), "utf8");
     await fs.writeFile(
       path.join(deps.evalsDir, "smoke-2026-01-01T00-00-00Z.json"),
       "{}\n",

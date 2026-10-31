@@ -9,6 +9,29 @@ function fixture(): StructuredAcceptanceContract {
     deliverables: [{ id: "delivery", description: "Synthetic delivery", requiredGates: ["implementation", "verification", "packaging", "supervision"], status: "verified", receipts: {}, gaps: [] }] };
 }
 
+test('declared recipe verification rejects skipped collection and whitespace substitutes',async()=>{
+ const command='python3 -m unittest discover -s tests -p test_synthetic.py -v',other='python3 -m unittest discover -s tests -p test_other.py -v';
+ const paths=['tests/test_synthetic.py','tests/test_other.py'];
+ const recipes=paths.map((p,i)=>({source_paths:paths,test_paths:[p],commands:[i?other:command],output_paths:[]}));
+ const run=async(commands:string[],stderr='Ran 1 test in 0.1s\nOK\n')=>{
+  const frozen=fixture();frozen.sourcePaths=paths;
+  const observedAt='2026-01-01T00:00:00.000Z';
+  const records=commands.map((commandLine,i)=>{const content={commandLine,exitCode:0,timedOut:false,stdout:'',stderr,subjectHash:'subject',sourcePaths:paths,sourceBefore:'subject',sourceAfter:'subject'};
+   const ref={artifactUri:`db://synthetic/recipe-${i}`,runId:'run',taskId:'task',stageId:'verification',kind:'command_output' as const,contentHash:acceptanceDigest(content),observedAt,subjectHash:'subject'};return{content,ref};});
+  frozen.deliverables[0]!.receipts.verification=records.map(r=>r.ref);
+  const client={query:async(sql:string,params:unknown[])=>{
+   if(sql.includes('from workflow_runs where'))return {rows:[{projectId:'project',task:'task',metadata:{acceptanceContract:frozen},policy:{actions:{allowed_commands:[command,other,'git diff --check'],verification_recipes:recipes}}}]};
+   if(sql.includes('select uri from artifacts'))return {rows:records.filter(r=>r.content.commandLine===params[1]).map(r=>({uri:r.ref.artifactUri}))};
+   const record=records.find(r=>r.ref.artifactUri===params[0]);return{rows:record?[{runId:'run',taskId:'task',stageId:'verification',projectId:'project',kind:'command_output',content:record.content,observedAt}]:[]};
+  }} as unknown as Parameters<typeof storedAcceptanceDecision>[0];
+  return storedAcceptanceDecision(client,'run','verification',{acceptanceContract:frozen});
+ };
+ assert.equal((await run([command,other])).reason,null);
+ assert.notEqual((await run([command,other],'Ran 4 tests in 0.1s\nOK (skipped=4)\n')).reason,null);
+ assert.match((await run(['git diff --check'])).reason!,/omits a required scoped recipe/);
+ assert.match((await run([command])).reason!,/omits a required scoped recipe/);
+});
+
 test("supervision stages share the structured gate while advisory stages remain unmapped", () => {
   for (const stage of ["supervise", "supervision", "supervisor"]) assert.equal(acceptanceGate(stage), "supervision");
   assert.equal(acceptanceGate("implement-item-1"), "implementation");
@@ -17,6 +40,19 @@ test("supervision stages share the structured gate while advisory stages remain 
   assert.equal(acceptanceGate("supervisor-audit"), "supervision");
   assert.equal(acceptanceGate("implementationNotes"), null);
   for (const stage of ["orient", "plan", "document"]) assert.equal(acceptanceGate(stage), null);
+});
+
+test("canonical verification and packaging stage IDs enforce missing governed gate evidence", async () => {
+  const frozen = fixture();
+  const client = { query: async () => ({ rows: [{ projectId: "project", task: "task", metadata: { acceptanceContract: frozen } }] }) } as unknown as Parameters<typeof storedAcceptanceDecision>[0];
+  for (const [stage, expected] of [["verification", "verification"], ["verification-source", "verification"],
+    ["packaging", "packaging"], ["packaging_source", "packaging"]] as const) {
+    const gate = acceptanceGate(stage);
+    assert.equal(gate, expected);
+    assert.match((await storedAcceptanceDecision(client, "run", gate!, { acceptanceContract: frozen })).reason!, /lacks/u,
+      `${stage} cannot complete from narrative success without its governed receipts`);
+  }
+  for (const stage of ["verificationNotes", "packagingNotes", "document-packaging"]) assert.equal(acceptanceGate(stage), null);
 });
 
 test("frozen acceptance requirements cannot be removed or changed by the provider", () => {
@@ -128,4 +164,58 @@ test("only frozen advisory criteria warn or inform; required criteria and invali
   assert.notEqual((await structuredAcceptanceDecision(contract, "verification", async () => null)).reason, null);
   contract.deliverables[0].status = "pending";
   assert.notEqual((await structuredAcceptanceDecision(contract, "verification", async () => null)).reason, null);
+});
+
+test("production supersession requires equivalent accepted completion before emitting a receipt", async () => {
+  const { default: pg } = await import("pg");
+  const { supersedeWorkflowRun } = await import("./run-supersession.js");
+  const sourceId = "00000000-0000-4000-8000-000000000001";
+  const replacementId = "00000000-0000-4000-8000-000000000002";
+  const originalConnect = pg.Pool.prototype.connect;
+  try {
+    for (const scenario of ["queued", "running", "failed", "blocked", "foreign", "task", "requirements", "unverified", "unfinished", "accepted"]) {
+      const contract = { ...fixture(), originRunId: replacementId };
+      const content = { commandLine: "npm test", exitCode: 0, timedOut: false, subjectHash: contract.subjectHash };
+      const reference = { artifactUri: "db://synthetic/supersession-check", runId: replacementId, taskId: "verifier", stageId: "verify", kind: "command_output" as const,
+        contentHash: acceptanceDigest(content), observedAt: "2026-01-01T00:00:00.000Z", subjectHash: contract.subjectHash };
+      for (const gate of contract.deliverables[0].requiredGates) contract.deliverables[0].receipts[gate] = [reference];
+      const sourceContract = { ...structuredClone(contract), originRunId: sourceId };
+      if (scenario === "requirements") sourceContract.deliverables[0].description = "Different required work";
+      const source = { id: sourceId, projectId: "project", workflowId: "build-feature", task: "task", status: "blocked", contract: sourceContract };
+      const replacement = { ...source, id: replacementId, contract, status: ["queued", "running", "failed", "blocked"].includes(scenario) ? scenario : "completed",
+        projectId: scenario === "foreign" ? "foreign" : "project", task: scenario === "task" ? "Different task" : "task" };
+      const before = JSON.stringify([source, replacement]);
+      const receipts: unknown[][] = [];
+      const transaction: string[] = [];
+      const query = async (sql: string, args: unknown[] = []) => {
+        if (["begin", "commit", "rollback"].includes(sql)) transaction.push(sql);
+        if (sql.includes("where id=any")) return { rows: [source, replacement] };
+        if (sql.includes("as ready")) return { rows: [{ ready: scenario !== "unfinished" }] };
+        if (sql.includes("select a.content")) return { rows: [{ content: { acceptanceContract: contract } }] };
+        if (sql.includes("evaluation_metadata as metadata")&&sql.includes("from workflow_runs")) return { rows: [{ projectId: "project", task: "task", metadata: { acceptanceContract: contract } }] };
+        if (sql.includes("select a.run_id")) return { rows: scenario === "unverified" ? [] : [{ runId: replacementId, taskId: "verifier", stageId: "verify", projectId: "project", kind: "command_output", content, observedAt: reference.observedAt }] };
+        if (sql.includes("select uri from artifacts")) return { rows: [{ uri: reference.artifactUri }] };
+        if (sql.includes("INSERT INTO run_notifications")) {
+          assert.equal(args[0], sourceId, "Supersession notification belongs to the preserved source run");
+          return { rows: [{ id: sourceId }], rowCount: 1 };
+        }
+        if (sql.includes("select wr.id::text")) return { rows: [{ id: sourceId }] };
+        if (sql.includes("select id from workflow_runs")) return { rows: [{ id: sourceId }] };
+        if (sql.includes("insert into action_receipts")) receipts.push(args);
+        return { rows: [], rowCount: 0 };
+      };
+      pg.Pool.prototype.connect = (async () => ({ query, release() {} })) as unknown as typeof originalConnect;
+      const accepted = scenario === "accepted";
+      assert.equal(await supersedeWorkflowRun({ runId: sourceId, supersededBy: replacementId, actor: "synthetic-reviewer", reason: "Synthetic independent acceptance" }), accepted, scenario);
+      assert.equal(receipts.length, accepted ? 1 : 0, scenario);
+      assert.equal(transaction.at(-1), accepted ? "commit" : "rollback", scenario);
+      assert.equal(JSON.stringify([source, replacement]), before, "Canonical history inputs remain unchanged");
+      if (accepted) {
+        assert.equal(receipts[0][2], "failed_run_superseded");
+        assert.equal(JSON.parse(String(receipts[0][5])).supersededBy, replacementId);
+      }
+    }
+  } finally {
+    pg.Pool.prototype.connect = originalConnect;
+  }
 });

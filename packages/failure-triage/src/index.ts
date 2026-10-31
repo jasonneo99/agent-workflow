@@ -25,7 +25,7 @@ function normalizedProvider(evidence: FailureTriageEvidence, text: string): stri
   if (evidence.providerId) return evidence.providerId;
   const route = evidence.receipts.find((receipt) => receipt.actionType === "model_route_failed");
   if (route?.target && route.target !== "unknown") return route.target;
-  const match = text.match(/\b(openai|anthropic|codex-cli|bedrock|kiro|local|byo|openai-compatible|mock)\b/i);
+  const match = text.match(/\b(openai|anthropic|deepseek|codex-cli|bedrock|kiro|local|byo|openai-compatible|mock)\b/i);
   return match?.[1]?.toLowerCase() ?? null;
 }
 

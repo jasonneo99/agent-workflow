@@ -1,13 +1,14 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { canonicalProjectRegistrations } from "./project-identity.js";
 import { logicalProjectIdentityKeys, projectIdentityVisibility, type ProjectIdentityInput } from "./project-identity.js";
 
-test("immutable release registrations group under one available mutable project", () => {
+test("unreviewed release registrations do not merge by matching project name", () => {
   const local = { project: { name: "agent-workflow", rootUri: "/Users/example/Projects/Agent Workflow" }, resolution: { storageRootUri: "/Users/example/Projects/Agent Workflow", localRootUri: "/Users/example/Projects/Agent Workflow", localPathExists: true } };
   const release = { project: { name: "agent-workflow", rootUri: "/home/example/releases/agent-workflow/deadbeef" }, resolution: { storageRootUri: "/home/example/releases/agent-workflow/deadbeef", localRootUri: "/home/example/releases/agent-workflow/deadbeef", localPathExists: false } };
   const keys = logicalProjectIdentityKeys([local, release] satisfies ProjectIdentityInput[]);
   assert.equal(keys.get(local), local.project.rootUri);
-  assert.equal(keys.get(release), local.project.rootUri);
+  assert.equal(keys.get(release), release.project.rootUri);
 });
 
 test("same-name mutable projects stay separate when identity is ambiguous", () => {
@@ -18,13 +19,13 @@ test("same-name mutable projects stay separate when identity is ambiguous", () =
   assert.equal(keys.get(release), release.project.rootUri);
 });
 
-test("worktrees and vendored mirrors group under one canonical mutable project", () => {
+test("unreviewed worktrees and vendor locations require actual identity binding", () => {
   const canonical = { project: { name: "product", rootUri: "/Users/example/Projects/product" }, resolution: { storageRootUri: "/Users/example/Projects/product", localRootUri: "/Users/example/Projects/product", localPathExists: true } };
   const worktree = { project: { name: "product", rootUri: "/Users/example/.codex/worktrees/abcd/product" }, resolution: { storageRootUri: "/Users/example/.codex/worktrees/abcd/product", localRootUri: "/Users/example/.codex/worktrees/abcd/product", localPathExists: true } };
   const vendored = { project: { name: "product", rootUri: "/Users/example/Projects/deployment-config/vendor/product" }, resolution: { storageRootUri: "/Users/example/Projects/deployment-config/vendor/product", localRootUri: "/Users/example/Projects/deployment-config/vendor/product", localPathExists: true } };
   const keys = logicalProjectIdentityKeys([canonical, worktree, vendored] satisfies ProjectIdentityInput[]);
-  assert.equal(keys.get(worktree), canonical.project.rootUri);
-  assert.equal(keys.get(vendored), canonical.project.rootUri);
+  assert.equal(keys.get(worktree), worktree.project.rootUri);
+  assert.equal(keys.get(vendored), vendored.project.rootUri);
 });
 
 test("temporary, template, and unavailable roots are supporting identities", () => {
@@ -32,4 +33,15 @@ test("temporary, template, and unavailable roots are supporting identities", () 
   assert.equal(projectIdentityVisibility("/Users/example/Projects/agent-workflow/templates/project", true), "supporting");
   assert.equal(projectIdentityVisibility("/home/example/Projects/remote-only", false), "supporting");
   assert.equal(projectIdentityVisibility("/Users/example/Projects/product", true), "canonical");
+});
+
+test("reviewed identity links override name/path guesses without merging scopes",()=>{
+  const primary={project:{name:"product",rootUri:"/one",identityId:"stable",identityRootUri:"/one"},resolution:{storageRootUri:"/one",localRootUri:"/one",localPathExists:true}};
+  const clone={project:{name:"renamed-checkout",rootUri:"/two",identityId:"stable",identityRootUri:"/one"},resolution:{storageRootUri:"/two",localRootUri:"/two",localPathExists:true}};
+  const independent={project:{name:"product",rootUri:"/three",identityId:"other",identityRootUri:"/three"},resolution:{storageRootUri:"/three",localRootUri:"/three",localPathExists:true}};
+  const keys=logicalProjectIdentityKeys([primary,clone,independent]);
+  assert.equal(keys.get(clone),"/one");assert.equal(keys.get(independent),"/three");
+  const rows=[{id:"stable",identityId:"stable",locationKind:"canonical"},{id:"scope",identityId:"stable",locationKind:"checkout"},{id:"mirror",identityId:"mirror",locationKind:"vendor"},{id:"other",identityId:"other",locationKind:"canonical"}];
+  assert.deepEqual(canonicalProjectRegistrations(rows).map(p=>p.id),["stable","other"]);
+  assert.equal(rows[1].id,"scope");
 });

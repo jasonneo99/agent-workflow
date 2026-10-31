@@ -60,6 +60,21 @@ test("R2 actual worker orders governed writes and refreshes failed command evide
         ? () => { throw new Error(`Unmocked storage boundary: ${name}`); } : value])) : original;
     t.mock.module(url, { namedExports: { ...defaults, ...overrides } });
   };
+  await replace("../../storage/src/client.js", {
+    withClient: async (operation: (client: any) => unknown) => operation({
+      query: async (sql: string, args: unknown[]) => {
+        assert.match(sql, /from artifacts a/u);
+        assert.match(sql, /join workflow_tasks wt/u);
+        assert.deepEqual(args, [task.runId]);
+        return { rows: [...artifacts.values()].reverse().filter(row => row.kind === "file_write").map(row => {
+          const claim = claims.get(row.content.idempotencyKey);
+          return { runId: row.runId, taskId: row.taskId, stageId: row.stageId,
+            kind: row.kind, uri: row.uri, content: row.content,
+            status: claim?.status ?? null, operation: "file_write", receipt: claim?.receipt ?? null };
+        }) };
+      }
+    })
+  });
   await replace("../../storage/src/postgres.js", {
     claimNextWorkflowTask: async () => task, startWorkflowTask: async () => {},
     assertWorkflowTaskLease: async (input: any) => {
@@ -73,7 +88,9 @@ test("R2 actual worker orders governed writes and refreshes failed command evide
     recordRunAction: async (action: any) => {
       const uri = `db://synthetic-r2/${artifacts.size}`;
       const row = { uri, runId: task.runId, taskId: task.taskId, stageId: task.stageId,
-        kind: action.artifactKind, actionType: action.actionType, content: action.artifactContent, idempotencyKey: action.idempotencyKey };
+        kind: action.artifactKind, actionType: action.actionType,
+        content: { ...action.artifactContent, ...(action.idempotencyKey ? { idempotencyKey: action.idempotencyKey } : {}) },
+        idempotencyKey: action.idempotencyKey };
       artifacts.set(uri, row);
       if (action.idempotencyKey) receipts.set(action.idempotencyKey, row);
       return uri;
@@ -132,6 +149,15 @@ test("R2 actual worker orders governed writes and refreshes failed command evide
       }, attempts: [], actualProvider: "mock", actualModel: "mock", fallbackUsed: false };
     }
   });
+  let recoveryReads = 0;
+  await replace("./recovery-evidence.js", {
+    recoveryEvidence: async (runId: string, projectRootUri: string) => {
+      assert.equal(runId, task.runId);
+      assert.equal(projectRootUri, task.projectRootUri);
+      recoveryReads++;
+      return ""; // Synthetic dependency scenarios have no stored ancestry.
+    }
+  });
   const { runWorkerOnce } = await import("./executor.js");
   let result = await runWorkerOnce(1, { recoverExpiredLeases: false });
   if (scenario === "restart") {
@@ -152,6 +178,7 @@ test("R2 actual worker orders governed writes and refreshes failed command evide
     writes: writes.map((row) => ({ uri: row.uri, nextHash: row.content.nextHash })),
     reuses: reuses.map((row) => row.content), failed, blockedReason: blocked?.reason, checkpointRound: checkpoint?.round }));
   assert.equal(failed, undefined, "Fixture setup/runtime failure is not expected R2 assertion evidence");
+  assert.ok(recoveryReads > 0, "Worker reads recovery context through the scoped fixture boundary");
   assert.ok(leaseChecks > 0, "Actual worker checks fencing authority");
   if (scenario === "rejected-write") {
     assert.equal(writes.length, 0);

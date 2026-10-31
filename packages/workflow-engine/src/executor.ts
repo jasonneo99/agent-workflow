@@ -1,28 +1,33 @@
 import path from "node:path";
-import { reconstructRunWriteFootprint } from "./continuation-ownership.js";
+import { inspectStageWritePostimages, reconstructRunWriteFootprint } from "./continuation-ownership.js";
 import { acceptanceGate } from "../../storage/src/acceptance.js";
 import { getWorkflowAcceptanceDecision } from "../../storage/src/postgres.js";
 import { commandEvidencePacket } from "../../storage/src/command-evidence.js";
+import { recoveryEvidence } from "./recovery-evidence.js";
 import { sourceSubjectHash } from "./source-subject.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
-import { continuationBackoff, continuationResumeReceipt, pendingEvidenceReason } from "./action-result-continuation.js";
+import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
+import { assertRepairCommitEnabled, createRepairCheckpoint, repairChangedFiles, repairCommitBaseline, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
-import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation } from "../../local-tools/src/file-patcher.js";
+import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation, oversizedReplacementPatchHint } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
 import { commandDelta, commandFailureDelta, fileReadDelta, type StateDelta } from "../../model-providers/src/state-deltas.js";
 import { classifyProviderFailure, executeWithProviderFallback, providerFallbackPolicyFromEnv, ProviderExecutionError, providerFromEnv, type ProviderFallbackAttempt } from "../../model-providers/src/index.js";
-import { retainedVerificationEvidence, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason } from "../../model-providers/src/quality.js";
+import { retainedVerificationEvidence, scoreStageOutput, unfulfilledCompletionReason, verificationCompletionReason, type RuntimeCompletionEvidence } from "../../model-providers/src/quality.js";
+import {legacyNoChangeSourceBinding,verifyLegacyNoChangeRecovery} from './legacy-no-change-proof.js';
 import { selectModelRoute } from "../../model-providers/src/routing.js";
 import { buildMemoryContextForStage, recordStageMemoryGraph } from "./memory-graph-wiring.js";
 import type { StageExecutionInput, StageExecutionOutput } from "../../model-providers/src/types.js";
 import { searchProjectFileIndex } from "../../storage/src/project-index.js";
 import { buildModelRouteReceiptContent } from "./model-route-receipt.js";
 import { recordDirectProviderUsage } from "./fleet-usage.js";
+import { providerWithInfluence, stageContextInfluence } from "./context-influence.js";
+import { promptPersonalizationRequirementsHash, selectPromptPersonalization } from "../../learning-loop/src/runtime.js";
 import { actionIdempotencyKey, buildBoundedReactLoopReceiptContent } from "./action-receipts.js";
 import { fileWriteRejectionRecovered, isRecoverableFileMutationFailure, prepareRejectedPatchRetry } from "./file-mutation-retry.js";
 export { isRecoverableFileMutationFailure } from "./file-mutation-retry.js";
@@ -55,7 +60,7 @@ import {
   type ClaimedWorkflowTask
 } from "../../storage/src/postgres.js";
 import { createRenewingStageAuthority } from "./stage-authority.js";
-import { attributeVerifyCommandFailure, commandFailureEligibleForVerifyRetry, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, fileMutationRetryBudgetFromEnv, formatCommandFailureEvidence, npmPreflightDiagnostic, snapshotGitStatus, truncateCommandOutputForError, verifyRetryBudgetFromEnv } from "./command-failure.js";
+import { attributeVerifyCommandFailure, commandFailureEligibleForVerifyRetry, commandFailureIsDiagnosticEvidence, commandFailurePrecedesGovernedWrites, commandOutputEvidence, fileMutationRetryBudgetFromEnv, formatCommandFailureEvidence, npmPreflightDiagnostic, snapshotGitStatus, truncateCommandOutputForError, verifyRetryBudgetFromEnv } from "./command-failure.js";
 export * from "./command-failure.js";
 import { createStageTelemetry, flushStageTelemetry } from "./stage-telemetry.js";
 import type { WorkerResult, WorkerRunOptions } from "./worker-types.js";
@@ -64,6 +69,11 @@ import { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } fr
 export { shouldContinuePlanningDeliverableGap, shouldRetryWeakFallbackBlock } from "./stage-outcome.js";
 import { runWorkerWatchLoop, type WorkerWatchInput } from "./worker-watch.js";
 import { applyCurrentAutoApprovalThreshold } from "./approval-threshold.js";
+import {applyGuideNudge,guideAssignment,guideStageInput,validateGuideNudge} from './guide-plane.js';
+import {defaultGuideBudget,executeGuideWithinBudget} from './guide-budget.js';
+import {recordQueuePartnerGuideCircuitOutcome,reserveQueuePartnerGuideCircuitAttempt} from '../../storage/src/queue-partner-guide-circuit.js';
+import {queuePartnerGuideActorReadiness} from '../../storage/src/queue-partner-guide-readiness.js';
+import {reconcileQueuePartnerGuideRegistryHold} from '../../storage/src/queue-partner-guide-holds.js';
 export { applyCurrentAutoApprovalThreshold } from "./approval-threshold.js";
 
 export class LostWorkflowTaskLeaseError extends Error {
@@ -125,7 +135,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
   const concurrency = Number.isFinite(requestedConcurrency)
     ? Math.max(1, Math.min(safeLimit || 1, requestedConcurrency, 16))
     : 1;
-  if (options?.recoverExpiredLeases !== false) {
+  if (options?.runId === undefined && options?.recoverExpiredLeases !== false) {
     const workerId = options?.workerId?.trim() || "worker";
     await requeueExpiredWorkflowTaskLeases({
       projectRootUri: options?.projectRootUri,
@@ -198,8 +208,37 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         await assertWorkflowTaskLease({ taskId: task.taskId, workerId: task.workerId!, fencingToken: task.fencingToken });
       };
       const localProjectRootUri = projectResolution.localRootUri;
+      const stagePattern = normalizeStagePattern(task.stagePattern);
+      stageTelemetry = createStageTelemetry(task, stagePattern);
+      await assertLeaseOwned();
+      let sourcePostimages: Awaited<ReturnType<typeof inspectStageWritePostimages>>
+        | { runId: string; matches: false; evidenceUnavailable: true };
+      try {
+        sourcePostimages = await inspectStageWritePostimages({
+          runId: task.runId, cwd: localProjectRootUri, priorStageArtifacts: task.priorStageArtifacts
+        });
+      } catch {
+        sourcePostimages = { runId: task.runId, matches: false, evidenceUnavailable: true };
+      }
+      await assertLeaseOwned();
+      if (sourcePostimages && !sourcePostimages.matches) {
+        const reason = "evidenceUnavailable" in sourcePostimages
+          ? "Recorded write evidence is unavailable; this checkout cannot be verified before continuation."
+          : "This checkout does not match finalized same-run write evidence; source verification is required before continuation.";
+        await blockWorkflowTask({
+          taskId: task.taskId, runId: task.runId, agentId: task.agentId,
+          workerId: task.workerId!, fencingToken: task.fencingToken,
+          summary: reason, reason,
+          artifact: { outcome: "blocked", blockedReason: reason, sourcePostimages,
+            authority: "none", stageExecutionStarted: false }
+        });
+        stageTelemetry.end("blocked", reason);
+        result.failed += 1;
+        continue;
+      }
       const savedContinuation = await getArtifactByUri(`db://workflow_tasks/${task.taskId}/continuation`);
       const continuation = savedContinuation?.runId === task.runId && savedContinuation.taskId === task.taskId
+        && continuationMatchesExecutionContract(savedContinuation.content,task.acceptanceContract?.contractId)
         ? savedContinuation.content : {};
       const continuationRound = continuation.round === undefined ? 0 : continuation.round;
       if (typeof continuationRound !== "number" || !Number.isInteger(continuationRound) || continuationRound < 0 || continuationRound > 3) {
@@ -209,8 +248,25 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const snapshotProject = projectConfigSchema.parse(task.projectConfig);
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
       const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
-      const stagePattern = normalizeStagePattern(task.stagePattern);
-      stageTelemetry = createStageTelemetry(task, stagePattern);
+      const repairCommitSelected = project.execution.repair_commits?.enabled === true && project.execution.repair_commits.stages.includes(task.stageId);
+      let repairParent: string | null = null;
+      if (repairCommitSelected) {
+        const saved = actionResults.find(action => (action as { type?: string }).type === "repair_commit_baseline") as { parent?: string } | undefined;
+        try {
+          assertRepairCommitEnabled(project);
+          repairParent = await repairCommitBaseline(localProjectRootUri, saved?.parent);
+          if (!saved) {
+            await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "repair_commit_baseline", target: repairParent,
+              summary: "Pinned the clean repair parent before implementation; no commit or acceptance is claimed.", artifactKind: "repair_commit_baseline", artifactContent: { parent: repairParent } });
+            actionResults.push({ type: "repair_commit_baseline", parent: repairParent });
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          await blockWorkflowTask({ taskId: task.taskId, runId: task.runId, agentId: task.agentId, workerId: task.workerId!, fencingToken: task.fencingToken,
+            summary: reason, reason, artifact: { outcome: "blocked", blockedReason: reason, stageExecutionStarted: false } });
+          stageTelemetry.end("blocked", reason); result.failed += 1; continue;
+        }
+      }
       // Footprint-scoped verify attribution: snapshot the working tree before
       // the agent acts, so verify failures on pre-existing dirty state are not
       // blamed on the agent. Read-only; never touches the working tree.
@@ -227,7 +283,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       if (task.executorSnapshot) {
         const assertExecutorAuthority = await createRenewingStageAuthority({ projectId: task.projectRootUri, runId: task.runId, stageId: task.stageId, workflowId: task.workflowId, agentId: task.agentId, providerId: "executor", project, evidence: task.compiledBrief || task.stageGoal, leaseSeconds, assertLeaseOwned });
         await assertExecutorAuthority(true);
+        const executorInfluence = await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence", target: task.stageId,
+          summary: "Context and governed snapshot prepared for the bound executor; authority is checked separately.", artifactKind: "context_influence", idempotencyKey: randomUUID(),
+          artifactContent: { ...stageContextInfluence(stageInput), phase: "executor_input", stageId: task.stageId, executorSnapshotHash: task.executorSnapshot.snapshotHash, compiledBriefUri: `db://workflow_runs/${task.runId}/compiled-brief` } });
         await executeBoundExecutorStage(task, project, assertLeaseOwned);
+        await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "context_influence_result", target: executorInfluence,
+          summary: "Executor returned; consult its existing approval and output receipts for outcome.", artifactKind: "context_influence_result", idempotencyKey: randomUUID(),
+          artifactContent: { schemaVersion: 1, authority: "none", phase: "executor_returned", stageId: task.stageId, influenceReceiptUri: executorInfluence } });
         clearInterval(leaseHeartbeat);
         result.completed += 1;
         continue;
@@ -240,24 +302,152 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         stageGoal: task.stageGoal,
         taskLabel: task.workflowTask
       });
-      const routedStageInput = {
+      const stageFileReads = (Array.isArray(continuation.fileReads) ? [...continuation.fileReads] : []) as NonNullable<StageExecutionInput["fileReads"]>;
+      const stageStateDeltas = (Array.isArray(continuation.stateDeltas) ? [...continuation.stateDeltas] : []) as StateDelta[];
+      const seenReadPaths = new Set<string>();
+      let fileReadIteration = 0;
+      const fulfillFileReadRequests = async (readPaths: string[], totalRequestedActions: number): Promise<number> => {
+        const pendingReads = readPaths.filter((readPath) => {
+          const key = readPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+          if (!key || seenReadPaths.has(key)) return false;
+          seenReadPaths.add(key);
+          return true;
+        });
+        for (const readPath of pendingReads) {
+          await assertLeaseOwned();
+          fileReadIteration += 1;
+          const fileReadIdempotencyKey = actionIdempotencyKey({
+            taskId: task.taskId,
+            stageId: task.stageId,
+            agentId: task.agentId,
+            actionType: "file_read",
+            target: readPath,
+            payload: readPath,
+            normalizePayload: true
+          });
+          const readReceiptBase = {
+            task,
+            stagePattern,
+            iteration: fileReadIteration,
+            totalRequestedActions,
+            actionType: "file_read" as const,
+            target: readPath,
+            payloadHash: hashText(normalizeActionText(readPath))
+          };
+          try {
+            const readResult = await executeAllowedFileRead({ relativePath: readPath, cwd: localProjectRootUri, project });
+            const readArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "file_read",
+              target: readResult.relativePath,
+              summary: `Read ${readResult.bytesRead} bytes from \`${readResult.relativePath}\`${readResult.truncated ? " (truncated at policy max)" : ""}.`,
+              artifactKind: "file_read",
+              artifactContent: {
+                actionType: "file_read",
+                path: readResult.relativePath,
+                bytesRead: readResult.bytesRead,
+                truncated: readResult.truncated,
+                sha256: readResult.sha256,
+                lineRange: readResult.lineRange,
+                contentPreview: readResult.content.slice(0, 20000),
+                requestedByTaskId: task.taskId,
+                requestedByStageId: task.stageId
+              },
+              idempotencyKey: fileReadIdempotencyKey
+            });
+            stageFileReads.push({ path: readPath, content: readResult.content, truncated: readResult.truncated, sha256: readResult.sha256 });
+            stageStateDeltas.push(fileReadDelta({
+              path: readResult.relativePath,
+              bytesRead: readResult.bytesRead,
+              truncated: readResult.truncated,
+              sha256: readResult.sha256,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read", taskId: task.taskId, artifactUri: readArtifactUri }
+            }));
+            actionResults.push({ type: "file_read", path: readResult.relativePath, artifactUri: readArtifactUri,
+              bytesRead: readResult.bytesRead, truncated: readResult.truncated });
+            await recordBoundedReactLoopReceipt({
+              ...readReceiptBase,
+              policyDecision: { status: "allowed", approvalRequired: false, allowedByPolicy: true, policyProfile: project.execution.policy_profile },
+              resultReceipt: { status: "completed", artifactUri: readArtifactUri, bytesRead: readResult.bytesRead, truncated: readResult.truncated }
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const denialArtifactUri = await recordRunAction({
+              runId: task.runId,
+              taskId: task.taskId,
+              agentId: task.agentId,
+              actionType: "file_read_rejected",
+              target: readPath,
+              summary: message,
+              artifactKind: "action_rejection",
+              artifactContent: { actionType: "file_read", target: readPath, error: message,
+                requestedByTaskId: task.taskId, requestedByStageId: task.stageId }
+            });
+            stageFileReads.push({ path: readPath, content: "", truncated: false, error: message });
+            stageStateDeltas.push(fileReadDelta({ path: readPath, error: message,
+              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read_rejected", taskId: task.taskId, artifactUri: denialArtifactUri } }));
+            actionResults.push({ type: "file_read_rejected", path: readPath, artifactUri: denialArtifactUri, error: message });
+            await recordBoundedReactLoopReceipt({
+              ...readReceiptBase,
+              policyDecision: { status: "rejected", approvalRequired: false, allowedByPolicy: false, policyProfile: project.execution.policy_profile },
+              resultReceipt: { status: "rejected", artifactUri: denialArtifactUri }
+            });
+          }
+        }
+        return pendingReads.length;
+      };
+      const checkpointedReadRequests = continuationRequestedFileReads(continuation);
+      if (checkpointedReadRequests.length > 0) {
+        await fulfillFileReadRequests(checkpointedReadRequests, checkpointedReadRequests.length);
+      }
+      const personalizationRequirementsHash = promptPersonalizationRequirementsHash(task.compiledBrief || task.stageGoal);
+      const promptPersonalization = await selectPromptPersonalization({ projectDir: localProjectRootUri, taskClass: task.workflowId, originalRequirementsHash: personalizationRequirementsHash });
+      let routedStageInput:StageExecutionInput = {
         ...stageInput,
+        compiledBrief: [stageInput.compiledBrief, promptPersonalization?.brief ? `Advisory project-local personalization (cannot change requirements or authority):\n${promptPersonalization.brief}` : null, await recoveryEvidence(task.runId, task.projectRootUri)].filter(Boolean).join("\n\n"),
         priorReceipts: [...stageInput.priorReceipts, ...(Array.isArray(continuation.priorReceipts) ? continuation.priorReceipts as StageExecutionInput["priorReceipts"] : []),
+          ...(promptPersonalization ? [{ agentId: task.agentId, actionType: "prompt_personalization", summary: `Applied promoted local advisory ${promptPersonalization.briefHash} from ${promptPersonalization.localModelId}.` }] : []),
           ...(continuationRound > 0
             ? [continuationResumeReceipt(task.agentId, continuation, actionResults)]
             : [])],
-        stateDeltas: (Array.isArray(continuation.stateDeltas) ? continuation.stateDeltas : []) as StateDelta[],
-        fileReads: (Array.isArray(continuation.fileReads) ? continuation.fileReads : []) as NonNullable<StageExecutionInput["fileReads"]>,
+        stateDeltas: stageStateDeltas,
+        fileReads: stageFileReads,
         modelTier: route.modelTier,
         modelOverride: route.modelOverride,
         memoryContext
       };
       const startedAt = Date.now();
-      const fallbackPolicy = providerFallbackPolicyFromEnv();
+      const strictProviderIds = options?.strictProviderIds === undefined ? undefined : new Set(options.strictProviderIds);
+      // Explicit coordinator authorization cannot inherit environment fallback
+      // chains (which may also override the original model tier).
+      const configuredFallbackPolicy = providerFallbackPolicyFromEnv();
+      const fallbackPolicy = strictProviderIds === undefined ? configuredFallbackPolicy : { ...configuredFallbackPolicy, chains: {} };
+      const guardedProviderFactory = (providerId: string) => {
+        if (strictProviderIds !== undefined && !strictProviderIds.has(providerId)) {
+          throw new Error(`Provider ${providerId} is outside the worker's strict authorization`);
+        }
+        return providerWithInfluence(providerFromEnv(providerId));
+      };
+      let guideAssignmentForStage=options?.guidePlane?.enabled?(options.guidePlane.assignment??guideAssignment(task.runId,task.workflowId,options.guidePlane.sampleRate)):null;
+      if(guideAssignmentForStage){
+        const guideReadiness=await queuePartnerGuideActorReadiness(task.runId).catch(()=>({ready:false,reason:'guide-registry-unavailable' as const,expectedFingerprint:null,actualFingerprint:null,registryUpdatedAt:null,authority:'readiness-only' as const}));
+        if(!guideReadiness.ready){
+          await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'guide_registry_not_ready',target:'workflow-guide',summary:'Guide enrollment was skipped because the deployed actor registry is missing, stale, or unavailable; the primary stage continues unchanged.',artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,authority:'none',reason:guideReadiness.reason,expectedFingerprint:guideReadiness.expectedFingerprint,actualFingerprint:guideReadiness.actualFingerprint,registryUpdatedAt:guideReadiness.registryUpdatedAt},idempotencyKey:`guide-v1-registry-not-ready-${task.runId}-${guideReadiness.expectedFingerprint??'unavailable'}`}).catch(()=>undefined);
+          guideAssignmentForStage=null;
+        }else if(typeof guideReadiness.expectedFingerprint==='string'){
+          await reconcileQueuePartnerGuideRegistryHold({runId:task.runId,actorAgentId:task.agentId,expectedFingerprint:guideReadiness.expectedFingerprint}).catch(()=>undefined);
+        }
+      }
+      if(guideAssignmentForStage?.cohort==='unguided')await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:'guide_baseline',target:task.stageId,
+         summary:'Stage retained as an unguided comparison observation.',artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,authority:'none',cohort:guideAssignmentForStage.cohort,bucket:guideAssignmentForStage.bucket,sampleRate:guideAssignmentForStage.sampleRate},idempotencyKey:`guide-v1-baseline-${task.taskId}-${task.fencingToken}`}).catch(()=>undefined);
       let execution;
+      let primaryCallStartedAt=Date.now();
       try {
         await assertStageGuard(false);
-        execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: providerFromEnv });
+        await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'execution_progress',target:task.stageId,summary:'Agent call starting; detailed tool activity is not yet recorded.',artifactKind:'execution_progress',artifactContent:{operation:'agent',status:'started',requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
+        primaryCallStartedAt=Date.now();execution = await executeWithProviderFallback({ providerId: route.providerId, stageInput: routedStageInput, policy: fallbackPolicy, providerFactory: guardedProviderFactory });
       } catch (error) {
         const failure = classifyProviderFailure(error);
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: failure.attempts, latencyMs: Date.now() - startedAt }).catch(() => 0);
@@ -274,34 +464,69 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       await recordDirectProviderUsage({ stage: routedStageInput, attempts: execution.attempts, output: execution.output, latencyMs: Date.now() - startedAt }).catch(() => 0);
       let output = execution.output;
-      let quality = scoreStageOutput(routedStageInput, output);
+      let runtimeCompletionEvidence:RuntimeCompletionEvidence={};
+      const noChangeInput={runId:task.runId,taskId:task.taskId,workerId:task.workerId!,fencingToken:String(task.fencingToken),projectRootUri:localProjectRootUri};
+      const refreshCompletionEvidence=async()=>{
+        runtimeCompletionEvidence={};
+        if(!routedStageInput.acceptanceContract&&task.agentId==='implementation-agent'
+          &&await verifyLegacyNoChangeRecovery(noChangeInput))runtimeCompletionEvidence={verifiedNoChangeRecovery:true};
+      };
+      const scoreOutput=(candidate:StageExecutionOutput)=>scoreStageOutput(routedStageInput,candidate,runtimeCompletionEvidence);
+      const completionReason=(candidate:StageExecutionOutput)=>unfulfilledCompletionReason(routedStageInput,candidate,runtimeCompletionEvidence);
+      await refreshCompletionEvidence();
+      let quality = scoreOutput(output);
       let fallbackProviderId = execution.fallbackUsed ? execution.actualProvider : undefined;
       let actualProviderId = execution.actualProvider;
       let actualModel = execution.actualModel;
       let fallbackAttempts: ProviderFallbackAttempt[] = [...execution.attempts];
       let fallbackUsed = execution.fallbackUsed;
-      const qualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+      if(guideAssignmentForStage?.cohort==='guided')try{
+        await assertStageGuard(false);
+        const observationIds=['primary:outcome','primary:quality','primary:latency','primary:commands','primary:writes','primary:reads','policy:profile','evidence:verification'],verificationReceipts=routedStageInput.priorReceipts.filter(receipt=>/(?:verify|test|acceptance)/iu.test(receipt.actionType)).length,observedInput:StageExecutionInput={...routedStageInput,priorReceipts:[...routedStageInput.priorReceipts,{agentId:task.agentId,actionType:'guide_primary_observation',summary:`Outcome ${output.outcome??'unspecified'}; quality ${quality.score}; latency ${Date.now()-primaryCallStartedAt}ms; requested commands ${output.requestedCommands?.length??0}; writes ${output.requestedFileWrites?.length??0}; reads ${(output.requestedFileReads?.length??0)+(output.requestedFileSearches?.length??0)}; verification receipts ${verificationReceipts}; policy profile ${project.execution.policy_profile}.`}]};
+        const guideInput=guideStageInput(observedInput,observationIds),guideRoute=await selectModelRoute(guideInput,{allowedProviderIds:options?.providerIds}),guideStartedAt=Date.now();
+        const durableCircuit=await reserveQueuePartnerGuideCircuitAttempt({runId:task.runId,taskClass:task.workflowId,cooldownMs:defaultGuideBudget.cooldownMs,probeLeaseMs:defaultGuideBudget.timeoutMs*2});
+        if(!durableCircuit.allowed)await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:'guide_circuit_skipped',target:task.stageId,summary:`Guide ${durableCircuit.reason}; the primary stage continued unchanged.`,artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,authority:'none',cohort:'guided',budgetStatus:'skipped-circuit',reason:durableCircuit.reason,circuit:durableCircuit.state},idempotencyKey:`guide-v1-durable-skip-${task.taskId}-${task.fencingToken}`}).catch(()=>undefined);
+        else {
+        const probe=durableCircuit.reason==='bounded-recovery-probe';
+        const budgeted=await executeGuideWithinBudget({taskClass:task.workflowId,circuitKey:`${durableCircuit.projectId}:${task.workflowId}`,initialCircuit:{failures:probe?Math.max(0,defaultGuideBudget.failureThreshold-1):durableCircuit.state.failures,reason:durableCircuit.state.reason??undefined},execute:(abortSignal,maxOutputTokens)=>executeWithProviderFallback({providerId:guideRoute.providerId,stageInput:{...guideInput,abortSignal,maxOutputTokens},policy:{...fallbackPolicy,chains:{}},providerFactory:guardedProviderFactory})});
+        await recordQueuePartnerGuideCircuitOutcome({runId:task.runId,taskClass:task.workflowId,expectedGeneration:durableCircuit.generation,probeToken:durableCircuit.probeToken,outcome:budgeted.status==='completed'?'success':'failure',reason:budgeted.reason,failureThreshold:defaultGuideBudget.failureThreshold,cooldownMs:defaultGuideBudget.cooldownMs}).catch(async error=>{await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:'guide_circuit_persistence_failed',target:task.stageId,summary:'Guide circuit persistence rejected stale or unavailable state; the primary stage continued unchanged.',artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,authority:'none',failureKind:error instanceof Error?error.message:'unknown'},idempotencyKey:`guide-v1-circuit-persistence-${task.taskId}-${task.fencingToken}`}).catch(()=>undefined);});
+        if(budgeted.status!=='completed')await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:budgeted.status==='skipped-circuit'?'guide_circuit_skipped':'guide_budget_exceeded',target:task.stageId,summary:`Guide ${budgeted.reason}; the primary stage continued unchanged.`,artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,authority:'none',cohort:'guided',budgetStatus:budgeted.status,reason:budgeted.reason,circuit:budgeted.circuit},idempotencyKey:`guide-v1-budget-${task.taskId}-${task.fencingToken}`}).catch(()=>undefined);
+        else {const guided=budgeted.value;await recordDirectProviderUsage({stage:guideInput,attempts:guided.attempts,output:guided.output,latencyMs:Date.now()-guideStartedAt}).catch(()=>0);
+        const nudge=validateGuideNudge(guided.output,observationIds);
+        await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:'guide_intervention',target:task.stageId,summary:nudge&&nudge.kind!=='none'?`Guide suggested ${nudge.kind} after observing the primary response.`:'Guide accepted the primary response without another nudge.',artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,phase:'primary-response',authority:'advisory-only',cohort:'guided',route:{providerId:guided.actualProvider,model:guided.actualModel},nudge},idempotencyKey:`guide-v1-primary-${task.taskId}-${task.fencingToken}`});
+        if(nudge&&nudge.kind!=='none'){
+          routedStageInput=applyGuideNudge(routedStageInput,nudge);await assertStageGuard(false);
+          const retry=await executeWithProviderFallback({providerId:route.providerId,stageInput:routedStageInput,policy:{...fallbackPolicy,chains:{},maxRetries:Math.max(1,fallbackPolicy.maxRetries)},providerFactory:guardedProviderFactory});
+          await recordDirectProviderUsage({stage:routedStageInput,attempts:retry.attempts,output:retry.output,latencyMs:Date.now()-guideStartedAt}).catch(()=>0);
+          fallbackAttempts=[...fallbackAttempts,...retry.attempts];output=retry.output;quality=scoreOutput(output);fallbackUsed=retry.fallbackUsed;actualProviderId=retry.actualProvider;actualModel=retry.actualModel;
+        }}}
+      }catch(error){
+        if(error instanceof LostWorkflowTaskLeaseError||isStaleLeaseError(error))throw error;
+        await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:'workflow-guide',actionType:'guide_intervention_failed',target:task.stageId,summary:'Post-response guide observation failed; the primary response continued unchanged.',artifactKind:'guide_intervention',artifactContent:{schemaVersion:1,phase:'primary-response',authority:'none',cohort:'guided',failureKind:classifyProviderFailure(error).kind},idempotencyKey:`guide-v1-primary-failed-${task.taskId}-${task.fencingToken}`}).catch(()=>undefined);
+      }
+      const configuredQualityFallbackProviderId = process.env.AGENTFLOW_FALLBACK_PROVIDER;
+      const qualityFallbackProviderId = strictProviderIds === undefined || (configuredQualityFallbackProviderId && strictProviderIds.has(configuredQualityFallbackProviderId)) ? configuredQualityFallbackProviderId : undefined;
 
-      const initialCompletionViolation = routedStageInput.acceptanceContract ? null : unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
+      const initialCompletionViolation = routedStageInput.acceptanceContract ? null : completionReason({ ...output, artifact: { ...output.artifact, actionResults } });
       if (initialCompletionViolation) {
         await assertStageGuard(false);
         const contractRetry = await executeWithProviderFallback({
           providerId: route.providerId,
           stageInput: { ...routedStageInput, priorReceipts: [...routedStageInput.priorReceipts, { agentId: task.agentId, actionType: "completion_contract_feedback", summary: initialCompletionViolation }] },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-          providerFactory: providerFromEnv
+          providerFactory: guardedProviderFactory
         });
         fallbackAttempts = [...fallbackAttempts, ...contractRetry.attempts];
         output = contractRetry.output;
-        quality = scoreStageOutput(routedStageInput, output);
+        quality = scoreOutput(output);
         fallbackUsed = false;
         fallbackProviderId = undefined;
         actualProviderId = contractRetry.actualProvider;
         actualModel = contractRetry.actualModel;
-        const repeatedViolation = unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults } });
+        const repeatedViolation = completionReason({ ...output, artifact: { ...output.artifact, actionResults } });
         if (repeatedViolation) {
           output = { ...output, outcome: "blocked", blockedReason: repeatedViolation };
-          quality = scoreStageOutput(routedStageInput, output);
+          quality = scoreOutput(output);
         }
       }
 
@@ -314,11 +539,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             providerId: route.providerId,
             stageInput: routedStageInput,
             policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-            providerFactory: providerFromEnv
+            providerFactory: guardedProviderFactory
           });
           fallbackAttempts = [...fallbackAttempts, ...primaryRetry.attempts];
           output = primaryRetry.output;
-          quality = scoreStageOutput(routedStageInput, output);
+          quality = scoreOutput(output);
           fallbackUsed = false;
           fallbackProviderId = undefined;
           actualProviderId = primaryRetry.actualProvider;
@@ -338,9 +563,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       if (!quality.passed && qualityFallbackProviderId && qualityFallbackProviderId !== actualProviderId) {
         try {
           await assertStageGuard(false);
-          const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: providerFromEnv });
+          const qualityExecution = await executeWithProviderFallback({ providerId: qualityFallbackProviderId, stageInput: routedStageInput, policy: { ...fallbackPolicy, chains: {} }, providerFactory: guardedProviderFactory });
           const fallbackOutput = qualityExecution.output;
-          const fallbackQuality = scoreStageOutput(routedStageInput, fallbackOutput);
+          const fallbackQuality = scoreOutput(fallbackOutput);
           await recordDirectProviderUsage({ stage: routedStageInput, attempts: qualityExecution.attempts, output: fallbackOutput, latencyMs: Date.now() - startedAt }).catch(() => 0);
           fallbackAttempts = [...fallbackAttempts, ...qualityExecution.attempts];
           if (fallbackQuality.score >= quality.score) {
@@ -364,7 +589,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           summary: `${output.summary} Recorded as implementation scope rather than a workflow prerequisite.`,
           artifact: { ...output.artifact, planningDeliverableGapReclassifiedAsFinding: true }
         };
-        quality = scoreStageOutput(routedStageInput, output);
+        quality = scoreOutput(output);
       }
 
       // Bounded file-read rounds: give API-backed providers the source-inspection
@@ -372,12 +597,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       // executor reads them under the read-path policy, and the model is asked
       // again with the contents in context. Reads are informational: a denied
       // or missing file is reported back, never a stage blocker.
-      const stageFileReads = [...routedStageInput.fileReads];
-      const stageStateDeltas: StateDelta[] = [...routedStageInput.stateDeltas];
-      const seenReadPaths = new Set<string>();
       const seenSearches = new Set<string>();
       const maxReadRounds = Math.min(Math.max(stagePattern.maxIterations ?? 5, 1), 10);
-      let fileReadIteration = 0;
       const countRequestedActions = (out: typeof output): number =>
         (out.requestedCommands?.length ?? 0) + (out.requestedFileWrites?.length ?? 0) + (out.requestedFileReads?.length ?? 0) + (out.requestedFileSearches?.length ?? 0);
       let readRounds = 0;
@@ -391,9 +612,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         }).slice(0, 4);
         const pendingReads = (output.requestedFileReads ?? []).filter((readPath) => {
           const key = readPath.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-          if (!key || seenReadPaths.has(key)) return false;
-          seenReadPaths.add(key);
-          return true;
+          return Boolean(key) && !seenReadPaths.has(key);
         });
         if (pendingReads.length === 0 && pendingSearches.length === 0) break;
         readRounds += 1;
@@ -422,147 +641,25 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           stageFileReads.push({ path: `search:${query}`, content, truncated });
           actionResults.push({ type: "file_search", query, matches, artifactUri });
         }
-        for (const readPath of pendingReads) {
-          await assertLeaseOwned();
-          fileReadIteration += 1;
-          const fileReadIdempotencyKey = actionIdempotencyKey({
-            taskId: task.taskId,
-            stageId: task.stageId,
-            agentId: task.agentId,
-            actionType: "file_read",
-            target: readPath,
-            payload: readPath,
-            normalizePayload: true
-          });
-          const readReceiptBase = {
-            task,
-            stagePattern,
-            iteration: fileReadIteration,
-            totalRequestedActions: countRequestedActions(output),
-            actionType: "file_read" as const,
-            target: readPath,
-            payloadHash: hashText(normalizeActionText(readPath))
-          };
-          try {
-            const readResult = await executeAllowedFileRead({
-              relativePath: readPath,
-              cwd: localProjectRootUri,
-              project
-            });
-            const readArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_read",
-              target: readResult.relativePath,
-              summary: `Read ${readResult.bytesRead} bytes from \`${readResult.relativePath}\`${readResult.truncated ? " (truncated at policy max)" : ""}.`,
-              artifactKind: "file_read",
-              artifactContent: {
-                actionType: "file_read",
-                path: readResult.relativePath,
-                bytesRead: readResult.bytesRead,
-                truncated: readResult.truncated,
-                sha256: readResult.sha256,
-                lineRange: readResult.lineRange,
-                contentPreview: readResult.content.slice(0, 20000),
-                requestedByTaskId: task.taskId,
-                requestedByStageId: task.stageId
-              },
-              idempotencyKey: fileReadIdempotencyKey
-            });
-            stageFileReads.push({
-              path: readPath,
-              content: readResult.content,
-              truncated: readResult.truncated,
-              sha256: readResult.sha256
-            });
-            stageStateDeltas.push(fileReadDelta({
-              path: readResult.relativePath,
-              bytesRead: readResult.bytesRead,
-              truncated: readResult.truncated,
-              sha256: readResult.sha256,
-              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read", taskId: task.taskId, artifactUri: readArtifactUri }
-            }));
-            actionResults.push({
-              type: "file_read",
-              path: readResult.relativePath,
-              artifactUri: readArtifactUri,
-              bytesRead: readResult.bytesRead,
-              truncated: readResult.truncated
-            });
-            await recordBoundedReactLoopReceipt({
-              ...readReceiptBase,
-              policyDecision: {
-                status: "allowed",
-                approvalRequired: false,
-                allowedByPolicy: true,
-                policyProfile: project.execution.policy_profile
-              },
-              resultReceipt: {
-                status: "completed",
-                artifactUri: readArtifactUri,
-                bytesRead: readResult.bytesRead,
-                truncated: readResult.truncated
-              }
-            });
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            const denialArtifactUri = await recordRunAction({
-              runId: task.runId,
-              taskId: task.taskId,
-              agentId: task.agentId,
-              actionType: "file_read_rejected",
-              target: readPath,
-              summary: message,
-              artifactKind: "action_rejection",
-              artifactContent: {
-                actionType: "file_read",
-                target: readPath,
-                error: message,
-                requestedByTaskId: task.taskId,
-                requestedByStageId: task.stageId
-              }
-            });
-            stageFileReads.push({ path: readPath, content: "", truncated: false, error: message });
-            stageStateDeltas.push(fileReadDelta({
-              path: readPath,
-              error: message,
-              provenance: { stageId: task.stageId, agentId: task.agentId, actionType: "file_read_rejected", taskId: task.taskId, artifactUri: denialArtifactUri }
-            }));
-            actionResults.push({
-              type: "file_read_rejected",
-              path: readPath,
-              artifactUri: denialArtifactUri,
-              error: message
-            });
-            await recordBoundedReactLoopReceipt({
-              ...readReceiptBase,
-              policyDecision: {
-                status: "rejected",
-                approvalRequired: false,
-                allowedByPolicy: false,
-                policyProfile: project.execution.policy_profile
-              },
-              resultReceipt: {
-                status: "rejected",
-                artifactUri: denialArtifactUri
-              }
-            });
-          }
-        }
+        await fulfillFileReadRequests(pendingReads, countRequestedActions(output));
         await assertLeaseOwned();
         await assertStageGuard(false);
+        const readActionState=readRoundActionStateReceipt(task.agentId,output);
+        if(readActionState)await recordRunAction({runId:task.runId,agentId:task.agentId,actionType:readActionState.actionType,
+          target:task.stageId,summary:readActionState.summary,artifactKind:'action_request_state',
+          artifactContent:{readRound:readRounds,summary:readActionState.summary}});
         const readRoundStartedAt = Date.now();
         const reread = await executeWithProviderFallback({
           providerId: route.providerId,
-          stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
+          stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas,
+            ...(readActionState?{priorReceipts:[...routedStageInput.priorReceipts,readActionState]}:{}) },
           policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-          providerFactory: providerFromEnv
+          providerFactory: guardedProviderFactory
         });
         await recordDirectProviderUsage({ stage: routedStageInput, attempts: reread.attempts, output: reread.output, latencyMs: Date.now() - readRoundStartedAt }).catch(() => 0);
         fallbackAttempts = [...fallbackAttempts, ...reread.attempts];
         output = reread.output;
-        quality = scoreStageOutput(routedStageInput, output);
+        quality = scoreOutput(output);
         fallbackUsed = false;
         fallbackProviderId = undefined;
         actualProviderId = reread.actualProvider;
@@ -626,6 +723,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const verifyRetryBudget = verifyRetryBudgetFromEnv();
       let verifyRetriesRemaining = verifyRetryBudget;
       let successfulFollowupsRemaining = Math.min(Math.max(stagePattern.maxIterations ?? 4, 3), 6);
+      // Reuse performs no action, but its observation still needs consumption.
+      // Keep a separate finite budget so it cannot rerun work or reset retries.
+      let reusedObservationFollowupsRemaining = Math.min(Math.max(stagePattern.maxIterations ?? 4, 1), 3);
       let mutationRetriesRemaining = fileMutationRetryBudgetFromEnv();
       let verifyRetryRound = 0;
       if (typeof continuation.verifyRetryRound === "number" && Number.isInteger(continuation.verifyRetryRound)
@@ -654,21 +754,14 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         if (deferredCommands.length) output = { ...output, requestedCommands: [] };
         for (const commandLine of output.requestedCommands ?? []) {
           await assertLeaseOwned();
-          const sourcePaths = stageInput.acceptanceContract?.sourcePaths;
+          const legacyBinding=!stageInput.acceptanceContract&&task.agentId==='implementation-agent'
+            ?await legacyNoChangeSourceBinding(noChangeInput):null;
+          const sourcePaths = stageInput.acceptanceContract?.sourcePaths??legacyBinding?.sourcePaths;
           const sourceBefore = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths) : undefined;
           // Only verification commands receive a new evidence identity after
           // governed mutations. Arbitrary side effects retain their identity.
-          const verificationCommand = !/[;&|<>`$\n\r]/u.test(commandLine)
-            && /^(?:npm (?:test|run (?:test|check|typecheck|validate|build)(?:[-:\w]*))(?:\s|$)|node (?:--test |[\w./-]+\.test\.(?:cjs|mjs|js)$))/u.test(commandLine.trim());
-          const governedWrites = new Map<string, string>();
-          if (verificationCommand) for (const action of actionResults) {
-            if (!action || typeof action !== "object") continue;
-            const write = action as { type?: string; path?: string; nextHash?: string };
-            if ((write.type === "file_write" || write.type === "file_write_reused")
-              && write.path && write.nextHash) governedWrites.set(write.path, write.nextHash);
-          }
-          const writeSubject = governedWrites.size
-            ? hashText(JSON.stringify([...governedWrites].sort(([a], [b]) => a.localeCompare(b)))) : undefined;
+          const verificationCommand = isVerificationCommand(commandLine);
+          const writeSubject = verificationCommand ? verificationWriteSubject(actionResults) : undefined;
           reactIteration += 1;
           const commandIdempotencyKey = actionIdempotencyKey({
             taskId: task.taskId,
@@ -685,12 +778,19 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             idempotencyKey: commandIdempotencyKey
           });
           if (previousCommand) {
+            // Duplicate suppression must not discard the complete retained
+            // observation. Repair/debug stages need the same bounded,
+            // ownership-checked evidence packet as the original execution.
+            routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
+              agentId: task.agentId,
+              actionType: "command_evidence_packet",
+              summary: commandEvidencePacket([{ ...previousCommand, stageId: task.stageId }])
+            }];
             if (previousCommand.content.exitCode === 0 && previousCommand.content.timedOut === false) {
-              successfulCommandsThisRound += 1;
               routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
                 agentId: task.agentId,
                 actionType: "local_command_reused",
-                summary: `Command ${commandLine} succeeded. Evidence: ${previousCommand.uri}.\n${truncateCommandOutputForError(String(previousCommand.content.stdout || previousCommand.content.stderr || ""), 80, 4000)}`
+                summary: `Command ${commandLine} succeeded. Evidence: ${previousCommand.uri}.\n${truncateCommandOutputForError(commandOutputEvidence(String(previousCommand.content.stdout ?? ""), String(previousCommand.content.stderr ?? "")), 80, 4000)}`
               }];
             }
             const reuseArtifactUri = await recordRunAction({
@@ -715,7 +815,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               artifactUri: previousCommand.uri,
               exitCode: previousCommand.content.exitCode,
               timedOut: previousCommand.content.timedOut,
-              outputPreview: truncateCommandOutputForError(String(previousCommand.content.stdout || previousCommand.content.stderr || ""), 80, 4000),
+              outputPreview: truncateCommandOutputForError(commandOutputEvidence(String(previousCommand.content.stdout ?? ""), String(previousCommand.content.stderr ?? "")), 80, 4000),
               reuseArtifactUri
             });
             await recordBoundedReactLoopReceipt({
@@ -881,7 +981,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           try {
             if (sourcePaths && await sourceSubjectHash(localProjectRootUri, sourcePaths) !== sourceBefore) throw new Error("Acceptance source changed before command execution.");
             const serializationResource = commandSerializationResource(commandLine, localProjectRootUri);
-            const executeCommand = () => {
+            const executeCommand = async () => {
               // Fix 3 pre-flight: `npm run` without a package.json in the
               // resolved cwd fails with npm's ENOENT. Fail fast with a clear
               // diagnostic naming the cwd and the missing file instead.
@@ -899,7 +999,11 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 };
                 return Promise.resolve(preflightResult);
               }
-              return executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project });
+              await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'execution_progress',target:commandLine,summary:'Starting the governed command; no result or acceptance is claimed.',artifactKind:'execution_progress',artifactContent:{operation:'command',status:'started',requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
+              return executeAllowedCommand({ commandLine, cwd: localProjectRootUri, project,
+                environmentContext: { runId: task.runId, taskId: task.taskId, workflowId: task.workflowId, stageId: task.stageId },
+                assertEnvironmentAuthority: async () => { await assertLeaseOwned(); await assertStageGuard(true); }
+              });
             };
             commandResult = serializationResource
               ? await withProjectExecutionLock({ projectRootUri: task.projectRootUri, resource: serializationResource }, executeCommand)
@@ -973,7 +1077,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
           const summary = [
             `Command \`${commandResult.commandLine}\` exited with ${commandResult.exitCode}`,
-            commandResult.timedOut ? "after timing out" : `in ${commandResult.durationMs}ms`
+            commandResult.timedOut ? "after timing out" : `in ${commandResult.durationMs}ms`,
+            ...(commandResult.verificationRecipe?.status==='failed'?[`verification unproven: ${commandResult.verificationRecipe.reason}`]:[])
           ].join(" ");
           // Preserve the executed command receipt even if its source was removed or changed.
           const sourceAfter = sourcePaths ? await sourceSubjectHash(localProjectRootUri, sourcePaths).catch(() => null) : undefined;
@@ -996,39 +1101,49 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             idempotencyKey: commandIdempotencyKey
           });
           const commandFinalized = await finalizeSideEffect({ projectId: task.runId, idempotencyKey: commandIdempotencyKey, claimToken: commandSideEffect.claimToken, receipt: { artifactUri, exitCode: commandResult.exitCode, timedOut: commandResult.timedOut } });
-          if (stageInput.acceptanceContract) {
-            const stored = await getArtifactByUri(artifactUri);
-            if (stored?.runId === task.runId && stored.taskId === task.taskId) {
-              routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
-                agentId: task.agentId, actionType: "command_evidence_packet",
-                summary: commandEvidencePacket([{ ...stored, stageId: task.stageId }])
-              }];
-            }
+          // Every command consumer receives the complete retained observation
+          // when it is small enough and belongs to this exact run/task/stage.
+          // Acceptance contracts still use the same packet; they are not the
+          // only stages that need complete diagnostics after a failure.
+          const stored = await getArtifactByUri(artifactUri);
+          if (stored?.runId === task.runId && stored.taskId === task.taskId) {
+            routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
+              agentId: task.agentId, actionType: "command_evidence_packet",
+              summary: commandEvidencePacket([{ ...stored, stageId: task.stageId }])
+            }];
           }
           if (!commandFinalized) throw new Error(`Command side-effect claim could not be finalized for ${commandLine}.`);
+          if (commandResult.environment?.status === "blocked") {
+            verifyEnvironmentalBlock = { summary: "The run environment is not ready; execution remains held.",
+              reason: commandResult.environment.reason ?? "Run environment preparation failed.", files: [] };
+            actionResults.push({ type: "run_environment_blocked", commandLine, artifactUri, environment: commandResult.environment });
+            break verifyActionRounds;
+          }
           await dismissSupersededActionApprovals({ runId: task.runId, taskId: task.taskId, actionType: "local_command", target: commandLine, actor: task.workerId! });
           actionResults.push({
             commandLine,
             artifactUri,
             exitCode: commandResult.exitCode,
             timedOut: commandResult.timedOut,
-            outputPreview: truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000),
+            verificationRecipe:commandResult.verificationRecipe,
+            environment: commandResult.environment,
+            outputPreview: truncateCommandOutputForError(commandOutputEvidence(commandResult.stdout, commandResult.stderr), 80, 4000),
             acquiredWorkIntent: acquiredStageIntent(commandLine, commandResult.stdout, commandResult.exitCode, commandResult.timedOut),
             approvalRule: commandApprovalRule ?? undefined
           });
-          if (commandResult.exitCode === 0 && !commandResult.timedOut) {
+          if (commandResult.exitCode === 0 && !commandResult.timedOut && commandResult.verificationRecipe?.status!=='failed') {
             successfulCommandsThisRound += 1;
             // Keep successful observations in the provider's receipt context too:
             // folded state can replace older command facts during multi-step repair.
             routedStageInput.priorReceipts = [...routedStageInput.priorReceipts, {
               agentId: task.agentId,
               actionType: "local_command",
-              summary: `Command ${commandLine} succeeded. Evidence: ${artifactUri}.\n${truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000)}`
+              summary: `Command ${commandLine} succeeded. Evidence: ${artifactUri}.\n${truncateCommandOutputForError(commandOutputEvidence(commandResult.stdout, commandResult.stderr), 80, 4000)}`
             }];
             stageStateDeltas.push(commandDelta({
               command: commandLine,
               exitCode: commandResult.exitCode,
-              outputPreview: truncateCommandOutputForError(commandResult.stdout || commandResult.stderr, 80, 4000),
+              outputPreview: truncateCommandOutputForError(commandOutputEvidence(commandResult.stdout, commandResult.stderr), 80, 4000),
               provenance: {
                 stageId: task.stageId,
                 agentId: task.agentId,
@@ -1054,7 +1169,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               approvalRule: commandApprovalRule ?? undefined
             },
             resultReceipt: {
-              status: commandResult.exitCode === 0 && !commandResult.timedOut ? "completed" : "failed",
+              status: commandResult.exitCode === 0 && !commandResult.timedOut && commandResult.verificationRecipe?.status!=='failed' ? "completed" : "failed",
               artifactUri,
               exitCode: commandResult.exitCode,
               timedOut: commandResult.timedOut
@@ -1062,7 +1177,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           });
 
           if (
-            (commandResult.exitCode !== 0 || commandResult.timedOut)
+            (commandResult.exitCode !== 0 || commandResult.timedOut || commandResult.verificationRecipe?.status==='failed')
             && !commandFailureIsDiagnosticEvidence(stagePattern)
             && !commandFailurePrecedesGovernedWrites(stagePattern, output)
           ) {
@@ -1170,7 +1285,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 providerId: route.providerId,
                 stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
                 policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-                providerFactory: providerFromEnv
+                providerFactory: guardedProviderFactory
               });
               await recordDirectProviderUsage({
                 stage: routedStageInput,
@@ -1180,7 +1295,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               }).catch(() => 0);
               fallbackAttempts = [...fallbackAttempts, ...verifyRetry.attempts];
               output = verifyRetry.output;
-              quality = scoreStageOutput(routedStageInput, output);
+              quality = scoreOutput(output);
               actualProviderId = verifyRetry.actualProvider;
               actualModel = verifyRetry.actualModel;
               verifyRetryRequested = true;
@@ -1282,6 +1397,29 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                   requestedByStageId: task.stageId
                 }
               });
+              const patchHint = !isPatch ? oversizedReplacementPatchHint(fileWrite.path,filePayload,project) : null;
+              if(patchHint){
+                actionResults.push({type:'file_write_rejected',path:fileWrite.path,error:policyError,recoveryHint:patchHint,artifactUri:rejectionArtifactUri});
+                stageStateDeltas.push({op:'update',key:`file:${fileWrite.path}`,fact:patchHint,
+                  provenance:{stageId:task.stageId,agentId:task.agentId,actionType:'file_write',taskId:task.taskId,artifactUri:rejectionArtifactUri},assertedAt:new Date().toISOString()});
+                if(mutationRetriesRemaining>0){
+                  mutationRetriesRemaining-=1;
+                  const boundedPath=`${fileWrite.path}#L1-L100`;
+                  const fresh=await executeAllowedFileRead({relativePath:boundedPath,cwd:localProjectRootUri,project});
+                  stageFileReads.push({path:boundedPath,content:fresh.content,truncated:fresh.truncated,sha256:fresh.sha256});
+                  await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'file_write_patch_reroute',target:fileWrite.path,
+                    summary:'Oversized replacement refused; returning bounded context and full preimage hash for a policy-allowed surgical patch.',artifactKind:'file_write_retry',
+                    artifactContent:{rejectionArtifactUri,previousHash:fresh.sha256,readPath:boundedPath,retriesRemaining:mutationRetriesRemaining,policyUnchanged:true}});
+                  await assertLeaseOwned();await assertStageGuard(false);
+                  const rerouteStartedAt=Date.now();
+                  const reroute=await executeWithProviderFallback({providerId:route.providerId,stageInput:{...routedStageInput,fileReads:stageFileReads,stateDeltas:stageStateDeltas},policy:{...fallbackPolicy,chains:{},maxRetries:0},providerFactory:guardedProviderFactory});
+                  await recordDirectProviderUsage({stage:routedStageInput,attempts:reroute.attempts,output:reroute.output,latencyMs:Date.now()-rerouteStartedAt}).catch(()=>0);
+                  fallbackAttempts=[...fallbackAttempts,...reroute.attempts];output=reroute.output;quality=scoreOutput(output);actualProviderId=reroute.actualProvider;actualModel=reroute.actualModel;
+                  verifyRetryRequested=true;
+                  continue verifyActionRounds;
+                }
+                continue;
+              }
               const approval = await requestActionApproval({
                 runId: task.runId,
                 taskId: task.taskId,
@@ -1357,7 +1495,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                   bytes: actionBytes,
                   payloadHash: hashText(filePayload),
                   mode: isPatch ? "patch" : "replace",
-                  expectedHash
+                  expectedHash,
+                  canonicalProjectRoot: await fs.realpath(localProjectRootUri),
+                  projectRootHash: hashText(await fs.realpath(localProjectRootUri))
                 },
                 idempotencyKey: fileWriteIdempotencyKey
               });
@@ -1403,7 +1543,10 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           try {
             writeResult = await withProjectExecutionLock(
               { projectRootUri: task.projectRootUri, resource: `file:${fileWrite.path.replace(/\\/gu, "/")}` },
-              () => executeAllowedFileMutation({ request: fileWrite, payload: filePayload, isPatch, expectedHash, cwd: localProjectRootUri, project })
+              async () => {
+                await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,actionType:'execution_progress',target:fileWrite.path,summary:'Starting the governed file change; no successful write or acceptance is claimed.',artifactKind:'execution_progress',artifactContent:{operation:'file_write',status:'started',requestedByTaskId:task.taskId,requestedByStageId:task.stageId}});
+                return executeAllowedFileMutation({ request: fileWrite, payload: filePayload, isPatch, expectedHash, cwd: localProjectRootUri, project });
+              }
             );
           } catch (error) {
             const rejectionMessage = error instanceof Error ? error.message : String(error);
@@ -1460,12 +1603,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
                 providerId: route.providerId,
                 stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
                 policy: { ...fallbackPolicy, chains: {}, maxRetries: 0 },
-                providerFactory: providerFromEnv
+                providerFactory: guardedProviderFactory
               });
               await recordDirectProviderUsage({ stage: routedStageInput, attempts: retry.attempts, output: retry.output, latencyMs: Date.now() - retryStartedAt }).catch(() => 0);
               fallbackAttempts = [...fallbackAttempts, ...retry.attempts];
               output = retry.output;
-              quality = scoreStageOutput(routedStageInput, output);
+              quality = scoreOutput(output);
               actualProviderId = retry.actualProvider;
               actualModel = retry.actualModel;
               const replacementWriteRequested = (output.requestedFileWrites ?? []).some((candidate) => candidate.path === fileWrite.path);
@@ -1571,11 +1714,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           verifyRetryRequested = true;
           continue verifyActionRounds;
         }
+        await refreshCompletionEvidence();
         const acceptanceGap = routedStageInput.acceptanceContract ? null : (verificationCompletionReason(routedStageInput, actionResults)
-          ?? unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] }));
+          ?? completionReason({ ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] }));
         const successfulWritesThisRound = actionResults.slice(writeActionStart).filter((action) => {
           const result = action as { type?: string; artifactUri?: string };
-          return (result.type === "file_write" || result.type === "file_write_reused") && Boolean(result.artifactUri);
+          return result.type === "file_write" && Boolean(result.artifactUri);
         }).length;
         const successfulActionsThisRound = successfulCommandsThisRound + successfulWritesThisRound;
         // A follow-up call alone is not observation: carry committed writes and
@@ -1617,11 +1761,12 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             providerId: route.providerId,
             stageInput: { ...routedStageInput, fileReads: stageFileReads, stateDeltas: stageStateDeltas },
             policy: { ...fallbackPolicy, chains: {}, maxRetries: Math.max(1, fallbackPolicy.maxRetries) },
-            providerFactory: providerFromEnv
+            providerFactory: guardedProviderFactory
           });
           fallbackAttempts = [...fallbackAttempts, ...followup.attempts];
           output = followup.output;
-          quality = scoreStageOutput(routedStageInput, output);
+          await refreshCompletionEvidence();
+          quality = scoreOutput(output);
           actualProviderId = followup.actualProvider;
           actualModel = followup.actualModel;
           verifyRetryRequested = true;
@@ -1629,6 +1774,30 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         }
         if (successfulActionsThisRound > 0) {
           unconsumedSuccessfulActionResult = "The bounded action-result follow-up budget was exhausted before the provider consumed the final successful command receipt.";
+        } else {
+          const reusedObservationsThisRound = actionResults.slice(writeActionStart).some((action) => {
+            const reused=action as {type?:string;artifactUri?:string;exitCode?:number;timedOut?:boolean};
+            return Boolean(reused.artifactUri) && (reused.type==='file_write_reused'
+              || (reused.type==='local_command_reused'&&reused.exitCode===0&&reused.timedOut===false));
+          });
+          if (reusedObservationsThisRound && reusedObservationFollowupsRemaining > 0) {
+            reusedObservationFollowupsRemaining -= 1;
+            await recordRunAction({runId:task.runId,taskId:task.taskId,agentId:task.agentId,
+              actionType:'action_reuse_observation_followup',target:task.stageId,
+              summary:'Returning an existing action receipt for evaluation; no command or write was repeated.',
+              artifactKind:'command_followup',artifactContent:{remaining:reusedObservationFollowupsRemaining}});
+            await assertLeaseOwned();await assertStageGuard(false);
+            const observation=await executeWithProviderFallback({providerId:route.providerId,
+              stageInput:{...routedStageInput,fileReads:stageFileReads,stateDeltas:stageStateDeltas},
+              policy:{...fallbackPolicy,chains:{},maxRetries:Math.max(1,fallbackPolicy.maxRetries)},providerFactory:guardedProviderFactory});
+            fallbackAttempts=[...fallbackAttempts,...observation.attempts];output=observation.output;
+            await refreshCompletionEvidence();quality=scoreOutput(output);
+            actualProviderId=observation.actualProvider;actualModel=observation.actualModel;
+            verifyRetryRequested=true;continue verifyActionRounds;
+          }
+          if (reusedObservationsThisRound) {
+            unconsumedSuccessfulActionResult='The bounded reused-result observation budget was exhausted before the provider evaluated its requested receipt; checkpoint rather than complete or repeat the action.';
+          }
         }
       } while (verifyRetryRequested);
       if (verifyEnvironmentalBlock) {
@@ -1655,7 +1824,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       }
       // Source evidence needs the same durable, finite continuation as command
       // results. Exhausting one dispatch is not an unrecoverable task failure.
-      unconsumedSuccessfulActionResult ??= pendingEvidenceReason(output);
+      unconsumedSuccessfulActionResult ??= pendingEvidenceReason(output, stageFileReads);
       if (unconsumedSuccessfulActionResult) {
         if (continuationRound < 3) {
           const backoff = continuationBackoff(continuation, actionResults);
@@ -1666,7 +1835,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
             delaySeconds: backoff.delaySeconds,
             continuation: {
               ...backoff, verifyRetryRound,
-              version: 1, round: continuationRound + 1, actionResults,
+              version: 1, executionContractId:task.acceptanceContract?.contractId, round: continuationRound + 1, actionResults,
               pendingOutput: output,
               priorReceipts: routedStageInput.priorReceipts.slice(-40),
               stateDeltas: stageStateDeltas.slice(-80), fileReads: stageFileReads.slice(-20)
@@ -1736,12 +1905,13 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
       const typedGate = acceptanceGate(task.stageId);
+      await refreshCompletionEvidence();
       const typedDecision = routedStageInput.acceptanceContract && typedGate
         ? await getWorkflowAcceptanceDecision(task.runId, output.artifact, typedGate) : undefined;
       const verificationViolation = pendingEvidenceReason(output)
         ?? (routedStageInput.acceptanceContract
           ? (typedDecision?.mode === "legacy" ? "Enrolled acceptance contract is unavailable." : typedDecision?.reason ?? null)
-          : unfulfilledCompletionReason(routedStageInput, { ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })
+          : completionReason({ ...output, artifact: { ...output.artifact, actionResults }, requestedCommands: [], requestedFileWrites: [] })
             ?? verificationCompletionReason(routedStageInput, actionResults));
       if (verificationViolation) {
         await blockWorkflowTask({
@@ -1760,6 +1930,42 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         continue;
       }
       await assertLeaseOwned();
+      let repairCheckpoint: RepairCheckpoint | null = null;
+      let repairVerification: Awaited<ReturnType<typeof verifyRepairCheckpoint>> | null = null;
+      if (repairParent || (project.execution.repair_commits?.enabled && stagePattern.type === "verifier")) {
+        try {
+          const observations = actionResults as Array<{ environment?: { status?: string; receiptPath?: string | null }; verificationRecipe?: { status?: string } }>;
+          const evidence = [...observations].reverse().find(action => action.environment?.status === "ready" && action.environment.receiptPath && action.verificationRecipe?.status === "passed");
+          const changed = repairParent ? await repairChangedFiles(localProjectRootUri) : [];
+          if (repairParent && changed.length) {
+            const owned = await reconstructRunWriteFootprint(task.runId, localProjectRootUri);
+            if (changed.some(file => !owned.has(file))) throw Error("Dirty changes exceed this run's recorded write footprint; no repair commit was created.");
+            if (!evidence?.environment?.receiptPath) throw Error("Repair commits require a current source-bound environment test receipt.");
+            repairCheckpoint = await createRepairCheckpoint({ cwd: localProjectRootUri, project, runId: task.runId,
+              expectedParent: repairParent, files: changed, validationReceipt: path.relative(localProjectRootUri, evidence.environment.receiptPath).split(path.sep).join("/"),
+              execute: true, message: `Repair candidate: ${task.workflowId}/${task.stageId}`,
+              assertAuthority: async () => { await assertLeaseOwned(); await assertStageGuard(true); } });
+            await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "repair_commit_candidate", target: repairCheckpoint.commit!,
+              summary: "Committed the tested repair candidate; independent verification remains pending.", artifactKind: "repair_commit_candidate", artifactContent: { ...repairCheckpoint } });
+          }
+          if (stagePattern.type === "verifier") {
+            const candidate = [...task.priorStageArtifacts].reverse().find(stage => stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
+            if (candidate?.receiptPath) {
+              if (!evidence?.environment?.receiptPath) throw Error("The committed repair requires a fresh independent environment test receipt.");
+              repairVerification = await verifyRepairCheckpoint({ cwd: localProjectRootUri,
+                candidateReceipt: path.relative(localProjectRootUri, candidate.receiptPath).split(path.sep).join("/"),
+                validationReceipt: path.relative(localProjectRootUri, evidence.environment.receiptPath).split(path.sep).join("/") });
+              await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId, actionType: "repair_commit_source_verified", target: repairVerification.commit,
+                summary: "Independent verification checked the exact candidate source and environment; product acceptance stays separate.", artifactKind: "repair_commit_verification", artifactContent: { ...repairVerification } });
+            }
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          await blockWorkflowTask({ taskId: task.taskId, runId: task.runId, agentId: task.agentId, workerId: task.workerId!, fencingToken: task.fencingToken,
+            summary: reason, reason, artifact: { ...output.artifact, outcome: "blocked", blockedReason: reason, actionResults } });
+          stageTelemetry.end("blocked", reason); result.failed += 1; continue;
+        }
+      }
       for (const action of actionResults) {
         const intent = (action as { acquiredWorkIntent?: StageIntent }).acquiredWorkIntent;
         if (!intent) continue;
@@ -1794,6 +2000,8 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           },
           quality,
           verificationEvidence: retainedVerificationEvidence(routedStageInput, actionResults),
+          ...(repairCheckpoint ? { repairCheckpoint } : {}),
+          ...(repairVerification ? { repairVerification } : {}),
           actionResults
         }
       });

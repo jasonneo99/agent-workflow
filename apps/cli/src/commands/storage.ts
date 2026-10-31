@@ -17,8 +17,38 @@ import { parsePositiveInteger } from "../numeric-options.js";
 import { normalizeLookup } from "../reference-resolution.js";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { initializeProjectIdentities, listProjectIdentities, listProjectIdentityRuns, previewProjectIdentityPlan, applyProjectIdentityPlan, revertProjectIdentityEvent, type ProjectIdentityPlan, type IdentityAttachment } from "../../../../packages/storage/src/project-identity.js";
 
 export function registerStorageCommands(program: Command, ctx: CliContext): void {
+  program.command("project-identities")
+    .description("Stable logical projects and separately permission-scoped locations; never destructive alias merging")
+    .option("--initialize", "initialize additive identity registry (requires --write)")
+    .option("--target <id>", "exact canonical registration UUID")
+    .option("--runs <id>", "read run/repair history grouped under a stable identity, retaining original scopes")
+    .option("--attach <json>", "explicit JSON location list: [{projectId,kind}]")
+    .option("--plan <path>", "apply exact previously reviewed JSON preview (requires --write)")
+    .option("--revert <id>", "revert a reconciliation event (requires --write)")
+    .option("--write", "apply only the explicitly selected metadata change")
+    .option("--actor <name>", "operator performing a metadata write")
+    .option("--reason <text>", "reason recorded in append-only identity audit")
+    .action(async options => {
+      const mutations = [options.initialize,options.plan,options.revert].filter(Boolean);
+      if (mutations.length > 1 || (mutations.length && !options.write)) throw new Error("Choose exactly one mutation with --write; default is read-only.");
+      if (mutations.length && (!options.actor || !options.reason)) throw new Error("Registry writes require --actor and --reason.");
+      if (options.initialize) await initializeProjectIdentities(options.actor,options.reason);
+      if (options.plan) {
+        const raw = await fs.readFile(options.plan,"utf8");
+        if (Buffer.byteLength(raw)>100000) throw new Error("Identity plan exceeds 100000 bytes.");
+        console.log(JSON.stringify({eventId:await applyProjectIdentityPlan(JSON.parse(raw) as ProjectIdentityPlan,options.actor,options.reason)}));return;
+      }
+      if (options.revert) { console.log(JSON.stringify({eventId:await revertProjectIdentityEvent(options.revert,options.actor,options.reason)}));return; }
+      if (options.runs) { console.log(JSON.stringify(await listProjectIdentityRuns(options.runs),null,2));return; }
+      if (options.target || options.attach) {
+        if (!options.target || !options.attach) throw new Error("Preview requires both --target and --attach.");
+        console.log(JSON.stringify(await previewProjectIdentityPlan(options.target,JSON.parse(options.attach) as IdentityAttachment[]),null,2));return;
+      }
+      console.log(JSON.stringify(await listProjectIdentities(),null,2));
+    });
   async function ensureObjectStorageBucket(): Promise<{ ok: true; message: string } | { ok: false; message: string }> {
     const endpoint = process.env.OBJECT_STORAGE_ENDPOINT;
     const bucket = process.env.OBJECT_STORAGE_BUCKET || "agentflow-artifacts";

@@ -18,7 +18,7 @@ import {
   type StageJsonArtifact
 } from "./prompts.js";
 
-type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; reasoningEffort?: "low" | "medium"; workingDirectory?: string; sessionKey?: string };
+type CodexCliRunInput = { prompt: string; schema: Record<string, unknown>; model?: string; reasoningEffort?: "low" | "medium"; workingDirectory?: string; sessionKey?: string;abortSignal?:AbortSignal };
 type CodexCliRunResult = { output: string; model: string; usage?: StageExecutionOutput["usage"] };
 export type CodexCliDiagnosticCategory = "spawn_unavailable" | "timeout" | "output_limit" | "authentication" | "account_quota" | "rate_limited" | "model_unavailable" | "configuration" | "transport" | "service_unavailable" | "schema_or_usage" | "process_exit";
 export interface CodexCliDiagnostic {
@@ -49,6 +49,19 @@ const stageSchema = {
     summary: { type: "string" },
     findings: { type: "array", items: { type: "string" } },
     nextAction: { type: "string" },
+    proposedSourcePaths: { type: "array", maxItems: 40, items: { type: "string", maxLength: 500 } },
+    memoryInfluence: {
+      type: ["object", "null"], additionalProperties: false,
+      properties: {
+        used: { type: "array", maxItems: 12, items: {
+          type: "object", additionalProperties: false,
+          properties: { childRunId: { type: "string", maxLength: 128 }, effect: { type: "string", enum: ["changed-plan", "confirmed-plan", "rejected"] }, reason: { type: "string", maxLength: 1500 } },
+          required: ["childRunId", "effect", "reason"]
+        } },
+        noInfluenceReason: { type: "string", maxLength: 2000 }
+      },
+      required: ["used", "noInfluenceReason"]
+    },
     requestedCommands: { type: "array", items: { type: "string" } },
     requestedFileReads: { type: "array", items: { type: "string" } },
     requestedFileSearches: { type: "array", maxItems: 4, items: { type: "string" } },
@@ -62,7 +75,7 @@ const stageSchema = {
       }
     }
   },
-  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "requestedCommands", "requestedFileReads", "requestedFileSearches", "requestedFileWrites"]
+  required: ["outcome", "blockedReason", "summary", "findings", "nextAction", "proposedSourcePaths", "memoryInfluence", "requestedCommands", "requestedFileReads", "requestedFileSearches", "requestedFileWrites"]
 };
 
 const fileSummarySchema = {
@@ -125,6 +138,7 @@ export class CodexCliProvider implements ModelProvider {
       // Preserve a stage's bounded read/retry context without replaying the
       // entire workflow history into every later stage.
       sessionKey: input.taskId
+      ,abortSignal:input.abortSignal
     };
     let result = await this.runner.execute(call);
     let decoded = extractJsonObject(result.output) as StageJsonArtifact;
@@ -210,8 +224,9 @@ export function createCodexCliRunner(): CodexCliRunner {
       const result = await runProcess(binary, ["login", "status"], undefined, process.cwd());
       return `${result.stdout}\n${result.stderr}`.trim();
     },
-    execute: async ({ prompt, schema, model, reasoningEffort, workingDirectory, sessionKey }) => {
+    execute: async ({ prompt, schema, model, reasoningEffort, workingDirectory, sessionKey,abortSignal }) => {
       return withCodexCliProcessLock(async () => {
+        if(abortSignal?.aborted)throw new Error('Codex CLI execution aborted before process start.');
         const temporaryDir = await fs.mkdtemp(path.join(os.tmpdir(), "agentflow-codex-cli-"));
         const schemaPath = path.join(temporaryDir, "output-schema.json");
         const outputPath = path.join(temporaryDir, "last-message.json");
@@ -242,15 +257,16 @@ export function createCodexCliRunner(): CodexCliRunner {
           let processResult: { stdout: string; stderr: string };
           let resumed = false;
           try {
-            processResult = await runProcess(binary, buildArgs(resumeAttempt?.threadId), prompt, executionDirectory);
+            processResult = await runProcess(binary, buildArgs(resumeAttempt?.threadId), prompt, executionDirectory,abortSignal);
             resumed = Boolean(resumeAttempt);
           } catch (error) {
+            if(abortSignal?.aborted)throw error;
             if (!resumeAttempt || !sessionKey) throw error;
             // A failed `exec resume` must never fail the stage: the executor
             // already passes full context via priorReceipts, so resume is a
             // pure optimization. Forget the poisoned thread and retry once fresh.
             await forgetCodexCliSession(sessionKey);
-            processResult = await runProcess(binary, buildArgs(undefined), prompt, executionDirectory);
+            processResult = await runProcess(binary, buildArgs(undefined), prompt, executionDirectory,abortSignal);
           }
           assertCodexCliTurnSucceeded(processResult.stdout);
           const output = await readCodexCliOutputFile(outputPath);
@@ -493,7 +509,7 @@ async function readCodexCliOutputFile(outputPath: string): Promise<string> {
   }
 }
 
-async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string): Promise<{ stdout: string; stderr: string }> {
+async function runProcess(binary: string, args: string[], input: string | undefined, cwd: string,abortSignal?:AbortSignal): Promise<{ stdout: string; stderr: string }> {
   const startedAt = Date.now();
   const timeoutMs = configuredCodexCliTimeoutMs();
   const maxBytes = configuredCodexCliOutputMaxBytes();
@@ -517,6 +533,7 @@ async function runProcess(binary: string, args: string[], input: string | undefi
     const stderr: Buffer[] = [];
     let bytes = 0;
     let terminationReason: "timeout" | "output_limit" | undefined;
+    const abort=()=>{terminationReason='timeout';child.kill('SIGTERM');};abortSignal?.addEventListener('abort',abort,{once:true});if(abortSignal?.aborted)abort();
     const timer = setTimeout(() => {
       terminationReason = "timeout";
       child.kill("SIGTERM");
@@ -547,6 +564,7 @@ async function runProcess(binary: string, args: string[], input: string | undefi
       reject(codexCliProcessError({ rawDetail: error.message, errorCode, forcedCategory: "spawn_unavailable" }));
     });
     child.on("close", (code, signal) => {
+      abortSignal?.removeEventListener('abort',abort);
       clearTimeout(timer);
       if (code === 0 && bytes <= maxBytes) {
         logSpawn({});

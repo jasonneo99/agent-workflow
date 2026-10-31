@@ -93,6 +93,58 @@ test("never routes polite make, implement, or change requests to review-only wor
   }
 });
 
+test("routes a plain repair request to failure diagnosis and implementation", () => {
+  assert.equal(selectWorkflowArchetype("Repair a stalled queue task").id, "debug-failure");
+});
+
+test("repair requests retain implementation and verification despite review or release wording", () => {
+  const goals = [
+    "Repair a queue claim. Review the audit evidence before release.",
+    "Please repair a journal writer after the review found a missing synchronization step.",
+    "Can you repair the owner token check and assess release readiness?",
+    "Repair the background worker. Inspect the security review and package the corrected behavior."
+  ];
+  for (const goal of goals) {
+    for (const executionProfile of ["full", "adaptive"] as const) {
+      const plan = constructDynamicWorkflow({ goal, project, executionProfile });
+      assert.ok(plan.stages.some((stage) => stage.pattern.type === "executor"), goal);
+      assert.ok(plan.stages.some((stage) => stage.id === "verify"), goal);
+    }
+  }
+});
+
+test("reviewing a proposed repair remains read only", () => {
+  for (const goal of ["Review the proposed repair for regressions", "Inspect a proposed repair"]) {
+    assert.equal(selectWorkflowArchetype(goal).id, "code-review");
+    for (const executionProfile of ["full", "adaptive"] as const) {
+      const plan = constructDynamicWorkflow({ goal, project, executionProfile });
+      assert.ok(!plan.stages.some((stage) => stage.pattern.type === "executor"), goal);
+    }
+  }
+});
+
+test("change requests cannot remove their last executor but may replace it", () => {
+  const goal = "Fix a stalled queue task";
+  assert.throws(() => constructDynamicWorkflow({
+    goal, project, changes: { remove: ["implement"] }
+  }), /executor stage/u);
+  const replacement = constructDynamicWorkflow({
+    goal, project, changes: { remove: ["implement"], add: [{ template: "backend", after: "diagnose" }] }
+  });
+  assert.ok(replacement.stages.some((stage) => stage.id === "backend"));
+  assert.ok(replacement.stages.some((stage) => stage.id === "verify"));
+});
+
+test("validation rejects a rehashed change plan with no executor", () => {
+  const plan = constructDynamicWorkflow({ goal: "Fix a parser bug", project });
+  plan.stages = plan.stages.filter((stage) => stage.pattern.type !== "executor");
+  for (const [index, stage] of plan.stages.entries()) {
+    stage.depends_on = index === 0 ? [] : [plan.stages[index - 1].id];
+  }
+  plan.dynamic!.definition_hash = definitionHash(plan);
+  assert.throws(() => validateDynamicWorkflow(plan, project), /executor stage/u);
+});
+
 test("constructs a reproducible validated plan with policy controls and routing", () => {
   const plan = constructDynamicWorkflow({
     goal: "Create me a local web app that tracks books",

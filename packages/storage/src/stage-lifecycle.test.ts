@@ -17,13 +17,14 @@ test("stage cancellations and manual requeues have atomic, per-stage events", as
     await client.query("set search_path to pg_temp");
     await client.query(`create temporary table workflow_runs(id uuid primary key, status text, state_version bigint default 0,
       lease_epoch bigint default 0, lease_owner text, lease_expires_at timestamptz, finished_at timestamptz,
-      requester_channel text default 'synthetic', evaluation_metadata jsonb default '{}');
+      requester_channel text default 'synthetic', evaluation_metadata jsonb default '{}', run_set_id uuid default gen_random_uuid());
       create temporary table workflow_tasks(id uuid primary key,run_id uuid,agent_id text,status text,finished_at timestamptz,
         started_at timestamptz,worker_id text,lease_expires_at timestamptz,available_at timestamptz);
       create temporary table workflow_run_transitions(run_id uuid,from_status text,to_status text,state_version bigint,
         lease_epoch bigint,actor text,reason text,idempotency_key text,metadata jsonb,created_at timestamptz default now());
       create temporary table action_receipts(run_id uuid,agent_id text,action_type text,target text,summary text,
         metadata jsonb,prev_hash text,receipt_hash text,created_at timestamptz,metadata_serialization_version integer);
+      create temporary table artifacts(run_id uuid,kind text,content jsonb);
       create temporary table run_notifications(id uuid primary key default gen_random_uuid(),run_id uuid,channel text,kind text,
         title text,body text,status text default 'pending',created_at timestamptz default now(),delivered_at timestamptz)`);
     await client.query(runNotificationOutboxSchemaSql);

@@ -17,3 +17,11 @@ test("different, earlier, and unfinished runs do not supersede a blocker", () =>
   ];
   assert.equal(findLaterCompletedEquivalentRun(runs, blocked), null);
 });
+
+test("supersession candidates require exact task identity without whitespace normalization", () => {
+  const source = { id: "source", workflowId: "build-feature", task: "Build synthetic product", status: "blocked", startedAt: "2026-09-16T10:00:00Z" };
+  for (const task of [" Build synthetic product", "Build synthetic product ", "Build  synthetic product"]) {
+    const candidate = { ...source, id: "candidate", task, status: "completed", startedAt: "2026-09-16T11:00:00Z" };
+    assert.equal(findLaterCompletedEquivalentRun([candidate], source), null);
+  }
+});

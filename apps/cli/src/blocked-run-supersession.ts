@@ -12,7 +12,7 @@ export function findLaterCompletedEquivalentRun<T extends SupersessionRun>(runs:
     candidate.id !== source.id
     && candidate.status === "completed"
     && candidate.workflowId === source.workflowId
-    && candidate.task.trim() === source.task.trim()
+    && candidate.task === source.task
     && Date.parse(candidate.startedAt) > sourceStartedAt
   ) ?? null;
 }

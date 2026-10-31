@@ -1,5 +1,5 @@
-// Queue presentation only. These predicates never change run state, acceptance,
-// scheduling, or receipts. Explicit lineage is scoped to the registered project
+// Read-only queue membership. These predicates never change run state,
+// acceptance, scheduling, or receipts and never grant execution. Explicit lineage is scoped to the registered project
 // or its operator-reconciled logical identity; execution scopes never change.
 function scopeSql(identity: boolean, projectRootParameter?: string): string {
   const scope = projectRootParameter
@@ -38,7 +38,29 @@ function visible(alias: string): string {
   return `not (${alias}.status in ('failed','blocked') and ${alias}.evaluation_metadata ? 'suiteId')
     and not exists (select 1 from action_receipts hidden
       where hidden.run_id = ${alias}.id
-        and hidden.action_type in ('failed_run_dismissed','failed_run_superseded')
+        and (hidden.action_type in ('failed_run_dismissed','failed_run_superseded')
+          or (hidden.action_type='obsolete_policy_contract_retired'
+            and ${alias}.status in ('failed','blocked','cancelled')
+            and hidden.metadata->>'authority'='direct-human'
+            and hidden.metadata->>'disposition'='obsolete-policy-unaccepted'
+            and hidden.metadata->>'viewOnly'='true'
+            and hidden.metadata->>'originalAcceptanceChanged'='false'
+            and hidden.metadata->>'runId'=${alias}.id::text
+            and hidden.metadata->>'projectId'=${alias}.project_id::text
+            and hidden.metadata->>'originalTask'=${alias}.task
+            and not exists(select 1 from workflow_tasks active_task where active_task.run_id=${alias}.id and active_task.status in ('queued','leased','running'))
+            and not exists(select 1 from action_approvals active_approval where active_approval.run_id=${alias}.id and active_approval.status in ('pending','approved','executing','failed'))
+            and not exists(select 1 from queue_coordinator_assignments active_assignment
+              where active_assignment.project_id=${alias}.project_id and (active_assignment.source_run_id=${alias}.id or active_assignment.child_run_id=${alias}.id)
+                and active_assignment.state in ('reserved','running','uncertain'))
+            and not exists(select 1 from side_effect_receipts active_effect where active_effect.project_id=${alias}.id::text
+              and active_effect.status<>'completed' and not exists(select 1
+                from jsonb_array_elements_text(coalesce(hidden.metadata->'reconciledEffectKeys','[]'::jsonb)) known_effect(key)
+                where known_effect.key=active_effect.project_id||':'||active_effect.idempotency_key))
+            and hidden.receipt_hash is not null
+            and exists(select 1 from artifacts disposition
+              where disposition.run_id=hidden.run_id and disposition.kind='obsolete_policy_disposition'
+                and disposition.content=hidden.metadata)))
         and not exists (select 1 from action_receipts reinstated
           where reinstated.run_id = ${alias}.id
             and reinstated.action_type = 'failed_run_reinstated'
@@ -46,17 +68,23 @@ function visible(alias: string): string {
 }
 
 function unfinished(alias: string): string {
-  return `(${alias}.status in ('queued','leased','running','blocked','failed')
-    or exists (select 1 from workflow_tasks pending where pending.run_id = ${alias}.id
-      and pending.status in ('queued','leased','running','blocked','failed'))
-    or exists (select 1 from action_approvals approval where approval.run_id=${alias}.id
-      and approval.status in ('pending','executing')))`;
+  // The run state is authoritative for queue membership. Terminal completed
+  // and cancelled runs belong to history even if stale child rows or approval
+  // records remain; those inconsistencies surface on their dedicated views.
+  return `${alias}.status in ('queued','leased','running','blocked','failed')`;
+}
+
+// Also used as a NEGATIVE exact-source admission check. Never infer execution
+// authority from display membership or from a different visible family member.
+export function activeQueueRunPredicateSql(alias: string): string {
+  return `${visible(alias)} and ${unfinished(alias)}`;
 }
 
 // Materialize the graph once per display query, not once per candidate card.
 // Deduplicate identical component arrays before doing receipt/task lookups.
-// The newest visible attempt can be completed: earlier unfinished attempts
-// remain a review warning, not duplicate cards or implicit dismissals.
+// Completed attempts remain in the family history, but the card itself is the
+// newest visible unfinished attempt. A completed run never represents active
+// queue work merely because an older family member still needs attention.
 // UNION terminates cycles in malformed lineage.
 export function queuePresentationSql(identity = false, projectRootParameter?: string): string { return `with recursive ${scopeSql(identity, projectRootParameter)}, explicit_sources as (
   -- Legacy operator requests froze a source list in the task rather than metadata.
@@ -111,9 +139,10 @@ export function queuePresentationSql(identity = false, projectRootParameter?: st
         from action_approvals aa where aa.run_id=attempt.id and aa.status in ('pending','failed','executing')))
       order by attempt.started_at desc,attempt.id desc) from workflow_runs attempt where attempt.id=any(members)) as attempts,
     (select latest.id from workflow_runs latest where latest.id=any(members)
-       and ${visible("latest")} order by latest.started_at desc,latest.id desc limit 1) as latest_id,
+       and ${activeQueueRunPredicateSql("latest")}
+       order by latest.started_at desc,latest.id desc limit 1) as latest_id,
     (select count(*)::int from workflow_runs pending_run where pending_run.id=any(members)
-       and ${visible("pending_run")} and ${unfinished("pending_run")}) as open_count
+       and ${activeQueueRunPredicateSql("pending_run")}) as open_count
   from families
 )`; }
 
