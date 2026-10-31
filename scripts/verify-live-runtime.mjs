@@ -63,7 +63,12 @@ const [queue, history, queueHtml] = await Promise.all([
 ]);
 assertCheck("queue-contract", Array.isArray(queue), { items: Array.isArray(queue) ? queue.length : null });
 assertCheck("minute-history-contract", history.resolution === "minute" && Array.isArray(history.points), { resolution: history.resolution, points: history.points?.length ?? null });
-assertCheck("queue-ui-contract", queueHtml.includes("queue-history-chart") && queueHtml.includes("Stacked minute bars") && queueHtml.includes("queue-card-list"), {});
+const queueElements = {
+  changeChart: queueHtml.includes('id="queue-history-chart"'),
+  totalsChart: queueHtml.includes('id="queue-history-bars"'),
+  cards: queueHtml.includes('data-queue-live-region="cards"')
+};
+assertCheck("queue-ui-contract", Object.values(queueElements).every(Boolean), queueElements);
 for (const timing of routeTimings) {
   const budgetMs = timing.route.includes("queue-history") ? 2_000 : timing.route === "/api/info" ? 2_000 : 8_000;
   assertCheck(`route-latency:${timing.route}`, timing.durationMs <= budgetMs, { durationMs: timing.durationMs, budgetMs });
