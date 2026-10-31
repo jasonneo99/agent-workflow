@@ -140,6 +140,17 @@ test('focused Python recipes still require the current grant and do not expand e
  assert.ok(!partnerRecoveryCommands(blocked,['tests/test_a.py']).some(c=>c.includes('unittest')));
  assert.ok(!partnerRecoveryCommands(blocked,['tests/../test_foreign.py','tests/test_a.py;bad']).some(c=>c.includes('unittest')));
 });
+test('repair recipes retain a declared exact environment capability without inheriting broad shell grants',()=>{
+ const capability='npm run agentflow -- environments *';
+ const environments={profiles:{focused:{kind:'native',platform:'darwin/arm64',source_paths:['src/a.ts'],readiness:[{argv:['node','--version']}]}}};
+ const make=(allowed_commands:string[],blocked_commands:string[]=[],declared=true)=>projectConfigSchema.parse({project:{name:'Bounded repair environment'},
+  execution:declared?{environments}:{},actions:{allowed_commands,blocked_commands}});
+ assert.ok(partnerRecoveryCommands(make([capability]),['src/a.ts']).includes(capability));
+ assert.ok(!partnerRecoveryCommands(make(['npm *']),['src/a.ts']).includes(capability));
+ assert.ok(!partnerRecoveryCommands(make([capability],[],false),['src/a.ts']).includes(capability));
+ assert.ok(!partnerRecoveryCommands(make([capability],['npm *']),['src/a.ts']).includes(capability));
+ assert.ok(!partnerRecoveryCommands(make([capability,'npm *','git *']),['src/a.ts']).includes('git *'));
+});
 test('owned queued continuation waits on the same child instead of declaring the availability fence uncertain',async()=>{
  let clock=0,calls=0,waits=0;
  const result=await driveOwnedPartnerChild('same-child',{

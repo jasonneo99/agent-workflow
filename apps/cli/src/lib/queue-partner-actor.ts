@@ -25,6 +25,7 @@ import {assertCommandAllowed} from '../../../../packages/local-tools/src/command
 import type {ProjectConfig} from '../../../../packages/agent-registry/src/schemas.js';
 import {verifyReceiptChain,type ChainedReceipt} from '../../../../packages/workflow-engine/src/receipt-chain.js';
 import type {Client} from 'pg';
+import {ENVIRONMENT_COMMAND} from '../../../../packages/run-environments/src/schema.js';
 import {loadQueuePartnerComparisons,normalizeQueuePartnerInfluence,queuePartnerDeliveryEvidence,queuePartnerRepairPlaybooks,recordQueuePartnerMemory,recordQueuePartnerMemoryInfluence,type QueuePartnerComparison,type QueuePartnerMemoryFact,type QueuePartnerPlaybookRevalidation} from './queue-partner-memory.js';
 
 export interface PartnerActorSource {id:string;status:string;activeQueueMember:boolean;task:string;root_uri:string;profile:string;registration_profile:string;metadata:any;provider_override:string|null;model_tier_override:'fast'|'standard'|'reasoning'|null;blocker:string}
@@ -129,7 +130,8 @@ export function partnerRecoveryCommands(project:ProjectConfig,paths:readonly str
  // Materialize only exact in-scope tests, then check the current project grant.
  // A broad Python grant need not repeat each filename, but is never invented.
  const pythonTests=paths.filter(p=>/^tests\/test_[A-Za-z0-9_]+\.py$/u.test(p));
- const candidates=[...legacyOfflineCommands(project,paths),...pythonTests.map(p=>`python3 -m unittest discover -s tests -p ${p.slice('tests/'.length)} -v`),...paths.filter(p=>/^[A-Za-z0-9_./-]+\.test\.[cm]?[jt]s$/u.test(p))
+ const environmentCapability=project.execution.environments&&project.actions.allowed_commands.includes(ENVIRONMENT_COMMAND)?[ENVIRONMENT_COMMAND]:[];
+ const candidates=[...environmentCapability,...legacyOfflineCommands(project,paths),...pythonTests.map(p=>`python3 -m unittest discover -s tests -p ${p.slice('tests/'.length)} -v`),...paths.filter(p=>/^[A-Za-z0-9_./-]+\.test\.[cm]?[jt]s$/u.test(p))
   .flatMap(p=>[`node --import tsx --test ${p}`,`node --test ${p}`])];
  return [...new Set(candidates)].filter(c=>{try{assertCommandAllowed(c,project);return true;}catch{return false;}});
 }
