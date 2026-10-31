@@ -265,14 +265,27 @@ export function verificationCompletionReason(input: StageExecutionInput, actionR
     if (!item || typeof item !== "object" || Array.isArray(item)) continue;
     const result = item as Record<string, unknown>;
     if (typeof result.commandLine === "string"
-      && /^(?:npm\s+(?:test|run\s+(?:check|test|typecheck|validate-boundary))\b|(?:npm\s+exec\s+--\s+)?node\s+.*--test\b)/u.test(result.commandLine.trim())
+      && (/^(?:npm\s+(?:test|run\s+(?:check|test|typecheck|validate-boundary))\b|(?:npm\s+exec\s+--\s+)?node\s+.*--test\b|python3?\s+(?:-B\s+)?-m\s+(?:unittest|pytest|compileall)\b)/u.test(result.commandLine.trim())
+        || Boolean(result.verificationRecipe && typeof result.verificationRecipe === "object"))
       && (typeof result.exitCode === "number" || result.exitCode === null)) {
-      latestChecks.set(result.commandLine.trim(), result);
+      const command = result.commandLine.trim();
+      const previous = latestChecks.get(command);
+      latestChecks.set(command, { ...result, declaredCollectionRequired: Boolean(result.verificationRecipe)
+        || previous?.declaredCollectionRequired === true });
     }
   }
-  const latestCheck = [...latestChecks.values()].find((result) => result.exitCode !== 0 || result.timedOut === true);
-  if (latestCheck && (latestCheck.exitCode !== 0 || latestCheck.timedOut === true)) {
-    return `Verification command failed: ${latestCheck.commandLine} (${latestCheck.timedOut === true ? "timed out" : `exit code ${latestCheck.exitCode}`}); see governed command receipt ${latestCheck.artifactUri ?? "in actionResults"}.`;
+  const incompleteCollection = (result: Record<string, unknown>): boolean => {
+    const recipe = result.verificationRecipe as Record<string, unknown> | undefined;
+    return result.declaredCollectionRequired === true && (!recipe || recipe.status !== "passed"
+      || typeof recipe.cases !== "number" || !Number.isSafeInteger(recipe.cases) || recipe.cases <= 0
+      || recipe.passed !== recipe.cases || recipe.skipped !== 0);
+  };
+  const latestCheck = [...latestChecks.values()].find((result) => result.exitCode !== 0 || result.timedOut === true
+    || result.outputTruncated === true || incompleteCollection(result));
+  if (latestCheck) {
+    const reason = latestCheck.timedOut === true ? "timed out" : latestCheck.outputTruncated === true ? "truncated output"
+      : latestCheck.exitCode !== 0 ? `exit code ${latestCheck.exitCode}` : "declared test collection is incomplete or failed";
+    return `Verification command failed: ${latestCheck.commandLine} (${reason}); see governed command receipt ${latestCheck.artifactUri ?? "in actionResults"}.`;
   }
   const acceptanceTask = workflowAcceptanceTask(input.workflowTask);
   const deliveryIntent = /\b(?:build|implement|create|develop|deliver|ship|add|fix|finish|repair|complete)\b/iu.test(acceptanceTask);
