@@ -108,7 +108,7 @@ export async function executeAllowedCommand(input: {
   if (!argv.length) {
     throw new Error("Command is empty.");
   }
-  if (input.environmentContext && argv.slice(0, 5).join(" ") === "npm run agentflow -- environments") {
+  if (argv.slice(0, 5).join(" ") === "npm run agentflow -- environments") {
     throw new Error("The environment capability cannot be requested as a nested agent command; request the underlying authorized test command.");
   }
 

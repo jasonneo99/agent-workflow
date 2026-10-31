@@ -9,6 +9,18 @@ import type { ProjectConfig } from "../../agent-registry/src/schemas.js";
 import { assertCommandAllowed, commandSerializationResource, withDeveloperToolPath, createBoundedOutputCapture, executeAllowedCommand } from "./command-executor.js";
 import {projectConfigSchema} from '../../agent-registry/src/schemas.js';
 
+test('environment management is a runner capability even when no test selector matched the agent command',async()=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'synthetic-runner-capability-')));
+ const project=projectConfigSchema.parse({project:{name:'Runner capability'},actions:{allowed_commands:['npm run agentflow -- environments *'],blocked_commands:[]}});
+ try{
+  for(const commandLine of ['npm run agentflow -- environments list','npm run agentflow -- environments --project synthetic --run synthetic']){
+   for(const environmentContext of [undefined,{runId:'synthetic-review'}]){
+    await assert.rejects(executeAllowedCommand({cwd:root,project,commandLine,environmentContext}),/request the underlying authorized test command/u);
+   }
+  }
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});
+
 test('real declared unittest execution distinguishes all-skipped exit zero from passing tests',async()=>{
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'synthetic-recipe-evidence-')));
  try{

@@ -248,6 +248,7 @@ test('Partner recovery brief references injected policy by digest and remains bo
  assert.match(task,/current failure evidence, exact source\/test scope and a verifiable acceptance gate/);
  assert.match(task,/exact owning project and dependency/);
  assert.match(task,/never edit a vendor mirror, copy grants/);
+ assert.match(task,/Request the underlying literal test command directly/);
  const partner=readFileSync(new URL('../../../../agents/operations/queue-partner.yaml',import.meta.url),'utf8');
  assert.match(partner,/Trace existing wrappers/);
  assert.match(partner,/Missing control-plane evidence is coordinator work to supply/);
