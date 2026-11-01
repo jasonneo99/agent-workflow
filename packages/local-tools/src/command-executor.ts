@@ -111,6 +111,9 @@ export async function executeAllowedCommand(input: {
   if (argv.slice(0, 5).join(" ") === "npm run agentflow -- environments") {
     throw new Error("The environment capability cannot be requested as a nested agent command; request the underlying authorized test command.");
   }
+  if (argv.slice(0, 5).join(" ") === "npm run agentflow -- repair-checkpoint") {
+    throw new Error("The repair checkpoint capability is managed by the worker; request the underlying authorized test command.");
+  }
 
   const started = Date.now();
   const timeoutMs = input.project.actions.command_timeout_ms;

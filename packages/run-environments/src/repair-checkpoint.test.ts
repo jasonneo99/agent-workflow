@@ -6,7 +6,17 @@ import path from "node:path";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { executeAllowedCommand } from "../../local-tools/src/command-executor.js";
 import { ENVIRONMENT_COMMAND, runProcess, type ProcessRunner } from "./index.js";
-import { createRepairCheckpoint, REPAIR_COMMIT_COMMAND, verifyRepairCheckpoint } from "./repair-checkpoint.js";
+import { createRepairCheckpoint, REPAIR_COMMIT_COMMAND, repairVerifierPolicy, verifyRepairCheckpoint } from "./repair-checkpoint.js";
+import {assertFilePathAllowed} from '../../local-tools/src/file-writer.js';
+
+test('the independent repair verifier cannot inherit implementation write authority',()=>{
+ const project=projectConfigSchema.parse({project:{name:'Scoped independent verification'},execution:{repair_commits:{enabled:true}},actions:{allowed_write_paths:['src/**']}});
+ assert.doesNotThrow(()=>assertFilePathAllowed('src/index.js',project));
+ const verifier=repairVerifierPolicy(project,true);
+ assert.throws(()=>assertFilePathAllowed('src/index.js',verifier),/not allowed/);
+ assert.deepEqual(project.actions.allowed_write_paths,['src/**'],'implementation policy is unchanged');
+ assert.equal(repairVerifierPolicy(project,false),project);
+});
 
 async function fixture() {
   const cwd = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "repair-checkpoint-test-")));

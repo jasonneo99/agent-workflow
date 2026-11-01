@@ -12,7 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { projectConfigSchema } from "../../agent-registry/src/schemas.js";
 import { loadProjectConfig } from "../../agent-registry/src/loaders.js";
 import { assertCommandAllowed, commandSerializationResource, executeAllowedCommand, type CommandExecutionResult } from "../../local-tools/src/command-executor.js";
-import { assertRepairCommitEnabled, createRepairCheckpoint, repairChangedFiles, repairCommitBaseline, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
+import { assertRepairCommitEnabled, createRepairCheckpoint, repairChangedFiles, repairCommitBaseline, repairVerifierPolicy, verifyRepairCheckpoint, type RepairCheckpoint } from "../../run-environments/src/repair-checkpoint.js";
 import { assertFileWriteAllowed, executeAllowedFileWrite } from "../../local-tools/src/file-writer.js";
 import { assertFilePatchAllowed, executeAllowedFileMutation, normalizeRequestedFileMutation, summarizeFileMutation, oversizedReplacementPatchHint } from "../../local-tools/src/file-patcher.js";
 import { executeAllowedFileRead } from "../../local-tools/src/file-reader.js";
@@ -247,7 +247,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       const actionResults: unknown[] = Array.isArray(continuation.actionResults) ? [...continuation.actionResults] : [];
       const snapshotProject = projectConfigSchema.parse(task.projectConfig);
       const currentProject = await loadProjectConfig(localProjectRootUri).catch(() => snapshotProject);
-      const project = applyCurrentAutoApprovalThreshold(snapshotProject, currentProject);
+      const project = repairVerifierPolicy(applyCurrentAutoApprovalThreshold(snapshotProject, currentProject), stagePattern.type === "verifier");
       const repairCommitSelected = project.execution.repair_commits?.enabled === true && project.execution.repair_commits.stages.includes(task.stageId);
       let repairParent: string | null = null;
       if (repairCommitSelected) {
@@ -1950,6 +1950,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
           }
           if (stagePattern.type === "verifier") {
             const candidate = [...task.priorStageArtifacts].reverse().find(stage => stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
+            if (!candidate?.receiptPath) throw Error("Repair verification requires a retained candidate checkpoint; use a separately scoped current-revision review when no repair was needed.");
             if (candidate?.receiptPath) {
               if (!evidence?.environment?.receiptPath) throw Error("The committed repair requires a fresh independent environment test receipt.");
               repairVerification = await verifyRepairCheckpoint({ cwd: localProjectRootUri,

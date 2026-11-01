@@ -17,6 +17,7 @@ export interface PartnerReasoningReservation {
  projectId:string;projectRootUri:string;sourceRunId:string;familyId:string;
  owner:string;intentFence:string;fileScopes:string[];fingerprint:string;
  taskHash:string;policyHash:string;sourceHash:string|null;writePaths:string[];
+ requiresVerifierSlot?:boolean;
 }
 const active="('reserved','running','uncertain')";
 /** Lifetime ledger, not a per-watch or per-fingerprint counter. */
@@ -36,6 +37,7 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
  if(!exactPartnerPaths(input.writePaths)||!exactPartnerPaths(input.fileScopes)||!input.fileScopes.length
   ||!input.owner||!/^\d+$/u.test(input.intentFence)||![input.fingerprint,input.taskHash,input.policyHash].every(v=>/^[a-f0-9]{64}$/u.test(v))
   ||(input.sourceHash!==null&&!/^[a-f0-9]{64}$/u.test(input.sourceHash))
+  ||(input.requiresVerifierSlot!==undefined&&typeof input.requiresVerifierSlot!=='boolean')
   ||(input.writePaths.length>0)!==(input.sourceHash!==null))throw Error('Invalid Partner reasoning binding');
  const expected=input.writePaths.length?input.writePaths:[`runtime/queue-partner/recovery/${input.sourceRunId}`];
  if(acceptanceDigest([...expected].sort())!==acceptanceDigest([...input.fileScopes].sort()))throw Error('Reasoning intent does not cover its exact effects');
@@ -52,6 +54,9 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
  if(await fs.realpath(input.projectRootUri)!==input.projectRootUri)return null;
  const policy=resolveExecutionPolicy(await loadProjectConfig(input.projectRootUri),row.policy_profile).project;
  if(canonicalJsonHash(policy)!==input.policyHash)return null;
+ const requiresVerifierSlot=input.writePaths.length>0&&policy.execution.repair_commits?.enabled===true;
+ // A stale one-stage caller cannot reserve a newly opted-in repair pipeline.
+ if(Boolean(input.requiresVerifierSlot)!==requiresVerifierSlot)return null;
  for(const file of input.writePaths)assertFilePathAllowed(file,policy);
  if(input.writePaths.length&&await sourceSubjectHash(input.projectRootUri,input.writePaths)!==input.sourceHash)return null;
  const intent=(await c.query(`select file_scopes,to_jsonb(i)->>'id' intent_id from work_intents i where project_id=$1 and owner=$2 and fencing_token::text=$3
@@ -67,7 +72,7 @@ export async function reservePartnerReasoningOnClient(c:Client,input:PartnerReas
  if(busy.rowCount)return null;
  const assignments=(await c.query(`select family_id,project_id::text,role,lane,file_scopes from queue_coordinator_assignments where state in ${active}`)).rows;
  const occupancy=await queueWorkingOccupancyOnClient(c);
- if(occupancy.count>=5||occupancy.externalFamilyIds.includes(input.familyId)||assignments.some(a=>a.family_id===input.familyId))return null;
+ if(occupancy.count>=5||(requiresVerifierSlot&&occupancy.verifier)||occupancy.externalFamilyIds.includes(input.familyId)||assignments.some(a=>a.family_id===input.familyId))return null;
  if(assignments.some(a=>a.project_id===input.projectId&&(!exactPartnerPaths(a.file_scopes)||a.file_scopes.some((a:string)=>input.fileScopes.some(b=>a===b||a.startsWith(`${b}/`)||b.startsWith(`${a}/`))))))return null;
  if((await c.query('select 1 from queue_coordinator_assignments where family_id=$1 and role=\'repair\' and fingerprint=$2',[input.familyId,input.fingerprint])).rowCount)return null;
  // A fixed budget and semantic fingerprint are durable across watch restarts.

@@ -43,18 +43,26 @@ export const initializeQueueCoordinator=()=>transaction(async c=>{await c.query(
 
 /** Count assignment-backed children once, include genuinely executing external
  * work, and retain queued independently authorized dependencies. Ordinary queued
- * history is not working capacity; uncertainty still reserves its assignment. */
+ * history is not working capacity; uncertainty still reserves its assignment.
+ * Two-stage repair pipelines reserve the verifier for their whole lifetime.
+ * These signals only inhibit capacity; they grant no execution authority. */
 export async function queueWorkingOccupancyOnClient(c:Client){
  const row=(await c.query(`select
   (select count(*) from queue_coordinator_assignments where state in ${active})+
   (select count(*) from workflow_runs r where (r.status in ('leased','running') or
-   (r.status='queued' and r.evaluation_metadata->>'source'='authorized-project-dependency'))
+   (r.status='queued' and (r.evaluation_metadata->>'source'='authorized-project-dependency'
+    or r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true')))
    and not exists(select 1 from queue_coordinator_assignments q where q.child_run_id=r.id and q.project_id=r.project_id
     and q.state in ${active} and r.evaluation_metadata->>'queueCoordinatorClaimId'=q.id::text
     and r.evaluation_metadata->>'queueCoordinatorFence'=q.fence::text)) as count,
   (select count(*) from workflow_runs where status in ('queued','leased','running')
    and evaluation_metadata->>'source'='authorized-project-dependency') as dependencies,
-  exists(select 1 from queue_coordinator_assignments where role='verifier' and state in ${active}) verifier`)).rows[0];
+  (exists(select 1 from queue_coordinator_assignments q where q.state in ${active} and
+    (q.role='verifier' or exists(select 1 from action_receipts a where a.run_id=q.source_run_id
+     and a.action_type='queue_partner_reasoning_reserved' and a.target=q.id::text
+     and a.metadata->>'fence'=q.fence::text and a.metadata->>'requiresVerifierSlot'='true')))
+   or exists(select 1 from workflow_runs r where r.status in ('queued','leased','running')
+    and r.evaluation_metadata->'partnerRepairPipeline'->>'requiresVerifierSlot'='true')) verifier`)).rows[0];
  const external=await externalQueueReservationOccupancyOnClient(c);
  return {count:Number(row.count)+external.count,dependencies:Number(row.dependencies),verifier:Boolean(row.verifier)||external.verifier,externalFamilyIds:external.reservations.map(b=>b.familyId)};
 }

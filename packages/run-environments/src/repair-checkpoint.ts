@@ -7,6 +7,10 @@ import { environmentDataHash, runProcess, type EnvironmentEvidence, type Environ
 import type { TestEvidence } from "./evidence.js";
 
 export const REPAIR_COMMIT_COMMAND = "npm run agentflow -- repair-checkpoint *";
+export function repairVerifierPolicy(project: ProjectConfig, verifier: boolean): ProjectConfig {
+  return verifier && project.execution.repair_commits?.enabled
+    ? { ...project, actions: { ...project.actions, allowed_write_paths: [] } } : project;
+}
 export interface RepairCheckpoint {
   schemaVersion: 1;
   phase: "candidate";

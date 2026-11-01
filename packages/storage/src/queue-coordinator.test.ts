@@ -8,7 +8,7 @@ import type { Client } from "pg";
 import { withClient } from "./client.js";
 import { acceptanceDigest } from "./acceptance.js";
 import { repairFingerprint } from "./repair-dispatch.js";
-import { acknowledgeQueuePartnerOutcomeJournalOnClient,finishQueueCoordinatorOnClient,queueCoordinatorSchemaSql, reserveCoordinatorOnClient, reconcileUnstartedCoordinatorReservationOnClient, reconcileBlockedVerifierOnClient, type CoordinatorReservation } from "./queue-coordinator.js";
+import { acknowledgeQueuePartnerOutcomeJournalOnClient,finishQueueCoordinatorOnClient,queueCoordinatorSchemaSql,queueWorkingOccupancyOnClient, reserveCoordinatorOnClient, reconcileUnstartedCoordinatorReservationOnClient, reconcileBlockedVerifierOnClient, type CoordinatorReservation } from "./queue-coordinator.js";
 import { repairedRevisionSchemaSql, captureRepairRevisionManifest,repairRevisionManifestHash,repairRevisionRequirementsDigest } from "./repaired-revision.js";
 import { legacyRecoverySchemaSql,enrollLegacyRecoveryOnClient } from "./legacy-recovery.js";
 import { appendActionReceipt } from "./receipt-writer.js";
@@ -53,6 +53,28 @@ async function fixture(body:(c:Client, make:(name:string, scope?:string)=>Promis
  }finally{await c.query("rollback");}});
 }
 const reserve=(c:Client,r:CoordinatorReservation)=>reserveCoordinatorOnClient(c,r,async()=>{});
+
+test('repair pipelines reserve one item and the verifier until their exact assignment or run finishes',async()=>fixture(async(c,make)=>{
+ const input=await make('pipeline-slot');
+ await c.query("update workflow_runs set status='queued',evaluation_metadata=$2 where id=$1",[input.sourceRunId,JSON.stringify({partnerRepairPipeline:{version:1,requiresVerifierSlot:true}})]);
+ let occupancy=await queueWorkingOccupancyOnClient(c);
+ assert.equal(occupancy.count,1);assert.equal(occupancy.verifier,true);assert.equal(occupancy.dependencies,0);
+ await c.query("update workflow_runs set status='completed' where id=$1",[input.sourceRunId]);
+ occupancy=await queueWorkingOccupancyOnClient(c);assert.equal(occupancy.count,0);assert.equal(occupancy.verifier,false);
+ const id=randomUUID();
+ const fence=(await c.query(`insert into queue_coordinator_assignments(id,family_id,project_id,source_run_id,role,lane,owner,fingerprint,intent_fence,file_scopes,state)
+  values($1,$2,$3,$4,'repair',1,$5,$6,$7,$8,'reserved') returning fence::text`,[id,input.familyId,input.projectId,input.sourceRunId,input.owner,input.fingerprint,input.intentFence,JSON.stringify(input.fileScopes)])).rows[0].fence;
+ await c.query("insert into action_receipts(id,run_id,action_type,target,metadata) values($1,$2,'queue_partner_reasoning_reserved',$3,$4)",[randomUUID(),input.sourceRunId,id,JSON.stringify({fence:String(BigInt(fence)+1n),requiresVerifierSlot:true})]);
+ assert.equal((await queueWorkingOccupancyOnClient(c)).verifier,false,'a different assignment fence cannot reserve this verifier');
+ await c.query("update action_receipts set metadata=$2 where target=$1",[id,JSON.stringify({fence,requiresVerifierSlot:true})]);
+ occupancy=await queueWorkingOccupancyOnClient(c);assert.equal(occupancy.count,1);assert.equal(occupancy.verifier,true);
+ await c.query("update workflow_runs set status='running',evaluation_metadata=evaluation_metadata||$2::jsonb where id=$1",[input.sourceRunId,JSON.stringify({queueCoordinatorClaimId:id,queueCoordinatorFence:fence})]);
+ await c.query('update queue_coordinator_assignments set child_run_id=$2 where id=$1',[id,input.sourceRunId]);
+ assert.equal((await queueWorkingOccupancyOnClient(c)).count,1,'assignment-backed pipeline is counted once');
+ await c.query("update workflow_runs set status='completed' where id=$1",[input.sourceRunId]);
+ await c.query("update queue_coordinator_assignments set state='verified' where id=$1",[id]);
+ occupancy=await queueWorkingOccupancyOnClient(c);assert.equal(occupancy.count,0);assert.equal(occupancy.verifier,false);
+}));
 
 test('ordinary reservation instance proof is captured from the live intent, never caller metadata',async()=>fixture(async(c,make)=>{
  await c.query('alter table work_intents add column id uuid default gen_random_uuid()');

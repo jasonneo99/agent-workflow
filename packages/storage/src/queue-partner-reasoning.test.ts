@@ -221,6 +221,20 @@ test('five real reasoning claims occupy the ordinary lane indexes and forbid a s
  await c.query("update queue_coordinator_assignments set state='held' where id=$1",[claims[1].id]);
  assert.equal((await reservePartnerReasoningOnClient(c,next))?.lane,2,'Refill the actual hole, not the last lane');
 }));
+test('opted-in source repair reserves the verifier and rejects stale callers before consuming a turn',async()=>fixture(async(c,make,root)=>{
+ const input=await make('pipeline',['src/main.ts']);
+ const config=await loadProjectConfig(root);config.execution.repair_commits={enabled:true,stages:['repair']};
+ await fs.writeFile(path.join(root,'.agent-workflow/project.yaml'),YAML.stringify(config));
+ input.policyHash=canonicalJsonHash(resolveExecutionPolicy(await loadProjectConfig(root),'local').project);
+ assert.equal(await reservePartnerReasoningOnClient(c,input),null,'legacy caller cannot silently use the old one-stage path');
+ const occupied=await make('queued-pipeline');
+ await c.query("update workflow_runs set status='queued',evaluation_metadata=$2 where id=$1",[occupied.sourceRunId,JSON.stringify({partnerRepairPipeline:{version:1,requiresVerifierSlot:true}})]);
+ assert.equal(await reservePartnerReasoningOnClient(c,{...input,requiresVerifierSlot:true}),null);
+ assert.equal(Number((await c.query("select count(*) n from action_receipts where run_id=$1 and action_type='queue_partner_reasoning_reserved'",[input.sourceRunId])).rows[0].n),0,'capacity hold consumes no lifetime turn');
+ await c.query("update workflow_runs set status='completed' where id=$1",[occupied.sourceRunId]);
+ const claim=await reservePartnerReasoningOnClient(c,{...input,requiresVerifierSlot:true});assert.ok(claim);
+ const occupancy=await queueWorkingOccupancyOnClient(c);assert.equal(occupancy.count,1);assert.equal(occupancy.verifier,true);
+}));
 test('attached actor children count once and genuinely executing non-Partner work still occupies capacity',async()=>fixture(async(c,make)=>{
  for(let i=0;i<3;i++){
   const input=await make(`attached-${i}`),claim=await reservePartnerReasoningOnClient(c,input);assert.ok(claim);

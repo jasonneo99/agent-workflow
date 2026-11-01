@@ -47,6 +47,22 @@ environment test receipt. Dirty unrelated files, an already staged index,
 changed parents, missing evidence or changed source hold the stage. Existing
 projects do not gain commit authority by installing the feature.
 
+Partner uses `repair-blocked-item` for projects that enable this capability. Its
+`repair` stage creates the candidate automatically and its read-only `verify`
+stage tests that exact commit in a fresh instance of the declared environment.
+The selected implementation specialist replaces only the repair-stage agent.
+Partner checks both stages' environment selectors, the behavioral recipe and
+the clean checkout before reserving an attempt. Missing profiles or a dirty
+shared checkout produce a preparation hold rather than consuming another turn.
+The pipeline occupies one item inside the shared capacity limit and reserves
+the single verifier slot until the assignment finishes or is reconciled.
+Use a scoped isolated checkout for accumulated work; this policy never cleans,
+adopts, or commits another owner's changes automatically.
+
+Projects without this explicit capability retain their existing workflow.
+Native, device, deployment and human acceptance still require their own matching
+environment and authority; a container source pass does not satisfy those gates.
+
 Independent verifier stages consume the candidate in the preceding stage's
 artifact and require their own fresh test receipt before reporting source
 verification. The commit and verifier records become normal run action artifacts.

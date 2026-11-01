@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import fs from 'node:fs/promises';
 import type {CliContext} from './context.js';
-import {loadAgents,loadProjectConfig} from '../../../../packages/agent-registry/src/loaders.js';
+import {loadAgents,loadProjectConfig,loadWorkflows} from '../../../../packages/agent-registry/src/loaders.js';
 import {projectConfigSchema} from '../../../../packages/agent-registry/src/schemas.js';
 import {resolveExecutionPolicy,canonicalJsonHash} from '../../../../packages/policy-engine/src/index.js';
 import {assertFilePathAllowed} from '../../../../packages/local-tools/src/file-writer.js';
@@ -26,6 +26,10 @@ import type {ProjectConfig} from '../../../../packages/agent-registry/src/schema
 import {verifyReceiptChain,type ChainedReceipt} from '../../../../packages/workflow-engine/src/receipt-chain.js';
 import type {Client} from 'pg';
 import {ENVIRONMENT_COMMAND} from '../../../../packages/run-environments/src/schema.js';
+import {assertRepairCommitEnabled,repairCommitBaseline,REPAIR_COMMIT_COMMAND} from '../../../../packages/run-environments/src/repair-checkpoint.js';
+import {planRunEnvironment} from '../../../../packages/run-environments/src/index.js';
+import {materializeVerificationRecipes} from '../../../../packages/storage/src/partner-recovery-admission.js';
+import type {WorkflowDefinition} from '../../../../packages/agent-registry/src/schemas.js';
 import {loadQueuePartnerComparisons,normalizeQueuePartnerInfluence,queuePartnerDeliveryEvidence,queuePartnerRepairPlaybooks,recordQueuePartnerMemory,recordQueuePartnerMemoryInfluence,type QueuePartnerComparison,type QueuePartnerMemoryFact,type QueuePartnerPlaybookRevalidation} from './queue-partner-memory.js';
 
 export interface PartnerActorSource {id:string;status:string;activeQueueMember:boolean;task:string;root_uri:string;profile:string;registration_profile:string;metadata:any;provider_override:string|null;model_tier_override:'fast'|'standard'|'reasoning'|null;blocker:string}
@@ -132,9 +136,35 @@ export function partnerRecoveryCommands(project:ProjectConfig,paths:readonly str
  // A broad Python grant need not repeat each filename, but is never invented.
  const pythonTests=paths.filter(p=>/^tests\/test_[A-Za-z0-9_]+\.py$/u.test(p));
  const environmentCapability=project.execution.environments&&project.actions.allowed_commands.includes(ENVIRONMENT_COMMAND)?[ENVIRONMENT_COMMAND]:[];
- const candidates=[...environmentCapability,...legacyOfflineCommands(project,paths),...pythonTests.map(p=>`python3 -m unittest discover -s tests -p ${p.slice('tests/'.length)} -v`),...paths.filter(p=>/^[A-Za-z0-9_./-]+\.test\.[cm]?[jt]s$/u.test(p))
+ const commitCapability=project.execution.repair_commits?.enabled&&project.actions.allowed_commands.includes(REPAIR_COMMIT_COMMAND)?[REPAIR_COMMIT_COMMAND]:[];
+ const candidates=[...environmentCapability,...commitCapability,...legacyOfflineCommands(project,paths),...pythonTests.map(p=>`python3 -m unittest discover -s tests -p ${p.slice('tests/'.length)} -v`),...paths.filter(p=>/^[A-Za-z0-9_./-]+\.test\.[cm]?[jt]s$/u.test(p))
   .flatMap(p=>[`node --import tsx --test ${p}`,`node --test ${p}`])];
  return [...new Set(candidates)].filter(c=>{try{assertCommandAllowed(c,project);return true;}catch{return false;}});
+}
+
+export function partnerRecoveryWorkflow(worker:Awaited<ReturnType<typeof loadAgents>>[number],project:ProjectConfig,template?:WorkflowDefinition,sourceRepair=true):WorkflowDefinition {
+ const selected=sourceRepair&&project.execution.repair_commits?.enabled===true;
+ if(selected){
+  assertRepairCommitEnabled(project);
+  if(!template||template.id!=='repair-blocked-item'||template.stages.length!==2||template.stages[0]?.id!=='repair'
+    ||template.stages[1]?.id!=='verify'||template.stages[1]?.pattern?.type!=='verifier'
+    ||!project.execution.repair_commits!.stages.includes('repair'))throw Error('Partner repair pipeline requires its repair/verify workflow and configured repair checkpoint stage.');
+ }
+ const base=selected?template!:createAgentTaskWorkflow(worker);
+ return {...base,id:`partner-${selected?'repair':'recovery'}-${worker.id}`,name:`Queue Partner recovery with ${worker.display_name}`,lead:'queue-partner',
+  stages:base.stages.map(stage=>stage.id==='repair'?{...stage,agent:worker.id}:stage)};
+}
+
+export async function preflightPartnerRepairPipeline(cwd:string,project:ProjectConfig,paths:string[],workflow:WorkflowDefinition){
+ if(!project.execution.repair_commits?.enabled)return;
+ assertRepairCommitEnabled(project);
+ const commands=materializeVerificationRecipes(project,paths);
+ if(!commands.length)throw Error('Repair pipeline requires an exact declared behavioral test recipe before consuming a repair attempt.');
+ for(const stage of ['repair','verify'])for(const commandLine of commands){
+  const plan=await planRunEnvironment({cwd,project,context:{runId:'partner-repair-preflight',workflowId:workflow.id,stageId:stage,requireVerification:true},commandLine});
+  if(!plan)throw Error(`Repair pipeline has no declared environment for ${stage}: ${commandLine}`);
+ }
+ await repairCommitBaseline(cwd);
 }
 
 export type PartnerRecoveryFact={runId:string;kind:string;target:string;summary:string;exitCode?:number;timedOut?:boolean;nextHash?:string};
@@ -345,6 +375,15 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
     allowed_write_paths:writePaths,allowed_commands:writePaths.length?partnerRecoveryCommands(resolved.project,writePaths):[],isolate_command_writes:true}});
    const admission=writePaths.length?await preparePartnerAdmission({sourceRunId:source.id,projectId:family.projectId,projectRootUri:source.root_uri,
     familyId:family.familyId,task:source.task,metadata:source.metadata,project:resolved.project,paths:writePaths}):undefined;
+   const pipelineAgents=writePaths.length&&policy.execution.repair_commits?.enabled?await loadAgents(ctx.rootDir):[];
+   const pipelineWorker=pipelineAgents.find(a=>a.id===selectPartnerWorkerAgent(writePaths))??pipelineAgents.find(a=>a.id==='implementation-agent');
+   const pipelineTemplate=pipelineWorker?(await loadWorkflows(ctx.rootDir)).find(w=>w.id==='repair-blocked-item'):undefined;
+   let pipelineGap='';
+   if(pipelineWorker&&admission?.ready)try{
+    if(!pipelineAgents.some(a=>a.id==='test-engineer'))throw Error('Independent repair verifier is unavailable in the current registry.');
+    await preflightPartnerRepairPipeline(source.root_uri,policy,writePaths,partnerRecoveryWorkflow(pipelineWorker,policy,pipelineTemplate));
+   }
+   catch(error){pipelineGap=error instanceof Error?error.message:String(error);}
    const priorFacts=await loadPartnerRecoveryEvidence(source.id,family.projectId),acceptanceHash=acceptanceDigest(source.task),guidePolicy=await queuePartnerGuidePolicy(family.projectId,source.id);
    const comparisons=await loadQueuePartnerComparisons(family.projectId,{familyId:family.familyId,sourceRunId:source.id,task:source.task,blocker:source.blocker,writePaths});
    const repairPlaybooks=queuePartnerRepairPlaybooks(comparisons,{sourceHash,policyHash,acceptanceHash});
@@ -352,9 +391,10 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
    const reason=[holdReasons.get(family.familyId)??'Technical queue recovery',scopeGap].filter(Boolean).join('; ');
    const binding={projectId:family.projectId,projectRootUri:source.root_uri,sourceRunId:source.id,familyId:family.familyId,
     fileScopes:writePaths.length?writePaths:[`runtime/queue-partner/recovery/${source.id}`],taskHash:acceptanceHash,policyHash,sourceHash,writePaths,
+    ...(writePaths.length&&policy.execution.repair_commits?.enabled?{requiresVerifierSlot:true}:{}),
     fingerprint:partnerActorFingerprint({task:source.task,blocker:source.blocker,reason,policyHash,sourceHash,writePaths,provider:null,tier:null,
      commands:policy.actions.allowed_commands,evidenceDigest:partnerRecoveryEvidenceDigest(priorFacts)})};
-   return {binding,...(admission?{admission:(owner:string,fence:string)=>enforcePartnerAdmission(admission,owner,fence)}:{}),execute:async claim=>{
+   return {binding,...(admission?{admission:(owner:string,fence:string)=>pipelineGap?Promise.resolve({ready:false,reason:pipelineGap}):enforcePartnerAdmission(admission,owner,fence)}:{}),execute:async claim=>{
     let renewalLost=false,childId:string|undefined,guideSampleRate=.5;
     const timer=setInterval(()=>{void renewWorkIntent({projectId:claim.projectId,owner:claim.owner,fencingToken:claim.intentFence,ttlSeconds:900}).then(ok=>{if(!ok)renewalLost=true;}).catch(()=>{renewalLost=true;});},60_000);
     try{
@@ -363,10 +403,11 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
      if(guidePolicy.policy.mode!=='canary')try{guideSampleRate=(await recordQueuePartnerGuidePolicyTransition({projectId:family.projectId,sourceRunId:source.id,report:guidePolicy})).effectiveSampleRate;}catch{guideSampleRate=.5;}
      const agents=await loadAgents(ctx.rootDir),partner=agents.find(a=>a.id==='queue-partner');if(!partner)throw Error('Partner agent unavailable');
      const preferredWorkerId=selectPartnerWorkerAgent(writePaths),worker=agents.find(a=>a.id===preferredWorkerId)??agents.find(a=>a.id==='implementation-agent')??partner;
-     const workflow={...createAgentTaskWorkflow(worker),id:`partner-recovery-${worker.id}`,name:`Queue Partner recovery with ${worker.display_name}`,lead:partner.id};
+     const workflow=partnerRecoveryWorkflow(worker,policy,pipelineTemplate,writePaths.length>0);
+     const verifier=workflow.stages.some(stage=>stage.agent==='test-engineer')?agents.find(a=>a.id==='test-engineer'):undefined;
      // Refresh both the durable leader and selected reusable specialist. This
      // is one governed child workflow, not a recursive recovery workflow.
-     await seedRegistry([{path:'agents/operations/queue-partner.yaml',value:partner},{path:`agents/runtime/${worker.id}.yaml`,value:worker}],[{path:`runtime/${workflow.id}.yaml`,value:workflow}]);
+     await seedRegistry([{path:'agents/operations/queue-partner.yaml',value:partner},{path:`agents/runtime/${worker.id}.yaml`,value:worker},...(verifier?[{path:'agents/runtime/test-engineer.yaml',value:verifier}]:[])],[{path:`runtime/${workflow.id}.yaml`,value:workflow}]);
      const task=buildPartnerRecoveryTask({strategy:family.resolutionStrategy??'discover-missing-scope',workerAgentId:worker.id as PartnerWorkerAgentId,writePaths,priorFacts,comparisonEvidence,repairPlaybooks,source,
       familyId:family.familyId,owner:claim.owner,intentFence:claim.intentFence,reason,policyHash,sourceHash,allowedCommands:policy.actions.allowed_commands});
      const guideExposure=guideAssignment(source.id,workflow.id,guideSampleRate);
@@ -376,6 +417,7 @@ export function createPartnerActorAdapter(ctx:CliContext,holdReasons:ReadonlyMap
       // current configured project/provider route instead of copying an old
       // failed run's stale provider or assuming the originating chat's model.
       evaluationMetadata:{source:'queue-partner-recovery',sourceRunId:source.id,queueCoordinatorClaimId:claim.id,queueCoordinatorFence:claim.fence,
+       ...(binding.requiresVerifierSlot?{partnerRepairPipeline:{version:1,requiresVerifierSlot:true}}:{}),
        recoveryTaskHash:binding.taskHash,recoveryPolicyHash:policyHash,recoverySubjectHash:sourceHash,recoveryWritePaths:writePaths,acceptance:'unverified',
        partnerPrompt:{schemaVersion:1,characters:task.length,comparisonCharacters:JSON.stringify(comparisonEvidence).length,priorFactCharacters:JSON.stringify(compactPartnerPriorFacts(priorFacts)).length},
        partnerWorkerTeam:{schemaVersion:1,leaderAgentId:partner.id,workerAgentId:worker.id,workflowId:workflow.id,usageAccounting:'model-route-receipts'},

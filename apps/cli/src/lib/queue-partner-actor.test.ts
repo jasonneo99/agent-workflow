@@ -2,8 +2,10 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {readFileSync} from 'node:fs';
 import {setImmediate} from 'node:timers/promises';
+import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
-import {buildPartnerRecoveryTask,compactPartnerComparisonEvidence,compactPartnerPriorFacts,partnerCanInvestigate,partnerActorFingerprint,partnerRecoveryCommands,runPartnerActor,runPartnerActors,driveOwnedPartnerChild,readOwnedPartnerChildOnClient,selectPartnerWorkerAgent,verifiedPartnerRecoveryFacts,partnerRecoveryEvidenceDigest,type PartnerActorAdapter,type PartnerActorSource,type PartnerChildState} from './queue-partner-actor.js';
+import {buildPartnerRecoveryTask,compactPartnerComparisonEvidence,compactPartnerPriorFacts,partnerCanInvestigate,partnerActorFingerprint,partnerRecoveryCommands,partnerRecoveryWorkflow,preflightPartnerRepairPipeline,runPartnerActor,runPartnerActors,driveOwnedPartnerChild,readOwnedPartnerChildOnClient,selectPartnerWorkerAgent,verifiedPartnerRecoveryFacts,partnerRecoveryEvidenceDigest,type PartnerActorAdapter,type PartnerActorSource,type PartnerChildState} from './queue-partner-actor.js';
+import {loadAgents,loadWorkflows} from '../../../../packages/agent-registry/src/loaders.js';
 import type {QueuePartnerComparison} from './queue-partner-memory.js';
 import {projectConfigSchema} from '../../../../packages/agent-registry/src/schemas.js';
 import {chainReceipt} from '../../../../packages/workflow-engine/src/receipt-chain.js';
@@ -139,6 +141,24 @@ test('focused Python recipes still require the current grant and do not expand e
  const blocked=projectConfigSchema.parse({project:{name:'Blocked tests'},actions:{allowed_commands:['python3 *'],blocked_commands:['python3 -m unittest *']}});
  assert.ok(!partnerRecoveryCommands(blocked,['tests/test_a.py']).some(c=>c.includes('unittest')));
  assert.ok(!partnerRecoveryCommands(blocked,['tests/../test_foreign.py','tests/test_a.py;bad']).some(c=>c.includes('unittest')));
+});
+test('enabled Partner repairs use the checkpoint stage and an independent verifier from the shared workflow',async()=>{
+ const root=fileURLToPath(new URL('../../../../',import.meta.url));
+ const worker=(await loadAgents(root)).find(a=>a.id==='backend-engineer')!;
+ const template=(await loadWorkflows(root)).find(w=>w.id==='repair-blocked-item')!;
+ const project=projectConfigSchema.parse({project:{name:'Declared repair'},execution:{repair_commits:{enabled:true}},actions:{allowed_commands:['npm run agentflow -- repair-checkpoint *'],blocked_commands:[]}});
+ const workflow=partnerRecoveryWorkflow(worker,project,template);
+ assert.equal(workflow.id,'partner-repair-backend-engineer');
+ assert.deepEqual(workflow.stages.map(s=>[s.id,s.agent]),[['repair','backend-engineer'],['verify','test-engineer']]);
+ assert.equal(workflow.stages[1]!.pattern.type,'verifier');
+ assert.ok(partnerRecoveryCommands(project,['src/a.ts']).includes('npm run agentflow -- repair-checkpoint *'));
+ assert.deepEqual(partnerRecoveryWorkflow(worker,project,undefined,false).stages.map(s=>s.id),['specialist-task']);
+ assert.throws(()=>partnerRecoveryWorkflow(worker,project),/requires its repair\/verify workflow/);
+ const missing=projectConfigSchema.parse({...project,actions:{...project.actions,allowed_commands:[]}});
+ assert.throws(()=>partnerRecoveryWorkflow(worker,missing,template),/not enabled/);
+ await assert.rejects(preflightPartnerRepairPipeline(root,project,['src/a.ts'],workflow),/behavioral test recipe/);
+ const recipe=projectConfigSchema.parse({...project,actions:{...project.actions,allowed_commands:[...project.actions.allowed_commands,'python3 -m unittest discover -s tests -p test_a.py -v'],verification_recipes:[{source_paths:['tests/test_a.py'],test_paths:['tests/test_a.py'],commands:['python3 -m unittest discover -s tests -p test_a.py -v'],output_paths:[]}]}});
+ await assert.rejects(preflightPartnerRepairPipeline(root,recipe,['tests/test_a.py'],workflow),/environment/i);
 });
 test('repair recipes retain a declared exact environment capability without inheriting broad shell grants',()=>{
  const capability='npm run agentflow -- environments *';

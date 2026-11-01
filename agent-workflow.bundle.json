@@ -14,12 +14,12 @@
   },
   "counts": {
     "agents": 28,
-    "workflows": 23,
-    "files": 51
+    "workflows": 24,
+    "files": 52
   },
   "checksum": {
     "algorithm": "sha256",
-    "value": "8960a8473f3f7b01061b1d59595a25eb8b86c9abcca965d6fc9fd1ad57b31a86"
+    "value": "faf728851dd4fcc8c63e1e5cb6dad21fd84c306488be421bff4029d48cbdef83"
   },
   "agents": [
     {
@@ -250,6 +250,11 @@
       "checksum": "bd57f99d6a91da17c9f94ad0a019403d36e83bb947a16c8b48066979699c319e"
     },
     {
+      "id": "repair-blocked-item",
+      "path": "workflows/repair-blocked-item.yaml",
+      "checksum": "cf4bd4b4c63348b8a6eccfc8a0f06f839ac525ba6854b37100bd60cf405e9c18"
+    },
+    {
       "id": "review-pr",
       "path": "workflows/review-pr.yaml",
       "checksum": "6102f3fac71089dab8496c5e4e16b6fdd5b63302a96f687d84853cb4e86e3398"
@@ -460,6 +465,10 @@
     {
       "path": "workflows/provider-smoke.yaml",
       "checksum": "bd57f99d6a91da17c9f94ad0a019403d36e83bb947a16c8b48066979699c319e"
+    },
+    {
+      "path": "workflows/repair-blocked-item.yaml",
+      "checksum": "cf4bd4b4c63348b8a6eccfc8a0f06f839ac525ba6854b37100bd60cf405e9c18"
     },
     {
       "path": "workflows/review-pr.yaml",

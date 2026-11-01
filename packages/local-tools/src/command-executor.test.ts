@@ -11,9 +11,9 @@ import {projectConfigSchema} from '../../agent-registry/src/schemas.js';
 
 test('environment management is a runner capability even when no test selector matched the agent command',async()=>{
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'synthetic-runner-capability-')));
- const project=projectConfigSchema.parse({project:{name:'Runner capability'},actions:{allowed_commands:['npm run agentflow -- environments *'],blocked_commands:[]}});
+ const project=projectConfigSchema.parse({project:{name:'Runner capability'},actions:{allowed_commands:['npm run agentflow -- environments *','npm run agentflow -- repair-checkpoint *'],blocked_commands:[]}});
  try{
-  for(const commandLine of ['npm run agentflow -- environments list','npm run agentflow -- environments --project synthetic --run synthetic']){
+  for(const commandLine of ['npm run agentflow -- environments list','npm run agentflow -- environments --project synthetic --run synthetic','npm run agentflow -- repair-checkpoint --execute']){
    for(const environmentContext of [undefined,{runId:'synthetic-review'}]){
     await assert.rejects(executeAllowedCommand({cwd:root,project,commandLine,environmentContext}),/request the underlying authorized test command/u);
    }
