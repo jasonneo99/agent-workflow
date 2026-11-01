@@ -88,6 +88,11 @@ export function missingRepairVerifierCommands(project: ReturnType<typeof project
   return materializeVerificationRecipes(project, candidateFiles).filter(command => !seen.has(command));
 }
 
+export function repairVerifierNeedsCheckpoint(project: ReturnType<typeof projectConfigSchema.parse>, verifier: boolean, workflowId: string, hasCandidate: boolean): boolean {
+  return verifier && project.execution.repair_commits?.enabled === true
+    && (hasCandidate || workflowId === "repair-blocked-item" || workflowId.startsWith("partner-repair-"));
+}
+
 export class LostWorkflowTaskLeaseError extends Error {
   constructor(taskId: string) {
     super(`Worker lost ownership of workflow task ${taskId}; no further side effects may be dispatched.`);
@@ -1956,7 +1961,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
       await assertLeaseOwned();
       let repairCheckpoint: RepairCheckpoint | null = null;
       let repairVerification: Awaited<ReturnType<typeof verifyRepairCheckpoint>> | null = null;
-      if (repairParent || (project.execution.repair_commits?.enabled && stagePattern.type === "verifier")) {
+      const priorRepairCandidate = [...task.priorStageArtifacts ?? []].reverse().find(stage => stage.artifact.repairCheckpoint)
+        ?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
+      if (repairParent || repairVerifierNeedsCheckpoint(project, stagePattern.type === "verifier", task.workflowId, Boolean(priorRepairCandidate))) {
         try {
           const observations = actionResults as Array<{ environment?: { status?: string; receiptPath?: string | null }; verificationRecipe?: { status?: string } }>;
           const evidence = [...observations].reverse().find(action => action.environment?.status === "ready" && action.environment.receiptPath && action.verificationRecipe?.status === "passed");
@@ -1973,7 +1980,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               summary: "Committed the tested repair candidate; independent verification remains pending.", artifactKind: "repair_commit_candidate", artifactContent: { ...repairCheckpoint } });
           }
           if (stagePattern.type === "verifier") {
-            const candidate = [...task.priorStageArtifacts ?? []].reverse().find(stage => stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
+            const candidate = priorRepairCandidate;
             if (!candidate?.receiptPath) throw Error("Repair verification requires a retained candidate checkpoint; use a separately scoped current-revision review when no repair was needed.");
             if (candidate?.receiptPath) {
               if (!evidence?.environment?.receiptPath) throw Error("The committed repair requires a fresh independent environment test receipt.");

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { continuationBackoff, continuationResumeReceipt } from "./action-result-continuation.js";
-import { missingRepairVerifierCommands } from "./executor.js";
+import { missingRepairVerifierCommands, repairVerifierNeedsCheckpoint } from "./executor.js";
 
 test("independent candidate tests are scheduled when the review omits actions, without authorizing other commands or repeats", () => {
   const command = "python3 -m unittest discover -s tests -p test_example.py -v";
@@ -17,6 +17,17 @@ test("independent candidate tests are scheduled when the review omits actions, w
   assert.deepEqual(missingRepairVerifierCommands(project, true, [files[0]!], [], []), []);
   assert.deepEqual(missingRepairVerifierCommands({ ...project, actions: { ...project.actions, allowed_commands: [] } }, true, files, [], []), []);
   assert.deepEqual(missingRepairVerifierCommands({ ...project, execution: { ...project.execution, repair_commits: { enabled: false, stages: ["repair"] } } }, true, files, [], []), []);
+});
+
+test("repair checkpoint requirements preserve separate review and release workflows", () => {
+  const project = projectConfigSchema.parse({ project: { name: "Synthetic repair" }, execution: { repair_commits: { enabled: true, stages: ["repair"] } } });
+  for (const id of ["ship-release", "review-pr", "queue-revision-verification", "partner-recovery-test-engineer"])
+    assert.equal(repairVerifierNeedsCheckpoint(project, true, id, false), false, id);
+  for (const id of ["repair-blocked-item", "partner-repair-implementation-agent"])
+    assert.equal(repairVerifierNeedsCheckpoint(project, true, id, false), true, "explicit repair flows cannot omit their candidate");
+  assert.equal(repairVerifierNeedsCheckpoint(project, true, "build-feature", true), true, "other workflows still verify a produced candidate");
+  assert.equal(repairVerifierNeedsCheckpoint(project, false, "repair-blocked-item", true), false);
+  assert.equal(repairVerifierNeedsCheckpoint({ ...project, execution: { ...project.execution, repair_commits: { enabled: false, stages: ["repair"] } } }, true, "repair-blocked-item", true), false);
 });
 
 test("checkpoint round trip returns final successful evidence and pending work to the provider", () => {
