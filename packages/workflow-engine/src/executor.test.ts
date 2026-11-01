@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { continuationBackoff, continuationResumeReceipt } from "./action-result-continuation.js";
+import { missingRepairVerifierCommands } from "./executor.js";
+
+test("independent candidate tests are scheduled when the review omits actions, without authorizing other commands or repeats", () => {
+  const command = "python3 -m unittest discover -s tests -p test_example.py -v";
+  const files = ["src/example.py", "tests/test_example.py"];
+  const project = projectConfigSchema.parse({ project: { name: "Synthetic repair" }, execution: { repair_commits: { enabled: true, stages: ["repair"] } },
+    actions: { allowed_commands: [command], allowed_write_paths: [], verification_recipes: [{ source_paths: files, test_paths: [files[1]], commands: [command], output_paths: [] }] } });
+  assert.deepEqual(missingRepairVerifierCommands(project, true, files, [], []), [command]);
+  assert.deepEqual(project.actions.allowed_write_paths, [], "scheduling tests adds no verifier writes");
+  assert.deepEqual(missingRepairVerifierCommands(project, true, files, [command], []), []);
+  for (const exitCode of [0, 1]) assert.deepEqual(missingRepairVerifierCommands(project, true, files, [], [{ commandLine: command, exitCode }]), [], "never replay an observed test");
+  assert.deepEqual(missingRepairVerifierCommands(project, false, files, [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands(project, true, undefined, [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands(project, true, [files[0]!], [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands({ ...project, actions: { ...project.actions, allowed_commands: [] } }, true, files, [], []), []);
+  assert.deepEqual(missingRepairVerifierCommands({ ...project, execution: { ...project.execution, repair_commits: { enabled: false, stages: ["repair"] } } }, true, files, [], []), []);
+});
 
 test("checkpoint round trip returns final successful evidence and pending work to the provider", () => {
   const action = { commandLine: "git diff -- src/example.ts", artifactUri: "db://synthetic/final", exitCode: 0, timedOut: false, outputPreview: "final diagnostic result" };

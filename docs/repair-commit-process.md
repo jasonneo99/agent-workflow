@@ -50,6 +50,9 @@ projects do not gain commit authority by installing the feature.
 Partner uses `repair-blocked-item` for projects that enable this capability. Its
 `repair` stage creates the candidate automatically and its read-only `verify`
 stage tests that exact commit in a fresh instance of the declared environment.
+The worker schedules missing declared candidate test commands through ordinary
+action policy even when the verifier returns only a review. An observed test is
+never scheduled again automatically, including a failed test.
 The selected implementation specialist replaces only the repair-stage agent.
 Partner checks both stages' environment selectors, the behavioral recipe and
 the clean checkout before reserving an attempt. Missing profiles or a dirty

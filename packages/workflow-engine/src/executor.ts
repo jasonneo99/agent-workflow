@@ -5,6 +5,7 @@ import { getWorkflowAcceptanceDecision } from "../../storage/src/postgres.js";
 import { commandEvidencePacket } from "../../storage/src/command-evidence.js";
 import { recoveryEvidence } from "./recovery-evidence.js";
 import { sourceSubjectHash } from "./source-subject.js";
+import { materializeVerificationRecipes } from "../../storage/src/partner-recovery-admission.js";
 import { acquiredStageIntent, type StageIntent } from "./stage-intent.js";
 import { continuationBackoff, continuationRequestedFileReads, continuationResumeReceipt, continuationMatchesExecutionContract, readRoundActionStateReceipt, isVerificationCommand, pendingEvidenceReason, verificationWriteSubject } from "./action-result-continuation.js";
 import fs from "node:fs/promises";
@@ -75,6 +76,17 @@ import {recordQueuePartnerGuideCircuitOutcome,reserveQueuePartnerGuideCircuitAtt
 import {queuePartnerGuideActorReadiness} from '../../storage/src/queue-partner-guide-readiness.js';
 import {reconcileQueuePartnerGuideRegistryHold} from '../../storage/src/queue-partner-guide-holds.js';
 export { applyCurrentAutoApprovalThreshold } from "./approval-threshold.js";
+
+/** Schedule only declared, allowlisted candidate tests through ordinary action
+ * approval and command execution. A model's review cannot replace execution.
+ * Any current-task observation inhibits rescheduling, including a failed test. */
+export function missingRepairVerifierCommands(project: ReturnType<typeof projectConfigSchema.parse>, verifier: boolean,
+  candidateFiles: readonly string[] | undefined, requested: readonly string[], observations: readonly unknown[]): string[] {
+  if (!verifier || !project.execution.repair_commits?.enabled || !candidateFiles?.length) return [];
+  const seen = new Set([...requested, ...observations.flatMap(value => value && typeof value === "object"
+    && typeof (value as { commandLine?: unknown }).commandLine === "string" ? [(value as { commandLine: string }).commandLine] : [])]);
+  return materializeVerificationRecipes(project, candidateFiles).filter(command => !seen.has(command));
+}
 
 export class LostWorkflowTaskLeaseError extends Error {
   constructor(taskId: string) {
@@ -745,6 +757,17 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         // evidence to the provider instead of prematurely applying the final
         // verification gate to an informational response.
         await executePendingReadRounds();
+        const candidateFiles = ([...task.priorStageArtifacts].reverse().find(stage => stage.artifact.repairCheckpoint)
+          ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files;
+        const scheduledVerifierCommands = missingRepairVerifierCommands(project, stagePattern.type === "verifier",
+          candidateFiles, output.requestedCommands ?? [], actionResults);
+        if (scheduledVerifierCommands.length) {
+          output = { ...output, requestedCommands: [...output.requestedCommands ?? [], ...scheduledVerifierCommands] };
+          await recordRunAction({ runId: task.runId, taskId: task.taskId, agentId: task.agentId,
+            actionType: "repair_verifier_commands_scheduled", target: task.stageId,
+            summary: "Scheduled the declared candidate tests through ordinary command policy; independent execution remains required.",
+            artifactKind: "repair_verifier_commands_scheduled", artifactContent: { commands: scheduledVerifierCommands, candidateFiles, grantsAdditionalAuthority: false } });
+        }
         const totalRequestedActions = countRequestedActions(output);
         let reactIteration = 0;
         let successfulCommandsThisRound = 0;
