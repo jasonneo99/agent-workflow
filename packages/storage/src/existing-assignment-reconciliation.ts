@@ -39,6 +39,8 @@ export interface ProspectiveSourcePhaseRequest {
  runId:string;assignmentId:string;expectedFence:string;expectedStateVersion:string;
  phaseId:string;owner:string;intentFence:string;actor:string;reason:string;
  sourcePaths:string[];writePaths:string[];commands:string[];goal:string;lane:number;
+ /** One separately approved correction of a pre-write checkpoint-policy refusal. */
+ correctedAttempt?:true;
 }
 export async function previewProspectiveSourcePhaseOnClient(c:Client,input:ProspectiveSourcePhaseRequest) {
  const {loadProjectConfig,loadWorkflows}=await import('../../agent-registry/src/loaders.js');
@@ -61,7 +63,8 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
   q.intent_fence prior_intent_fence,q.family_id,q.source_run_id::text source_id,q.file_scopes
   from workflow_runs r join projects p on p.id=r.project_id join queue_coordinator_assignments q on q.child_run_id=r.id
   where r.id=$1 and q.id=$2 for update of r,q,p`,[input.runId,input.assignmentId])).rows[0];
- if(!row||row.assignment_project!==row.project_key||!['blocked','failed'].includes(row.status)||row.assignment_state!=='held'||row.role!=='repair'||
+ if(!row||row.assignment_project!==row.project_key||!['blocked','failed'].includes(row.status)||
+  !(input.correctedAttempt?['held','running']:['held']).includes(row.assignment_state)||row.role!=='repair'||
   row.assignment_fence!==input.expectedFence||String(row.state_version)!==input.expectedStateVersion||row.lease_owner||
   row.lease_expires_at&&new Date(row.lease_expires_at).getTime()>Date.now()||
   row.evaluation_metadata?.queueCoordinatorClaimId!==input.assignmentId||
@@ -73,8 +76,20 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
   throw Error('Prospective source phase must retain exact original project and family');
  if(!(await c.query("select 1 from project_identity_locations where project_id=$1 and identity_id=$1 and kind='canonical'",[row.project_key])).rowCount)
   throw Error('Canonical project registration required');
- if((await c.query("select 1 from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted'",[input.runId])).rowCount)
+ const admitted=await c.query("select 1 from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted'",[input.runId]);
+ if(admitted.rowCount&&!input.correctedAttempt)
   throw Error('One-time prospective source phase already consumed');
+ if(input.correctedAttempt){
+  if(admitted.rowCount!==1||row.evaluation_metadata?.prospectiveSourcePhase?.phaseId!==input.phaseId||
+   (await c.query("select 1 from action_receipts where run_id=$1 and action_type='prospective_source_phase_corrected_once'",[input.runId])).rowCount)
+   throw Error('One corrected attempt on the same admitted phase only');
+  const original=(await c.query(`select a.content from artifacts a join action_receipts r on r.run_id=a.run_id and r.target=a.uri
+   and r.metadata=a.content and r.agent_id='workflow-orchestrator' and r.action_type='operator_prospective_source_phase_authorized'
+   where a.run_id=$1 and a.uri=$2 and a.kind='prospective_source_phase_authorization'`,[input.runId,row.evaluation_metadata.prospectiveSourcePhase.authorizationUri])).rows;
+  if(original.length!==1)throw Error('Original phase authority unavailable');
+  for(const key of ['phaseId','assignmentId','sourcePaths','writePaths','commands','goal','lane'] as const)
+   if(acceptanceDigest(input[key])!==acceptanceDigest(original[0].content.manifest[key]))throw Error('Correction cannot broaden the admitted phase');
+ }
  const intent=(await c.query(`select file_scopes,expires_at from work_intents where project_id=$1 and owner=$2
   and fencing_token::text=$3 and expires_at>clock_timestamp() for update`,[row.project_key,input.owner,input.intentFence])).rows[0];
  if(!intent||acceptanceDigest([...intent.file_scopes].sort())!==acceptanceDigest([...input.sourcePaths].sort()))throw Error('Fresh exact prospective work intent required');
@@ -108,8 +123,25 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  const stages=repair.stages.map((stage,index)=>({...stage,id:prefix+'-'+stage.id,
   goal:index===0?input.goal+'\n'+stage.goal:stage.goal,
   depends_on:repair.stages.slice(0,index).map(s=>prefix+'-'+s.id)}));
- if(!Array.isArray(row.workflow_snapshot?.stages)||stages.some(stage=>row.workflow_snapshot.stages.some((old:any)=>old.id===stage.id)))
+ if(!Array.isArray(row.workflow_snapshot?.stages)||(!input.correctedAttempt&&stages.some(stage=>row.workflow_snapshot.stages.some((old:any)=>old.id===stage.id))))
   throw Error('Prospective stage identity conflicts with retained workflow');
+ if(input.correctedAttempt){
+  const retained=row.workflow_snapshot.stages.filter((stage:any)=>stages.some(s=>s.id===stage.id));
+  if(acceptanceDigest(retained)!==acceptanceDigest(stages))throw Error('Correction requires unchanged phase stages');
+  const phaseTasks=stages.map(stage=>tasks.filter(t=>t.stage_id===stage.id));
+  if(phaseTasks.some(found=>found.length!==1)||phaseTasks[0]![0].status!=='blocked'||phaseTasks[0]![0].attempts!==1||
+   phaseTasks.slice(1).some(found=>found[0].status!=='cancelled'||found[0].attempts!==0))throw Error('Correction requires the single pre-write attempt');
+  const failure=(await c.query(`select content from artifacts where run_id=$1 and task_id=$2 and kind='stage_output'`,[input.runId,phaseTasks[0]![0].id])).rows;
+  if(failure.length!==1||failure[0].content.phase!=='runtime-preparation'||
+   failure[0].content.blockedReason!=="Repair commits are not enabled by the owning project's exact capability.")
+   throw Error('Only the checkpoint-capability preparation refusal can be corrected');
+  // No provider or product-write authority may have been exercised. Retained
+  // stage output and the receipt chain remain immutable after the retry.
+  if((await c.query(`select 1 from action_receipts where run_id=$1 and agent_id=$2
+   and action_type in ('local_file_write','local_command','provider_invocation','source_checkpoint_created')
+   and created_at>(select min(created_at) from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted')`,
+   [input.runId,stages[0]!.agent])).rowCount)throw Error('Correction requires no source execution effects');
+ }
  assertRepairCommitEnabled(current);
  const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:[...input.commands,REPAIR_COMMIT_COMMAND],
   allowed_write_paths:input.writePaths,blocked_commands:[...new Set([...current.actions.blocked_commands,...(row.policy_snapshot.actions.blocked_commands??[])])],
@@ -126,7 +158,7 @@ export async function previewProspectiveSourcePhaseOnClient(c:Client,input:Prosp
  const phaseContract:StructuredAcceptanceContract={version:1,contractId:prefix,projectId:row.project_key,
   originRunId:input.runId,taskHash:acceptanceDigest(row.task),sourcePaths:input.sourcePaths,subjectHash:sourceHash,
   deliverables:[{id:'approved-source-phase',description:input.goal,status:'pending',receipts:{},gaps:[],requiredGates:['implementation','verification','packaging','supervision']}]};
- const manifest={version:1,operation:'continue-existing-run-source-phase',authority:'direct-human',approvalDecision:'approved',maxAttempts:1,
+ const manifest={version:1,operation:input.correctedAttempt?'correct-existing-source-phase-once':'continue-existing-run-source-phase',authority:'direct-human',approvalDecision:'approved',maxAttempts:1,
   ...input,projectId:row.project_key,taskHash:acceptanceDigest(row.task),sourceHash,currentPolicyHash:acceptanceDigest(current),
   priorPolicyHash:acceptanceDigest(row.policy_snapshot),policyHash:acceptanceDigest(policy),priorContractHash:acceptanceDigest(priorContract),
   taskSnapshotHash:acceptanceDigest(tasks),workflowSnapshotHash:acceptanceDigest(row.workflow_snapshot),
@@ -141,10 +173,13 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
  try{
  const preview=await previewProspectiveSourcePhaseOnClient(c,input);
  if(preview.digest!==expectedDigest)throw Error('Prospective phase changed after preview');
+ const correction=input.correctedAttempt===true;
  const records=(await c.query(`select a.content,a.created_at from artifacts a join action_receipts r on
   r.run_id=a.run_id and r.target=a.uri and r.metadata=a.content and r.receipt_hash is not null
-  and r.agent_id='workflow-orchestrator' and r.action_type='operator_prospective_source_phase_authorized'
-  where a.run_id=$1 and a.uri=$2 and a.kind='prospective_source_phase_authorization'`,[input.runId,authorizationUri])).rows;
+  and r.agent_id='workflow-orchestrator' and r.action_type=$3
+  where a.run_id=$1 and a.uri=$2 and a.kind=$4`,[input.runId,authorizationUri,
+   correction?'operator_prospective_source_phase_correction_authorized':'operator_prospective_source_phase_authorized',
+   correction?'prospective_source_phase_correction_authorization':'prospective_source_phase_authorization'])).rows;
  const grant=records.length===1?records[0].content:null,expiry=Date.parse(grant?.expiresAt),now=Date.now();
  if(!grant||acceptanceDigest(grant.manifest)!==preview.digest||grant.previewDigest!==expectedDigest||
   !/^human-message:[^\s]+$/u.test(grant.instructionReference??'')||typeof grant.instructionText!=='string'||
@@ -157,7 +192,7 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
  const fresh=(await c.query(`update queue_coordinator_assignments set owner=$2,intent_fence=$3,file_scopes=$4::jsonb,
   lane=$5,fence=nextval(pg_get_serial_sequence('queue_coordinator_assignments','fence')),state='running',
   reason='Explicit one-time prospective source phase; historical attempts retained',updated_at=clock_timestamp()
-  where id=$1 and fence=$6::bigint and state='held' returning fence::text`,[input.assignmentId,input.owner,input.intentFence,JSON.stringify(input.sourcePaths),input.lane,input.expectedFence])).rows[0];
+  where id=$1 and fence=$6::bigint and state=$7 returning fence::text`,[input.assignmentId,input.owner,input.intentFence,JSON.stringify(input.sourcePaths),input.lane,input.expectedFence,row.assignment_state])).rows[0];
  if(!fresh)throw Error('Prospective assignment fence changed');
  const uri=`db://workflow_runs/${input.runId}/existing_assignment_reconciled/${randomUUID()}`;
  const record={version:1,runId:input.runId,assignmentId:input.assignmentId,fence:fresh.fence,contract:phaseContract,
@@ -169,15 +204,22 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
   summary:'Admitted a scoped prospective source phase; original blocked stages, attempts and acceptance remain unchanged.',metadata:JSON.stringify(record)});
  const metadata={...row.evaluation_metadata,queueCoordinatorFence:fresh.fence,workIntent:{owner:input.owner,fencingToken:input.intentFence},
   existingAssignmentReconciliationUri:uri,coordinatorReconciliationContract:phaseContract,noAutomaticRepeat:true,
-  taskGrant:{sourceWritePaths:input.writePaths},prospectiveSourcePhase:{phaseId:input.phaseId,authorizationUri,originalContract:priorContract,originalTaskIds:tasks.map(t=>t.id)},
+  taskGrant:{sourceWritePaths:input.writePaths},prospectiveSourcePhase:correction?
+   {...row.evaluation_metadata.prospectiveSourcePhase,correctionAuthorizationUri:authorizationUri}:
+   {phaseId:input.phaseId,authorizationUri,originalContract:priorContract,originalTaskIds:tasks.map(t=>t.id)},
   executionPipeline:{version:1,required:true,sourceChanges:true,isolation:'worktree',preparedOnly:false,
    sourcePaths:input.sourcePaths,checkpointStageIds:[stages[0]!.id]}};
- const workflow={...row.workflow_snapshot,execution:{kind:'source-change'},stages:[...row.workflow_snapshot.stages,...stages]};
+ const workflow=correction?row.workflow_snapshot:{...row.workflow_snapshot,execution:{kind:'source-change'},stages:[...row.workflow_snapshot.stages,...stages]};
  const updated=(await c.query(`update workflow_runs set status='queued',state_version=state_version+1,finished_at=null,
   evaluation_metadata=$2::jsonb,policy_snapshot=$3::jsonb,policy_snapshot_hash=$4,workflow_snapshot=$5::jsonb,
   workflow_definition_hash=$6 where id=$1 and state_version=$7::bigint and status=$8 returning state_version::text`,
   [input.runId,JSON.stringify(metadata),JSON.stringify(policy),acceptanceDigest(policy),JSON.stringify(workflow),acceptanceDigest(workflow),input.expectedStateVersion,row.status])).rows[0];
  if(!updated)throw Error('Prospective run state changed');
+ if(correction){
+  for(const stage of stages)if((await c.query(`update workflow_tasks set status='queued',worker_id=null,lease_expires_at=null,
+   finished_at=null,available_at=clock_timestamp() where run_id=$1 and stage_id=$2 and status in ('blocked','cancelled')`,[input.runId,stage.id])).rowCount!==1)
+   throw Error('Corrected task identity changed');
+ }else{
  for(const stage of stages)await c.query(`insert into workflow_tasks(id,run_id,stage_id,agent_id,status,attempts,available_at,idempotency_key)
   values($1,$2,$3,$4,'queued',0,clock_timestamp(),$5)`,[randomUUID(),input.runId,stage.id,stage.agent,`${input.runId}:${stage.id}:${stage.agent}`]);
  for(const destination of stages)for(const sourceId of destination.depends_on??[]){
@@ -191,12 +233,13 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
   await c.query(`insert into workflow_handoff_events(handoff_id,run_id,status,actor_agent_id,metadata)
    values($1,$2,'proposed',$3,$4::jsonb)`,[handoff.id,input.runId,source.agent,JSON.stringify({generatedFromWorkflowDefinition:true,phaseId:input.phaseId})]);
  }
+ }
  const brief=`Approved prospective source phase ${input.phaseId}. Same run, no new wrapper.\n${input.goal}\nExact source write paths: ${input.writePaths.join(', ')}. Exact commands: ${input.commands.join('; ')}.\nUse the required isolated prepared pipeline. Root owns intent ${input.owner}/${input.intentFence}; do not acquire a competing intent. Historical blocked tasks and original acceptance are retained, not delivered by this phase. No deployment, service restart, credentials, terminal features, policy edits, new workflow, or direct Git commit commands. Let the runtime commit/verify/integrate the exact source candidate. Phase authorization: ${authorizationUri}.`;
  await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,'compiled_brief',$2,$3::jsonb,clock_timestamp())",[input.runId,uri+'/brief',JSON.stringify({text:brief,assignmentFence:fresh.fence,contractDigest:acceptanceDigest(phaseContract)})]);
  await c.query(`insert into workflow_run_transitions(run_id,from_status,to_status,state_version,lease_epoch,actor,reason,idempotency_key,metadata)
   values($1,$2,'queued',$3::bigint,$4::bigint,$5,$6,$7,$8::jsonb)`,[input.runId,row.status,updated.state_version,row.lease_epoch,input.actor,input.reason,
-  'prospective-source-phase:'+input.runId,JSON.stringify({authorizationUri,phaseId:input.phaseId,assignmentFence:fresh.fence})]);
- await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'prospective_source_phase_admitted',target:authorizationUri,
+  (correction?'prospective-source-phase-correction:':'prospective-source-phase:')+input.runId,JSON.stringify({authorizationUri,phaseId:input.phaseId,assignmentFence:fresh.fence})]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:correction?'prospective_source_phase_corrected_once':'prospective_source_phase_admitted',target:authorizationUri,
   summary:'One fresh explicitly authorized source phase queued on the same run; historical retries and original blocked tasks retained.',metadata:JSON.stringify({phaseId:input.phaseId,previewDigest:preview.digest,assignmentFence:fresh.fence,originalAcceptanceUnchanged:true})});
  await c.query('release savepoint prospective_source_phase_admission');
  return {runId:input.runId,fence:fresh.fence,intentFence:input.intentFence,artifactUri:uri,phaseId:input.phaseId};

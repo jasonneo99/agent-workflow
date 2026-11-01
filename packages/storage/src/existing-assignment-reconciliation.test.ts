@@ -74,11 +74,11 @@ test('one prospective source phase retains exhausted history and requires exact 
    const input={runId:run,assignmentId:assignment,expectedFence:'1',expectedStateVersion:'19',phaseId:randomUUID(),owner:'fresh-human-source',intentFence:'2',actor:'synthetic human control',reason:'Approved one prospective source phase',sourcePaths:['source.py','tests.py'],writePaths:['source.py','tests.py'],commands,goal:'Implement a bounded portable input contract and regressions; retain original acceptance.',lane:1};
    const preview=await previewProspectiveSourcePhaseOnClient(c,input);
    const before=(await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0];
-   const putGrant=async(overrides:Record<string,unknown>={},actionType='operator_prospective_source_phase_authorized')=>{
+   const putGrant=async(overrides:Record<string,unknown>={},actionType='operator_prospective_source_phase_authorized',boundPreview=preview,kind='prospective_source_phase_authorization')=>{
     const uri='synthetic://prospective/'+randomUUID();const instruction='Synthetic explicit human source-phase authorization';
-    const content={manifest:preview.manifest,previewDigest:preview.digest,instructionReference:'human-message:synthetic-current',instructionText:instruction,
+    const content={manifest:boundPreview.manifest,previewDigest:boundPreview.digest,instructionReference:'human-message:synthetic-current',instructionText:instruction,
      instructionSha256:createHash('sha256').update(instruction).digest('hex'),expiresAt:new Date(Date.now()+60000).toISOString(),...overrides};
-    await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,'prospective_source_phase_authorization',$2,$3,clock_timestamp())",[run,uri,content]);
+    await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,$4,$2,$3,clock_timestamp())",[run,uri,content,kind]);
     await appendActionReceipt(c,{runId:run,agentId:'workflow-orchestrator',actionType,target:uri,summary:'Synthetic authorization',metadata:JSON.stringify(content)});return uri;
    };
    for(const changed of [{expectedFence:'0'},{expectedStateVersion:'18'},{intentFence:'1'},{commands:['unapproved command']},
@@ -151,6 +151,36 @@ test('one prospective source phase retains exhausted history and requires exact 
     expectedFence:result.fence,expectedStateVersion:'20'}),/One-time prospective source phase already consumed/,
     'A new phase ID and terminal state cannot refund the approved one-phase budget');
    await c.query('rollback to savepoint completed_phase_reissue');
+   // A separately authorized correction retains the same tasks and spent
+   // attempts. It cannot create another phase or retry arbitrary failures.
+   await c.query("update workflow_runs set status='blocked',state_version=23 where id=$1",[run]);
+   await c.query("update work_intents set expires_at=clock_timestamp()-interval '1 second'",[]);
+   await c.query("insert into work_intents values($1,'fresh-correction',3,'[\"source.py\",\"tests.py\"]',clock_timestamp()+interval '1 hour')",[project]);
+   const correction={...input,correctedAttempt:true as const,expectedFence:result.fence,expectedStateVersion:'23',owner:'fresh-correction',intentFence:'3'};
+   const phaseIds=fresh.workflow_snapshot.stages.slice(1).map((stage:any)=>stage.id);
+   await c.query("update workflow_tasks set status=case when stage_id=$2 then 'blocked' else 'cancelled' end,attempts=case when stage_id=$2 then 1 else 0 end where run_id=$1 and id<>$3",[run,phaseIds[0],oldTask]);
+   const firstTask=(await c.query('select id from workflow_tasks where run_id=$1 and stage_id=$2',[run,phaseIds[0]])).rows[0].id;
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,correction),/checkpoint-capability/);
+   await c.query("insert into artifacts(run_id,task_id,kind,uri,content)values($1,$2,'stage_output','synthetic://refusal',$3)",[run,firstTask,{phase:'runtime-preparation',blockedReason:"Repair commits are not enabled by the owning project's exact capability."}]);
+   const correctedPreview=await previewProspectiveSourcePhaseOnClient(c,correction);
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...correction,goal:'broader scope'}),/cannot broaden/);
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...correction,phaseId:randomUUID()}),/same admitted phase/);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,correction,correctedPreview.digest,grant),/direct-human/);
+   const correctionGrant=await putGrant({},'operator_prospective_source_phase_correction_authorized',correctedPreview,'prospective_source_phase_correction_authorization');
+   await c.query('savepoint correction_wrong_attempt');
+   await c.query('update workflow_tasks set attempts=2 where id=$1',[firstTask]);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,correction,correctedPreview.digest,correctionGrant),/single pre-write/);
+   await c.query('rollback to savepoint correction_wrong_attempt');
+   const corrected=await admitProspectiveSourcePhaseOnClient(c,correction,correctedPreview.digest,correctionGrant);
+   assert.ok(BigInt(corrected.fence)>BigInt(result.fence));
+   assert.equal((await c.query('select count(*)::int n from workflow_tasks where run_id=$1',[run])).rows[0].n,4);
+   assert.equal((await c.query('select attempts from workflow_tasks where id=$1',[firstTask])).rows[0].attempts,1);
+   assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before);
+   assert.equal((await c.query('select count(*)::int n from workflow_handoffs where run_id=$1',[run])).rows[0].n,3);
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted'",[run])).rows[0].n,1);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,correction,correctedPreview.digest,correctionGrant));
+   await c.query("update workflow_runs set status='blocked' where id=$1",[run]);
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...correction,expectedFence:corrected.fence,expectedStateVersion:'24'}),/One corrected attempt/);
   }finally{await c.query('rollback');}});
  }finally{await fs.rm(root,{recursive:true,force:true});}
 });
