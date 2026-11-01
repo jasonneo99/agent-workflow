@@ -9,11 +9,145 @@ import {appendActionReceipt} from './receipt-writer.js';
 import {acceptanceDigest,storedAcceptanceDecision} from './acceptance.js';
 import {coordinatorClaimFenceSql} from './coordinator-claim-fence.js';
 import {loadStageContext,workflowRunLeaseTransitionKey,transitionWorkflowRun} from './postgres.js';
-import {previewExistingAssignmentOnClient,reconcileExistingAssignmentOnClient,reconciledExecutionContract,prepareReconciledAssignmentContextOnClient,recordVerifiedSourceRepairOnClient,requeueOwnedPrestartLeaseOnClient} from './existing-assignment-reconciliation.js';
+import {previewExistingAssignmentOnClient,reconcileExistingAssignmentOnClient,reconciledExecutionContract,prepareReconciledAssignmentContextOnClient,recordVerifiedSourceRepairOnClient,requeueOwnedPrestartLeaseOnClient,previewProspectiveSourcePhaseOnClient,admitProspectiveSourcePhaseOnClient} from './existing-assignment-reconciliation.js';
 import {assertWorkflowRunTransition} from './run-state-machine.js';
 import {sourceSubjectHash} from '../../workflow-engine/src/source-subject.js';
 import {loadProjectConfig} from '../../agent-registry/src/loaders.js';
 import {resolveExecutionPolicy} from '../../policy-engine/src/index.js';
+
+test('one prospective source phase retains exhausted history and requires exact fresh human, source, policy and ownership bindings',async()=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'prospective-source-')));
+ try{
+  await fs.mkdir(path.join(root,'.agent-workflow'));
+  await fs.writeFile(path.join(root,'source.py'),'# synthetic source\n');
+  await fs.writeFile(path.join(root,'tests.py'),'# synthetic tests\n');
+  const commands=['python3 -m unittest discover -s tests','git diff --check'];
+  const config={project:{name:'Portable prospective fixture'},execution:{repair_commits:{enabled:true}},
+   actions:{allowed_commands:commands,allowed_write_paths:['source.py','tests.py'],blocked_write_paths:['.env']}};
+  const configFile=path.join(root,'.agent-workflow/project.yaml');await fs.writeFile(configFile,JSON.stringify(config));
+  const policy=await loadProjectConfig(root);
+  await withClient(async c=>{await c.query('begin');try{
+   const schema='prospective_source_'+randomUUID().replaceAll('-','');
+   await c.query(`create schema ${schema};set local search_path to ${schema},public;
+    create table agents(id text primary key);insert into agents values('workflow-orchestrator'),('implementation-agent'),('test-engineer');
+    create table projects(id uuid primary key,root_uri text);
+    create table project_identity_locations(project_id uuid,identity_id uuid,kind text);
+    create table workflow_runs(id uuid primary key,project_id uuid,run_set_id uuid,task text,status text,evaluation_metadata jsonb,
+     policy_snapshot jsonb,policy_snapshot_hash text,workflow_snapshot jsonb,workflow_definition_hash text,
+     lease_owner text,lease_expires_at timestamptz,lease_epoch bigint default 0,state_version bigint default 1,finished_at timestamptz,requester_channel text);
+    create table workflow_tasks(id uuid primary key,run_id uuid,status text,attempts int,worker_id text,lease_expires_at timestamptz,
+     lease_generation bigint default 0,started_at timestamptz,finished_at timestamptz,stage_id text,agent_id text,available_at timestamptz);
+    create table queue_coordinator_assignments(id uuid primary key,fence bigserial,project_id uuid,source_run_id uuid,child_run_id uuid,
+     family_id text,state text,role text,lane int,owner text,intent_fence text,file_scopes jsonb,reason text,updated_at timestamptz default now());
+    create table work_intents(project_id text,owner text,fencing_token bigint,file_scopes jsonb,expires_at timestamptz);
+    create table action_approvals(run_id uuid,status text);
+    create table side_effect_receipts(project_id text,status text);
+    create table workflow_run_transitions(run_id uuid,from_status text,to_status text,state_version bigint,lease_epoch bigint,
+     actor text,reason text,idempotency_key text unique,metadata jsonb,created_at timestamptz default clock_timestamp());
+    create table artifacts(run_id uuid,kind text,uri text,content jsonb,task_id uuid,created_at timestamptz default now(),id uuid default gen_random_uuid());
+    create table action_receipts(run_id uuid,agent_id text references agents(id),action_type text,target text,summary text,
+     metadata jsonb,prev_hash text,receipt_hash text,created_at timestamptz,metadata_serialization_version int);`);
+   const project=randomUUID(),source=randomUUID(),run=randomUUID(),set=randomUUID(),assignment=randomUUID(),oldTask=randomUUID();
+   const contract={version:1,contractId:'synthetic-original',originRunId:run,projectId:project,taskHash:acceptanceDigest('original objective'),
+    sourcePaths:['source.py'],subjectHash:await sourceSubjectHash(root,['source.py']),deliverables:[{id:'original-requirements',description:'Original product requirement',status:'pending',receipts:{},gaps:['native acceptance outstanding'],requiredGates:['implementation','verification','packaging','supervision']}]};
+   const priorUri='synthetic://prior-reconciliation',oldWorkflow={id:'synthetic-workflow',stages:[{id:'original-assessment',agent:'test-engineer',goal:'Retained assessment',pattern:{type:'single-shot'}}]};
+   const metadata={sourceRunId:source,queueCoordinatorClaimId:assignment,queueCoordinatorFence:'1',
+    acceptanceContract:contract,coordinatorReconciliationContract:contract,existingAssignmentReconciliationUri:priorUri};
+   await c.query('insert into projects values($1,$2)',[project,root]);
+   await c.query("insert into project_identity_locations values($1,$1,'canonical')",[project]);
+   await c.query(`insert into workflow_runs(id,project_id,run_set_id,task,status,evaluation_metadata,policy_snapshot,workflow_snapshot,state_version)
+    values($1,$2,$3,'original objective','cancelled','{}',$4,$5,1),($6,$2,$3,'original objective','blocked',$7,$4,$5,19)`,[source,project,set,policy,oldWorkflow,run,metadata]);
+   await c.query("insert into workflow_tasks(id,run_id,status,attempts,stage_id,agent_id,finished_at)values($1,$2,'blocked',7,'original-assessment','test-engineer',clock_timestamp())",[oldTask,run]);
+   await c.query(`insert into queue_coordinator_assignments(id,project_id,source_run_id,child_run_id,family_id,state,role,lane,owner,intent_fence,file_scopes)
+    values($1,$2,$3,$4,$5,'held','repair',1,'historical-owner','1','["source.py"]')`,[assignment,project,source,run,project+':'+set]);
+   await c.query("insert into work_intents values($1,'fresh-human-source',2,'[\"source.py\",\"tests.py\"]',clock_timestamp()+interval '1 hour')",[project]);
+   await appendActionReceipt(c,{runId:source,agentId:'workflow-orchestrator',actionType:'fixture_created',target:source,summary:'Synthetic original',metadata:'{}'});
+   const prior={runId:run,assignmentId:assignment,fence:'1',contract};
+   await c.query("insert into artifacts(run_id,kind,uri,content)values($1,'existing_assignment_reconciled',$2,$3)",[run,priorUri,prior]);
+   await appendActionReceipt(c,{runId:run,agentId:'workflow-orchestrator',actionType:'existing_assignment_reconciled',target:priorUri,summary:'Synthetic prior reconciliation',metadata:JSON.stringify(prior)});
+   for(const actionType of ['existing_assignment_repaired_resumed','existing_assignment_repaired_resumed','existing_assignment_repaired_resumed','existing_assignment_explicit_source_phase_resumed'])
+    await appendActionReceipt(c,{runId:run,agentId:'workflow-orchestrator',actionType,target:'synthetic://consumed',summary:'Retained consumed history',metadata:'{}'});
+   await c.query(coordinatorClaimFenceSql);
+   const input={runId:run,assignmentId:assignment,expectedFence:'1',expectedStateVersion:'19',phaseId:randomUUID(),owner:'fresh-human-source',intentFence:'2',actor:'synthetic human control',reason:'Approved one prospective source phase',sourcePaths:['source.py','tests.py'],writePaths:['source.py','tests.py'],commands,goal:'Implement a bounded portable input contract and regressions; retain original acceptance.',lane:1};
+   const preview=await previewProspectiveSourcePhaseOnClient(c,input);
+   const before=(await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0];
+   const putGrant=async(overrides:Record<string,unknown>={},actionType='operator_prospective_source_phase_authorized')=>{
+    const uri='synthetic://prospective/'+randomUUID();const instruction='Synthetic explicit human source-phase authorization';
+    const content={manifest:preview.manifest,previewDigest:preview.digest,instructionReference:'human-message:synthetic-current',instructionText:instruction,
+     instructionSha256:createHash('sha256').update(instruction).digest('hex'),expiresAt:new Date(Date.now()+60000).toISOString(),...overrides};
+    await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,'prospective_source_phase_authorization',$2,$3,clock_timestamp())",[run,uri,content]);
+    await appendActionReceipt(c,{runId:run,agentId:'workflow-orchestrator',actionType,target:uri,summary:'Synthetic authorization',metadata:JSON.stringify(content)});return uri;
+   };
+   for(const changed of [{expectedFence:'0'},{expectedStateVersion:'18'},{intentFence:'1'},{commands:['unapproved command']},
+    {writePaths:['.agent-workflow/project.yaml']},{sourcePaths:['source.py']},{phaseId:'------------------------------------'}])
+    await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...input,...changed}));
+   for(const invalid of [{manifest:{...preview.manifest,authority:'callback'}},{manifest:{...preview.manifest,maxAttempts:2}},
+    {manifest:{...preview.manifest,writePaths:['other.py']}},{instructionReference:'callback:notification'},
+    {instructionSha256:'a'.repeat(64)},{expiresAt:new Date(Date.now()-1000).toISOString()},
+    {expiresAt:new Date(Date.now()+7200000).toISOString()}])
+    await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,await putGrant(invalid)));
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,await putGrant({},'untrusted_callback')));
+   const grant=await putGrant();
+   await fs.writeFile(path.join(root,'source.py'),'# changed after preview\n');
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant));
+   await fs.writeFile(path.join(root,'source.py'),'# synthetic source\n');
+   await fs.writeFile(configFile,JSON.stringify({...config,project:{name:'Policy drift'}}));
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant));
+   await fs.writeFile(configFile,JSON.stringify(config));
+   const negative=async(sql:string,values:unknown[])=>{await c.query('savepoint phase_negative');try{
+    await c.query(sql,values);await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant));
+   }finally{await c.query('rollback to savepoint phase_negative');}};
+   await negative("update work_intents set expires_at=clock_timestamp()-interval '1 second'",[]);
+   await negative("update workflow_runs set task='changed objective' where id=$1",[run]);
+   await negative("update workflow_runs set state_version=20 where id=$1",[run]);
+   await negative("update queue_coordinator_assignments set project_id=$2 where id=$1",[assignment,randomUUID()]);
+   await negative("update queue_coordinator_assignments set family_id='forged-family' where id=$1",[assignment]);
+   await negative("update workflow_runs set policy_snapshot=jsonb_set(policy_snapshot,'{actions,blocked_write_paths}','[\"tests.py\"]') where id=$1",[run]);
+   await negative("insert into action_approvals values($1,'pending')",[run]);
+   await negative("insert into side_effect_receipts values($1,'uncertain')",[project]);
+   await negative("update action_receipts set receipt_hash='corrupt' where run_id=$1 and action_type='fixture_created'",[source]);
+   await negative("insert into queue_coordinator_assignments(id,project_id,state,role,lane,family_id,file_scopes)values($1,$2,'running','repair',1,'other','[\"other.py\"]')",[randomUUID(),randomUUID()]);
+   // A later storage error must roll back the admission even when the caller
+   // catches it and continues the outer transaction. Sequence gaps are safe;
+   // partially published assignment ownership or authority is not.
+   await c.query(`create function reject_phase_task() returns trigger language plpgsql as $$begin
+    if NEW.stage_id like 'source-phase-%' then raise exception 'synthetic task insertion failure';end if;return NEW;end$$;
+    create trigger reject_phase_task before insert on workflow_tasks for each row execute function reject_phase_task()`);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant),/synthetic task insertion failure/);
+   assert.equal((await c.query('select state from queue_coordinator_assignments where id=$1',[assignment])).rows[0].state,'held');
+   assert.equal((await c.query('select status from workflow_runs where id=$1',[run])).rows[0].status,'blocked');
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted'",[run])).rows[0].n,0);
+   assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before);
+   await c.query('drop trigger reject_phase_task on workflow_tasks');
+   const result=await admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant);
+   assert.ok(BigInt(result.fence)>1n);
+   assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before,'Original blocked stage and its seven attempts are immutable');
+   assert.equal((await c.query('select count(*)::int n from workflow_runs')).rows[0].n,2,'No new run');
+   const fresh=(await c.query('select * from workflow_runs where id=$1',[run])).rows[0];
+   assert.equal(fresh.status,'queued');assert.equal(String(fresh.state_version),'20');
+   assert.deepEqual(fresh.evaluation_metadata.acceptanceContract,contract);
+   assert.deepEqual(fresh.evaluation_metadata.prospectiveSourcePhase.originalContract,contract);
+   assert.deepEqual(fresh.evaluation_metadata.taskGrant.sourceWritePaths,input.writePaths);
+   assert.equal(fresh.evaluation_metadata.executionPipeline.required,true);
+   assert.equal(fresh.evaluation_metadata.executionPipeline.isolation,'worktree');
+   assert.equal(fresh.workflow_snapshot.stages.length,4);
+   assert.equal((await c.query("select count(*)::int n from workflow_tasks where run_id=$1 and status='queued' and attempts=0",[run])).rows[0].n,3);
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='existing_assignment_repaired_resumed'",[run])).rows[0].n,3);
+   assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='existing_assignment_explicit_source_phase_resumed'",[run])).rows[0].n,1);
+   assert.equal((await reconciledExecutionContract(c,run,fresh.evaluation_metadata))?.contractId,'source-phase-'+input.phaseId);
+   await assert.rejects(admitProspectiveSourcePhaseOnClient(c,input,preview.digest,grant),'Exact authorization is not replayable');
+   assert.deepEqual((await c.query('select * from workflow_tasks where id=$1',[oldTask])).rows[0],before);
+   await c.query('savepoint completed_phase_reissue');
+   await c.query("update queue_coordinator_assignments set state='held' where id=$1",[assignment]);
+   await c.query("update workflow_runs set status='blocked' where id=$1",[run]);
+   await c.query("update workflow_tasks set status='completed' where run_id=$1 and id<>$2",[run,oldTask]);
+   await assert.rejects(previewProspectiveSourcePhaseOnClient(c,{...input,phaseId:randomUUID(),
+    expectedFence:result.fence,expectedStateVersion:'20'}),/One-time prospective source phase already consumed/,
+    'A new phase ID and terminal state cannot refund the approved one-phase budget');
+   await c.query('rollback to savepoint completed_phase_reissue');
+  }finally{await c.query('rollback');}});
+ }finally{await fs.rm(root,{recursive:true,force:true});}
+});
 
 test('existing queued continuation receives fresh fences and current contract without a wrapper or history rewrite',async()=>{
  const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'existing-assignment-')));

@@ -33,6 +33,165 @@ export interface ExistingAssignmentRequest {
 const exactPaths=(paths:string[])=>paths.length>0&&paths.length<=1000&&new Set(paths).size===paths.length
  &&paths.every(p=>typeof p==='string'&&p.length>0&&!p.startsWith('/')&&!/[\\*?\[\]{}]/u.test(p)&&!p.split('/').some(s=>!s||s==='.'||s==='..'));
 
+/** Operator-only prospective admission. This is a single additional source
+ * phase, not a refund of any historical repair/reassessment budget. */
+export interface ProspectiveSourcePhaseRequest {
+ runId:string;assignmentId:string;expectedFence:string;expectedStateVersion:string;
+ phaseId:string;owner:string;intentFence:string;actor:string;reason:string;
+ sourcePaths:string[];writePaths:string[];commands:string[];goal:string;lane:number;
+}
+export async function previewProspectiveSourcePhaseOnClient(c:Client,input:ProspectiveSourcePhaseRequest) {
+ const {loadProjectConfig,loadWorkflows}=await import('../../agent-registry/src/loaders.js');
+ const {projectConfigSchema}=await import('../../agent-registry/src/schemas.js');
+ const {assertFilePathAllowed}=await import('../../local-tools/src/file-writer.js');
+ const {assertCommandAllowed}=await import('../../local-tools/src/command-executor.js');
+ const {findAgentWorkflowRoot}=await import('../../runtime-root/src/index.js');
+ const {queueWorkingOccupancyOnClient}=await import('./queue-coordinator.js');
+ if(!/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/u.test(input.phaseId)||!input.owner||!input.actor||!input.reason||
+  !input.goal||input.goal.length>8192||!exactPaths(input.sourcePaths)||input.sourcePaths.length>128||
+  !exactPaths(input.writePaths)||input.writePaths.some(p=>!input.sourcePaths.includes(p)||
+   p==='AGENTS.md'||p==='.agent-workflow/project.yaml')||!input.commands.length||input.commands.length>32||
+  new Set(input.commands).size!==input.commands.length||input.commands.some(x=>typeof x!=='string'||x.includes('*'))||
+  !input.commands.includes('git diff --check')||!Number.isInteger(input.lane)||input.lane<1||input.lane>5)
+  throw Error('Exact bounded prospective source phase required');
+ await c.query("select pg_advisory_xact_lock(hashtext('agentflow:queue-coordinator'))");
+ const row=(await c.query(`select r.*,r.id::text run_key,r.project_id::text project_key,p.root_uri,
+  q.id::text assignment_key,q.project_id::text assignment_project,q.fence::text assignment_fence,q.state assignment_state,q.role,q.owner prior_owner,
+  q.intent_fence prior_intent_fence,q.family_id,q.source_run_id::text source_id,q.file_scopes
+  from workflow_runs r join projects p on p.id=r.project_id join queue_coordinator_assignments q on q.child_run_id=r.id
+  where r.id=$1 and q.id=$2 for update of r,q,p`,[input.runId,input.assignmentId])).rows[0];
+ if(!row||row.assignment_project!==row.project_key||!['blocked','failed'].includes(row.status)||row.assignment_state!=='held'||row.role!=='repair'||
+  row.assignment_fence!==input.expectedFence||String(row.state_version)!==input.expectedStateVersion||row.lease_owner||
+  row.lease_expires_at&&new Date(row.lease_expires_at).getTime()>Date.now()||
+  row.evaluation_metadata?.queueCoordinatorClaimId!==input.assignmentId||
+  String(row.evaluation_metadata?.queueCoordinatorFence)!==input.expectedFence||
+  row.evaluation_metadata?.sourceRunId!==row.source_id||await fs.realpath(row.root_uri)!==row.root_uri||
+  /(^|\/)(vendor|node_modules)(\/|$)/u.test(row.root_uri))throw Error('Exact held canonical run and assignment required');
+ const source=(await c.query('select project_id::text project_key,run_set_id::text run_set from workflow_runs where id=$1 for update',[row.source_id])).rows[0];
+ if(!source||source.project_key!==row.project_key||row.family_id!==row.project_key+':'+source.run_set)
+  throw Error('Prospective source phase must retain exact original project and family');
+ if(!(await c.query("select 1 from project_identity_locations where project_id=$1 and identity_id=$1 and kind='canonical'",[row.project_key])).rowCount)
+  throw Error('Canonical project registration required');
+ if((await c.query("select 1 from action_receipts where run_id=$1 and action_type='prospective_source_phase_admitted'",[input.runId])).rowCount)
+  throw Error('One-time prospective source phase already consumed');
+ const intent=(await c.query(`select file_scopes,expires_at from work_intents where project_id=$1 and owner=$2
+  and fencing_token::text=$3 and expires_at>clock_timestamp() for update`,[row.project_key,input.owner,input.intentFence])).rows[0];
+ if(!intent||acceptanceDigest([...intent.file_scopes].sort())!==acceptanceDigest([...input.sourcePaths].sort()))throw Error('Fresh exact prospective work intent required');
+ if((await c.query(`select 1 from work_intents where project_id=$1 and owner=$2 and fencing_token::text=$3
+  and expires_at>clock_timestamp()`,[row.project_key,row.prior_owner,row.prior_intent_fence])).rowCount)throw Error('Prior assignment still owns a live intent');
+ const tasks=(await c.query('select * from workflow_tasks where run_id=$1 order by id for update',[input.runId])).rows;
+ if(!tasks.length||tasks.some(t=>['queued','leased','running'].includes(t.status)||t.lease_expires_at&&new Date(t.lease_expires_at).getTime()>Date.now()))throw Error('Historical tasks must be terminal and unleased');
+ if((await c.query(`select 1 from action_approvals where run_id=$1 and status in ('pending','executing')
+  union all select 1 from side_effect_receipts where project_id=$2 and status is distinct from 'completed' limit 1`,[input.runId,row.project_key])).rowCount)
+  throw Error('Outstanding approval or uncertain effect must be reconciled first');
+ const others=(await c.query("select id::text,project_id::text project_key,role,lane,family_id,file_scopes from queue_coordinator_assignments where id<>$1 and state in ('reserved','running','uncertain') for update",[input.assignmentId])).rows;
+ if(others.some(q=>q.family_id===row.family_id||q.role===row.role&&q.lane===input.lane||q.project_key===row.project_key&&
+  (!Array.isArray(q.file_scopes)||!q.file_scopes.length||q.file_scopes.some((a:string)=>input.sourcePaths.some(b=>a===b||a.startsWith(b+'/')||b.startsWith(a+'/')))))||
+  (await queueWorkingOccupancyOnClient(c)).count>=5)throw Error('Prospective phase conflicts with existing ownership or capacity');
+ const current=await loadProjectConfig(row.root_uri);
+ for(const relative of input.sourcePaths){
+  assertFilePathAllowed(relative,current);
+  assertFilePathAllowed(relative,{...row.policy_snapshot,actions:{...row.policy_snapshot.actions,allowed_write_paths:input.sourcePaths}});
+ }
+ const tests=input.commands.filter(command=>/\b(?:unittest|pytest)\b|^npm (?:test|run (?:test|check))\b|^node .*--test\b/u.test(command));
+ if(!tests.length)throw Error('Prospective phase needs a behavioral verification command');
+ for(const command of input.commands){assertCommandAllowed(command,current);assertCommandAllowed(command,row.policy_snapshot);}
+ const priorContract=await reconciledExecutionContract(c,input.runId,row.evaluation_metadata);
+ if(!priorContract?.sourcePaths?.length||priorContract.sourcePaths.some(p=>!input.sourcePaths.includes(p)))throw Error('Original acceptance source scope must remain retained');
+ const prefix='source-phase-'+input.phaseId,profile='source-phase-'+input.phaseId;
+ const repair=(await loadWorkflows(findAgentWorkflowRoot(import.meta.url))).find(w=>w.id==='repair-blocked-item');
+ if(!repair||repair.stages.length!==3||repair.stages[0]?.agent!=='implementation-agent'||
+  repair.stages[1]?.agent!=='test-engineer'||repair.stages[0].runtime_operation||repair.stages[1].runtime_operation||
+  !repair.stages[0].checkpoint_after||repair.stages[1].pattern?.type!=='verifier'||
+  repair.stages[2]?.runtime_operation!=='integrate-source')throw Error('Trusted prepared source workflow unavailable');
+ const stages=repair.stages.map((stage,index)=>({...stage,id:prefix+'-'+stage.id,
+  goal:index===0?input.goal+'\n'+stage.goal:stage.goal,
+  depends_on:repair.stages.slice(0,index).map(s=>prefix+'-'+s.id)}));
+ if(!Array.isArray(row.workflow_snapshot?.stages)||stages.some(stage=>row.workflow_snapshot.stages.some((old:any)=>old.id===stage.id)))
+  throw Error('Prospective stage identity conflicts with retained workflow');
+ const policy=projectConfigSchema.parse({...current,actions:{...current.actions,allowed_commands:input.commands,
+  allowed_write_paths:input.writePaths,blocked_commands:[...new Set([...current.actions.blocked_commands,...(row.policy_snapshot.actions.blocked_commands??[])])],
+  blocked_write_paths:[...new Set([...current.actions.blocked_write_paths,...(row.policy_snapshot.actions.blocked_write_paths??[])])],isolate_command_writes:true},execution:{...current.execution,
+  repair_commits:{enabled:true,stages:[stages[0]!.id]},environments:{default_profile:profile,profiles:{[profile]:{
+   kind:'native',platform:`${process.platform}/${process.arch==='x64'?'amd64':process.arch}`,
+   source_paths:input.sourcePaths,readiness:[{argv:['git','diff','--check']}],build_network:'none',
+   verification:[{commands:tests,format:tests.every(x=>x.includes('unittest'))?'unittest':tests.every(x=>x.includes('pytest'))?'pytest':'node-test',minimum_tests:1}],
+   limits:{timeout_ms:Math.min(current.actions.command_timeout_ms,600000),max_source_bytes:67108864,max_files:1000}
+  }}}}});
+ if(current.execution.repair_commits?.enabled!==true)throw Error('Current project must authorize source checkpoints');
+ const sourceHash=await sourceSubjectHash(row.root_uri,input.sourcePaths);
+ const phaseContract:StructuredAcceptanceContract={version:1,contractId:prefix,projectId:row.project_key,
+  originRunId:input.runId,taskHash:acceptanceDigest(row.task),sourcePaths:input.sourcePaths,subjectHash:sourceHash,
+  deliverables:[{id:'approved-source-phase',description:input.goal,status:'pending',receipts:{},gaps:[],requiredGates:['implementation','verification','packaging','supervision']}]};
+ const manifest={version:1,operation:'continue-existing-run-source-phase',authority:'direct-human',approvalDecision:'approved',maxAttempts:1,
+  ...input,projectId:row.project_key,taskHash:acceptanceDigest(row.task),sourceHash,currentPolicyHash:acceptanceDigest(current),
+  priorPolicyHash:acceptanceDigest(row.policy_snapshot),policyHash:acceptanceDigest(policy),priorContractHash:acceptanceDigest(priorContract),
+  taskSnapshotHash:acceptanceDigest(tasks),workflowSnapshotHash:acceptanceDigest(row.workflow_snapshot),
+  phaseStagesHash:acceptanceDigest(stages),intentExpiresAt:new Date(intent.expires_at).toISOString()};
+ return {digest:acceptanceDigest(manifest),manifest,snapshot:{row,tasks,policy,priorContract,phaseContract,stages}};
+}
+
+/** The caller is the independently authenticated human control surface. Never
+ * register this as an agent tool or use callback text to mint its authorization. */
+export async function admitProspectiveSourcePhaseOnClient(c:Client,input:ProspectiveSourcePhaseRequest,expectedDigest:string,authorizationUri:string) {
+ await c.query('savepoint prospective_source_phase_admission');
+ try{
+ const preview=await previewProspectiveSourcePhaseOnClient(c,input);
+ if(preview.digest!==expectedDigest)throw Error('Prospective phase changed after preview');
+ const records=(await c.query(`select a.content,a.created_at from artifacts a join action_receipts r on
+  r.run_id=a.run_id and r.target=a.uri and r.metadata=a.content and r.receipt_hash is not null
+  and r.agent_id='workflow-orchestrator' and r.action_type='operator_prospective_source_phase_authorized'
+  where a.run_id=$1 and a.uri=$2 and a.kind='prospective_source_phase_authorization'`,[input.runId,authorizationUri])).rows;
+ const grant=records.length===1?records[0].content:null,expiry=Date.parse(grant?.expiresAt),now=Date.now();
+ if(!grant||acceptanceDigest(grant.manifest)!==preview.digest||grant.previewDigest!==expectedDigest||
+  !/^human-message:[^\s]+$/u.test(grant.instructionReference??'')||typeof grant.instructionText!=='string'||
+  !grant.instructionText.length||grant.instructionText.length>8192||createHash('sha256').update(grant.instructionText).digest('hex')!==grant.instructionSha256||
+  !Number.isFinite(expiry)||expiry<=now||expiry>new Date(records[0].created_at).getTime()+3600000||
+  expiry>Date.parse(preview.manifest.intentExpiresAt))throw Error('Fresh exact direct-human prospective authorization required');
+ const {verifyRunReceiptChainOnClient}=await import('./postgres.js');
+ for(const id of new Set([input.runId,preview.snapshot.row.source_id]))if(!(await verifyRunReceiptChainOnClient(c,id)).valid)throw Error('Original receipt chain invalid');
+ const {row,tasks,policy,priorContract,phaseContract,stages}=preview.snapshot;
+ const fresh=(await c.query(`update queue_coordinator_assignments set owner=$2,intent_fence=$3,file_scopes=$4::jsonb,
+  lane=$5,fence=nextval(pg_get_serial_sequence('queue_coordinator_assignments','fence')),state='running',
+  reason='Explicit one-time prospective source phase; historical attempts retained',updated_at=clock_timestamp()
+  where id=$1 and fence=$6::bigint and state='held' returning fence::text`,[input.assignmentId,input.owner,input.intentFence,JSON.stringify(input.sourcePaths),input.lane,input.expectedFence])).rows[0];
+ if(!fresh)throw Error('Prospective assignment fence changed');
+ const uri=`db://workflow_runs/${input.runId}/existing_assignment_reconciled/${randomUUID()}`;
+ const record={version:1,runId:input.runId,assignmentId:input.assignmentId,fence:fresh.fence,contract:phaseContract,
+  acceptanceScope:'approved-source-phase-only',originalAcceptanceUnchanged:true,authorizationUri,authorizationHash:acceptanceDigest(grant),
+  previewDigest:preview.digest,priorAssignment:{fence:input.expectedFence,owner:row.prior_owner,intentFence:row.prior_intent_fence},
+  priorRun:row,priorTasks:tasks,priorContract};
+ await c.query("insert into artifacts(run_id,kind,uri,content)values($1,'existing_assignment_reconciled',$2,$3::jsonb)",[input.runId,uri,JSON.stringify(record)]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'existing_assignment_reconciled',target:uri,
+  summary:'Admitted a scoped prospective source phase; original blocked stages, attempts and acceptance remain unchanged.',metadata:JSON.stringify(record)});
+ const metadata={...row.evaluation_metadata,queueCoordinatorFence:fresh.fence,workIntent:{owner:input.owner,fencingToken:input.intentFence},
+  existingAssignmentReconciliationUri:uri,coordinatorReconciliationContract:phaseContract,noAutomaticRepeat:true,
+  taskGrant:{sourceWritePaths:input.writePaths},prospectiveSourcePhase:{phaseId:input.phaseId,authorizationUri,originalContract:priorContract,originalTaskIds:tasks.map(t=>t.id)},
+  executionPipeline:{version:1,required:true,sourceChanges:true,isolation:'worktree',preparedOnly:false,
+   sourcePaths:input.sourcePaths,checkpointStageIds:[stages[0]!.id]}};
+ const workflow={...row.workflow_snapshot,execution:{kind:'source-change'},stages:[...row.workflow_snapshot.stages,...stages]};
+ const updated=(await c.query(`update workflow_runs set status='queued',state_version=state_version+1,finished_at=null,
+  evaluation_metadata=$2::jsonb,policy_snapshot=$3::jsonb,policy_snapshot_hash=$4,workflow_snapshot=$5::jsonb,
+  workflow_definition_hash=$6 where id=$1 and state_version=$7::bigint and status=$8 returning state_version::text`,
+  [input.runId,JSON.stringify(metadata),JSON.stringify(policy),acceptanceDigest(policy),JSON.stringify(workflow),acceptanceDigest(workflow),input.expectedStateVersion,row.status])).rows[0];
+ if(!updated)throw Error('Prospective run state changed');
+ for(const stage of stages)await c.query(`insert into workflow_tasks(id,run_id,stage_id,agent_id,status,attempts,available_at)
+  values($1,$2,$3,$4,'queued',0,clock_timestamp())`,[randomUUID(),input.runId,stage.id,stage.agent]);
+ const brief=`Approved prospective source phase ${input.phaseId}. Same run, no new wrapper.\n${input.goal}\nExact source write paths: ${input.writePaths.join(', ')}. Exact commands: ${input.commands.join('; ')}.\nUse the required isolated prepared pipeline. Root owns intent ${input.owner}/${input.intentFence}; do not acquire a competing intent. Historical blocked tasks and original acceptance are retained, not delivered by this phase. No deployment, service restart, credentials, terminal features, policy edits, new workflow, or direct Git commit commands. Let the runtime commit/verify/integrate the exact source candidate. Phase authorization: ${authorizationUri}.`;
+ await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,'compiled_brief',$2,$3::jsonb,clock_timestamp())",[input.runId,uri+'/brief',JSON.stringify({text:brief,assignmentFence:fresh.fence,contractDigest:acceptanceDigest(phaseContract)})]);
+ await c.query(`insert into workflow_run_transitions(run_id,from_status,to_status,state_version,lease_epoch,actor,reason,idempotency_key,metadata)
+  values($1,$2,'queued',$3::bigint,$4::bigint,$5,$6,$7,$8::jsonb)`,[input.runId,row.status,updated.state_version,row.lease_epoch,input.actor,input.reason,
+  'prospective-source-phase:'+input.runId,JSON.stringify({authorizationUri,phaseId:input.phaseId,assignmentFence:fresh.fence})]);
+ await appendActionReceipt(c,{runId:input.runId,agentId:'workflow-orchestrator',actionType:'prospective_source_phase_admitted',target:authorizationUri,
+  summary:'One fresh explicitly authorized source phase queued on the same run; historical retries and original blocked tasks retained.',metadata:JSON.stringify({phaseId:input.phaseId,previewDigest:preview.digest,assignmentFence:fresh.fence,originalAcceptanceUnchanged:true})});
+ await c.query('release savepoint prospective_source_phase_admission');
+ return {runId:input.runId,fence:fresh.fence,intentFence:input.intentFence,artifactUri:uri,phaseId:input.phaseId};
+ }catch(error){
+  await c.query('rollback to savepoint prospective_source_phase_admission');
+  await c.query('release savepoint prospective_source_phase_admission');throw error;
+ }
+}
+
 /** A new direct human source phase is not a refund of an old repair budget.
  * One such phase per run; exact immutable grant, changed source and state CAS.
  * This operator-only API is never exposed to workers or callback handlers. */
