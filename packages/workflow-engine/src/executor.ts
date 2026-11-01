@@ -757,8 +757,9 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
         // evidence to the provider instead of prematurely applying the final
         // verification gate to an informational response.
         await executePendingReadRounds();
-        const candidateFiles = ([...task.priorStageArtifacts].reverse().find(stage => stage.artifact.repairCheckpoint)
-          ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files;
+        const candidateFiles = project.execution.repair_commits?.enabled && stagePattern.type === "verifier"
+          ? ([...task.priorStageArtifacts ?? []].reverse().find(stage => stage.artifact.repairCheckpoint)
+            ?.artifact.repairCheckpoint as RepairCheckpoint | undefined)?.files : undefined;
         const scheduledVerifierCommands = missingRepairVerifierCommands(project, stagePattern.type === "verifier",
           candidateFiles, output.requestedCommands ?? [], actionResults);
         if (scheduledVerifierCommands.length) {
@@ -1972,7 +1973,7 @@ export async function runWorkerOnce(limit: number, options?: WorkerRunOptions): 
               summary: "Committed the tested repair candidate; independent verification remains pending.", artifactKind: "repair_commit_candidate", artifactContent: { ...repairCheckpoint } });
           }
           if (stagePattern.type === "verifier") {
-            const candidate = [...task.priorStageArtifacts].reverse().find(stage => stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
+            const candidate = [...task.priorStageArtifacts ?? []].reverse().find(stage => stage.artifact.repairCheckpoint)?.artifact.repairCheckpoint as RepairCheckpoint | undefined;
             if (!candidate?.receiptPath) throw Error("Repair verification requires a retained candidate checkpoint; use a separately scoped current-revision review when no repair was needed.");
             if (candidate?.receiptPath) {
               if (!evidence?.environment?.receiptPath) throw Error("The committed repair requires a fresh independent environment test receipt.");
