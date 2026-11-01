@@ -36,7 +36,10 @@ test('one prospective source phase retains exhausted history and requires exact 
      policy_snapshot jsonb,policy_snapshot_hash text,workflow_snapshot jsonb,workflow_definition_hash text,
      lease_owner text,lease_expires_at timestamptz,lease_epoch bigint default 0,state_version bigint default 1,finished_at timestamptz,requester_channel text);
     create table workflow_tasks(id uuid primary key,run_id uuid,status text,attempts int,worker_id text,lease_expires_at timestamptz,
-     lease_generation bigint default 0,started_at timestamptz,finished_at timestamptz,stage_id text,agent_id text,available_at timestamptz);
+     lease_generation bigint default 0,started_at timestamptz,finished_at timestamptz,stage_id text,agent_id text,available_at timestamptz,idempotency_key text not null unique);
+    create table workflow_handoffs(id uuid primary key default gen_random_uuid(),run_id uuid,sender_agent_id text,receiver_agent_id text,
+     source_stage_id text,destination_stage_id text,transferred_artifacts jsonb,context_summary text,acceptance_criteria jsonb,idempotency_key text not null unique);
+    create table workflow_handoff_events(handoff_id uuid,run_id uuid,status text,actor_agent_id text,metadata jsonb);
     create table queue_coordinator_assignments(id uuid primary key,fence bigserial,project_id uuid,source_run_id uuid,child_run_id uuid,
      family_id text,state text,role text,lane int,owner text,intent_fence text,file_scopes jsonb,reason text,updated_at timestamptz default now());
     create table work_intents(project_id text,owner text,fencing_token bigint,file_scopes jsonb,expires_at timestamptz);
@@ -57,7 +60,7 @@ test('one prospective source phase retains exhausted history and requires exact 
    await c.query("insert into project_identity_locations values($1,$1,'canonical')",[project]);
    await c.query(`insert into workflow_runs(id,project_id,run_set_id,task,status,evaluation_metadata,policy_snapshot,workflow_snapshot,state_version)
     values($1,$2,$3,'original objective','cancelled','{}',$4,$5,1),($6,$2,$3,'original objective','blocked',$7,$4,$5,19)`,[source,project,set,policy,oldWorkflow,run,metadata]);
-   await c.query("insert into workflow_tasks(id,run_id,status,attempts,stage_id,agent_id,finished_at)values($1,$2,'blocked',7,'original-assessment','test-engineer',clock_timestamp())",[oldTask,run]);
+   await c.query("insert into workflow_tasks(id,run_id,status,attempts,stage_id,agent_id,finished_at,idempotency_key)values($1,$2,'blocked',7,'original-assessment','test-engineer',clock_timestamp(),'original-task')",[oldTask,run]);
    await c.query(`insert into queue_coordinator_assignments(id,project_id,source_run_id,child_run_id,family_id,state,role,lane,owner,intent_fence,file_scopes)
     values($1,$2,$3,$4,$5,'held','repair',1,'historical-owner','1','["source.py"]')`,[assignment,project,source,run,project+':'+set]);
    await c.query("insert into work_intents values($1,'fresh-human-source',2,'[\"source.py\",\"tests.py\"]',clock_timestamp()+interval '1 hour')",[project]);
@@ -132,6 +135,8 @@ test('one prospective source phase retains exhausted history and requires exact 
    assert.equal(fresh.evaluation_metadata.executionPipeline.isolation,'worktree');
    assert.equal(fresh.workflow_snapshot.stages.length,4);
    assert.equal((await c.query("select count(*)::int n from workflow_tasks where run_id=$1 and status='queued' and attempts=0",[run])).rows[0].n,3);
+   assert.equal((await c.query('select count(*)::int n from workflow_handoffs where run_id=$1',[run])).rows[0].n,3);
+   assert.equal((await c.query("select count(*)::int n from workflow_handoff_events where run_id=$1 and status='proposed'",[run])).rows[0].n,3);
    assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='existing_assignment_repaired_resumed'",[run])).rows[0].n,3);
    assert.equal((await c.query("select count(*)::int n from action_receipts where run_id=$1 and action_type='existing_assignment_explicit_source_phase_resumed'",[run])).rows[0].n,1);
    assert.equal((await reconciledExecutionContract(c,run,fresh.evaluation_metadata))?.contractId,'source-phase-'+input.phaseId);

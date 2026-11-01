@@ -175,8 +175,19 @@ export async function admitProspectiveSourcePhaseOnClient(c:Client,input:Prospec
   workflow_definition_hash=$6 where id=$1 and state_version=$7::bigint and status=$8 returning state_version::text`,
   [input.runId,JSON.stringify(metadata),JSON.stringify(policy),acceptanceDigest(policy),JSON.stringify(workflow),acceptanceDigest(workflow),input.expectedStateVersion,row.status])).rows[0];
  if(!updated)throw Error('Prospective run state changed');
- for(const stage of stages)await c.query(`insert into workflow_tasks(id,run_id,stage_id,agent_id,status,attempts,available_at)
-  values($1,$2,$3,$4,'queued',0,clock_timestamp())`,[randomUUID(),input.runId,stage.id,stage.agent]);
+ for(const stage of stages)await c.query(`insert into workflow_tasks(id,run_id,stage_id,agent_id,status,attempts,available_at,idempotency_key)
+  values($1,$2,$3,$4,'queued',0,clock_timestamp(),$5)`,[randomUUID(),input.runId,stage.id,stage.agent,`${input.runId}:${stage.id}:${stage.agent}`]);
+ for(const destination of stages)for(const sourceId of destination.depends_on??[]){
+  const source=stages.find(stage=>stage.id===sourceId);
+  if(!source)throw Error('Prospective handoff source missing');
+  const handoff=(await c.query(`insert into workflow_handoffs(run_id,sender_agent_id,receiver_agent_id,source_stage_id,destination_stage_id,
+   transferred_artifacts,context_summary,acceptance_criteria,idempotency_key)
+   values($1,$2,$3,$4,$5,'[]'::jsonb,$6,$7::jsonb,$8) returning id::text`,
+   [input.runId,source.agent,destination.agent,source.id,destination.id,`Transfer ${source.output} from ${source.id} to ${destination.id}.`,
+    JSON.stringify(destination.acceptance_criteria??[destination.goal]),`${source.id}:${destination.id}`])).rows[0];
+  await c.query(`insert into workflow_handoff_events(handoff_id,run_id,status,actor_agent_id,metadata)
+   values($1,$2,'proposed',$3,$4::jsonb)`,[handoff.id,input.runId,source.agent,JSON.stringify({generatedFromWorkflowDefinition:true,phaseId:input.phaseId})]);
+ }
  const brief=`Approved prospective source phase ${input.phaseId}. Same run, no new wrapper.\n${input.goal}\nExact source write paths: ${input.writePaths.join(', ')}. Exact commands: ${input.commands.join('; ')}.\nUse the required isolated prepared pipeline. Root owns intent ${input.owner}/${input.intentFence}; do not acquire a competing intent. Historical blocked tasks and original acceptance are retained, not delivered by this phase. No deployment, service restart, credentials, terminal features, policy edits, new workflow, or direct Git commit commands. Let the runtime commit/verify/integrate the exact source candidate. Phase authorization: ${authorizationUri}.`;
  await c.query("insert into artifacts(run_id,kind,uri,content,created_at)values($1,'compiled_brief',$2,$3::jsonb,clock_timestamp())",[input.runId,uri+'/brief',JSON.stringify({text:brief,assignmentFence:fresh.fence,contractDigest:acceptanceDigest(phaseContract)})]);
  await c.query(`insert into workflow_run_transitions(run_id,from_status,to_status,state_version,lease_epoch,actor,reason,idempotency_key,metadata)
